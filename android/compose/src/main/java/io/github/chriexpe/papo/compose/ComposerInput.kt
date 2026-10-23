@@ -150,6 +150,7 @@ internal fun ComposerInput(
     enabled: Boolean = true,
     channelId: String = server.selected,
 ) {
+    val dimensions = LocalUiDimensions.current
     val formatting = remember(server.url, server.me, server.selected) { ComposerFormatting() }
     DisposableEffect(formatting) { onDispose { formatting.close() } }
     SideEffect { formatting.sync(draft) }
@@ -264,7 +265,12 @@ internal fun ComposerInput(
     }
     Box(
         modifier
-            .padding(start = 14.dp, end = 8.dp, top = 12.dp, bottom = 12.dp)
+            .padding(
+                start = 14.dp,
+                end = 8.dp,
+                top = dimensions.composerTextVertical,
+                bottom = dimensions.composerTextVertical,
+            )
             .heightIn(min = 24.dp, max = 160.dp)
             .onSizeChanged { editorHeight = it.height }
             .verticalScroll(editorScroll)

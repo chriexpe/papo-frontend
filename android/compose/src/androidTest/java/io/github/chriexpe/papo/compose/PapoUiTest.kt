@@ -2,6 +2,7 @@ package io.github.chriexpe.papo.compose
 
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.testTag
@@ -3009,6 +3010,141 @@ class PapoUiTest {
             compose.onAllNodesWithText(draft).fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithContentDescription("Message options").assertIsEnabled()
+    }
+
+    @Test
+    fun interfaceDensityKeepsHeaderHeightsEqualAndPersistsWithoutChangingSystemFontScale() {
+        demo()
+        val original = compose.onNodeWithTag("server-header").fetchSemanticsNode().boundsInRoot
+        val profile = compose.onNodeWithTag("account-settings").fetchSemanticsNode().boundsInRoot
+        assertEquals(original.height, profile.height, 1f)
+        assertEquals(
+            original.center.x,
+            compose.onNodeWithTag("server-header-name").fetchSemanticsNode().boundsInRoot.center.x,
+            1f,
+        )
+        val systemScale =
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .resources
+                .configuration
+                .fontScale
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithText("Appearance", substring = false).performClick()
+        compose
+            .onNodeWithTag("appearance-settings")
+            .performScrollToNode(hasTestTag("ui-density-compact"))
+        compose.onNodeWithTag("ui-density-compact").performClick().assertIsSelected()
+        activity.recreate()
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithTag("appearance-settings").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose
+            .onNodeWithTag("appearance-settings")
+            .performScrollToNode(hasTestTag("ui-density-compact"))
+        compose.onNodeWithTag("ui-density-compact").assertIsSelected()
+        systemBack()
+        systemBack()
+        val compact = compose.onNodeWithTag("server-header").fetchSemanticsNode().boundsInRoot
+        val compactProfile =
+            compose.onNodeWithTag("account-settings").fetchSemanticsNode().boundsInRoot
+        assertTrue(compact.height < original.height)
+        assertEquals(compact.height, compactProfile.height, 1f)
+        assertEquals(
+            compact.center.x,
+            compose.onNodeWithTag("server-header-name").fetchSemanticsNode().boundsInRoot.center.x,
+            1f,
+        )
+        assertEquals(
+            systemScale,
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .resources
+                .configuration
+                .fontScale,
+        )
+        val nav = compose.onNodeWithTag("chat-navigation").fetchSemanticsNode().boundsInRoot
+        val servers = compose.onNodeWithTag("servers-navigation").fetchSemanticsNode().boundsInRoot
+        assertEquals(nav.height, servers.height, 1f)
+    }
+
+    @Test
+    fun multilineComposerUsesFullWidthWithoutLosingFocusAndReturnsToCompactPlacement() {
+        chat()
+        val input = compose.onNodeWithTag("composer-input")
+        input.performClick().performTextInput("x")
+        val compactWidth = input.fetchSemanticsNode().boundsInRoot.width
+        val text = "A longer draft that should have room across the composer.\nSecond line 🙂"
+        input.performTextReplacement(text)
+        input.assertIsFocused()
+        val expanded = input.fetchSemanticsNode().boundsInRoot
+        val actions = compose.onNodeWithTag("composer-actions").fetchSemanticsNode().boundsInRoot
+        assertTrue(expanded.width > compactWidth)
+        assertTrue(expanded.bottom <= actions.top)
+        input.performTextInput(" more")
+        input.assertIsFocused().assertTextEquals(text + " more")
+        input.performTextReplacement("x")
+        input.assertIsFocused()
+        assertEquals(compactWidth, input.fetchSemanticsNode().boundsInRoot.width, 1f)
+        input.performTextReplacement(text)
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("geral").performClick()
+        input.assertTextEquals(text)
+    }
+
+    @Test
+    fun compactComposerKeepsActionsReachableAtNarrowWidthAndDoubleSystemTextSize() {
+        chat()
+        activity.onActivity { host ->
+            host
+                .getSharedPreferences("compose-appearance", 0)
+                .edit()
+                .putString("ui-density", "compact")
+                .apply()
+            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            host.setContent {
+                val density = androidx.compose.ui.platform.LocalDensity.current
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.ui.platform.LocalDensity provides
+                        androidx.compose.ui.unit.Density(density.density, 2f)
+                ) {
+                    androidx.compose.foundation.layout.Box(
+                        androidx.compose.ui.Modifier.width(320.dp)
+                    ) {
+                        PapoApp(model)
+                    }
+                }
+            }
+        }
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithTag("server-header").fetchSemanticsNodes().isNotEmpty()
+        }
+        if (compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isEmpty())
+            compose.onNodeWithText("geral", substring = false).performClick()
+        val input = compose.onNodeWithTag("composer-input")
+        input.performTextInput("A multiline draft with larger text\nand a second line")
+        input.assertIsFocused()
+        val actions = compose.onNodeWithTag("composer-actions").fetchSemanticsNode().boundsInRoot
+        val text = input.fetchSemanticsNode().boundsInRoot
+        assertTrue(text.bottom <= actions.top)
+        val pixels =
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .resources
+                .displayMetrics
+                .density
+        listOf("Emoji and stickers", "GIF picker", "Send message").forEach { label ->
+            val button =
+                compose
+                    .onNodeWithContentDescription(label)
+                    .assertIsDisplayed()
+                    .fetchSemanticsNode()
+                    .boundsInRoot
+            assertTrue(button.width >= 48 * pixels - 1)
+            assertTrue(button.height >= 48 * pixels - 1)
+            assertTrue(button.right <= actions.right + 1)
+        }
     }
 
     @Test

@@ -104,6 +104,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var retry by remember { mutableStateOf<ChatMessage?>(null) }
     var pins by remember(draftKey) { mutableStateOf(false) }
     var members by remember { mutableStateOf(false) }
+    val dimensions = LocalUiDimensions.current
     val appearance = LocalClientPreferences.current
     var descriptionExpanded by
         rememberSaveable(draftKey) {
@@ -803,8 +804,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             Column(
                 Modifier.align(Alignment.TopCenter)
                     .statusBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                    .onSizeChanged { headerHeight = with(density) { it.height.toDp() } + 32.dp }
+                    .padding(horizontal = dimensions.floatingPadding, vertical = 8.dp)
+                    .onSizeChanged {
+                        headerHeight =
+                            with(density) { it.height.toDp() } +
+                                dimensions.floatingPadding * 2 +
+                                8.dp
+                    }
             ) {
                 GlassPill(Modifier.fillMaxWidth()) {
                     Column(
@@ -827,7 +833,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             }
                     ) {
                         Row(
-                            Modifier.fillMaxWidth().padding(6.dp),
+                            Modifier.fillMaxWidth().padding(dimensions.surfaceInset),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Box(Modifier.width(96.dp)) {
@@ -891,7 +897,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     .fillMaxWidth()
                     .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }
                     .testTag("chat-composer")
-                    .padding(12.dp)
+                    .padding(dimensions.composerPadding)
             ) {
                 if (server.loadingContext || server.reading.seekingCatchUp)
                     GlassPill(Modifier.fillMaxWidth().padding(bottom = 8.dp), radius = 24) {
@@ -915,7 +921,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     ComposerSuggestions(composer, server, model) { updateComposer(it) }
                 Row(
                     Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(dimensions.composerGap),
                     verticalAlignment = Alignment.Bottom,
                 ) {
                     AttachmentActions(
@@ -1057,102 +1063,104 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                                 )
                                             }
                                         }
-                                    Row(
-                                        Modifier.padding(6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        ComposerInput(
-                                            composer,
-                                            server,
-                                            model,
-                                            ui(
-                                                R.string.message_to,
-                                                if (channel.kind == "direct") channel.name
-                                                else "#${channel.name}",
-                                            ),
-                                            onChange = {
-                                                updateComposer(it)
-                                                model.typing(server)
-                                            },
-                                            modifier =
-                                                Modifier.weight(1f).focusRequester(composerFocus),
-                                            onFocusChange = { composerFocused = it },
-                                            animationsAllowed =
-                                                appearance.animations &&
-                                                    viewedMedia == null &&
-                                                    !emojiPicker &&
-                                                    !gifPicker,
-                                        )
-                                        IconButton(
-                                            onClick = {
-                                                focus.clearFocus()
-                                                keyboard?.hide()
-                                                emojiTarget = null
-                                                emojiPicker = true
-                                            },
-                                            enabled = !submitting && !attachmentDraft.sending,
-                                            modifier = Modifier.size(40.dp),
-                                        ) {
-                                            Icon(
-                                                Icons.Outlined.SentimentSatisfiedAlt,
-                                                ui(R.string.emoji_and_stickers),
-                                                Modifier.size(22.dp),
+                                    AdaptiveComposer(
+                                        draft = composer,
+                                        editor = { inputModifier ->
+                                            ComposerInput(
+                                                composer,
+                                                server,
+                                                model,
+                                                ui(
+                                                    R.string.message_to,
+                                                    if (channel.kind == "direct") channel.name
+                                                    else "#${channel.name}",
+                                                ),
+                                                onChange = {
+                                                    updateComposer(it)
+                                                    model.typing(server)
+                                                },
+                                                modifier =
+                                                    inputModifier.focusRequester(composerFocus),
+                                                onFocusChange = { composerFocused = it },
+                                                animationsAllowed =
+                                                    appearance.animations &&
+                                                        viewedMedia == null &&
+                                                        !emojiPicker &&
+                                                        !gifPicker,
                                             )
-                                        }
-                                        IconButton(
-                                            onClick = {
-                                                focus.clearFocus()
-                                                keyboard?.hide()
-                                                gifPicker = true
-                                            },
-                                            enabled =
-                                                !submitting &&
-                                                    !attachmentDraft.sending &&
-                                                    !gifPreparing,
-                                            modifier = Modifier.size(40.dp),
-                                        ) {
-                                            Icon(
-                                                Icons.Outlined.GifBox,
-                                                ui(R.string.gif_picker),
-                                                Modifier.size(24.dp),
-                                            )
-                                        }
-                                        ComposerSendButton(
-                                            canSend =
-                                                text.isNotBlank() ||
-                                                    attachmentDraft.files.isNotEmpty() ||
-                                                    embedDrafts.isNotEmpty(),
-                                            enabled =
-                                                !submitting &&
-                                                    !attachmentDraft.sending &&
-                                                    !attachmentDraft.preparing &&
-                                                    !gifPreparing,
-                                            busy = submitting || attachmentDraft.sending,
-                                            onEmbeds = {
-                                                focus.clearFocus()
-                                                keyboard?.hide()
-                                                embedEditor = true
-                                            },
-                                            onSend = {
-                                                if (
-                                                    validateEmbedDrafts(
-                                                            embedDrafts,
-                                                            attachmentDraft.files.map {
-                                                                it.wireName
-                                                            },
-                                                        )
-                                                        .isNotEmpty()
+                                        },
+                                        actions = {
+                                            IconButton(
+                                                onClick = {
+                                                    focus.clearFocus()
+                                                    keyboard?.hide()
+                                                    emojiTarget = null
+                                                    emojiPicker = true
+                                                },
+                                                enabled = !submitting && !attachmentDraft.sending,
+                                                modifier = Modifier.size(48.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.SentimentSatisfiedAlt,
+                                                    ui(R.string.emoji_and_stickers),
+                                                    Modifier.size(22.dp),
                                                 )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    focus.clearFocus()
+                                                    keyboard?.hide()
+                                                    gifPicker = true
+                                                },
+                                                enabled =
+                                                    !submitting &&
+                                                        !attachmentDraft.sending &&
+                                                        !gifPreparing,
+                                                modifier = Modifier.size(48.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.GifBox,
+                                                    ui(R.string.gif_picker),
+                                                    Modifier.size(24.dp),
+                                                )
+                                            }
+                                            ComposerSendButton(
+                                                canSend =
+                                                    text.isNotBlank() ||
+                                                        attachmentDraft.files.isNotEmpty() ||
+                                                        embedDrafts.isNotEmpty(),
+                                                enabled =
+                                                    !submitting &&
+                                                        !attachmentDraft.sending &&
+                                                        !attachmentDraft.preparing &&
+                                                        !gifPreparing,
+                                                busy = submitting || attachmentDraft.sending,
+                                                onEmbeds = {
+                                                    focus.clearFocus()
+                                                    keyboard?.hide()
                                                     embedEditor = true
-                                                else if (
-                                                    attachmentDraft.files.isNotEmpty() &&
-                                                        attachmentDraft.uncertain
-                                                )
-                                                    confirmAttachmentRetry = true
-                                                else submitMessage(false)
-                                            },
-                                        )
-                                    }
+                                                },
+                                                onSend = {
+                                                    if (
+                                                        validateEmbedDrafts(
+                                                                embedDrafts,
+                                                                attachmentDraft.files.map {
+                                                                    it.wireName
+                                                                },
+                                                            )
+                                                            .isNotEmpty()
+                                                    )
+                                                        embedEditor = true
+                                                    else if (
+                                                        attachmentDraft.files.isNotEmpty() &&
+                                                            attachmentDraft.uncertain
+                                                    )
+                                                        confirmAttachmentRetry = true
+                                                    else submitMessage(false)
+                                                },
+                                            )
+                                        },
+                                    )
                                 }
                         }
                     }
@@ -1160,7 +1168,10 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
             Column(
                 Modifier.align(Alignment.BottomEnd)
-                    .padding(end = 18.dp, bottom = composerHeight + 8.dp),
+                    .padding(
+                        end = dimensions.composerPadding + dimensions.surfaceInset,
+                        bottom = composerHeight + 8.dp,
+                    ),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.End,
             ) {

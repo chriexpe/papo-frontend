@@ -121,7 +121,7 @@ internal fun AttachmentActions(
                 )
         }
     BackHandler(expanded) { expanded = false }
-    Box(modifier.width(60.dp).height(60.dp)) {
+    Box(modifier.size(LocalUiDimensions.current.attachmentSize)) {
         Column(
             Modifier.align(Alignment.BottomStart)
                 .offset(y = (-72).dp)

@@ -121,13 +121,17 @@ internal fun MessageRow(
                     ExternalAvatar(
                         server,
                         external,
-                        Modifier.size(48.dp).then(authorAction).padding(2.dp),
+                        Modifier.size(48.dp)
+                            .then(authorAction)
+                            .padding(LocalUiDimensions.current.avatarInset),
                     )
                 else
                     UserAvatar(
                         message.authorId,
                         message.author,
-                        Modifier.size(48.dp).then(authorAction).padding(2.dp),
+                        Modifier.size(48.dp)
+                            .then(authorAction)
+                            .padding(LocalUiDimensions.current.avatarInset),
                     )
             }
             Column(

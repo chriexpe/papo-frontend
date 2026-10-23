@@ -33,13 +33,17 @@ internal fun FloatingNavigation(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val dimensions = LocalUiDimensions.current
     Row(
-        modifier.widthIn(max = 400.dp).fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier.widthIn(max = 400.dp).fillMaxWidth().height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.spacedBy(dimensions.contentGap),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        GlassPill(Modifier.weight(1f).testTag("chat-navigation")) {
-            Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        GlassPill(Modifier.weight(1f).fillMaxHeight().testTag("chat-navigation")) {
+            Row(
+                Modifier.padding(dimensions.navigationPadding),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 NavigationDestination(
                     "Chats",
                     Icons.Outlined.Forum,
@@ -56,13 +60,18 @@ internal fun FloatingNavigation(
                 )
             }
         }
-        GlassPill(Modifier.size(72.dp).testTag("servers-navigation"), radius = 24) {
+        GlassPill(
+            Modifier.width(dimensions.navigationWidth)
+                .fillMaxHeight()
+                .testTag("servers-navigation"),
+            radius = 24,
+        ) {
             NavigationDestination(
                 "Servers",
                 Icons.Outlined.Dns,
                 selected == "Servers",
                 { onSelect("Servers") },
-                Modifier.fillMaxSize().padding(6.dp),
+                Modifier.fillMaxSize().padding(dimensions.navigationPadding),
                 radius = 18,
             )
         }
@@ -85,8 +94,8 @@ private fun NavigationDestination(
                 if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
             )
             .selectable(selected = active, onClick = onClick, role = Role.Tab)
-            .heightIn(min = 58.dp)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .heightIn(min = LocalUiDimensions.current.navigationItemHeight)
+            .padding(horizontal = 10.dp, vertical = LocalUiDimensions.current.navigationPadding),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),
     ) {
@@ -162,8 +171,14 @@ internal fun ServerList(
     }
     LazyColumn(
         Modifier.fillMaxSize().hazeSource(LocalHaze.current).statusBarsPadding(),
-        contentPadding = PaddingValues(24.dp, 24.dp, 24.dp, 140.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding =
+            PaddingValues(
+                LocalUiDimensions.current.screenPadding,
+                LocalUiDimensions.current.screenPadding,
+                LocalUiDimensions.current.screenPadding,
+                140.dp,
+            ),
+        verticalArrangement = Arrangement.spacedBy(LocalUiDimensions.current.contentGap),
     ) {
         item {
             Row(
@@ -201,7 +216,7 @@ internal fun ServerList(
             )
         }
         items(state.servers, key = { it.url }) { server ->
-            ListItem(
+            DensityListItem(
                 headlineContent = { Text(server.name, fontWeight = FontWeight.SemiBold) },
                 supportingContent = {
                     Text(server.url, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -214,7 +229,9 @@ internal fun ServerList(
                     }
                 },
                 modifier =
-                    Modifier.clip(RoundedCornerShape(22.dp)).clickable { onSelect(server.url) },
+                    Modifier.clip(RoundedCornerShape(22.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .clickable { onSelect(server.url) },
             )
         }
         item {

@@ -72,9 +72,15 @@ internal fun AppearanceSettings() {
     val target = LocalSettingTarget.current
     val list = rememberLazyListState()
     val order =
-        listOf("preview", "preview-note", "theme-label", "theme", "glass", "conversation-label") +
-            appearanceSwitches.map { it.key } +
-            "text-size"
+        listOf(
+            "preview",
+            "preview-note",
+            "theme-label",
+            "theme",
+            "glass",
+            "ui-density",
+            "conversation-label",
+        ) + appearanceSwitches.map { it.key } + "text-size"
     LaunchedEffect(target) {
         val index = order.indexOf(target)
         if (index >= 0) list.scrollToItem(index)
@@ -82,13 +88,19 @@ internal fun AppearanceSettings() {
     LazyColumn(
         Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("appearance-settings"),
         state = list,
-        contentPadding = PaddingValues(20.dp, 8.dp, 20.dp, 40.dp),
+        contentPadding =
+            PaddingValues(
+                LocalUiDimensions.current.screenPadding,
+                8.dp,
+                LocalUiDimensions.current.screenPadding,
+                40.dp,
+            ),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         item("preview") {
             SettingsCard {
                 Column(
-                    Modifier.padding(20.dp),
+                    Modifier.padding(LocalUiDimensions.current.screenPadding),
                     verticalArrangement = Arrangement.spacedBy(if (prefs.compact) 6.dp else 14.dp),
                 ) {
                     Text(
@@ -161,6 +173,28 @@ internal fun AppearanceSettings() {
                     "glass",
                 ) {
                     prefs.set("glass", it)
+                }
+            }
+        }
+        item("ui-density") {
+            SettingsCard {
+                Column(Modifier.then(settingTarget("ui-density")).padding(16.dp)) {
+                    Text(ui(R.string.ui_density), style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        ui(R.string.ui_density_description),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        UiDensity.entries.forEach { density ->
+                            FilterChip(
+                                prefs.uiDensity == density,
+                                { prefs.set("ui-density", density.value) },
+                                label = { Text(density.label) },
+                                modifier = Modifier.testTag("ui-density-${density.value}"),
+                            )
+                        }
+                    }
                 }
             }
         }

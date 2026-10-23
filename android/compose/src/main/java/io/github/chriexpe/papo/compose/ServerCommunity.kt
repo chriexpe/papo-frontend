@@ -24,6 +24,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.chriexpe.papo.core.Action
@@ -80,23 +81,26 @@ internal fun ServerHeader(
     var panel by rememberSaveable(server.url) { mutableStateOf("") }
     var settingsFromInfo by remember { mutableStateOf(false) }
     val canAdmin = server.capabilities.canAdmin
+    val dimensions = LocalUiDimensions.current
     GlassPill(modifier.fillMaxWidth(), radius = 24) {
         Row(
             Modifier.fillMaxWidth()
-                .heightIn(min = 76.dp)
+                .height(dimensions.headerHeight)
                 .testTag("server-header")
                 .clickable(onClickLabel = ui(R.string.server_information)) { panel = "info" }
-                .padding(start = 12.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+                .padding(horizontal = dimensions.surfaceInset),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            ServerIcon(server, model)
+            Box(Modifier.size(dimensions.touchSize), contentAlignment = Alignment.Center) {
+                ServerIcon(server, model, Modifier.size(dimensions.headerIcon))
+            }
             Text(
                 server.name,
-                Modifier.weight(1f),
-                style = MaterialTheme.typography.titleLarge,
+                Modifier.weight(1f).testTag("server-header-name"),
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
                 fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             if (canAdmin)
@@ -108,13 +112,7 @@ internal fun ServerHeader(
                 ) {
                     Icon(Icons.Outlined.Settings, ui(R.string.server_settings))
                 }
-            else
-                Icon(
-                    Icons.Outlined.ExpandMore,
-                    null,
-                    Modifier.padding(12.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            else Spacer(Modifier.size(dimensions.touchSize))
         }
     }
     if (panel == "info")

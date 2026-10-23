@@ -67,6 +67,7 @@ internal fun ConversationList(
     onProfile: (String) -> Unit,
     onMessage: (String, String) -> Unit,
 ) {
+    val dimensions = LocalUiDimensions.current
     // A server owns its search; changing servers never leaks terms/results.
     var query by
         rememberSaveable(server.url, stateSaver = TextFieldValue.Saver) {
@@ -122,12 +123,12 @@ internal fun ConversationList(
     val hints = if (focused) analysis?.suggestions.orEmpty() else emptyList()
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = dimensions.screenPadding, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(dimensions.contentGap),
         ) {
             ServerHeader(server, model, appError, Modifier.weight(1f))
-            GlassPill(Modifier.size(60.dp), radius = 20) {
+            GlassPill(Modifier.size(dimensions.headerHeight), radius = 20) {
                 Box(
                     Modifier.fillMaxSize()
                         .clickable(
@@ -178,13 +179,13 @@ internal fun ConversationList(
                 ),
             modifier =
                 Modifier.fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .padding(horizontal = dimensions.screenPadding, vertical = 8.dp)
                     .testTag("global-search")
                     .onFocusChanged { focused = it.isFocused },
         )
         if (hints.isNotEmpty())
             Surface(
-                Modifier.padding(horizontal = 20.dp).fillMaxWidth(),
+                Modifier.padding(horizontal = dimensions.screenPadding).fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
                 color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
@@ -375,7 +376,7 @@ private fun PersonItem(
     person: io.github.chriexpe.papo.core.MemberView,
     onProfile: (String) -> Unit,
 ) {
-    ListItem(
+    DensityListItem(
         headlineContent = {
             Text(
                 person.name,
@@ -387,7 +388,6 @@ private fun PersonItem(
         supportingContent = { Text("@${person.username}") },
         leadingContent = { UserAvatar(person.id, person.name) },
         trailingContent = { Icon(Icons.Outlined.PersonOutline, null) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable { onProfile(person.id) },
     )
 }
@@ -397,7 +397,7 @@ private fun ChannelItem(
     channel: io.github.chriexpe.papo.core.ChannelView,
     onOpen: (String) -> Unit,
 ) {
-    ListItem(
+    DensityListItem(
         headlineContent = {
             Text(
                 channel.name,
@@ -410,7 +410,7 @@ private fun ChannelItem(
             else null,
         leadingContent = {
             Box(
-                Modifier.size(44.dp)
+                Modifier.size(LocalUiDimensions.current.listIcon)
                     .clip(RoundedCornerShape(14.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainer),
                 contentAlignment = Alignment.Center,
@@ -429,7 +429,6 @@ private fun ChannelItem(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
         },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable { onOpen(channel.id) },
     )
 }

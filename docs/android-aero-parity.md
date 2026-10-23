@@ -34,8 +34,8 @@ References:
 | 3 | 4; webhook authorization portion of 6 | Webhook management, one-time token disclosure, identity edits and revocation | Accepted by user on 2026-10-23 |
 | 4 | 5 | Structured custom embed composer/editor, preview, limits and protected-media preservation | Functionality accepted by user on 2026-10-23; UI provisional |
 | 5 | 7, 8 | Apply channel notification policy to all with partial-failure reporting; independent inbox pagination and mark-loaded-read | Accepted by user on 2026-10-23 |
-| 6 | 9, 10 | Permission-aware `@everyone` and shared-catalog Unicode emoji suggestions | Built; awaiting user review |
-| 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | Pending |
+| 6 | 9, 10 | Permission-aware `@everyone` and shared-catalog Unicode emoji suggestions | Accepted by user on 2026-10-23, including the received-mention correction |
+| 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | 7a UI density/composer accepted by user; 7b account typography/spacing pending |
 
 Item 6 is a cross-cutting audit of existing administration, rather than a new
 administration implementation. Its remaining owner/delegate, channel, ban/reset,
@@ -467,3 +467,77 @@ the owner/permitted delegate. The first stays ordinary; the second has an accent
 word on both accounts and a recipient tint only on the other account. Confirm
 notification delivery with the receiver outside the chat and channel notifications
 enabled. APK: `target/android-apks/papo-android-0.8.5-everyone-fix.apk`.
+
+## Part 7a: interface density and multiline composer prototype
+
+This part deliberately stops at the UI review gate before adding account-synced
+font/message-density controls. The backend's `small`/`medium`/`huge` font and
+`compact`/`normal`/`comfortable` message-density values were verified. Those account
+controls, their acknowledged mutation/preservation path and legacy compact
+preference migration remain Part 7b. Existing message-spacing preferences still
+work in this build and are not silently remapped to interface density.
+
+- Appearance and individual-setting search expose **Interface density** with
+  Compact, Normal and Comfortable. This is a working device preference, stored in
+  the existing observable appearance preferences and restored after restart.
+  One dimensions provider adjusts the main channel/DM/person/server rows, server
+  and channel headers, navigation, settings links/header, global actions, composer
+  padding and gallery control. Android density and system font scaling are untouched.
+- Floating header/gallery heights are 52/60/68 dp, navigation item minimum heights
+  48/58/66 dp, and one-line list row minimum heights 48/56/64 dp. Rows grow with
+  content and larger system text. Navigation pills share their measured height;
+  emoji, GIF and Send each receive an explicit 48 dp target.
+- The server header and profile settings button now have the same height in every
+  mode. The dropdown chevron is removed. Equal icon/action slots center the server
+  name across the entire pill; permitted administrators retain the gear, and the
+  whole header still opens server information. Long names ellipsize on one line.
+- Short input keeps the single-row layout. A wrapped or explicitly multiline draft
+  moves emoji, GIF and Send into a bottom action row, reclaiming their 144 dp beside
+  every text line. The same composer still contains attachments, reply controls,
+  embed drafts and recording. The external gallery control stays separate.
+- Expansion is measured against the compact editor width even after expanding,
+  rather than feeding the wider rendered line count back into the decision. This
+  prevents repeated expand/collapse. One editor composition slot and native
+  TextFieldValue preserve focus, IME composition, selection, mentions and stickers;
+  a custom Layout changes only measurement and placement. Plain shortcode width
+  is conservative while an inline sticker is loading. The editor remains scrollable
+  at its existing height cap.
+- The existing latest/mention/hourglass shortcut column follows the measured
+  composer and the same horizontal inset as Send in each density. No reading
+  state transitions or hourglass algorithms are changed.
+
+Layout proposal (Android/M3 controls, existing Papo glass):
+
+```text
+Short:      [gallery] [text …             emoji GIF Send]
+Multiline:  [gallery] [text uses the full available width]
+                     [                    emoji GIF Send]
+```
+
+Design judgment: preserve Papo's frosted floating controls over the content layer;
+remove the redundant header chevron and reclaim padding before reducing text.
+Existing semantic colors and Material typography remain: normal body text is
+16 sp with Android scaling. Existing solid surfaces have approximately 15:1 dark
+and 16:1 light body contrast; translucent backgrounds still depend on the sampled
+content and retain their existing opaque preference. Material's 48 dp target
+minimum ([Android guidance](https://developer.android.com/develop/ui/compose/accessibility/api-defaults#minimum-touch-target-sizes)) limits how far compact controls can shrink. This is a deliberate spacing
+prototype rather than a global density/fontScale override.
+
+Validation: Compose formatting, universal APK, instrumentation APK compilation and
+Android lint pass. Three new UI regression flows compile for equal/centered
+headers, preference restoration, navigation alignment, multiline focus/draft
+retention, and 320 dp width with 200% text and 48 dp controls. Their execution stays
+deferred until the user reviews this UI slice. Rust behavior is unchanged in 7a;
+the preceding 819-test workspace/Clippy baseline still applies. Final Android
+regression execution and the remaining administration audit remain outstanding.
+
+Review: Appearance → Interface density; compare all three choices in the channel
+list and chat. Try short/multiline drafts, keyboard open/closed, larger system text,
+attachments, a reply, mentions/stickers and recording. Check the matched server
+header/profile heights, centered name, preserved gear and sheet navigation.
+APK: `target/android-apks/papo-android-0.8.5-ui-density.apk`.
+
+The user accepted the Part 7a layout on 2026-10-23. The existing compact-message
+switch remains spacing-only; account font size and the three message-density
+choices continue in Part 7b. The reported raw mention syntax in quoted replies
+is tracked as a preview-rendering correction, independently of this layout commit.

@@ -19,7 +19,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
@@ -40,9 +39,9 @@ internal fun GlobalAction(
     GlassPill(modifier, radius = 24) {
         Column(
             Modifier.fillMaxWidth()
-                .heightIn(min = 88.dp)
+                .heightIn(min = LocalUiDimensions.current.globalActionHeight)
                 .clickable(onClick = onClick)
-                .padding(14.dp),
+                .padding(LocalUiDimensions.current.rowPadding),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -75,7 +74,7 @@ internal fun DirectMessageItem(
 ) {
     var options by remember(server.url, server.me, channel.id) { mutableStateOf(false) }
     CompositionLocalProvider(LocalProfileContext provides ProfileContext(server, model)) {
-        ListItem(
+        DensityListItem(
             headlineContent = {
                 Text(
                     channel.name,
@@ -90,7 +89,16 @@ internal fun DirectMessageItem(
                     ({ Text(server.name, maxLines = 1, overflow = TextOverflow.Ellipsis) })
                 else null,
             leadingContent = {
-                UserAvatar(channel.userId, channel.name, Modifier.clickable(onClick = onProfile))
+                Box(
+                    Modifier.size(48.dp).clickable(onClick = onProfile),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    UserAvatar(
+                        channel.userId,
+                        channel.name,
+                        Modifier.size(LocalUiDimensions.current.listIcon),
+                    )
+                }
             },
             trailingContent = {
                 if (channel.mentions > 0) Badge { Text(channel.mentions.toString()) }
@@ -101,7 +109,6 @@ internal fun DirectMessageItem(
                     )
                 else Icon(Icons.Outlined.ChevronRight, null)
             },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             modifier =
                 Modifier.testTag("dm-${server.key}-${channel.id}")
                     .clip(RoundedCornerShape(18.dp))

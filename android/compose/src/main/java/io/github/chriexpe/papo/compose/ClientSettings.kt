@@ -246,6 +246,15 @@ private fun settingsEntries(server: ServerState, prefs: ClientPreferences): List
                 ui(R.string.translucency_transparency_blur),
             )
         )
+        add(
+            SettingEntry(
+                "ui-density",
+                "Appearance",
+                ui(R.string.ui_density),
+                prefs.uiDensity.label,
+                "interface layout spacing compact comfortable density",
+            )
+        )
         appearanceSwitches.forEach { item ->
             add(
                 SettingEntry(

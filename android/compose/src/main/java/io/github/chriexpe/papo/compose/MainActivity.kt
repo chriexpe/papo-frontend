@@ -145,6 +145,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
         CompositionLocalProvider(
             LocalHaze provides haze,
             LocalClientPreferences provides appearance,
+            LocalUiDimensions provides UiDimensions(appearance.uiDensity),
             LocalGlass provides glass,
             LocalContentColor provides colors.onSurface,
         ) {

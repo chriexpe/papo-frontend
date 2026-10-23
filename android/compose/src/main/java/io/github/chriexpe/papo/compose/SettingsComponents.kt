@@ -53,7 +53,12 @@ internal fun SettingsHeader(
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     Row(
-        Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth()
+            .statusBarsPadding()
+            .padding(
+                horizontal = LocalUiDimensions.current.floatingPadding,
+                vertical = LocalUiDimensions.current.rowVerticalPadding,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         GlassPill {
@@ -94,7 +99,7 @@ internal fun SettingsLink(
     leading: (@Composable () -> Unit)? = null,
     target: String = "",
 ) {
-    ListItem(
+    DensityListItem(
         headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
         supportingContent = { Text(subtitle) },
         leadingContent = {
@@ -104,13 +109,14 @@ internal fun SettingsLink(
                     shape = RoundedCornerShape(14.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 ) {
-                    Icon(icon, null, Modifier.padding(12.dp))
+                    Icon(icon, null, Modifier.padding(LocalUiDimensions.current.contentGap))
                 }
         },
         trailingContent = { Icon(Icons.Outlined.ChevronRight, null) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier =
-            Modifier.then(settingTarget(target)).clickable(onClick = onClick).heightIn(min = 80.dp),
+            Modifier.then(settingTarget(target))
+                .clickable(onClick = onClick)
+                .heightIn(min = LocalUiDimensions.current.settingsLinkHeight),
     )
 }
 

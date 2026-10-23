@@ -927,4 +927,9 @@
     <string name="composer_everyone_description">"Notificar todas as pessoas neste canal"</string>
     <string name="composer_insert_unicode">"Inserir %1$s"</string>
     <string name="message_mentions_you">"Menciona você"</string>
+    <string name="ui_density">"Densidade da interface"</string>
+    <string name="ui_density_description">"Ajuste o espaçamento e o tamanho dos controles neste aparelho. As áreas de toque e o tamanho de texto do Android são preservados."</string>
+    <string name="density_compact">"Compacta"</string>
+    <string name="density_normal">"Normal"</string>
+    <string name="density_comfortable">"Confortável"</string>
 </resources>

@@ -51,6 +51,11 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
     val compact
         get() = boolean("compact", false)
 
+    val uiDensity
+        get() =
+            UiDensity.entries.firstOrNull { it.value == string("ui-density", "normal") }
+                ?: UiDensity.Normal
+
     val replyNotifications
         get() = boolean("reply-notifications")
 
