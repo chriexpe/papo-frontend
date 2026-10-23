@@ -1,9 +1,12 @@
 package io.github.chriexpe.papo.compose
 
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -4022,6 +4025,93 @@ class PapoUiTest {
                 .fetchSemanticsNode()
                 .size
         assertEquals(frame.height, loaded.height)
+    }
+
+    @Test
+    fun portraitMediaCentersInsideItsEmbedCard() {
+        val client = io.github.chriexpe.papo.core.NativeClient.demo()
+        val embed =
+            try {
+                client.dispatch(io.github.chriexpe.papo.core.Action.SelectChannel("media"))
+                client.poll().messages.single { it.id == "media-7" }.embeds.single()
+            } finally {
+                client.close()
+            }
+        activity.onActivity {
+            it.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    androidx.compose.foundation.layout.Box(
+                        Modifier.width(320.dp).testTag("embed-card")
+                    ) {
+                        EmbedCardLayout(
+                            embed,
+                            media = {
+                                ReservedMedia(embed.width, embed.height, tag = "portrait-frame") {}
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        val card = compose.onNodeWithTag("embed-card").fetchSemanticsNode().boundsInRoot
+        val frame = compose.onNodeWithTag("portrait-frame").fetchSemanticsNode().boundsInRoot
+        val density =
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .resources
+                .displayMetrics
+                .density
+        // The card retains its existing 3 dp accent inset.
+        assertEquals(card.center.x + 1.5f * density, frame.center.x, 1f)
+        assertTrue(frame.width < card.width)
+        assertEquals(540f / 960f, frame.width / frame.height, .01f)
+    }
+
+    @Test
+    fun directMediaFitsAndRoundsContentWithoutPaintingOrResizingItsReservation() {
+        val ratio = androidx.compose.runtime.mutableStateOf<Float?>(null)
+        activity.onActivity {
+            it.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    androidx.compose.foundation.layout.Box(
+                        Modifier.width(320.dp)
+                            .background(androidx.compose.ui.graphics.Color.Red)
+                            .testTag("media-backdrop")
+                    ) {
+                        ReservedMedia(0, 0, fallback = 4f / 3f, tag = "media-reservation") {
+                            FittedMediaContent(ratio.value, Modifier.testTag("fitted-artwork")) {
+                                androidx.compose.foundation.layout.Box(
+                                    Modifier.fillMaxSize()
+                                        .background(androidx.compose.ui.graphics.Color.Blue)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fun bounds(tag: String) = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        val reserved = bounds("media-reservation")
+        compose.runOnIdle { ratio.value = 540f / 960f }
+        val portrait = bounds("fitted-artwork")
+        assertEquals(reserved.center.x, portrait.center.x, 1f)
+        assertEquals(540f / 960f, portrait.width / portrait.height, .01f)
+        assertEquals(reserved, bounds("media-reservation"))
+        val backdrop = bounds("media-backdrop")
+        val pixels = compose.onNodeWithTag("media-backdrop").captureToImage().asAndroidBitmap()
+        assertEquals(android.graphics.Color.RED, pixels.getPixel(4, pixels.height / 2))
+        assertEquals(
+            "Rounding follows the portrait rather than the wide reservation",
+            android.graphics.Color.RED,
+            pixels.getPixel(
+                (portrait.left - backdrop.left).toInt() + 1,
+                (portrait.top - backdrop.top).toInt() + 1,
+            ),
+        )
+        compose.runOnIdle { ratio.value = 16f / 9f }
+        val landscape = bounds("fitted-artwork")
+        assertEquals(16f / 9f, landscape.width / landscape.height, .01f)
+        assertEquals(reserved, bounds("media-reservation"))
     }
 
     @Test

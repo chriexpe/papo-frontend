@@ -581,3 +581,23 @@ mutation; all 68 adapter tests and strict adapter Clippy pass. The compiled Andr
 preview regression covers resolved names, APP metadata, canonical source retention
 and literal/label preservation. Device execution remains deferred for UI review.
 The same message-spacing APK includes both corrections.
+
+### Centered embeds and unframed direct media
+
+The shared media reservation now centers narrower portrait frames within the
+available card/content width. Ordinary images and videos no longer paint a solid
+surface behind unused aspect-fit space. Images and inline players use the same
+fitted-content wrapper, so rounding follows the actual artwork/player bounds.
+Explicit spoiler/sensitive/blocked placeholders retain their surface and controls.
+
+Metadata and the existing bounded fallback still determine the outer timeline
+height. Image decode and video-size callbacks fit only the inner content, keeping
+row geometry stable through loading, retry, playback and fullscreen handoff.
+The existing player, cache, viewer and message renderer remain shared across chat,
+search and pins; no reading/navigation transitions or network contracts change.
+
+Formatting, universal APK construction, instrumentation APK compilation and lint
+pass. Two compiled UI regressions cover card centering and a transparent, rounded
+portrait/landscape fit with unchanged reservation bounds. Device execution stays
+deferred for the user's visual review. APK:
+`target/android-apks/papo-android-0.8.5-media-layout.apk`.

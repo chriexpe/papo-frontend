@@ -169,34 +169,6 @@ internal fun MessageMedia(
         }
 }
 
-/**
- * The metadata ratio is the layout source of truth. Decode and player events never change it,
- * including on error, retry, or switching to playback.
- */
-@Composable
-internal fun ReservedMedia(
-    width: Int,
-    height: Int,
-    fallback: Float = 16f / 9f,
-    tag: String = "",
-    content: @Composable BoxScope.() -> Unit,
-) {
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val ratio = if (width > 0 && height > 0) width.toFloat() / height else fallback
-        val available = maxWidth.coerceAtMost(480.dp)
-        val frameHeight = (available / ratio).coerceIn(72.dp, 360.dp)
-        val frameWidth = (frameHeight * ratio).coerceAtMost(available)
-        Box(
-            Modifier.width(frameWidth)
-                .height(frameHeight)
-                .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainer)
-                .testTag(tag),
-            content = content,
-        )
-    }
-}
-
 @Composable
 private fun Attachment(
     a: AttachmentView,
@@ -210,7 +182,12 @@ private fun Attachment(
     val blocked = a.status == "blocked"
     val sensitive = (a.status == "sensitive" || a.spoiler) && !revealed
     if (blocked || sensitive) {
-        ReservedMedia(0, 0, tag = "attachment-${a.id}") {
+        ReservedMedia(
+            0,
+            0,
+            tag = "attachment-${a.id}",
+            background = MaterialTheme.colorScheme.surfaceContainer,
+        ) {
             Column(
                 Modifier.align(Alignment.Center).padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -562,27 +539,37 @@ internal fun BoxScope.VideoPreview(
 ) {
     val viewer = LocalMediaViewer.current
     val active = LocalInlinePlayer.current == media.id
-    Box(
-        Modifier.fillMaxSize()
-            .combinedClickable(
-                onClick = { onPlayer(media.id) },
-                onLongClick = onActions,
-                onLongClickLabel = ui(R.string.message_actions),
+    var ratio by
+        remember(media.id, media.width, media.height) {
+            mutableStateOf(
+                if (media.width > 0 && media.height > 0) media.width.toFloat() / media.height
+                else null
             )
-    ) {
-        PlayableMedia(
-            server,
-            model,
-            media.id,
-            media.title,
-            active,
-            { onPlayer(media.id) },
-            media.resource,
-            poster = poster,
-            embedPoster = embedPoster,
-            publicUrl = media.url,
-            onFullscreen = { viewer(media.copy(playback = it)) },
-        )
+        }
+    FittedMediaContent(ratio) {
+        Box(
+            Modifier.fillMaxSize()
+                .combinedClickable(
+                    onClick = { onPlayer(media.id) },
+                    onLongClick = onActions,
+                    onLongClickLabel = ui(R.string.message_actions),
+                )
+        ) {
+            PlayableMedia(
+                server,
+                model,
+                media.id,
+                media.title,
+                active,
+                { onPlayer(media.id) },
+                media.resource,
+                poster = poster,
+                embedPoster = embedPoster,
+                publicUrl = media.url,
+                onVideoRatio = { ratio = it },
+                onFullscreen = { viewer(media.copy(playback = it)) },
+            )
+        }
     }
 }
 
@@ -668,6 +655,10 @@ internal fun BoxScope.MediaImage(
         )
     var decodeError by remember(retry, embed?.revision) { mutableStateOf(false) }
     var decoded by remember(retry, embed?.revision) { mutableStateOf(false) }
+    var imageRatio by
+        remember(server.url, server.me, resource, embed?.id, embed?.revision, author, publicUrl) {
+            mutableStateOf<Float?>(null)
+        }
     val data by
         produceState<ByteArray?>(
             null,
@@ -698,32 +689,39 @@ internal fun BoxScope.MediaImage(
         }
     val loader = remember(context) { MediaImages.loader(context) }
     val request = remember(data) { ImageRequest.Builder(context).data(data).build() }
-    if (data != null && !decodeError)
-        ManagedAsyncImage(
-            request,
-            description,
-            imageLoader = loader,
-            modifier =
-                Modifier.fillMaxSize()
-                    .semantics {
-                        stateDescription =
-                            if (decoded) ui(R.string.loaded) else ui(R.string.loading)
-                    }
-                    .then(
-                        if (viewer)
-                            Modifier.combinedClickable(
-                                onClick = { openViewer(media) },
-                                onLongClick = onActions,
-                                onLongClickLabel = ui(R.string.message_actions),
-                            )
-                        else Modifier
-                    ),
-            contentScale = ContentScale.Fit,
-            onSuccess = { decoded = true },
-            onError = { decodeError = true },
-            retentionKey = "image/${embed?.id}/${embed?.revision}/$resource/$publicUrl/$author",
-        )
-    else if (!decodeError)
+    if (data != null && !decodeError) {
+        FittedMediaContent(imageRatio) {
+            ManagedAsyncImage(
+                request,
+                description,
+                imageLoader = loader,
+                modifier =
+                    Modifier.fillMaxSize()
+                        .semantics {
+                            stateDescription =
+                                if (decoded) ui(R.string.loaded) else ui(R.string.loading)
+                        }
+                        .then(
+                            if (viewer)
+                                Modifier.combinedClickable(
+                                    onClick = { openViewer(media) },
+                                    onLongClick = onActions,
+                                    onLongClickLabel = ui(R.string.message_actions),
+                                )
+                            else Modifier
+                        ),
+                contentScale = ContentScale.Fit,
+                onSuccess = {
+                    decoded = true
+                    val image = it.result.image
+                    if (image.width > 0 && image.height > 0)
+                        imageRatio = image.width.toFloat() / image.height
+                },
+                onError = { decodeError = true },
+                retentionKey = "image/${embed?.id}/${embed?.revision}/$resource/$publicUrl/$author",
+            )
+        }
+    } else if (!decodeError)
         CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
     if (decodeError)
         Column(
