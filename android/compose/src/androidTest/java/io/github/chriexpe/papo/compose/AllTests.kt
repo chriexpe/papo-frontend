@@ -17,6 +17,7 @@ import org.junit.runners.Suite
     AudioWaveformTest::class,
     ExpressionLibraryTest::class,
     ComposerDraftTest::class,
+    ComposerSuggestionsTest::class,
     MarkdownTest::class,
     MessageLinksTest::class,
     MediaLifecycleTest::class,

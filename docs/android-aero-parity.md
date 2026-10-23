@@ -33,8 +33,8 @@ References:
 | 2 | 3 | Profile block/unblock, blocked-user settings, hide/reopen DMs, global-list and account synchronization | Accepted by user on 2026-10-23 |
 | 3 | 4; webhook authorization portion of 6 | Webhook management, one-time token disclosure, identity edits and revocation | Accepted by user on 2026-10-23 |
 | 4 | 5 | Structured custom embed composer/editor, preview, limits and protected-media preservation | Functionality accepted by user on 2026-10-23; UI provisional |
-| 5 | 7, 8 | Apply channel notification policy to all with partial-failure reporting; independent inbox pagination and mark-loaded-read | Built; awaiting user review |
-| 6 | 9, 10 | Permission-aware `@everyone` and shared-catalog Unicode emoji suggestions | Pending |
+| 5 | 7, 8 | Apply channel notification policy to all with partial-failure reporting; independent inbox pagination and mark-loaded-read | Accepted by user on 2026-10-23 |
+| 6 | 9, 10 | Permission-aware `@everyone` and shared-catalog Unicode emoji suggestions | Built; awaiting user review |
 | 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | Pending |
 
 Item 6 is a cross-cutting audit of existing administration, rather than a new
@@ -366,3 +366,59 @@ User checks:
 4. Use the header's double-check button. Only loaded notifications become read;
    unseen/unloaded pages and notifications arriving after the action remain eligible.
    Check individual reads, leaving/reopening during a load, and multiple servers.
+
+## Part 6 implementation and review
+
+- The existing scrollable `@` suggestions now offer `@everyone` first for a
+  matching prefix, only in a known server text/voice channel with the current
+  effective `everyone_message` capability. DMs, categories, missing channels and
+  signed-out snapshots do not offer it. Live permission snapshots recompute the
+  list without rewriting the draft. The backend remains authoritative.
+- The global mention inserts plain `@everyone`, the backend's expected token,
+  rather than a fabricated user binding. A real member named everyone remains a
+  separate, ID-bound suggestion. Global mentions use the composer's existing bold
+  accent treatment when permitted, with offsets mapped through inline stickers.
+- Unicode suggestions share the picker's existing `emoji.json` through one cached
+  catalog and one matcher. Bilingual keywords support case/accent-insensitive
+  matching and aliases separated by underscores/hyphens, such as `:thumbs_up`.
+  Repeated glyphs retain all their keywords while producing one result. Server
+  stickers retain priority; matching Unicode results follow in the same list.
+- Both the main composer and existing-message editor reuse the same suggestion
+  builder and insertion operation. A pick replaces the token at the caret,
+  consumes its closing colon and subsequent horizontal whitespace, leaves one
+  space, and preserves unrelated mention identities, UTF-16 caret offsets and
+  custom-sticker rendering. Ordinary IME/selection changes retain the original
+  TextFieldValue. An empty query offers the existing catalog; no matches hide the
+  list. New queries reset suggestion scrolling to the first result.
+- Presentation is separated from matching/selection helpers. Suggestion action
+  labels and the global-mention explanation use Android English/Portuguese
+  resources; protocol tokens and the catalog's bilingual search aliases retain
+  their original values.
+
+References:
+[backend mention triggers and authorization](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/services/notifications.go),
+[Aero composer permission and insertion reference](https://github.com/Papo-Chat/papo-frontend/blob/3817e3e1760b26c470eb7deefb32f9d4f616395c/src/lib/components/Composer.svelte).
+
+Validation: Compose formatting, universal debug APK, instrumentation APK
+compilation and Android lint pass. The existing native wire/edit regression test
+passes on the host, confirming plain `@everyone` and bound adjacent user mentions.
+Four new algorithm/UniFFI regression cases and
+two UI flows are compiled for permission changes, DM/category exclusion, member
+name collisions, duplicate glyph aliases, empty/no-result queries, replacement
+inside a shortcode, adjacent bound mentions, projected highlights, IME state and
+navigation persistence. Their device execution remains deferred until UI review;
+no reading/hourglass state transitions are changed in this part.
+
+User checks:
+
+1. In a server channel where you can mention everyone, type `@ev` and select
+   `@everyone`. Check the final space and caret. An ordinary member without that
+   permission, or a DM, must not offer the global action.
+2. Type `:thumbs_up`, `:smile` or a server sticker's prefix. The same list should
+   offer custom stickers first, followed by matching Unicode glyphs. Selecting a
+   glyph inserts the actual emoji; selecting a sticker preserves its inline image.
+3. Try a pick between existing text/mentions, an empty `:` and a query with no
+   matches. Leave/reopen the chat with the draft and repeat inside message editing.
+
+APK: `target/android-apks/papo-android-0.8.5-aero-suggestions.apk`, containing
+arm64-v8a and x86_64, installed on the phone emulator without clearing saved data.

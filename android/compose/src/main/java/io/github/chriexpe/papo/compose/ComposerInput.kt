@@ -5,10 +5,7 @@ import android.graphics.drawable.Animatable
 import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -45,6 +42,8 @@ import kotlinx.coroutines.withContext
 
 internal data class ComposerSticker(val range: IntRange, val id: String, val name: String)
 
+private val composerEveryone = Regex("(?i)(?<![\\p{L}\\p{N}_<])@everyone\\b")
+
 internal fun composerStickers(text: String, emojis: List<EmojiView>): List<ComposerSticker> {
     val byName = emojis.associateBy { it.name }
     return Regex(":([A-Za-z0-9_+\\-]+):")
@@ -62,6 +61,7 @@ internal class ComposerProjection(
     stickers: List<ComposerSticker>,
     loaded: Set<String>,
     color: Color,
+    highlightEveryone: Boolean = false,
 ) : VisualTransformation {
     private val forward = IntArray(draft.text.length + 1)
     private val reverse = mutableListOf(0)
@@ -93,6 +93,14 @@ internal class ComposerProjection(
         annotated = buildAnnotatedString {
             append(plain.toString())
             positions.forEach { addStyle(SpanStyle(fontSize = 28.sp), it.offset, it.offset + 1) }
+            if (highlightEveryone)
+                composerEveryone.findAll(draft.text).forEach {
+                    addStyle(
+                        SpanStyle(color = color, fontWeight = FontWeight.Bold),
+                        forward[it.range.first],
+                        forward[it.range.last + 1],
+                    )
+                }
             draft.mentions
                 .filter { it.valid(draft.text) }
                 .forEach {
@@ -140,6 +148,7 @@ internal fun ComposerInput(
     animationsAllowed: Boolean = true,
     inputTag: String = "composer-input",
     enabled: Boolean = true,
+    channelId: String = server.selected,
 ) {
     val formatting = remember(server.url, server.me, server.selected) { ComposerFormatting() }
     DisposableEffect(formatting) { onDispose { formatting.close() } }
@@ -184,9 +193,10 @@ internal fun ComposerInput(
         }
     val images = if (loaded.owner == owner && loaded.size == pixels) loaded.images else emptyMap()
     val color = MaterialTheme.colorScheme.primary
+    val highlightEveryone = server.canSuggestEveryone(channelId)
     val projection =
-        remember(draft.text, draft.mentions, stickers, images.keys, color) {
-            ComposerProjection(draft, stickers, images.keys, color)
+        remember(draft.text, draft.mentions, stickers, images.keys, color, highlightEveryone) {
+            ComposerProjection(draft, stickers, images.keys, color, highlightEveryone)
         }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var frame by remember { mutableIntStateOf(0) }
@@ -352,78 +362,4 @@ internal fun ComposerInput(
             },
         )
     }
-}
-
-@Composable
-internal fun ComposerSuggestions(
-    draft: ComposerDraft,
-    server: ServerState,
-    model: PapoViewModel,
-    onPick: (ComposerDraft) -> Unit,
-) {
-    val trigger = draft.trigger() ?: return
-    val query = trigger.query
-    val people =
-        if (trigger.people)
-            server.members
-                .filter { it.name.contains(query, true) || it.username.contains(query, true) }
-                .sortedWith(
-                    compareBy<Person> { !it.name.startsWith(query, true) }
-                        .thenBy { it.name.lowercase() }
-                )
-        else emptyList()
-    val stickers =
-        if (!trigger.people)
-            server.emojis
-                .filter { it.name.contains(query, true) }
-                .sortedWith(
-                    compareBy<EmojiView> { !it.name.startsWith(query, true) }
-                        .thenBy { it.name.lowercase() }
-                )
-        else emptyList()
-    if (people.isEmpty() && stickers.isEmpty()) return
-    GlassPill(Modifier.fillMaxWidth().padding(bottom = 8.dp), radius = 24) {
-        LazyColumn(
-            Modifier.heightIn(max = 216.dp).testTag("composer-suggestions"),
-            contentPadding = PaddingValues(6.dp),
-        ) {
-            items(people, key = { "person/${it.id}" }) { person ->
-                SuggestionRow(
-                    person.name,
-                    person.username,
-                    { UserAvatar(person.id, person.name) },
-                    "Mention ${person.name}",
-                ) {
-                    onPick(draft.insert("@${person.name}", trigger, person))
-                }
-            }
-            items(stickers, key = { "sticker/${it.id}" }) { e ->
-                SuggestionRow(
-                    ":${e.name}:",
-                    ui(R.string.server_sticker),
-                    { EmojiGlyph(server, EmojiChoice(e.id, true, e.name), 36, model) },
-                    "Insert :${e.name}:",
-                ) {
-                    onPick(draft.insert(":${e.name}:", trigger))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SuggestionRow(
-    title: String,
-    subtitle: String,
-    leading: @Composable () -> Unit,
-    label: String,
-    onClick: () -> Unit,
-) {
-    androidx.compose.material3.ListItem(
-        headlineContent = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        supportingContent = { Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        leadingContent = leading,
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = Modifier.clickable(onClickLabel = label, onClick = onClick),
-    )
 }

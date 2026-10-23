@@ -1471,6 +1471,85 @@ class PapoUiTest {
     }
 
     @Test
+    fun unicodeAndEveryoneSuggestionsInsertWithoutLosingTheBoundUserMention() {
+        chat()
+        val input = compose.onNodeWithTag("composer-input")
+        input.performTextInput("@eve")
+        compose
+            .onNode(hasText("@everyone") and hasAnyAncestor(hasTestTag("composer-suggestions")))
+            .performClick()
+        input.assertTextEquals("@everyone ")
+        input.performTextInput(":thumbs_up")
+        compose
+            .onNode(hasText("👍") and hasAnyAncestor(hasTestTag("composer-suggestions")))
+            .performClick()
+        input.assertTextEquals("@everyone 👍 ")
+        input.performTextInput("@An")
+        compose
+            .onNode(hasText("Ana") and hasAnyAncestor(hasTestTag("composer-suggestions")))
+            .performClick()
+        input.assertTextEquals("@everyone 👍 @Ana ")
+        compose.onNodeWithTag("composer-suggestions").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("geral").performClick()
+        input.assertTextEquals("@everyone 👍 @Ana ")
+        input.performTextInput(":zzzznomatch")
+        compose.onNodeWithTag("composer-suggestions").assertDoesNotExist()
+    }
+
+    @Test
+    fun everyoneSuggestionsDisappearOnPermissionChangeWithoutErasingDraft() {
+        val client = io.github.chriexpe.papo.core.NativeClient.demo()
+        val server =
+            try {
+                client.poll().copy(selectedChannel = "general")
+            } finally {
+                client.shutdown()
+                client.close()
+            }
+        val shown = androidx.compose.runtime.mutableStateOf(server)
+        val draft =
+            androidx.compose.runtime.mutableStateOf(
+                ComposerDraft(
+                    androidx.compose.ui.text.input.TextFieldValue(
+                        "@ev",
+                        androidx.compose.ui.text.TextRange(3),
+                    )
+                )
+            )
+        activity.onActivity { host ->
+            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            host.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        LocalHaze provides dev.chrisbanes.haze.HazeState(),
+                        LocalGlass provides false,
+                    ) {
+                        androidx.compose.foundation.layout.Column {
+                            ComposerSuggestions(draft.value, shown.value, model) {
+                                draft.value = it
+                            }
+                            ComposerInput(draft.value, shown.value, model, "", { draft.value = it })
+                        }
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText("@everyone").assertIsDisplayed()
+        compose.runOnIdle {
+            shown.value =
+                server.copy(capabilities = server.capabilities.copy(everyoneMessage = false))
+        }
+        compose.onNodeWithText("@everyone").assertDoesNotExist()
+        compose.onNodeWithTag("composer-input").assertTextEquals("@ev")
+        compose.runOnIdle { shown.value = server }
+        compose.onNodeWithText("@everyone").assertIsDisplayed()
+        compose.runOnIdle { shown.value = server.copy(selectedChannel = "dm-ana") }
+        compose.onNodeWithText("@everyone").assertDoesNotExist()
+        compose.onNodeWithTag("composer-input").assertTextEquals("@ev")
+    }
+
+    @Test
     fun mentionAndStickerSuggestionsScrollInsertAndRenderInsideTheComposer() {
         chat()
         compose.onNodeWithTag("composer-input").performTextInput("@")

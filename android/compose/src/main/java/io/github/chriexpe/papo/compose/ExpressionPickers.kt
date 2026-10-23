@@ -27,7 +27,6 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.json.JSONArray
 
 @Composable
 internal fun EmojiGlyph(
@@ -78,12 +77,7 @@ internal fun EmojiPicker(
 ) {
     var query by remember { mutableStateOf("") }
     val context = LocalContext.current
-    val standard = remember {
-        val a = JSONArray(context.assets.open("emoji.json").bufferedReader().use { it.readText() })
-        (0 until a.length()).map {
-            a.getJSONObject(it).let { e -> e.getString("glyph") to e.getString("keywords") }
-        }
-    }
+    val standard = remember { UnicodeEmojiCatalog.load(context) }
     val custom =
         remember(server.emojis, query) {
             server.emojis.filter { it.name.contains(query.trim(), true) }
@@ -95,12 +89,8 @@ internal fun EmojiPicker(
                     .filter { !it.custom }
                     .takeIf { it.size == 1 && it[0].value == query.trim() }
                     .orEmpty()
-                    .map { it.value to it.value }
-            (typed +
-                    standard.filter { (g, k) ->
-                        query.isBlank() || k.contains(query.trim(), true) || g == query.trim()
-                    })
-                .distinctBy { it.first }
+                    .map { UnicodeEmoji(it.value, it.value) }
+            (typed + matchingUnicodeEmoji(standard, query.trim())).distinctBy { it.glyph }
         }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -177,7 +167,7 @@ internal fun EmojiPicker(
                         modifier = Modifier.padding(vertical = 12.dp),
                     )
                 }
-                items(unicode, key = { "u/${it.first}" }) { (glyph, _) ->
+                items(unicode, key = { "u/${it.glyph}" }) { (glyph, _) ->
                     Box(
                         Modifier.size(52.dp)
                             .clip(RoundedCornerShape(16.dp))

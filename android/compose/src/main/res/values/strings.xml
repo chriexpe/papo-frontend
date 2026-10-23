@@ -924,4 +924,6 @@
     <string name="notification_policy_failure_item">"%1$s: %2$s"</string>
     <string name="notification_policy_retry_failed">"Retry unconfirmed channels"</string>
     <string name="notification_policy_applying">"Applying…"</string>
+    <string name="composer_everyone_description">"Notify everyone in this channel"</string>
+    <string name="composer_insert_unicode">"Insert %1$s"</string>
 </resources>
