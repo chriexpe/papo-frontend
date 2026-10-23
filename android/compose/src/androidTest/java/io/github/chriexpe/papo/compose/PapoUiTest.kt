@@ -711,11 +711,16 @@ class PapoUiTest {
                 .first { it.embeds.any { e -> e.title == "Original card" } }
                 .id
         compose.onNodeWithTag("composer-input").performTextInput("Keep my draft")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.onNodeWithTag("message-list").performScrollToKey(id)
         // The caption editor preserves both cards and never redirects to embed creation.
-        compose.onNodeWithText("Original caption", substring = false).performTouchInput {
-            longClick()
-        }
+        compose
+            .onNodeWithText("Original caption", substring = false, useUnmergedTree = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performTouchInput {
+                longClick()
+            }
         compose.onNodeWithText("Edit message").performClick()
         compose.waitUntil(5000) {
             compose.onAllNodesWithTag("edit-message-field").fetchSemanticsNodes().isNotEmpty()
@@ -740,9 +745,20 @@ class PapoUiTest {
             longClick()
         }
         compose.onNodeWithText("Edit embed").performClick()
+        compose.waitUntil(5000) {
+            compose
+                .onAllNodesWithTag("embed-field-${R.string.embed_title}")
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
         compose
             .onNodeWithTag("embed-field-${R.string.embed_title}")
-            .assertTextEquals("Original card")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.EditableText,
+                    AnnotatedString("Original card"),
+                )
+            )
         compose
             .onNodeWithTag("embed-field-${R.string.embed_title}")
             .performTextReplacement("Edited card")
@@ -801,7 +817,11 @@ class PapoUiTest {
                 it.mine && it.content == "Pasted first\nsecond\nthird" && !it.pending
             } == 1
         }
-        compose.onNodeWithTag("composer-input").assertTextEquals("")
+        compose
+            .onNodeWithTag("composer-input")
+            .assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString(""))
+            )
         compose.onNodeWithTag("composer-input").performTextInput("IME send")
         compose.onNodeWithTag("composer-input").performImeAction()
         compose.waitUntil(10_000) {
@@ -809,7 +829,11 @@ class PapoUiTest {
                 it.mine && it.content == "IME send" && !it.pending
             } == 1
         }
-        compose.onNodeWithTag("composer-input").assertTextEquals("")
+        compose
+            .onNodeWithTag("composer-input")
+            .assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString(""))
+            )
     }
 
     @Test

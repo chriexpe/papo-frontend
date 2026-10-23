@@ -786,11 +786,11 @@ The phone emulator was cold-started with 4 GiB RAM instead of 2 GiB for the fina
 run, preserving its existing data. The TV emulator was not changed.
 
 The administration fixes are in the universal APK
-`target/android-apks/papo-android-0.8.5-administration-audit.apk`. The PR remains a
-draft with the restoration failure disclosed; no merge is performed by this pass.
+`target/android-apks/papo-android-0.8.5-administration-audit.apk`. During that audit review, the PR was kept a
+draft with the restoration failure disclosed.
 
 
-## Message editing follow-up (awaiting UI review)
+## Message editing follow-up (accepted and device-checked)
 
 The message-actions preview now uses the resolved document preview, so mentions
 show readable names while Copy retains canonical source text. Caption edits use
@@ -809,11 +809,18 @@ always retains newline behavior. English/Portuguese labels are resource-backed.
 The universal APK and instrumentation APK compile; ktfmt and Android lint pass.
 Updated device coverage checks readable previews, caption/card separation, the
 selected card among several embeds, and hardware/IME send paths. These new flows
-are not device-tested yet: user UI review comes first. The preceding 154/155
-result remains a historical baseline, not a result for the new editing UI.
+passed on the phone emulator after user UI review: 3 targeted tests, 0 failures.
+They verify exact editable values separately from field labels/placeholders and
+touch the caption's unmerged text node so a merged-row center cannot hit an embed.
+The preceding 154/155 result remains the full-suite historical baseline; the
+deferred hourglass failure is unchanged. No production change was required by
+these targeted checks.
 
 The CI dependency helper caches downloaded Ubuntu packages, retains fresh signed
 package indexes, uses the canonical Ubuntu mirrors, and bounds update/install
 steps to avoid another 114-minute download. CI changes are committed separately
-from presentation changes. All 12 checks passed on the preceding `343c40c` head;
-new-head CI results must be checked independently.
+from presentation changes. All 12 checks passed on `fd25c58`; the pinned Clippy job's dependency setup took
+68 seconds and the complete job took 103 seconds. Final test-fixture corrections
+are committed separately and receive their own CI run before the requested merge.
+The user has accepted this editing UI and requested merging PR #124, with calls
+and the disclosed hourglass investigation retained as follow-ups.
