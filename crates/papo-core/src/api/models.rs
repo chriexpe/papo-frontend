@@ -735,14 +735,31 @@ pub struct Attachment {
     pub original_file_name: Option<String>,
     #[serde(default)]
     pub size_bytes: i64,
+    /// Original video geometry; older servers and unsupported containers omit it.
+    pub width: Option<i32>,
+    pub height: Option<i32>,
     /// Miniatura gerada no upload (WebP, ou GIF para GIF animado).
     pub thumbnail_id: Option<String>,
+    pub thumbnail_width: Option<i32>,
+    pub thumbnail_height: Option<i32>,
     pub created_at: Option<DateTime<Utc>>,
     /// `pending`/`processing`/`clean`/`sensitive`/`blocked`/`failed`.
     pub moderation_status: Option<String>,
 }
 
 impl Attachment {
+    /// Size the original video when known, otherwise use the generated image preview.
+    /// Missing or invalid dimensions never define an aspect ratio.
+    pub fn media_dimensions(&self) -> Option<(u32, u32)> {
+        let valid = |width: Option<i32>, height: Option<i32>| {
+            width.zip(height).and_then(|(width, height)| {
+                (width > 0 && height > 0).then_some((width as u32, height as u32))
+            })
+        };
+        valid(self.width, self.height)
+            .or_else(|| valid(self.thumbnail_width, self.thumbnail_height))
+    }
+
     pub fn name(&self) -> &str {
         self.original_file_name.as_deref().unwrap_or("arquivo")
     }

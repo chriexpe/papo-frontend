@@ -495,7 +495,11 @@ fn attachment(id: &str, name: &str, mime: &str, path: &std::path::Path) -> Attac
         mime_type: Some(mime.into()),
         original_file_name: Some(name.into()),
         size_bytes: std::fs::metadata(path).map(|meta| meta.len() as i64).unwrap_or(0),
+        width: None,
+        height: None,
         thumbnail_id: (mime.starts_with("image/")).then(|| id.to_owned()),
+        thumbnail_width: None,
+        thumbnail_height: None,
         created_at: None,
         moderation_status: Some("clean".into()),
     }

@@ -601,3 +601,35 @@ pass. Two compiled UI regressions cover card centering and a transparent, rounde
 portrait/landscape fit with unchanged reservation bounds. Device execution stays
 deferred for the user's visual review. APK:
 `target/android-apks/papo-android-0.8.5-media-layout.apk`.
+
+### Attachment dimensions through the shared media path
+
+The backend already exposes original video `width`/`height` and image-preview
+`thumbnail_width`/`thumbnail_height` in message attachments. These fields were
+missing from the shared core attachment model and its durable cache, so Compose
+always received an unknown size for attachments. Contract rechecked against
+official backend `af057d5e0e107ae666c4f6776b36222ef18b2105`:
+[MessageAttachment](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/models/message.go).
+
+All four optional fields now survive API decoding, confirmed-message caching,
+cache restoration and store snapshots. Core chooses a valid original pair first,
+then a valid thumbnail pair, without mixing dimensions from different sources.
+The Android bridge carries the resolved pair into images, GIFs, inline video and
+the shared viewer. Chat, search and pins retain the same renderer. Missing/null,
+zero and negative pairs use the existing fallback; legacy cached rows remain
+readable without a database migration or discarded history.
+
+The media frame now fits its aspect ratio within both width/height limits instead
+of imposing a minimum height that letterboxed panoramic content. Known sizes are
+available before decoding, so the outer frame follows the actual media ratio and
+remains stable during loading/playback. Hidden-media covers retain a usable reveal
+or error area even for very thin artwork.
+
+Validation: 822 workspace library tests pass (275 egui, 69 Android adapter, 478
+core), along with strict workspace Clippy, Compose formatting, universal APK,
+instrumentation APK compilation and lint. Regressions cover original/thumbnail
+precedence, invalid/missing pairs, both cache conversion paths and legacy rows.
+Compiled UI coverage checks portrait attachment/embed geometry before/after
+loading and viewer opening, plus wide-media sizing without a minimum-height gap.
+Device execution remains deferred for the user's review. APK:
+`target/android-apks/papo-android-0.8.5-media-dimensions.apk`.

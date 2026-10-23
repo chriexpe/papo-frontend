@@ -182,6 +182,7 @@ private fun Attachment(
     val blocked = a.status == "blocked"
     val sensitive = (a.status == "sensitive" || a.spoiler) && !revealed
     if (blocked || sensitive) {
+        // Keep the reveal/error controls usable even when the hidden artwork is very thin.
         ReservedMedia(
             0,
             0,
@@ -207,18 +208,26 @@ private fun Attachment(
     }
     when (a.kind) {
         "image" ->
-            ReservedMedia(0, 0, fallback = 4f / 3f, tag = "attachment-${a.id}") {
+            ReservedMedia(a.width, a.height, fallback = 4f / 3f, tag = "attachment-${a.id}") {
                 MediaImage(
                     server,
                     model,
                     "Photo: ${a.name}",
                     resource = MediaResource.Attachment(a.id, false),
+                    mediaWidth = a.width,
+                    mediaHeight = a.height,
                     gif =
                         if (
                             a.mime.substringBefore(';').equals("image/gif", true) ||
                                 a.name.endsWith(".gif", true)
                         )
-                            GifChoice("attachment:${a.id}", a.name, attachment = a.id)
+                            GifChoice(
+                                "attachment:${a.id}",
+                                a.name,
+                                attachment = a.id,
+                                width = a.width,
+                                height = a.height,
+                            )
                         else null,
                     onActions = onActions,
                 )
@@ -232,6 +241,8 @@ private fun Attachment(
                     a.name,
                     a.kind,
                     a.mime,
+                    a.width,
+                    a.height,
                     resource = MediaResource.Attachment(a.id, false),
                 )
             if (a.kind == "audio") {
@@ -244,7 +255,7 @@ private fun Attachment(
                     tag = "audio-attachment-${a.id}",
                 )
             } else
-                ReservedMedia(0, 0, tag = "attachment-${a.id}") {
+                ReservedMedia(a.width, a.height, tag = "attachment-${a.id}") {
                     VideoPreview(
                         server,
                         model,
@@ -635,6 +646,8 @@ internal fun BoxScope.MediaImage(
     viewer: Boolean = true,
     gif: GifChoice? = null,
     publicUrl: String = "",
+    mediaWidth: Int = embed?.width ?: 0,
+    mediaHeight: Int = embed?.height ?: 0,
     onActions: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
@@ -646,8 +659,8 @@ internal fun BoxScope.MediaImage(
             description.removePrefix("Photo: "),
             if (gif != null) "gif" else "image",
             embed?.mime.orEmpty(),
-            embed?.width ?: 0,
-            embed?.height ?: 0,
+            mediaWidth,
+            mediaHeight,
             resource,
             embed,
             gif,

@@ -27,8 +27,9 @@ internal fun ReservedMedia(
     BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
         val ratio = if (width > 0 && height > 0) width.toFloat() / height else fallback
         val available = maxWidth.coerceAtMost(480.dp)
-        val frameHeight = (available / ratio).coerceIn(72.dp, 360.dp)
-        val frameWidth = (frameHeight * ratio).coerceAtMost(available)
+        // Fit both bounds together. A minimum height would letterbox very wide media.
+        val frameWidth = minOf(available, 360.dp * ratio)
+        val frameHeight = frameWidth / ratio
         Box(
             Modifier.width(frameWidth)
                 .height(frameHeight)

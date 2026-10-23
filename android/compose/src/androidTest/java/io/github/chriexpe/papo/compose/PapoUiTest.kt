@@ -4029,6 +4029,7 @@ class PapoUiTest {
 
     @Test
     fun portraitMediaCentersInsideItsEmbedCard() {
+        val dimensions = androidx.compose.runtime.mutableStateOf(540 to 960)
         val client = io.github.chriexpe.papo.core.NativeClient.demo()
         val embed =
             try {
@@ -4046,7 +4047,11 @@ class PapoUiTest {
                         EmbedCardLayout(
                             embed,
                             media = {
-                                ReservedMedia(embed.width, embed.height, tag = "portrait-frame") {}
+                                ReservedMedia(
+                                    dimensions.value.first,
+                                    dimensions.value.second,
+                                    tag = "portrait-frame",
+                                ) {}
                             },
                         )
                     }
@@ -4065,6 +4070,15 @@ class PapoUiTest {
         assertEquals(card.center.x + 1.5f * density, frame.center.x, 1f)
         assertTrue(frame.width < card.width)
         assertEquals(540f / 960f, frame.width / frame.height, .01f)
+        compose.runOnIdle { dimensions.value = 4000 to 100 }
+        val wide = compose.onNodeWithTag("portrait-frame").fetchSemanticsNode().boundsInRoot
+        assertEquals(
+            "Wide media must not inherit a minimum-height letterbox",
+            40f,
+            wide.width / wide.height,
+            .2f,
+        )
+        assertTrue(wide.height < 72 * density)
     }
 
     @Test
@@ -4115,34 +4129,39 @@ class PapoUiTest {
     }
 
     @Test
-    fun portraitEmbedReservesServerDimensionsAndOpensViewer() {
+    fun portraitMediaUsesBackendDimensionsBeforeLoadingAndOpensViewer() {
         media()
-        compose
-            .onNodeWithTag("message-list", useUnmergedTree = true)
-            .performScrollToNode(hasTestTag("embed-embed-portrait"))
-        val frame =
+        for ((tag, description) in
+            listOf(
+                "embed-embed-portrait" to "Portrait preview",
+                "attachment-demo-portrait" to "Photo: portrait.png",
+            )) {
             compose
-                .onNodeWithTag("embed-embed-portrait", useUnmergedTree = true)
-                .fetchSemanticsNode()
-                .boundsInRoot
-        assertEquals(540f / 960f, frame.width / frame.height, 0.01f)
-        compose.waitUntil(10_000) {
-            compose
-                .onAllNodes(
-                    hasContentDescription("Portrait preview") and
-                        SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Loaded")
-                )
-                .fetchSemanticsNodes()
-                .isNotEmpty()
+                .onNodeWithTag("message-list", useUnmergedTree = true)
+                .performScrollToNode(hasTestTag(tag))
+            val frame =
+                compose.onNodeWithTag(tag, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertEquals(540f / 960f, frame.width / frame.height, 0.01f)
+            compose.waitUntil(10_000) {
+                compose
+                    .onAllNodes(
+                        hasContentDescription(description) and
+                            SemanticsMatcher.expectValue(
+                                SemanticsProperties.StateDescription,
+                                "Loaded",
+                            )
+                    )
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+            }
+            val loaded =
+                compose.onNodeWithTag(tag, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertEquals(frame.height, loaded.height, 1f)
+            compose.onNodeWithContentDescription(description).performClick()
+            val viewer = compose.onNodeWithTag("viewer-content").fetchSemanticsNode().boundsInRoot
+            assertEquals(540f / 960f, viewer.width / viewer.height, .01f)
+            compose.onNodeWithContentDescription("Close image").assertExists().performClick()
         }
-        val loaded =
-            compose
-                .onNodeWithTag("embed-embed-portrait", useUnmergedTree = true)
-                .fetchSemanticsNode()
-                .boundsInRoot
-        assertEquals(frame.height, loaded.height, 1f)
-        compose.onNodeWithContentDescription("Portrait preview").performClick()
-        compose.onNodeWithContentDescription("Close image").assertExists().performClick()
     }
 
     @Test

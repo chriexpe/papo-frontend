@@ -31,9 +31,14 @@ pub struct AttachmentView {
     pub thumbnail: bool,
     #[serde(default)]
     pub spoiler: bool,
+    #[serde(default)]
+    pub width: i32,
+    #[serde(default)]
+    pub height: i32,
 }
 impl From<&Attachment> for AttachmentView {
     fn from(a: &Attachment) -> Self {
+        let (width, height) = a.media_dimensions().unwrap_or_default();
         let mime = a.mime().to_ascii_lowercase();
         let kind = match a.kind() {
             papo_core::api::models::Kind::Image => "image",
@@ -50,6 +55,8 @@ impl From<&Attachment> for AttachmentView {
             size_bytes: a.size_bytes,
             thumbnail: a.thumbnail_id.is_some(),
             spoiler: a.spoiler(),
+            width: width as i32,
+            height: height as i32,
         }
     }
 }
@@ -323,6 +330,38 @@ pub fn demo_image(id: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachment_geometry_reaches_android_without_guessing_missing_or_invalid_pairs() {
+        for (geometry, expected) in [
+            (
+                json!({"width":1920,"height":1080,"thumbnail_width":256,"thumbnail_height":512}),
+                (1920, 1080),
+            ),
+            (
+                json!({"width":null,"height":null,"thumbnail_width":540,"thumbnail_height":960}),
+                (540, 960),
+            ),
+            (
+                json!({"width":-1,"height":100,"thumbnail_width":512,"thumbnail_height":288}),
+                (512, 288),
+            ),
+            (
+                json!({"width":100,"height":null,"thumbnail_width":null,"thumbnail_height":960}),
+                (0, 0),
+            ),
+            (json!({}), (0, 0)),
+        ] {
+            let mut value = json!({"id":"a1","mime_type":"video/mp4"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(geometry.as_object().unwrap().clone());
+            let attachment: Attachment = serde_json::from_value(value).unwrap();
+            let view = AttachmentView::from(&attachment);
+            assert_eq!((view.width, view.height), expected);
+        }
+    }
 
     #[test]
     fn spoiler_filenames_survive_projection_independently_of_moderation() {
