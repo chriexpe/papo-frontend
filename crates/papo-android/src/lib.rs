@@ -29,6 +29,7 @@ pub mod media;
 mod media_edit;
 mod message_results;
 mod moderation;
+mod notification_policy;
 mod notifications;
 mod projection;
 mod social;
@@ -266,6 +267,8 @@ pub struct Client {
     notification_listener: Option<Arc<dyn notifications::NotificationListener>>,
     notification_visible: bool,
     push_registration: Option<(String, String)>,
+    inbox: inbox::Pager,
+    inbox_revision: u64,
     _notification_lease: notifications::InteractiveLease,
     // Serialize one user's mutation per message/emoji until HTTP settles.
     pending_reactions: HashMap<(String, Emoji), PendingReaction>,
@@ -344,6 +347,8 @@ impl Client {
             notification_listener: listener,
             notification_visible: false,
             push_registration: None,
+            inbox: inbox::Pager::default(),
+            inbox_revision: 0,
             _notification_lease: lease,
             pending_reactions: HashMap::new(),
             navigation_serial: 0,
@@ -538,6 +543,7 @@ impl Client {
                 } => events.push(json!({"type":"rejected", "localId": local_id, "error": message})),
                 _ => {}
             }
+            self.observe_inbox_update(&update);
             self.observe_pin_update(&update);
             self.runtime.process_update(update);
             self.sync_notification_context();
@@ -582,6 +588,7 @@ impl Client {
         let mut snapshot = self.snapshot();
         snapshot["more"] = json!(more);
         snapshot["events"] = json!(events);
+        snapshot["inboxRevision"] = json!(self.inbox_revision);
         #[cfg(all(debug_assertions, target_os = "android"))]
         {
             let after = self.reading_debug_state();
@@ -1330,3 +1337,6 @@ mod tests {
 
 #[cfg(test)]
 mod reaction_tests;
+
+#[cfg(test)]
+mod notification_tests;

@@ -1638,8 +1638,28 @@ impl Api {
 
     /// Notificações do usuário — é daqui que sai a contagem de menções.
     pub async fn notifications(&self, user_id: &str) -> ApiResult<Vec<NotificationItem>> {
-        let list: NotificationList = self.get(&format!("/users/{user_id}/notifications")).await?;
-        Ok(list.notifications)
+        Ok(self.notification_page(user_id, None).await?.notifications)
+    }
+
+    /// Newest first. `since` alone polls forward; older pages require both
+    /// parts of the exact (nanosecond timestamp, id) cursor.
+    pub async fn notification_page(
+        &self,
+        user_id: &str,
+        cursor: Option<&crate::inbox::Cursor>,
+    ) -> ApiResult<NotificationList> {
+        let path = format!("/users/{user_id}/notifications");
+        let path = if let Some(cursor) = cursor {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("since", &cursor.at.to_rfc3339())
+                .append_pair("last_id", &cursor.id)
+                .append_pair("order", "desc")
+                .finish();
+            format!("{path}?{query}")
+        } else {
+            path
+        };
+        self.get(&path).await
     }
 
     /// Explicit channel acknowledgement; listing messages does not mark them read.

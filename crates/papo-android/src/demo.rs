@@ -8,6 +8,7 @@ use papo_core::state::Store;
 pub struct Demo {
     pub(crate) store: Store,
     pub(crate) notifications: Vec<models::Notification>,
+    pub(crate) inbox: inbox::Pager,
     pub(crate) webhooks: Vec<models::Webhook>,
     events: Vec<Value>,
     media_files: HashMap<String, PathBuf>,
@@ -237,6 +238,7 @@ impl Demo {
             store,
             events: vec![],
             media_files: HashMap::new(),
+            inbox: inbox::Pager::default(),
             navigation_serial: 0,
             navigation_target: String::new(),
             search_query: String::new(),

@@ -32,8 +32,8 @@ References:
 | 1 | 1, 2; role/permission portion of 6 | Preserve all eight role permissions; shared moderator deletion policy; acknowledged Delete from chat, pins and search | Accepted by user on 2026-10-23 |
 | 2 | 3 | Profile block/unblock, blocked-user settings, hide/reopen DMs, global-list and account synchronization | Accepted by user on 2026-10-23 |
 | 3 | 4; webhook authorization portion of 6 | Webhook management, one-time token disclosure, identity edits and revocation | Accepted by user on 2026-10-23 |
-| 4 | 5 | Structured custom embed composer/editor, preview, limits and protected-media preservation | Built; awaiting user review |
-| 5 | 7, 8 | Apply channel notification policy to all with partial-failure reporting; independent inbox pagination and mark-loaded-read | Pending |
+| 4 | 5 | Structured custom embed composer/editor, preview, limits and protected-media preservation | Functionality accepted by user on 2026-10-23; UI provisional |
+| 5 | 7, 8 | Apply channel notification policy to all with partial-failure reporting; independent inbox pagination and mark-loaded-read | Built; awaiting user review |
 | 6 | 9, 10 | Permission-aware `@everyone` and shared-catalog Unicode emoji suggestions | Pending |
 | 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | Pending |
 
@@ -288,3 +288,81 @@ User checks:
    unsent composer draft. A protected-image message must explain the editing limit;
    a text-only change must retain its original media. Server rejection keeps the
    editing dialog open.
+
+## Part 4 user feedback
+
+The user accepted the working functionality on 2026-10-23 and asked to continue.
+The editor's visual design remains provisional; retain that feedback for the
+appearance/polish review rather than treating the current layout as a final design.
+
+## Part 5 implementation and review
+
+- Server information retains per-channel notification choices and adds one policy
+  selector plus **Apply to all** for its current text/voice channels. Categories and
+  DMs are excluded. The native adapter calls the existing account/channel endpoint
+  sequentially through the shared request governor. A rate-limited request can be
+  retried once after that governor's deadline. Every confirmed channel is projected
+  independently, without relisting chat/navigation/read state.
+- Success counts require backend ACKs, including when the requested policy matches
+  the local value: another client may have changed it. Partial results name the
+  unconfirmed channels and distinguish missing channels, denial, rate limits and
+  unconfirmed transport outcomes. Retry targets only those channels and retains
+  previously confirmed changes. The operation is idempotent; the UI never claims
+  an unconfirmed change left the server untouched.
+- The core API now exposes `notifications`, `has_more` and an exact nanosecond
+  timestamp/ID cursor. The shared inbox pager owns raw-page cursors, descending
+  ordering, deduplication, request tickets and monotonic read flags. Filtering an
+  own-author notification cannot erase the raw cursor. Empty/repeating pages that
+  claim more data produce a retryable error rather than an infinite loading loop.
+- Native pagers belong to their server/account. Account changes reset history and
+  invalidate tickets; credential renewal invalidates in-flight tickets while
+  retaining that same owner's loaded history. The authenticated response and cache
+  update are checked under one lock. Deleted message notifications cannot be
+  resurrected by an older response.
+- A live head refresh merges into previously loaded pages. If a new head has no
+  overlap, pagination resumes from that new head so an intervening gap is not
+  skipped. A refresh no longer depends solely on the unread count: native inbox
+  revisions include live notifications, reconciliations and deletion events. REST
+  page application deliberately does not increment this signal and refetch itself.
+- The ViewModel owns per-account UI requests across navigation, queues a head
+  refresh behind an active page and suppresses duplicate loads. Hidden inboxes
+  retain state and mark refreshes pending without fetching further pages. The
+  global list loads older pages incrementally per server, with scoped Retry on
+  failure. It keeps existing author/avatar, source-message and read presentations.
+- The header now marks **all loaded notifications as read**, replacing the refresh
+  icon. It captures only loaded unread IDs, splits requests at the backend's 1000-ID
+  limit, keeps earlier ACKs if another batch/server fails and reports the remaining
+  unconfirmed count. Individual read controls use the same path. An incoming page
+  cannot undo a simultaneous read ACK. Inbox pagination never generates OS alerts.
+- All new labels, counts, busy/error states and accessibility text use Android
+  English/Portuguese resources. Chat frontier/hourglass transitions are unchanged;
+  the inbox uses a read-only projection of existing acknowledgement state.
+
+References:
+[notification endpoint contracts](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/handlers/notifications.go),
+[service authorization and limits](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/services/notifications.go),
+[keyset ordering](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/storage/notifications.go),
+[Aero inbox reference](https://github.com/Papo-Chat/papo-frontend/blob/3817e3e1760b26c470eb7deefb32f9d4f616395c/src/lib/store/notifications.svelte.ts).
+
+Validation: 814 Rust tests (275 egui, 64 Android adapter, 475 core; one existing
+ignored test), strict workspace Clippy, Compose formatting, universal debug APK,
+instrumentation APK compilation and Android lint. New core/HTTP tests cover exact
+submillisecond cursors, read/page races, refresh retention, no-progress responses,
+raw filtering, deletion races, credential renewal, duplicate requests, account
+replacement, real partial policy ACKs and 429 retry. Two new Android interaction
+flows are compiled but not run before user acceptance. Final device regression
+execution remains due; CI only compiles instrumentation APKs.
+
+User checks:
+
+1. Tap a server name, choose a notification policy and **Apply to all**. All current
+   text/voice channel rows should reflect confirmed settings. Override one channel
+   afterwards and check the others retain their values.
+2. If a batch partially fails, verify confirmed rows stay changed and Retry names
+   only the unconfirmed channels. Signing out/forgetting must isolate the old work.
+3. Open global Notifications. Scroll toward the oldest entries to load more; each
+   account retains an independent cursor, loading state and retry control. New
+   incoming notifications must not discard those older loaded entries.
+4. Use the header's double-check button. Only loaded notifications become read;
+   unseen/unloaded pages and notifications arriving after the action remain eligible.
+   Check individual reads, leaving/reopening during a load, and multiple servers.

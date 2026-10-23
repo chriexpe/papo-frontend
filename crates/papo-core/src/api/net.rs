@@ -518,6 +518,8 @@ pub enum Update {
     ConnectionViolation,
     Server(Option<Box<Server>>),
     Channels(Vec<Channel>),
+    /// Acknowledged preference for this account only, without relisting navigation/read state.
+    ChannelNotificationSetting { channel_id: String, setting: String },
     /// Rail completa de mensagens diretas desta conta.
     DirectMessages(Vec<DirectConversation>),
     /// Conversa aberta pelo usuário; além de atualizar a rail, seleciona a DM.

@@ -414,6 +414,8 @@ pub struct ClientSnapshot {
     pub my_name: String,
     pub notification_count: u32,
     #[serde(default)]
+    pub inbox_revision: u64,
+    #[serde(default)]
     pub push_registered: bool,
     #[serde(default = "default_notifications_enabled")]
     pub notifications_enabled: bool,

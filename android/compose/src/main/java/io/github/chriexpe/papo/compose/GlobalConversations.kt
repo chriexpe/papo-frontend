@@ -28,13 +28,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
 import io.github.chriexpe.papo.core.InboxItem
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 
 @Composable
 internal fun GlobalAction(
@@ -227,111 +220,67 @@ internal fun GlobalDirectMessages(
     }
 }
 
-private data class InboxPage(
-    val url: String,
-    val owner: String,
-    val items: List<InboxItem> = emptyList(),
-    val loading: Boolean = true,
-    val error: String = "",
-)
-
-private data class ScopedNotice(val server: ServerState, val item: InboxItem)
-
 @Composable
 internal fun GlobalNotifications(
     state: PapoState,
     model: PapoViewModel,
     onBack: () -> Unit,
     onOpen: (ServerState, InboxItem) -> Unit,
+    inbox: NotificationInbox = model.notificationInbox,
 ) {
     val servers = state.servers.filter { it.screen == "chat" && it.me.isNotBlank() }
-    val owners = servers.map { Triple(it.url, it.me, it.notificationCount) }
-    var refresh by remember { mutableIntStateOf(0) }
-    var pages by remember { mutableStateOf<List<InboxPage>>(emptyList()) }
-    var reading by remember { mutableStateOf<Set<String>>(emptySet()) }
-    val scope = rememberCoroutineScope()
+    val owners = servers.map { listOf(it.url, it.me, it.notificationCount, it.inboxRevision) }
     val snackbar = remember { SnackbarHostState() }
-    BackHandler(onBack = onBack)
-    LaunchedEffect(owners, refresh) {
-        pages = servers.map { s ->
-            pages
-                .firstOrNull { it.url == s.url && it.owner == s.me }
-                ?.copy(loading = true, error = "") ?: InboxPage(s.url, s.me)
-        }
-        coroutineScope {
-            servers.forEach { server ->
-                launch {
-                    val page =
-                        try {
-                            InboxPage(server.url, server.me, model.inbox(server), loading = false)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            InboxPage(
-                                server.url,
-                                server.me,
-                                items =
-                                    pages
-                                        .firstOrNull {
-                                            it.url == server.url && it.owner == server.me
-                                        }
-                                        ?.items
-                                        .orEmpty(),
-                                loading = false,
-                                error = e.message ?: ui(R.string.couldn_t_load_notifications),
-                            )
-                        }
-                    pages = pages.map {
-                        if (it.url == page.url && it.owner == page.owner) page else it
-                    }
-                }
-            }
-        }
+    DisposableEffect(inbox) {
+        inbox.show(servers)
+        onDispose { inbox.hide() }
     }
-    val activePages = pages.filter { p -> servers.any { it.url == p.url && it.me == p.owner } }
+    LaunchedEffect(inbox) { inbox.messages.collect { snackbar.showSnackbar(it) } }
+    BackHandler(onBack = onBack)
+    LaunchedEffect(owners) { inbox.synchronize(servers) }
+    val active = servers.mapNotNull { server ->
+        inbox.pages[server.inboxOwner()]?.let { server to it }
+    }
     val rows =
-        activePages
-            .flatMap { page ->
-                val server = servers.first { it.url == page.url && it.me == page.owner }
-                page.items.map { ScopedNotice(server, it) }
-            }
+        active
+            .flatMap { (server, page) -> page.items.map { ScopedNotice(server, it) } }
             .sortedWith(
-                compareByDescending<ScopedNotice> { it.item.at }
+                compareByDescending<ScopedNotice> { it.item.orderTime }
                     .thenBy { it.server.url }
-                    .thenBy { it.item.id }
+                    .thenByDescending { it.item.id }
             )
+    val unread = rows.count { !it.item.read }
     Box(Modifier.fillMaxSize().testTag("global-notifications")) {
         Column(Modifier.fillMaxSize()) {
             GlobalHeader(ui(R.string.notifications), onBack) {
-                IconButton(onClick = { refresh++ }, enabled = activePages.none { it.loading }) {
-                    Icon(Icons.Outlined.Refresh, ui(R.string.refresh_notifications))
+                IconButton(
+                    onClick = inbox::markLoaded,
+                    enabled = unread > 0 && !inbox.marking && inbox.reading.isEmpty(),
+                    modifier =
+                        Modifier.testTag("mark-loaded-notifications").semantics {
+                            contentDescription = uiQuantity(R.plurals.inbox_mark_loaded, unread)
+                        },
+                ) {
+                    if (inbox.marking)
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    else
+                        Icon(
+                            Icons.Outlined.DoneAll,
+                            null,
+                        )
                 }
             }
-            if (activePages.any { it.loading })
+            if (active.any { it.second.loading })
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp))
             LazyColumn(
                 Modifier.weight(1f).hazeSource(LocalHaze.current).testTag("notification-list"),
                 contentPadding = PaddingValues(12.dp, 8.dp, 12.dp, 140.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                items(activePages.filter { it.error.isNotBlank() }, key = { "error/${it.url}" }) {
-                    page ->
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        modifier = Modifier.padding(8.dp),
-                    ) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(
-                                servers.first { it.url == page.url }.name,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(page.error, style = MaterialTheme.typography.bodyMedium)
-                            TextButton(onClick = { refresh++ }) { Text(ui(R.string.retry)) }
-                        }
-                    }
-                }
-                if (rows.isEmpty() && activePages.none { it.loading || it.error.isNotBlank() })
+                if (
+                    rows.isEmpty() &&
+                        active.none { it.second.loading || it.second.error.isNotBlank() }
+                )
                     item {
                         EmptyState(
                             ui(R.string.all_quiet_for_now),
@@ -339,132 +288,47 @@ internal fun GlobalNotifications(
                         )
                     }
                 items(rows, key = { "${it.server.url}/${it.server.me}/${it.item.id}" }) { notice ->
-                    val server = notice.server
-                    val item = notice.item
-                    val key = "${server.url}/${server.me}/${item.id}"
-                    val canOpen =
-                        (server.channels + server.dms).any {
-                            it.id == item.channelId && it.kind != "category"
-                        }
-                    CompositionLocalProvider(
-                        LocalProfileContext provides ProfileContext(server, model)
+                    NotificationInboxRow(
+                        notice,
+                        model,
+                        inbox.marking ||
+                            (notice.server.inboxOwner() to notice.item.id) in inbox.reading,
+                        onRead = { inbox.readOne(notice.server.inboxOwner(), notice.item.id) },
+                        onOpen = onOpen,
+                    )
+                }
+                items(
+                    active.filter { it.second.hasMore || it.second.error.isNotBlank() },
+                    key = { "page/${it.first.url}/${it.first.me}" },
+                ) { (server, page) ->
+                    val owner = server.inboxOwner()
+                    Column(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        ListItem(
-                            overlineContent = {
-                                Text(server.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            },
-                            headlineContent = {
-                                Text(
-                                    item.author.ifBlank { ui(R.string.message) } +
-                                        (if (item.channelName.isNotBlank()) " · ${item.channelName}"
-                                        else ""),
-                                    fontWeight =
-                                        if (item.read) FontWeight.Normal else FontWeight.SemiBold,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            supportingContent = {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text(
-                                        item.content.ifBlank { ui(R.string.new_message) },
-                                        maxLines = 3,
-                                        overflow = TextOverflow.Ellipsis,
+                        Text(server.name, style = MaterialTheme.typography.labelLarge)
+                        if (page.error.isNotBlank()) {
+                            Text(page.error, color = MaterialTheme.colorScheme.error)
+                            TextButton(enabled = !page.loading, onClick = { inbox.retry(owner) }) {
+                                Text(ui(R.string.retry))
+                            }
+                        } else {
+                            LaunchedEffect(owner, page.data?.cursor, page.loading) {
+                                if (!page.loading) inbox.more(owner)
+                            }
+                            TextButton(
+                                enabled = !page.loading,
+                                onClick = { inbox.more(owner) },
+                                modifier = Modifier.testTag("inbox-more-${server.key}"),
+                            ) {
+                                if (page.loading)
+                                    CircularProgressIndicator(
+                                        Modifier.size(18.dp),
+                                        strokeWidth = 2.dp,
                                     )
-                                    if (item.at > 0)
-                                        Text(
-                                            Instant.ofEpochMilli(item.at)
-                                                .atZone(ZoneId.systemDefault())
-                                                .format(
-                                                    DateTimeFormatter.ofLocalizedDateTime(
-                                                            FormatStyle.SHORT
-                                                        )
-                                                        .withLocale(AppLanguage.locale)
-                                                ),
-                                            style = MaterialTheme.typography.labelSmall,
-                                        )
-                                    if (!canOpen)
-                                        Text(
-                                            ui(R.string.conversation_unavailable),
-                                            style = MaterialTheme.typography.labelSmall,
-                                        )
-                                }
-                            },
-                            leadingContent = {
-                                if (item.authorId.isNotBlank())
-                                    UserAvatar(item.authorId, item.author)
-                                else Icon(Icons.Outlined.NotificationsNone, null)
-                            },
-                            trailingContent = {
-                                if (!item.read)
-                                    IconButton(
-                                        enabled = key !in reading,
-                                        onClick = {
-                                            reading = reading + key
-                                            scope.launch {
-                                                try {
-                                                    model.readInbox(server, listOf(item.id))
-                                                    pages = pages.map { page ->
-                                                        if (
-                                                            page.url == server.url &&
-                                                                page.owner == server.me
-                                                        )
-                                                            page.copy(
-                                                                items =
-                                                                    page.items.map {
-                                                                        if (it.id == item.id)
-                                                                            it.copy(read = true)
-                                                                        else it
-                                                                    }
-                                                            )
-                                                        else page
-                                                    }
-                                                } catch (e: CancellationException) {
-                                                    throw e
-                                                } catch (e: Exception) {
-                                                    snackbar.showSnackbar(
-                                                        e.message
-                                                            ?: ui(
-                                                                R.string
-                                                                    .couldn_t_mark_notification_as_read
-                                                            )
-                                                    )
-                                                } finally {
-                                                    reading = reading - key
-                                                }
-                                            }
-                                        },
-                                    ) {
-                                        Icon(
-                                            Icons.Outlined.Done,
-                                            ui(R.string.mark_notification_as_read),
-                                        )
-                                    }
-                                else Icon(Icons.Outlined.ChevronRight, null)
-                            },
-                            colors =
-                                ListItemDefaults.colors(
-                                    containerColor =
-                                        if (item.read) MaterialTheme.colorScheme.surfaceContainerLow
-                                        else
-                                            MaterialTheme.colorScheme.primaryContainer.copy(
-                                                alpha = .4f
-                                            )
-                                ),
-                            modifier =
-                                Modifier.testTag("notification-${server.key}-${item.id}")
-                                    .clip(RoundedCornerShape(20.dp))
-                                    .semantics {
-                                        stateDescription =
-                                            if (item.read) uiLabel("Read") else ui(R.string.unread)
-                                    }
-                                    .clickable(
-                                        enabled = canOpen,
-                                        onClickLabel = ui(R.string.open_notification_message),
-                                    ) {
-                                        onOpen(server, item)
-                                    },
-                        )
+                                else Text(ui(R.string.inbox_load_older))
+                            }
+                        }
                     }
                 }
             }

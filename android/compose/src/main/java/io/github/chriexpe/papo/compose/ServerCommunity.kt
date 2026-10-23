@@ -6,7 +6,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -146,6 +145,9 @@ private fun ServerInfoSheet(
 ) {
     BackHandler(onBack = onDismiss)
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    val notificationPreferences =
+        remember(server.url, server.me) { NotificationPolicyUi(model, scope) }
     var copied by remember { mutableStateOf(false) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -217,75 +219,7 @@ private fun ServerInfoSheet(
                         },
                 )
             }
-            if (server.channels.any { it.kind != "category" && it.kind != "direct" })
-                item { CommunitySection(ui(R.string.channel_notifications)) }
-            items(
-                server.channels.filter { it.kind != "category" && it.kind != "direct" },
-                key = { it.id },
-            ) { channel ->
-                var expanded by remember { mutableStateOf(false) }
-                val label =
-                    when (channel.notificationSettings) {
-                        "all" -> ui(R.string.all_messages)
-                        "off" -> uiLabel("Off")
-                        else -> ui(R.string.mentions_only)
-                    }
-                ListItem(
-                    headlineContent = {
-                        Text(channel.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    },
-                    leadingContent = {
-                        Icon(
-                            if (channel.kind == "voice") Icons.Outlined.VolumeUp
-                            else Icons.Outlined.Tag,
-                            null,
-                        )
-                    },
-                    trailingContent = {
-                        Box {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    label,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Icon(Icons.Outlined.ChevronRight, null, Modifier.size(20.dp))
-                            }
-                            DropdownMenu(expanded, { expanded = false }) {
-                                listOf(
-                                        "all" to ui(R.string.all_messages),
-                                        "only_mentions" to ui(R.string.mentions_only),
-                                        "off" to uiLabel("Off"),
-                                    )
-                                    .forEach { (value, title) ->
-                                        DropdownMenuItem(
-                                            text = { Text(title) },
-                                            leadingIcon = {
-                                                if (channel.notificationSettings == value)
-                                                    Icon(Icons.Outlined.Check, null)
-                                            },
-                                            onClick = {
-                                                expanded = false
-                                                model.command(
-                                                    Action.ChannelNotifications(channel.id, value),
-                                                    server.url,
-                                                )
-                                            },
-                                        )
-                                    }
-                            }
-                        }
-                    },
-                    colors =
-                        ListItemDefaults.colors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                        ),
-                    modifier =
-                        Modifier.testTag("channel-notifications-${channel.id}").clickable {
-                            expanded = true
-                        },
-                )
-            }
+            channelNotificationPreferences(server, notificationPreferences)
             item {
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 TextButton(

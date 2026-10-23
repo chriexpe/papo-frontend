@@ -6,6 +6,7 @@
 pub mod api;
 pub mod audit;
 pub mod embed_authoring;
+pub mod inbox;
 pub mod cache;
 pub mod giphy;
 pub mod markdown;

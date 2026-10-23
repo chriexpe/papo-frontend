@@ -910,4 +910,18 @@
     <string name="embed_expand">"Expandir seção"</string>
     <string name="embed_collapse">"Recolher seção"</string>
     <string name="embed_empty_card">"Adicione texto, link, campo ou mídia a este cartão, ou remova-o."</string>
+    <string name="inbox_load_failed">"Não foi possível carregar esta página. Os avisos carregados foram mantidos."</string>
+    <string name="inbox_load_older">"Carregar avisos mais antigos"</string>
+    <string name="inbox_read_partial">"%1$d marcados como lidos; não foi possível confirmar %2$d. Os itens não confirmados continuam não lidos para você tentar novamente."</string>
+    <string name="notification_policy_failed">"Não foi possível concluir a aplicação. As alterações confirmadas continuam salvas."</string>
+    <string name="notification_policy_description">"Aplique uma opção aos canais atuais de texto e voz deste servidor. Você ainda pode ajustar cada canal abaixo."</string>
+    <string name="notification_policy_apply_all">"Aplicar a todos"</string>
+    <string name="notification_policy_result">"%1$s · %2$s"</string>
+    <string name="notification_policy_missing">"Canal indisponível"</string>
+    <string name="notification_policy_denied">"Permissão negada"</string>
+    <string name="notification_policy_rate_limited">"Limite de requisições do servidor atingido"</string>
+    <string name="notification_policy_unconfirmed_reason">"Não foi possível confirmar a alteração"</string>
+    <string name="notification_policy_failure_item">"%1$s: %2$s"</string>
+    <string name="notification_policy_retry_failed">"Tentar canais não confirmados novamente"</string>
+    <string name="notification_policy_applying">"Aplicando…"</string>
 </resources>

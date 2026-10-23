@@ -94,6 +94,11 @@ pub(super) struct ScopedApi {
     pub(super) owner: String,
     token: Option<String>,
 }
+impl ScopedApi {
+    pub(super) fn uses_token(&self, token: &Option<String>) -> bool {
+        &self.token == token
+    }
+}
 impl NativeClient {
     pub(super) fn scoped_api(&self, expected_owner: &str) -> Result<ScopedApi, CoreError> {
         let backend = self
@@ -126,6 +131,15 @@ impl NativeClient {
         request: &ScopedApi,
         updates: Vec<Update>,
     ) -> Result<(), CoreError> {
+        self.finish_request_with(request, updates, |_| Ok(()))
+    }
+    /// Validate, apply ACKs and update related presentation state under one lock.
+    pub(super) fn finish_request_with<T>(
+        &self,
+        request: &ScopedApi,
+        updates: Vec<Update>,
+        then: impl FnOnce(&mut Client) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
         let mut backend = self
             .backend
             .lock()
@@ -140,9 +154,10 @@ impl NativeClient {
         }
         c.runtime.net.session.set_token(request.api.session.token());
         for update in updates {
+            c.observe_inbox_update(&update);
             c.runtime.store.apply(update);
         }
-        Ok(())
+        then(c)
     }
 }
 pub(super) fn run_api<T>(

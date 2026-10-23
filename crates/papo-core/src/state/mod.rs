@@ -2695,6 +2695,40 @@ impl Store {
             .sum()
     }
 
+    /// Inbox pages can arrive after a read ACK. Project the existing read
+    /// state without moving the chat frontier or changing navigation.
+    pub fn notification_was_read(&self, n: &models::Notification) -> bool {
+        if n.read
+            || self
+                .read_states
+                .values()
+                .any(|s| s.pending_notification_reads.contains(&n.id))
+        {
+            return true;
+        }
+        let open = self
+            .open_notifications
+            .values()
+            .flatten()
+            .any(|(id, _)| id == &n.id);
+        if self.counted_notifications.contains(&n.id) && !open {
+            return true;
+        }
+        if let (Some(channel), Some(message)) = (n.channel_id.as_deref(), n.message_id.as_deref()) {
+            if let Some(key) = self.message_key(message) {
+                return self
+                    .acknowledged_key(channel)
+                    .max(self.frontier_key(channel))
+                    .is_some_and(|mark| key <= mark);
+            }
+            return n
+                .created_at
+                .zip(self.read_marks.get(channel))
+                .is_some_and(|(at, mark)| at <= *mark);
+        }
+        false
+    }
+
     fn confirm_notification_read(&mut self, notification: &models::Notification) {
         let mut cleared = Vec::new();
         for (channel_id, entries) in &mut self.open_notifications {
@@ -3764,6 +3798,11 @@ impl Store {
                             &self.my_name,
                             &self.my_username,
                         )));
+                }
+            }
+            Update::ChannelNotificationSetting { channel_id, setting } => {
+                if let Some(channel) = self.channels.iter_mut().find(|c| c.id == channel_id) {
+                    channel.notification_settings = setting;
                 }
             }
             Update::Channels(channels) => {

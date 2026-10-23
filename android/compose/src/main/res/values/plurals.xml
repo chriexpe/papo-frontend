@@ -32,4 +32,20 @@
         <item quantity="one">%d embed needs attention</item>
         <item quantity="other">%d embeds need attention</item>
     </plurals>
+    <plurals name="inbox_mark_loaded">
+        <item quantity="one">%d loaded notification: mark all loaded as read</item>
+        <item quantity="other">%d loaded notifications: mark all loaded as read</item>
+    </plurals>
+    <plurals name="inbox_marked_count">
+        <item quantity="one">%d notification marked as read</item>
+        <item quantity="other">%d notifications marked as read</item>
+    </plurals>
+    <plurals name="notification_policy_confirmed">
+        <item quantity="one">%d channel confirmed</item>
+        <item quantity="other">%d channels confirmed</item>
+    </plurals>
+    <plurals name="notification_policy_unconfirmed">
+        <item quantity="one">%d channel unconfirmed</item>
+        <item quantity="other">%d channels unconfirmed</item>
+    </plurals>
 </resources>

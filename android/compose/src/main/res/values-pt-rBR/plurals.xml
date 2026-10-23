@@ -38,4 +38,20 @@
         <item quantity="one">%d embed precisa de revisão</item>
         <item quantity="other">%d embeds precisam de revisão</item>
     </plurals>
+    <plurals name="inbox_mark_loaded">
+        <item quantity="one">%d aviso carregado: marcar todos os carregados como lidos</item>
+        <item quantity="other">%d avisos carregados: marcar todos os carregados como lidos</item>
+    </plurals>
+    <plurals name="inbox_marked_count">
+        <item quantity="one">%d aviso marcado como lido</item>
+        <item quantity="other">%d avisos marcados como lidos</item>
+    </plurals>
+    <plurals name="notification_policy_confirmed">
+        <item quantity="one">%d canal confirmado</item>
+        <item quantity="other">%d canais confirmados</item>
+    </plurals>
+    <plurals name="notification_policy_unconfirmed">
+        <item quantity="one">%d canal não confirmado</item>
+        <item quantity="other">%d canais não confirmados</item>
+    </plurals>
 </resources>

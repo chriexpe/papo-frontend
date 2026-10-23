@@ -169,6 +169,9 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val awaitingUploads = mutableMapOf<String, PendingUpload>()
     internal val expressions = ExpressionLibrary(getApplication())
     internal val attachments = AttachmentDrafts(application, viewModelScope, ::uploadFiles)
+    // A page fetch outlives route composition; reopening the inbox reuses the
+    // same in-flight owner rather than issuing a competing request.
+    internal val notificationInbox = NotificationInbox(this, viewModelScope)
     private val awaitingPersistence = mutableMapOf<String, PendingMessage>()
     private var networkFingerprint: Pair<Long?, Boolean>? = null
     private val networkCallback =
@@ -342,6 +345,11 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 if (snapshot.more) signals.trySend(Unit)
             }
             publish()
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                notificationInbox.synchronize(
+                    state.value.servers.filter { it.screen == "chat" && it.me.isNotBlank() }
+                )
+            }
             syncNotifications()
             if (snapshots.values.any { it.reading.syncPending } && readRetry?.isActive != true) {
                 readRetry =
@@ -655,17 +663,44 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-    internal suspend fun inbox(server: ServerState): List<io.github.chriexpe.papo.core.InboxItem> {
+    internal suspend fun inbox(server: ServerState) = inboxPage(server, false).items
+
+    internal suspend fun inboxPage(
+        server: ServerState,
+        more: Boolean,
+    ): io.github.chriexpe.papo.core.InboxPage {
         val client = accountClient(server)
-        val items = withContext(kotlinx.coroutines.Dispatchers.IO) { client.inbox(server.me) }
-        withContext(dispatcher) { poll() }
-        return items
+        try {
+            return withContext(kotlinx.coroutines.Dispatchers.IO) {
+                client.inboxPage(server.me, more)
+            }
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+        }
     }
 
     internal suspend fun readInbox(server: ServerState, ids: List<String>) {
         val client = accountClient(server)
-        withContext(kotlinx.coroutines.Dispatchers.IO) { client.inboxRead(server.me, ids) }
-        withContext(dispatcher) { poll() }
+        try {
+            withContext(kotlinx.coroutines.Dispatchers.IO) { client.inboxRead(server.me, ids) }
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+        }
+    }
+
+    internal suspend fun notificationPolicy(
+        server: ServerState,
+        ids: List<String>,
+        setting: String,
+    ): io.github.chriexpe.papo.core.NotificationPolicyResult = accountMutex.withLock {
+        val client = accountClient(server)
+        try {
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                client.notificationPolicy(server.me, ids, setting)
+            }
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+        }
     }
 
     fun command(

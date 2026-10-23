@@ -425,11 +425,15 @@ class PapoUiTest {
                         LocalHaze provides dev.chrisbanes.haze.HazeState(),
                         LocalGlass provides false,
                     ) {
+                        val scope = androidx.compose.runtime.rememberCoroutineScope()
+                        val inbox =
+                            androidx.compose.runtime.remember { NotificationInbox(model, scope) }
                         GlobalNotifications(
                             PapoState(listOf(source, unavailable), source.url),
                             model,
                             onBack = {},
                             onOpen = { _, _ -> },
+                            inbox = inbox,
                         )
                     }
                 }
@@ -538,10 +542,86 @@ class PapoUiTest {
         compose.onNodeWithText("Christian", substring = true).assertDoesNotExist()
         compose.onNodeWithTag("channel-notifications-general").performClick()
         compose.onNodeWithText("Off", substring = false).performClick()
+        compose.waitUntil(10_000) {
+            compose
+                .onAllNodes(hasTestTag("channel-notifications-general") and hasText("Off"))
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
         compose.onNodeWithTag("channel-notifications-general").assert(hasText("Off"))
         systemBack()
         compose.onNodeWithTag("server-info").assertDoesNotExist()
         compose.onNodeWithTag("server-header").assertIsDisplayed()
+    }
+
+    @Test
+    fun notificationPolicyAppliesToCurrentChannelsAndStillAllowsIndividualOverrides() {
+        demo()
+        lateinit var model: PapoViewModel
+        activity.onActivity {
+            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+        }
+        compose.onNodeWithTag("server-header").performClick()
+        compose.onNodeWithTag("notification-policy-choice").performScrollTo().performClick()
+        compose.onNodeWithText("All messages", substring = false).performClick()
+        compose.onNodeWithTag("apply-notifications-all").performClick()
+        compose.waitUntil(10_000) {
+            model.state.value.active!!
+                .channels
+                .filter { it.kind == "text" || it.kind == "voice" }
+                .all { it.notificationSettings == "all" }
+        }
+        compose.onNodeWithTag("channel-notifications-general").performScrollTo().performClick()
+        compose.onNodeWithText("Off", substring = false).performClick()
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.channels.first { it.id == "general" }.notificationSettings ==
+                "off"
+        }
+        assertTrue(
+            model.state.value.active!!
+                .channels
+                .filter { it.kind == "text" && it.id != "general" }
+                .all { it.notificationSettings == "all" }
+        )
+    }
+
+    @Test
+    fun inboxMarkLoadedAcknowledgesRecordsAndSurvivesLeavingAndReopening() {
+        demo()
+        compose.onNodeWithText("Servers", substring = false).performClick()
+        compose
+            .onNode(hasText("Notifications") and hasAnyAncestor(hasTestTag("global-actions")))
+            .performClick()
+        compose.waitUntil(10_000) {
+            compose
+                .onAllNodesWithTag("notification-demo-demo-notification")
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        compose.onNodeWithTag("mark-loaded-notifications").performClick()
+        compose.waitUntil(10_000) {
+            compose
+                .onAllNodes(
+                    hasTestTag("notification-demo-demo-notification") and
+                        SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Read")
+                )
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        compose.onNodeWithTag("mark-loaded-notifications").assertIsNotEnabled()
+        systemBack()
+        compose
+            .onNode(hasText("Notifications") and hasAnyAncestor(hasTestTag("global-actions")))
+            .performClick()
+        compose.waitUntil(10_000) {
+            compose
+                .onAllNodes(
+                    hasTestTag("notification-demo-demo-notification") and
+                        SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Read")
+                )
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
     }
 
     @Test

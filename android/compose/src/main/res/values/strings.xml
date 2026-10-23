@@ -910,4 +910,18 @@
     <string name="embed_expand">"Expand section"</string>
     <string name="embed_collapse">"Collapse section"</string>
     <string name="embed_empty_card">"Add text, a link, a field or media to this card, or remove it."</string>
+    <string name="inbox_load_failed">"Could not load this page. Your loaded notifications are kept."</string>
+    <string name="inbox_load_older">"Load older notifications"</string>
+    <string name="inbox_read_partial">"Marked %1$d as read; could not confirm %2$d. Unconfirmed items stay unread so you can retry."</string>
+    <string name="notification_policy_failed">"Could not finish applying preferences. Confirmed changes remain saved."</string>
+    <string name="notification_policy_description">"Apply a policy to the current text and voice channels on this server. You can still adjust each channel below."</string>
+    <string name="notification_policy_apply_all">"Apply to all"</string>
+    <string name="notification_policy_result">"%1$s · %2$s"</string>
+    <string name="notification_policy_missing">"Channel unavailable"</string>
+    <string name="notification_policy_denied">"Permission denied"</string>
+    <string name="notification_policy_rate_limited">"Server request limit reached"</string>
+    <string name="notification_policy_unconfirmed_reason">"Change could not be confirmed"</string>
+    <string name="notification_policy_failure_item">"%1$s: %2$s"</string>
+    <string name="notification_policy_retry_failed">"Retry unconfirmed channels"</string>
+    <string name="notification_policy_applying">"Applying…"</string>
 </resources>
