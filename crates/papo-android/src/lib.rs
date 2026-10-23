@@ -35,6 +35,10 @@ mod reading_debug;
 mod recovery;
 uniffi::setup_scaffolding!();
 
+fn reply_notifications_default() -> bool {
+    true
+}
+
 /// The wire contract is deliberately small and versioned. Kotlin only renders
 /// projections; it never writes the core Store or implements backend requests.
 #[derive(Debug, Deserialize, uniffi::Enum)]
@@ -94,12 +98,16 @@ pub enum Action {
         channel_id: String,
         content: String,
         reply_to: Option<String>,
+        #[serde(default = "reply_notifications_default")]
+        notify_reply: bool,
     },
     SendAttachments {
         local_id: String,
         channel_id: String,
         content: String,
         reply_to: Option<String>,
+        #[serde(default = "reply_notifications_default")]
+        notify_reply: bool,
         files: Vec<UploadFile>,
     },
     Edit {
@@ -842,6 +850,7 @@ impl Client {
                 channel_id,
                 content,
                 reply_to,
+                notify_reply,
             } => {
                 if store.screen != Screen::Chat || store.me.is_empty() {
                     return Err("Sign in before sending messages".into());
@@ -864,7 +873,7 @@ impl Client {
                     channel_id,
                     content,
                     reply_to,
-                    notify_reply: true,
+                    notify_reply,
                     created_at: now_millis(),
                 }
             }
@@ -873,6 +882,7 @@ impl Client {
                 channel_id,
                 content,
                 reply_to,
+                notify_reply,
                 files,
             } => {
                 if store.screen != Screen::Chat || store.me.is_empty() {
@@ -895,7 +905,7 @@ impl Client {
                     channel_id,
                     content,
                     reply_to,
-                    notify_reply: true,
+                    notify_reply,
                     embeds: vec![],
                     attachments: prepare_uploads(files)?,
                 }

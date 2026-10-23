@@ -27,6 +27,7 @@ internal class IncomingChatFixture(
     private val sockets = CopyOnWriteArrayList<Socket>()
     private val peers = CopyOnWriteArrayList<Socket>()
     val requests = CopyOnWriteArrayList<String>()
+    val sentBodies = CopyOnWriteArrayList<String>()
     val failures = CopyOnWriteArrayList<String>()
     private val messages = mutableListOf<JSONObject>()
     private val start = Instant.now().minusSeconds(120)
@@ -194,6 +195,13 @@ internal class IncomingChatFixture(
         var mime = "application/json"
         val response: ByteArray =
             when {
+                path == "/messages" && method == "POST" -> {
+                    sentBodies.add(body.toString(Charsets.UTF_8))
+                    message("sent-${sentBodies.size}", "sent reply", 90 + sentBodies.size)
+                        .put("author_id", "me")
+                        .toString()
+                        .toByteArray()
+                }
                 path == "/auth/login" ->
                     "{\"user\":{\"id\":\"me\",\"username\":\"reader\"}}".toByteArray()
                 path == "/auth/whoami" ->

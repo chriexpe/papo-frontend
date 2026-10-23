@@ -56,6 +56,15 @@ internal fun NotificationSettings(server: ServerState) {
                     prefs.set("notifications-enabled", it)
                     available = MessageAlerts.listener.available()
                 }
+                SettingsDivider()
+                SettingsSwitch(
+                    ui(R.string.reply_notifications_default),
+                    ui(R.string.reply_notifications_default_description),
+                    prefs.replyNotifications,
+                    "reply-notifications",
+                ) {
+                    prefs.set("reply-notifications", it)
+                }
             }
         }
         item {

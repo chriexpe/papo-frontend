@@ -39,7 +39,7 @@ class AttachmentDraftTest {
             var privacyCopy: java.io.File? = null
             try {
                 val drafts =
-                    AttachmentDrafts(context, scope) { _, _, _, _ ->
+                    AttachmentDrafts(context, scope) { _, _, _, _, _ ->
                         error("Editing must never send")
                     }
                 drafts.captured(key, source, "photo.png", "image/png").join()
@@ -61,7 +61,7 @@ class AttachmentDraftTest {
                 assertEquals(privacyCopy!!.absolutePath, applied.native().path)
                 assertTrue(applied.native().spoiler)
                 val restored =
-                    AttachmentDrafts(context, restoredScope) { _, _, _, _ ->
+                    AttachmentDrafts(context, restoredScope) { _, _, _, _, _ ->
                         error("Restoring must never send")
                     }
                 val file =
@@ -110,7 +110,7 @@ class AttachmentDraftTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         try {
             val drafts =
-                AttachmentDrafts(context, scope) { _, _, _, _ ->
+                AttachmentDrafts(context, scope) { _, _, _, _, _ ->
                     error("A failed edit must never send")
                 }
             drafts.captured(key, source, "photo.png", "image/png").join()
@@ -161,7 +161,9 @@ class AttachmentDraftTest {
         var replacement: java.io.File? = null
         try {
             val drafts =
-                AttachmentDrafts(context, scope) { _, _, _, _ -> error("Editing must never send") }
+                AttachmentDrafts(context, scope) { _, _, _, _, _ ->
+                    error("Editing must never send")
+                }
             drafts.captured(key, original, "photo.png", "image/png").join()
             val first = drafts.drafts.value.getValue(key).files.single()
             val bytes = "encoded edited image".toByteArray()
@@ -221,7 +223,7 @@ class AttachmentDraftTest {
             val started = CompletableDeferred<Unit>()
             val waiting = CompletableDeferred<UploadReceipt>()
             val first =
-                AttachmentDrafts(context, firstScope) { _, _, _, _ ->
+                AttachmentDrafts(context, firstScope) { _, _, _, _, _ ->
                     started.complete(Unit)
                     waiting.await()
                 }
@@ -237,7 +239,7 @@ class AttachmentDraftTest {
             firstScope.cancel()
             var sends = 0
             val restored =
-                AttachmentDrafts(context, restoredScope) { _, _, _, _ ->
+                AttachmentDrafts(context, restoredScope) { _, _, _, _, _ ->
                     sends++
                     UploadReceipt(true)
                 }

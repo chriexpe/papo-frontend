@@ -1585,6 +1585,7 @@ class PapoUiTest {
                             fixture.poll().selected,
                             "$text",
                             null,
+                            true,
                         )
                     )
                     fixture.poll().messages.single { it.id == "markdown-fixture" }
@@ -1723,6 +1724,7 @@ class PapoUiTest {
                 "general",
                 "First grouped message",
                 null,
+                true,
             )
         )
         model.command(
@@ -1731,6 +1733,7 @@ class PapoUiTest {
                 "general",
                 "Second grouped message",
                 null,
+                true,
             )
         )
         compose.waitUntil(5000) {
@@ -2052,6 +2055,7 @@ class PapoUiTest {
                 "general",
                 "Live head arrival $i",
                 null,
+                true,
             )
         )
         compose.waitUntil(5000) {
@@ -2083,6 +2087,7 @@ class PapoUiTest {
                 "New arrival $i\n" +
                     "A longer message to keep separate reading positions. ".repeat(5),
                 null,
+                true,
             )
         )
         compose.waitUntil(10_000) {
@@ -2814,6 +2819,80 @@ class PapoUiTest {
                 .fetchSemanticsNodes()
                 .isNotEmpty() &&
                 compose.onAllNodesWithTag("message-list").fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
+    @Test
+    fun replyMentionDefaultIsSearchablePersistentAndOverriddenPerReply() {
+        demo()
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithTag("settings-search").performTextInput("Mention when replying")
+        compose.onNodeWithText("Mention when replying by default", substring = false).performClick()
+        compose
+            .onNodeWithContentDescription("Mention when replying by default")
+            .assertIsOn()
+            .performClick()
+        compose.onNodeWithContentDescription("Mention when replying by default").assertIsOff()
+        systemBack()
+        systemBack()
+        compose.onNodeWithText("geral", substring = false).performClick()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-5")
+        compose.onNodeWithTag("message-general-5").performTouchInput { longClick() }
+        compose.onNodeWithText("Reply", substring = false).performClick()
+        compose.onNodeWithTag("reply-notification-toggle").assertIsOff().performClick()
+        compose.onNodeWithTag("reply-notification-toggle").assertIsOn()
+        activity.recreate()
+        compose.onNodeWithTag("reply-notification-toggle").assertIsOn()
+        compose.onNodeWithContentDescription("Cancel reply").performClick()
+        compose.onNodeWithTag("message-general-5").performTouchInput { longClick() }
+        compose.onNodeWithText("Reply", substring = false).performClick()
+        compose.onNodeWithTag("reply-notification-toggle").assertIsOff()
+    }
+
+    @Test
+    fun disabledReplyMentionsReachTheServerForTextAndAttachments() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        lateinit var model: PapoViewModel
+        activity.onActivity {
+            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+        }
+        IncomingChatFixture(context).use { fixture ->
+            try {
+                model.addServer(fixture.url)
+                compose.waitUntil(10_000) { model.state.value.active?.url == fixture.url }
+                model.command(
+                    io.github.chriexpe.papo.core.Action.Login("reader", "fixture"),
+                    fixture.url,
+                )
+                compose.waitUntil(30_000) {
+                    model.state.value.active?.let {
+                        it.url == fixture.url &&
+                            it.connection == "online" &&
+                            it.messages.any { m -> m.id == "m30" }
+                    } == true
+                }
+                val server = model.state.value.active!!
+                model.send(server, "quiet text reply", "m30", false) {}
+                compose.waitUntil(15_000) { fixture.sentBodies.size == 1 }
+                assertTrue(fixture.sentBodies[0].contains("name=\"notify_reply\"\r\n\r\nfalse\r\n"))
+                assertTrue(fixture.sentBodies[0].contains("name=\"reply_to\"\r\n\r\nm30\r\n"))
+                model.send(server, "notifying reply", "m30", true) {}
+                compose.waitUntil(15_000) { fixture.sentBodies.size == 2 }
+                assertTrue(fixture.sentBodies[1].contains("name=\"notify_reply\"\r\n\r\ntrue\r\n"))
+                val key = "${server.url}/${server.me}/${server.selected}"
+                val file =
+                    AttachmentFiles.create(context, "txt").apply { writeText("attachment reply") }
+                kotlinx.coroutines.runBlocking {
+                    model.attachments.captured(key, file, "reply.txt", "text/plain").join()
+                }
+                model.attachments.send(key, server, "quiet attachment", "m30", false) {}
+                compose.waitUntil(15_000) { fixture.sentBodies.size == 3 }
+                assertTrue(fixture.sentBodies[2].contains("name=\"notify_reply\"\r\n\r\nfalse\r\n"))
+                assertTrue(fixture.sentBodies[2].contains("filename=\"reply.txt\""))
+            } finally {
+                val server = model.state.value.servers.firstOrNull { it.url == fixture.url }
+                if (server != null) kotlinx.coroutines.runBlocking { model.forgetServer(server) }
+            }
         }
     }
 

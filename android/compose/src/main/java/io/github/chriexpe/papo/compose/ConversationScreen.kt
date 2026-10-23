@@ -78,6 +78,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     }
 
     var reply by rememberSaveable(draftKey) { mutableStateOf<String?>(null) }
+    // The device preference initializes each new reply; a per-reply override survives recreation.
+    var notifyReply by rememberSaveable(draftKey) { mutableStateOf(true) }
     var emojiPicker by remember(draftKey) { mutableStateOf(false) }
     var emojiTarget by remember(draftKey) { mutableStateOf<ChatMessage?>(null) }
     var gifPicker by remember(draftKey) { mutableStateOf(false) }
@@ -431,6 +433,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         jumpToMessage(id)
     }
     fun beginReply(id: String, openKeyboard: Boolean = false) {
+        if (reply != id) notifyReply = appearance.replyNotifications
         reply = id
         selected = null
         if (openKeyboard && !recording) {
@@ -588,6 +591,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 jumpToLatest()
             }
         }
+        val sentNotifyReply = notifyReply
         val sentReply = reply
         scope.launch {
             try {
@@ -600,13 +604,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             "https://giphy.com/gifs/${it.groupValues[1]}"
                         }
                 if (!attachmentsOnly && attachmentDraft.files.isEmpty())
-                    model.send(server, encoded, sentReply, onResult)
+                    model.send(server, encoded, sentReply, sentNotifyReply, onResult)
                 else
                     model.attachments.send(
                         draftKey,
                         server,
                         encoded,
                         sentReply,
+                        sentNotifyReply,
                         onResult,
                     )
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -965,6 +970,26 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                                 modifier =
                                                     Modifier.weight(1f).padding(start = 8.dp),
                                             )
+                                            IconToggleButton(
+                                                checked = notifyReply,
+                                                onCheckedChange = { notifyReply = it },
+                                                modifier =
+                                                    Modifier.testTag("reply-notification-toggle"),
+                                            ) {
+                                                Icon(
+                                                    if (notifyReply) Icons.Outlined.AlternateEmail
+                                                    else Icons.Outlined.NotificationsOff,
+                                                    if (notifyReply) ui(R.string.reply_mention_on)
+                                                    else ui(R.string.reply_mention_off),
+                                                    Modifier.size(18.dp),
+                                                    tint =
+                                                        if (notifyReply)
+                                                            MaterialTheme.colorScheme.primary
+                                                        else
+                                                            MaterialTheme.colorScheme
+                                                                .onSurfaceVariant,
+                                                )
+                                            }
                                             IconButton(onClick = { reply = null }) {
                                                 Icon(
                                                     Icons.Outlined.Close,

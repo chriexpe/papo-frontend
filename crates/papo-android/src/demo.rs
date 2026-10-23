@@ -479,6 +479,7 @@ impl Demo {
                 channel_id,
                 content,
                 reply_to,
+                notify_reply: _,
             } => {
                 if content.trim().is_empty() {
                     return Err("Write a message first".into());
@@ -499,6 +500,7 @@ impl Demo {
                 channel_id,
                 content,
                 reply_to,
+                notify_reply: _,
                 files,
             } => {
                 let files = prepare_uploads(files)?;
@@ -735,6 +737,7 @@ mod tests {
             channel_id: "general".into(),
             content: "hello 👋".into(),
             reply_to: None,
+            notify_reply: true,
         })
         .unwrap();
         let snapshot = demo.poll();

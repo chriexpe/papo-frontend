@@ -42,6 +42,7 @@ internal fun importPreviousAndroid(context: Context, credentials: AndroidSecrets
                 "glass" to imported.glass,
                 "notifications-enabled" to imported.notifications,
                 "open-newest" to imported.openNewest,
+                "reply-notifications" to imported.replyNotifications,
             )
             .forEach { (key, value) ->
                 if (!appearance.contains(key)) preferences.putBoolean(key, value)

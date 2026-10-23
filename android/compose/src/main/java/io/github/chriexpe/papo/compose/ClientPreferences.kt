@@ -51,6 +51,9 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
     val compact
         get() = boolean("compact", false)
 
+    val replyNotifications
+        get() = boolean("reply-notifications")
+
     val catchUpHourglass
         get() = boolean("catch-up-hourglass")
 

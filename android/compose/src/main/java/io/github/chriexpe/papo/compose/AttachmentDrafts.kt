@@ -123,7 +123,7 @@ internal class AttachmentDrafts(
     private val context: Context,
     private val scope: CoroutineScope,
     private val upload:
-        suspend (ServerState, String, String?, List<PendingAttachment>) -> UploadReceipt,
+        suspend (ServerState, String, String?, Boolean, List<PendingAttachment>) -> UploadReceipt,
 ) {
     private val preferences =
         context.getSharedPreferences("compose-attachments", Context.MODE_PRIVATE)
@@ -553,6 +553,7 @@ internal class AttachmentDrafts(
         server: ServerState,
         text: String,
         reply: String?,
+        notifyReply: Boolean = true,
         onResult: (Boolean) -> Unit,
     ) =
         scope
@@ -571,7 +572,7 @@ internal class AttachmentDrafts(
                         // cannot silently resend a POST whose outcome it never received.
                         persist(key)
                         dispatched = true
-                        val result = upload(server, text, reply, draft.files)
+                        val result = upload(server, text, reply, notifyReply, draft.files)
                         if (result.accepted) {
                             update(
                                 key,

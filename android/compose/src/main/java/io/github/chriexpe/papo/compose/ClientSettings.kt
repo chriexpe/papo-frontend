@@ -253,6 +253,15 @@ private fun settingsEntries(server: ServerState, prefs: ClientPreferences): List
         )
         add(
             SettingEntry(
+                "reply-notifications",
+                "Notifications",
+                ui(R.string.reply_notifications_default),
+                ui(R.string.reply_notifications_default_description),
+                "reply mention responder mencionar",
+            )
+        )
+        add(
+            SettingEntry(
                 "notification-permission",
                 "Notifications",
                 ui(R.string.android_notification_settings),

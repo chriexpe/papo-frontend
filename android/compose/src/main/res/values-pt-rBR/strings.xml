@@ -798,4 +798,8 @@
     <string name="forget_server_failed">"Não foi possível concluir a limpeza do servidor. Tente novamente; a limpeza pendente também continuará ao reiniciar o app."</string>
     <string name="server_actions_named">"Opções do servidor %1$s"</string>
     <string name="server_cleanup_pending">"A limpeza do servidor ainda está em andamento. Tente novamente em instantes."</string>
+    <string name="reply_notifications_default">"Mencionar ao responder por padrão"</string>
+    <string name="reply_notifications_default_description">"Novas respostas começam com a menção @ ligada. Você pode mudar isso em cada resposta."</string>
+    <string name="reply_mention_on">"Menção na resposta ligada. Toque para desligar."</string>
+    <string name="reply_mention_off">"Menção na resposta desligada. Toque para ligar."</string>
 </resources>

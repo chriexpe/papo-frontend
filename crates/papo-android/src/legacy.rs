@@ -24,6 +24,7 @@ struct Settings {
     translucency: bool,
     notifications: bool,
     open_at_newest: bool,
+    reply_notifications: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -35,6 +36,7 @@ impl Default for Settings {
             translucency: true,
             notifications: true,
             open_at_newest: true,
+            reply_notifications: true,
         }
     }
 }
@@ -46,6 +48,7 @@ pub struct LegacyImport {
     pub glass: bool,
     pub notifications: bool,
     pub open_newest: bool,
+    pub reply_notifications: bool,
 }
 #[uniffi::export]
 pub fn import_legacy_android(
@@ -118,6 +121,7 @@ pub fn import_legacy_android(
         glass: settings.translucency,
         notifications: settings.notifications,
         open_newest: settings.open_at_newest,
+        reply_notifications: settings.reply_notifications,
     }))
 }
 
@@ -147,7 +151,7 @@ mod tests {
         std::fs::create_dir_all(data.join("sessions")).unwrap();
         let url = "https://papo.example";
         let key = papo_core::server_key(url);
-        let raw = r##"(servers:[(url:"https://papo.example",label:"Papo")],active:0,theme:Dark,translucency:false,notifications:false,open_at_newest:false,lang:PtBr)"##;
+        let raw = r##"(servers:[(url:"https://papo.example",label:"Papo")],active:0,theme:Dark,translucency:false,notifications:false,open_at_newest:false,reply_notifications:false,lang:PtBr)"##;
         let outer = HashMap::from([("app", raw)]);
         std::fs::write(data.join("app.ron"), ron::to_string(&outer).unwrap()).unwrap();
         std::fs::write(
@@ -170,6 +174,7 @@ mod tests {
         assert!(!imported.glass);
         assert!(!imported.notifications);
         assert!(!imported.open_newest);
+        assert!(!imported.reply_notifications);
         assert_eq!(
             secrets
                 .load(key.clone(), "token".into())

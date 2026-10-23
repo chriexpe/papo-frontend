@@ -1110,6 +1110,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         server: ServerState,
         text: String,
         reply: String?,
+        notifyReply: Boolean = true,
         onResult: (Boolean) -> Unit,
     ) =
         viewModelScope.launch(dispatcher) {
@@ -1120,7 +1121,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                     ui(R.string.account_changed_before_sending)
                 }
                 awaitingPersistence[id] = PendingMessage(server.url, onResult)
-                handle.dispatch(Action.Send(id, server.selected, text, reply))
+                handle.dispatch(Action.Send(id, server.selected, text, reply, notifyReply))
                 signals.trySend(Unit)
             } catch (e: Exception) {
                 awaitingPersistence.remove(id)
@@ -1133,6 +1134,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         server: ServerState,
         text: String,
         reply: String?,
+        notifyReply: Boolean,
         files: List<PendingAttachment>,
     ): UploadReceipt {
         val result =
@@ -1151,6 +1153,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                             server.selected,
                             text,
                             reply,
+                            notifyReply,
                             files.map { it.native() },
                         )
                     )

@@ -251,6 +251,11 @@ suggestions and recreation. Duplicate labels cannot exchange identities when one
 deleted. Unknown/departed users retain their original binding using the ID as a label.
 The normal unsent composer draft stays separate from the message editor.
 
+New replies initialize their @ toggle from **Notifications → Mention when replying by
+default**. The per-reply choice survives recreation without changing the device default;
+text outbox entries and attachment uploads both carry it through UniFFI to `notify_reply`.
+Existing canonical mentions in the message body are independent of this reply toggle.
+
 The wire format comes from core’s mention encoder, including in direct messages;
 DMs no longer discard the selected identity. Sticker tokens render as real
 animated images in the editor’s measured text layout; cursor mapping, wrapping,
