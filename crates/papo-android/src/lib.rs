@@ -27,6 +27,7 @@ mod markdown;
 pub mod media;
 mod media_edit;
 mod message_results;
+mod moderation;
 mod notifications;
 mod projection;
 use projection::project;
@@ -913,12 +914,28 @@ impl Client {
             Action::Edit {
                 message_id,
                 content,
-            } => Command::EditMessage {
-                embeds: None,
-                message_id,
-                content,
-            },
-            Action::Delete { message_id } => Command::DeleteMessage { message_id },
+            } => {
+                if !store
+                    .preview_message(&message_id)
+                    .is_some_and(|m| store.can_edit_message(m))
+                {
+                    return Err("Only the message author can edit it".into());
+                }
+                Command::EditMessage {
+                    embeds: None,
+                    message_id,
+                    content,
+                }
+            }
+            Action::Delete { message_id } => {
+                if !store
+                    .preview_message(&message_id)
+                    .is_some_and(|m| store.can_delete_message(m))
+                {
+                    return Err("You cannot delete this message".into());
+                }
+                Command::DeleteMessage { message_id }
+            }
             Action::React {
                 channel_id,
                 message_id,

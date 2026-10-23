@@ -3,6 +3,7 @@
 
 pub mod call;
 mod previews;
+mod authorization;
 #[cfg(test)]
 mod reading_tests;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -3623,6 +3624,7 @@ impl Store {
             combined.manage_server |= p.manage_server;
             combined.manage_channels |= p.manage_channels;
             combined.manage_roles |= p.manage_roles;
+            combined.manage_webhooks |= p.manage_webhooks;
             combined.ban_members |= p.ban_members;
             combined.pin_message |= p.pin_message;
             combined.everyone_message |= p.everyone_message;

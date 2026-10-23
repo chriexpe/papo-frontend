@@ -14,6 +14,8 @@ pub struct Capabilities {
     pub pin_message: bool,
     pub everyone_message: bool,
     pub send_attachment: bool,
+    #[serde(default)]
+    pub manage_webhooks: bool,
 }
 impl Capabilities {
     pub fn from_store(store: &Store) -> Self {
@@ -26,6 +28,7 @@ impl Capabilities {
                 pin_message: true,
                 everyone_message: true,
                 send_attachment: true,
+                manage_webhooks: true,
             };
         }
         let mut value = Self::from(store.my_role_permissions());
@@ -45,6 +48,7 @@ impl From<models::RolePermissions> for Capabilities {
             pin_message: p.pin_message,
             everyone_message: p.everyone_message,
             send_attachment: p.send_attachment,
+            manage_webhooks: p.manage_webhooks,
         }
     }
 }
@@ -58,6 +62,7 @@ impl From<Capabilities> for models::RolePermissions {
             pin_message: p.pin_message,
             everyone_message: p.everyone_message,
             send_attachment: p.send_attachment,
+            manage_webhooks: p.manage_webhooks,
         }
     }
 }
@@ -296,5 +301,37 @@ mod tests {
         assert!(check_notifications(&demo.store, "general", "only_mentions").is_ok());
         assert!(check_notifications(&demo.store, "projects", "all").is_err());
         assert!(check_notifications(&demo.store, "general", "unknown").is_err());
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn editing_a_role_round_trips_webhook_permissions_and_all_false_fields() {
+        let role: models::Role = serde_json::from_value(json!({
+            "id":"automations", "name":"Before", "permissions":{"manage_webhooks":true}
+        }))
+        .unwrap();
+        let capabilities = Capabilities::from(role.permissions);
+        assert!(capabilities.manage_webhooks);
+        let update = models::RoleRequest {
+            name: "After".into(),
+            color: None,
+            permissions: capabilities.into(),
+            people: Vec::new(),
+        };
+        let body = serde_json::to_value(update).unwrap();
+        assert_eq!(body["permissions"]["manage_webhooks"], true);
+        assert_eq!(body["permissions"]["manage_roles"], false);
+        assert_eq!(body["permissions"].as_object().unwrap().len(), 8);
+        let restored: models::RolePermissions =
+            serde_json::from_value(body["permissions"].clone()).unwrap();
+        assert_eq!(restored, role.permissions);
+        let legacy: models::RolePermissions =
+            serde_json::from_value(json!({"send_attachment":true})).unwrap();
+        assert!(!legacy.manage_webhooks);
+        assert!(legacy.send_attachment);
     }
 }

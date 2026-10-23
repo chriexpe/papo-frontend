@@ -1237,6 +1237,16 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             .apply()
     }
 
+    internal suspend fun deleteMessage(server: ServerState, id: String) = accountMutex.withLock {
+        val client = accountClient(server)
+        try {
+            withContext(kotlinx.coroutines.Dispatchers.IO) { client.deleteMessage(server.me, id) }
+        } finally {
+            // A completed server mutation still needs projection if its UI was dismissed meanwhile.
+            withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+        }
+    }
+
     internal suspend fun editableMessage(server: ServerState, source: String): ComposerDraft =
         withContext(dispatcher) {
             val client = accountClient(server)

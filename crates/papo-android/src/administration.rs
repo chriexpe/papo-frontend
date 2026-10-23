@@ -3,7 +3,7 @@ use super::*;
 use crate::{
     account::{self, ScopedApi},
     bindings::{Backend, CoreError, NativeClient},
-    discovery::Capabilities,
+    discovery::{Capabilities, RoleView},
 };
 use papo_core::{
     api::{
@@ -35,6 +35,7 @@ pub struct ManagedPerson {
 pub struct AdministrationState {
     pub channels: Vec<ManagedChannel>,
     pub people: Vec<ManagedPerson>,
+    pub roles: Vec<RoleView>,
 }
 
 #[derive(Clone, Copy, Debug, Default, uniffi::Record)]
@@ -151,6 +152,16 @@ pub struct AdministrationOutcome {
 
 fn state_view(s: &Store) -> AdministrationState {
     AdministrationState {
+        roles: s
+            .roles
+            .iter()
+            .map(|role| RoleView {
+                id: role.id.clone(),
+                name: role.name.clone(),
+                color: role.color.clone().unwrap_or_default(),
+                permissions: role.permissions.into(),
+            })
+            .collect(),
         channels: s
             .channels
             .iter()
@@ -1283,7 +1294,13 @@ mod tests {
                 id: "role".into(),
                 name: "Renamed".into(),
                 color: "".into(),
-                permissions: Capabilities::default(),
+                // A renamed existing role must keep the permission it loaded.
+                permissions: Capabilities::from(
+                    serde_json::from_value::<models::RolePermissions>(
+                        json!({"manage_webhooks":true}),
+                    )
+                    .unwrap(),
+                ),
             },
             AdministrationChange::AssignRole {
                 user_id: "ana".into(),
@@ -1337,6 +1354,8 @@ mod tests {
             bodies[3],
             json!({"permissions":{"read_channel":true,"send_messages":false,"delete_messages":false,"connect_voice":true}})
         );
+        assert_eq!(bodies[6]["permissions"]["manage_webhooks"], true);
+        assert_eq!(bodies[6]["permissions"].as_object().unwrap().len(), 8);
         assert_eq!(bodies[7], json!({"role_id":"role"}));
         assert_eq!(bodies[9], json!({"ban_state":true}));
         assert_eq!(

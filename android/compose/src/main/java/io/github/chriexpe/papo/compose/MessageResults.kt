@@ -289,6 +289,17 @@ internal fun ResultMessageActions(
     model: PapoViewModel,
     onDismiss: () -> Unit,
 ) {
+    var deleting by remember(message.id) { mutableStateOf(false) }
+    if (deleting) {
+        DeleteMessageDialog(
+            message,
+            server,
+            model,
+            onDismiss = { deleting = false },
+            onDeleted = onDismiss,
+        )
+        return
+    }
     val clipboard = LocalClipboardManager.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -308,6 +319,10 @@ internal fun ResultMessageActions(
             }
             MessageLinkActions(message)
             PinMessageAction(server, model, channel, message, onDismiss)
+            if (message.canDelete)
+                SheetAction(ui(R.string.delete_message), Icons.Outlined.DeleteOutline) {
+                    deleting = true
+                }
             Spacer(Modifier.height(16.dp))
         }
     }

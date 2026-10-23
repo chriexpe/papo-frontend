@@ -1269,7 +1269,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 },
             )
 
-        selected?.let { message ->
+        selected?.let { stale ->
+            val message = server.messages.firstOrNull { it.id == stale.id } ?: stale
             ModalBottomSheet(onDismissRequest = { selected = null }) {
                 Column(
                     Modifier.navigationBarsPadding()
@@ -1363,11 +1364,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         selected = null
                     }
                     MessageLinkActions(message)
-                    if (message.mine && !message.pending) {
+                    if (message.canEdit) {
                         SheetAction(ui(R.string.edit_message), Icons.Outlined.Edit) {
                             edit = message
                             selected = null
                         }
+                    }
+                    if (message.canDelete) {
                         SheetAction(ui(R.string.delete_message), Icons.Outlined.DeleteOutline) {
                             delete = message
                             selected = null
@@ -1394,25 +1397,12 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             EditMessageDialog(message, server, model, onDismiss = { edit = null })
         }
         delete?.let { message ->
-            AlertDialog(
-                onDismissRequest = { delete = null },
-                title = { Text(ui(R.string.delete_this_message)) },
-                text = {
-                    Text(ui(R.string.this_removes_the_message_for_everyone_you_can_t_undo_it))
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            model.command(Action.Delete(message.id))
-                            delete = null
-                        }
-                    ) {
-                        Text(ui(R.string.delete), color = MaterialTheme.colorScheme.error)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { delete = null }) { Text(ui(R.string.cancel)) }
-                },
+            DeleteMessageDialog(
+                message,
+                server,
+                model,
+                onDismiss = { delete = null },
+                onDeleted = { delete = null },
             )
         }
         retry?.let { message ->

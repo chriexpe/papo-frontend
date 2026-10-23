@@ -509,6 +509,10 @@ pub struct MessageView {
     pub at: i64,
     pub edited: bool,
     pub mine: bool,
+    #[serde(default)]
+    pub can_edit: bool,
+    #[serde(default)]
+    pub can_delete: bool,
     pub reply_to: String,
     pub reply_content: String,
     pub pending: bool,

@@ -277,6 +277,7 @@ internal fun serverSettingEntries(
                     "manage-server" to ui(R.string.manage_server),
                     "manage-channels" to ui(R.string.manage_channels),
                     "manage-roles" to ui(R.string.manage_roles),
+                    "manage-webhooks" to ui(R.string.manage_webhooks),
                     "ban-members" to ui(R.string.ban_people),
                     "pin-message" to ui(R.string.pin_messages),
                     "everyone-message" to ui(R.string.mention_everyone),

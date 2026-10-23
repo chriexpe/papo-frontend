@@ -107,6 +107,15 @@ impl Fixture {
                         "200 OK",
                         r#"{"results":[{"type":"message","id":"remote-hit","content":"hello","channel_id":"media","channel_name":"mídia","author_id":"ana","created_at":"2026-10-20T12:00:00Z"}],"has_more":false}"#,
                     )
+                } else if method == "DELETE" && first.contains("/messages/general-0 ") {
+                    seen.lock()
+                        .unwrap()
+                        .push(("DELETE-MESSAGE".into(), Value::Null));
+                    if reject.swap(false, Ordering::SeqCst) {
+                        ("403 Forbidden", r#"{"status":403,"detail":"not allowed"}"#)
+                    } else {
+                        ("204 No Content", "")
+                    }
                 } else if method == "PATCH" && first.contains("/server ") {
                     seen.lock()
                         .unwrap()
@@ -868,4 +877,118 @@ fn visible_pins_refresh_unknown_live_events_and_keep_events_during_inflight_snap
         assert!(!client.runtime.store.loading_pinned("media"));
     }
     native.shutdown();
+}
+
+#[test]
+fn moderator_deletion_is_permission_gated_acknowledged_and_shared_by_all_message_surfaces() {
+    use crate::bindings::{Backend, NativeClient};
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    client.runtime.net.session.set_token(Some("fixture".into()));
+    client.runtime.store.server.as_mut().unwrap().owner_id = Some("owner".into());
+    let message = client.runtime.store.message("general-0").unwrap().clone();
+    client.runtime.store.preview_messages.push(message.clone());
+    client
+        .runtime
+        .store
+        .pinned_messages
+        .insert("general".into(), vec![message]);
+    let native = NativeClient {
+        backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+    };
+    assert!(
+        native
+            .delete_message("other-account".into(), "general-0".into())
+            .is_err()
+    );
+    assert!(
+        native
+            .delete_message("me".into(), "general-0".into())
+            .is_err()
+    );
+    assert!(fixture.requests.lock().unwrap().is_empty());
+    {
+        let mut backend = native.backend.lock().unwrap();
+        let Some(Backend::Live(client)) = backend.as_mut() else {
+            panic!()
+        };
+        client
+            .runtime
+            .store
+            .members
+            .iter_mut()
+            .find(|m| m.id == "me")
+            .unwrap()
+            .roles
+            .push("mod".into());
+        client
+            .runtime
+            .store
+            .channels
+            .iter_mut()
+            .find(|c| c.id == "general")
+            .unwrap()
+            .permissions
+            .push(papo_core::api::models::ChannelPermissionEntry {
+                role_id: "mod".into(),
+                role_name: "Moderator".into(),
+                permissions: papo_core::api::models::ChannelPermissions {
+                    delete_messages: true,
+                    ..Default::default()
+                },
+            });
+    }
+    let projected = native.poll().unwrap();
+    let projected = projected
+        .messages
+        .iter()
+        .find(|m| m.id == "general-0")
+        .unwrap();
+    assert!(projected.can_delete);
+    assert!(!projected.can_edit);
+    assert!(
+        native
+            .dispatch(Action::Edit {
+                message_id: "general-0".into(),
+                content: "not mine".into()
+            })
+            .is_err()
+    );
+    fixture.fail.store(true, Ordering::SeqCst);
+    assert!(
+        native
+            .delete_message("me".into(), "general-0".into())
+            .is_err()
+    );
+    assert!(
+        native
+            .poll()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.id == "general-0")
+    );
+    native
+        .delete_message("me".into(), "general-0".into())
+        .unwrap();
+    let state = native.poll().unwrap();
+    assert!(state.messages.iter().all(|m| m.id != "general-0"));
+    {
+        let backend = native.backend.lock().unwrap();
+        let Some(Backend::Live(client)) = backend.as_ref() else {
+            panic!()
+        };
+        assert!(client.runtime.store.preview_message("general-0").is_none());
+        assert!(client.runtime.store.pinned_messages["general"].is_empty());
+    }
+    assert_eq!(
+        fixture
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.0 == "DELETE-MESSAGE")
+            .count(),
+        2
+    );
 }

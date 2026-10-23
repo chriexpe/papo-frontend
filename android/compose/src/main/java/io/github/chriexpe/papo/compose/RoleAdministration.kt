@@ -74,7 +74,13 @@ internal fun RoleAdministrationEditor(
     onSaved: () -> Unit,
     open: (String, String) -> Unit,
 ) {
-    val existing = server.roles.find { it.id == id }
+    // The pre-upgrade cache did not know every permission. Editing an existing
+    // role needs the acknowledged administration snapshot, never that cached fallback.
+    if (id != null && ui.data == null) {
+        AdministrationEmpty(ui(R.string.role_edit_requires_refresh))
+        return
+    }
+    val existing = ui.data?.roles?.find { it.id == id }
     if (id != null && existing == null) {
         AdministrationEmpty(ui(R.string.this_role_no_longer_exists))
         return
@@ -82,8 +88,9 @@ internal fun RoleAdministrationEditor(
     var name by rememberSaveable(id) { mutableStateOf(existing?.name.orEmpty()) }
     var color by rememberSaveable(id) { mutableStateOf(existing?.color.orEmpty()) }
     val initial =
-        existing?.permissions ?: Capabilities(false, false, false, false, false, false, false)
-    // Seed once per role. Live server updates affect the dirty comparison, not the user's draft.
+        existing?.permissions
+            ?: Capabilities(false, false, false, false, false, false, false, false)
+    // Seed once per role. Refreshed metadata affects the dirty comparison, not the user's draft.
     var permissions by
         rememberSaveable(id, stateSaver = rolePermissionsSaver) {
             mutableStateOf(initial)
@@ -360,9 +367,15 @@ private val rolePermissionsSaver =
                 it.pinMessage,
                 it.everyoneMessage,
                 it.sendAttachment,
+                it.manageWebhooks,
             )
         },
-        restore = { Capabilities(it[0], it[1], it[2], it[3], it[4], it[5], it[6]) },
+        // A seven-bit saved editor cannot represent manage_webhooks. Reseed it
+        // from the current server role rather than silently restoring that bit as false.
+        restore = {
+            if (it.size < 8) null
+            else Capabilities(it[0], it[1], it[2], it[3], it[4], it[5], it[6], it[7])
+        },
     )
 
 @Composable
@@ -456,6 +469,14 @@ private fun RolePermissionsEditor(
                 "role-manage-roles",
             ) {
                 onChange(permissions.copy(manageRoles = it))
+            }
+            AdministrationToggle(
+                ui(R.string.manage_webhooks),
+                permissions.manageWebhooks,
+                enabled,
+                "role-manage-webhooks",
+            ) {
+                onChange(permissions.copy(manageWebhooks = it))
             }
             AdministrationToggle(
                 ui(R.string.ban_people),

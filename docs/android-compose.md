@@ -759,11 +759,20 @@ individual controls and channel/role editors. General settings save the server
 name, public/private access, password and picture. Channel editors create text,
 voice and category entries, edit descriptions, change order and confirm deletion.
 Channel access reads and writes the backend's role rules (read, send, delete and
-voice). Roles support names, colors, all seven backend permissions, membership
+voice). Roles support names, colors, all eight backend permissions, membership
 and deletion. Moderators can ban/unban people; the owner and current account are
 protected. Sticker administration adds static or animated images and confirms
 deletion. The audit timeline supports person/name/ID, action family, channel,
 date and deleted-message filters, selectable deleted text and pagination.
+
+Role editing preserves `manage_webhooks` with the other seven permission fields,
+including rename-only updates. A shared core policy exposes moderator Delete from
+chat, pins and search using the backend's channel-role grants and owner rules;
+open channels do not grant moderation, and DMs cannot be moderated by a server
+owner. Edit remains author-only. Deletion waits for backend acknowledgement and
+retains the message/confirmation on rejection. The remaining Aero parity work is
+tracked in [android-aero-parity.md](android-aero-parity.md), with UI review between
+parts.
 
 Changes use the canonical Rust HTTP client through account-scoped UniFFI calls.
 A save is acknowledged by the server before leaving its editor. Refresh failure

@@ -539,7 +539,7 @@ pub struct AuditLogList {
     pub has_more: bool,
 }
 
-/// As sete permissões de um cargo, exatamente como o `RolePermissions` do
+/// As oito permissões de um cargo, exatamente como o `RolePermissions` do
 /// backend. `send_attachment` é a que libera anexo; `manage_channels`, a que
 /// libera criar canal.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,6 +550,8 @@ pub struct RolePermissions {
     pub manage_channels: bool,
     #[serde(default)]
     pub manage_roles: bool,
+    #[serde(default)]
+    pub manage_webhooks: bool,
     #[serde(default)]
     pub ban_members: bool,
     #[serde(default)]
@@ -1348,11 +1350,10 @@ mod tests {
         assert_eq!(embed.media_dimensions(), Some((540, 960)));
     }
 
-    /// As sete permissões vão todas no corpo, inclusive as falsas: o
-    /// `RolePermissions` do backend não tem `omitempty`, e mandar só as
-    /// verdadeiras deixaria as outras no que já estavam.
+    /// As oito permissões vão todas no corpo, inclusive as falsas.
+    /// O backend substitui o objeto completo: omitir uma permissão a revoga.
     #[test]
-    fn cargo_manda_as_sete_permissoes() {
+    fn cargo_manda_as_oito_permissoes() {
         let body = serde_json::to_string(&RoleRequest {
             people: Vec::new(),
             name: "membro".to_owned(),
@@ -1365,7 +1366,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             body,
-            r##"{"name":"membro","color":"#FF0000","permissions":{"manage_server":false,"manage_channels":false,"manage_roles":false,"ban_members":false,"pin_message":false,"everyone_message":false,"send_attachment":true}}"##
+            r##"{"name":"membro","color":"#FF0000","permissions":{"manage_server":false,"manage_channels":false,"manage_roles":false,"manage_webhooks":false,"ban_members":false,"pin_message":false,"everyone_message":false,"send_attachment":true}}"##
         );
     }
 

@@ -76,6 +76,8 @@ pub(crate) fn project_message(store: &Store, url: &str, message: &Message) -> Va
         "at": message.at.timestamp_millis(),
         "edited": message.edited,
         "mine": message.mine(&store.me),
+        "canEdit": store.can_edit_message(message),
+        "canDelete": store.can_delete_message(message),
         "replyTo": message.reply_to.as_deref().unwrap_or_default(),
         "replyContent": reply_content,
         "pending": message.pending,

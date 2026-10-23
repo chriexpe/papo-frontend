@@ -802,4 +802,7 @@
     <string name="reply_notifications_default_description">"Novas respostas começam com a menção @ ligada. Você pode mudar isso em cada resposta."</string>
     <string name="reply_mention_on">"Menção na resposta ligada. Toque para desligar."</string>
     <string name="reply_mention_off">"Menção na resposta desligada. Toque para ligar."</string>
+    <string name="manage_webhooks">"Administrar webhooks"</string>
+    <string name="delete_message_failed">"Não foi possível excluir esta mensagem. Ela pode não estar mais disponível ou sua permissão pode ter mudado."</string>
+    <string name="role_edit_requires_refresh">"Carregue as permissões atuais do servidor antes de editar este cargo."</string>
 </resources>

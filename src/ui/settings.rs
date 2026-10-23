@@ -2320,6 +2320,7 @@ fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &String
                 (s.perm_manage_server, &mut draft.permissions.manage_server),
                 (s.perm_manage_channels, &mut draft.permissions.manage_channels),
                 (s.perm_manage_roles, &mut draft.permissions.manage_roles),
+                (s.perm_manage_webhooks, &mut draft.permissions.manage_webhooks),
                 (s.perm_ban_members, &mut draft.permissions.ban_members),
                 (s.perm_pin_message, &mut draft.permissions.pin_message),
                 (s.perm_everyone_message, &mut draft.permissions.everyone_message),

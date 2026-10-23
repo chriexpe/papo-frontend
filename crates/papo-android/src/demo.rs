@@ -534,14 +534,30 @@ impl Demo {
             Action::Edit {
                 message_id,
                 content,
-            } => self
-                .store
-                .apply(Update::Event(Box::new(Event::MessageEdited {
-                    id: message_id,
-                    channel_id: self.store.selected_channel.clone(),
-                    content,
-                }))),
-            Action::Delete { message_id } => self.store.apply(Update::Deleted(message_id)),
+            } => {
+                let message = self
+                    .store
+                    .preview_message(&message_id)
+                    .filter(|m| self.store.can_edit_message(m))
+                    .ok_or("Only the message author can edit it")?;
+                let channel_id = message.channel_id.clone();
+                self.store
+                    .apply(Update::Event(Box::new(Event::MessageEdited {
+                        id: message_id,
+                        channel_id,
+                        content,
+                    })));
+            }
+            Action::Delete { message_id } => {
+                if !self
+                    .store
+                    .preview_message(&message_id)
+                    .is_some_and(|m| self.store.can_delete_message(m))
+                {
+                    return Err("You cannot delete this message".into());
+                }
+                self.store.apply(Update::Deleted(message_id));
+            }
             Action::React {
                 message_id,
                 emoji,

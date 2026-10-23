@@ -802,4 +802,7 @@
     <string name="reply_notifications_default_description">"Start new replies with the @ mention enabled. You can change it for each reply."</string>
     <string name="reply_mention_on">"Reply mention enabled. Tap to disable."</string>
     <string name="reply_mention_off">"Reply mention disabled. Tap to enable."</string>
+    <string name="manage_webhooks">"Manage webhooks"</string>
+    <string name="delete_message_failed">"Could not delete this message. It may no longer be available, or your permission may have changed."</string>
+    <string name="role_edit_requires_refresh">"Load current server permissions before editing this role."</string>
 </resources>

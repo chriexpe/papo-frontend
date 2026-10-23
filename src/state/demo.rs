@@ -549,6 +549,7 @@ fn profiles(store: &mut Store) {
         manage_server: manage,
         manage_channels: manage,
         manage_roles: manage,
+        manage_webhooks: manage,
         ban_members: manage,
         pin_message: true,
         everyone_message: manage,
