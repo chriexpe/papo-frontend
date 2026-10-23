@@ -539,7 +539,7 @@ pub struct AuditLogList {
     pub has_more: bool,
 }
 
-/// As sete permissões de um cargo, exatamente como o `RolePermissions` do
+/// As oito permissões de um cargo, exatamente como o `RolePermissions` do
 /// backend. `send_attachment` é a que libera anexo; `manage_channels`, a que
 /// libera criar canal.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,6 +550,8 @@ pub struct RolePermissions {
     pub manage_channels: bool,
     #[serde(default)]
     pub manage_roles: bool,
+    #[serde(default)]
+    pub manage_webhooks: bool,
     #[serde(default)]
     pub ban_members: bool,
     #[serde(default)]
@@ -733,14 +735,31 @@ pub struct Attachment {
     pub original_file_name: Option<String>,
     #[serde(default)]
     pub size_bytes: i64,
+    /// Original video geometry; older servers and unsupported containers omit it.
+    pub width: Option<i32>,
+    pub height: Option<i32>,
     /// Miniatura gerada no upload (WebP, ou GIF para GIF animado).
     pub thumbnail_id: Option<String>,
+    pub thumbnail_width: Option<i32>,
+    pub thumbnail_height: Option<i32>,
     pub created_at: Option<DateTime<Utc>>,
     /// `pending`/`processing`/`clean`/`sensitive`/`blocked`/`failed`.
     pub moderation_status: Option<String>,
 }
 
 impl Attachment {
+    /// Size the original video when known, otherwise use the generated image preview.
+    /// Missing or invalid dimensions never define an aspect ratio.
+    pub fn media_dimensions(&self) -> Option<(u32, u32)> {
+        let valid = |width: Option<i32>, height: Option<i32>| {
+            width.zip(height).and_then(|(width, height)| {
+                (width > 0 && height > 0).then_some((width as u32, height as u32))
+            })
+        };
+        valid(self.width, self.height)
+            .or_else(|| valid(self.thumbnail_width, self.thumbnail_height))
+    }
+
     pub fn name(&self) -> &str {
         self.original_file_name.as_deref().unwrap_or("arquivo")
     }
@@ -754,8 +773,19 @@ impl Attachment {
         Kind::guess(self.mime(), self.name())
     }
 
+    /// Client-side convention; independent of asynchronous moderation status.
+    pub fn spoiler(&self) -> bool {
+        self.name().starts_with("SPOILER_")
+    }
+
     /// Conteúdo que a moderação marcou como sensível fica embaçado até um
     /// clique.
+    /// Moderation is asynchronous and non-blocking. The backend denies only
+    /// blocked blobs; pending/processing/failed describe the check, not access.
+    pub fn blocked(&self) -> bool {
+        self.moderation_status.as_deref() == Some("blocked")
+    }
+
     pub fn sensitive(&self) -> bool {
         self.moderation_status.as_deref() == Some("sensitive")
     }
@@ -789,7 +819,7 @@ pub struct LinkPreview {
     pub video: Option<EmbedMedia>,
     #[serde(default)]
     pub footer: Option<EmbedFooter>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_list")]
     pub fields: Vec<EmbedField>,
     #[serde(default)]
     pub embed_url: Option<String>,
@@ -818,6 +848,76 @@ pub struct EmbedMedia {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub size_bytes: Option<i64>,
+}
+
+impl EmbedMedia {
+    /// Missing, zero and negative dimensions cannot define a layout ratio.
+    pub fn dimensions(&self) -> Option<(u32, u32)> {
+        let (width, height) = (self.width?, self.height?);
+        (width > 0 && height > 0).then_some((width as u32, height as u32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbedPlayback { Video, YouTube }
+
+impl LinkPreview {
+    pub fn animated(&self) -> bool {
+        self.fetch_method.as_deref() == Some("gif")
+            || [self.image.as_ref(), self.thumbnail.as_ref()].into_iter().flatten()
+                .filter_map(|media| media.mime_type.as_deref())
+                .any(|mime| mime.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("image/gif"))
+    }
+
+    /// Automatic direct media belongs in the timeline like an attachment.
+    /// A webpage's social image and authored custom cards retain their framing.
+    pub fn native_media(&self) -> bool {
+        if self.source_type.as_deref() == Some("custom") || self.playback() == Some(EmbedPlayback::YouTube) {
+            return false;
+        }
+        let Some(source) = self.url.as_deref().and_then(|raw| url::Url::parse(raw).ok()) else { return false; };
+        if !matches!(source.scheme(), "http" | "https") { return false; }
+        let has_media = self.image.is_some() || self.thumbnail.is_some() || self.video.is_some() || self.image_data.is_some();
+        has_media && (self.animated()
+            || Kind::guess("", source.path()) != Kind::Other
+            || source.path().to_ascii_lowercase().ends_with(".m3u8")
+            || [self.image.as_ref(), self.video.as_ref()].into_iter().flatten().any(|media| {
+                media.url.as_deref().and_then(|raw| url::Url::parse(raw).ok()).as_ref() == Some(&source)
+                    && media.mime_type.as_deref().is_some_and(|mime| matches!(Kind::of(mime), Kind::Image | Kind::Video | Kind::Audio))
+            }))
+    }
+
+    /// Backend video URLs are relay inputs, not public image URLs. An absent
+    /// MIME means an iframe only for the backend's exact YouTube pattern.
+    pub fn playback(&self) -> Option<EmbedPlayback> {
+        if let Some(video) = &self.video {
+            if video.mime_type.as_deref().is_some_and(|mime| mime.trim().to_ascii_lowercase().starts_with("video/")) {
+                return Some(EmbedPlayback::Video);
+            }
+            if video.mime_type.as_deref().is_none_or(str::is_empty)
+                && video.url.as_deref().is_some_and(valid_youtube_embed) {
+                return Some(EmbedPlayback::YouTube);
+            }
+        }
+        self.embed_url.as_deref().filter(|url| valid_youtube_embed(url)).map(|_| EmbedPlayback::YouTube)
+    }
+
+    pub fn media_dimensions(&self) -> Option<(u32, u32)> {
+        let video = self.playback().and(self.video.as_ref()).and_then(EmbedMedia::dimensions);
+        // GET /embeds/:id returns the thumbnail blob when one exists, with
+        // the original image as fallback. Reserve space for those same bytes.
+        video.or_else(|| self.thumbnail.as_ref().and_then(EmbedMedia::dimensions))
+            .or_else(|| self.image.as_ref().and_then(EmbedMedia::dimensions))
+    }
+}
+
+pub fn valid_youtube_embed(raw: &str) -> bool {
+    let Ok(url) = url::Url::parse(raw) else { return false; };
+    let Some(id) = url.path().strip_prefix("/embed/") else { return false; };
+    url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
+        && url.port_or_known_default() == Some(443)
+        && matches!(url.host_str(), Some("www.youtube.com" | "www.youtube-nocookie.com"))
+        && !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -871,6 +971,7 @@ impl CustomEmbedInput {
         if preview.source_type.as_deref() != Some("custom")
             || preview.thumbnail.is_some() || preview.image.is_some()
             || preview.video.is_some()
+            || preview.image_data.is_some() || preview.author_image_data.is_some()
             || preview.author.as_ref().is_some_and(|a| a.media.is_some())
             || preview.footer.as_ref().is_some_and(|f| f.icon.is_some())
         {
@@ -928,6 +1029,9 @@ pub struct CustomEmbedFooterInput {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomEmbedMediaInput {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub attachment_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
     #[serde(default)]
     pub mime_type: String,
@@ -1197,20 +1301,32 @@ impl Kind {
             | "heif" | "svg" | "ico" | "jxl" => Self::Image,
             "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi" | "ogv" | "wmv" | "flv" | "3gp"
             | "mpg" | "mpeg" | "ts" | "m2ts" => Self::Video,
-            "mp3" | "ogg" | "oga" | "opus" | "wav" | "flac" | "m4a" | "aac" | "wma" | "aif"
+            "mp3" | "ogg" | "oga" | "opus" | "wav" | "flac" | "m4a" | "m4b" | "aac" | "wma" | "aif"
             | "aiff" | "weba" | "mka" => Self::Audio,
             _ => return None,
         };
         Some(kind)
     }
 
-    /// Mime primeiro; a extensão entra quando ele não diz nada.
+    /// Mime primeiro, com correção para contêiner MP4 de áudio; a extensão
+    /// também entra quando o mime não diz nada.
     ///
     /// O backend deduz o mime sozinho e erra: um `.mp4` volta como
     /// `application/octet-stream` e um recado de voz como `application/ogg`.
     /// Os dois caem em `Other` pelo mime e apareceriam como um arquivo
     /// qualquer, em vez do vídeo e da forma de onda que são.
     pub fn guess(mime: &str, name: &str) -> Self {
+        // Go's content sniffer labels MP4 containers video/mp4 even when
+        // they contain only audio. M4A/M4B are the audio-only variants;
+        // don't let that broad container label turn voice notes into video.
+        let essence = mime.split(';').next().unwrap_or("").trim();
+        if essence.eq_ignore_ascii_case("video/mp4")
+            && name.rsplit_once('.').is_some_and(|(_, extension)| {
+                extension.eq_ignore_ascii_case("m4a") || extension.eq_ignore_ascii_case("m4b")
+            })
+        {
+            return Self::Audio;
+        }
         match Self::of(mime) {
             Self::Other => Self::of_extension(name).unwrap_or(Self::Other),
             known => known,
@@ -1222,11 +1338,43 @@ impl Kind {
 mod tests {
     use super::*;
 
-    /// As sete permissões vão todas no corpo, inclusive as falsas: o
-    /// `RolePermissions` do backend não tem `omitempty`, e mandar só as
-    /// verdadeiras deixaria as outras no que já estavam.
     #[test]
-    fn cargo_manda_as_sete_permissoes() {
+    fn embed_metadata_keeps_dimensions_and_accepts_nullable_fields() {
+        let embed: LinkPreview = serde_json::from_value(serde_json::json!({
+            "id":"portrait", "fields":null, "image":{"mime_type":"image/png"},
+            "thumbnail":{"width":540,"height":960}
+        })).unwrap();
+        assert_eq!(embed.media_dimensions(), Some((540, 960)));
+        assert!(embed.fields.is_empty());
+        let restored: LinkPreview = serde_json::from_str(&serde_json::to_string(&embed).unwrap()).unwrap();
+        assert_eq!(restored.media_dimensions(), Some((540, 960)));
+    }
+
+    #[test]
+    fn video_and_iframe_have_distinct_backend_contracts() {
+        let direct: LinkPreview = serde_json::from_value(serde_json::json!({"id":"v", "video":{"url":"https://cdn.example/movie.mp4","mime_type":"video/mp4","width":1920,"height":1080},"thumbnail":{"width":200,"height":300}})).unwrap();
+        assert_eq!(direct.playback(), Some(EmbedPlayback::Video));
+        assert_eq!(direct.media_dimensions(), Some((1920, 1080)));
+        let iframe: LinkPreview = serde_json::from_value(serde_json::json!({"id":"y","video":{"url":"https://www.youtube.com/embed/abc_123-xyz","width":1280,"height":720}})).unwrap();
+        assert_eq!(iframe.playback(), Some(EmbedPlayback::YouTube));
+        for url in ["https://www.youtube.com.attacker.example/embed/abc", "http://www.youtube.com/embed/abc", "https://user@www.youtube.com/embed/abc", "https://www.youtube.com/watch?v=abc", "https://www.youtube.com/embed/abc/path"] { assert!(!valid_youtube_embed(url), "{url}"); }
+        let invalid = EmbedMedia { url: None, mime_type: None, width: Some(-1), height: Some(0), size_bytes: None };
+        assert_eq!(invalid.dimensions(), None);
+    }
+
+    #[test]
+    fn preview_dimensions_follow_the_backend_thumbnail_precedence() {
+        let embed: LinkPreview = serde_json::from_value(serde_json::json!({
+            "id":"image", "image":{"width":1920,"height":1080},
+            "thumbnail":{"width":540,"height":960}
+        })).unwrap();
+        assert_eq!(embed.media_dimensions(), Some((540, 960)));
+    }
+
+    /// As oito permissões vão todas no corpo, inclusive as falsas.
+    /// O backend substitui o objeto completo: omitir uma permissão a revoga.
+    #[test]
+    fn cargo_manda_as_oito_permissoes() {
         let body = serde_json::to_string(&RoleRequest {
             people: Vec::new(),
             name: "membro".to_owned(),
@@ -1239,7 +1387,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             body,
-            r##"{"name":"membro","color":"#FF0000","permissions":{"manage_server":false,"manage_channels":false,"manage_roles":false,"ban_members":false,"pin_message":false,"everyone_message":false,"send_attachment":true}}"##
+            r##"{"name":"membro","color":"#FF0000","permissions":{"manage_server":false,"manage_channels":false,"manage_roles":false,"manage_webhooks":false,"ban_members":false,"pin_message":false,"everyone_message":false,"send_attachment":true}}"##
         );
     }
 
@@ -1333,6 +1481,22 @@ mod tests {
     fn mime_conhecido_tem_a_palavra_final() {
         assert_eq!(Kind::guess("video/mp4", "coisa.bin"), Kind::Video);
         assert_eq!(Kind::guess("image/png", "sem-extensao"), Kind::Image);
+    }
+
+    #[test]
+    fn audio_only_mp4_names_correct_the_backend_container_label() {
+        for mime in ["video/mp4", "VIDEO/MP4", "video/mp4; codecs=mp4a.40.2"] {
+            for name in ["Voice note.m4a", "RECORDING.M4A", "audiobook.m4b"] {
+                assert_eq!(Kind::guess(mime, name), Kind::Audio, "{mime}: {name}");
+            }
+        }
+        assert_eq!(Kind::guess("audio/mp4", "Voice note.m4a"), Kind::Audio);
+        assert_eq!(Kind::guess("application/octet-stream", "Voice note.m4a"), Kind::Audio);
+        assert_eq!(Kind::guess("video/mp4", "movie.mp4"), Kind::Video);
+        assert_eq!(Kind::guess("video/mp4", "movie.m4v"), Kind::Video);
+        assert_eq!(Kind::guess("video/mp4", "movie.bin"), Kind::Video);
+        assert_eq!(Kind::guess("video/mp4", "movie.mp3"), Kind::Video);
+        assert_eq!(Kind::guess("image/png", "image.m4a"), Kind::Image);
     }
 
     /// Nem todo octet-stream é mídia; um arquivo continua arquivo.
@@ -1552,4 +1716,52 @@ mod embed_contract_tests {
     }
 
 
+}
+
+/// Management metadata contains neither the token nor its stored hash.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Webhook {
+    pub id: String,
+    pub channel_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+#[derive(Deserialize)]
+pub struct WebhookList {
+    pub webhooks: Vec<Webhook>,
+}
+/// Deliberately not serializable: the one-time credential must not enter caches.
+#[derive(Deserialize)]
+pub struct CreatedWebhook {
+    #[serde(flatten)]
+    pub webhook: Webhook,
+    pub token: String,
+}
+impl std::fmt::Debug for CreatedWebhook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreatedWebhook")
+            .field("webhook", &self.webhook)
+            .field("token", &"[redacted]")
+            .finish()
+    }
+}
+#[derive(Serialize)]
+pub struct CreateWebhookRequest<'a> {
+    pub channel_id: &'a str,
+    pub name: &'a str,
+}
+/// None preserves the existing field; Some("") explicitly clears it.
+#[derive(Default, Serialize)]
+pub struct UpdateWebhookIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_format: Option<String>,
 }

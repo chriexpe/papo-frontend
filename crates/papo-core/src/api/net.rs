@@ -457,7 +457,20 @@ pub enum Command {
         message_id: String,
         pin: bool,
     },
-    LoadPinned { ticket: RefreshTicket },
+    LoadPinned {
+        ticket: RefreshTicket,
+    },
+    LoadReadAnchor {
+        owner_user_id: String,
+        channel_id: String,
+        message_id: String,
+        before: Option<(chrono::DateTime<chrono::Utc>, String)>,
+    },
+    MarkChannelRead {
+        owner_user_id: String,
+        channel_id: String,
+        message_id: String,
+    },
     MarkNotificationsRead {
         user_id: String,
         ids: Vec<String>,
@@ -505,10 +518,16 @@ pub enum Update {
     ConnectionViolation,
     Server(Option<Box<Server>>),
     Channels(Vec<Channel>),
+    /// Acknowledged preference for this account only, without relisting navigation/read state.
+    ChannelNotificationSetting { channel_id: String, setting: String },
     /// Rail completa de mensagens diretas desta conta.
     DirectMessages(Vec<DirectConversation>),
     /// Conversa aberta pelo usuário; além de atualizar a rail, seleciona a DM.
     DirectMessageOpened(Box<DirectConversation>),
+    /// Acknowledged hiding removes the rail entry without deleting history.
+    DirectMessageHidden(String),
+    /// Acknowledged block changes must project even if the following refresh fails.
+    UserBlockChanged { user_id: String, blocked: bool },
     /// Pessoas bloqueadas pelo usuário autenticado.
     BlockedUsers(Vec<UserSummary>),
     /// Canal recém-criado: a janela o seleciona assim que a lista chega.
@@ -525,6 +544,12 @@ pub enum Update {
         reactions: Vec<crate::api::models::ReactionGroup>,
         has_more: bool,
         append: bool,
+    },
+    ReactionComplete {
+        message_id: String,
+        emoji: ReactionRequest,
+        add: bool,
+        success: bool,
     },
     ReactionDetailsFailed {
         message_id: String,
@@ -635,6 +660,25 @@ pub enum Update {
     },
     /// Terminal marker used only by the bounded background transport.
     BackgroundFinished(BackgroundRunResult),
+    RemoteReadAnchor {
+        failed: bool,
+        owner_user_id: String,
+        channel_id: String,
+        message_id: String,
+        at: Option<chrono::DateTime<chrono::Utc>>,
+        next: Option<(chrono::DateTime<chrono::Utc>, String)>,
+    },
+    NotificationReadsSynced {
+        success: bool,
+        owner_user_id: String,
+        ids: Vec<String>,
+    },
+    ChannelReadSynced {
+        owner_user_id: String,
+        channel_id: String,
+        message_id: String,
+        success: bool,
+    },
 }
 
 /// A janela pode parar de pintar quando fica minimizada ou em segundo plano.
@@ -857,18 +901,23 @@ impl Net {
                     }
                 };
                 if mode.opens_websocket() {
-                    runtime.block_on(worker(
-                        base_url,
-                        worker_storage_key,
-                        worker_storage,
-                        worker_session,
-                        worker_cache,
-                        commands_rx,
-                        updates_tx,
-                        wake,
-                        worker_hooks,
-                        worker_diagnostics,
-                    ));
+                    runtime.block_on(async {
+                        tokio::select! {
+                            _ = worker(
+                                base_url,
+                                worker_storage_key,
+                                worker_storage,
+                                worker_session,
+                                worker_cache,
+                                commands_rx,
+                                updates_tx,
+                                wake,
+                                worker_hooks,
+                                worker_diagnostics,
+                            ) => {},
+                            _ = wait_background_cancel(worker_cancel) => {},
+                        }
+                    });
                 } else {
                     runtime.block_on(background_worker(
                         base_url,
@@ -955,6 +1004,15 @@ impl Net {
             return;
         }
         self.cancel_background();
+        if let Some(thread) = self.worker_thread.take() {
+            let _ = thread.join();
+        }
+    }
+
+    /// Explicit teardown joins the worker before callers erase durable state.
+    /// Ordinary interactive Drop keeps its historical detached lifetime.
+    pub fn shutdown(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Release);
         if let Some(thread) = self.worker_thread.take() {
             let _ = thread.join();
         }
@@ -2053,6 +2111,7 @@ async fn worker(
                         match api.hide_direct_message(&dm_id).await {
                             Ok(()) => {
                                 outgoing_channels.invalidate();
+                                publish(&updates, &wake, Update::DirectMessageHidden(dm_id));
                                 match api.direct_messages().await {
                                     Ok(dms) => publish(
                                         &updates,
@@ -2074,6 +2133,11 @@ async fn worker(
                         match result {
                             Ok(()) => {
                                 outgoing_channels.invalidate();
+                                publish(
+                                    &updates,
+                                    &wake,
+                                    Update::UserBlockChanged { user_id, blocked },
+                                );
                                 match api.blocked_users().await {
                                     Ok(users) => publish(
                                         &updates,
@@ -2883,7 +2947,7 @@ async fn run_reconcile(
                 success: false,
                 updates: vec![Update::MessageContextFailed {
                     ticket,
-                    message: error.to_string(),
+                    message: if matches!(error, ApiError::NotFound) {"The original message is no longer available.".to_owned()} else {error.to_string()},
                 }],
             },
         },
@@ -3799,7 +3863,7 @@ async fn handle(
                 return;
             }
             match api
-                .send_message(
+                .send_message_classified(
                     &channel_id,
                     &content,
                     reply_to.as_deref(),
@@ -3818,6 +3882,10 @@ async fn handle(
                     },
                 ),
                 Err(error) => {
+                    let state = if matches!(error, SendMessageError::UnknownOutcome(_)) {
+                        OutgoingState::UnknownOutcome
+                    } else { OutgoingState::FailedPermanent };
+                    let error = error.into_api_error();
                     let dm_blocked = matches!(error, ApiError::DirectMessageBlocked(_));
                     publish(
                         updates,
@@ -3825,9 +3893,7 @@ async fn handle(
                         Update::UploadFailed {
                             local_id,
                             message: error.to_string(),
-                            state: if matches!(error, ApiError::Network(_) | ApiError::Decode(_)) {
-                                OutgoingState::UnknownOutcome
-                            } else { OutgoingState::FailedPermanent },
+                            state,
                         },
                     );
                     report(storage_key, updates, wake, error);
@@ -3866,6 +3932,7 @@ async fn handle(
             } else {
                 api.remove_reaction(&channel_id, &message_id, &emoji).await
             };
+            publish(updates, wake, Update::ReactionComplete { message_id, emoji, add, success:outcome.is_ok() });
             if let Err(error) = outcome {
                 report(storage_key, updates, wake, error);
             }
@@ -3885,11 +3952,129 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
-        Command::MarkNotificationsRead { user_id, ids } => {
-            if !ids.is_empty()
-                && let Err(error) = api.mark_notifications_read(&user_id, ids).await
+        Command::LoadReadAnchor {
+            owner_user_id,
+            channel_id,
+            message_id,
+            before,
+        } => {
+            if me.lock().ok().and_then(|user| user.clone()).as_deref()
+                != Some(owner_user_id.as_str())
             {
-                log::warn!("runtime {storage_key}: marcar notificações: {error}");
+                return;
+            }
+            // One bounded page per command keeps other channels/network actions
+            // responsive. The adapter resumes the exact cursor, never rescans.
+            let page = match api
+                .message_page(
+                    &channel_id,
+                    before.as_ref().map(|(at, id)| (*at, id.as_str())),
+                    false,
+                    100,
+                )
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    log::warn!("runtime {storage_key}: read anchor: {error}");
+                    publish(
+                        updates,
+                        wake,
+                        Update::RemoteReadAnchor {
+                            failed: true,
+                            owner_user_id,
+                            channel_id,
+                            message_id,
+                            at: None,
+                            next: None,
+                        },
+                    );
+                    return;
+                }
+            };
+            let at = page
+                .messages
+                .iter()
+                .find(|m| m.id == message_id && m.channel_id == channel_id)
+                .map(|m| m.created_at);
+            let next = if at.is_none() && page.has_more {
+                page.messages
+                    .iter()
+                    .filter(|m| m.channel_id == channel_id)
+                    .map(|m| (m.created_at, m.id.clone()))
+                    .min()
+                    .filter(|key| before.as_ref().is_none_or(|old| key < old))
+            } else {
+                None
+            };
+            publish(
+                updates,
+                wake,
+                Update::RemoteReadAnchor {
+                    failed: false,
+                    owner_user_id,
+                    channel_id,
+                    message_id,
+                    at,
+                    next,
+                },
+            );
+        }
+        Command::MarkChannelRead {
+            owner_user_id,
+            channel_id,
+            message_id,
+        } => {
+            if me.lock().ok().and_then(|user| user.clone()).as_deref()
+                != Some(owner_user_id.as_str())
+            {
+                return;
+            }
+            let result = api.mark_channel_read(&channel_id, &message_id).await;
+            if let Err(error) = &result {
+                log::warn!("runtime {storage_key}: channel read: {error}");
+            }
+            publish(
+                updates,
+                wake,
+                Update::ChannelReadSynced {
+                    owner_user_id,
+                    channel_id,
+                    message_id,
+                    success: result.is_ok(),
+                },
+            );
+        }
+        Command::MarkNotificationsRead { user_id, ids } => {
+            if ids.is_empty()
+                || me.lock().ok().and_then(|user| user.clone()).as_deref() != Some(user_id.as_str())
+            {
+                return;
+            }
+            match api.mark_notifications_read(&user_id, ids.clone()).await {
+                // The backend returns 404 when every requested row is already
+                // read. A duplicate acknowledgement has reached its goal.
+                Ok(_) | Err(ApiError::NotFound) => publish(
+                    updates,
+                    wake,
+                    Update::NotificationReadsSynced {
+                        success: true,
+                        owner_user_id: user_id,
+                        ids,
+                    },
+                ),
+                Err(error) => {
+                    log::warn!("runtime {storage_key}: notification reads: {error}");
+                    publish(
+                        updates,
+                        wake,
+                        Update::NotificationReadsSynced {
+                            success: false,
+                            owner_user_id: user_id,
+                            ids,
+                        },
+                    );
+                }
             }
         }
         Command::JoinVoice {

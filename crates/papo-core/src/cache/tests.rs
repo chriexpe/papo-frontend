@@ -206,6 +206,14 @@ fn read_navigation_state_survives_reconstructible_cache_clear() {
                 gap_end_message_id: Some("m4".to_owned()),
                 unread_mentions: vec!["m4".to_owned()],
                 updated_at: 2_000,
+                acknowledged_at: Some(5_000_000_001),
+                acknowledged_id: Some("m5".into()),
+                synced_id: Some("m4".into()),
+                pending_notification_reads: vec!["n4".into()],
+                mention_times: [("m4".into(), 4_000_000_003)].into_iter().collect(),
+                read_at_exact: Some(1_000_000_001),
+                seen_to_at_exact: Some(5_000_000_002),
+                gap_end_at_exact: Some(4_000_000_003),
             }),
         ],
     );
@@ -236,6 +244,14 @@ fn read_navigation_state_survives_reconstructible_cache_clear() {
     assert_eq!(state.gap_end_at, Some(4_000));
     assert_eq!(state.gap_end_message_id.as_deref(), Some("m4"));
     assert_eq!(state.unread_mentions, vec!["m4".to_owned()]);
+    assert_eq!(state.acknowledged_at, Some(5_000_000_001));
+    assert_eq!(state.acknowledged_id.as_deref(), Some("m5"));
+    assert_eq!(state.synced_id.as_deref(), Some("m4"));
+    assert_eq!(state.pending_notification_reads, vec!["n4"]);
+    assert_eq!(state.mention_times["m4"], 4_000_000_003);
+    assert_eq!(state.read_at_exact, Some(1_000_000_001));
+    assert_eq!(state.seen_to_at_exact, Some(5_000_000_002));
+    assert_eq!(state.gap_end_at_exact, Some(4_000_000_003));
 }
 
 #[test]
@@ -771,7 +787,11 @@ fn attachment_metadata_survives() {
         mime_type: Some("image/png".to_owned()),
         original_file_name: Some("foto.png".to_owned()),
         size_bytes: 1234,
+        width: Some(1920),
+        height: Some(1080),
         thumbnail_id: Some("thumb".to_owned()),
+        thumbnail_width: Some(512),
+        thumbnail_height: Some(288),
         created_at: Some(999),
         moderation_status: Some("clean".to_owned()),
     });
@@ -788,6 +808,46 @@ fn attachment_metadata_survives() {
     let snapshot = db.load_snapshot("srv").expect("snapshot");
     assert_eq!(snapshot.messages[0].attachments.len(), 1);
     assert_eq!(snapshot.messages[0].attachments[0].size_bytes, 1234);
+    let attachment = &snapshot.messages[0].attachments[0];
+    assert_eq!(
+        (attachment.width, attachment.height),
+        (Some(1920), Some(1080))
+    );
+    assert_eq!(
+        (attachment.thumbnail_width, attachment.thumbnail_height),
+        (Some(512), Some(288))
+    );
+    let restored = snapshot.messages[0].to_store();
+    assert_eq!(
+        restored.attachments[0].media_dimensions(),
+        Some((1920, 1080))
+    );
+    assert_eq!(
+        CachedMessage::from_store(&restored).attachments,
+        snapshot.messages[0].attachments
+    );
+}
+
+#[test]
+fn attachment_dimensions_survive_api_confirmation_and_legacy_cache_loading() {
+    let message: crate::api::models::Message = serde_json::from_value(serde_json::json!({
+        "id":"m1", "channel_id":"general", "author_id":"u1", "content":"photo",
+        "created_at":"2026-01-01T00:00:00Z",
+        "attachments":[{"id":"a1", "thumbnail_width":540, "thumbnail_height":960}]
+    }))
+    .unwrap();
+    let cached = CachedMessage::from_api(&message);
+    assert_eq!(
+        cached.to_store().attachments[0].media_dimensions(),
+        Some((540, 960))
+    );
+    let old: CachedAttachment = serde_json::from_value(serde_json::json!({
+        "id":"legacy", "mime_type":"image/png", "original_file_name":"photo.png",
+        "size_bytes":1234, "thumbnail_id":null, "created_at":null, "moderation_status":null
+    }))
+    .unwrap();
+    assert!(old.width.is_none() && old.height.is_none());
+    assert!(old.thumbnail_width.is_none() && old.thumbnail_height.is_none());
 }
 
 #[test]
@@ -1360,6 +1420,7 @@ fn custom_embeds_survive_outbox_reopen_with_exact_payload() {
         description: "Texto rico".into(),
         url: "https://example.org".into(),
         image: Some(crate::api::models::CustomEmbedMediaInput {
+            attachment_name: String::new(),
             url: "https://example.org/img.png".into(),
             mime_type: "image/png".into(),
         }),

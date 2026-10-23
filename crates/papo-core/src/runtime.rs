@@ -288,7 +288,8 @@ impl ServerRuntime {
                 self.store.selected_channel.clone()
             },
             visible_server: view.visible_server,
-            notifications_enabled: view.notifications_enabled,
+            notifications_enabled: view.notifications_enabled
+                && self.store.user_settings.as_ref().is_none_or(|settings|settings.config.notifications.enabled),
             push_registered: view.push_registered,
             channel_notification_settings: self.store.channels.iter()
                 .map(|channel| (channel.id.clone(), channel.notification_settings.clone())).collect(),
@@ -305,6 +306,14 @@ impl ServerRuntime {
                 .map(|member| (member.id.clone(), member.name.clone()))
                 .collect(),
         });
+    }
+
+    /// Authoritative REST notification records, including a foreground push
+    /// wake. Policy and the durable ledger converge these with live events.
+    pub fn deliver_notifications(&self, items: &[crate::api::models::Notification]) {
+        for item in items {
+            let _ = self.notification.handle_notification(&self.server_key, item, CandidateSource::Background);
+        }
     }
 
     pub fn process_update(&mut self, update: Update) -> Vec<RuntimeEffect> {
@@ -392,13 +401,7 @@ impl ServerRuntime {
                 self.sync_notification_context(view);
             }
             if let Some(items) = background_notifications {
-                for item in &items {
-                    let _ = self.notification.handle_notification(
-                        &self.server_key,
-                        item,
-                        CandidateSource::Background,
-                    );
-                }
+                self.deliver_notifications(&items);
             }
         }
 
@@ -512,10 +515,15 @@ impl ServerRuntime {
         }
     }
 
-    pub fn forget_server(&self) {
+    pub fn forget_server(&mut self) {
+        // No late auth refresh, outbox write or Drop flush may resurrect a
+        // namespace after forgetting it. Stop first, discard pending UI ops.
+        self.net.shutdown();
+        self.store.take_cache_ops();
         self.notification.remove_context(&self.server_key);
         self.cache.clear_server(&self.server_key);
         self.net.forget_credentials();
+        self.cache.flush();
     }
 
     fn presentation_effects(&self, update: &Update) -> Vec<RuntimeEffect> {
@@ -1016,7 +1024,7 @@ mod tests {
             Arc::clone(&cache),
             None,
         ));
-        let runtime = ServerRuntime::open(
+        let mut runtime = ServerRuntime::open(
             "http://127.0.0.1:9".to_owned(),
             Wake::noop(),
             secrets.clone(),

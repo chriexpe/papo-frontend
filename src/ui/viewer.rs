@@ -186,9 +186,35 @@ pub fn draw(
         let texture = full.and_then(|texture| texture.frame(ui.ctx())).cloned();
         stage_image_texture(ui, t, s, viewer, texture, stage, &mut content)
     } else if let Some(attachment) = attachment {
-        match attachment.kind() {
-            Kind::Video | Kind::Audio => stage_player(ui, t, s, media, attachment, stage, &mut content),
-            _ => stage_image(ui, t, s, media, viewer, attachment, stage, &mut content),
+        if attachment.spoiler() && media.sensitive_hidden(&attachment.id) {
+            let rect = Rect::from_center_size(
+                stage.center(),
+                Vec2::new(stage.width().min(320.0), 100.0),
+            );
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(radius::CARD),
+                t.fill_soft,
+            );
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                s.sensitive_reveal,
+                text::body(),
+                t.label_secondary,
+            );
+            content = rect;
+            if ui.interact(rect, ui.id().with("reveal-viewer-spoiler"), Sense::click()).clicked() {
+                media.reveal(&attachment.id);
+            }
+            None
+        } else {
+            match attachment.kind() {
+                Kind::Video | Kind::Audio => {
+                    stage_player(ui, t, s, media, attachment, stage, &mut content)
+                }
+                _ => stage_image(ui, t, s, media, viewer, attachment, stage, &mut content),
+            }
         }
     } else {
         None

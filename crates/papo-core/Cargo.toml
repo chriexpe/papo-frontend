@@ -8,6 +8,7 @@ license = "AGPL-3.0-or-later"
 publish = false
 
 [dependencies]
+pulldown-cmark = { version = "0.13", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
@@ -25,6 +26,7 @@ url = "2"
 thiserror = "2"
 log = "0.4"
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 
 # Engine of the production `ClientDb` cache. Pinned to the exact 0.8
 # prerelease qualified by PR #29; the pin is deliberate, not a floating semver

@@ -20,6 +20,13 @@ use url::Url;
 use super::models::Notification as NotificationItem;
 use super::models::*;
 
+#[path = "user_display.rs"]
+mod user_display;
+pub use user_display::{DisplayChange, DisplayFontSize, MessageDensity};
+
+#[path = "user_list.rs"]
+mod user_list;
+
 const COOKIE_NAME: &str = "Auth";
 
 /// Pedaço lido por vez ao mandar um anexo. Grande o bastante para não
@@ -203,6 +210,7 @@ fn problem_error(status: StatusCode, body: &str) -> ApiError {
                 ApiError::Unauthorized
             }
         }
+        StatusCode::FORBIDDEN => ApiError::Forbidden(problem.message()),
         StatusCode::NOT_FOUND => ApiError::NotFound,
         StatusCode::TOO_MANY_REQUESTS => ApiError::TooManyRequests(problem.message()),
         _ => ApiError::Problem(if problem.status == 0 {
@@ -220,12 +228,24 @@ pub struct Upload {
     pub name: String,
     pub mime: String,
     pub size: u64,
-    /// O anexo deve aparecer escondido até o destinatário tocar. É o backend
-    /// quem aplica; o cliente só avisa.
+    /// Papo clients conceal filenames prefixed with SPOILER_. The backend
+    /// preserves the name but currently has no dedicated spoiler field.
     pub spoiler: bool,
     /// Tirar metadados e trocar o nome antes de enviar (feito no cliente,
     /// logo antes do upload).
     pub anonymize: bool,
+}
+
+impl Upload {
+    /// The convention survives REST, WebSocket, search and cache without a
+    /// backend schema change. Other clients must opt into recognizing it.
+    pub fn wire_name(&self) -> String {
+        if self.spoiler && !self.name.starts_with("SPOILER_") {
+            format!("SPOILER_{}", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -243,6 +263,8 @@ pub enum ApiError {
     ServerLocked,
     #[error("recurso não encontrado")]
     NotFound,
+    #[error("{0}")]
+    Forbidden(String),
     #[error("{0}")]
     DirectMessageBlocked(String),
     #[error("falha de rede: {0}")]
@@ -274,6 +296,12 @@ pub enum SendMessageError {
 }
 
 impl SendMessageError {
+    pub fn into_api_error(self) -> ApiError {
+        match self {
+            Self::SafeToRetry(error) | Self::FailedPermanent(error) | Self::UnknownOutcome(error) => error,
+        }
+    }
+
     pub fn message(&self) -> String {
         match self {
             Self::SafeToRetry(error)
@@ -541,7 +569,17 @@ impl Api {
 
     /// Use-once reset; never sends the token to another server.
     pub async fn recover_password(&self, token: &str, password: &str) -> ApiResult<()> {
-        let _: serde_json::Value = self.post(
+        // A public bearer token and new password must never follow a 307/308
+        // to another origin or borrow a signed-in account's cookie.
+        let public = Self {
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(30))
+                .build().map_err(|e| ApiError::Network(e.to_string()))?,
+            session: Arc::new(Session::default()),
+            ..self.clone()
+        };
+        let _: serde_json::Value = public.post(
             "/auth/password_reset",
             &serde_json::json!({ "token": token, "password": password }),
         ).await?;
@@ -774,7 +812,7 @@ impl Api {
             .await
     }
 
-    async fn message_page(
+    pub(crate) async fn message_page(
         &self,
         channel_id: &str,
         cursor: Option<(chrono::DateTime<chrono::Utc>, &str)>,
@@ -912,33 +950,37 @@ impl Api {
         attachments: &[Upload],
         embeds: &[super::models::CustomEmbedInput],
     ) -> ApiResult<Message> {
+        self.send_message_classified(channel_id, content, reply_to, notify_reply, attachments, embeds)
+            .await.map_err(SendMessageError::into_api_error)
+    }
+
+    /// Multipart uploads use the same uncertainty rules as text sends: local
+    /// preparation failures are definite, but a failed POST may have arrived.
+    pub async fn send_message_classified(
+        &self,
+        channel_id: &str,
+        content: &str,
+        reply_to: Option<&str>,
+        notify_reply: bool,
+        attachments: &[Upload],
+        embeds: &[super::models::CustomEmbedInput],
+    ) -> Result<Message, SendMessageError> {
         let url = self
             .base
             .join("/messages")
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(e.to_string())))?;
 
         let mut form = reqwest::multipart::Form::new()
             .text("channel_id", channel_id.to_owned())
             .text("content", content.to_owned());
         if !embeds.is_empty() {
             form = form.text("embeds", serde_json::to_string(embeds)
-                .map_err(|e| ApiError::Decode(e.to_string()))?);
+                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Decode(e.to_string())))?);
         }
         if let Some(reply_to) = reply_to {
             form = form
                 .text("reply_to", reply_to.to_owned())
                 .text("notify_reply", notify_reply.to_string());
-        }
-        // Posições (na ordem de `attachments`) que o autor marcou como
-        // spoiler, separadas por vírgula.
-        let spoilers: Vec<String> = attachments
-            .iter()
-            .enumerate()
-            .filter(|(_, upload)| upload.spoiler)
-            .map(|(index, _)| index.to_string())
-            .collect();
-        if !spoilers.is_empty() {
-            form = form.text("spoiler_attachments", spoilers.join(","));
         }
         for upload in attachments {
             // Ler o arquivo inteiro para a memória fazia o pico acompanhar o
@@ -947,11 +989,11 @@ impl Api {
             // mandar um pequeno.
             let file = tokio::fs::File::open(&upload.path)
                 .await
-                .map_err(|e| ApiError::Network(format!("{}: {e}", upload.name)))?;
+                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(format!("{}: {e}", upload.name))))?;
             let length = file
                 .metadata()
                 .await
-                .map_err(|e| ApiError::Network(format!("{}: {e}", upload.name)))?
+                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(format!("{}: {e}", upload.name))))?
                 .len();
             let chunks = futures_util::stream::try_unfold(file, |mut file| async move {
                 use tokio::io::AsyncReadExt as _;
@@ -969,9 +1011,9 @@ impl Api {
                 reqwest::Body::wrap_stream(chunks),
                 length,
             )
-            .file_name(upload.name.clone())
+            .file_name(upload.wire_name())
             .mime_str(&upload.mime)
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(e.to_string())))?;
             form = form.part("attachments", part);
         }
 
@@ -987,13 +1029,21 @@ impl Api {
             request = request.header(COOKIE, value);
         }
         self.governor.wait_turn().await;
-        let response = request
-            .send()
-            .await
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) if error.is_builder() || error.is_connect() => {
+                return Err(SendMessageError::SafeToRetry(ApiError::Network(error.to_string())));
+            }
+            Err(error) => return Err(SendMessageError::UnknownOutcome(ApiError::Network(error.to_string()))),
+        };
         self.governor.observe_response(&response).await;
         self.session.absorb(&response);
-        Self::parse(response).await
+        let status = response.status();
+        Self::parse(response).await.map_err(|error| match status {
+            StatusCode::TOO_MANY_REQUESTS => SendMessageError::SafeToRetry(error),
+            StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => SendMessageError::FailedPermanent(error),
+            _ => SendMessageError::UnknownOutcome(error),
+        })
     }
 
     /// Caminho classificado usado exclusivamente pela fila durável de texto.
@@ -1279,6 +1329,39 @@ impl Api {
         .await
     }
 
+    // -- Webhook administration: tokens occur only in the create response. --
+
+    pub async fn webhooks(&self) -> ApiResult<Vec<Webhook>> {
+        let list: WebhookList = self.get("/webhooks").await?;
+        Ok(list.webhooks)
+    }
+
+    pub async fn create_webhook(&self, channel_id: &str, name: &str) -> ApiResult<CreatedWebhook> {
+        let created: CreatedWebhook = self
+            .post("/webhooks", &CreateWebhookRequest { channel_id, name })
+            .await?;
+        if created.token.is_empty() {
+            return Err(ApiError::Decode(
+                "Webhook creation returned no credential".into(),
+            ));
+        }
+        Ok(created)
+    }
+
+    pub async fn update_webhook_identity(
+        &self,
+        id: &str,
+        change: &UpdateWebhookIdentity,
+    ) -> ApiResult<Webhook> {
+        self.patch(&format!("/webhooks/{}", encode_path_segment(id)), change)
+            .await
+    }
+
+    pub async fn revoke_webhook(&self, id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/webhooks/{}", encode_path_segment(id)), None)
+            .await
+    }
+
     // -- Canais: ordem, permissões e notificação --------------------------
 
     pub async fn move_channel(
@@ -1562,8 +1645,40 @@ impl Api {
 
     /// Notificações do usuário — é daqui que sai a contagem de menções.
     pub async fn notifications(&self, user_id: &str) -> ApiResult<Vec<NotificationItem>> {
-        let list: NotificationList = self.get(&format!("/users/{user_id}/notifications")).await?;
-        Ok(list.notifications)
+        Ok(self.notification_page(user_id, None).await?.notifications)
+    }
+
+    /// Newest first. `since` alone polls forward; older pages require both
+    /// parts of the exact (nanosecond timestamp, id) cursor.
+    pub async fn notification_page(
+        &self,
+        user_id: &str,
+        cursor: Option<&crate::inbox::Cursor>,
+    ) -> ApiResult<NotificationList> {
+        let path = format!("/users/{user_id}/notifications");
+        let path = if let Some(cursor) = cursor {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("since", &cursor.at.to_rfc3339())
+                .append_pair("last_id", &cursor.id)
+                .append_pair("order", "desc")
+                .finish();
+            format!("{path}?{query}")
+        } else {
+            path
+        };
+        self.get(&path).await
+    }
+
+    /// Explicit channel acknowledgement; listing messages does not mark them read.
+    pub async fn mark_channel_read(&self, channel_id: &str, message_id: &str) -> ApiResult<()> {
+        let response = self
+            .send(
+                Method::PUT,
+                &format!("/channels/{channel_id}/read"),
+                Some(&serde_json::json!({"message_id": message_id})),
+            )
+            .await?;
+        Self::parse::<serde_json::Value>(response).await.map(|_| ())
     }
 
     pub async fn mark_notifications_read(
@@ -1587,7 +1702,7 @@ impl Api {
     }
 
     pub async fn unregister_push_device(&self, token: &str) -> ApiResult<()> {
-        self.delete(
+        let result = self.delete(
             "/users/me/push-device",
             Some(&PushDeviceRequest {
                 token: token.to_owned(),
@@ -1595,12 +1710,17 @@ impl Api {
                 device_name: None,
             }),
         )
-        .await
+        .await;
+        // Token rotation must still register the replacement when the old
+        // token has already expired or been removed on the server.
+        match result {
+            Err(ApiError::NotFound) => Ok(()),
+            result => result,
+        }
     }
 
     pub async fn users(&self) -> ApiResult<Vec<UserSummary>> {
-        let list: UserList = self.get("/users").await?;
-        Ok(list.users)
+        self.all_users().await
     }
 }
 
@@ -1708,6 +1828,57 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn upload_preparation_failure_is_definite_before_any_post() {
+        let api = Api::new("http://127.0.0.1:9", Arc::new(Session::default())).unwrap();
+        let file = Upload {
+            path: std::env::temp_dir().join(format!("missing-{}", request_id())),
+            name: "missing.txt".into(), mime: "text/plain".into(), size: 10,
+            spoiler: false, anonymize: false,
+        };
+        assert!(matches!(api.send_message_classified("chat", "", None, true, &[file], &[]).await,
+            Err(SendMessageError::FailedPermanent(_))));
+    }
+
+    #[tokio::test]
+    async fn multipart_upload_distinguishes_rejection_from_uncertain_server_outcome() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let path = std::env::temp_dir().join(format!("upload-{}", request_id()));
+        std::fs::write(&path, b"attachment-fixture").unwrap();
+        for (status, expected) in [(400, "rejected"), (500, "unknown"), (429, "safe"), (200, "unknown")] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                assert!(line.starts_with("POST /messages "));
+                let mut length = 0;
+                loop {
+                    line.clear(); stream.read_line(&mut line).await.unwrap();
+                    if line == "\r\n" { break; }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") { length = value.trim().parse::<usize>().unwrap(); }
+                }
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).await.unwrap();
+                let body = String::from_utf8(body).unwrap();
+                assert!(body.contains("attachment-fixture"));
+                assert!(body.contains("filename=\"SPOILER_fixture.txt\""));
+                assert!(!body.contains("spoiler_attachments"));
+                assert!(body.contains("name=\"channel_id\""));
+                let response = format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+                stream.get_mut().write_all(response.as_bytes()).await.unwrap();
+            });
+            let api = Api::new(&format!("http://{address}"), Arc::new(Session::default())).unwrap();
+            let file = Upload { path: path.clone(), name: "fixture.txt".into(), mime: "text/plain".into(), size: 18, spoiler: true, anonymize: false };
+            let error = api.send_message_classified("chat", "caption", None, true, &[file], &[]).await.unwrap_err();
+            assert_eq!(match error { SendMessageError::FailedPermanent(_) => "rejected", SendMessageError::UnknownOutcome(_) => "unknown", SendMessageError::SafeToRetry(_) => "safe" }, expected);
+            server.await.unwrap();
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
     // Replica o contrato do backend: páginas de 25, cursor composto e
     // last_id ignorado quando since não está presente.
     async fn mock_emoji_pages(repeat_page: bool) -> (Vec<Emoji>, usize) {
@@ -1790,3 +1961,9 @@ mod tests {
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod history_tests;
+
+fn encode_path_segment(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
+}

@@ -272,6 +272,15 @@ impl From<&Channel> for CachedChannel {
 /// existe uma lacuna que a ampulheta sabe reencontrar.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CachedReadState {
+    /// Nanoseconds since epoch, preserving exact ordering across restarts.
+    pub read_at_exact: Option<i64>,
+    pub seen_to_at_exact: Option<i64>,
+    pub gap_end_at_exact: Option<i64>,
+    pub acknowledged_at: Option<i64>,
+    pub acknowledged_id: Option<String>,
+    pub synced_id: Option<String>,
+    pub pending_notification_reads: Vec<String>,
+    pub mention_times: std::collections::HashMap<String, i64>,
     pub owner_user_id: String,
     pub channel_id: String,
     pub read_at: Option<i64>,
@@ -311,7 +320,15 @@ pub struct CachedAttachment {
     pub mime_type: Option<String>,
     pub original_file_name: Option<String>,
     pub size_bytes: i64,
+    #[serde(default)]
+    pub width: Option<i32>,
+    #[serde(default)]
+    pub height: Option<i32>,
     pub thumbnail_id: Option<String>,
+    #[serde(default)]
+    pub thumbnail_width: Option<i32>,
+    #[serde(default)]
+    pub thumbnail_height: Option<i32>,
     pub created_at: Option<i64>,
     pub moderation_status: Option<String>,
 }
@@ -367,7 +384,11 @@ impl CachedMessage {
                     mime_type: attachment.mime_type.clone(),
                     original_file_name: attachment.original_file_name.clone(),
                     size_bytes: attachment.size_bytes,
+                    width: attachment.width,
+                    height: attachment.height,
                     thumbnail_id: attachment.thumbnail_id.clone(),
+                    thumbnail_width: attachment.thumbnail_width,
+                    thumbnail_height: attachment.thumbnail_height,
                     created_at: attachment
                         .created_at
                         .map(|at| at.timestamp_millis()),
@@ -416,7 +437,11 @@ impl CachedMessage {
                     mime_type: attachment.mime_type.clone(),
                     original_file_name: attachment.original_file_name.clone(),
                     size_bytes: attachment.size_bytes,
+                    width: attachment.width,
+                    height: attachment.height,
                     thumbnail_id: attachment.thumbnail_id.clone(),
+                    thumbnail_width: attachment.thumbnail_width,
+                    thumbnail_height: attachment.thumbnail_height,
                     created_at: attachment.created_at.map(|at| at.timestamp_millis()),
                     moderation_status: attachment.moderation_status.clone(),
                 })
@@ -454,7 +479,11 @@ impl CachedMessage {
                     mime_type: attachment.mime_type.clone(),
                     original_file_name: attachment.original_file_name.clone(),
                     size_bytes: attachment.size_bytes,
+                    width: attachment.width,
+                    height: attachment.height,
                     thumbnail_id: attachment.thumbnail_id.clone(),
+                    thumbnail_width: attachment.thumbnail_width,
+                    thumbnail_height: attachment.thumbnail_height,
                     created_at: attachment
                         .created_at
                         .and_then(DateTime::from_timestamp_millis),

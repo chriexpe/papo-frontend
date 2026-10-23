@@ -53,6 +53,7 @@ if (!firebaseConfigured && firebaseConfig.values.any { it != null }) {
 }
 
 android {
+    sourceSets["main"].java.srcDir(rootProject.file("shared/src/main/java"))
     namespace = "io.github.chriexpe.papo"
     compileSdk = 37
     // O NDK que compila o Rust é o mesmo que o Gradle empacota: versões

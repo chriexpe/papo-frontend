@@ -1,0 +1,694 @@
+//! Generated, typed Kotlin boundary. UniFFI owns foreign object lifetimes,
+//! callbacks and error conversion; no JNI signatures or integer handles.
+use super::*;
+use papo_core::storage::{Secret, StorageError, StorageResult};
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum CoreError {
+    #[error("{details}")]
+    Operation { details: String },
+}
+impl From<String> for CoreError {
+    fn from(message: String) -> Self {
+        Self::Operation { details: message }
+    }
+}
+impl From<uniffi::UnexpectedUniFFICallbackError> for CoreError {
+    fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::Operation {
+            details: format!("Android service failed: {error}"),
+        }
+    }
+}
+
+#[uniffi::export(with_foreign)]
+pub trait Credentials: Send + Sync {
+    fn load(&self, server: String, secret: String) -> Result<Option<String>, CoreError>;
+    fn store(&self, server: String, secret: String, value: String) -> Result<(), CoreError>;
+    fn remove(&self, server: String, secret: String) -> Result<(), CoreError>;
+}
+
+#[uniffi::export(with_foreign)]
+pub trait WakeListener: Send + Sync {
+    fn on_wake(&self);
+}
+
+pub(super) struct ForeignSecrets(pub(super) Arc<dyn Credentials>);
+impl SecretStore for ForeignSecrets {
+    fn load(&self, server: &str, secret: Secret) -> StorageResult<Option<String>> {
+        self.0
+            .load(server.to_owned(), secret.key().to_owned())
+            .map_err(|e| StorageError::new(e.to_string()))
+    }
+    fn store(&self, server: &str, secret: Secret, value: &str) -> StorageResult<()> {
+        self.0
+            .store(server.to_owned(), secret.key().to_owned(), value.to_owned())
+            .map_err(|e| StorageError::new(e.to_string()))
+    }
+    fn remove(&self, server: &str, secret: Secret) -> StorageResult<()> {
+        self.0
+            .remove(server.to_owned(), secret.key().to_owned())
+            .map_err(|e| StorageError::new(e.to_string()))
+    }
+}
+
+#[derive(uniffi::Object)]
+pub struct NativeClient {
+    pub(super) backend: Mutex<Option<Backend>>,
+}
+pub(super) enum Backend {
+    Live(Box<Client>),
+    Demo(Box<demo::Demo>),
+}
+
+#[uniffi::export]
+impl NativeClient {
+    #[uniffi::constructor]
+    pub fn open(
+        url: String,
+        database: String,
+        credentials: Arc<dyn Credentials>,
+        listener: Arc<dyn WakeListener>,
+    ) -> Result<Arc<Self>, CoreError> {
+        #[cfg(target_os = "android")]
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_tag("PapoCompose")
+                .with_max_level(log::LevelFilter::Info),
+        );
+        let client = Client::open(
+            &url,
+            PathBuf::from(database),
+            Arc::new(ForeignSecrets(credentials)),
+            Wake::new(move || listener.on_wake()),
+        )
+        .map_err(CoreError::from)?;
+        Ok(Arc::new(Self {
+            backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+        }))
+    }
+
+    #[uniffi::constructor]
+    pub fn demo() -> Arc<Self> {
+        Arc::new(Self {
+            backend: Mutex::new(Some(Backend::Demo(Box::default()))),
+        })
+    }
+
+    pub fn poll(&self) -> Result<ClientSnapshot, CoreError> {
+        let mut backend = self
+            .backend
+            .lock()
+            .map_err(|_| "Native client lock failed".to_owned())?;
+        let value = match backend
+            .as_mut()
+            .ok_or_else(|| "Client is closed".to_owned())?
+        {
+            Backend::Live(client) => client.poll(),
+            Backend::Demo(client) => client.poll(),
+        };
+        serde_json::from_value(value).map_err(|e| CoreError::Operation {
+            details: format!("Invalid presentation state: {e}"),
+        })
+    }
+
+    pub fn dispatch(&self, action: Action) -> Result<(), CoreError> {
+        let mut backend = self
+            .backend
+            .lock()
+            .map_err(|_| "Native client lock failed".to_owned())?;
+        match backend
+            .as_mut()
+            .ok_or_else(|| "Client is closed".to_owned())?
+        {
+            Backend::Live(client) => {
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                let before = client.reading_debug_state();
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                let detail = client.reading_debug_action(&action);
+                let result = client.dispatch(action);
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                {
+                    let after = client.reading_debug_state();
+                    client.reading_debug.record("action", before, after, detail);
+                }
+                result
+            }
+            Backend::Demo(client) => client.dispatch(action),
+        }
+        .map_err(CoreError::from)
+    }
+
+    /// Explicitly stops transport even if a foreign reference is retained by a
+    /// coroutine. Resource fetching never holds this lock across network I/O.
+    pub fn shutdown(&self) {
+        if let Ok(mut backend) = self.backend.lock() {
+            backend.take();
+        }
+    }
+
+    /// Takes ownership away from every retained foreign reference before cleanup.
+    pub fn forget_server(&self, push_token: Option<String>) -> Result<(), CoreError> {
+        let mut backend = self
+            .backend
+            .lock()
+            .map_err(|_| "Client lock failed".to_owned())?;
+        if let Some(Backend::Live(mut client)) = backend.take() {
+            if let Some(token) = push_token {
+                client.runtime.release_push_device(token);
+            }
+            client.runtime.forget_server();
+        }
+        Ok(())
+    }
+
+    pub fn media_request(
+        &self,
+        resource: media::MediaResource,
+    ) -> Result<media::MediaRequest, CoreError> {
+        let backend = self
+            .backend
+            .lock()
+            .map_err(|_| "Native client lock failed".to_owned())?;
+        match backend
+            .as_ref()
+            .ok_or_else(|| "Client is closed".to_owned())?
+        {
+            Backend::Live(client) => media::request(&client.runtime, resource),
+            Backend::Demo(client) => client.media_request(resource),
+        }
+        .map_err(CoreError::from)
+    }
+
+    /// Resolve once when opening an editor; later member changes must not
+    /// rebind a draft that the user has already begun modifying.
+    pub fn editable_message(&self, source: String) -> Result<EditableMessage, CoreError> {
+        let backend = self
+            .backend
+            .lock()
+            .map_err(|_| "Client lock failed".to_owned())?;
+        let store = match backend.as_ref().ok_or("Client is closed".to_owned())? {
+            Backend::Live(client) => &client.runtime.store,
+            Backend::Demo(client) => &client.store,
+        };
+        let (text, mentions) = store.display_mentions_with_bindings(&source);
+        Ok(EditableMessage {
+            text,
+            mentions: mentions
+                .into_iter()
+                .map(|m| MentionSelection {
+                    start: m.start as u32,
+                    label: m.label,
+                    user_id: m.user_id,
+                })
+                .collect(),
+        })
+    }
+
+    pub fn encode_message(
+        &self,
+        text: String,
+        mentions: Vec<MentionSelection>,
+    ) -> Result<String, CoreError> {
+        let backend = self
+            .backend
+            .lock()
+            .map_err(|_| "Client lock failed".to_owned())?;
+        let store = match backend.as_ref().ok_or("Client is closed".to_owned())? {
+            Backend::Live(client) => &client.runtime.store,
+            Backend::Demo(client) => &client.store,
+        };
+        let bindings = mentions
+            .into_iter()
+            .map(|m| papo_core::state::MentionBinding {
+                start: m.start as usize,
+                label: m.label,
+                user_id: m.user_id,
+            })
+            .collect::<Vec<_>>();
+        Ok(store.encode_mentions(&text, &bindings))
+    }
+
+    pub fn emoji_image(&self, id: String) -> Result<Vec<u8>, CoreError> {
+        use base64::Engine;
+        let blob = {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            let emojis = match backend.as_ref().ok_or("Client is closed".to_owned())? {
+                Backend::Live(client) => &client.runtime.store.emojis,
+                Backend::Demo(client) => &client.store.emojis,
+            };
+            emojis
+                .iter()
+                .find(|e| e.id == id)
+                .and_then(|e| e.blob.clone())
+                .ok_or("Emoji image is unavailable".to_owned())?
+        };
+        let encoded = blob.split_once("base64,").map(|(_, b)| b).unwrap_or(&blob);
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| CoreError::from("Invalid emoji image".to_owned()))
+    }
+
+    /// Decoded on demand, outside presentation snapshots. The profile revision
+    /// lets Android invalidate its account-scoped image cache after an update.
+    pub fn avatar_image(&self, id: String) -> Result<Vec<u8>, CoreError> {
+        use base64::Engine;
+        let blob = {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            let store = match backend.as_ref().ok_or("Client is closed".to_owned())? {
+                Backend::Live(client) => &client.runtime.store,
+                Backend::Demo(client) => &client.store,
+            };
+            store
+                .avatars
+                .get(&id)
+                .cloned()
+                .ok_or("Avatar is unavailable".to_owned())?
+        };
+        let encoded = blob
+            .split_once("base64,")
+            .map(|(_, data)| data)
+            .unwrap_or(&blob);
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| CoreError::from("Invalid avatar image".to_owned()))
+    }
+
+    // Provider work runs on Kotlin's IO dispatcher and never takes the server lock.
+    pub fn gif_page(&self, query: String, offset: u32) -> Result<GifPageView, CoreError> {
+        let demo = {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            matches!(backend.as_ref(), Some(Backend::Demo(_)))
+        };
+        if demo {
+            return Ok(GifPageView {
+                items: vec![GifView {
+                    id: "demo-motion".into(),
+                    title: "A little motion".into(),
+                    gif_url: "file:///android_asset/demo/animation.gif".into(),
+                    display_url: "file:///android_asset/demo/animation.gif".into(),
+                    preview_url: "file:///android_asset/demo/animation.gif".into(),
+                    width: 480,
+                    height: 320,
+                }],
+                more: false,
+            });
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CoreError::from(e.to_string()))?;
+        let page = rt
+            .block_on(papo_core::giphy::page(&query, offset))
+            .map_err(CoreError::from)?;
+        Ok(GifPageView {
+            items: page.items.into_iter().map(GifView::from).collect(),
+            more: page.more,
+        })
+    }
+    pub fn gif_item(&self, id: String) -> Result<GifView, CoreError> {
+        let demo = {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            matches!(backend.as_ref(), Some(Backend::Demo(_)))
+        };
+        if demo && id == "demo-motion" {
+            return Ok(self.gif_page(String::new(), 0)?.items.remove(0));
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CoreError::from(e.to_string()))?;
+        rt.block_on(papo_core::giphy::item(&id))
+            .map(GifView::from)
+            .map_err(CoreError::from)
+    }
+
+    pub fn embed_image(&self, id: String, author: bool) -> Result<Vec<u8>, CoreError> {
+        let api = {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Native client lock failed".to_owned())?;
+            match backend
+                .as_ref()
+                .ok_or_else(|| "Client is closed".to_owned())?
+            {
+                Backend::Demo(demo) => {
+                    use base64::Engine;
+                    let embed = demo
+                        .store
+                        .media_messages()
+                        .flat_map(|m| &m.previews)
+                        .find(|e| e.id == id);
+                    let data = embed.and_then(|embed| {
+                        if author {
+                            embed.author_image_data.as_ref()
+                        } else {
+                            embed.image_data.as_ref()
+                        }
+                    });
+                    if let Some(data) = data {
+                        return base64::engine::general_purpose::STANDARD
+                            .decode(data)
+                            .map_err(|e| e.to_string().into());
+                    }
+                    if embed.is_some_and(|e| e.source_type.as_deref() == Some("custom")) {
+                        return Err("The demo does not resolve remote embed media"
+                            .to_owned()
+                            .into());
+                    }
+                    return Ok(media::demo_image(&id));
+                }
+                Backend::Live(client) => {
+                    media::check_embed(&client.runtime, &id)?;
+                    papo_core::api::client::Api::new(
+                        &client.runtime.url,
+                        Arc::clone(&client.runtime.net.session),
+                    )
+                    .map_err(|e| e.to_string())?
+                }
+            }
+        };
+        media::embed_image(api, id, author).map_err(CoreError::from)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientSnapshot {
+    pub version: i32,
+    pub url: String,
+    pub key: String,
+    pub screen: String,
+    pub connection: String,
+    pub server_name: String,
+    pub server_description: String,
+    pub server_icon_revision: String,
+    pub server_public: bool,
+    pub capabilities: discovery::Capabilities,
+    #[serde(default)]
+    pub can_reset_passwords: bool,
+    pub roles: Vec<discovery::RoleView>,
+    pub search_query: String,
+    pub searching: bool,
+    pub search_has_more: bool,
+    pub search_results: Vec<discovery::SearchHit>,
+    pub pinned_messages: Vec<MessageView>,
+    pub pins_known: bool,
+    pub pins_loading: bool,
+    pub pins_error: String,
+    pub can_pin: bool,
+    pub me: String,
+    pub my_name: String,
+    pub notification_count: u32,
+    #[serde(default)]
+    pub inbox_revision: u64,
+    #[serde(default)]
+    pub push_registered: bool,
+    #[serde(default = "default_notifications_enabled")]
+    pub notifications_enabled: bool,
+    #[serde(default)]
+    pub appearance: Option<crate::appearance::AppearanceView>,
+    pub selected_channel: String,
+    pub channels: Vec<ChannelView>,
+    pub members: Vec<MemberView>,
+    #[serde(default)]
+    pub profiles: Vec<ProfileView>,
+    pub emojis: Vec<EmojiView>,
+    pub reaction_details: Vec<ReactionDetailsView>,
+    pub reaction_loading: Vec<String>,
+    pub dms: Vec<ChannelView>,
+    #[serde(default)]
+    pub blocked_users: Vec<String>,
+    pub messages: Vec<MessageView>,
+    pub locked: bool,
+    pub busy: bool,
+    pub error: String,
+    pub typing: Vec<String>,
+    #[serde(default)]
+    pub typing_phrase: String,
+    pub can_load_older: bool,
+    pub loading_older: bool,
+    pub browsing_history: bool,
+    pub loading_context: bool,
+    pub can_load_newer: bool,
+    pub navigation_serial: u64,
+    pub navigation_target: String,
+    pub timeline: String,
+    #[serde(default)]
+    pub reading: ReadingView,
+    #[serde(default)]
+    pub more: bool,
+    #[serde(default)]
+    pub events: Vec<DeliveryEvent>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingView {
+    pub gap_start: String,
+    pub gap_end: String,
+    pub hourglass_target: String,
+    pub unread_start: String,
+    pub mentions: Vec<String>,
+    pub sync_pending: bool,
+    pub initializing: bool,
+    pub live_ids: Vec<String>,
+    #[serde(default)]
+    pub seeking_catch_up: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+pub struct ChannelView {
+    pub id: String,
+    #[serde(default, rename = "userId")]
+    pub user_id: String,
+    pub name: String,
+    pub kind: String,
+    pub topic: String,
+    #[serde(default, rename = "notificationSettings")]
+    pub notification_settings: String,
+    pub unread: bool,
+    pub mentions: i32,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+pub struct MemberView {
+    #[serde(default, rename = "roleColor")]
+    pub role_color: String,
+    pub id: String,
+    pub username: String,
+    pub name: String,
+    pub presence: String,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileView {
+    pub id: String,
+    pub avatar_revision: String,
+    pub loaded: bool,
+    pub banner: String,
+    pub description: String,
+    pub created_at: String,
+    pub status_message: String,
+    pub roles: Vec<ProfileRoleView>,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+pub struct ProfileRoleView {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+pub struct ReactionView {
+    pub emoji: String,
+    pub count: i32,
+    pub mine: bool,
+    pub custom: bool,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveryEvent {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub local_id: String,
+    #[serde(default)]
+    pub error: String,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageView {
+    pub id: String,
+    pub author_id: String,
+    pub author: String,
+    #[serde(default)]
+    pub external_author: Option<ExternalAuthorView>,
+    pub content: String,
+    pub markdown: crate::markdown::MarkdownDocument,
+    pub pinned: bool,
+    pub at: i64,
+    pub edited: bool,
+    pub mine: bool,
+    #[serde(default)]
+    pub mentions_me: bool,
+    #[serde(default)]
+    pub can_edit: bool,
+    #[serde(default)]
+    pub can_delete: bool,
+    pub reply_to: String,
+    pub reply_content: String,
+    pub pending: bool,
+    pub delivery: String,
+    pub reactions: Vec<ReactionView>,
+    pub attachments: Vec<media::AttachmentView>,
+    pub embeds: Vec<media::EmbedView>,
+}
+
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAuthorView {
+    pub source: String,
+    pub id: String,
+    pub name: String,
+    pub avatar_url: String,
+    pub profile_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+pub struct EmojiView {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub revision: String,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+pub struct ReactorView {
+    pub id: String,
+    pub name: String,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+pub struct ReactionGroupView {
+    pub emoji: String,
+    pub custom: bool,
+    pub users: Vec<ReactorView>,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ReactionDetailsView {
+    pub message_id: String,
+    pub groups: Vec<ReactionGroupView>,
+    pub more: bool,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct GifView {
+    pub id: String,
+    pub title: String,
+    pub gif_url: String,
+    pub display_url: String,
+    pub preview_url: String,
+    pub width: u32,
+    pub height: u32,
+}
+impl From<papo_core::giphy::GifItem> for GifView {
+    fn from(g: papo_core::giphy::GifItem) -> Self {
+        Self {
+            id: g.id,
+            title: g.title,
+            gif_url: g.gif_url,
+            display_url: g.display_url,
+            preview_url: g.preview_url,
+            width: g.width,
+            height: g.height,
+        }
+    }
+}
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct GifPageView {
+    pub items: Vec<GifView>,
+    pub more: bool,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct EditableMessage {
+    pub text: String,
+    pub mentions: Vec<MentionSelection>,
+}
+
+#[uniffi::export]
+pub fn canonical_server_url(input: String) -> Result<String, CoreError> {
+    normalize_url(&input).map_err(CoreError::from)
+}
+
+/// Crash recovery for an interrupted forget does not reconnect or require authentication.
+#[uniffi::export]
+pub fn forget_saved_server(
+    url: String,
+    root: String,
+    database_path: String,
+    credentials: Arc<dyn Credentials>,
+) -> Result<(), CoreError> {
+    let url = normalize_url(&url)?;
+    let key = papo_core::server_key(&url);
+    let cache = database(PathBuf::from(&database_path))?;
+    cache.clear_server(&key);
+    cache.flush();
+    credentials.remove(key.clone(), "token".into())?;
+    credentials.remove(key.clone(), "server".into())?;
+    crate::legacy::forget_android_data(std::path::Path::new(&root), &url)?;
+    let parent = std::path::Path::new(&database_path)
+        .parent()
+        .ok_or("Invalid database path".to_owned())?;
+    for name in [
+        format!("reading-debug-{key}.jsonl"),
+        format!("reading-debug-{key}.previous.jsonl"),
+    ] {
+        let file = parent.join(name);
+        if file.exists() {
+            std::fs::remove_file(file).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Start is a Unicode scalar index, matching papo-core's mention bindings.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct MentionSelection {
+    pub start: u32,
+    pub label: String,
+    pub user_id: String,
+}
+
+fn default_notifications_enabled() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    #[test]
+    fn readable_editing_keeps_unknown_users_and_adjacent_mentions_bound() {
+        let client = NativeClient::demo();
+        let source = "🙂 x@mention(<@ana>)@mention(<@missing>) / @everyone";
+        let edit = client.editable_message(source.into()).unwrap();
+        assert_eq!(edit.text, "🙂 x@Ana@missing / @everyone");
+        assert_eq!(edit.mentions.len(), 2);
+        assert_eq!(edit.mentions[0].start, 3);
+        assert_eq!(
+            client.encode_message(edit.text, edit.mentions).unwrap(),
+            source
+        );
+        client.shutdown();
+    }
+}

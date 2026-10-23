@@ -1,0 +1,57 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <plurals name="people_count">
+        <item quantity="one">%d pessoa</item>
+        <item quantity="other">%d pessoas</item>
+        <item quantity="many">%d pessoas</item>
+    </plurals>
+    <plurals name="reaction_count">
+        <item quantity="one">%d reação</item>
+        <item quantity="other">%d reações</item>
+        <item quantity="many">%d reações</item>
+    </plurals>
+    <plurals name="mention_count">
+        <item quantity="one">%d menção não lida; ir para a mais nova</item>
+        <item quantity="other">%d menções não lidas; ir para a mais nova</item>
+        <item quantity="many">%d menções não lidas; ir para a mais nova</item>
+    </plurals>
+    <plurals name="new_message_count">
+        <item quantity="one">%d mensagem nova</item>
+        <item quantity="other">%d mensagens novas</item>
+        <item quantity="many">%d mensagens novas</item>
+    </plurals>
+    <plurals name="server_sticker_count">
+        <item quantity="one">%d figurinha do servidor</item>
+        <item quantity="other">%d figurinhas do servidor</item>
+        <item quantity="many">%d figurinhas do servidor</item>
+    </plurals>
+    <plurals name="role_count">
+        <item quantity="one">%d cargo</item>
+        <item quantity="other">%d cargos</item>
+        <item quantity="many">%d cargos</item>
+    </plurals>
+    <plurals name="embed_draft_count">
+        <item quantity="one">%d embed personalizado</item>
+        <item quantity="other">%d embeds personalizados</item>
+    </plurals>
+    <plurals name="embed_draft_needs_attention">
+        <item quantity="one">%d embed precisa de revisão</item>
+        <item quantity="other">%d embeds precisam de revisão</item>
+    </plurals>
+    <plurals name="inbox_mark_loaded">
+        <item quantity="one">%d aviso carregado: marcar todos os carregados como lidos</item>
+        <item quantity="other">%d avisos carregados: marcar todos os carregados como lidos</item>
+    </plurals>
+    <plurals name="inbox_marked_count">
+        <item quantity="one">%d aviso marcado como lido</item>
+        <item quantity="other">%d avisos marcados como lidos</item>
+    </plurals>
+    <plurals name="notification_policy_confirmed">
+        <item quantity="one">%d canal confirmado</item>
+        <item quantity="other">%d canais confirmados</item>
+    </plurals>
+    <plurals name="notification_policy_unconfirmed">
+        <item quantity="one">%d canal não confirmado</item>
+        <item quantity="other">%d canais não confirmados</item>
+    </plurals>
+</resources>

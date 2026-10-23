@@ -1,0 +1,51 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <plurals name="people_count">
+        <item quantity="one">%d person</item>
+        <item quantity="other">%d people</item>
+    </plurals>
+    <plurals name="reaction_count">
+        <item quantity="one">%d reaction</item>
+        <item quantity="other">%d reactions</item>
+    </plurals>
+    <plurals name="mention_count">
+        <item quantity="one">%d unread mention; go to newest</item>
+        <item quantity="other">%d unread mentions; go to newest</item>
+    </plurals>
+    <plurals name="new_message_count">
+        <item quantity="one">%d new message</item>
+        <item quantity="other">%d new messages</item>
+    </plurals>
+    <plurals name="server_sticker_count">
+        <item quantity="one">%d server sticker</item>
+        <item quantity="other">%d server stickers</item>
+    </plurals>
+    <plurals name="role_count">
+        <item quantity="one">%d role</item>
+        <item quantity="other">%d roles</item>
+    </plurals>
+    <plurals name="embed_draft_count">
+        <item quantity="one">%d custom embed</item>
+        <item quantity="other">%d custom embeds</item>
+    </plurals>
+    <plurals name="embed_draft_needs_attention">
+        <item quantity="one">%d embed needs attention</item>
+        <item quantity="other">%d embeds need attention</item>
+    </plurals>
+    <plurals name="inbox_mark_loaded">
+        <item quantity="one">%d loaded notification: mark all loaded as read</item>
+        <item quantity="other">%d loaded notifications: mark all loaded as read</item>
+    </plurals>
+    <plurals name="inbox_marked_count">
+        <item quantity="one">%d notification marked as read</item>
+        <item quantity="other">%d notifications marked as read</item>
+    </plurals>
+    <plurals name="notification_policy_confirmed">
+        <item quantity="one">%d channel confirmed</item>
+        <item quantity="other">%d channels confirmed</item>
+    </plurals>
+    <plurals name="notification_policy_unconfirmed">
+        <item quantity="one">%d channel unconfirmed</item>
+        <item quantity="other">%d channels unconfirmed</item>
+    </plurals>
+</resources>

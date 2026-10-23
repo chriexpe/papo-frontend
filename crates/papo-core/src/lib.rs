@@ -4,11 +4,20 @@
 //! reutilizar o mesmo contrato REST/WebSocket, sessão e runtime assíncrono.
 
 pub mod api;
+pub mod audit;
+pub mod embed_authoring;
+pub mod inbox;
 pub mod cache;
+pub mod giphy;
+pub mod markdown;
+pub mod format_assist;
+pub mod media_prepare;
 pub mod core;
 pub mod notification;
 pub mod preview;
 pub mod runtime;
+pub mod recovery;
+pub mod search;
 pub mod state;
 pub mod storage;
 

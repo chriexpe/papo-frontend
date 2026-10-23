@@ -1,0 +1,36 @@
+[package]
+name = "papo-android"
+version = "0.8.5"
+edition = "2024"
+rust-version = "1.98"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "UniFFI presentation adapter for the native Android Compose client"
+
+[lib]
+name = "papo_compose"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+papo-core = { path = "../papo-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ron = "0.12.2"
+url = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+uniffi = "=0.32.2"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+base64 = "0.22"
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "papo-bindgen"
+path = "src/bin/bindgen.rs"
+required-features = ["bindgen"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
+log = "0.4"
