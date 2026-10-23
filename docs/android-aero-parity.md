@@ -763,7 +763,7 @@ Contract references:
 
 ## Device regression and known remaining failure
 
-The complete Android suite contains 155 tests. The final regression pass updates
+The pre-editing Android regression ran 155 tests. That regression pass updates
 fixtures for the accepted UI: all eight capability fields, the actual APP demo
 channel, empty-composer embed options, lazy settings/role rows, merged header
 semantics, pixel rounding for very wide media and the new localized spacing
@@ -788,3 +788,32 @@ run, preserving its existing data. The TV emulator was not changed.
 The administration fixes are in the universal APK
 `target/android-apks/papo-android-0.8.5-administration-audit.apk`. The PR remains a
 draft with the restoration failure disclosed; no merge is performed by this pass.
+
+
+## Message editing follow-up (awaiting UI review)
+
+The message-actions preview now uses the resolved document preview, so mentions
+show readable names while Copy retains canonical source text. Caption edits use
+an outlined, focused rich text field in a Material 3 bottom sheet. The generic
+"Create or edit embeds" link is removed from that sheet. Holding a custom card
+instead offers "Edit embed" and opens the structured editor at that card; the
+complete custom-card list and original caption bindings are retained. Protected
+media remains subject to the existing all-or-nothing replacement restriction.
+Failed saves retain staged edits, and pending saves block accidental dismissal.
+
+The device's Enter-to-send preference defaults off. When enabled, hardware Enter
+and IME Send share the send button's validation, attachment retry and delivery
+path. Shift+Enter and pasted multiline text remain multiline; the message editor
+always retains newline behavior. English/Portuguese labels are resource-backed.
+
+The universal APK and instrumentation APK compile; ktfmt and Android lint pass.
+Updated device coverage checks readable previews, caption/card separation, the
+selected card among several embeds, and hardware/IME send paths. These new flows
+are not device-tested yet: user UI review comes first. The preceding 154/155
+result remains a historical baseline, not a result for the new editing UI.
+
+The CI dependency helper caches downloaded Ubuntu packages, retains fresh signed
+package indexes, uses the canonical Ubuntu mirrors, and bounds update/install
+steps to avoid another 114-minute download. CI changes are committed separately
+from presentation changes. All 12 checks passed on the preceding `343c40c` head;
+new-head CI results must be checked independently.

@@ -118,13 +118,24 @@ internal fun MessageMedia(
     activePlayer: String?,
     onPlayer: (String?) -> Unit,
     onActions: () -> Unit,
+    onEmbedActions: ((EmbedView) -> Unit)? = null,
 ) {
     GifChoice.marker(message.content)?.let { ProviderGif(server, model, it, onActions) }
     message.attachments.forEach { attachment ->
         Attachment(attachment, server, model, activePlayer, onPlayer, onActions)
     }
     message.visibleEmbeds().forEach { embed ->
-        EmbedCard(embed, server, model, activePlayer, onPlayer, onActions)
+        val editCustom = onEmbedActions?.takeIf { embed.sourceType == "custom" }
+        val actions = if (editCustom == null) onActions else ({ editCustom(embed) })
+        EmbedCard(
+            embed,
+            server,
+            model,
+            activePlayer,
+            onPlayer,
+            actions,
+            contextualActions = editCustom != null,
+        )
     }
     message
         .nativeLinks()
@@ -351,6 +362,7 @@ private fun EmbedCard(
     activePlayer: String?,
     onPlayer: (String?) -> Unit,
     onActions: () -> Unit,
+    contextualActions: Boolean = false,
 ) {
     if (e.nativeMedia) {
         ReservedMedia(
@@ -365,6 +377,11 @@ private fun EmbedCard(
     }
     EmbedCardLayout(
         e,
+        modifier =
+            if (contextualActions)
+                Modifier.testTag("custom-embed-${e.id}")
+                    .combinedClickable(onClick = {}, onLongClick = onActions)
+            else Modifier,
         authorImage = {
             if (e.hasAuthorImage)
                 Box(Modifier.size(24.dp).clip(RoundedCornerShape(12.dp))) {
@@ -414,6 +431,7 @@ internal fun EmbedCardLayout(
     e: EmbedView,
     authorImage: @Composable () -> Unit = {},
     media: @Composable () -> Unit = {},
+    modifier: Modifier = Modifier,
 ) {
     val uriHandler = LocalUriHandler.current
     val publicUrl = remember(e.url) { e.url.takeIf(::isPublicLink) }
@@ -422,7 +440,8 @@ internal fun EmbedCardLayout(
             runCatching { Color(android.graphics.Color.parseColor(e.color)) }.getOrNull()
         }
     Column(
-        Modifier.fillMaxWidth()
+        modifier
+            .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(MaterialTheme.colorScheme.surface)
             .padding(start = 3.dp)

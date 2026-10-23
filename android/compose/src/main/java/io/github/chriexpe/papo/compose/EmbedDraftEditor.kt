@@ -37,21 +37,26 @@ internal fun EmbedDraftEditor(
     model: PapoViewModel,
     onApply: (List<EmbedDraft>) -> Unit,
     onDismiss: () -> Unit,
+    initialIndex: Int = 0,
+    saving: Boolean = false,
+    saveError: String = "",
+    editingMessage: Boolean = false,
 ) {
     var json by rememberSaveable {
         mutableStateOf(encodeEmbedDrafts(original.ifEmpty { listOf(newEmbedDraft()) }))
     }
     val drafts = remember(json) { restoredEmbeds(json) }
-    var selected by rememberSaveable { mutableIntStateOf(0) }
+    var selected by rememberSaveable { mutableIntStateOf(initialIndex) }
     var preview by rememberSaveable { mutableStateOf(false) }
     var confirmDiscard by remember { mutableStateOf(false) }
     var contentBounds by remember { mutableStateOf<Rect?>(null) }
     val issues = remember(json, files) { validateEmbedDrafts(drafts, files.map { it.wireName }) }
     val current = selected.coerceIn(0, (drafts.size - 1).coerceAtLeast(0))
     fun replace(next: List<EmbedDraft>) {
-        json = encodeEmbedDrafts(next)
+        if (!saving) json = encodeEmbedDrafts(next)
     }
     fun close() {
+        if (saving) return
         if (drafts == original || (original.isEmpty() && drafts == listOf(newEmbedDraft())))
             onDismiss()
         else confirmDiscard = true
@@ -77,8 +82,11 @@ internal fun EmbedDraftEditor(
                         Modifier.weight(1f),
                         style = MaterialTheme.typography.titleLarge,
                     )
-                    TextButton(enabled = issues.isEmpty(), onClick = { onApply(drafts) }) {
-                        Text(ui(R.string.embed_apply))
+                    TextButton(
+                        enabled = !saving && issues.isEmpty(),
+                        onClick = { onApply(drafts) },
+                    ) {
+                        Text(ui(if (editingMessage) R.string.save else R.string.embed_apply))
                     }
                 }
                 LazyRow(
@@ -152,6 +160,8 @@ internal fun EmbedDraftEditor(
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    if (saveError.isNotEmpty())
+                        Text(saveError, color = MaterialTheme.colorScheme.error)
                     issues.forEach {
                         Text(
                             embedIssueText(it),
@@ -199,6 +209,24 @@ internal fun EmbedDraftEditor(
                 confirmButton = { TextButton(onClick = onDismiss) { Text(ui(R.string.discard)) } },
                 dismissButton = {
                     TextButton(onClick = { confirmDiscard = false }) { Text(ui(R.string.cancel)) }
+                },
+            )
+        // Keep the staged cards mounted on failure, and prevent edits/back navigation while
+        // the server mutation is pending. The owner's unsent chat draft is never involved.
+        if (saving)
+            AlertDialog(
+                onDismissRequest = {},
+                properties =
+                    DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+                confirmButton = {},
+                text = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        CircularProgressIndicator(Modifier.size(24.dp))
+                        Text(ui(R.string.saving))
+                    }
                 },
             )
     }

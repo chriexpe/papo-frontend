@@ -695,7 +695,10 @@ class PapoUiTest {
             "Original caption",
             null,
             embeds =
-                listOf(io.github.chriexpe.papo.core.newEmbedDraft().copy(title = "Original card")),
+                listOf(
+                    io.github.chriexpe.papo.core.newEmbedDraft().copy(title = "Keep first card"),
+                    io.github.chriexpe.papo.core.newEmbedDraft().copy(title = "Original card"),
+                ),
         ) {}
         compose.waitUntil(10_000) {
             model.state.value.active!!.messages.any {
@@ -709,13 +712,40 @@ class PapoUiTest {
                 .id
         compose.onNodeWithTag("composer-input").performTextInput("Keep my draft")
         compose.onNodeWithTag("message-list").performScrollToKey(id)
-        compose.onNodeWithTag("message-$id").performTouchInput { longClick() }
+        // The caption editor preserves both cards and never redirects to embed creation.
+        compose.onNodeWithText("Original caption", substring = false).performTouchInput {
+            longClick()
+        }
         compose.onNodeWithText("Edit message").performClick()
-        compose.onNodeWithText("Create or edit embeds").performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithTag("edit-message-field").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("edit-message-field").assertExists()
+        compose.onNodeWithText("Create or edit embeds").assertDoesNotExist()
+        compose.onNodeWithTag("edit-message-input").performTextReplacement("Edited caption")
+        compose.onNodeWithTag("edit-message-save").performClick()
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.messages.first { it.id == id }.content == "Edited caption"
+        }
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        val cardId =
+            model.state.value.active!!
+                .messages
+                .first { it.id == id }
+                .embeds
+                .first { it.title == "Original card" }
+                .id
+        compose.onNodeWithTag("message-list").performScrollToKey(id)
+        compose.onNodeWithTag("custom-embed-$cardId").performScrollTo().performTouchInput {
+            longClick()
+        }
+        compose.onNodeWithText("Edit embed").performClick()
+        compose
+            .onNodeWithTag("embed-field-${R.string.embed_title}")
+            .assertTextEquals("Original card")
         compose
             .onNodeWithTag("embed-field-${R.string.embed_title}")
             .performTextReplacement("Edited card")
-        compose.onNodeWithText("Apply").performClick()
         compose.onNodeWithText("Save", substring = false).performClick()
         compose.waitUntil(10_000) {
             model.state.value.active!!.messages.any {
@@ -724,9 +754,62 @@ class PapoUiTest {
         }
         compose.onNodeWithTag("composer-input").assertTextEquals("Keep my draft")
         assertEquals(
-            "Original caption",
+            "Edited caption",
             model.state.value.active!!.messages.first { it.id == id }.content,
         )
+        assertEquals(
+            listOf("Keep first card", "Edited card"),
+            model.state.value.active!!
+                .messages
+                .first { it.id == id }
+                .embeds
+                .filter { it.sourceType == "custom" }
+                .map { it.title },
+        )
+    }
+
+    @Test
+    fun enterToSendDefaultsOffPreservesMultilineInputAndUsesBothKeyboardSendPaths() {
+        chat()
+        lateinit var model: PapoViewModel
+        activity.onActivity {
+            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+        }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val settings = context.getSharedPreferences("compose-appearance", 0)
+        assertTrue(!settings.getBoolean("enter-to-send", false))
+        compose.onNodeWithTag("composer-input").performTextInput("Default newline")
+        compose.onNodeWithTag("composer-input").performKeyInput {
+            pressKey(androidx.compose.ui.input.key.Key.Enter)
+        }
+        compose.onNodeWithTag("composer-input").assertTextEquals("Default newline\n")
+        assertTrue(model.state.value.active!!.messages.none { it.content == "Default newline" })
+        compose.runOnIdle { settings.edit().putBoolean("enter-to-send", true).commit() }
+        compose.onNodeWithTag("composer-input").performTextReplacement("Pasted first\nsecond")
+        compose.onNodeWithTag("composer-input").performKeyInput {
+            keyDown(androidx.compose.ui.input.key.Key.ShiftLeft)
+            pressKey(androidx.compose.ui.input.key.Key.Enter)
+            keyUp(androidx.compose.ui.input.key.Key.ShiftLeft)
+        }
+        compose.onNodeWithTag("composer-input").assertTextEquals("Pasted first\nsecond\n")
+        compose.onNodeWithTag("composer-input").performTextInput("third")
+        compose.onNodeWithTag("composer-input").performKeyInput {
+            pressKey(androidx.compose.ui.input.key.Key.Enter)
+        }
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.messages.count {
+                it.mine && it.content == "Pasted first\nsecond\nthird" && !it.pending
+            } == 1
+        }
+        compose.onNodeWithTag("composer-input").assertTextEquals("")
+        compose.onNodeWithTag("composer-input").performTextInput("IME send")
+        compose.onNodeWithTag("composer-input").performImeAction()
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.messages.count {
+                it.mine && it.content == "IME send" && !it.pending
+            } == 1
+        }
+        compose.onNodeWithTag("composer-input").assertTextEquals("")
     }
 
     @Test
@@ -3548,6 +3631,7 @@ class PapoUiTest {
         compose.onNodeWithTag("composer-input").performTextInput("Keep my unsent draft")
         compose.onNodeWithTag("message-list").performScrollToKey(message.id)
         compose.onNodeWithTag("message-${message.id}").performTouchInput { longClick() }
+        compose.onNodeWithTag("message-actions-preview").assertTextEquals("Hello @Ana")
         compose.onNodeWithText("Edit message").performClick()
         compose.waitUntil(5000) {
             compose.onAllNodesWithTag("edit-message-input").fetchSemanticsNodes().isNotEmpty()

@@ -43,6 +43,12 @@ internal val appearanceSwitches
                 ui(R.string.keep_profile_pictures_beside_messages),
             ),
             AppearanceSwitch(
+                "enter-to-send",
+                ui(R.string.enter_to_send),
+                ui(R.string.enter_to_send_description),
+                false,
+            ),
+            AppearanceSwitch(
                 "timestamps",
                 ui(R.string.show_timestamps),
                 ui(R.string.display_the_time_beside_each_author),

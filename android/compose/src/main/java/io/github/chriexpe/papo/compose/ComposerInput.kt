@@ -8,6 +8,7 @@ import android.os.Looper
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -149,6 +150,7 @@ internal fun ComposerInput(
     inputTag: String = "composer-input",
     enabled: Boolean = true,
     channelId: String = server.selected,
+    onSubmit: (() -> Unit)? = null,
 ) {
     val dimensions = LocalUiDimensions.current
     val formatting = remember(server.url, server.me, server.selected) { ComposerFormatting() }
@@ -291,6 +293,23 @@ internal fun ComposerInput(
                 Modifier.fillMaxWidth()
                     .onPreviewKeyEvent { event ->
                         if (
+                            onSubmit != null &&
+                                (event.key == Key.Enter || event.key == Key.NumPadEnter) &&
+                                !event.isShiftPressed &&
+                                !event.isCtrlPressed &&
+                                !event.isAltPressed &&
+                                !event.isMetaPressed &&
+                                draft.value.composition == null
+                        ) {
+                            // Consume the pair, but send only once. Enter used to confirm an
+                            // IME candidate must continue through the editor normally.
+                            if (
+                                event.type == KeyEventType.KeyDown &&
+                                    event.nativeKeyEvent.repeatCount == 0
+                            )
+                                onSubmit()
+                            true
+                        } else if (
                             event.key == Key.Tab &&
                                 event.type == KeyEventType.KeyDown &&
                                 !event.isShiftPressed &&
@@ -351,7 +370,12 @@ internal fun ComposerInput(
             cursorBrush = SolidColor(color),
             visualTransformation = projection,
             onTextLayout = { layout = it },
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            keyboardOptions =
+                KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Sentences,
+                    imeAction = if (onSubmit == null) ImeAction.Default else ImeAction.Send,
+                ),
+            keyboardActions = KeyboardActions(onSend = { onSubmit?.invoke() }),
             decorationBox = { inner ->
                 Box {
                     if (draft.text.isEmpty())

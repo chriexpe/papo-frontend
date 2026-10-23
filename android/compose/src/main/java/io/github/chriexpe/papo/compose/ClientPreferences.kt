@@ -76,6 +76,9 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
     val replyNotifications
         get() = boolean("reply-notifications")
 
+    val enterToSend
+        get() = boolean("enter-to-send", false)
+
     val catchUpHourglass
         get() = boolean("catch-up-hourglass")
 

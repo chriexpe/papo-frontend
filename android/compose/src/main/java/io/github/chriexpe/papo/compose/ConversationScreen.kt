@@ -99,7 +99,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         expressionStates[model.expressions.owner(server)]
             ?: model.expressions.state(model.expressions.owner(server))
     var selected by remember { mutableStateOf<ChatMessage?>(null) }
+    var selectedEmbedIndex by remember(draftKey) { mutableStateOf<Int?>(null) }
     var edit by remember { mutableStateOf<ChatMessage?>(null) }
+    var editEmbed by remember(draftKey) { mutableStateOf<Pair<ChatMessage, Int>?>(null) }
     var delete by remember { mutableStateOf<ChatMessage?>(null) }
     var retry by remember { mutableStateOf<ChatMessage?>(null) }
     var pins by remember(draftKey) { mutableStateOf(false) }
@@ -209,6 +211,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             viewedMedia != null ||
             selected != null ||
             edit != null ||
+            editEmbed != null ||
             delete != null ||
             retry != null ||
             members ||
@@ -584,13 +587,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     }
 
     val submitMessage: (Boolean) -> Unit = { attachmentsOnly ->
-        val original = text
         val originalDraft = composer
+        // IME Send can follow a text commit before the next composition frame.
+        val original = originalDraft.text
         val sentEmbeds = embedDrafts
         val sent =
-            if (GifChoice.marker(text) != null) text
+            if (GifChoice.marker(original) != null) original
             else
-                Regex("(?m)^giphy:([A-Za-z0-9_-]{1,200})$").replace(text) {
+                Regex("(?m)^giphy:([A-Za-z0-9_-]{1,200})$").replace(original) {
                     "https://giphy.com/gifs/${it.groupValues[1]}"
                 }
         val sentFiles = attachmentDraft.files.map { it.path }.toSet()
@@ -645,6 +649,32 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     e.message ?: ui(R.string.couldn_t_prepare_this_message),
                 )
             }
+        }
+    }
+
+    val canSubmit =
+        text.isNotBlank() || attachmentDraft.files.isNotEmpty() || embedDrafts.isNotEmpty()
+    val submitEnabled =
+        !submitting && !attachmentDraft.sending && !attachmentDraft.preparing && !gifPreparing
+    // Buttons, hardware Enter and IME Send share validation and uncertain-upload handling.
+    val requestComposerSend: () -> Unit = {
+        if (
+            (composer.text.isNotBlank() ||
+                attachmentDraft.files.isNotEmpty() ||
+                embedDrafts.isNotEmpty()) &&
+                !submitting &&
+                !attachmentDraft.sending &&
+                !attachmentDraft.preparing &&
+                !gifPreparing
+        ) {
+            if (
+                validateEmbedDrafts(embedDrafts, attachmentDraft.files.map { it.wireName })
+                    .isNotEmpty()
+            )
+                embedEditor = true
+            else if (attachmentDraft.files.isNotEmpty() && attachmentDraft.uncertain)
+                confirmAttachmentRetry = true
+            else submitMessage(false)
         }
     }
 
@@ -732,7 +762,10 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                     }
                                 },
                                 onJump = ::openOriginal,
-                                onActions = { selected = message },
+                                onActions = {
+                                    selectedEmbedIndex = null
+                                    selected = message
+                                },
                                 onReaction = { r ->
                                     model.react(
                                         server,
@@ -762,7 +795,18 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                         model,
                                         activeMedia,
                                         { activeMedia = it },
-                                        { selected = message },
+                                        {
+                                            selectedEmbedIndex = null
+                                            selected = message
+                                        },
+                                        onEmbedActions = { embed ->
+                                            selectedEmbedIndex =
+                                                message.embeds
+                                                    .filter { it.sourceType == "custom" }
+                                                    .indexOf(embed)
+                                                    .takeIf { it >= 0 }
+                                            selected = message
+                                        },
                                     )
                                 },
                             )
@@ -1081,6 +1125,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                                 },
                                                 modifier =
                                                     inputModifier.focusRequester(composerFocus),
+                                                onSubmit =
+                                                    if (appearance.enterToSend) requestComposerSend
+                                                    else null,
                                                 onFocusChange = { composerFocused = it },
                                                 animationsAllowed =
                                                     appearance.animations &&
@@ -1125,39 +1172,15 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                                 )
                                             }
                                             ComposerSendButton(
-                                                canSend =
-                                                    text.isNotBlank() ||
-                                                        attachmentDraft.files.isNotEmpty() ||
-                                                        embedDrafts.isNotEmpty(),
-                                                enabled =
-                                                    !submitting &&
-                                                        !attachmentDraft.sending &&
-                                                        !attachmentDraft.preparing &&
-                                                        !gifPreparing,
+                                                canSend = canSubmit,
+                                                enabled = submitEnabled,
                                                 busy = submitting || attachmentDraft.sending,
                                                 onEmbeds = {
                                                     focus.clearFocus()
                                                     keyboard?.hide()
                                                     embedEditor = true
                                                 },
-                                                onSend = {
-                                                    if (
-                                                        validateEmbedDrafts(
-                                                                embedDrafts,
-                                                                attachmentDraft.files.map {
-                                                                    it.wireName
-                                                                },
-                                                            )
-                                                            .isNotEmpty()
-                                                    )
-                                                        embedEditor = true
-                                                    else if (
-                                                        attachmentDraft.files.isNotEmpty() &&
-                                                            attachmentDraft.uncertain
-                                                    )
-                                                        confirmAttachmentRetry = true
-                                                    else submitMessage(false)
-                                                },
+                                                onSend = requestComposerSend,
                                             )
                                         },
                                     )
@@ -1361,11 +1384,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                     Text(
-                        message.content.ifBlank { ui(R.string.message) },
+                        message.previewText(),
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        modifier =
+                            Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                                .testTag("message-actions-preview"),
                     )
                     if (!message.pending) {
                         val favorites =
@@ -1441,8 +1466,16 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     }
                     MessageLinkActions(message)
                     if (message.canEdit) {
-                        SheetAction(ui(R.string.edit_message), Icons.Outlined.Edit) {
-                            edit = message
+                        SheetAction(
+                            ui(
+                                if (selectedEmbedIndex == null) R.string.edit_message
+                                else R.string.edit_embed
+                            ),
+                            Icons.Outlined.Edit,
+                        ) {
+                            // Hold origin selects the editor; ordinary link previews are text.
+                            val index = selectedEmbedIndex
+                            if (index == null) edit = message else editEmbed = message to index
                             selected = null
                         }
                     }
@@ -1470,7 +1503,10 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
         }
         edit?.let { message ->
-            EditMessageDialog(message, server, model, onDismiss = { edit = null })
+            EditMessageSheet(message, server, model, onDismiss = { edit = null })
+        }
+        editEmbed?.let { (message, index) ->
+            EditMessageEmbeds(message, index, server, model, onDismiss = { editEmbed = null })
         }
         delete?.let { message ->
             DeleteMessageDialog(

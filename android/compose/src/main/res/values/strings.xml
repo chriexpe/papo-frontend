@@ -949,4 +949,7 @@
     <string name="appearance_update_failed">"Couldn’t finish syncing appearance. Try again."</string>
     <string name="appearance_preview_second">"Consecutive messages stay together."</string>
     <string name="appearance_preview_third">"Choose the spacing that suits you."</string>
+    <string name="enter_to_send">"Enter to send"</string>
+    <string name="enter_to_send_description">"Enter sends. On a physical keyboard, Shift+Enter adds a new line."</string>
+    <string name="edit_embed">"Edit embed"</string>
 </resources>

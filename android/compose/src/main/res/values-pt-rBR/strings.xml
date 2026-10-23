@@ -949,4 +949,7 @@
     <string name="appearance_update_failed">"Não foi possível concluir a sincronização da aparência. Tente novamente."</string>
     <string name="appearance_preview_second">"Mensagens seguidas ficam juntas."</string>
     <string name="appearance_preview_third">"Escolha o espaçamento que combina com você."</string>
+    <string name="enter_to_send">"Enter para enviar"</string>
+    <string name="enter_to_send_description">"Enter envia. No teclado físico, Shift+Enter adiciona uma nova linha."</string>
+    <string name="edit_embed">"Editar embed"</string>
 </resources>
