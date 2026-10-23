@@ -53,6 +53,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import dev.chrisbanes.haze.hazeSource
 import io.github.chriexpe.papo.core.Action
+import io.github.chriexpe.papo.core.encodeEmbedDrafts
+import io.github.chriexpe.papo.core.validateEmbedDrafts
 import java.text.SimpleDateFormat
 import java.util.Date
 import kotlinx.coroutines.delay
@@ -69,6 +71,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 ComposerDraft.restore(model.draft(draftKey), model.draftMentions(draftKey))
             )
         }
+    var embedJson by rememberSaveable(draftKey) { mutableStateOf(model.embedDrafts(draftKey)) }
+    val embedDrafts = remember(embedJson) { restoredEmbeds(embedJson) }
+    var embedEditor by rememberSaveable(draftKey) { mutableStateOf(false) }
+    fun updateEmbeds(next: List<io.github.chriexpe.papo.core.EmbedDraft>) {
+        embedJson = encodeEmbedDrafts(next)
+        model.saveEmbedDrafts(draftKey, embedJson)
+    }
     val openProfile = LocalOpenProfile.current
     val composerFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     val text = composer.text
@@ -194,6 +203,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     val readingBlocked =
         attachmentOptions != null ||
+            embedEditor ||
             overlayBlocking ||
             viewedMedia != null ||
             selected != null ||
@@ -250,6 +260,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 latestServer.messages.asReversed().map { it.id },
                 viewedMedia == null &&
                     attachmentOptions == null &&
+                    !embedEditor &&
+                    edit == null &&
                     !pins &&
                     !overlayBlocking &&
                     mediaLifecycle.isAtLeast(Lifecycle.State.RESUMED),
@@ -573,6 +585,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val submitMessage: (Boolean) -> Unit = { attachmentsOnly ->
         val original = text
         val originalDraft = composer
+        val sentEmbeds = embedDrafts
         val sent =
             if (GifChoice.marker(text) != null) text
             else
@@ -587,6 +600,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 model.recordSent(server, draftKey, sent, sentFiles)
                 if (composer.text == original && composer.mentions == originalDraft.mentions)
                     updateComposer(ComposerDraft())
+                // A send acknowledgement can outlive this composition. Compare the
+                // persisted owner draft too, so re-entering and editing cannot be erased.
+                if (
+                    restoredEmbeds(model.embedDrafts(draftKey)) == sentEmbeds &&
+                        restoredEmbeds(embedJson) == sentEmbeds
+                )
+                    updateEmbeds(emptyList())
                 reply = null
                 jumpToLatest()
             }
@@ -604,7 +624,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             "https://giphy.com/gifs/${it.groupValues[1]}"
                         }
                 if (!attachmentsOnly && attachmentDraft.files.isEmpty())
-                    model.send(server, encoded, sentReply, sentNotifyReply, onResult)
+                    model.send(server, encoded, sentReply, sentNotifyReply, sentEmbeds, onResult)
                 else
                     model.attachments.send(
                         draftKey,
@@ -612,6 +632,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         encoded,
                         sentReply,
                         sentNotifyReply,
+                        sentEmbeds,
                         onResult,
                     )
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -676,6 +697,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         LocalTimelineMediaVisible provides
                             (message.id in visibleRows &&
                                 viewedMedia == null &&
+                                !embedEditor &&
+                                edit == null &&
                                 !pins &&
                                 !overlayBlocking),
                         LocalMediaRowId provides message.id,
@@ -935,6 +958,42 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                     ) {
                                         model.attachments.remove(draftKey, it)
                                     }
+                                    if (embedDrafts.isNotEmpty()) {
+                                        val valid =
+                                            remember(embedDrafts, attachmentDraft.files) {
+                                                validateEmbedDrafts(
+                                                        embedDrafts,
+                                                        attachmentDraft.files.map { it.wireName },
+                                                    )
+                                                    .isEmpty()
+                                            }
+                                        AssistChip(
+                                            onClick = {
+                                                focus.clearFocus()
+                                                keyboard?.hide()
+                                                embedEditor = true
+                                            },
+                                            label = {
+                                                Text(
+                                                    uiQuantity(
+                                                        if (valid) R.plurals.embed_draft_count
+                                                        else R.plurals.embed_draft_needs_attention,
+                                                        embedDrafts.size,
+                                                    )
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    if (valid) Icons.Outlined.ViewAgenda
+                                                    else Icons.Outlined.WarningAmber,
+                                                    null,
+                                                )
+                                            },
+                                            modifier =
+                                                Modifier.padding(start = 14.dp)
+                                                    .testTag("composer-embeds"),
+                                        )
+                                    }
                                     if (reply != null)
                                         Row(
                                             Modifier.testTag("composer-reply")
@@ -1058,35 +1117,41 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                                 Modifier.size(24.dp),
                                             )
                                         }
-                                        FilledIconButton(
-                                            onClick = {
+                                        ComposerSendButton(
+                                            canSend =
+                                                text.isNotBlank() ||
+                                                    attachmentDraft.files.isNotEmpty() ||
+                                                    embedDrafts.isNotEmpty(),
+                                            enabled =
+                                                !submitting &&
+                                                    !attachmentDraft.sending &&
+                                                    !attachmentDraft.preparing &&
+                                                    !gifPreparing,
+                                            busy = submitting || attachmentDraft.sending,
+                                            onEmbeds = {
+                                                focus.clearFocus()
+                                                keyboard?.hide()
+                                                embedEditor = true
+                                            },
+                                            onSend = {
                                                 if (
+                                                    validateEmbedDrafts(
+                                                            embedDrafts,
+                                                            attachmentDraft.files.map {
+                                                                it.wireName
+                                                            },
+                                                        )
+                                                        .isNotEmpty()
+                                                )
+                                                    embedEditor = true
+                                                else if (
                                                     attachmentDraft.files.isNotEmpty() &&
                                                         attachmentDraft.uncertain
                                                 )
                                                     confirmAttachmentRetry = true
                                                 else submitMessage(false)
                                             },
-                                            enabled =
-                                                (text.isNotBlank() ||
-                                                    attachmentDraft.files.isNotEmpty()) &&
-                                                    !submitting &&
-                                                    !attachmentDraft.sending &&
-                                                    !attachmentDraft.preparing &&
-                                                    !gifPreparing,
-                                            modifier = Modifier.size(48.dp),
-                                        ) {
-                                            if (submitting || attachmentDraft.sending)
-                                                CircularProgressIndicator(
-                                                    Modifier.size(18.dp),
-                                                    strokeWidth = 2.dp,
-                                                )
-                                            else
-                                                Icon(
-                                                    Icons.Outlined.ArrowUpward,
-                                                    ui(R.string.send_message),
-                                                )
-                                        }
+                                        )
                                     }
                                 }
                         }
@@ -1462,6 +1527,18 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 }
             }
     }
+    if (embedEditor)
+        EmbedDraftEditor(
+            embedDrafts,
+            attachmentDraft.files,
+            server,
+            model,
+            onApply = {
+                updateEmbeds(it)
+                embedEditor = false
+            },
+            onDismiss = { embedEditor = false },
+        )
     attachmentOptions?.let { file ->
         AttachmentOptions(file, draftKey, server, model, onDismiss = { attachmentOptions = null })
     }

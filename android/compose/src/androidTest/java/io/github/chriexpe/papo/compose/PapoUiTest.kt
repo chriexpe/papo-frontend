@@ -569,6 +569,83 @@ class PapoUiTest {
     }
 
     @Test
+    fun customEmbedDraftCanBePreviewedCancelledAndSentWithoutMessageText() {
+        chat()
+        compose.onNodeWithContentDescription("Message options").performClick()
+        compose.onNodeWithText("Create or edit embeds").performClick()
+        compose.onNodeWithText("Apply").assertIsNotEnabled()
+        compose
+            .onNodeWithTag("embed-field-${R.string.embed_title}")
+            .performTextInput("A custom card")
+        compose
+            .onNodeWithTag("embed-field-${R.string.embed_description}")
+            .performTextInput("A complete description")
+        compose.onNodeWithText("Preview", substring = false).performClick()
+        compose.onNodeWithText("A custom card", substring = false).assertExists()
+        compose.onNodeWithText("Apply").performClick()
+        compose.onNodeWithTag("composer-embeds").assertTextContains("1 custom embed")
+        compose.onNodeWithTag("composer-embeds").performClick()
+        compose
+            .onNodeWithTag("embed-field-${R.string.embed_title}")
+            .performTextReplacement("Discard this title")
+        compose.onNodeWithContentDescription("Cancel").performClick()
+        compose.onNodeWithText("Discard", substring = false).performClick()
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithTag("composer-embeds").fetchSemanticsNodes().isEmpty()
+        }
+        compose.onNodeWithText("A custom card", substring = false).assertExists()
+        compose.onNodeWithText("Discard this title", substring = false).assertDoesNotExist()
+    }
+
+    @Test
+    fun editingCustomEmbedsPreservesTheUnsentComposerAndOnlyChangesTheSelectedMessage() {
+        chat()
+        lateinit var model: PapoViewModel
+        activity.onActivity {
+            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+        }
+        val server = model.state.value.active!!
+        model.send(
+            server,
+            "Original caption",
+            null,
+            embeds =
+                listOf(io.github.chriexpe.papo.core.newEmbedDraft().copy(title = "Original card")),
+        ) {}
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.messages.any {
+                it.embeds.any { e -> e.title == "Original card" }
+            }
+        }
+        val id =
+            model.state.value.active!!
+                .messages
+                .first { it.embeds.any { e -> e.title == "Original card" } }
+                .id
+        compose.onNodeWithTag("composer-input").performTextInput("Keep my draft")
+        compose.onNodeWithTag("message-list").performScrollToKey(id)
+        compose.onNodeWithTag("message-$id").performTouchInput { longClick() }
+        compose.onNodeWithText("Edit message").performClick()
+        compose.onNodeWithText("Create or edit embeds").performClick()
+        compose
+            .onNodeWithTag("embed-field-${R.string.embed_title}")
+            .performTextReplacement("Edited card")
+        compose.onNodeWithText("Apply").performClick()
+        compose.onNodeWithText("Save", substring = false).performClick()
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.messages.any {
+                it.id == id && it.embeds.any { e -> e.title == "Edited card" }
+            }
+        }
+        compose.onNodeWithTag("composer-input").assertTextEquals("Keep my draft")
+        assertEquals(
+            "Original caption",
+            model.state.value.active!!.messages.first { it.id == id }.content,
+        )
+    }
+
+    @Test
     fun webhooksAreSearchableAndIssuedCredentialsCannotBeOpenedAgain() {
         demo()
         compose.onNodeWithContentDescription("Server settings").performClick()
@@ -1681,6 +1758,7 @@ class PapoUiTest {
                             "$text",
                             null,
                             true,
+                            emptyList(),
                         )
                     )
                     fixture.poll().messages.single { it.id == "markdown-fixture" }
@@ -1820,6 +1898,7 @@ class PapoUiTest {
                 "First grouped message",
                 null,
                 true,
+                emptyList(),
             )
         )
         model.command(
@@ -1829,6 +1908,7 @@ class PapoUiTest {
                 "Second grouped message",
                 null,
                 true,
+                emptyList(),
             )
         )
         compose.waitUntil(5000) {
@@ -2151,6 +2231,7 @@ class PapoUiTest {
                 "Live head arrival $i",
                 null,
                 true,
+                emptyList(),
             )
         )
         compose.waitUntil(5000) {
@@ -2183,6 +2264,7 @@ class PapoUiTest {
                     "A longer message to keep separate reading positions. ".repeat(5),
                 null,
                 true,
+                emptyList(),
             )
         )
         compose.waitUntil(10_000) {
@@ -2767,7 +2849,7 @@ class PapoUiTest {
         compose.waitUntil(10_000) {
             compose.onAllNodesWithText(draft).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Message options").assertIsEnabled()
     }
 
     @Test
@@ -3352,7 +3434,7 @@ class PapoUiTest {
                     .isNotEmpty()
             }
             compose.onNodeWithContentDescription("Remove ${file.name}").assertDoesNotExist()
-            compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+            compose.onNodeWithContentDescription("Message options").assertIsEnabled()
         } finally {
             instrumentation.removeMonitor(monitor)
             file.delete()
@@ -3470,7 +3552,7 @@ class PapoUiTest {
                     .fetchSemanticsNodes()
                     .isEmpty()
             }
-            compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+            compose.onNodeWithContentDescription("Message options").assertIsEnabled()
         } finally {
             instrumentation.removeMonitor(monitor)
         }

@@ -21,6 +21,7 @@ mod administration;
 pub mod bindings;
 pub mod demo;
 mod discovery;
+mod embed_authoring;
 mod inbox;
 mod legacy;
 mod markdown;
@@ -103,6 +104,8 @@ pub enum Action {
         reply_to: Option<String>,
         #[serde(default = "reply_notifications_default")]
         notify_reply: bool,
+        #[serde(default)]
+        embeds: Vec<embed_authoring::EmbedDraft>,
     },
     SendAttachments {
         local_id: String,
@@ -112,10 +115,14 @@ pub enum Action {
         #[serde(default = "reply_notifications_default")]
         notify_reply: bool,
         files: Vec<UploadFile>,
+        #[serde(default)]
+        embeds: Vec<embed_authoring::EmbedDraft>,
     },
     Edit {
         message_id: String,
         content: String,
+        #[serde(default)]
+        embeds: Option<Vec<embed_authoring::EmbedDraft>>,
     },
     Delete {
         message_id: String,
@@ -854,11 +861,13 @@ impl Client {
                 content,
                 reply_to,
                 notify_reply,
+                embeds,
             } => {
                 if store.screen != Screen::Chat || store.me.is_empty() {
                     return Err("Sign in before sending messages".into());
                 }
-                if content.trim().is_empty() {
+                let embeds = embed_authoring::inputs(embeds, &[])?;
+                if content.trim().is_empty() && embeds.is_empty() {
                     return Err("Write a message first".into());
                 }
                 if local_id.is_empty()
@@ -870,7 +879,7 @@ impl Client {
                     return Err("Select a text conversation".into());
                 }
                 Command::QueueMessage {
-                    embeds: vec![],
+                    embeds,
                     local_id,
                     owner_user_id: store.me.clone(),
                     channel_id,
@@ -887,6 +896,7 @@ impl Client {
                 reply_to,
                 notify_reply,
                 files,
+                embeds,
             } => {
                 if store.screen != Screen::Chat || store.me.is_empty() {
                     return Err("Sign in before sending attachments".into());
@@ -902,6 +912,12 @@ impl Client {
                 {
                     return Err("Select a text conversation".into());
                 }
+                let attachments = prepare_uploads(files)?;
+                let names = attachments
+                    .iter()
+                    .map(|f| f.wire_name())
+                    .collect::<Vec<_>>();
+                let embeds = embed_authoring::inputs(embeds, &names)?;
                 Command::SendMessage {
                     local_id,
                     owner_user_id: store.me.clone(),
@@ -909,13 +925,14 @@ impl Client {
                     content,
                     reply_to,
                     notify_reply,
-                    embeds: vec![],
-                    attachments: prepare_uploads(files)?,
+                    embeds,
+                    attachments,
                 }
             }
             Action::Edit {
                 message_id,
                 content,
+                embeds,
             } => {
                 if !store
                     .preview_message(&message_id)
@@ -923,8 +940,21 @@ impl Client {
                 {
                     return Err("Only the message author can edit it".into());
                 }
+                if embeds.is_some()
+                    && papo_core::embed_authoring::editable(
+                        &store
+                            .preview_message(&message_id)
+                            .ok_or("Message unavailable")?
+                            .previews,
+                    )
+                    .is_none()
+                {
+                    return Err("Protected embed media must be preserved".into());
+                }
                 Command::EditMessage {
-                    embeds: None,
+                    embeds: embeds
+                        .map(|e| embed_authoring::inputs(e, &[]))
+                        .transpose()?,
                     message_id,
                     content,
                 }

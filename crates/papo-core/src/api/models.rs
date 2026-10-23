@@ -954,6 +954,7 @@ impl CustomEmbedInput {
         if preview.source_type.as_deref() != Some("custom")
             || preview.thumbnail.is_some() || preview.image.is_some()
             || preview.video.is_some()
+            || preview.image_data.is_some() || preview.author_image_data.is_some()
             || preview.author.as_ref().is_some_and(|a| a.media.is_some())
             || preview.footer.as_ref().is_some_and(|f| f.icon.is_some())
         {
@@ -1011,6 +1012,9 @@ pub struct CustomEmbedFooterInput {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomEmbedMediaInput {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub attachment_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
     #[serde(default)]
     pub mime_type: String,

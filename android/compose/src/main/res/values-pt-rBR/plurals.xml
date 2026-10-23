@@ -30,4 +30,12 @@
         <item quantity="other">%d cargos</item>
         <item quantity="many">%d cargos</item>
     </plurals>
+    <plurals name="embed_draft_count">
+        <item quantity="one">%d embed personalizado</item>
+        <item quantity="other">%d embeds personalizados</item>
+    </plurals>
+    <plurals name="embed_draft_needs_attention">
+        <item quantity="one">%d embed precisa de revisão</item>
+        <item quantity="other">%d embeds precisam de revisão</item>
+    </plurals>
 </resources>

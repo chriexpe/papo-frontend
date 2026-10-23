@@ -13,6 +13,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.chriexpe.papo.core.Action
 import io.github.chriexpe.papo.core.Credentials
+import io.github.chriexpe.papo.core.EmbedDraft
 import io.github.chriexpe.papo.core.MediaRequest
 import io.github.chriexpe.papo.core.MediaResource
 import io.github.chriexpe.papo.core.NativeClient
@@ -574,7 +575,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             val edit = preferences.edit()
             preferences.all.keys
                 .filter { key ->
-                    listOf("draft/", "draft-mentions/", "position/").any {
+                    listOf("draft/", "draft-mentions/", "draft-embeds/", "position/").any {
                         key.startsWith("$it$url/")
                     }
                 }
@@ -1188,6 +1189,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         text: String,
         reply: String?,
         notifyReply: Boolean = true,
+        embeds: List<EmbedDraft> = emptyList(),
         onResult: (Boolean) -> Unit,
     ) =
         viewModelScope.launch(dispatcher) {
@@ -1198,7 +1200,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                     ui(R.string.account_changed_before_sending)
                 }
                 awaitingPersistence[id] = PendingMessage(server.url, onResult)
-                handle.dispatch(Action.Send(id, server.selected, text, reply, notifyReply))
+                handle.dispatch(Action.Send(id, server.selected, text, reply, notifyReply, embeds))
                 signals.trySend(Unit)
             } catch (e: Exception) {
                 awaitingPersistence.remove(id)
@@ -1213,6 +1215,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         reply: String?,
         notifyReply: Boolean,
         files: List<PendingAttachment>,
+        embeds: List<EmbedDraft>,
     ): UploadReceipt {
         val result =
             withContext(dispatcher) {
@@ -1232,6 +1235,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                             reply,
                             notifyReply,
                             files.map { it.native() },
+                            embeds,
                         )
                     )
                     signals.trySend(Unit)
@@ -1303,6 +1307,14 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun draft(key: String) = preferences.getString("draft/$key", "").orEmpty()
 
+    fun embedDrafts(key: String): String =
+        preferences.getString("draft-embeds/$key", "[]").orEmpty()
+
+    fun saveEmbedDrafts(key: String, json: String) {
+        if (forgottenServers.any { key.startsWith("$it/") }) return
+        preferences.edit().putString("draft-embeds/$key", json).apply()
+    }
+
     fun draftMentions(key: String) = preferences.getString("draft-mentions/$key", "[]").orEmpty()
 
     fun saveDraft(key: String, text: String, mentions: String = "[]") {
@@ -1365,15 +1377,33 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             ComposerDraft.fromEditable(client.editableMessage(source))
         }
 
-    internal suspend fun editMessage(server: ServerState, id: String, draft: ComposerDraft) =
+    internal suspend fun editableEmbeds(server: ServerState, id: String) =
         withContext(dispatcher) {
-            val client = accountClient(server)
-            val mentions =
-                draft.mentions.filter { it.valid(draft.text) }.map { it.native(draft.text) }
-            val wire = client.encodeMessage(draft.text, mentions)
-            client.dispatch(Action.Edit(id, wire))
-            poll()
+            accountClient(server).editableEmbeds(server.me, id)
         }
+
+    internal suspend fun editMessage(
+        server: ServerState,
+        id: String,
+        draft: ComposerDraft,
+        embeds: List<EmbedDraft>? = null,
+    ) = accountMutex.withLock {
+        val client = accountClient(server)
+        val wire =
+            withContext(dispatcher) {
+                val mentions =
+                    draft.mentions.filter { it.valid(draft.text) }.map { it.native(draft.text) }
+                client.encodeMessage(draft.text, mentions)
+            }
+        try {
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                client.editMessage(server.me, id, wire, embeds)
+            }
+        } finally {
+            // Preserve the acknowledged mutation even if the editing surface was dismissed.
+            withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+        }
+    }
 
     internal suspend fun encodeMessage(
         server: ServerState,

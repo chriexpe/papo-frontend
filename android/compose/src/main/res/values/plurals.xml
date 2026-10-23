@@ -24,4 +24,12 @@
         <item quantity="one">%d role</item>
         <item quantity="other">%d roles</item>
     </plurals>
+    <plurals name="embed_draft_count">
+        <item quantity="one">%d custom embed</item>
+        <item quantity="other">%d custom embeds</item>
+    </plurals>
+    <plurals name="embed_draft_needs_attention">
+        <item quantity="one">%d embed needs attention</item>
+        <item quantity="other">%d embeds need attention</item>
+    </plurals>
 </resources>

@@ -345,7 +345,32 @@ impl NativeClient {
                 .as_ref()
                 .ok_or_else(|| "Client is closed".to_owned())?
             {
-                Backend::Demo(_) => return Ok(media::demo_image(&id)),
+                Backend::Demo(demo) => {
+                    use base64::Engine;
+                    let embed = demo
+                        .store
+                        .media_messages()
+                        .flat_map(|m| &m.previews)
+                        .find(|e| e.id == id);
+                    let data = embed.and_then(|embed| {
+                        if author {
+                            embed.author_image_data.as_ref()
+                        } else {
+                            embed.image_data.as_ref()
+                        }
+                    });
+                    if let Some(data) = data {
+                        return base64::engine::general_purpose::STANDARD
+                            .decode(data)
+                            .map_err(|e| e.to_string().into());
+                    }
+                    if embed.is_some_and(|e| e.source_type.as_deref() == Some("custom")) {
+                        return Err("The demo does not resolve remote embed media"
+                            .to_owned()
+                            .into());
+                    }
+                    return Ok(media::demo_image(&id));
+                }
                 Backend::Live(client) => {
                     media::check_embed(&client.runtime, &id)?;
                     papo_core::api::client::Api::new(

@@ -949,6 +949,7 @@ fn moderator_deletion_is_permission_gated_acknowledged_and_shared_by_all_message
     assert!(
         native
             .dispatch(Action::Edit {
+                embeds: None,
                 message_id: "general-0".into(),
                 content: "not mine".into()
             })

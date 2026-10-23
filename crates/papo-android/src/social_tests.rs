@@ -13,6 +13,7 @@ fn hiding_blocking_and_reopening_preserve_history_and_account_isolation() {
     let dm = client.poll().unwrap().selected_channel;
     client
         .dispatch(crate::Action::Send {
+            embeds: vec![],
             local_id: "kept-message".into(),
             channel_id: dm.clone(),
             content: "Keep this history".into(),

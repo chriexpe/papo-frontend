@@ -31,8 +31,8 @@ References:
 | --- | --- | --- | --- |
 | 1 | 1, 2; role/permission portion of 6 | Preserve all eight role permissions; shared moderator deletion policy; acknowledged Delete from chat, pins and search | Accepted by user on 2026-10-23 |
 | 2 | 3 | Profile block/unblock, blocked-user settings, hide/reopen DMs, global-list and account synchronization | Accepted by user on 2026-10-23 |
-| 3 | 4; webhook authorization portion of 6 | Webhook management, one-time token disclosure, identity edits and revocation | Built; awaiting user review |
-| 4 | 5 | Structured custom embed composer/editor, preview, limits and protected-media preservation | Pending |
+| 3 | 4; webhook authorization portion of 6 | Webhook management, one-time token disclosure, identity edits and revocation | Accepted by user on 2026-10-23 |
+| 4 | 5 | Structured custom embed composer/editor, preview, limits and protected-media preservation | Built; awaiting user review |
 | 5 | 7, 8 | Apply channel notification policy to all with partial-failure reporting; independent inbox pagination and mark-loaded-read | Pending |
 | 6 | 9, 10 | Permission-aware `@everyone` and shared-catalog Unicode emoji suggestions | Pending |
 | 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | Pending |
@@ -217,3 +217,74 @@ Contract references:
 [webhook handlers](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/handlers/webhooks.go),
 [webhook service](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/services/webhooks.go),
 [Aero management](https://github.com/Papo-Chat/papo-frontend/blob/3817e3e1760b26c470eb7deefb32f9d4f616395c/src/routes/admin/webhooks/+page.svelte).
+
+## Part 4 implementation and review
+
+- Send's long-press menu opens **Create or edit embeds**. An empty composer exposes
+  the same options on tap. A compact draft chip opens the editor again without
+  expanding the main textbox. The editor stages changes until Apply; Cancel and
+  its discard confirmation preserve the previous draft. Cards can be added,
+  removed and moved within the backend's ten-card limit.
+- Typed UniFFI drafts cover title, description, link, accent, site, author identity,
+  footer text, image, thumbnail, direct video and up to 25 fields per card. Shared
+  core validation counts Unicode code points, including the backend's 4192-character
+  description and 6000-character aggregate text limits. Presentation errors and
+  counts use English/Portuguese Android resources and plurals.
+- Explicit Preview uses the received-card layout, shared media cache/decoder,
+  player and viewer. Image/thumbnail preview follows the backend's primary image
+  priority. Previewing, rather than typing a URL, starts remote media requests;
+  actual server downloading/resizing can still reject or change the media.
+- Images can use HTTPS URLs or uniquely named image files already attached to
+  the same message. The native adapter resolves the actual multipart filenames;
+  changed/removed references fail validation rather than silently losing media.
+  Referenced uploads become embed media rather than duplicate attachments.
+  Spoiler files remain independent attachments because embed media has no filename
+  on which to preserve the agreed spoiler cover. Video uses the supported HTTPS
+  URL plus MIME input, not a fabricated attachment URL.
+- Embeds use the existing durable text outbox or attachment upload path, retaining
+  reply bindings and the per-reply notification choice. Owner-scoped drafts survive
+  navigation/restarts and participate in Forget server cleanup. A late send ACK
+  compares the persisted draft before clearing it, preserving later edits made
+  after leaving and re-entering the conversation.
+- Existing-message editing keeps stable mention bindings and now waits for the
+  acknowledged server result. Custom metadata and direct-video cards are editable;
+  an untouched embed list is omitted from PUT, while an explicit empty list removes
+  editable custom cards. Ordinary automatic previews remain backend-managed.
+
+**Confirmed backend limitation:** received custom image/thumbnail/author media is
+protected and its identity is absent from authoring inputs. `PUT /messages/:id`
+replaces the full custom list and accepts neither existing embed IDs/protected
+media identities nor multipart replacements. Footer icon input is also absent.
+If any custom card cannot be represented without data loss, Compose disables
+replacement of the entire list and explains why. Message text can still be edited
+with the list omitted, preserving the original IDs and media. No public URL is
+invented and no editable subset is sent in place of the complete list.
+
+References:
+[custom input and limits](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/services/embeds_custom.go),
+[create/edit service](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/services/messages.go),
+[edit handler](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/handlers/messages.go).
+
+Validation: 805 workspace Rust tests pass (275 egui, 60 Android adapter, 470 core;
+one pre-existing ignored test). Host checks cover full typed round-trips, Unicode
+limits, multipart attachment references, the real HTTP omission/replacement/removal
+contract, rejected edits, author isolation and preservation of protected media.
+Strict Clippy, Compose formatting, universal debug APK, instrumentation APK
+compilation and Android lint pass. Two new UI flows are compiled, not executed;
+local instrumentation remains deferred until user acceptance.
+
+User checks:
+
+1. Hold Send, or tap Message options with an empty textbox. Create a card, preview
+   it, Apply and send with/without ordinary message text.
+2. Add/move/remove multiple cards, inline fields and author/footer details. Try an
+   invalid URL/color and overlong text; Apply must explain the problem.
+3. Attach an image first and reference it from Media. Rename/remove that file after
+   Apply; the composer must request correction before sending. Check an HTTPS image,
+   GIF or direct video in Preview, including the shared player/viewer.
+4. Leave the conversation and return with an unsent embed. Cancel an editor change
+   and verify the original draft remains. Forgetting the server removes this draft.
+5. Hold an authored message and edit its card/title/body. Preserve any mentions and
+   unsent composer draft. A protected-image message must explain the editing limit;
+   a text-only change must retain its original media. Server rejection keeps the
+   editing dialog open.

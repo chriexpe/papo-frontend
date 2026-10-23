@@ -1,6 +1,7 @@
 //! Explicit, ephemeral demo. Uses the real core reducer, creates no sessions,
 //! opens no sockets and cannot send anything to a real server.
 use super::*;
+use base64::Engine;
 use papo_core::api::{models, ws::Event};
 use papo_core::state::Store;
 
@@ -57,7 +58,6 @@ impl Demo {
             {"id":"bruno","username":"bruno","nickname":"Bruno","status":"away"},
             {"id":"dora","username":"dora","nickname":"Dora","status":"busy"}
         ]))));
-        use base64::Engine;
         let avatar = base64::engine::general_purpose::STANDARD.encode(include_bytes!(
             "../../../android/compose/src/main/assets/demo/portrait.png"
         ));
@@ -482,18 +482,28 @@ impl Demo {
                 content,
                 reply_to,
                 notify_reply: _,
+                embeds,
             } => {
-                if content.trim().is_empty() {
+                let embeds = embed_authoring::inputs(embeds, &[])?;
+                if content.trim().is_empty() && embeds.is_empty() {
                     return Err("Write a message first".into());
                 }
-                self.store.apply(Update::Sent(Box::new(message(
+                let mut sent = message(
                     &local_id,
                     &channel_id,
                     "me",
                     &content,
                     reply_to,
                     now_millis(),
-                ))));
+                );
+                sent.previews = embeds
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        papo_core::embed_authoring::preview(e, &format!("{local_id}-embed-{i}"))
+                    })
+                    .collect();
+                self.store.apply(Update::Sent(Box::new(sent)));
                 self.events
                     .push(json!({"type":"accepted","localId":local_id}));
             }
@@ -504,8 +514,13 @@ impl Demo {
                 reply_to,
                 notify_reply: _,
                 files,
+                embeds,
             } => {
                 let files = prepare_uploads(files)?;
+                let embeds = embed_authoring::inputs(
+                    embeds,
+                    &files.iter().map(|f| f.wire_name()).collect::<Vec<_>>(),
+                )?;
                 let mut sent = message(
                     &local_id,
                     &channel_id,
@@ -514,7 +529,40 @@ impl Demo {
                     reply_to,
                     now_millis(),
                 );
+                sent.previews = embeds
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        papo_core::embed_authoring::preview(e, &format!("{local_id}-embed-{i}"))
+                    })
+                    .collect();
                 for file in files {
+                    let mut used = false;
+                    for (input, preview) in embeds.iter().zip(&mut sent.previews) {
+                        if [input.image.as_ref(), input.thumbnail.as_ref()]
+                            .into_iter()
+                            .flatten()
+                            .any(|m| m.attachment_name == file.wire_name())
+                        {
+                            if input
+                                .thumbnail
+                                .as_ref()
+                                .or(input.image.as_ref())
+                                .is_some_and(|m| m.attachment_name == file.wire_name())
+                            {
+                                preview.image_data = Some(
+                                    base64::engine::general_purpose::STANDARD.encode(
+                                        std::fs::read(&file.path)
+                                            .map_err(|_| "Attachment unavailable")?,
+                                    ),
+                                );
+                            }
+                            used = true;
+                        }
+                    }
+                    if used {
+                        continue;
+                    }
                     let id = format!("demo-local-{}", papo_core::cache::new_local_id());
                     let copy = file
                         .path
@@ -536,18 +584,43 @@ impl Demo {
             Action::Edit {
                 message_id,
                 content,
+                embeds,
             } => {
                 let message = self
                     .store
                     .preview_message(&message_id)
                     .filter(|m| self.store.can_edit_message(m))
                     .ok_or("Only the message author can edit it")?;
-                let channel_id = message.channel_id.clone();
+                let mut edited = message.clone();
+                edited.content = content;
+                if let Some(drafts) = embeds {
+                    if papo_core::embed_authoring::editable(&edited.previews).is_none() {
+                        return Err("Protected embed media must be preserved".into());
+                    }
+                    let inputs = embed_authoring::inputs(drafts, &[])?;
+                    edited
+                        .previews
+                        .retain(|p| p.source_type.as_deref() != Some("custom"));
+                    edited
+                        .previews
+                        .extend(inputs.iter().enumerate().map(|(i, e)| {
+                            papo_core::embed_authoring::preview(
+                                e,
+                                &format!("{message_id}-embed-{i}"),
+                            )
+                        }));
+                }
                 self.store
                     .apply(Update::Event(Box::new(Event::MessageEdited {
-                        id: message_id,
-                        channel_id,
-                        content,
+                        id: message_id.clone(),
+                        channel_id: edited.channel_id.clone(),
+                        content: edited.content,
+                    })));
+                self.store
+                    .apply(Update::Event(Box::new(Event::MessageEmbedsUpdated {
+                        message_id,
+                        channel_id: edited.channel_id,
+                        embeds: edited.previews,
                     })));
             }
             Action::Delete { message_id } => {
@@ -751,6 +824,7 @@ mod tests {
         let mut demo = Demo::new();
         assert_eq!(demo.poll()["messages"].as_array().unwrap().len(), 10);
         demo.dispatch(Action::Send {
+            embeds: vec![],
             local_id: "test-send".into(),
             channel_id: "general".into(),
             content: "hello 👋".into(),

@@ -1376,6 +1376,7 @@ fn custom_embeds_survive_outbox_reopen_with_exact_payload() {
         description: "Texto rico".into(),
         url: "https://example.org".into(),
         image: Some(crate::api::models::CustomEmbedMediaInput {
+            attachment_name: String::new(),
             url: "https://example.org/img.png".into(),
             mime_type: "image/png".into(),
         }),

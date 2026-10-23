@@ -375,6 +375,58 @@ private fun EmbedCard(
         }
         return
     }
+    EmbedCardLayout(
+        e,
+        authorImage = {
+            if (e.hasAuthorImage)
+                Box(Modifier.size(24.dp).clip(RoundedCornerShape(12.dp))) {
+                    MediaImage(
+                        server,
+                        model,
+                        "${e.author} avatar",
+                        embed = e,
+                        author = true,
+                        viewer = false,
+                    )
+                }
+        },
+        media = {
+            when (e.kind) {
+                "image",
+                "gif" ->
+                    ReservedMedia(e.width, e.height, fallback = 4f / 3f, tag = "embed-${e.id}") {
+                        EmbedVisual(e, server, model, onPlayer, onActions)
+                    }
+                "video" ->
+                    ReservedMedia(e.width, e.height, tag = "embed-${e.id}") {
+                        EmbedVisual(e, server, model, onPlayer, onActions)
+                    }
+                "iframe" ->
+                    ReservedMedia(e.width, e.height, tag = "embed-${e.id}") {
+                        val id = "${server.url}/${server.me}/iframe/${e.id}"
+                        if (activePlayer == id) ProviderPlayer(e.iframeUrl, server, onPlayer)
+                        else {
+                            if (e.hasImage)
+                                MediaImage(server, model, e.title, embed = e, viewer = false)
+                            PlayButton(e.title.ifBlank { ui(R.string.youtube_video) }) {
+                                onPlayer(id)
+                            }
+                        }
+                    }
+            }
+        },
+    )
+}
+
+/**
+ * One card presentation for received embeds and authoring previews; media sources stay explicit.
+ */
+@Composable
+internal fun EmbedCardLayout(
+    e: EmbedView,
+    authorImage: @Composable () -> Unit = {},
+    media: @Composable () -> Unit = {},
+) {
     val uriHandler = LocalUriHandler.current
     val publicUrl = remember(e.url) { e.url.takeIf(::isPublicLink) }
     val accent =
@@ -388,7 +440,7 @@ private fun EmbedCard(
             .padding(start = 3.dp)
             .then(if (accent != null) Modifier.background(accent.copy(alpha = .08f)) else Modifier)
     ) {
-        if (e.kind != "gif")
+        if (e.kind != "gif" || e.sourceType == "custom")
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (e.provider.isNotBlank())
                     Text(
@@ -401,22 +453,12 @@ private fun EmbedCard(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        if (e.hasAuthorImage)
-                            Box(Modifier.size(24.dp).clip(RoundedCornerShape(12.dp))) {
-                                MediaImage(
-                                    server,
-                                    model,
-                                    "${e.author} avatar",
-                                    embed = e,
-                                    author = true,
-                                    viewer = false,
-                                )
-                            }
+                        authorImage()
                         Text(e.author, style = MaterialTheme.typography.labelMedium)
                     }
-                if (e.title.isNotBlank())
+                if (e.title.isNotBlank() || (e.sourceType == "custom" && publicUrl != null))
                     Text(
-                        e.title,
+                        e.title.ifBlank { e.url },
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier =
@@ -446,27 +488,7 @@ private fun EmbedCard(
                         }
                     }
             }
-        when (e.kind) {
-            "image",
-            "gif" ->
-                ReservedMedia(e.width, e.height, fallback = 4f / 3f, tag = "embed-${e.id}") {
-                    EmbedVisual(e, server, model, onPlayer, onActions)
-                }
-            "video" ->
-                ReservedMedia(e.width, e.height, tag = "embed-${e.id}") {
-                    EmbedVisual(e, server, model, onPlayer, onActions)
-                }
-            "iframe" ->
-                ReservedMedia(e.width, e.height, tag = "embed-${e.id}") {
-                    val id = "${server.url}/${server.me}/iframe/${e.id}"
-                    if (activePlayer == id) ProviderPlayer(e.iframeUrl, server, onPlayer)
-                    else {
-                        if (e.hasImage)
-                            MediaImage(server, model, e.title, embed = e, viewer = false)
-                        PlayButton(e.title.ifBlank { ui(R.string.youtube_video) }) { onPlayer(id) }
-                    }
-                }
-        }
+        media()
         if (e.footer.isNotBlank())
             Text(
                 e.footer,
@@ -529,7 +551,7 @@ private fun BoxScope.EmbedVisual(
 }
 
 @Composable
-private fun BoxScope.VideoPreview(
+internal fun BoxScope.VideoPreview(
     server: ServerState,
     model: PapoViewModel,
     media: ViewerMedia,

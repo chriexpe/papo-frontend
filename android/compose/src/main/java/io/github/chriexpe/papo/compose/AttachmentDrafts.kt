@@ -3,6 +3,7 @@ package io.github.chriexpe.papo.compose
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import io.github.chriexpe.papo.core.EmbedDraft
 import io.github.chriexpe.papo.core.UploadFile
 import java.io.File
 import java.io.IOException
@@ -123,7 +124,14 @@ internal class AttachmentDrafts(
     private val context: Context,
     private val scope: CoroutineScope,
     private val upload:
-        suspend (ServerState, String, String?, Boolean, List<PendingAttachment>) -> UploadReceipt,
+        suspend (
+            ServerState,
+            String,
+            String?,
+            Boolean,
+            List<PendingAttachment>,
+            List<EmbedDraft>,
+        ) -> UploadReceipt,
 ) {
     private val preferences =
         context.getSharedPreferences("compose-attachments", Context.MODE_PRIVATE)
@@ -554,6 +562,7 @@ internal class AttachmentDrafts(
         text: String,
         reply: String?,
         notifyReply: Boolean = true,
+        embeds: List<EmbedDraft> = emptyList(),
         onResult: (Boolean) -> Unit,
     ) =
         scope
@@ -572,7 +581,7 @@ internal class AttachmentDrafts(
                         // cannot silently resend a POST whose outcome it never received.
                         persist(key)
                         dispatched = true
-                        val result = upload(server, text, reply, notifyReply, draft.files)
+                        val result = upload(server, text, reply, notifyReply, draft.files, embeds)
                         if (result.accepted) {
                             update(
                                 key,
