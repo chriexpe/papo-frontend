@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 mod account;
 mod admin_audit;
 mod administration;
+mod appearance;
 pub mod bindings;
 pub mod demo;
 mod discovery;

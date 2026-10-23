@@ -51,6 +51,16 @@ internal fun MessageRow(
     media: @Composable () -> Unit,
 ) {
     val appearance = LocalClientPreferences.current
+    val messageAppearance = LocalMessageAppearance.current
+    val headingHeight =
+        maxOf(
+            24.dp,
+            48.dp -
+                with(androidx.compose.ui.platform.LocalDensity.current) {
+                    messageAppearance.lineHeight.toDp()
+                } -
+                messageAppearance.headingGap,
+        )
     val openProfile = LocalOpenProfile.current
     val openExternal = LocalOpenExternalProfile.current
     val external = message.externalAuthor
@@ -112,9 +122,8 @@ internal fun MessageRow(
                     // Put all separation before a message. Padding both sides made the first
                     // continuation inherit the author row's larger bottom padding.
                     top =
-                        if (grouped) {
-                            if (appearance.compact) 0.dp else 2.dp
-                        } else if (appearance.compact) 4.dp else 8.dp,
+                        if (grouped) messageAppearance.continuationGap
+                        else messageAppearance.authorGap,
                 ),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -139,7 +148,7 @@ internal fun MessageRow(
             }
             Column(
                 Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                verticalArrangement = Arrangement.spacedBy(messageAppearance.headingGap),
             ) {
                 if (!grouped)
                     MessageAuthorHeading(
@@ -147,6 +156,7 @@ internal fun MessageRow(
                         time,
                         external != null,
                         authorAction,
+                        headingHeight,
                         appearance.timestamps,
                         onActions,
                     )
@@ -233,6 +243,7 @@ private fun MessageAuthorHeading(
     time: String,
     external: Boolean,
     authorAction: Modifier,
+    headingHeight: androidx.compose.ui.unit.Dp,
     timestamps: Boolean,
     onActions: () -> Unit,
 ) {
@@ -251,9 +262,9 @@ private fun MessageAuthorHeading(
             overflow = TextOverflow.Ellipsis,
             modifier =
                 Modifier.weight(1f, fill = false)
-                    // Together with the 2 dp body gap and compact's 22 sp line, this
-                    // fills the avatar's 48 dp row instead of adding an invisible tail.
-                    .heightIn(min = 24.dp)
+                    // The heading absorbs any extra avatar height at small text sizes;
+                    // the first continuation must have the same gap as later ones.
+                    .heightIn(min = headingHeight)
                     .then(authorAction)
                     .wrapContentHeight(Alignment.CenterVertically)
                     .testTag("author-${message.id}"),
@@ -274,7 +285,7 @@ private fun MessageAuthorHeading(
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
             IconButton(
                 onClick = onActions,
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier.size(headingHeight),
             ) {
                 Icon(
                     Icons.Outlined.MoreHoriz,

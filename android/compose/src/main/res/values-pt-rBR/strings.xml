@@ -932,4 +932,21 @@
     <string name="density_compact">"Compacta"</string>
     <string name="density_normal">"Normal"</string>
     <string name="density_comfortable">"Confortável"</string>
+    <string name="text_small">"Pequeno"</string>
+    <string name="text_normal">"Normal"</string>
+    <string name="text_large">"Grande"</string>
+    <string name="account_text_size">"Tamanho do texto"</string>
+    <string name="account_text_size_description">"Ajusta os textos do app junto com o tamanho de texto do Android."</string>
+    <string name="message_density">"Espaçamento das mensagens"</string>
+    <string name="message_density_description">"Ajusta a distância entre linhas e entre mensagens."</string>
+    <string name="appearance_account_scope">"Sincronizado com sua conta em %1$s."</string>
+    <string name="appearance_demo_scope">"As alterações na demonstração duram esta sessão."</string>
+    <string name="appearance_syncing">"Sincronizando aparência…"</string>
+    <string name="appearance_network_error">"Não foi possível sincronizar a aparência. Confira a conexão e tente novamente."</string>
+    <string name="appearance_rate_limited">"O servidor está limitando as solicitações. Tente novamente em instantes."</string>
+    <string name="appearance_unavailable">"A aparência da conta está indisponível neste servidor no momento."</string>
+    <string name="appearance_incompatible">"O servidor retornou ajustes que este cliente não consegue atualizar."</string>
+    <string name="appearance_update_failed">"Não foi possível concluir a sincronização da aparência. Tente novamente."</string>
+    <string name="appearance_preview_second">"Mensagens seguidas ficam juntas."</string>
+    <string name="appearance_preview_third">"Escolha o espaçamento que combina com você."</string>
 </resources>

@@ -56,6 +56,23 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
             UiDensity.entries.firstOrNull { it.value == string("ui-density", "normal") }
                 ?: UiDensity.Normal
 
+    fun messageAppearance(server: ServerState?): MessageAppearance {
+        val prefix = server?.appearanceOwner()?.cachePrefix().orEmpty()
+        val remote = server?.appearance
+        val font = remote?.fontSize ?: string(prefix + "font", "medium")
+        val density = remote?.messageDensity ?: string(prefix + "density")
+        // Keep the former layout while its conditional, once-per-account import is pending.
+        // Existing non-default server choices always win over the old global switch.
+        val importCompact =
+            !boolean(prefix + "migrated", false) &&
+                compact &&
+                (density.isBlank() || density == "normal")
+        return MessageAppearance(
+            AccountFontSize.from(font),
+            if (importCompact) MessageDensity.Compact else MessageDensity.from(density),
+        )
+    }
+
     val replyNotifications
         get() = boolean("reply-notifications")
 

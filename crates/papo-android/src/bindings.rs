@@ -419,6 +419,8 @@ pub struct ClientSnapshot {
     pub push_registered: bool,
     #[serde(default = "default_notifications_enabled")]
     pub notifications_enabled: bool,
+    #[serde(default)]
+    pub appearance: Option<crate::appearance::AppearanceView>,
     pub selected_channel: String,
     pub channels: Vec<ChannelView>,
     pub members: Vec<MemberView>,

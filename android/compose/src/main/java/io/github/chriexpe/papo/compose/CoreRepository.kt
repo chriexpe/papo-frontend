@@ -144,6 +144,17 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val snapshots = linkedMapOf<String, ServerState>()
     private val mutableState = MutableStateFlow(PapoState())
     val state = mutableState.asStateFlow()
+    internal val accountAppearance =
+        AccountAppearanceCoordinator(
+            application,
+            viewModelScope,
+            { server ->
+                state.value.servers.any {
+                    it.url == server.url && it.me == server.me && it.screen == "chat"
+                }
+            },
+            ::applyAppearance,
+        )
     private val forgottenServers = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var activeUrl = preferences.getString("active-server", "").orEmpty()
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
@@ -558,6 +569,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
 
     private suspend fun clearServerLocalData(url: String) {
+        withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { accountAppearance.forget(url) }
         attachments.forgetServer(url)
         withContext(kotlinx.coroutines.Dispatchers.IO) {
             if (!url.startsWith("demo:"))
@@ -778,6 +790,25 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val accountMutex = Mutex()
+
+    private suspend fun applyAppearance(
+        server: ServerState,
+        change: io.github.chriexpe.papo.core.AppearanceChange?,
+    ): io.github.chriexpe.papo.core.AppearanceView = accountMutex.withLock {
+        val client = accountClient(server)
+        val result =
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                client.accountAppearance(server.me, change)
+            }
+        withContext(dispatcher) {
+            poll()
+            check(handles[server.url] === client && snapshots[server.url]?.me == server.me) {
+                ui(R.string.account_changed)
+            }
+        }
+        result
+    }
+
     private val mutableRecoveryLink = MutableStateFlow<String?>(null)
     internal val recoveryLink = mutableRecoveryLink.asStateFlow()
 

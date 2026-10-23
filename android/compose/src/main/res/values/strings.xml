@@ -932,4 +932,21 @@
     <string name="density_compact">"Compact"</string>
     <string name="density_normal">"Normal"</string>
     <string name="density_comfortable">"Comfortable"</string>
+    <string name="text_small">"Small"</string>
+    <string name="text_normal">"Normal"</string>
+    <string name="text_large">"Large"</string>
+    <string name="account_text_size">"Text size"</string>
+    <string name="account_text_size_description">"Scales app text in addition to Android’s text-size setting."</string>
+    <string name="message_density">"Message spacing"</string>
+    <string name="message_density_description">"Adjust line spacing and gaps between messages."</string>
+    <string name="appearance_account_scope">"Synced with your account on %1$s."</string>
+    <string name="appearance_demo_scope">"Demo changes last for this session."</string>
+    <string name="appearance_syncing">"Syncing appearance…"</string>
+    <string name="appearance_network_error">"Couldn’t sync appearance. Check your connection and try again."</string>
+    <string name="appearance_rate_limited">"The server is limiting requests. Try again shortly."</string>
+    <string name="appearance_unavailable">"Account appearance is unavailable on this server right now."</string>
+    <string name="appearance_incompatible">"The server returned settings this client cannot update."</string>
+    <string name="appearance_update_failed">"Couldn’t finish syncing appearance. Try again."</string>
+    <string name="appearance_preview_second">"Consecutive messages stay together."</string>
+    <string name="appearance_preview_third">"Choose the spacing that suits you."</string>
 </resources>

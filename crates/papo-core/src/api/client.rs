@@ -20,6 +20,10 @@ use url::Url;
 use super::models::Notification as NotificationItem;
 use super::models::*;
 
+#[path = "user_display.rs"]
+mod user_display;
+pub use user_display::{DisplayChange, DisplayFontSize, MessageDensity};
+
 const COOKIE_NAME: &str = "Auth";
 
 /// Pedaço lido por vez ao mandar um anexo. Grande o bastante para não

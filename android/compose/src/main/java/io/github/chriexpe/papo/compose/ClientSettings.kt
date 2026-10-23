@@ -265,6 +265,25 @@ private fun settingsEntries(server: ServerState, prefs: ClientPreferences): List
                 )
             )
         }
+        val accountAppearance = prefs.messageAppearance(server)
+        add(
+            SettingEntry(
+                "text-size",
+                "Appearance",
+                ui(R.string.account_text_size),
+                ui(accountAppearance.font.labelId),
+                "font small normal large texto tamanho fonte",
+            )
+        )
+        add(
+            SettingEntry(
+                "message-density",
+                "Appearance",
+                ui(R.string.message_density),
+                ui(accountAppearance.density.labelId),
+                "compact messages normal comfortable spacing espaçamento mensagens compactas",
+            )
+        )
         add(
             SettingEntry(
                 "notifications-enabled",
@@ -403,7 +422,7 @@ internal fun ClientSettings(
                                 ::open,
                                 onLogout,
                             )
-                        "Appearance" -> AppearanceSettings()
+                        "Appearance" -> AppearanceSettings(server, model)
                         "Notifications" -> NotificationSettings(server)
                         "Language" -> LanguageSettings()
                         "Links" -> LinkSettings()

@@ -49,10 +49,7 @@ internal fun MessageContent(
     onActions: () -> Unit,
     media: @Composable () -> Unit,
 ) {
-    Column(
-        verticalArrangement =
-            Arrangement.spacedBy(if (LocalClientPreferences.current.compact) 2.dp else 4.dp)
-    ) {
+    Column(verticalArrangement = Arrangement.spacedBy(LocalMessageAppearance.current.contentGap)) {
         val content = remember(message.content, message.embeds) { message.visibleContent() }
         if (content.isNotBlank() && GifChoice.marker(message.content) == null)
             MessageText(message, server, model, onActions)
@@ -115,22 +112,26 @@ internal fun MessageResultsMediaHost(
             }
     }
     DisposableEffect(registry) { onDispose { registry.close() } }
-    CompositionLocalProvider(
-        LocalMediaViewer provides
-            { media ->
-                active = if (media.playback != null) media.id else null
-                viewed = media
-            },
-        LocalViewedMedia provides viewed,
-        LocalInlinePlayer provides active,
-        LocalPlaybackBookmarks provides bookmarks,
-        LocalMediaVisibilityRegistry provides registry,
-        LocalMediaViewport provides bounds,
-    ) {
-        Box(Modifier.fillMaxSize().onGloballyPositioned { bounds = it.boundsInWindow() }) {
-            content(active, { active = it }, if (enabled) visible else emptySet())
+    val appearance = LocalClientPreferences.current.messageAppearance(server)
+    MaterialTheme(typography = remember(appearance.font) { messageTypography(appearance.font) }) {
+        CompositionLocalProvider(
+            LocalMessageAppearance provides appearance,
+            LocalMediaViewer provides
+                { media ->
+                    active = if (media.playback != null) media.id else null
+                    viewed = media
+                },
+            LocalViewedMedia provides viewed,
+            LocalInlinePlayer provides active,
+            LocalPlaybackBookmarks provides bookmarks,
+            LocalMediaVisibilityRegistry provides registry,
+            LocalMediaViewport provides bounds,
+        ) {
+            Box(Modifier.fillMaxSize().onGloballyPositioned { bounds = it.boundsInWindow() }) {
+                content(active, { active = it }, if (enabled) visible else emptySet())
+            }
+            viewed?.let { media -> MediaViewer(server, model, media) { viewed = null } }
         }
-        viewed?.let { media -> MediaViewer(server, model, media) { viewed = null } }
     }
 }
 

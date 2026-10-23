@@ -48,12 +48,6 @@ internal val appearanceSwitches
                 ui(R.string.display_the_time_beside_each_author),
             ),
             AppearanceSwitch(
-                "compact",
-                ui(R.string.compact_messages),
-                ui(R.string.compact_messages_description),
-                false,
-            ),
-            AppearanceSwitch(
                 "animations",
                 ui(R.string.animate_gifs_and_stickers),
                 ui(R.string.turn_off_motion_while_keeping_images_visible),
@@ -67,10 +61,14 @@ internal val appearanceSwitches
         )
 
 @Composable
-internal fun AppearanceSettings() {
+internal fun AppearanceSettings(server: ServerState, model: PapoViewModel) {
     val prefs = LocalClientPreferences.current
     val target = LocalSettingTarget.current
     val list = rememberLazyListState()
+    val messageAppearance = LocalMessageAppearance.current
+    val status =
+        model.accountAppearance.states[server.appearanceOwner()] ?: AccountAppearanceStatus()
+    LaunchedEffect(server.url, server.me) { model.accountAppearance.refresh(server, force = true) }
     val order =
         listOf(
             "preview",
@@ -79,8 +77,12 @@ internal fun AppearanceSettings() {
             "theme",
             "glass",
             "ui-density",
+            "account-note",
+            "text-size",
+            "message-density",
+            "appearance-sync",
             "conversation-label",
-        ) + appearanceSwitches.map { it.key } + "text-size"
+        ) + appearanceSwitches.map { it.key }
     LaunchedEffect(target) {
         val index = order.indexOf(target)
         if (index >= 0) list.scrollToItem(index)
@@ -101,7 +103,7 @@ internal fun AppearanceSettings() {
             SettingsCard {
                 Column(
                     Modifier.padding(LocalUiDimensions.current.screenPadding),
-                    verticalArrangement = Arrangement.spacedBy(if (prefs.compact) 6.dp else 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(messageAppearance.contentGap),
                 ) {
                     Text(
                         "# design-ui",
@@ -113,7 +115,9 @@ internal fun AppearanceSettings() {
                         verticalAlignment = Alignment.Top,
                     ) {
                         if (prefs.avatars) Avatar("Ana")
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(messageAppearance.headingGap)
+                        ) {
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -126,7 +130,23 @@ internal fun AppearanceSettings() {
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                             }
-                            Text(ui(R.string.a_little_more_like_you))
+                            Column(
+                                verticalArrangement =
+                                    Arrangement.spacedBy(messageAppearance.continuationGap)
+                            ) {
+                                Text(
+                                    ui(R.string.a_little_more_like_you),
+                                    lineHeight = messageAppearance.lineHeight,
+                                )
+                                Text(
+                                    ui(R.string.appearance_preview_second),
+                                    lineHeight = messageAppearance.lineHeight,
+                                )
+                                Text(
+                                    ui(R.string.appearance_preview_third),
+                                    lineHeight = messageAppearance.lineHeight,
+                                )
+                            }
                         }
                     }
                     GlassPill {
@@ -198,6 +218,18 @@ internal fun AppearanceSettings() {
                 }
             }
         }
+        item("account-note") {
+            Text(
+                if (server.isDemo) ui(R.string.appearance_demo_scope)
+                else ui(R.string.appearance_account_scope, server.name),
+                Modifier.padding(8.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        item("text-size") { AccountFontSetting(server, model, status.busy) }
+        item("message-density") { AccountDensitySetting(server, model, status.busy) }
+        item("appearance-sync") { AppearanceSyncStatus(server, model, status) }
         item("conversation-label") { SettingsLabel(ui(R.string.conversations)) }
         items(appearanceSwitches, key = { it.key }) { entry ->
             SettingsCard {
@@ -210,14 +242,6 @@ internal fun AppearanceSettings() {
                     prefs.set(entry.key, it)
                 }
             }
-        }
-        item("text-size") {
-            Text(
-                ui(R.string.text_size_follows_android_s_font_and_display_settings),
-                Modifier.padding(8.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

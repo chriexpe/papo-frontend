@@ -2048,6 +2048,71 @@ class PapoUiTest {
     }
 
     @Test
+    fun accountTextSizeAndMessageSpacingApplyAndSurviveActivityRecreation() {
+        chat()
+        val fontScale =
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .resources
+                .displayMetrics
+                .scaledDensity /
+                InstrumentationRegistry.getInstrumentation()
+                    .targetContext
+                    .resources
+                    .displayMetrics
+                    .density
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithText("Appearance").performClick()
+        fun choose(tag: String) {
+            compose.onNodeWithTag("appearance-settings").performScrollToNode(hasTestTag(tag))
+            compose.onNodeWithTag(tag).performClick()
+            compose.waitUntil(5000) {
+                val config = compose.onNodeWithTag(tag).fetchSemanticsNode().config
+                config.getOrNull(SemanticsProperties.Selected) == true &&
+                    config.getOrNull(SemanticsProperties.Disabled) == null
+            }
+        }
+        choose("account-font-huge")
+        choose("message-density-comfortable")
+        compose
+            .onNodeWithTag("appearance-settings")
+            .performScrollToNode(hasText("A little more like you."))
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        compose
+            .onNodeWithText("A little more like you.", useUnmergedTree = true)
+            .performSemanticsAction(
+                androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult
+            ) {
+                it(layouts)
+            }
+        assertEquals(20f, layouts.single().layoutInput.style.fontSize.value, .01f)
+        activity.recreate()
+        compose
+            .onNodeWithTag("appearance-settings")
+            .performScrollToNode(hasTestTag("account-font-huge"))
+        compose.onNodeWithTag("account-font-huge").assertIsSelected()
+        compose
+            .onNodeWithTag("appearance-settings")
+            .performScrollToNode(hasTestTag("message-density-comfortable"))
+        compose.onNodeWithTag("message-density-comfortable").assertIsSelected()
+        assertEquals(
+            fontScale,
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .resources
+                .displayMetrics
+                .scaledDensity /
+                InstrumentationRegistry.getInstrumentation()
+                    .targetContext
+                    .resources
+                    .displayMetrics
+                    .density,
+            .001f,
+        )
+    }
+
+    @Test
     fun consecutiveMessagesShareTheirHeadingAndCompactReducesTheirSpacing() {
         chat()
         lateinit var model: PapoViewModel
@@ -2135,8 +2200,15 @@ class PapoUiTest {
         compose.onNodeWithText("Appearance").performClick()
         compose
             .onNodeWithTag("appearance-settings")
-            .performScrollToNode(hasContentDescription("Compact messages"))
-        compose.onNodeWithContentDescription("Compact messages").performClick()
+            .performScrollToNode(hasTestTag("message-density-compact"))
+        compose.onNodeWithTag("message-density-compact").performClick()
+        compose.waitUntil(5000) {
+            compose
+                .onNodeWithTag("message-density-compact")
+                .fetchSemanticsNode()
+                .config
+                .getOrNull(SemanticsProperties.Selected) == true
+        }
         androidx.test.espresso.Espresso.pressBack()
         androidx.test.espresso.Espresso.pressBack()
         compose.onNodeWithText("geral").performClick()

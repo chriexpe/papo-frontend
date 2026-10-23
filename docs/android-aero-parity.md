@@ -35,7 +35,7 @@ References:
 | 4 | 5 | Structured custom embed composer/editor, preview, limits and protected-media preservation | Functionality accepted by user on 2026-10-23; UI provisional |
 | 5 | 7, 8 | Apply channel notification policy to all with partial-failure reporting; independent inbox pagination and mark-loaded-read | Accepted by user on 2026-10-23 |
 | 6 | 9, 10 | Permission-aware `@everyone` and shared-catalog Unicode emoji suggestions | Accepted by user on 2026-10-23, including the received-mention correction |
-| 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | 7a UI density/composer accepted by user; 7b account typography/spacing pending |
+| 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | 7a UI density/composer accepted by user; 7b implemented, APK awaiting user review |
 
 Item 6 is a cross-cutting audit of existing administration, rather than a new
 administration implementation. Its remaining owner/delegate, channel, ban/reset,
@@ -661,3 +661,46 @@ checks that a short decoded image shrinks the fallback frame, with no letterbox
 padding, followed by portrait/video geometry; the known-metadata stability flow
 remains in place. Device execution stays deferred for the user's review. APK:
 `target/android-apks/papo-android-0.8.5-media-fallback.apk`.
+
+
+## Part 7b account typography and message spacing
+
+Appearance now exposes Small/Normal/Large text and Compact/Normal/Comfortable
+message spacing, replacing the old binary Compact messages switch. Text size
+applies to shared Material typography throughout the app, including the composer,
+settings, search and pins. Body text is 14/16/20 sp; small labels stay at least
+11 sp. Android system font scaling remains in effect. Spacing controls leading,
+continuation/author separation and Markdown/content gaps. The first author row
+fills the avatar height without adding an uneven gap after the first compact
+message. Interface density remains a separate device preference.
+
+The account display values come from `/auth/whoami` and acknowledged
+`PUT /users/settings` responses. Every write reads fresh raw configuration, changes
+only the selected display field, and forwards unknown/unrelated fields. The
+backend replaces a complete configuration and has no conditional revision API;
+simultaneous writes by different clients cannot be made atomic by this client.
+Core returns semantic errors; Android resources own English/Portuguese wording.
+
+The old device Compact switch imports once per server/account, only when the
+latest server value is still Normal. Existing Compact/Comfortable values win.
+Acknowledged values and the migration marker are cached together for offline
+startup. Failed writes retain the previous choice and offer Retry for the actual
+failed change. Lifecycle entry, reconnect and entering Appearance refresh settings;
+requests belong to the ViewModel, so leaving the page does not cancel a save.
+Owner/token checks and request tickets prevent late results from updating another
+account or a new request after sign-out. Forgetting a server removes all of its
+appearance caches and migration markers.
+
+Validation: all 826 workspace library tests pass (275 egui, 70 Android adapter,
+481 core), as do strict workspace Clippy, Compose formatting, the universal debug
+APK, instrumentation APK compilation and Android lint. The new HTTP fixture
+checks fresh reads, full-config preservation, rejection, owner mismatch and
+conditional migration. Compiled Android coverage adds migration/acknowledgement,
+retry, account isolation, late completion after cancellation, server forgetting,
+font/spacing tokens and activity recreation. Device execution remains deferred
+for the user's UI review.
+
+Review APK: `target/android-apks/papo-android-0.8.5-account-appearance.apk`.
+Try all three text sizes and spacing choices in Appearance, check the live preview
+and chat/composer, and reopen the app. Choices should follow the active account;
+changing interface density should remain independent.

@@ -64,7 +64,7 @@ private fun MarkdownBlocks(
     depth: Int = 0,
 ) {
     if (depth > 64) return
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(LocalMessageAppearance.current.contentGap)) {
         indices.forEach { index ->
             val node = document.nodes.getOrNull(index.toInt()) ?: return@forEach
             when (node.kind) {
@@ -80,13 +80,9 @@ private fun MarkdownBlocks(
                                 else -> MaterialTheme.typography.titleSmall
                             }.copy(fontWeight = FontWeight.Bold)
                         else
-                            MaterialTheme.typography.bodyLarge.let { body ->
-                                // Keep the font size; tighten leading as well as row padding so
-                                // compact is visibly denser even for single-line continuations.
-                                if (LocalClientPreferences.current.compact)
-                                    body.copy(lineHeight = 22.sp)
-                                else body
-                            }
+                            MaterialTheme.typography.bodyLarge.copy(
+                                lineHeight = LocalMessageAppearance.current.lineHeight
+                            )
                     MarkdownParagraph(
                         node.spans,
                         server,
@@ -119,7 +115,10 @@ private fun MarkdownBlocks(
                     }
                 }
                 "list" ->
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(
+                        verticalArrangement =
+                            Arrangement.spacedBy(LocalMessageAppearance.current.contentGap)
+                    ) {
                         node.children.forEachIndexed { offset, itemId ->
                             val item =
                                 document.nodes.getOrNull(itemId.toInt()) ?: return@forEachIndexed
@@ -130,7 +129,10 @@ private fun MarkdownBlocks(
                                     } else node.start?.let { "${it+offset.toULong()}." } ?: "•",
                                     modifier = Modifier.widthIn(min = 18.dp),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    style = MaterialTheme.typography.bodyLarge,
+                                    style =
+                                        MaterialTheme.typography.bodyLarge.copy(
+                                            lineHeight = LocalMessageAppearance.current.lineHeight
+                                        ),
                                 )
                                 Box(Modifier.weight(1f)) {
                                     MarkdownBlocks(

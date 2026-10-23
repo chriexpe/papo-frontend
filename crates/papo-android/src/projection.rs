@@ -331,6 +331,12 @@ pub(crate) fn project(store: &Store, url: &str, key: &str) -> Value {
             .as_ref()
             .is_none_or(|settings| settings.config.notifications.enabled)
     );
+    snapshot["appearance"] = json!(
+        store
+            .user_settings
+            .as_ref()
+            .map(crate::appearance::AppearanceView::from)
+    );
     snapshot["pinnedMessages"] = json!(
         store
             .pinned_in(&store.selected_channel)

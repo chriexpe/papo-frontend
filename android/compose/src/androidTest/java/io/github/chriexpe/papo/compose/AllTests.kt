@@ -21,6 +21,7 @@ import org.junit.runners.Suite
     MarkdownTest::class,
     MessageLinksTest::class,
     MediaLifecycleTest::class,
+    AccountAppearanceTest::class,
     PapoUiTest::class,
 )
 class AllTests

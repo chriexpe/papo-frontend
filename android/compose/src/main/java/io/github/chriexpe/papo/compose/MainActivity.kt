@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.chrisbanes.haze.HazeState
 import io.github.chriexpe.papo.core.Action
@@ -87,6 +88,27 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
     DisposableEffect(appearance) { onDispose { appearance.close() } }
     val theme = appearance.theme
     val glass = appearance.glass
+    val messageAppearance = appearance.messageAppearance(state.active)
+    val accountOwners = state.servers.map { Triple(it.url, it.me, it.screen) }
+    LaunchedEffect(accountOwners) { model.accountAppearance.synchronize(state.servers) }
+    val appearanceServer = state.active
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    // Refresh on account/reconnect/app entry. The request itself belongs to the ViewModel.
+    LaunchedEffect(
+        appearanceServer?.url,
+        appearanceServer?.me,
+        appearanceServer?.screen,
+        appearanceServer?.connection,
+        lifecycle,
+    ) {
+        if (appearanceServer?.screen == "chat" && appearanceServer.me.isNotBlank()) {
+            lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+                if (appearanceServer.connection == "online")
+                    model.accountAppearance.refresh(appearanceServer, force = true)
+                kotlinx.coroutines.awaitCancellation()
+            }
+        }
+    }
     val dark =
         when (theme) {
             "Dark" -> true
@@ -140,12 +162,16 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                 onSurface = Color(0xFF191B21),
                 onSurfaceVariant = Color(0xFF555D69),
             )
-    MaterialTheme(colorScheme = colors) {
+    MaterialTheme(
+        colorScheme = colors,
+        typography = remember(messageAppearance.font) { messageTypography(messageAppearance.font) },
+    ) {
         val haze = remember { HazeState() }
         CompositionLocalProvider(
             LocalHaze provides haze,
             LocalClientPreferences provides appearance,
             LocalUiDimensions provides UiDimensions(appearance.uiDensity),
+            LocalMessageAppearance provides messageAppearance,
             LocalGlass provides glass,
             LocalContentColor provides colors.onSurface,
         ) {
