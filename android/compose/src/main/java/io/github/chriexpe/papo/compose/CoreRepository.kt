@@ -828,6 +828,66 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         withContext(kotlinx.coroutines.Dispatchers.IO) { client.channelRules(server.me, id) }
     }
 
+    internal suspend fun webhooks(
+        server: ServerState
+    ): List<io.github.chriexpe.papo.core.WebhookView> = accountMutex.withLock {
+        val client = accountClient(server)
+        withContext(kotlinx.coroutines.Dispatchers.IO) { client.webhooks(server.me) }
+    }
+
+    internal suspend fun createWebhook(
+        server: ServerState,
+        channel: String,
+        name: String,
+    ): io.github.chriexpe.papo.core.WebhookReceipt = accountMutex.withLock {
+        val client = accountClient(server)
+        withContext(kotlinx.coroutines.Dispatchers.IO) {
+            client.createWebhook(server.me, channel, name)
+        }
+    }
+
+    internal suspend fun updateWebhook(
+        server: ServerState,
+        id: String,
+        nickname: String,
+        avatar: String?,
+        format: String?,
+    ): io.github.chriexpe.papo.core.WebhookView = accountMutex.withLock {
+        val client = accountClient(server)
+        val updated =
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                client.updateWebhook(server.me, id, nickname, avatar, format)
+            }
+        if (avatar != null && !server.isDemo) {
+            // Reuse the integration-avatar identity and cache. A cosmetic cache
+            // failure cannot turn an accepted PATCH into a failed save/retry.
+            withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val raw = "/webhooks/$id/avatar"
+                    val author =
+                        io.github.chriexpe.papo.core.ExternalAuthorView(
+                            "webhook",
+                            id,
+                            nickname,
+                            raw,
+                            "",
+                        )
+                    externalAvatarUrl(server.url, raw)?.let { url ->
+                        mediaCache.invalidate(
+                            mediaCache.scoped(externalAvatarMedia(server, author, url), server.url)
+                        )
+                    }
+                }
+            }
+        }
+        updated
+    }
+
+    internal suspend fun revokeWebhook(server: ServerState, id: String) = accountMutex.withLock {
+        val client = accountClient(server)
+        withContext(kotlinx.coroutines.Dispatchers.IO) { client.revokeWebhook(server.me, id) }
+    }
+
     internal suspend fun administrationAudit(
         server: ServerState,
         filter: io.github.chriexpe.papo.core.AuditFilter,

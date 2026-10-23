@@ -569,6 +569,47 @@ class PapoUiTest {
     }
 
     @Test
+    fun webhooksAreSearchableAndIssuedCredentialsCannotBeOpenedAgain() {
+        demo()
+        compose.onNodeWithContentDescription("Server settings").performClick()
+        compose.onNodeWithTag("server-settings-search").performTextInput("webhook integrations")
+        compose.onNodeWithText("Webhooks", substring = false).performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithTag("admin-webhooks").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("create-webhook").performClick()
+        compose.onNodeWithTag("webhook-name").performTextInput("Build updates")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithTag("webhook-channel").performClick()
+        compose.onNodeWithText("geral", substring = false).performClick()
+        compose.onNodeWithTag("save-new-webhook").performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithTag("webhook-token-dialog").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("copy-webhook-token").assertIsEnabled()
+        compose.onNodeWithText("Done", substring = false).performClick()
+        compose.onNodeWithText("Build updates", substring = false).performClick()
+        compose.onNodeWithTag("webhook-token-dialog").assertDoesNotExist()
+        compose.onNodeWithTag("webhook-nickname").performTextReplacement("Build bot")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithTag("save-webhook-identity").performScrollTo().performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithText("Displays as Build bot").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Revoke webhook", substring = false).performClick()
+        compose.onNodeWithText("Cancel", substring = false).performClick()
+        compose.onNodeWithText("Build updates", substring = false).assertIsDisplayed()
+        compose.onNodeWithText("Revoke webhook", substring = false).performClick()
+        compose.onNodeWithTag("confirm-revoke-webhook").performClick()
+        compose.waitUntil(5000) {
+            compose
+                .onAllNodesWithText("Build updates", substring = false)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        }
+    }
+
+    @Test
     fun serverEditorsSaveChannelAndRoleChanges() {
         demo()
         compose.onNodeWithContentDescription("Server settings").performClick()

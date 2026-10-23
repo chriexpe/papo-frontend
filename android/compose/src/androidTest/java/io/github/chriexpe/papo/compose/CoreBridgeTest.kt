@@ -12,6 +12,36 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class CoreBridgeTest {
     @Test
+    fun webhookReceiptCrossesUniFfiOnceWithoutEnteringSnapshots() {
+        val handle = NativeClient.demo()
+        try {
+            val initial = handle.poll()
+            val receipt = handle.createWebhook(initial.me, "general", "Integration")
+            val id = receipt.webhook().id
+            assertTrue(receipt.takeToken().isNotBlank())
+            assertEquals("", receipt.takeToken())
+            receipt.close()
+            assertEquals("Integration", handle.webhooks(initial.me).single().name)
+            handle.revokeWebhook(initial.me, id)
+            assertTrue(handle.webhooks(initial.me).isEmpty())
+            assertTrue(
+                initial.capabilities
+                    .copy(
+                        manageServer = false,
+                        manageChannels = false,
+                        manageRoles = false,
+                        banMembers = false,
+                        manageWebhooks = true,
+                    )
+                    .canAdmin
+            )
+        } finally {
+            handle.shutdown()
+            handle.close()
+        }
+    }
+
+    @Test
     fun coldBackgroundReconciliationWithoutASessionIsABoundedNoop() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val task = io.github.chriexpe.papo.core.NotificationReconcile()

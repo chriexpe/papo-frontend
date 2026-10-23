@@ -143,6 +143,33 @@ class MediaCacheTest {
         }
 
     @Test
+    fun acknowledgedAssetEditsInvalidateOnlyThatSharedCacheEntry() = runBlocking {
+        val directory = context.cacheDir.resolve("mutable-edit-${System.nanoTime()}")
+        val image = context.assets.open("demo/portrait.png").use { it.readBytes() }
+        try {
+            Fixture(image).use { server ->
+                MediaCache.isolated(context, directory).use { cache ->
+                    val a = cache.scoped(server.source("account-a"), "https://a.example")
+                    val b = cache.scoped(server.source("account-b"), "https://b.example")
+                    cache.images(a).toList()
+                    cache.images(b).toList()
+                    assertEquals(2, server.count.get())
+                    cache.invalidate(a)
+                    cache.images(b).toList()
+                    assertEquals("Another account retains its cached asset", 2, server.count.get())
+                    assertArrayEquals(image, cache.images(a).toList().single())
+                    assertEquals(3, server.count.get())
+                    assertFalse(
+                        server.requests.last().any { it.startsWith("If-None-Match:", true) }
+                    )
+                }
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun imagesAndPlaybackSharePersistentBytesAndSeparateAccounts() = runBlocking {
         val directory = context.cacheDir.resolve("shared-media-${System.nanoTime()}")
         val fixture = context.assets.open("demo/portrait.png").use { it.readBytes() }

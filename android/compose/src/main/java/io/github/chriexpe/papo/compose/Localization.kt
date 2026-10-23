@@ -148,6 +148,8 @@ internal fun uiLabel(value: String): String =
         "Channels" -> ui(R.string.channels)
         "Roles" -> ui(R.string.roles_2)
         "Stickers" -> ui(R.string.stickers)
+        "Webhooks" -> ui(R.string.webhooks)
+        "New webhook" -> ui(R.string.create_webhook)
         "Audit" -> ui(R.string.audit)
         "System" -> ui(R.string.system)
         "Light" -> ui(R.string.light)

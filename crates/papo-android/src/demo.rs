@@ -7,6 +7,7 @@ use papo_core::state::Store;
 pub struct Demo {
     pub(crate) store: Store,
     pub(crate) notifications: Vec<models::Notification>,
+    pub(crate) webhooks: Vec<models::Webhook>,
     events: Vec<Value>,
     media_files: HashMap<String, PathBuf>,
     navigation_serial: u64,
@@ -232,6 +233,7 @@ impl Demo {
         store.apply(Update::Notifications(notification.clone()));
         Self {
             notifications: notification,
+            webhooks: vec![],
             store,
             events: vec![],
             media_files: HashMap::new(),

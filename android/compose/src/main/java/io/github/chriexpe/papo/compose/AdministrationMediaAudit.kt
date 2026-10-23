@@ -377,6 +377,7 @@ private fun AuditTimelineEntry(entry: AuditEntryView) {
             "user_role" -> Icons.Outlined.Shield
             "user" -> Icons.Outlined.PersonOutline
             "emoji" -> Icons.Outlined.EmojiEmotions
+            "webhook" -> Icons.Outlined.Webhook
             "server" -> Icons.Outlined.Dns
             else -> Icons.Outlined.ChatBubbleOutline
         }

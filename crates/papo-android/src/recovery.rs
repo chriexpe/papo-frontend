@@ -59,9 +59,9 @@ impl From<ApiError> for RecoveryError {
             ApiError::Unauthorized | ApiError::NotFound | ApiError::ServerLocked => {
                 Self::Unavailable
             }
-            ApiError::Problem(details) | ApiError::DirectMessageBlocked(details) => {
-                Self::Server { details }
-            }
+            ApiError::Problem(details)
+            | ApiError::Forbidden(details)
+            | ApiError::DirectMessageBlocked(details) => Self::Server { details },
             ApiError::Decode(_) => Self::Unavailable,
         }
     }

@@ -175,6 +175,17 @@ internal fun serverSettingEntries(
             )
         )
     }
+    if (p.manageWebhooks) {
+        add(
+            SettingEntry(
+                "webhooks",
+                "Webhooks",
+                ui(R.string.webhooks),
+                ui(R.string.webhooks_summary),
+                ui(R.string.webhooks_keywords),
+            )
+        )
+    }
     if (p.manageChannels) {
         add(
             SettingEntry(
@@ -336,6 +347,9 @@ internal fun ServerSettingsSheet(
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val ui = remember(server.url, server.me) { AdministrationUi(server, model, scope, snackbar) }
+    val hooks = remember(server.url, server.me) { WebhookUi(server, model, scope, snackbar) }
+    val busy = ui.busy || hooks.busy
+    DisposableEffect(hooks) { onDispose { hooks.dismissToken() } }
     var pages by rememberSaveable(server.url, server.me) { mutableStateOf(listOf("Settings")) }
     var dirtyPages by
         rememberSaveable(server.url, server.me) { mutableStateOf(emptyList<String>()) }
@@ -352,7 +366,7 @@ internal fun ServerSettingsSheet(
         if (pages.size > 1) pages = pages.dropLast(1) else onDismiss()
     }
     fun back() {
-        if (!ui.busy) {
+        if (!ui.busy && !hooks.busy) {
             if (route in dirtyPages) discard = true else pop()
         }
     }
@@ -371,6 +385,14 @@ internal fun ServerSettingsSheet(
         pop()
     }
     LaunchedEffect(ui) { ui.refresh() }
+    LaunchedEffect(route, server.capabilities.manageWebhooks) {
+        if (!server.capabilities.manageWebhooks) hooks.dismissToken()
+        else if (
+            (route == "Webhooks" || route == "New webhook" || route.startsWith("Webhook/")) &&
+                !hooks.loaded
+        )
+            hooks.load()
+    }
     Dialog(
         onDismissRequest = ::back,
         properties =
@@ -397,15 +419,16 @@ internal fun ServerSettingsSheet(
                                 route.startsWith("Access/") -> ui(R.string.channel_access)
                                 route.startsWith("RolePeople/") -> ui(R.string.role_members)
                                 route.startsWith("Role/") -> ui(R.string.edit_role)
+                                route.startsWith("Webhook/") -> ui(R.string.webhook_edit_identity)
                                 else -> uiLabel(route)
                             }
                         SettingsHeader(
                             title,
                             ::back,
                             close = route == "Settings",
-                            enabled = !ui.busy,
+                            enabled = !busy,
                         ) {
-                            if (ui.busy)
+                            if (busy)
                                 CircularProgressIndicator(
                                     Modifier.padding(12.dp).size(24.dp),
                                     strokeWidth = 2.dp,
@@ -422,6 +445,24 @@ internal fun ServerSettingsSheet(
                             )
                         holder.SaveableStateProvider(route) {
                             when {
+                                (route == "Webhooks" ||
+                                    route == "New webhook" ||
+                                    route.startsWith("Webhook/")) &&
+                                    !server.capabilities.manageWebhooks ->
+                                    SettingsError(ui(R.string.webhook_permission_denied))
+                                route == "Webhooks" ->
+                                    WebhookAdministrationList(server, hooks, ::open)
+                                route == "New webhook" ->
+                                    WebhookCreation(server, hooks, dirty, saved)
+                                route.startsWith("Webhook/") ->
+                                    WebhookIdentityEditor(
+                                        server,
+                                        model,
+                                        hooks,
+                                        route.substringAfter('/'),
+                                        dirty,
+                                        saved,
+                                    )
                                 route == "Settings" ->
                                     ServerSettingsOverview(
                                         server,
@@ -494,6 +535,9 @@ internal fun ServerSettingsSheet(
                         }
                     }
                     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(12.dp))
+                }
+                hooks.issued?.let { receipt ->
+                    WebhookTokenDialog(server, receipt, hooks::dismissToken)
                 }
                 if (discard)
                     AlertDialog(
@@ -638,6 +682,17 @@ private fun ServerSettingsOverview(
                             ),
                             Icons.Outlined.Badge,
                             { open("Roles", "") },
+                        )
+                    }
+                }
+            if (p.manageWebhooks)
+                item {
+                    SettingsCard {
+                        SettingsLink(
+                            ui(R.string.webhooks),
+                            ui(R.string.webhooks_summary),
+                            Icons.Outlined.Webhook,
+                            { open("Webhooks", "") },
                         )
                     }
                 }

@@ -203,6 +203,7 @@ fn problem_error(status: StatusCode, body: &str) -> ApiError {
                 ApiError::Unauthorized
             }
         }
+        StatusCode::FORBIDDEN => ApiError::Forbidden(problem.message()),
         StatusCode::NOT_FOUND => ApiError::NotFound,
         StatusCode::TOO_MANY_REQUESTS => ApiError::TooManyRequests(problem.message()),
         _ => ApiError::Problem(if problem.status == 0 {
@@ -255,6 +256,8 @@ pub enum ApiError {
     ServerLocked,
     #[error("recurso não encontrado")]
     NotFound,
+    #[error("{0}")]
+    Forbidden(String),
     #[error("{0}")]
     DirectMessageBlocked(String),
     #[error("falha de rede: {0}")]
@@ -1319,6 +1322,39 @@ impl Api {
         .await
     }
 
+    // -- Webhook administration: tokens occur only in the create response. --
+
+    pub async fn webhooks(&self) -> ApiResult<Vec<Webhook>> {
+        let list: WebhookList = self.get("/webhooks").await?;
+        Ok(list.webhooks)
+    }
+
+    pub async fn create_webhook(&self, channel_id: &str, name: &str) -> ApiResult<CreatedWebhook> {
+        let created: CreatedWebhook = self
+            .post("/webhooks", &CreateWebhookRequest { channel_id, name })
+            .await?;
+        if created.token.is_empty() {
+            return Err(ApiError::Decode(
+                "Webhook creation returned no credential".into(),
+            ));
+        }
+        Ok(created)
+    }
+
+    pub async fn update_webhook_identity(
+        &self,
+        id: &str,
+        change: &UpdateWebhookIdentity,
+    ) -> ApiResult<Webhook> {
+        self.patch(&format!("/webhooks/{}", encode_path_segment(id)), change)
+            .await
+    }
+
+    pub async fn revoke_webhook(&self, id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/webhooks/{}", encode_path_segment(id)), None)
+            .await
+    }
+
     // -- Canais: ordem, permissões e notificação --------------------------
 
     pub async fn move_channel(
@@ -1899,3 +1935,9 @@ mod tests {
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod history_tests;
+
+fn encode_path_segment(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
+}

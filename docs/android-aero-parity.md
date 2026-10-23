@@ -8,7 +8,7 @@ feedback before continuing to the next part.
 
 ## Contract baseline
 
-Verified against the official sources on 2026-10-22:
+Verified against the official sources on 2026-10-23:
 
 - Backend `af057d5e0e107ae666c4f6776b36222ef18b2105`.
 - Aero frontend `3817e3e1760b26c470eb7deefb32f9d4f616395c`.
@@ -30,8 +30,8 @@ References:
 | Part | Brief items | Scope | Status |
 | --- | --- | --- | --- |
 | 1 | 1, 2; role/permission portion of 6 | Preserve all eight role permissions; shared moderator deletion policy; acknowledged Delete from chat, pins and search | Accepted by user on 2026-10-23 |
-| 2 | 3 | Profile block/unblock, blocked-user settings, hide/reopen DMs, global-list and account synchronization | Built; awaiting user review |
-| 3 | 4; webhook authorization portion of 6 | Webhook management, one-time token disclosure, identity edits and revocation | Pending |
+| 2 | 3 | Profile block/unblock, blocked-user settings, hide/reopen DMs, global-list and account synchronization | Accepted by user on 2026-10-23 |
+| 3 | 4; webhook authorization portion of 6 | Webhook management, one-time token disclosure, identity edits and revocation | Built; awaiting user review |
 | 4 | 5 | Structured custom embed composer/editor, preview, limits and protected-media preservation | Pending |
 | 5 | 7, 8 | Apply channel notification policy to all with partial-failure reporting; independent inbox pagination and mark-loaded-read | Pending |
 | 6 | 9, 10 | Permission-aware `@everyone` and shared-catalog Unicode emoji suggestions | Pending |
@@ -161,3 +161,59 @@ Contract references:
 [block service](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/services/user_blocks.go),
 [block storage](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/storage/user_blocks.go),
 [DM storage](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/storage/direct_messages.go).
+
+## Part 3 implementation and review
+
+- Server settings and its individual-setting search expose Webhooks only with
+  `manage_webhooks` (or server ownership). Delegates with only this permission
+  can reach administration without receiving other administration privileges.
+- Management lists active integrations with channel and persistent nickname.
+  Creation permits text/voice channels, excludes DMs/categories, and enforces
+  the backend's 80-character name limit. Identity editing supports a separate
+  100-character display nickname, preserving untouched avatar fields; empty
+  values explicitly clear nickname/avatar as defined by PATCH.
+- Avatar selection reuses the shared crop/animation pipeline and integration
+  avatar renderer. An acknowledged avatar edit invalidates only its existing
+  account-scoped cache entry; it does not create another media cache.
+- The new token exists only in an unpersisted one-shot UniFFI receipt and a
+  transient disclosure dialog. Metadata contains no token. Receipt debugging
+  redacts credentials; the dialog prevents screenshots, discards disclosure on
+  leaving/backgrounding, and marks explicit clipboard copies sensitive.
+- Revocation requires confirmation and preserves prior messages. Successful
+  create/edit/revoke changes reconcile from acknowledged responses, without
+  depending on another GET. Unconfirmed create responses are not automatically
+  retried; the UI requires checking the list before another creation.
+- Core exposes semantic HTTP permission rejection for localized presentation.
+  Existing audit sentences/icons recognize webhook create/update/revoke; server
+  audit filters include these events and revocation receives danger styling.
+
+Validation:
+
+- Rust workspace: 799 passed (275 egui, 58 Android adapter, 466 core); one existing
+  ignored smoke test. Strict workspace Clippy passed.
+- Host tests cover webhook-only delegates, insufficient server-management
+  permission, owner isolation, channel/name/image validation, one-time token
+  consumption/redaction, omitted versus cleared PATCH fields, actual avatar
+  upload, canonical HTTP routes/cookies, server denial, unconfirmed creation,
+  session changes and readable audit events.
+- Compose formatting, universal APK, instrumentation APK compilation and Android
+  lint passed. New UI/UniFFI/cache regression flows compile; their execution is
+  deferred until the user's review of this UI slice. Android CI for Part 2 passed
+  compilation checks; it does not run the emulator instrumentation suite.
+- APK: `target/android-apks/papo-android-0.8.5-aero-webhooks.apk` (arm64-v8a/x86_64),
+  installed on the phone emulator without clearing saved accounts. Production
+  webhook creation/editing/revocation is left to the user's test account.
+
+User checks:
+
+1. Open **Server settings → Webhooks**, or search server settings for Webhooks.
+   Create one in a text/voice channel and copy the one-time token before closing.
+2. Reopen its row: the token must not be retrievable. Edit the nickname/photo;
+   verify Cancel/discard, an untouched photo, removing a photo and animated images.
+3. Cancel a revocation, then confirm it. Previous messages should remain. A user
+   with only Manage webhooks should see this section; ordinary users should not.
+
+Contract references:
+[webhook handlers](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/handlers/webhooks.go),
+[webhook service](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/services/webhooks.go),
+[Aero management](https://github.com/Papo-Chat/papo-frontend/blob/3817e3e1760b26c470eb7deefb32f9d4f616395c/src/routes/admin/webhooks/+page.svelte).

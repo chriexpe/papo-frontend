@@ -46,7 +46,7 @@ impl Kind {
             Kind::Channels => family(&["channel."]),
             Kind::Roles => family(&["role.", "user_role."]),
             Kind::Members => family(&["user.", "auth."]),
-            Kind::Server => family(&["server.", "emoji."]),
+            Kind::Server => family(&["server.", "emoji.", "webhook."]),
         }
     }
 }
@@ -179,6 +179,7 @@ pub fn is_danger(action: &str) -> bool {
     action.ends_with(".delete")
         || action == "user.ban"
         || action == "auth.connection_drop"
+        || action == "webhook.revoke"
         || action == "message.moderation_blocked"
 }
 
@@ -523,6 +524,19 @@ pub fn sentence(entry: &AuditLogEntry, lang: AuditLanguage, names: &Names<'_>) -
                 " edited the server"
             },
         ),
+        "webhook.create" | "webhook.update" | "webhook.revoke" => {
+            let words = match (entry.action.as_str(), pt) {
+                ("webhook.create", true) => " criou o webhook ",
+                ("webhook.create", false) => " created webhook ",
+                ("webhook.update", true) => " atualizou a identidade do webhook ",
+                ("webhook.update", false) => " updated the identity of webhook ",
+                (_, true) => " revogou o webhook ",
+                (_, false) => " revoked webhook ",
+            };
+            text(&mut out, words);
+            named(&mut out, "—", "—");
+            in_channel(&mut out);
+        }
         "emoji.create" => {
             text(
                 &mut out,
@@ -607,6 +621,29 @@ mod tests {
             },
             |id: &str| (id == "c-geral").then(|| "geral".to_owned()),
         )
+    }
+
+    #[test]
+    fn webhook_audit_uses_readable_sentences_and_server_filters() {
+        let (person, channel) = names();
+        let names = Names {
+            person: &person,
+            channel: &channel,
+        };
+        let e = entry(
+            "webhook.revoke",
+            serde_json::json!({"name":"Builds", "channel_id":"c-geral"}),
+        );
+        assert_eq!(
+            render(&sentence(&e, AuditLanguage::English, &names)),
+            "Ana revoked webhook Builds in #geral"
+        );
+        assert_eq!(
+            render(&sentence(&e, AuditLanguage::Portuguese, &names)),
+            "Ana revogou o webhook Builds em #geral"
+        );
+        assert!(Kind::Server.matches(&e.action));
+        assert!(is_danger(&e.action));
     }
 
     #[test]

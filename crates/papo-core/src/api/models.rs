@@ -1696,3 +1696,51 @@ mod embed_contract_tests {
 
 
 }
+
+/// Management metadata contains neither the token nor its stored hash.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Webhook {
+    pub id: String,
+    pub channel_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+#[derive(Deserialize)]
+pub struct WebhookList {
+    pub webhooks: Vec<Webhook>,
+}
+/// Deliberately not serializable: the one-time credential must not enter caches.
+#[derive(Deserialize)]
+pub struct CreatedWebhook {
+    #[serde(flatten)]
+    pub webhook: Webhook,
+    pub token: String,
+}
+impl std::fmt::Debug for CreatedWebhook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreatedWebhook")
+            .field("webhook", &self.webhook)
+            .field("token", &"[redacted]")
+            .finish()
+    }
+}
+#[derive(Serialize)]
+pub struct CreateWebhookRequest<'a> {
+    pub channel_id: &'a str,
+    pub name: &'a str,
+}
+/// None preserves the existing field; Some("") explicitly clears it.
+#[derive(Default, Serialize)]
+pub struct UpdateWebhookIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_format: Option<String>,
+}

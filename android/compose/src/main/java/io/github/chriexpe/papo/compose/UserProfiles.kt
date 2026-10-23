@@ -479,6 +479,18 @@ internal fun externalProfileUrl(raw: String): String? = runCatching {
 }
     .getOrNull()
 
+internal fun externalAvatarMedia(
+    server: ServerState,
+    author: io.github.chriexpe.papo.core.ExternalAuthorView,
+    url: String,
+) =
+    if (server.isDemo) publicGifSource(url)
+    else
+        publicMediaSource(url)
+            .copy(
+                cacheKey = "${server.url}/${server.me}/external/${author.source}/${author.id}/$url"
+            )
+
 @Composable
 internal fun ExternalAvatar(
     server: ServerState,
@@ -497,14 +509,7 @@ internal fun ExternalAvatar(
             value = null
             if (url != null)
                 try {
-                    val raw =
-                        if (server.isDemo) publicGifSource(url)
-                        else
-                            publicMediaSource(url)
-                                .copy(
-                                    cacheKey =
-                                        "${server.url}/${server.me}/external/${author.source}/${author.id}/$url"
-                                )
+                    val raw = externalAvatarMedia(server, author, url)
                     val source = MediaCache.get(context).scoped(raw, server.url)
                     MediaCache.get(context).images(source).collect { value = it }
                 } catch (e: CancellationException) {

@@ -32,7 +32,7 @@ import io.github.chriexpe.papo.core.Capabilities
 import kotlinx.coroutines.CancellationException
 
 internal val Capabilities.canAdmin
-    get() = manageServer || manageChannels || manageRoles || banMembers
+    get() = manageServer || manageChannels || manageRoles || manageWebhooks || banMembers
 
 @Composable
 internal fun ServerIcon(server: ServerState, model: PapoViewModel, modifier: Modifier = Modifier) {

@@ -187,6 +187,18 @@ private constructor(
         }
     }
 
+    /** Discard a mutable asset after an acknowledged edit, serialized with image writes. */
+    internal suspend fun invalidate(source: MediaRequest) =
+        withContext(Dispatchers.IO) {
+            val key = key(source)
+            locks
+                .getOrPut(key) { Mutex() }
+                .withLock {
+                    checkAllowed(key)
+                    cache.removeResource(key)
+                }
+        }
+
     fun images(source: MediaRequest): Flow<ByteArray> = flow {
         val key = key(source)
         checkAllowed(key)

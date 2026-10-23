@@ -374,7 +374,10 @@ impl NativeClient {
         refresh: bool,
     ) -> Result<AdministrationState, CoreError> {
         self.inspect_admin(&owner, |s| {
-            if s.can_open_server_admin() || Capabilities::from_store(s).ban_members {
+            if s.can_open_server_admin()
+                || s.can_manage_webhooks()
+                || Capabilities::from_store(s).ban_members
+            {
                 Ok(())
             } else {
                 Err("You don’t have access to server settings".into())
