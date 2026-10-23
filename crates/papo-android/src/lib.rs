@@ -30,6 +30,7 @@ mod message_results;
 mod moderation;
 mod notifications;
 mod projection;
+mod social;
 use projection::project;
 #[cfg(any(test, all(debug_assertions, target_os = "android")))]
 mod reading_debug;

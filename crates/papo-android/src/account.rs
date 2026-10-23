@@ -145,15 +145,19 @@ impl NativeClient {
         Ok(())
     }
 }
-pub(super) fn run<T>(
+pub(super) fn run_api<T>(
     future: impl std::future::Future<Output = Result<T, papo_core::api::client::ApiError>>,
-) -> Result<T, CoreError> {
+) -> Result<T, papo_core::api::client::ApiError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| papo_core::api::client::ApiError::Network(e.to_string()))?
         .block_on(future)
-        .map_err(|e| e.to_string().into())
+}
+pub(super) fn run<T>(
+    future: impl std::future::Future<Output = Result<T, papo_core::api::client::ApiError>>,
+) -> Result<T, CoreError> {
+    run_api(future).map_err(|e| e.to_string().into())
 }
 
 #[uniffi::export]

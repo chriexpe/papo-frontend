@@ -623,7 +623,14 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                     ui(R.string.account_changed)
                 }
                 val client = handles[server.url] ?: error(ui(R.string.server_is_closed))
-                client.dispatch(action)
+                if (action is Action.OpenDm) {
+                    accountMutex.withLock {
+                        withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            client.openDirectMessage(server.me, action.userId)
+                        }
+                    }
+                    check(snapshots[server.url]?.me == server.me) { ui(R.string.account_changed) }
+                } else client.dispatch(action)
                 if (messageId != null && action is Action.SelectChannel)
                     client.dispatch(Action.JumpToMessage(action.channelId, messageId))
                 activeUrl = server.url
@@ -633,7 +640,17 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                publish(error = e.message ?: ui(R.string.couldn_t_open_conversation))
+                publish(
+                    error =
+                        if (action is Action.OpenDm) socialFailure(e)
+                        else e.message ?: ui(R.string.couldn_t_open_conversation)
+                )
+            } finally {
+                if (action is Action.OpenDm) {
+                    // A dm-blocked response can remove an existing rail entry;
+                    // project that change even though opening the route failed.
+                    withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+                }
             }
         }
 
@@ -1236,6 +1253,41 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             .putString("draft-mentions/$key", mentions)
             .apply()
     }
+
+    internal suspend fun blockedPeople(
+        server: ServerState
+    ): List<io.github.chriexpe.papo.core.BlockedPerson> = accountMutex.withLock {
+        val client = accountClient(server)
+        try {
+            withContext(kotlinx.coroutines.Dispatchers.IO) { client.blockedPeople(server.me) }
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+        }
+    }
+
+    internal suspend fun setPersonBlocked(server: ServerState, id: String, blocked: Boolean) =
+        accountMutex.withLock {
+            val client = accountClient(server)
+            try {
+                withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    client.setPersonBlocked(server.me, id, blocked)
+                }
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+            }
+        }
+
+    internal suspend fun hideDirectMessage(server: ServerState, id: String) =
+        accountMutex.withLock {
+            val client = accountClient(server)
+            try {
+                withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    client.hideDirectMessage(server.me, id)
+                }
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+            }
+        }
 
     internal suspend fun deleteMessage(server: ServerState, id: String) = accountMutex.withLock {
         val client = accountClient(server)

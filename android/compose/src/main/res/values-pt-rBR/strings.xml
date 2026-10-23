@@ -805,4 +805,23 @@
     <string name="manage_webhooks">"Administrar webhooks"</string>
     <string name="delete_message_failed">"Não foi possível excluir esta mensagem. Ela pode não estar mais disponível ou sua permissão pode ter mudado."</string>
     <string name="role_edit_requires_refresh">"Carregue as permissões atuais do servidor antes de editar este cargo."</string>
+    <string name="blocked_people">"Pessoas bloqueadas"</string>
+    <string name="blocked_people_summary">"O bloqueio vale apenas para mensagens diretas. Mensagens nos canais continuam visíveis."</string>
+    <string name="blocked_people_keywords">"pessoas usuários bloqueados desbloquear privacidade mensagens diretas"</string>
+    <string name="blocked_people_on_server">"Bloqueadas em %1$s"</string>
+    <string name="no_blocked_people">"Nenhuma pessoa bloqueada."</string>
+    <string name="block_person">"Bloquear"</string>
+    <string name="unblock_person">"Desbloquear"</string>
+    <string name="block_person_title">"Bloquear %1$s?"</string>
+    <string name="unblock_person_title">"Desbloquear %1$s?"</string>
+    <string name="block_person_explanation">"Vocês não poderão mais trocar mensagens diretas. A conversa será ocultada para ambos, sem apagar o histórico. Mensagens nos canais em comum continuam visíveis."</string>
+    <string name="unblock_person_explanation">"Mensagens diretas serão permitidas novamente, a menos que essa pessoa também tenha bloqueado você. A conversa oculta não será reaberta automaticamente."</string>
+    <string name="hide_conversation">"Ocultar conversa"</string>
+    <string name="hide_dm_explanation">"Remova esta conversa da sua lista sem apagar mensagens. Abra novamente pelo perfil da pessoa; uma nova mensagem recebida também pode fazê-la reaparecer."</string>
+    <string name="conversation_options">"Opções da conversa"</string>
+    <string name="dm_blocked">"Mensagens diretas indisponíveis porque um de vocês bloqueou o outro."</string>
+    <string name="social_target_unavailable">"Esta pessoa ou conversa não está mais disponível."</string>
+    <string name="social_sign_in_again">"Sua sessão expirou. Entre novamente para continuar."</string>
+    <string name="social_network_failure">"Não foi possível acessar o servidor. Tente novamente em instantes."</string>
+    <string name="social_request_failed">"O servidor não pôde concluir esta ação. Tente novamente."</string>
 </resources>

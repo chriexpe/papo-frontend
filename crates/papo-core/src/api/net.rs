@@ -522,6 +522,10 @@ pub enum Update {
     DirectMessages(Vec<DirectConversation>),
     /// Conversa aberta pelo usuário; além de atualizar a rail, seleciona a DM.
     DirectMessageOpened(Box<DirectConversation>),
+    /// Acknowledged hiding removes the rail entry without deleting history.
+    DirectMessageHidden(String),
+    /// Acknowledged block changes must project even if the following refresh fails.
+    UserBlockChanged { user_id: String, blocked: bool },
     /// Pessoas bloqueadas pelo usuário autenticado.
     BlockedUsers(Vec<UserSummary>),
     /// Canal recém-criado: a janela o seleciona assim que a lista chega.
@@ -2105,6 +2109,7 @@ async fn worker(
                         match api.hide_direct_message(&dm_id).await {
                             Ok(()) => {
                                 outgoing_channels.invalidate();
+                                publish(&updates, &wake, Update::DirectMessageHidden(dm_id));
                                 match api.direct_messages().await {
                                     Ok(dms) => publish(
                                         &updates,
@@ -2126,6 +2131,11 @@ async fn worker(
                         match result {
                             Ok(()) => {
                                 outgoing_channels.invalidate();
+                                publish(
+                                    &updates,
+                                    &wake,
+                                    Update::UserBlockChanged { user_id, blocked },
+                                );
                                 match api.blocked_users().await {
                                     Ok(users) => publish(
                                         &updates,

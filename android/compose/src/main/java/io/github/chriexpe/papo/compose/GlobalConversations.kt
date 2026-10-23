@@ -1,8 +1,11 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package io.github.chriexpe.papo.compose
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -77,6 +80,7 @@ internal fun DirectMessageItem(
     onProfile: () -> Unit,
     showServer: Boolean = false,
 ) {
+    var options by remember(server.url, server.me, channel.id) { mutableStateOf(false) }
     CompositionLocalProvider(LocalProfileContext provides ProfileContext(server, model)) {
         ListItem(
             headlineContent = {
@@ -108,9 +112,17 @@ internal fun DirectMessageItem(
             modifier =
                 Modifier.testTag("dm-${server.key}-${channel.id}")
                     .clip(RoundedCornerShape(18.dp))
-                    .clickable(onClick = onOpen),
+                    .combinedClickable(
+                        onClick = onOpen,
+                        onLongClick = { options = true },
+                        onLongClickLabel = ui(R.string.conversation_options),
+                    ),
         )
     }
+    if (options)
+        key(server.url, server.me, channel.id) {
+            DirectMessageOptions(server, model, channel) { options = false }
+        }
 }
 
 @Composable

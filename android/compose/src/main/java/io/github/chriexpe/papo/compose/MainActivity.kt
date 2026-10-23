@@ -165,9 +165,33 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                 var conversationScope by rememberSaveable { mutableStateOf("") }
                 val showingConversation =
                     inConversation && conversationScope == "${server?.url}/${server?.me}"
+                var conversationId by rememberSaveable { mutableStateOf("") }
                 fun enterConversation(target: ServerState) {
                     conversationScope = "${target.url}/${target.me}"
+                    conversationId =
+                        model.state.value.servers
+                            .firstOrNull {
+                                it.url == target.url && it.me == target.me
+                            }
+                            ?.selectedChannel
+                            .orEmpty()
                     inConversation = true
+                }
+                // Arm removal detection only after this composition has observed
+                // the route. Empty bootstrap snapshots must not close a restored chat.
+                var conversationWasPresent by
+                    remember(server?.url, server?.me, conversationId) {
+                        mutableStateOf(false)
+                    }
+                LaunchedEffect(showingConversation, server?.channels, server?.dms, conversationId) {
+                    if (showingConversation && conversationId.isNotBlank()) {
+                        val present =
+                            (server?.channels.orEmpty() + server?.dms.orEmpty()).any {
+                                it.id == conversationId
+                            }
+                        if (present) conversationWasPresent = true
+                        else if (conversationWasPresent) inConversation = false
+                    }
                 }
                 var profileId by remember { mutableStateOf<String?>(null) }
                 var profileServerUrl by remember { mutableStateOf("") }

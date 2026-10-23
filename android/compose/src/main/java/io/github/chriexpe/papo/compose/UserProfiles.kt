@@ -153,6 +153,8 @@ internal fun UserProfileSheet(
     val name = person?.name ?: id
     val username = person?.username.orEmpty()
     val clipboard = LocalClipboardManager.current
+    val blocked = id in server.blockedUsers
+    var blockDialog by remember(server.url, server.me, id) { mutableStateOf(false) }
     var resetLink by remember(id) { mutableStateOf(false) }
     var copied by remember(id) { mutableStateOf(false) }
     LaunchedEffect(server.url, server.me, id) { model.command(Action.LoadProfile(id), server.url) }
@@ -352,7 +354,7 @@ internal fun UserProfileSheet(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f)
                 )
                 Column(Modifier.padding(horizontal = 12.dp).navigationBarsPadding()) {
-                    if (id != server.me)
+                    if (id != server.me && !blocked)
                         ListItem(
                             headlineContent = {
                                 Text(
@@ -369,6 +371,29 @@ internal fun UserProfileSheet(
                                 Modifier.clip(RoundedCornerShape(18.dp)).clickable {
                                     onMessage(id)
                                 },
+                        )
+                    if (id != server.me)
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    ui(
+                                        if (blocked) R.string.unblock_person
+                                        else R.string.block_person
+                                    )
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    if (blocked) Icons.Outlined.PersonAdd
+                                    else Icons.Outlined.PersonOff,
+                                    null,
+                                )
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            modifier =
+                                Modifier.clip(RoundedCornerShape(18.dp))
+                                    .testTag("profile-block-person")
+                                    .clickable { blockDialog = true },
                         )
                     if (server.canResetPasswords && !server.isDemo && id != server.me)
                         ListItem(
@@ -400,6 +425,10 @@ internal fun UserProfileSheet(
             }
         }
     }
+    if (blockDialog)
+        key(server.url, server.me, id) {
+            BlockPersonDialog(server, model, id, name, blocked) { blockDialog = false }
+        }
     if (resetLink) GenerateRecoveryLink(server, model, id, name) { resetLink = false }
 }
 

@@ -1001,6 +1001,60 @@ class PapoUiTest {
     }
 
     @Test
+    fun hidingADirectConversationKeepsItsHistoryWhenReopened() {
+        demo()
+        compose.onNodeWithText("Direct", substring = false).performClick()
+        compose.onNodeWithText("Ana", substring = false).performClick()
+        compose.onNodeWithTag("composer-input").performTextInput("Keep my hidden history")
+        compose.onNodeWithContentDescription("Send message").performClick()
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        systemBack()
+        compose.onNodeWithText("Ana", substring = false).performTouchInput { longClick() }
+        compose.onNodeWithTag("hide-direct-message").performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithText("Ana", substring = false).fetchSemanticsNodes().isEmpty()
+        }
+        compose.onNodeWithTag("global-search").performTextInput("ana")
+        compose.onNode(hasText("Ana", substring = false) and !hasSetTextAction()).performClick()
+        compose.onNodeWithText("Message @ana").performScrollTo().performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithText("Keep my hidden history").fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
+    @Test
+    fun blockingAnOpenDirectLeavesItsRouteAndSettingsCanUnblockWithoutReopening() {
+        demo()
+        compose.onNodeWithText("Direct", substring = false).performClick()
+        compose.onNodeWithText("Ana", substring = false).performClick()
+        compose.onNodeWithTag("author-dm-ana-0", useUnmergedTree = true).performClick()
+        compose.onNodeWithTag("profile-block-person").performScrollTo().performClick()
+        compose.onNodeWithTag("confirm-person-block").performClick()
+        compose.waitUntil(5000) {
+            compose
+                .onAllNodesWithText("Unblock", substring = false)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        systemBack()
+        compose.onNodeWithTag("message-list").assertDoesNotExist()
+        compose.onNodeWithText("Ana", substring = false).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithTag("settings-search").performTextInput("blocked users")
+        compose.onNodeWithText("Blocked users", substring = false).performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithTag("unblock-ana").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("unblock-ana").performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithText("No blocked users.").fetchSemanticsNodes().isNotEmpty()
+        }
+        systemBack()
+        systemBack()
+        compose.onNodeWithText("Ana", substring = false).assertDoesNotExist()
+    }
+
+    @Test
     fun peopleOpenProfilesBeforeStartingDirectMessages() {
         demo()
         compose.onNodeWithText("Direct", substring = false).performClick()

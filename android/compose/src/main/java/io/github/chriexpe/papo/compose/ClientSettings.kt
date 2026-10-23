@@ -58,6 +58,11 @@ private val settingsDestinations
                 Icons.Outlined.Folder,
             ),
             SettingsDestination(
+                "Blocked",
+                ui(R.string.blocked_people_summary),
+                Icons.Outlined.PersonOff,
+            ),
+            SettingsDestination(
                 "Sessions",
                 ui(R.string.manage_signed_in_sessions),
                 Icons.Outlined.Devices,
@@ -84,6 +89,15 @@ internal fun searchFold(value: String) =
 
 private fun settingsEntries(server: ServerState, prefs: ClientPreferences): List<SettingEntry> =
     buildList {
+        add(
+            SettingEntry(
+                "blocked-users",
+                "Blocked",
+                ui(R.string.blocked_people),
+                ui(R.string.blocked_people_summary),
+                ui(R.string.blocked_people_keywords),
+            )
+        )
         add(
             SettingEntry(
                 "nickname",
@@ -385,6 +399,7 @@ internal fun ClientSettings(
                         "Language" -> LanguageSettings()
                         "Links" -> LinkSettings()
                         "Files" -> FileSettings(feedback)
+                        "Blocked" -> BlockedPeopleSettings(server, model)
                         "Sessions" -> SessionSettings(server, model, feedback)
                         "Diagnostics" -> DiagnosticSettings(server, model, feedback)
                     }

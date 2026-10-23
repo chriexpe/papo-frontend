@@ -836,6 +836,10 @@ impl Store {
     }
 
     fn upsert_direct_message(&mut self, dm: models::DirectConversation) {
+        // A late DM update must not resurrect a conversation we have blocked.
+        if self.is_user_blocked(&dm.user.id) {
+            return;
+        }
         let id = dm.id.clone();
         let name = dm.user.display_name().to_owned();
         let unread = dm.unread_count > 0
@@ -896,7 +900,8 @@ impl Store {
         }
     }
 
-    fn replace_direct_messages(&mut self, dms: Vec<models::DirectConversation>) {
+    fn replace_direct_messages(&mut self, mut dms: Vec<models::DirectConversation>) {
+        dms.retain(|dm| !self.is_user_blocked(&dm.user.id));
         let keep: HashSet<String> = dms.iter().map(|dm| dm.id.clone()).collect();
         let selected_direct_gone = self
             .channel(&self.selected_channel)
@@ -3856,13 +3861,42 @@ impl Store {
                 }
             }
             Update::DirectMessageOpened(dm) => {
+                if self.is_user_blocked(&dm.user.id) {
+                    return;
+                }
                 let id = dm.id.clone();
                 self.upsert_direct_message(*dm);
                 self.selected_channel = id;
                 self.busy = false;
             }
+            Update::DirectMessageHidden(id) => {
+                let remaining = self.direct_messages.iter()
+                    .filter(|dm| dm.id != id)
+                    .cloned()
+                    .collect();
+                self.replace_direct_messages(remaining);
+                self.busy = false;
+            }
+            Update::UserBlockChanged { user_id, blocked } => {
+                if blocked {
+                    self.blocked_users.insert(user_id.clone());
+                    let remaining = self.direct_messages.iter()
+                        .filter(|dm| dm.user.id != user_id)
+                        .cloned()
+                        .collect();
+                    self.replace_direct_messages(remaining);
+                } else {
+                    self.blocked_users.remove(&user_id);
+                }
+                self.busy = false;
+            }
             Update::BlockedUsers(users) => {
                 self.blocked_users = users.into_iter().map(|user| user.id).collect();
+                let remaining = self.direct_messages.iter()
+                    .filter(|dm| !self.is_user_blocked(&dm.user.id))
+                    .cloned()
+                    .collect();
+                self.replace_direct_messages(remaining);
                 self.busy = false;
             }
             Update::Roles(roles) => {

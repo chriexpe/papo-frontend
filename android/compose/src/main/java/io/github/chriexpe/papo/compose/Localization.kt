@@ -137,6 +137,7 @@ internal fun uiLabel(value: String): String =
         "Appearance" -> ui(R.string.appearance)
         "Notifications" -> ui(R.string.notifications)
         "Files" -> ui(R.string.files)
+        "Blocked" -> ui(R.string.blocked_people)
         "Sessions" -> ui(R.string.sessions)
         "Diagnostics" -> ui(R.string.diagnostics)
         "Chats" -> ui(R.string.chats)

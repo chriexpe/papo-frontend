@@ -805,4 +805,23 @@
     <string name="manage_webhooks">"Manage webhooks"</string>
     <string name="delete_message_failed">"Could not delete this message. It may no longer be available, or your permission may have changed."</string>
     <string name="role_edit_requires_refresh">"Load current server permissions before editing this role."</string>
+    <string name="blocked_people">"Blocked users"</string>
+    <string name="blocked_people_summary">"Blocking applies only to direct messages. Channel messages remain visible."</string>
+    <string name="blocked_people_keywords">"blocked users unblock privacy direct messages"</string>
+    <string name="blocked_people_on_server">"Blocked on %1$s"</string>
+    <string name="no_blocked_people">"No blocked users."</string>
+    <string name="block_person">"Block"</string>
+    <string name="unblock_person">"Unblock"</string>
+    <string name="block_person_title">"Block %1$s?"</string>
+    <string name="unblock_person_title">"Unblock %1$s?"</string>
+    <string name="block_person_explanation">"You will no longer be able to exchange direct messages. Your conversation will be hidden for both of you, without deleting its history. Messages in shared channels stay visible."</string>
+    <string name="unblock_person_explanation">"Direct messages will be allowed again, unless this person has also blocked you. Your hidden conversation will not reopen automatically."</string>
+    <string name="hide_conversation">"Hide conversation"</string>
+    <string name="hide_dm_explanation">"Remove this conversation from your list without deleting messages. Open it again from the person’s profile; a new incoming message can also make it reappear."</string>
+    <string name="conversation_options">"Conversation options"</string>
+    <string name="dm_blocked">"Direct messages are unavailable because one of you has blocked the other."</string>
+    <string name="social_target_unavailable">"This person or conversation is no longer available."</string>
+    <string name="social_sign_in_again">"Your session expired. Sign in again to continue."</string>
+    <string name="social_network_failure">"Could not reach the server. Try again shortly."</string>
+    <string name="social_request_failed">"The server could not complete this action. Try again."</string>
 </resources>

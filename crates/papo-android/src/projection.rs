@@ -323,6 +323,7 @@ pub(crate) fn project(store: &Store, url: &str, key: &str) -> Value {
         "loadingOlder": store.loading_older(&store.selected_channel),
         "timeline": format!("{:?}", store.timeline_status(&store.selected_channel)).to_lowercase(),
     });
+    snapshot["blockedUsers"] = json!(store.blocked_users.iter().collect::<Vec<_>>());
     snapshot["notificationsEnabled"] = json!(
         store
             .user_settings

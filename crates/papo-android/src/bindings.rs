@@ -401,6 +401,8 @@ pub struct ClientSnapshot {
     pub reaction_details: Vec<ReactionDetailsView>,
     pub reaction_loading: Vec<String>,
     pub dms: Vec<ChannelView>,
+    #[serde(default)]
+    pub blocked_users: Vec<String>,
     pub messages: Vec<MessageView>,
     pub locked: bool,
     pub busy: bool,
