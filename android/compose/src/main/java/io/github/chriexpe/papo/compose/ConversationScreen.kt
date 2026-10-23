@@ -106,8 +106,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
     var activeMedia by remember(draftKey) { mutableStateOf<String?>(null) }
-    var imageEdit by
-        remember(draftKey) { mutableStateOf<Pair<PendingAttachment, MediaEditorSource>?>(null) }
+    // Keep the editing snapshot alive until Apply finishes. Replacing a cropped
+    // draft file must not dispose the sheet/cancel its callback mid-commit.
+    var attachmentOptions by remember(draftKey) { mutableStateOf<PendingAttachment?>(null) }
     var viewedMedia by remember(draftKey) { mutableStateOf<ViewerMedia?>(null) }
     var submitting by remember(draftKey) { mutableStateOf(false) }
     var recording by remember(draftKey) { mutableStateOf(false) }
@@ -190,7 +191,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             )
         }
     val readingBlocked =
-        imageEdit != null ||
+        attachmentOptions != null ||
             overlayBlocking ||
             viewedMedia != null ||
             selected != null ||
@@ -246,7 +247,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 listState.layoutInfo,
                 latestServer.messages.asReversed().map { it.id },
                 viewedMedia == null &&
-                    imageEdit == null &&
+                    attachmentOptions == null &&
                     !pins &&
                     !overlayBlocking &&
                     mediaLifecycle.isAtLeast(Lifecycle.State.RESUMED),
@@ -917,23 +918,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                         edit = { file ->
                                             focus.clearFocus()
                                             keyboard?.hide()
-                                            scope.launch {
-                                                try {
-                                                    imageEdit =
-                                                        file to MediaEditorSource.attachment(file)
-                                                } catch (
-                                                    e: kotlinx.coroutines.CancellationException) {
-                                                    throw e
-                                                } catch (e: Exception) {
-                                                    model.attachments.report(
-                                                        draftKey,
-                                                        e.message
-                                                            ?: ui(
-                                                                R.string.couldn_t_edit_this_image
-                                                            ),
-                                                    )
-                                                }
-                                            }
+                                            attachmentOptions = file
                                         },
                                     ) {
                                         model.attachments.remove(draftKey, it)
@@ -1482,16 +1467,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 }
             }
     }
-    imageEdit?.let { (file, source) ->
-        MediaEditor(
-            source,
-            io.github.chriexpe.papo.core.MediaEditPurpose.ATTACHMENT,
-            server,
-            model,
-            onDismiss = { imageEdit = null },
-        ) { prepared, _ ->
-            model.attachments.replaceEdited(draftKey, file, prepared)
-        }
+    attachmentOptions?.let { file ->
+        AttachmentOptions(file, draftKey, server, model, onDismiss = { attachmentOptions = null })
     }
     viewedMedia?.let { media ->
         CompositionLocalProvider(LocalPlaybackBookmarks provides playbackBookmarks) {

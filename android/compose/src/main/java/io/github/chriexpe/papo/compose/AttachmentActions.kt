@@ -18,6 +18,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -44,7 +45,6 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import coil3.compose.AsyncImage
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -263,65 +263,16 @@ internal fun PendingAttachments(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             draft.files.forEach { file ->
-                Row(
-                    Modifier.width(260.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(MaterialTheme.colorScheme.surfaceContainer)
-                        .padding(start = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (file.mime.startsWith("image/"))
-                        AsyncImage(
-                            File(file.path),
-                            "Selected ${file.name}",
-                            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                        )
-                    else
-                        Icon(
-                            if (file.mime.startsWith("audio/")) Icons.Outlined.Mic
-                            else Icons.Outlined.InsertDriveFile,
-                            null,
-                            Modifier.size(36.dp).padding(4.dp),
-                        )
-                    Column(Modifier.weight(1f).padding(start = 8.dp)) {
-                        Text(
-                            file.name,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        Text(
-                            if (file.size >= 1024 * 1024) "${file.size / (1024 * 1024)} MB"
-                            else "${(file.size / 1024).coerceAtLeast(1)} KB",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    if (file.mime.startsWith("image/"))
-                        IconButton(
-                            onClick = { edit(file) },
-                            enabled = !draft.sending && !draft.preparing && !draft.uncertain,
-                        ) {
-                            Icon(
-                                Icons.Outlined.Edit,
-                                ui(R.string.edit_named, file.name),
-                                Modifier.size(18.dp),
-                            )
-                        }
-                    IconButton(
-                        onClick = { remove(file) },
-                        enabled = !draft.sending && !draft.preparing,
-                    ) {
-                        Icon(
-                            Icons.Outlined.Close,
-                            ui(R.string.remove_named, file.name),
-                            Modifier.size(18.dp),
-                        )
-                    }
-                }
+                PendingAttachmentTile(
+                    file,
+                    enabled = !draft.sending && !draft.preparing && !draft.uncertain,
+                    removable = !draft.sending && !draft.preparing,
+                    edit = { edit(file) },
+                    remove = { remove(file) },
+                )
             }
         }
+
     if (draft.preparing || draft.sending)
         Row(
             Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
@@ -342,6 +293,73 @@ internal fun PendingAttachments(
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
         )
+}
+
+/**
+ * Compact tiles leave room for several selections; the thumbnail opens the shared sheet pattern.
+ */
+@Composable
+private fun PendingAttachmentTile(
+    file: PendingAttachment,
+    enabled: Boolean,
+    removable: Boolean,
+    edit: () -> Unit,
+    remove: () -> Unit,
+) {
+    Column(
+        Modifier.width(104.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .clickable(enabled = enabled, role = Role.Button, onClick = edit)
+            .semantics { contentDescription = ui(R.string.attachment_options_named, file.wireName) }
+            .padding(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(Modifier.fillMaxWidth().height(72.dp)) {
+            AttachmentThumbnail(file.path, file.mime, file.spoiler, Modifier.fillMaxSize())
+            FilledTonalIconButton(
+                onClick = remove,
+                enabled = removable,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.align(Alignment.TopEnd).size(32.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.Close,
+                    ui(R.string.remove_named, file.name),
+                    Modifier.size(18.dp),
+                )
+            }
+        }
+        Text(
+            file.wireName,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                attachmentSize(file.uploadSize),
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (file.spoiler)
+                Icon(
+                    Icons.Outlined.VisibilityOff,
+                    ui(R.string.attachment_spoiler),
+                    Modifier.size(12.dp),
+                )
+            if (file.sanitized != null)
+                Icon(
+                    Icons.Outlined.Shield,
+                    ui(R.string.attachment_metadata_removed),
+                    Modifier.size(12.dp),
+                )
+        }
+    }
 }
 
 private fun captureName(prefix: String, extension: String) =

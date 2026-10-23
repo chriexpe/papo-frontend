@@ -2,8 +2,8 @@
 //! prévia (imagem, capa de vídeo) e, empilhadas à direita dele, as ações —
 //! remover, spoiler, anonimizar e editar em outra janela.
 //!
-//! O spoiler é aplicado pelo backend; aqui só se marca e se mostra como o
-//! destinatário verá. Anonimizar roda no envio (ver `platform::anonymize`).
+//! Spoiler usa o prefixo SPOILER_ no nome enviado, reconhecido pelos clientes
+//! Papo; o backend preserva o nome. Anonimizar roda no envio (ver `platform::anonymize`).
 
 use egui::{Color32, CornerRadius, Id, Rect, Sense, Stroke, UiBuilder, Vec2, pos2, vec2};
 use egui_phosphor::regular as icon;

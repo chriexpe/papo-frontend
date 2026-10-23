@@ -186,6 +186,28 @@ without Papo headers or a JavaScript bridge; arbitrary iframe URLs are not run.
 
 ## Attachments and capture
 
+Tapping a pending attachment opens its options sheet: rename the stem while
+keeping the extension, generate a stable random name, mark it as a spoiler,
+optionally strip image metadata, or open the existing crop editor. Apply commits
+all options/edits together; Cancel leaves the durable draft unchanged. Options
+survive channel changes and process death. Unsupported file types omit metadata
+removal; renaming and spoiler marking remain available. Metadata removal keeps a derived
+private copy alongside its source until the attachment is sent/removed; turning
+it off restores the source. Failed processing never falls back to sending it.
+PNG, JPEG, WebP and GIF use the shared core pipeline (also used by egui), applying
+EXIF orientation and retaining animation frames/delays. Animated WebP/APNG export
+as GIF. Re-encoding may change bytes, color profiles, format or size; it does not
+resize the image to fit the metadata-removal budget. Unsupported/oversized inputs
+fail explicitly. Cropping separately follows the existing editor budgets.
+
+Spoilers use an explicit `SPOILER_` filename convention recognized by Compose
+and egui, independently of moderation status. The backend currently ignores the
+previous `spoiler_attachments` field; the upload now uses the preserved filename
+instead. The UI previews the actual outgoing name. Other clients may display
+these attachments without concealing them; this compatibility limit is shown
+in the sheet. Incoming spoiler media is concealed before rendering/playback.
+
+
 The separate gallery squircle opens Android’s image/video picker on tap. A
 long press rolls up Record audio, Choose files and Camera actions. Its ripple
 is clipped to the same squircle. The composer placeholder stays on one line,

@@ -2818,6 +2818,119 @@ class PapoUiTest {
     }
 
     @Test
+    fun attachmentOptionsCancelCropApplyAndRevealSpoilersWithoutOfferingMetadataForDocuments() {
+        chat()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val image = AttachmentFiles.create(context, "png")
+        val document =
+            AttachmentFiles.create(context, "txt").apply { writeText("Attachment options fixture") }
+        val bitmap =
+            android.graphics.Bitmap.createBitmap(16, 12, android.graphics.Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(android.graphics.Color.BLUE)
+        image.outputStream().use {
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
+        bitmap.recycle()
+        fun pick(file: java.io.File) {
+            val uri =
+                androidx.core.content.FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.files",
+                    file,
+                )
+            val filter =
+                android.content.IntentFilter(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                    addDataType("*/*")
+                }
+            val monitor =
+                instrumentation.addMonitor(
+                    filter,
+                    android.app.Instrumentation.ActivityResult(
+                        android.app.Activity.RESULT_OK,
+                        android.content
+                            .Intent()
+                            .setData(uri)
+                            .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                    ),
+                    true,
+                )
+            try {
+                compose.onNodeWithContentDescription("Open gallery").performTouchInput {
+                    longClick()
+                }
+                compose.onNodeWithText("Choose files").performClick()
+                compose.waitUntil(10_000) {
+                    compose
+                        .onAllNodesWithContentDescription("Options for ${file.name}")
+                        .fetchSemanticsNodes()
+                        .isNotEmpty()
+                }
+            } finally {
+                instrumentation.removeMonitor(monitor)
+            }
+        }
+        try {
+            pick(image)
+            val tile = compose.onNodeWithContentDescription("Options for ${image.name}")
+            assertTrue(
+                "Selections should be compact thumbnail tiles",
+                tile.fetchSemanticsNode().boundsInRoot.width <
+                    compose.onNodeWithTag("composer-input").fetchSemanticsNode().boundsInRoot.width,
+            )
+            tile.performClick()
+            compose.onNodeWithTag("attachment-metadata").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Generate random filename").performClick()
+            val randomName =
+                compose
+                    .onNodeWithTag("attachment-filename")
+                    .fetchSemanticsNode()
+                    .config[SemanticsProperties.EditableText]
+                    .text
+            assertTrue(Regex("[0-9a-f]{16}").matches(randomName))
+            compose.onNodeWithText("Cancel").performScrollTo().performClick()
+            tile.performClick()
+            compose
+                .onNodeWithTag("attachment-filename")
+                .assertTextContains(attachmentStem(image.name))
+            compose.onNodeWithTag("attachment-filename").performTextReplacement("chosen")
+            compose.onNodeWithTag("attachment-spoiler").performScrollTo().performClick()
+            compose.onNodeWithTag("attachment-metadata").performScrollTo().performClick()
+            compose.onNodeWithTag("attachment-edit-image").performScrollTo().performClick()
+            compose.onNodeWithTag("media-editor").assertIsDisplayed()
+            compose.onNodeWithTag("save-media-edit").performClick()
+            compose.waitUntil(10_000) {
+                compose.onAllNodesWithTag("attachment-options").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithTag("apply-attachment-options").performScrollTo().performClick()
+            compose.waitUntil(10_000) {
+                compose
+                    .onAllNodesWithContentDescription("Options for SPOILER_chosen.webp")
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+            }
+            compose.onNodeWithContentDescription("Send message").performClick()
+            compose.waitUntil(10_000) {
+                compose.onAllNodesWithText("Show media").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithContentDescription("Photo: SPOILER_chosen.webp").assertDoesNotExist()
+            compose.onNodeWithText("Show media").performClick()
+            compose.onNodeWithContentDescription("Photo: SPOILER_chosen.webp").assertIsDisplayed()
+            pick(document)
+            compose.onNodeWithContentDescription("Options for ${document.name}").performClick()
+            compose.onNodeWithTag("attachment-spoiler").assertIsDisplayed()
+            compose.onNodeWithTag("attachment-metadata").assertDoesNotExist()
+            compose.onNodeWithTag("attachment-edit-image").assertDoesNotExist()
+            compose.onNodeWithText("Cancel").performClick()
+            compose.onNodeWithContentDescription("Remove ${document.name}").performClick()
+        } finally {
+            image.delete()
+            document.delete()
+        }
+    }
+
+    @Test
     fun attachmentRollupPicksAndSendsAFileThroughTheNativeCore() {
         chat()
         val instrumentation = InstrumentationRegistry.getInstrumentation()

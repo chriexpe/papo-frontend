@@ -7,10 +7,13 @@
 //! Qualquer outro tipo só ganha o nome novo; o conteúdo segue como está.
 
 use std::hash::{BuildHasher, Hasher, RandomState};
+#[cfg(test)]
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+use image::ImageFormat;
+#[cfg(test)]
+use image::DynamicImage;
 
 use papo_core::api::client::Upload;
 
@@ -51,45 +54,7 @@ pub fn gibberish_name(original: &str) -> String {
 
 /// Rewrite pixels and animation timing, omitting identifying metadata.
 pub fn scrub_image(bytes: &[u8]) -> Option<(Vec<u8>, ImageFormat)> {
-    let format = image::guess_format(bytes).ok()?;
-    if !matches!(
-        format,
-        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif
-    ) {
-        return None;
-    }
-    if let Some(frames) = crate::media::prepare::animation_frames(bytes).ok()? {
-        let mut out = Vec::new();
-        {
-            let mut encoder = image::codecs::gif::GifEncoder::new(&mut out);
-            encoder
-                .set_repeat(image::codecs::gif::Repeat::Infinite)
-                .ok()?;
-            for frame in frames {
-                encoder.encode_frame(frame.ok()?).ok()?;
-            }
-        }
-        return Some((out, ImageFormat::Gif));
-    }
-    let mut decoder = ImageReader::with_format(Cursor::new(bytes), format)
-        .into_decoder()
-        .ok()?;
-    let orientation = decoder.orientation().ok();
-    let mut picture = DynamicImage::from_decoder(decoder).ok()?;
-    if let Some(orientation) = orientation {
-        picture.apply_orientation(orientation);
-    }
-    let mut out = Cursor::new(Vec::new());
-    match format {
-        ImageFormat::Jpeg => {
-            // JPEG não tem alfa.
-            let rgb = DynamicImage::ImageRgb8(picture.to_rgb8());
-            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92);
-            rgb.write_with_encoder(encoder).ok()?;
-        }
-        other => picture.write_to(&mut out, other).ok()?,
-    }
-    Some((out.into_inner(), format))
+    papo_core::media_prepare::strip_image_metadata(bytes).ok()
 }
 
 /// Anonimiza um anexo, gravando o resultado em `dir`. O original nunca é

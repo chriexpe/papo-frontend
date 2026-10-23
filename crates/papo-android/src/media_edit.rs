@@ -80,6 +80,46 @@ pub fn prepare_media_image(
     })
 }
 
+/// Semantic failures are translated by the Android presentation layer.
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum AttachmentImageError {
+    #[error("unavailable")]
+    Unavailable,
+    #[error("unsupported")]
+    Unsupported,
+    #[error("too_large")]
+    TooLarge,
+    #[error("invalid_image")]
+    InvalidImage,
+}
+
+#[uniffi::export]
+pub fn strip_attachment_metadata(path: String) -> Result<PreparedMediaImage, AttachmentImageError> {
+    use base64::Engine as _;
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).map_err(|_| AttachmentImageError::Unavailable)?;
+    let mut raw = Vec::new();
+    file.take(32 * 1024 * 1024 + 1)
+        .read_to_end(&mut raw)
+        .map_err(|_| AttachmentImageError::Unavailable)?;
+    let (bytes, format) =
+        media_prepare::strip_image_metadata(&raw).map_err(|error| match error {
+            media_prepare::ImagePrivacyError::Unsupported => AttachmentImageError::Unsupported,
+            media_prepare::ImagePrivacyError::TooLarge => AttachmentImageError::TooLarge,
+            media_prepare::ImagePrivacyError::InvalidImage => AttachmentImageError::InvalidImage,
+        })?;
+    let info = media_prepare::inspect_image_bytes(&bytes)
+        .map_err(|_| AttachmentImageError::InvalidImage)?;
+    Ok(PreparedMediaImage {
+        blob: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        format: format!("{format:?}").to_uppercase(),
+        width: info.width,
+        height: info.height,
+        bytes: bytes.len() as u64,
+        shrunk: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

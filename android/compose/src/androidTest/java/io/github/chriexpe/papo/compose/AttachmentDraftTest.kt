@@ -6,11 +6,148 @@ import io.github.chriexpe.papo.core.NativeClient
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import org.junit.Assert.*
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class AttachmentDraftTest {
+    @Before
+    fun initializePresentationResources() {
+        // These model tests do not launch an Activity, so initialize the same
+        // resource context that MainActivity normally provides for callbacks.
+        AppLanguage.update(InstrumentationRegistry.getInstrumentation().targetContext)
+    }
+
+    @Test
+    fun attachmentOptionsRestoreAndMetadataRemovalCanBeReversedWithoutLosingTheSource() =
+        runBlocking {
+            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            val preferences = context.getSharedPreferences("compose-attachments", 0)
+            val saved = preferences.all.toMap()
+            val key = "test/attachment-options"
+            preferences.edit().remove(key).commit()
+            val source = AttachmentFiles.create(context, "png")
+            val bitmap =
+                android.graphics.Bitmap.createBitmap(8, 6, android.graphics.Bitmap.Config.ARGB_8888)
+            source.outputStream().use {
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+            }
+            bitmap.recycle()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            val restoredScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            var privacyCopy: java.io.File? = null
+            try {
+                val drafts =
+                    AttachmentDrafts(context, scope) { _, _, _, _ ->
+                        error("Editing must never send")
+                    }
+                drafts.captured(key, source, "photo.png", "image/png").join()
+                val original = drafts.drafts.value.getValue(key).files.single()
+                withContext(Dispatchers.Main.immediate) {
+                    drafts.applyOptions(
+                        key,
+                        original,
+                        "chosen-name",
+                        spoiler = true,
+                        removeMetadata = true,
+                    )
+                }
+                val applied = drafts.drafts.value.getValue(key).files.single()
+                privacyCopy = java.io.File(applied.sanitized!!.path)
+                assertTrue(source.isFile)
+                assertTrue(privacyCopy!!.isFile)
+                assertEquals("SPOILER_chosen-name.png", applied.wireName)
+                assertEquals(privacyCopy!!.absolutePath, applied.native().path)
+                assertTrue(applied.native().spoiler)
+                val restored =
+                    AttachmentDrafts(context, restoredScope) { _, _, _, _ ->
+                        error("Restoring must never send")
+                    }
+                val file =
+                    withTimeout(5000) {
+                        restored.drafts.first { key in it }.getValue(key).files.single()
+                    }
+                assertEquals(applied, file)
+                withContext(Dispatchers.Main.immediate) {
+                    restored.applyOptions(
+                        key,
+                        file,
+                        "renamed",
+                        spoiler = false,
+                        removeMetadata = false,
+                    )
+                }
+                val reverted = restored.drafts.value.getValue(key).files.single()
+                assertNull(reverted.sanitized)
+                assertFalse(reverted.spoiler)
+                assertEquals(source.absolutePath, reverted.native().path)
+                assertEquals("renamed.png", reverted.name)
+                assertTrue(source.isFile)
+                assertFalse(privacyCopy!!.exists())
+            } finally {
+                scope.cancel()
+                restoredScope.cancel()
+                source.delete()
+                privacyCopy?.delete()
+                preferences
+                    .edit()
+                    .clear()
+                    .apply { saved.forEach { (k, v) -> putString(k, v as String) } }
+                    .commit()
+            }
+        }
+
+    @Test
+    fun failedMetadataRemovalKeepsTheOriginalDraftAndDoesNotEnableItsSpoiler() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preferences = context.getSharedPreferences("compose-attachments", 0)
+        val saved = preferences.all.toMap()
+        val key = "test/invalid-privacy-image"
+        preferences.edit().remove(key).commit()
+        val source =
+            AttachmentFiles.create(context, "png").apply { writeText("not a decodable image") }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        try {
+            val drafts =
+                AttachmentDrafts(context, scope) { _, _, _, _ ->
+                    error("A failed edit must never send")
+                }
+            drafts.captured(key, source, "photo.png", "image/png").join()
+            val before = drafts.drafts.value.getValue(key)
+            try {
+                withContext(Dispatchers.Main.immediate) {
+                    drafts.applyOptions(
+                        key,
+                        before.files.single(),
+                        "changed",
+                        spoiler = true,
+                        removeMetadata = true,
+                    )
+                }
+                fail("Invalid image must fail closed")
+            } catch (_: java.io.IOException) {}
+            assertEquals(before, drafts.drafts.value.getValue(key))
+            assertTrue(source.isFile)
+            val savedFile =
+                org.json
+                    .JSONObject(preferences.getString(key, null)!!)
+                    .getJSONArray("files")
+                    .getJSONObject(0)
+            assertEquals("photo.png", savedFile.getString("name"))
+            assertFalse(savedFile.getBoolean("spoiler"))
+            assertTrue(savedFile.isNull("sanitized"))
+        } finally {
+            scope.cancel()
+            source.delete()
+            preferences
+                .edit()
+                .clear()
+                .apply { saved.forEach { (k, v) -> putString(k, v as String) } }
+                .commit()
+        }
+    }
+
     @Test
     fun editedImageReplacesThePersistedDraftBeforeRemovingItsOriginal() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

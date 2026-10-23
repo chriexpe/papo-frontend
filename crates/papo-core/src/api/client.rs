@@ -220,12 +220,24 @@ pub struct Upload {
     pub name: String,
     pub mime: String,
     pub size: u64,
-    /// O anexo deve aparecer escondido até o destinatário tocar. É o backend
-    /// quem aplica; o cliente só avisa.
+    /// Papo clients conceal filenames prefixed with SPOILER_. The backend
+    /// preserves the name but currently has no dedicated spoiler field.
     pub spoiler: bool,
     /// Tirar metadados e trocar o nome antes de enviar (feito no cliente,
     /// logo antes do upload).
     pub anonymize: bool,
+}
+
+impl Upload {
+    /// The convention survives REST, WebSocket, search and cache without a
+    /// backend schema change. Other clients must opt into recognizing it.
+    pub fn wire_name(&self) -> String {
+        if self.spoiler && !self.name.starts_with("SPOILER_") {
+            format!("SPOILER_{}", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -960,17 +972,6 @@ impl Api {
                 .text("reply_to", reply_to.to_owned())
                 .text("notify_reply", notify_reply.to_string());
         }
-        // Posições (na ordem de `attachments`) que o autor marcou como
-        // spoiler, separadas por vírgula.
-        let spoilers: Vec<String> = attachments
-            .iter()
-            .enumerate()
-            .filter(|(_, upload)| upload.spoiler)
-            .map(|(index, _)| index.to_string())
-            .collect();
-        if !spoilers.is_empty() {
-            form = form.text("spoiler_attachments", spoilers.join(","));
-        }
         for upload in attachments {
             // Ler o arquivo inteiro para a memória fazia o pico acompanhar o
             // tamanho do anexo, um para um. Agora o corpo sai em pedaços,
@@ -1000,7 +1001,7 @@ impl Api {
                 reqwest::Body::wrap_stream(chunks),
                 length,
             )
-            .file_name(upload.name.clone())
+            .file_name(upload.wire_name())
             .mime_str(&upload.mime)
             .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(e.to_string())))?;
             form = form.part("attachments", part);
@@ -1801,13 +1802,14 @@ mod tests {
                 stream.read_exact(&mut body).await.unwrap();
                 let body = String::from_utf8(body).unwrap();
                 assert!(body.contains("attachment-fixture"));
-                assert!(body.contains("filename=\"fixture.txt\""));
+                assert!(body.contains("filename=\"SPOILER_fixture.txt\""));
+                assert!(!body.contains("spoiler_attachments"));
                 assert!(body.contains("name=\"channel_id\""));
                 let response = format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
                 stream.get_mut().write_all(response.as_bytes()).await.unwrap();
             });
             let api = Api::new(&format!("http://{address}"), Arc::new(Session::default())).unwrap();
-            let file = Upload { path: path.clone(), name: "fixture.txt".into(), mime: "text/plain".into(), size: 18, spoiler: false, anonymize: false };
+            let file = Upload { path: path.clone(), name: "fixture.txt".into(), mime: "text/plain".into(), size: 18, spoiler: true, anonymize: false };
             let error = api.send_message_classified("chat", "caption", None, true, &[file], &[]).await.unwrap_err();
             assert_eq!(match error { SendMessageError::FailedPermanent(_) => "rejected", SendMessageError::UnknownOutcome(_) => "unknown", SendMessageError::SafeToRetry(_) => "safe" }, expected);
             server.await.unwrap();

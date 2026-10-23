@@ -521,7 +521,7 @@ impl Demo {
                         .map_err(|_| "Could not keep the demo attachment")?;
                     self.media_files.insert(id.clone(), copy);
                     sent.attachments.push(decode(json!({
-                        "id":id,"original_file_name":file.name,"mime_type":file.mime,
+                        "id":id,"original_file_name":file.wire_name(),"mime_type":file.mime,
                         "size_bytes":file.size,"moderation_status":"clean"
                     })));
                 }

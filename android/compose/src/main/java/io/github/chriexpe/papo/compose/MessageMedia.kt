@@ -208,7 +208,7 @@ private fun Attachment(
 ) {
     var revealed by rememberSaveable(server.url, server.me, a.id) { mutableStateOf(false) }
     val blocked = a.status == "blocked"
-    val sensitive = a.status == "sensitive" && !revealed
+    val sensitive = (a.status == "sensitive" || a.spoiler) && !revealed
     if (blocked || sensitive) {
         ReservedMedia(0, 0, tag = "attachment-${a.id}") {
             Column(
@@ -217,7 +217,9 @@ private fun Attachment(
             ) {
                 Icon(if (sensitive) Icons.Outlined.VisibilityOff else Icons.Outlined.Shield, null)
                 Text(
-                    if (blocked) ui(R.string.media_unavailable) else ui(R.string.sensitive_media),
+                    if (blocked) ui(R.string.media_unavailable)
+                    else if (a.spoiler) ui(R.string.attachment_spoiler)
+                    else ui(R.string.sensitive_media),
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 if (sensitive)

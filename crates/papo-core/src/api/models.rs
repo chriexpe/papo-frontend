@@ -754,6 +754,11 @@ impl Attachment {
         Kind::guess(self.mime(), self.name())
     }
 
+    /// Client-side convention; independent of asynchronous moderation status.
+    pub fn spoiler(&self) -> bool {
+        self.name().starts_with("SPOILER_")
+    }
+
     /// Conteúdo que a moderação marcou como sensível fica embaçado até um
     /// clique.
     /// Moderation is asynchronous and non-blocking. The backend denies only

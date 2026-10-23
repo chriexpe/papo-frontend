@@ -52,7 +52,14 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), String> {
 /// Dimensions follow EXIF orientation, matching Android's image preview.
 pub fn inspect_source(path: &Path) -> Result<SourceInfo, String> {
     let raw = source_bytes(path)?;
-    let mut decoder = image::ImageReader::new(Cursor::new(&raw))
+    inspect_image_bytes(&raw)
+}
+
+pub fn inspect_image_bytes(raw: &[u8]) -> Result<SourceInfo, String> {
+    if raw.len() as u64 > MAX_SOURCE_BYTES {
+        return Err("Choose an image up to 32 MB".into());
+    }
+    let mut decoder = image::ImageReader::new(Cursor::new(raw))
         .with_guessed_format()
         .map_err(|e| e.to_string())?
         .into_decoder()
@@ -70,6 +77,87 @@ pub fn inspect_source(path: &Path) -> Result<SourceInfo, String> {
         std::mem::swap(&mut width, &mut height);
     }
     Ok(SourceInfo { width, height })
+}
+
+/// Fail closed: callers must never substitute the original after a privacy failure.
+#[derive(Debug, thiserror::Error)]
+pub enum ImagePrivacyError {
+    #[error("unsupported_image")]
+    Unsupported,
+    #[error("image_too_large")]
+    TooLarge,
+    #[error("invalid_image")]
+    InvalidImage,
+}
+
+/// Re-encode only pixels and frame delays, without EXIF, XMP, text or profiles.
+/// Animation is handled before static decoding so APNG/WebP cannot be flattened.
+/// This has the same source/animation budgets as the shared crop pipeline, but
+/// never resizes an image merely to remove metadata.
+pub fn strip_image_metadata(raw: &[u8]) -> Result<(Vec<u8>, ImageFormat), ImagePrivacyError> {
+    use ImagePrivacyError::{InvalidImage, TooLarge, Unsupported};
+    if raw.len() as u64 > MAX_SOURCE_BYTES {
+        return Err(TooLarge);
+    }
+    let format = image::guess_format(raw).map_err(|_| Unsupported)?;
+    if !matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif
+    ) {
+        return Err(Unsupported);
+    }
+    let mut decoder = image::ImageReader::with_format(Cursor::new(raw), format)
+        .into_decoder()
+        .map_err(|_| InvalidImage)?;
+    let (width, height) = decoder.dimensions();
+    validate_dimensions(width, height).map_err(|_| TooLarge)?;
+    let orientation = decoder.orientation().map_err(|_| InvalidImage)?;
+    let mut out = Cursor::new(Vec::new());
+    let output_format;
+    if let Some(frames) = animation_frames(raw).map_err(|_| InvalidImage)? {
+        let mut encoder = GifEncoder::new(&mut out);
+        encoder
+            .set_repeat(image::codecs::gif::Repeat::Infinite)
+            .map_err(|_| InvalidImage)?;
+        let mut pixels = 0u64;
+        for (index, frame) in frames.enumerate() {
+            let frame = frame.map_err(|_| InvalidImage)?;
+            pixels += u64::from(frame.buffer().width()) * u64::from(frame.buffer().height());
+            if index >= 1000 || pixels > MAX_ANIMATION_PIXELS {
+                return Err(TooLarge);
+            }
+            let delay = frame.delay();
+            let mut picture = DynamicImage::ImageRgba8(frame.into_buffer());
+            picture.apply_orientation(orientation);
+            encoder
+                .encode_frame(Frame::from_parts(picture.into_rgba8(), 0, 0, delay))
+                .map_err(|_| InvalidImage)?;
+        }
+        if pixels == 0 {
+            return Err(InvalidImage);
+        }
+        output_format = ImageFormat::Gif;
+    } else {
+        let mut picture = DynamicImage::from_decoder(decoder).map_err(|_| InvalidImage)?;
+        picture.apply_orientation(orientation);
+        if format == ImageFormat::Jpeg {
+            let rgb = DynamicImage::ImageRgb8(picture.into_rgb8());
+            rgb.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+                &mut out, 92,
+            ))
+            .map_err(|_| InvalidImage)?;
+        } else {
+            picture
+                .write_to(&mut out, format)
+                .map_err(|_| InvalidImage)?;
+        }
+        output_format = format;
+    }
+    let bytes = out.into_inner();
+    if bytes.len() as u64 > MAX_SOURCE_BYTES {
+        return Err(TooLarge);
+    }
+    Ok((bytes, output_format))
 }
 
 /// Imagem pronta para o corpo da requisição.
@@ -368,6 +456,64 @@ fn encode64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn privacy_export_keeps_animation_frames_and_delays() {
+        for bytes in [
+            include_bytes!("../../../tests/fixtures/animated-sticker.webp").as_slice(),
+            include_bytes!("../../../tests/fixtures/animated-sticker.png").as_slice(),
+        ] {
+            let (clean, format) = strip_image_metadata(bytes).unwrap();
+            assert_eq!(format, ImageFormat::Gif);
+            let frames = animation_frames(&clean)
+                .unwrap()
+                .unwrap()
+                .collect_frames()
+                .unwrap();
+            assert_eq!(frames.len(), 2);
+            assert_eq!(frames[0].buffer().dimensions(), (8, 6));
+            assert_ne!(
+                frames[0].buffer().get_pixel(0, 0),
+                frames[1].buffer().get_pixel(0, 0)
+            );
+            assert_eq!(frames[0].delay().numer_denom_ms(), (80, 1));
+            assert_eq!(frames[1].delay().numer_denom_ms(), (120, 1));
+        }
+    }
+
+    #[test]
+    fn privacy_export_removes_exif_without_rotating_the_displayed_photo() {
+        let mut bytes = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut bytes);
+        encoder
+            .set_exif_metadata(vec![
+                0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, 1, 0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0,
+                0, 0,
+            ])
+            .unwrap();
+        encoder
+            .encode_image(&DynamicImage::new_rgb8(12, 8))
+            .unwrap();
+        assert!(bytes.windows(4).any(|chunk| chunk == b"Exif"));
+        let (clean, format) = strip_image_metadata(&bytes).unwrap();
+        assert_eq!(format, ImageFormat::Jpeg);
+        assert!(!clean.windows(4).any(|chunk| chunk == b"Exif"));
+        let decoded = image::load_from_memory(&clean).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (8, 12));
+    }
+
+    #[test]
+    fn privacy_export_rejects_unsupported_or_truncated_inputs() {
+        assert!(matches!(
+            strip_image_metadata(b"%PDF-1.7"),
+            Err(ImagePrivacyError::Unsupported)
+        ));
+        assert!(strip_image_metadata(b"GIF89a\x01\x00\x01\x00").is_err());
+        assert!(matches!(
+            strip_image_metadata(&vec![0; MAX_SOURCE_BYTES as usize + 1]),
+            Err(ImagePrivacyError::TooLarge)
+        ));
+    }
 
     #[test]
     fn oversized_sources_and_invalid_crops_are_rejected_before_decode() {

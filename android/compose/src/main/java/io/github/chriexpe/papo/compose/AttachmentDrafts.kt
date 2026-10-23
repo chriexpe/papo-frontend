@@ -20,13 +20,44 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** A derived privacy copy never replaces its source: disabling the option is reversible. */
+internal data class SanitizedAttachment(val path: String, val mime: String, val size: Long)
+
+internal fun attachmentExtension(name: String): String =
+    name.substringAfterLast('.', "").takeIf { name.lastIndexOf('.') > 0 }.orEmpty()
+
+internal fun attachmentStem(name: String): String =
+    if (attachmentExtension(name).isEmpty()) name else name.substringBeforeLast('.')
+
+internal fun validAttachmentName(name: String): Boolean =
+    name.isNotBlank() &&
+        name != "." &&
+        name != ".." &&
+        name.toByteArray(Charsets.UTF_8).size <= 255 &&
+        name.none { it.isISOControl() || it == '/' || it == '\\' }
+
 internal data class PendingAttachment(
     val path: String,
     val name: String,
     val mime: String,
     val size: Long,
+    val spoiler: Boolean = false,
+    val sourceExtension: String = attachmentExtension(name),
+    val sanitized: SanitizedAttachment? = null,
 ) {
-    fun native() = UploadFile(path, name, mime, size.toULong())
+    val wireName
+        get() = if (spoiler && !name.startsWith("SPOILER_")) "SPOILER_$name" else name
+
+    val uploadMime
+        get() = sanitized?.mime ?: mime
+
+    val uploadSize
+        get() = sanitized?.size ?: size
+
+    fun paths() = listOfNotNull(path, sanitized?.path)
+
+    fun native() =
+        UploadFile(sanitized?.path ?: path, name, uploadMime, uploadSize.toULong(), spoiler)
 }
 
 internal data class AttachmentDraft(
@@ -74,7 +105,13 @@ internal object AttachmentFiles {
                 .use { input ->
                     file.outputStream().use { input.copyTo(it, 64 * 1024) }
                 }
-            return PendingAttachment(file.absolutePath, name, mime, file.length())
+            return PendingAttachment(
+                file.absolutePath,
+                name.removePrefix("SPOILER_"),
+                mime,
+                file.length(),
+                spoiler = name.startsWith("SPOILER_"),
+            )
         } catch (e: Exception) {
             file.delete()
             throw e
@@ -116,6 +153,22 @@ internal class AttachmentDrafts(
                                         f.getString("name"),
                                         f.getString("mime"),
                                         file.length(),
+                                        f.optBoolean("spoiler"),
+                                        f.optString(
+                                            "sourceExtension",
+                                            attachmentExtension(f.getString("name")),
+                                        ),
+                                        f.optJSONObject("sanitized")?.let { clean ->
+                                            val copy = File(clean.getString("path"))
+                                            // A missing privacy copy must fail closed at upload;
+                                            // never silently substitute its unprocessed source.
+                                            check(AttachmentFiles.owns(context, copy))
+                                            SanitizedAttachment(
+                                                copy.absolutePath,
+                                                clean.getString("mime"),
+                                                clean.getLong("size"),
+                                            )
+                                        },
                                     )
                             }
                         val uncertain = json.optBoolean("sending") || json.optBoolean("uncertain")
@@ -172,6 +225,17 @@ internal class AttachmentDrafts(
                                     .put("name", file.name)
                                     .put("mime", file.mime)
                                     .put("size", file.size)
+                                    .put("spoiler", file.spoiler)
+                                    .put("sourceExtension", file.sourceExtension)
+                                    .put(
+                                        "sanitized",
+                                        file.sanitized?.let {
+                                            JSONObject()
+                                                .put("path", it.path)
+                                                .put("mime", it.mime)
+                                                .put("size", it.size)
+                                        },
+                                    )
                             )
                         }
                     },
@@ -186,11 +250,14 @@ internal class AttachmentDrafts(
         }
     }
 
-    /** Persist the replacement before deleting the old private draft file. */
-    suspend fun replaceEdited(
+    /** Options and generated files commit together; a failed save keeps the entire old draft. */
+    suspend fun applyOptions(
         key: String,
         original: PendingAttachment,
-        image: io.github.chriexpe.papo.core.PreparedMediaImage,
+        stem: String,
+        spoiler: Boolean,
+        removeMetadata: Boolean,
+        image: io.github.chriexpe.papo.core.PreparedMediaImage? = null,
     ) =
         lock(key).withLock {
             ready()
@@ -203,20 +270,73 @@ internal class AttachmentDrafts(
             ) {
                 ui(R.string.this_attachment_is_no_longer_in_the_draft)
             }
-            val file = AttachmentFiles.create(context, image.extension)
+            val created = mutableListOf<File>()
+            update(key, previous.copy(preparing = true, error = ""))
+            var committed = false
             try {
                 val replacement =
                     withContext(Dispatchers.IO) {
-                        file.writeBytes(
-                            android.util.Base64.decode(image.blob, android.util.Base64.DEFAULT)
-                        )
-                        PendingAttachment(
-                            file.absolutePath,
-                            original.name.substringBeforeLast('.') + "." + image.extension,
-                            image.mime,
-                            file.length(),
-                        )
+                        fun write(prepared: io.github.chriexpe.papo.core.PreparedMediaImage): File {
+                            val file = AttachmentFiles.create(context, prepared.extension)
+                            created += file
+                            file.writeBytes(
+                                android.util.Base64.decode(
+                                    prepared.blob,
+                                    android.util.Base64.DEFAULT,
+                                )
+                            )
+                            return file
+                        }
+                        val source =
+                            image?.let { prepared ->
+                                val file = write(prepared)
+                                original.copy(
+                                    path = file.absolutePath,
+                                    mime = prepared.mime,
+                                    size = file.length(),
+                                    sourceExtension = prepared.extension,
+                                    sanitized = null,
+                                )
+                            } ?: original
+                        val clean =
+                            if (!removeMetadata) null
+                            else
+                                source.sanitized
+                                    ?: run {
+                                        val prepared =
+                                            try {
+                                                io.github.chriexpe.papo.core
+                                                    .stripAttachmentMetadata(source.path)
+                                            } catch (
+                                                error:
+                                                    io.github.chriexpe.papo.core.AttachmentImageException) {
+                                                throw IOException(
+                                                    ui(R.string.attachment_metadata_failed),
+                                                    error,
+                                                )
+                                            }
+                                        val file = write(prepared)
+                                        SanitizedAttachment(
+                                            file.absolutePath,
+                                            prepared.mime,
+                                            file.length(),
+                                        )
+                                    }
+                        val extension =
+                            if (clean != null) attachmentExtension(File(clean.path).name)
+                            else source.sourceExtension
+                        require(validAttachmentName(stem)) {
+                            ui(R.string.attachment_filename_invalid)
+                        }
+                        val name = stem + if (extension.isEmpty()) "" else ".$extension"
+                        val wireName =
+                            if (spoiler && !name.startsWith("SPOILER_")) "SPOILER_$name" else name
+                        require(validAttachmentName(wireName)) {
+                            ui(R.string.attachment_filename_invalid)
+                        }
+                        source.copy(name = name, spoiler = spoiler, sanitized = clean)
                     }
+                // Cancellation may not split persistence from publication/deletion.
                 withContext(kotlinx.coroutines.NonCancellable) {
                     update(
                         key,
@@ -227,17 +347,41 @@ internal class AttachmentDrafts(
                     )
                     try {
                         persist(key)
-                    } catch (e: Exception) {
+                    } catch (error: Exception) {
                         update(key, previous)
-                        throw e
+                        throw error
                     }
-                    withContext(Dispatchers.IO) { File(original.path).delete() }
+                    committed = true
+                    withContext(Dispatchers.IO) {
+                        (original.paths() - replacement.paths().toSet()).forEach {
+                            File(it).delete()
+                        }
+                    }
                 }
-            } catch (e: Throwable) {
-                if (get(key).files.none { it.path == file.absolutePath }) file.delete()
-                throw e
+            } finally {
+                if (!committed) {
+                    update(key, previous)
+                    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                        created.forEach(File::delete)
+                    }
+                }
             }
         }
+
+    /** Crop callers share the same atomic replacement and preserve per-file options. */
+    suspend fun replaceEdited(
+        key: String,
+        original: PendingAttachment,
+        image: io.github.chriexpe.papo.core.PreparedMediaImage,
+    ) =
+        applyOptions(
+            key,
+            original,
+            attachmentStem(original.name),
+            original.spoiler,
+            original.sanitized != null,
+            image,
+        )
 
     fun report(key: String, message: String) = scope.launch {
         ready()
@@ -349,7 +493,9 @@ internal class AttachmentDrafts(
             try {
                 persist(key)
                 withContext(Dispatchers.IO) {
-                    File(file.path).takeIf { AttachmentFiles.owns(context, it) }?.delete()
+                    file.paths().forEach { path ->
+                        File(path).takeIf { AttachmentFiles.owns(context, it) }?.delete()
+                    }
                 }
             } catch (e: Exception) {
                 report(key, e.message ?: ui(R.string.couldn_t_remove_this_attachment))
@@ -393,9 +539,11 @@ internal class AttachmentDrafts(
                     persist(key)
                     withContext(Dispatchers.IO) {
                         draft.files.forEach {
-                            File(it.path)
-                                .takeIf { file -> AttachmentFiles.owns(context, file) }
-                                ?.delete()
+                            it.paths().forEach { path ->
+                                File(path)
+                                    .takeIf { file -> AttachmentFiles.owns(context, file) }
+                                    ?.delete()
+                            }
                         }
                     }
                     onResult(true)

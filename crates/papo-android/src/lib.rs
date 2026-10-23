@@ -176,6 +176,8 @@ pub struct UploadFile {
     pub name: String,
     pub mime: String,
     pub size: u64,
+    #[serde(default)]
+    pub spoiler: bool,
 }
 
 fn prepare_uploads(files: Vec<UploadFile>) -> Result<Vec<papo_core::api::client::Upload>, String> {
@@ -191,12 +193,28 @@ fn prepare_uploads(files: Vec<UploadFile>) -> Result<Vec<papo_core::api::client:
             if !metadata.is_file() || metadata.len() != file.size {
                 return Err(format!("{} changed. Choose it again.", file.name));
             }
+            if file.name.trim().is_empty()
+                || file.name.len()
+                    + if file.spoiler && !file.name.starts_with("SPOILER_") {
+                        8
+                    } else {
+                        0
+                    }
+                    > 255
+                || file
+                    .name
+                    .chars()
+                    .any(|c| c.is_control() || matches!(c, '/' | '\\'))
+                || matches!(file.name.as_str(), "." | "..")
+            {
+                return Err("Invalid attachment filename".into());
+            }
             Ok(papo_core::api::client::Upload {
                 path,
                 name: file.name,
                 mime: file.mime,
                 size: file.size,
-                spoiler: false,
+                spoiler: file.spoiler,
                 anonymize: false,
             })
         })

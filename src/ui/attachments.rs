@@ -59,6 +59,37 @@ pub fn draw(
     let mut index = 0;
     while index < attachments.len() {
         ui.add_space(space::XS);
+        let attachment = &attachments[index];
+        if attachment.spoiler() && media.sensitive_hidden(&attachment.id) {
+            let (rect, response) = ui.allocate_exact_size(
+                Vec2::new(width.min(IMAGE_MAX_W), 96.0),
+                Sense::click(),
+            );
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(radius::CARD),
+                t.fill_soft,
+            );
+            ui.painter().text(
+                rect.center() - Vec2::new(0.0, 12.0),
+                egui::Align2::CENTER_CENTER,
+                s.spoiler_badge,
+                text::footnote(),
+                t.label_secondary,
+            );
+            ui.painter().text(
+                rect.center() + Vec2::new(0.0, 12.0),
+                egui::Align2::CENTER_CENTER,
+                s.sensitive_reveal,
+                text::footnote(),
+                t.label_secondary,
+            );
+            if response.clicked() {
+                action = action.or(Some(MediaAction::Reveal(attachment.id.clone())));
+            }
+            index += 1;
+            continue;
+        }
         // Imagens e vídeos em sequência viram uma grade, em vez de uma pilha
         // de cartões que deixa a linha quase toda vazia.
         if is_visual(&attachments[index]) {
@@ -107,7 +138,7 @@ pub fn draw(
 }
 
 fn is_visual(attachment: &Attachment) -> bool {
-    matches!(attachment.kind(), Kind::Image | Kind::Video)
+    !attachment.spoiler() && matches!(attachment.kind(), Kind::Image | Kind::Video)
 }
 
 const GRID_MAX_W: f32 = 520.0;

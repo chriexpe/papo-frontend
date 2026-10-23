@@ -776,4 +776,18 @@
     <string name="delete_channel">"Excluir canal"</string>
     <string name="roles_summary">"%1$s · cores, permissões e pessoas"</string>
     <string name="connecting">"Conectando"</string>
+    <string name="attachment_options">"Opções do anexo"</string>
+    <string name="attachment_options_named">"Opções de %1$s"</string>
+    <string name="attachment_filename">"Nome do arquivo"</string>
+    <string name="attachment_random_name">"Gerar nome de arquivo aleatório"</string>
+    <string name="attachment_filename_invalid">"Use um nome de até 255 bytes, sem barras nem caracteres de controle."</string>
+    <string name="attachment_spoiler">"Spoiler"</string>
+    <string name="attachment_spoiler_description">"Usa o prefixo SPOILER_ no nome, ocultado em clientes Papo compatíveis. Outros clientes podem exibi-lo."</string>
+    <string name="attachment_remove_metadata">"Remover metadados da imagem"</string>
+    <string name="attachment_metadata_description">"Remove localização, dados da câmera, datas e outras informações incorporadas."</string>
+    <string name="attachment_metadata_removed">"Metadados da imagem removidos"</string>
+    <string name="attachment_reencode_description">"Editar ou remover metadados recodifica a imagem. A animação é mantida; o formato e o tamanho do arquivo podem mudar."</string>
+    <string name="attachment_metadata_failed">"Não foi possível remover os metadados. O original não foi enviado. Tente outra imagem ou desative esta opção."</string>
+    <string name="attachment_options_failed">"Não foi possível aplicar as opções do anexo. Tente novamente."</string>
+    <string name="attachment_apply">"Aplicar"</string>
 </resources>

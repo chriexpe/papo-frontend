@@ -29,6 +29,8 @@ pub struct AttachmentView {
     pub status: String,
     pub size_bytes: i64,
     pub thumbnail: bool,
+    #[serde(default)]
+    pub spoiler: bool,
 }
 impl From<&Attachment> for AttachmentView {
     fn from(a: &Attachment) -> Self {
@@ -47,6 +49,7 @@ impl From<&Attachment> for AttachmentView {
             status: a.moderation_status.clone().unwrap_or_default(),
             size_bytes: a.size_bytes,
             thumbnail: a.thumbnail_id.is_some(),
+            spoiler: a.spoiler(),
         }
     }
 }
@@ -320,6 +323,19 @@ pub fn demo_image(id: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spoiler_filenames_survive_projection_independently_of_moderation() {
+        for (name, expected) in [("SPOILER_photo.png", true), ("photo.png", false)] {
+            let attachment: Attachment = serde_json::from_value(serde_json::json!({
+                "id":"private", "original_file_name":name, "mime_type":"image/png", "moderation_status":"clean"
+            })).unwrap();
+            let view = AttachmentView::from(&attachment);
+            assert_eq!(view.spoiler, expected);
+            assert_eq!(view.status, "clean");
+            assert_eq!(view.name, name);
+        }
+    }
 
     #[test]
     fn direct_media_keeps_custom_cards_and_webpage_previews_distinct() {

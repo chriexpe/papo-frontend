@@ -776,4 +776,18 @@
     <string name="delete_channel">"Delete channel"</string>
     <string name="roles_summary">"%1$s · colors, permissions and people"</string>
     <string name="connecting">"Connecting"</string>
+    <string name="attachment_options">"Attachment options"</string>
+    <string name="attachment_options_named">"Options for %1$s"</string>
+    <string name="attachment_filename">"Filename"</string>
+    <string name="attachment_random_name">"Generate random filename"</string>
+    <string name="attachment_filename_invalid">"Use a filename up to 255 bytes without slashes or control characters."</string>
+    <string name="attachment_spoiler">"Spoiler"</string>
+    <string name="attachment_spoiler_description">"Uses a SPOILER_ filename, hidden in compatible Papo clients. Other clients may show it."</string>
+    <string name="attachment_remove_metadata">"Remove image metadata"</string>
+    <string name="attachment_metadata_description">"Remove location, camera details, dates and other embedded information."</string>
+    <string name="attachment_metadata_removed">"Image metadata removed"</string>
+    <string name="attachment_reencode_description">"Editing or removing metadata re-encodes the image. Animation is kept; its format and file size may change."</string>
+    <string name="attachment_metadata_failed">"Couldn\'t remove image metadata. The original has not been sent. Try another image or turn this option off."</string>
+    <string name="attachment_options_failed">"Couldn\'t apply these attachment options. Please try again."</string>
+    <string name="attachment_apply">"Apply"</string>
 </resources>
