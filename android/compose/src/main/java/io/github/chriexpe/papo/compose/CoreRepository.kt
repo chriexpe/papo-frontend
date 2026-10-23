@@ -1026,6 +1026,22 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             .apply()
     }
 
+    internal suspend fun editableMessage(server: ServerState, source: String): ComposerDraft =
+        withContext(dispatcher) {
+            val client = accountClient(server)
+            ComposerDraft.fromEditable(client.editableMessage(source))
+        }
+
+    internal suspend fun editMessage(server: ServerState, id: String, draft: ComposerDraft) =
+        withContext(dispatcher) {
+            val client = accountClient(server)
+            val mentions =
+                draft.mentions.filter { it.valid(draft.text) }.map { it.native(draft.text) }
+            val wire = client.encodeMessage(draft.text, mentions)
+            client.dispatch(Action.Edit(id, wire))
+            poll()
+        }
+
     internal suspend fun encodeMessage(
         server: ServerState,
         text: String,

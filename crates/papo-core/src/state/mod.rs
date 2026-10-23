@@ -1034,13 +1034,6 @@ impl Store {
                 continue;
             }
 
-            // Não interpretar e-mail nem o @ interno de um token já canônico.
-            if i > 0 && (!mention_boundary(chars[i - 1]) || chars[i - 1] == '<') {
-                out.push('@');
-                i += 1;
-                continue;
-            }
-
             if let Some(binding) = bindings_by_start.remove(&i) {
                 let label: Vec<char> = binding.label.chars().collect();
                 let end = i + 1 + label.len();
@@ -1058,11 +1051,17 @@ impl Store {
                 }
             }
 
+            // Não interpretar e-mail nem o @ interno de um token já canônico.
+            if i > 0 && (!mention_boundary(chars[i - 1]) || chars[i - 1] == '<') {
+                out.push('@');
+                i += 1;
+                continue;
+            }
+
             // Entrada manual: chamados globais continuam especiais.
             let rest: String = chars[i + 1..].iter().collect();
             let global = ["everyone", "todos"].iter().any(|word| {
-                rest.len() >= word.len()
-                    && rest[..word.len()].eq_ignore_ascii_case(word)
+                rest.get(..word.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(word))
                     && rest[word.len()..]
                         .chars()
                         .next()
@@ -1136,14 +1135,15 @@ impl Store {
                 }
                 if end + 1 < chars.len() {
                     let id: String = chars[id_start..end].iter().collect();
-                    if let Some(member) = self.member(&id) {
+                    if !id.is_empty() {
+                        let label = self.member(&id).map_or(id.as_str(), |member| member.name.as_str());
                         let start = out.chars().count();
                         out.push('@');
-                        out.push_str(&member.name);
+                        out.push_str(label);
                         bindings.push(MentionBinding {
                             start,
-                            label: member.name.clone(),
-                            user_id: member.id.clone(),
+                            label: label.to_owned(),
+                            user_id: id,
                         });
                         i = end + 2;
                         continue;

@@ -138,6 +138,8 @@ internal fun ComposerInput(
     modifier: Modifier = Modifier,
     onFocusChange: (Boolean) -> Unit = {},
     animationsAllowed: Boolean = true,
+    inputTag: String = "composer-input",
+    enabled: Boolean = true,
 ) {
     val formatting = remember(server.url, server.me, server.selected) { ComposerFormatting() }
     DisposableEffect(formatting) { onDispose { formatting.close() } }
@@ -259,6 +261,7 @@ internal fun ComposerInput(
     ) {
         BasicTextField(
             draft.value,
+            enabled = enabled,
             onValueChange = { next ->
                 onChange(
                     formatting.edit(
@@ -285,7 +288,7 @@ internal fun ComposerInput(
                         } else false
                     }
                     .onFocusChanged { onFocusChange(it.isFocused) }
-                    .testTag("composer-input")
+                    .testTag(inputTag)
                     .semantics {
                         if (projection.positions.isNotEmpty())
                             stateDescription =

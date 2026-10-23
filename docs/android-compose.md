@@ -245,6 +245,12 @@ Selection replaces the token at the cursor, inserts exactly one trailing space,
 and keeps editing focus. Mention labels are bold/accent-colored and retain
 stable user IDs, including duplicate display names and UTF-16/Unicode offsets.
 Bindings survive draft restoration and are invalidated if their label is edited.
+Editing uses the same bound composer: core decodes canonical mentions to readable
+labels with saved user IDs, and Kotlin preserves them through selections, formatting,
+suggestions and recreation. Duplicate labels cannot exchange identities when one is
+deleted. Unknown/departed users retain their original binding using the ID as a label.
+The normal unsent composer draft stays separate from the message editor.
+
 The wire format comes from core’s mention encoder, including in direct messages;
 DMs no longer discard the selected identity. Sticker tokens render as real
 animated images in the editor’s measured text layout; cursor mapping, wrapping,

@@ -10,6 +10,58 @@ import org.junit.Test
 
 class ComposerDraftTest {
     @Test
+    fun editingRepeatedNamesDeletesTheSelectedBindingRatherThanTheFirstMatchingLabel() {
+        val client = NativeClient.demo()
+        try {
+            val source = "🙂 @mention(<@ana>) @mention(<@ana>) @mention(<@missing>)"
+            val draft = ComposerDraft.fromEditable(client.editableMessage(source))
+            assertEquals("🙂 @Ana @Ana @missing", draft.text)
+            val twoNames =
+                ComposerDraft(
+                    TextFieldValue("@Sam @Sam", TextRange(0, 5)),
+                    listOf(
+                        ComposerMention(0, "Sam", "first", allowAdjacent = true),
+                        ComposerMention(5, "Sam", "second", allowAdjacent = true),
+                    ),
+                )
+            val removed = twoNames.edited(TextFieldValue("@Sam", TextRange(0)))
+            assertEquals("second", removed.mentions.single().userId)
+            assertEquals(
+                "@mention(<@second>)",
+                client.encodeMessage(
+                    removed.text,
+                    removed.mentions.map { it.native(removed.text) },
+                ),
+            )
+            val decorated =
+                draft
+                    .copy(value = draft.value.copy(selection = TextRange(0)))
+                    .edited(TextFieldValue("**" + draft.text, TextRange(2)))
+            val wrapped =
+                decorated
+                    .copy(
+                        value = decorated.value.copy(selection = TextRange(decorated.text.length))
+                    )
+                    .edited(
+                        TextFieldValue(decorated.text + "**", TextRange(decorated.text.length + 2))
+                    )
+            assertEquals(3, wrapped.mentions.size)
+            val restored = ComposerDraft.restore(wrapped.text, wrapped.json())
+            assertEquals(wrapped.mentions, restored.mentions)
+            assertEquals(
+                "**$source**",
+                client.encodeMessage(
+                    restored.text,
+                    restored.mentions.map { it.native(restored.text) },
+                ),
+            )
+        } finally {
+            client.shutdown()
+            client.close()
+        }
+    }
+
+    @Test
     fun externalAvatarRoutesResolveOnlyDocumentedServerPaths() {
         val path = "/webhooks/12345678-abcd-4321-abcd-123456789abc/avatar"
         assertEquals(

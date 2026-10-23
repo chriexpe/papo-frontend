@@ -3980,4 +3980,67 @@ private fun MainActivity.setContentForMemberHeader(server: ServerState, model: P
             }
         }
     }
+    @Test
+    fun editingMentionsShowsNamesPreservesTheirIdsAndLeavesTheComposerDraftAlone() {
+        chat()
+        lateinit var model: PapoViewModel
+        activity.onActivity {
+            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+        }
+        val server = model.state.value.active!!
+        model.send(server, "Hello @mention(<@ana>)", null) {}
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.messages.any {
+                it.mine && it.content == "Hello @mention(<@ana>)" && !it.pending
+            }
+        }
+        val message =
+            model.state.value.active!!.messages.first {
+                it.mine && it.content == "Hello @mention(<@ana>)"
+            }
+        compose.onNodeWithTag("composer-input").performTextInput("Keep my unsent draft")
+        compose.onNodeWithTag("message-list").performScrollToKey(message.id)
+        compose.onNodeWithTag("message-${message.id}").performTouchInput { longClick() }
+        compose.onNodeWithText("Edit message").performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithTag("edit-message-input").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("edit-message-input").assertTextContains("Hello @Ana")
+        compose.onNodeWithTag("edit-message-input").performClick()
+        compose
+            .onNodeWithTag("edit-message-input")
+            .performTextInputSelection(androidx.compose.ui.text.TextRange(10))
+        compose.onNodeWithTag("edit-message-input").performTextInput(" plus @An")
+        compose.onNodeWithTag("edit-message-input").assertTextEquals("Hello @Ana plus @An")
+        assertEquals(
+            androidx.compose.ui.text.TextRange(19),
+            compose
+                .onNodeWithTag("edit-message-input")
+                .fetchSemanticsNode()
+                .config[SemanticsProperties.TextSelectionRange],
+        )
+        compose.waitUntil(5000) {
+            compose
+                .onAllNodes(
+                    hasText("Ana", substring = false) and
+                        hasClickAction() and
+                        hasAnyAncestor(hasTestTag("composer-suggestions"))
+                )
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        compose
+            .onNode(
+                hasText("Ana", substring = false) and
+                    hasClickAction() and
+                    hasAnyAncestor(hasTestTag("composer-suggestions"))
+            )
+            .performClick()
+        compose.onNodeWithText("Save").performClick()
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.messages.first { it.id == message.id }.content ==
+                "Hello @mention(<@ana>) plus @mention(<@ana>) "
+        }
+        compose.onNodeWithTag("composer-input").assertTextEquals("Keep my unsent draft")
+    }
 }

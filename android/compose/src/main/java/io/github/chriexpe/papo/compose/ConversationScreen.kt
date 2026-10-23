@@ -1359,34 +1359,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
         }
         edit?.let { message ->
-            var edited by remember(message.id) { mutableStateOf(message.content) }
-            AlertDialog(
-                onDismissRequest = { edit = null },
-                title = { Text(ui(R.string.edit_message)) },
-                text = {
-                    OutlinedTextField(
-                        edited,
-                        { edited = it },
-                        label = { Text(ui(R.string.message)) },
-                        modifier = Modifier.fillMaxWidth(),
-                        maxLines = 8,
-                    )
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            model.command(Action.Edit(message.id, edited))
-                            edit = null
-                        },
-                        enabled = edited.isNotBlank(),
-                    ) {
-                        Text(ui(R.string.save))
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { edit = null }) { Text(ui(R.string.cancel)) }
-                },
-            )
+            EditMessageDialog(message, server, model, onDismiss = { edit = null })
         }
         delete?.let { message ->
             AlertDialog(

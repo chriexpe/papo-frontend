@@ -8,7 +8,12 @@ import io.github.chriexpe.papo.core.MentionSelection
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal data class ComposerMention(val start: Int, val label: String, val userId: String) {
+internal data class ComposerMention(
+    val start: Int,
+    val label: String,
+    val userId: String,
+    val allowAdjacent: Boolean = false,
+) {
     val end
         get() = start + label.length + 1
 
@@ -16,8 +21,9 @@ internal data class ComposerMention(val start: Int, val label: String, val userI
         start >= 0 &&
             end <= text.length &&
             text.substring(start, end) == "@$label" &&
-            (start == 0 || mentionBoundary(text[start - 1])) &&
-            (end == text.length || mentionBoundary(text[end]))
+            (allowAdjacent ||
+                (start == 0 || mentionBoundary(text[start - 1])) &&
+                    (end == text.length || mentionBoundary(text[end])))
 
     // Compose selections and saved bindings use UTF-16 offsets; core expects Unicode code points.
     // Convert only at the bridge boundary so emoji before a mention cannot shift its wire offset.
@@ -50,6 +56,7 @@ internal data class ComposerDraft(
                             .put("start", it.start)
                             .put("label", it.label)
                             .put("id", it.userId)
+                            .put("adjacent", it.allowAdjacent)
                     )
                 }
             }
@@ -67,8 +74,28 @@ internal data class ComposerDraft(
                 suffix < next.text.length - prefix &&
                 text[text.lastIndex - suffix] == next.text[next.text.lastIndex - suffix]
         ) suffix++
-        val oldEnd = text.length - suffix
+        var oldEnd = text.length - suffix
+        // Text comparison alone cannot distinguish deleting the first of two
+        // equal labels. Prefer the actual selection/caret edit when it matches.
+        val selected = value.selection
         val delta = next.text.length - text.length
+        val candidates = mutableListOf(selected.min to selected.max)
+        if (selected.collapsed && delta < 0) {
+            candidates.add((selected.start + delta).coerceAtLeast(0) to selected.start)
+            candidates.add(selected.start to (selected.start - delta).coerceAtMost(text.length))
+        }
+        candidates
+            .firstOrNull { (start, end) ->
+                val inserted = next.text.length - (text.length - (end - start))
+                inserted >= 0 &&
+                    start + inserted <= next.text.length &&
+                    text.replaceRange(start, end, next.text.substring(start, start + inserted)) ==
+                        next.text
+            }
+            ?.let { (start, end) ->
+                prefix = start
+                oldEnd = end
+            }
         val retained = mentions.mapNotNull { m ->
             val moved =
                 when {
@@ -159,12 +186,33 @@ internal data class ComposerDraft(
     }
 
     companion object {
+        fun fromEditable(message: io.github.chriexpe.papo.core.EditableMessage): ComposerDraft {
+            val bindings =
+                message.mentions.map { mention ->
+                    ComposerMention(
+                        message.text.offsetByCodePoints(0, mention.start.toInt()),
+                        mention.label,
+                        mention.userId,
+                        allowAdjacent = true,
+                    )
+                }
+            return ComposerDraft(
+                TextFieldValue(message.text, TextRange(message.text.length)),
+                bindings,
+            )
+        }
+
         fun restore(text: String, json: String, selection: Int = text.length): ComposerDraft {
             val bindings = runCatching {
                 val a = JSONArray(json)
                 (0 until a.length()).map {
                     val m = a.getJSONObject(it)
-                    ComposerMention(m.getInt("start"), m.getString("label"), m.getString("id"))
+                    ComposerMention(
+                        m.getInt("start"),
+                        m.getString("label"),
+                        m.getString("id"),
+                        m.optBoolean("adjacent"),
+                    )
                 }
             }
                 .getOrDefault(emptyList())

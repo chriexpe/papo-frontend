@@ -165,6 +165,31 @@ impl NativeClient {
         .map_err(CoreError::from)
     }
 
+    /// Resolve once when opening an editor; later member changes must not
+    /// rebind a draft that the user has already begun modifying.
+    pub fn editable_message(&self, source: String) -> Result<EditableMessage, CoreError> {
+        let backend = self
+            .backend
+            .lock()
+            .map_err(|_| "Client lock failed".to_owned())?;
+        let store = match backend.as_ref().ok_or("Client is closed".to_owned())? {
+            Backend::Live(client) => &client.runtime.store,
+            Backend::Demo(client) => &client.store,
+        };
+        let (text, mentions) = store.display_mentions_with_bindings(&source);
+        Ok(EditableMessage {
+            text,
+            mentions: mentions
+                .into_iter()
+                .map(|m| MentionSelection {
+                    start: m.start as u32,
+                    label: m.label,
+                    user_id: m.user_id,
+                })
+                .collect(),
+        })
+    }
+
     pub fn encode_message(
         &self,
         text: String,
@@ -543,6 +568,12 @@ pub struct GifPageView {
     pub more: bool,
 }
 
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct EditableMessage {
+    pub text: String,
+    pub mentions: Vec<MentionSelection>,
+}
+
 /// Start is a Unicode scalar index, matching papo-core's mention bindings.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct MentionSelection {
@@ -553,4 +584,23 @@ pub struct MentionSelection {
 
 fn default_notifications_enabled() -> bool {
     true
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    #[test]
+    fn readable_editing_keeps_unknown_users_and_adjacent_mentions_bound() {
+        let client = NativeClient::demo();
+        let source = "🙂 x@mention(<@ana>)@mention(<@missing>) / @everyone";
+        let edit = client.editable_message(source.into()).unwrap();
+        assert_eq!(edit.text, "🙂 x@Ana@missing / @everyone");
+        assert_eq!(edit.mentions.len(), 2);
+        assert_eq!(edit.mentions[0].start, 3);
+        assert_eq!(
+            client.encode_message(edit.text, edit.mentions).unwrap(),
+            source
+        );
+        client.shutdown();
+    }
 }

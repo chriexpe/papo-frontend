@@ -790,4 +790,6 @@
     <string name="attachment_metadata_failed">"Couldn\'t remove image metadata. The original has not been sent. Try another image or turn this option off."</string>
     <string name="attachment_options_failed">"Couldn\'t apply these attachment options. Please try again."</string>
     <string name="attachment_apply">"Apply"</string>
+    <string name="edit_message_load_failed">"Couldn\'t open this message for editing. Close it and try again."</string>
+    <string name="edit_message_save_failed">"Couldn\'t save this edit. Your changes are still here."</string>
 </resources>
