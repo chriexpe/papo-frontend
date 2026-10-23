@@ -58,4 +58,8 @@
         <item quantity="one">%d pessoa na sala</item>
         <item quantity="other">%d pessoas na sala</item>
     </plurals>
+    <plurals name="call_video_count">
+        <item quantity="one">%d vídeo</item>
+        <item quantity="other">%d vídeos</item>
+    </plurals>
 </resources>

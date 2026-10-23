@@ -1,7 +1,12 @@
 package io.github.chriexpe.papo.compose
 
+import android.animation.ValueAnimator
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,53 +44,27 @@ internal data class VoiceCallContext(
 
 internal val LocalVoiceCall = compositionLocalOf<VoiceCallContext?> { null }
 
-/** Resolves avatars against the call's account, even while another server's chat is on screen. */
+/** All call identity, participants and controls stay in their own pill while browsing. */
 @Composable
-internal fun SpeakingCallAvatar(modifier: Modifier = Modifier) {
-    val calls = LocalVoiceCall.current ?: return
-    val session = calls.state.session ?: return
-    val server = calls.server ?: return
-    val speaker = server.members.firstOrNull { it.id == session.speakerId }
-    CompositionLocalProvider(LocalProfileContext provides ProfileContext(server, calls.model)) {
-        IconButton(
-            onClick = calls.controller::reopen,
-            modifier =
-                modifier.testTag("call-speaking-avatar").semantics {
-                    contentDescription = ui(R.string.call_open)
-                    stateDescription = ui(R.string.call_person_speaking, speaker?.name.orEmpty())
-                },
-        ) {
-            if (speaker != null)
-                UserAvatar(
-                    speaker.id,
-                    speaker.name,
-                    Modifier.size(32.dp)
-                        .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
-                        .padding(3.dp),
-                    RoundedCornerShape(8.dp),
-                )
-            else Icon(Icons.AutoMirrored.Outlined.VolumeUp, ui(R.string.call_open))
-        }
-    }
-}
-
-/** A second row of the existing header, not an overlay on top of message content. */
-@Composable
-internal fun ActiveCallHeaderRow(showAvatar: Boolean = true) {
-    val calls = LocalVoiceCall.current ?: return
-    val session = calls.state.session ?: return
-    val server = calls.server ?: return
+private fun ActiveCallHeaderRow(
+    calls: VoiceCallContext,
+    session: CallPreviewSession,
+    server: ServerState,
+) {
     val channel = server.channels.firstOrNull { it.id == session.route.channelId } ?: return
+    val people = previewCallParticipants(server, channel.id, session)
     Row(
         Modifier.fillMaxWidth()
             .testTag("active-call-header")
             .padding(horizontal = 4.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (showAvatar) SpeakingCallAvatar()
         TextButton(
             onClick = calls.controller::reopen,
-            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("call-reopen"),
+            modifier =
+                Modifier.widthIn(min = 64.dp, max = 112.dp)
+                    .heightIn(min = 48.dp)
+                    .testTag("call-reopen"),
             contentPadding = PaddingValues(horizontal = 8.dp),
         ) {
             Column(Modifier.fillMaxWidth()) {
@@ -105,6 +84,7 @@ internal fun ActiveCallHeaderRow(showAvatar: Boolean = true) {
                 )
             }
         }
+        MinimizedCallParticipants(people, calls.controller::reopen, Modifier.weight(1f))
         CallIconButton(
             if (session.muted) Icons.Outlined.MicOff else Icons.Outlined.Mic,
             ui(if (session.muted) R.string.call_unmute else R.string.call_mute),
@@ -132,11 +112,110 @@ internal fun ActiveCallHeaderRow(showAvatar: Boolean = true) {
     }
 }
 
+/** Avatar slots use the available width; speaker priority never changes the full call grid. */
 @Composable
-internal fun CallBrowsingHeader(modifier: Modifier = Modifier) {
-    if (LocalVoiceCall.current?.active != true) return
-    GlassPill(modifier.fillMaxWidth(), radius = 24) { ActiveCallHeaderRow() }
+private fun MinimizedCallParticipants(
+    people: List<CallParticipant>,
+    onOpen: () -> Unit,
+    modifier: Modifier,
+) {
+    val ordered = people.sortedByDescending { it.speaking }
+    BoxWithConstraints(
+        modifier
+            .height(48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClickLabel = ui(R.string.call_open), onClick = onOpen)
+            .testTag("call-header-participants")
+            .semantics(mergeDescendants = true) {
+                contentDescription = uiQuantity(R.plurals.call_people_in_room, people.size)
+                ordered
+                    .firstOrNull { it.speaking }
+                    ?.let {
+                        stateDescription = ui(R.string.call_person_speaking, it.name)
+                    }
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val slots = ((maxWidth + 3.dp) / 33.dp).toInt().coerceAtLeast(0)
+        val overflow = slots >= 2 && ordered.size > slots
+        val visible = ordered.take(if (overflow) slots - 1 else slots)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            visible.forEach { person ->
+                key(person.id) {
+                    UserAvatar(
+                        person.id,
+                        person.name,
+                        Modifier.size(30.dp)
+                            .then(
+                                if (person.speaking)
+                                    Modifier.border(
+                                            2.dp,
+                                            MaterialTheme.colorScheme.primary,
+                                            RoundedCornerShape(11.dp),
+                                        )
+                                        .padding(3.dp)
+                                else Modifier.padding(2.dp)
+                            ),
+                        RoundedCornerShape(8.dp),
+                    )
+                }
+            }
+            if (overflow)
+                Box(
+                    Modifier.size(30.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "+${ordered.size - visible.size}",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+        }
+    }
 }
+
+@Composable
+internal fun CallBrowsingHeader(
+    modifier: Modifier = Modifier,
+    separateFromChannel: Boolean = false,
+) {
+    val calls = LocalVoiceCall.current ?: return
+    val session = calls.state.session ?: return
+    val server = calls.server ?: return
+    val people = previewCallParticipants(server, session.route.channelId, session)
+    val expanded =
+        session.videoLimit > 0 &&
+            (people.any { it.camera } || session.layout == CallPreviewLayout.Screen)
+    val motion = callMotionEnabled()
+    val separation by
+        animateDpAsState(
+            targetValue = if (!separateFromChannel) 0.dp else if (expanded) 12.dp else 4.dp,
+            animationSpec = if (motion) spring(dampingRatio = .9f, stiffness = 500f) else snap(),
+            label = "call-pill-separation",
+        )
+    CompositionLocalProvider(LocalProfileContext provides ProfileContext(server, calls.model)) {
+        GlassPill(modifier.fillMaxWidth().padding(top = separation), radius = 24) {
+            Column {
+                ActiveCallHeaderRow(calls, session, server)
+                MinimizedCallVideos(
+                    calls,
+                    session,
+                    people,
+                )
+            }
+        }
+    }
+}
+
+/** App and Android motion settings also apply to the glass pill's split/expand transition. */
+@Composable
+internal fun callMotionEnabled(): Boolean =
+    LocalClientPreferences.current.animations && ValueAnimator.areAnimatorsEnabled()
 
 @Composable
 internal fun CallIconButton(

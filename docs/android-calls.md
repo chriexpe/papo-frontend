@@ -14,9 +14,11 @@ call. The participant roster and any sample camera/screen content are explicitly
 part of Demo, not real users or a connection to a server.
 
 - Back and the downward chevron minimize the call. Only Leave ends its session.
-- The current conversation header keeps its name, pin and people buttons. Its
-  unused space beside Back shows the speaking avatar; a second row inside the
-  same pill contains the call room, microphone, camera and Leave controls.
+- The current conversation header keeps its name, pin and people buttons. All
+  call identity, participant avatars, microphone/camera and Leave controls live
+  in a separate pill immediately below it, matching the call pill while browsing
+  Chats or Servers. The room/server label sits on the left; the space before the
+  controls holds as many participant squircles as fit, prioritizing speakers.
 - The room label reopens the call. Its server label and account-scoped avatars
   continue identifying the call while another server's conversation is open.
 - Chats and Servers also keep a compact call header available while browsing.
@@ -24,7 +26,20 @@ part of Demo, not real users or a connection to a server.
   Opening Chat doesn't join, mute, leave or replace a call.
 - Joining another room asks to leave the current one. Cancel leaves it intact.
 - The call screen's overflow offers voice, sample video and sample shared-screen
-  layouts. Tap a participant to enlarge; Back restores the grid before minimizing.
+  layouts. Tap a participant to enlarge; a filled Show everyone button or Back
+  restores the grid before minimizing.
+- When video is available, the browsing call pill includes an expand button and
+  a 0–4 preview-count picker (default 2). Zero hides video previews without
+  switching off the camera or leaving. Fewer available videos leave no empty
+  tiles. Speaker priority chooses videos when capped; retained tiles keep their
+  relative order. Preview height adapts to the viewport and keyboard.
+- Opening video slightly separates the call pill from the channel header and
+  expands the controls and previews into one glass surface; hiding reverses it.
+  A short spring/opacity transition respects app and Android motion settings.
+  Speaker changes do not replay this transition.
+- The video-count sheet is hosted once above navigation and bound to the active
+  session token, so changing chat/account cannot create competing pickers. Like
+  the full-screen call, it uses the existing covered-conversation visibility guard.
 - Audio output choices preview selection only. They do not change Android routing.
 - Speaker changes are a five-second Demo cycle. Tiles retain their order. Studio
   has one remote participant and therefore retains that participant as its speaker.

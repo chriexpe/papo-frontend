@@ -254,7 +254,8 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                             showingConversation &&
                                 profileId == null &&
                                 externalProfile == null &&
-                                callUi.screen == null
+                                callUi.screen == null &&
+                                callUi.videoLimitPicker == null
                         )
                             server?.url.orEmpty()
                         else ""
@@ -317,7 +318,10 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                             externalProfile = author
                         },
                     LocalMediaOverlayBlocking provides
-                        (profileId != null || externalProfile != null || callUi.screen != null),
+                        (profileId != null ||
+                            externalProfile != null ||
+                            callUi.screen != null ||
+                            callUi.videoLimitPicker != null),
                 ) {
                     // Child dialogs, sheets and the IME consume Back first. Keep the
                     // activity alive until navigation reaches the conversation list.
@@ -514,6 +518,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                         }
                     }
                     CallSwitchConfirmation(calls)
+                    CallVideoLimitPicker(calls)
                     if (server?.screen == "chat")
                         externalProfile?.let { author ->
                             ExternalProfileSheet(server, author) { externalProfile = null }

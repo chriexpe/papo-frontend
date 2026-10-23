@@ -52,4 +52,8 @@
         <item quantity="one">%d person in the room</item>
         <item quantity="other">%d people in the room</item>
     </plurals>
+    <plurals name="call_video_count">
+        <item quantity="one">%d video</item>
+        <item quantity="other">%d videos</item>
+    </plurals>
 </resources>

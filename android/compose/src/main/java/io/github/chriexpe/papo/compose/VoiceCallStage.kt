@@ -41,10 +41,16 @@ internal fun CallStage(
         selected != null ->
             Column(modifier.padding(12.dp)) {
                 CallParticipantTile(selected, Modifier.weight(1f).fillMaxWidth()) { onFocus(null) }
-                TextButton(
+                FilledTonalButton(
                     onClick = { onFocus(null) },
-                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                    modifier =
+                        Modifier.align(Alignment.CenterHorizontally)
+                            .padding(top = 12.dp)
+                            .heightIn(min = 48.dp)
+                            .testTag("call-show-everyone"),
                 ) {
+                    Icon(Icons.Outlined.GridView, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text(ui(R.string.call_show_everyone))
                 }
             }

@@ -984,4 +984,9 @@
     <string name="call_switch_title">Trocar de canal de voz?</string>
     <string name="call_switch_description">Sair de %1$s e entrar em %2$s? Navegar por um canal não encerra sua chamada atual.</string>
     <string name="call_switch_confirm">Sair e entrar</string>
+    <string name="call_videos_hidden">Vídeos ocultos</string>
+    <string name="call_hide_videos">Ocultar vídeos</string>
+    <string name="call_choose_video_count">Vídeos ao navegar</string>
+    <string name="call_expand_video">Expandir chamada de vídeo</string>
+    <string name="call_video_count_description">Escolha quantos vídeos mostrar enquanto navega. Ocultar as prévias mantém sua câmera e a chamada como estão. Se houver menos vídeos disponíveis, somente eles serão exibidos.</string>
 </resources>
