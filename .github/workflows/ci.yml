@@ -20,9 +20,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Dependências de sistema
-        run: |
-          sudo apt-get update
-          ./scripts/deps.sh --install
+        timeout-minutes: 15
+        uses: ./.github/actions/install-linux-deps
       - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
       - name: Test winit preparation
@@ -38,9 +37,8 @@ jobs:
           toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
           components: clippy
       - name: Dependências de sistema
-        run: |
-          sudo apt-get update
-          ./scripts/deps.sh --install
+        timeout-minutes: 15
+        uses: ./.github/actions/install-linux-deps
       - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
@@ -58,9 +56,8 @@ jobs:
         with:
           components: clippy
       - name: Dependências de sistema
-        run: |
-          sudo apt-get update
-          ./scripts/deps.sh --install
+        timeout-minutes: 15
+        uses: ./.github/actions/install-linux-deps
       - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
@@ -82,9 +79,8 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - name: Dependências de sistema
-        run: |
-          sudo apt-get update
-          ./scripts/deps.sh --install
+        timeout-minutes: 15
+        uses: ./.github/actions/install-linux-deps
       - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
@@ -104,6 +100,7 @@ jobs:
       - name: Validar scripts de shell
         run: |
           bash -n scripts/deps.sh
+          bash -n scripts/ci-install-linux-deps.sh
           bash -n scripts/wpe-runtime.sh
           bash -n packaging/macos/build-app.sh
           python3 -m py_compile packaging/macos/bundle-gstreamer.py

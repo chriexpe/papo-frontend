@@ -1,0 +1,22 @@
+name: Install Linux dependencies
+description: Cache package archives and bound Ubuntu dependency setup
+runs:
+  using: composite
+  steps:
+    - id: cache-key
+      shell: bash
+      run: |
+        . /etc/os-release
+        echo "distribution=$ID-$VERSION_ID" >> "$GITHUB_OUTPUT"
+        echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      with:
+        # Cache downloads, never dpkg's installed-state database. Fresh signed
+        # indexes still select current package versions on every run.
+        path: ${{ runner.temp }}/papo-apt-archives/*.deb
+        key: papo-apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache-key.outputs.distribution }}-${{ hashFiles('scripts/deps.sh', 'scripts/ci-install-linux-deps.sh', '.github/actions/install-linux-deps/action.yml') }}-${{ steps.cache-key.outputs.week }}
+        restore-keys: |
+          papo-apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache-key.outputs.distribution }}-${{ hashFiles('scripts/deps.sh', 'scripts/ci-install-linux-deps.sh', '.github/actions/install-linux-deps/action.yml') }}-
+    - name: Install from current Ubuntu indexes
+      shell: bash
+      run: bash scripts/ci-install-linux-deps.sh "$RUNNER_TEMP/papo-apt-archives"
