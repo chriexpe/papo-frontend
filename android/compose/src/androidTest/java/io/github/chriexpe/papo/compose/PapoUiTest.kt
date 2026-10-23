@@ -2071,9 +2071,19 @@ class PapoUiTest {
                 emptyList(),
             )
         )
+        model.command(
+            io.github.chriexpe.papo.core.Action.Send(
+                "group-third",
+                "general",
+                "Third grouped message",
+                null,
+                true,
+                emptyList(),
+            )
+        )
         compose.waitUntil(5000) {
             compose
-                .onAllNodesWithTag("message-group-second", useUnmergedTree = true)
+                .onAllNodesWithTag("message-group-third", useUnmergedTree = true)
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
@@ -2091,6 +2101,25 @@ class PapoUiTest {
         fun nicknameGap() =
             textBaseline(compose.onNodeWithText("First grouped message", useUnmergedTree = true)) -
                 textBaseline(compose.onNodeWithTag("author-group-first", useUnmergedTree = true))
+        fun groupSteps(): List<Float> {
+            val baselines =
+                listOf("First", "Second", "Third").map {
+                    textBaseline(
+                        compose.onNodeWithText("$it grouped message", useUnmergedTree = true)
+                    )
+                }
+            return baselines
+                .zipWithNext { before, after -> after - before }
+                .also {
+                    assertEquals(
+                        "Every continuation must have the same baseline spacing",
+                        it[0],
+                        it[1],
+                        1f,
+                    )
+                }
+        }
+        val normalSteps = groupSteps()
         val normalGap = nicknameGap()
         val normal =
             compose
@@ -2115,6 +2144,10 @@ class PapoUiTest {
                 .boundsInRoot
                 .height
         assertTrue("Compact must actually reduce the message row height", compact < normal)
+        assertTrue(
+            "Compact must reduce spacing between continuations",
+            groupSteps()[0] < normalSteps[0],
+        )
         assertTrue(
             "Compact must reduce nickname-to-message spacing, not just outer padding",
             nicknameGap() < normalGap,

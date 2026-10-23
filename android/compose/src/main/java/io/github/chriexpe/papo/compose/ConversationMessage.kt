@@ -107,11 +107,14 @@ internal fun MessageRow(
                     onLongClickLabel = ui(R.string.message_actions),
                 )
                 .padding(
-                    horizontal = 12.dp,
-                    vertical =
+                    start = 12.dp,
+                    end = 12.dp,
+                    // Put all separation before a message. Padding both sides made the first
+                    // continuation inherit the author row's larger bottom padding.
+                    top =
                         if (grouped) {
-                            if (appearance.compact) 1.dp else 3.dp
-                        } else if (appearance.compact) 4.dp else 12.dp,
+                            if (appearance.compact) 0.dp else 2.dp
+                        } else if (appearance.compact) 4.dp else 8.dp,
                 ),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -136,7 +139,7 @@ internal fun MessageRow(
             }
             Column(
                 Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(if (appearance.compact) 2.dp else 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 if (!grouped)
                     MessageAuthorHeading(
@@ -144,7 +147,6 @@ internal fun MessageRow(
                         time,
                         external != null,
                         authorAction,
-                        appearance.compact,
                         appearance.timestamps,
                         onActions,
                     )
@@ -231,7 +233,6 @@ private fun MessageAuthorHeading(
     time: String,
     external: Boolean,
     authorAction: Modifier,
-    compact: Boolean,
     timestamps: Boolean,
     onActions: () -> Unit,
 ) {
@@ -250,7 +251,9 @@ private fun MessageAuthorHeading(
             overflow = TextOverflow.Ellipsis,
             modifier =
                 Modifier.weight(1f, fill = false)
-                    .heightIn(min = if (compact) 22.dp else 28.dp)
+                    // Together with the 2 dp body gap and compact's 22 sp line, this
+                    // fills the avatar's 48 dp row instead of adding an invisible tail.
+                    .heightIn(min = 24.dp)
                     .then(authorAction)
                     .wrapContentHeight(Alignment.CenterVertically)
                     .testTag("author-${message.id}"),
@@ -271,7 +274,7 @@ private fun MessageAuthorHeading(
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
             IconButton(
                 onClick = onActions,
-                modifier = Modifier.size(if (compact) 22.dp else 28.dp),
+                modifier = Modifier.size(24.dp),
             ) {
                 Icon(
                     Icons.Outlined.MoreHoriz,

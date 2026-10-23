@@ -79,7 +79,14 @@ private fun MarkdownBlocks(
                                 3 -> MaterialTheme.typography.titleMedium
                                 else -> MaterialTheme.typography.titleSmall
                             }.copy(fontWeight = FontWeight.Bold)
-                        else MaterialTheme.typography.bodyLarge
+                        else
+                            MaterialTheme.typography.bodyLarge.let { body ->
+                                // Keep the font size; tighten leading as well as row padding so
+                                // compact is visibly denser even for single-line continuations.
+                                if (LocalClientPreferences.current.compact)
+                                    body.copy(lineHeight = 22.sp)
+                                else body
+                            }
                     MarkdownParagraph(
                         node.spans,
                         server,

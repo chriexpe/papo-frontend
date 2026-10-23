@@ -541,3 +541,26 @@ The user accepted the Part 7a layout on 2026-10-23. The existing compact-message
 switch remains spacing-only; account font size and the three message-density
 choices continue in Part 7b. The reported raw mention syntax in quoted replies
 is tracked as a preview-rendering correction, independently of this layout commit.
+
+### Message spacing correction after Part 7a review
+
+The screenshots exposed a concrete geometry bug: the author row's bottom padding
+was added before the first continuation, whereas later continuations only inherited
+the smaller grouped-row padding. All message separation now precedes the row, so
+the first and subsequent continuation gaps agree.
+
+At the user's request, the tighter former compact layout becomes the normal
+baseline. Normal uses 2 dp before continuations and 24 sp text leading; Compact
+uses no added continuation padding and 22 sp leading, with the same 16 sp font.
+The visible gap between single-line messages is approximately halved rather than
+attempting to halve the baseline distance (which would overlap the glyphs).
+New-author separation is 8/4 dp. Both modes use a 24 dp author heading and 2 dp
+heading/body gap; at default text scale the first compact row fills its 48 dp
+avatar height, preventing another hidden trailing gap. System text scaling remains
+intact. Interface density and account text-size controls remain separate.
+
+The existing grouped-message regression now sends three consecutive messages and
+compares both baseline steps in each mode, alongside the author/body gap and actual
+row-height reduction. It compiles with the instrumentation APK; execution remains
+deferred for the user's review. Formatting, universal APK construction and Android
+lint pass. APK: `target/android-apks/papo-android-0.8.5-message-spacing.apk`.
