@@ -422,3 +422,48 @@ User checks:
 
 APK: `target/android-apks/papo-android-0.8.5-aero-suggestions.apk`, containing
 arm64-v8a and x86_64, installed on the phone emulator without clearing saved data.
+
+## Part 6 follow-up: received global mentions
+
+The user's two-account test exposed a split between composer authorization,
+received-word styling and recipient classification. The composer already checked
+`everyone_message`, while the shared recipient helper accepted any literal
+`@everyone`/`@todos`. Egui used that helper for the row band but checked the author
+for its word pill, producing contradictory visuals. Compose had no received
+`@everyone` span or persistent mention-row projection at all.
+
+- Shared recipient classification now requires the author's effective permission
+  for `@everyone`, retains direct ID-bound mentions, checks whole readable names
+  and prevents a member/role named everyone from bypassing the reserved token.
+  Unknown/external authors do not gain broadcast permission. Unsupported `@todos`
+  no longer masquerades as the backend's broadcast token.
+- Native Markdown projections receive the author identity and include the
+  permission result in the bounded document cache key. Valid global text gets an
+  accented, bold span while code, links and bound user mentions retain their
+  existing semantics. Permission changes cannot reuse the opposite cached result.
+- Compose consumes one core `mentionsMe` flag for a persistent row tint, with the
+  existing reply-navigation spotlight taking precedence. Own permitted broadcasts
+  keep a valid word accent but do not generate a self-recipient band or self-alert.
+  The same received-word renderer covers timeline, search and pins.
+- OS broadcast delivery waits for the backend's authoritative Notification rather
+  than inferring send-time authorization from cached roles. Ignoring the raw Message
+  consumes no ledger entry, so a subsequent valid Notification still delivers once.
+  Direct mention fallback and Message/Notification deduplication remain covered.
+- Author validity uses currently known role metadata: the backend does not attach
+  a historical permission decision to each message. Broadcast delivery remains
+  backend-authoritative independently of that presentation metadata.
+
+Validation: 819 workspace Rust tests pass (275 egui, 67 Android adapter, 477 core;
+one existing ignored test), including permission inversion, own-versus-recipient
+presentation, grant/revocation cache invalidation, reserved-name collisions,
+formatted text and backend-confirmed broadcast delivery. Strict Clippy, Compose
+formatting, universal APK, instrumentation APK compilation and Android lint pass.
+The device suite remains deferred; no production messages or role settings were
+changed for automated verification. Reading/hourglass transitions are unchanged;
+their existing mention classification now uses sender-aware input.
+
+Two-account review: send plain `@everyone` from an ordinary member and then from
+the owner/permitted delegate. The first stays ordinary; the second has an accented
+word on both accounts and a recipient tint only on the other account. Confirm
+notification delivery with the receiver outside the chat and channel notifications
+enabled. APK: `target/android-apks/papo-android-0.8.5-everyone-fix.apk`.

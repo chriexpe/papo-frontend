@@ -71,11 +71,12 @@ pub(crate) fn project_message(store: &Store, url: &str, message: &Message) -> Va
         "author": author,
         "content": message.content,
         "pinned": message.pinned,
-        "markdown": markdown::document(store, url, &message.content).as_ref(),
+        "markdown": markdown::document(store, url, &message.content, &message.author_id).as_ref(),
         "externalAuthor": external_author,
         "at": message.at.timestamp_millis(),
         "edited": message.edited,
         "mine": message.mine(&store.me),
+        "mentionsMe": store.mentions_me(message),
         "canEdit": store.can_edit_message(message),
         "canDelete": store.can_delete_message(message),
         "replyTo": message.reply_to.as_deref().unwrap_or_default(),
@@ -349,4 +350,53 @@ pub(crate) fn project(store: &Store, url: &str, key: &str) -> Value {
     snapshot["canPin"] = json!(store.can_pin_in(&store.selected_channel));
     snapshot["typingPhrase"] = json!(store.typing_phrase().unwrap_or_default());
     snapshot
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::*;
+
+    #[test]
+    fn message_word_and_recipient_highlights_use_author_not_viewer_permissions() {
+        let mut demo = crate::demo::Demo::new();
+        let mut message = demo.store.messages.first().unwrap().clone();
+        message.content = "@everyone".into();
+        let project = |store: &Store, message: &Message| -> crate::bindings::MessageView {
+            serde_json::from_value(project_message(store, "https://everyone.test", message))
+                .unwrap()
+        };
+        let tagged = |view: &crate::bindings::MessageView| {
+            view.markdown
+                .nodes
+                .iter()
+                .flat_map(|node| &node.spans)
+                .any(|span| span.kind == "everyone")
+        };
+        // Owner viewing an unprivileged author: neither the word nor the row is a mention.
+        message.author_id = "ana".into();
+        let denied = project(&demo.store, &message);
+        assert!(!tagged(&denied));
+        assert!(!denied.mentions_me);
+        // Own permitted message: valid word, no self-ping or recipient band.
+        message.author_id = "me".into();
+        let own = project(&demo.store, &message);
+        assert!(tagged(&own));
+        assert!(!own.mentions_me);
+        demo.store.me = "bruno".into();
+        let received = project(&demo.store, &message);
+        assert!(tagged(&received));
+        assert!(received.mentions_me);
+        // Delegate grant/revocation changes the same source, without a stale markdown cache.
+        message.author_id = "ana".into();
+        demo.store.roles[0].permissions.everyone_message = true;
+        let delegate = project(&demo.store, &message);
+        assert!(tagged(&delegate));
+        assert!(delegate.mentions_me);
+        demo.store.roles[0].permissions.everyone_message = false;
+        let revoked = project(&demo.store, &message);
+        assert!(!tagged(&revoked));
+        assert!(!revoked.mentions_me);
+        message.author_id.clear();
+        assert!(!tagged(&project(&demo.store, &message)));
+    }
 }

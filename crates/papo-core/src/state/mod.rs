@@ -3294,8 +3294,9 @@ impl Store {
     }
 
     fn text_mentions_me(&self, text: &str, author: &str) -> bool {
-        crate::notification::mentions_user(text, &self.me, &self.my_name, author)
-            || crate::notification::mentions_user(text, &self.me, &self.my_username, author)
+        let everyone = self.can_mention_everyone(author);
+        crate::notification::mentions_user(text, &self.me, &self.my_name, author, everyone)
+            || crate::notification::mentions_user(text, &self.me, &self.my_username, author, everyone)
             || (author != self.me && self.mentions_my_role(text))
     }
 
@@ -3618,12 +3619,7 @@ impl Store {
 
     /// A mensagem cita você? Menção estável, legado por nickname/display name ou chamado geral.
     pub fn mentions_me(&self, message: &Message) -> bool {
-        crate::notification::mentions_user(
-            &message.content,
-            &self.me,
-            &self.my_name,
-            &message.author_id,
-        ) || (message.author_id != self.me && self.mentions_my_role(&message.content))
+        self.text_mentions_me(&message.content, &message.author_id)
     }
 
     /// Nomes dos cargos (as "etiquetas") que a pessoa tem, do maior para o
@@ -3637,7 +3633,7 @@ impl Store {
             .iter()
             .filter(|role| me.roles.iter().any(|role_id| role_id == &role.id))
             .map(|role| role.name.trim().to_owned())
-            .filter(|name| !name.is_empty())
+            .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("everyone"))
             .collect();
         names.sort_by_key(|name| std::cmp::Reverse(name.chars().count()));
         names
@@ -3675,6 +3671,9 @@ impl Store {
     /// `@everyone` só tem efeito quando quem escreveu pode usá-lo: o dono do
     /// servidor ou alguém com um cargo que permita (`everyone_message`).
     pub fn can_mention_everyone(&self, user_id: &str) -> bool {
+        if user_id.is_empty() {
+            return false;
+        }
         if self
             .server
             .as_ref()
@@ -6049,6 +6048,22 @@ mod tests {
         assert!(!store.can_mention_everyone("comum"));
         assert!(!store.can_mention_everyone("sem-cargo"));
         assert!(!store.can_mention_everyone("desconhecido"));
+        assert!(!store.can_mention_everyone(""));
+        // The owner reading an ordinary member's text must not manufacture a mention.
+        store.me = "dono".into();
+        assert!(!store.text_mentions_me("@everyone", "comum"));
+        assert!(store.text_mentions_me("@everyone", "mod"));
+        assert!(!store.text_mentions_me("@everyone", "dono"));
+        store.me = "comum".into();
+        assert!(store.text_mentions_me("@everyone", "dono"));
+        assert!(store.text_mentions_me("@everyone", "mod"));
+        assert!(!store.text_mentions_me("@everyone", "sem-cargo"));
+        store.roles[0].permissions.everyone_message = false;
+        assert!(!store.text_mentions_me("@everyone", "mod"));
+        assert!(store.text_mentions_me("@everyone", "dono"));
+        // A role named everyone cannot re-enable the reserved global spelling.
+        store.roles[1].name = "everyone".into();
+        assert!(!store.text_mentions_me("@everyone", "sem-cargo"));
     }
 
     #[test]

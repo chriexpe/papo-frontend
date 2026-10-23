@@ -395,11 +395,19 @@ private fun MarkdownInline(
                     val spanStyle =
                         SpanStyle(
                             fontWeight =
-                                if (span.bold || span.kind == "mention") FontWeight.Bold else null,
+                                if (span.bold || span.kind in setOf("mention", "everyone"))
+                                    FontWeight.Bold
+                                else null,
+                            color = if (span.kind == "everyone") color else Color.Unspecified,
                             fontStyle = if (span.italic) FontStyle.Italic else null,
                             textDecoration = if (span.strike) TextDecoration.LineThrough else null,
                             fontFamily = if (span.kind == "code") FontFamily.Monospace else null,
-                            background = if (span.kind == "code") codeColor else Color.Unspecified,
+                            background =
+                                when (span.kind) {
+                                    "code" -> codeColor
+                                    "everyone" -> color.copy(alpha = .12f)
+                                    else -> Color.Unspecified
+                                },
                         )
                     withStyle(spanStyle) {
                         if (part.sticker.isNotBlank())

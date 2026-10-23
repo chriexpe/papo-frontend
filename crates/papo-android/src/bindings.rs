@@ -539,6 +539,8 @@ pub struct MessageView {
     pub edited: bool,
     pub mine: bool,
     #[serde(default)]
+    pub mentions_me: bool,
+    #[serde(default)]
     pub can_edit: bool,
     #[serde(default)]
     pub can_delete: bool,

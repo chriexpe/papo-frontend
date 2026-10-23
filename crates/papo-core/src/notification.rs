@@ -209,6 +209,9 @@ impl NotificationCoordinator {
             &context.owner_user_id,
             &context.owner_name,
             &message.author_id,
+            // Global delivery requires a backend Notification. Cached roles
+            // cannot prove the sender's permission at the time of this message.
+            false,
         ) {
             // Importante: Message sem menção não consome o ledger. Um
             // Notification posterior ainda pode representar reply/all.
@@ -400,10 +403,16 @@ impl NotificationCoordinator {
     }
 }
 
-/// A semântica histórica de menção do Papo, compartilhada pela Store e pelo
-/// coordenador para não nascerem duas implementações divergentes.
-pub fn mentions_user(text: &str, owner_user_id: &str, owner_name: &str, author_id: &str) -> bool {
-    if author_id == owner_user_id {
+/// Shared recipient classification. Sender permission is deliberately explicit:
+/// the reader's ability to mention everyone cannot authorize somebody else's text.
+pub fn mentions_user(
+    text: &str,
+    owner_user_id: &str,
+    owner_name: &str,
+    author_id: &str,
+    author_can_mention_everyone: bool,
+) -> bool {
+    if owner_user_id.is_empty() || author_id == owner_user_id {
         return false;
     }
     let lower = text.to_lowercase();
@@ -413,9 +422,11 @@ pub fn mentions_user(text: &str, owner_user_id: &str, owner_name: &str, author_i
             owner_user_id.to_lowercase()
         )))
         || (!owner_name.is_empty()
-            && lower.contains(&format!("@{}", owner_name.to_lowercase())))
-        || lower.contains("@everyone")
-        || lower.contains("@todos")
+            && !owner_name.eq_ignore_ascii_case("everyone")
+            && !tag_spans(text, &[owner_name.to_owned()]).is_empty())
+        || (author_can_mention_everyone
+            && !author_id.is_empty()
+            && !tag_spans(text, &["everyone".to_owned()]).is_empty())
 }
 
 /// Onde `@Etiqueta` aparece no texto, para cada etiqueta de `tags` (sem o
@@ -716,6 +727,87 @@ mod tests {
     }
 
     #[test]
+    fn everyone_requires_sender_permission_and_does_not_steal_user_mentions() {
+        assert!(!mentions_user("@everyone", "me", "Me", "phone", false));
+        assert!(mentions_user("@everyone", "me", "Me", "admin", true));
+        assert!(mentions_user("**@EVERYONE**!", "me", "Me", "admin", true));
+        assert!(!mentions_user("@everyone", "admin", "Admin", "admin", true));
+        assert!(!mentions_user("@everyone", "me", "Me", "", true));
+        assert!(!mentions_user("@everyone", "", "", "admin", true));
+        for text in [
+            "@everyonex",
+            "@everyone_else",
+            "mail@everyone.test",
+            "@todos",
+        ] {
+            assert!(!mentions_user(text, "me", "Me", "admin", true), "{text}");
+        }
+        // Reserved group spelling and partial readable names cannot bypass the sender check.
+        assert!(!mentions_user(
+            "@everyone",
+            "me",
+            "everyone",
+            "phone",
+            false
+        ));
+        assert!(!mentions_user("@everyone", "me", "every", "phone", false));
+        assert!(mentions_user(
+            "@mention(<@me>)",
+            "me",
+            "everyone",
+            "phone",
+            false
+        ));
+        assert!(mentions_user(
+            "hello @Ana Maria!",
+            "me",
+            "Ana Maria",
+            "phone",
+            false
+        ));
+    }
+
+    #[test]
+    fn denied_or_unknown_everyone_does_not_claim_a_delivery_before_backend_confirmation() {
+        let temp = TempDb::new("everyone-author-permission");
+        let (coordinator, deliveries) = coordinator(temp.db(), false);
+        coordinator.sync_context(context("srv", "me", true, true));
+        let msg = message("m1", "geral", "bia", "@everyone");
+        assert_eq!(
+            coordinator.handle_message("srv", &msg, CandidateSource::Live),
+            NotificationOutcome::Ignored
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(coordinator.diagnostics("srv").ledger_rows, 0);
+        // A newer backend decision remains authoritative even if local roles have not arrived.
+        assert_eq!(
+            coordinator.handle_notification(
+                "srv",
+                &notification("n1", "m1", "geral", "bia"),
+                CandidateSource::Live
+            ),
+            NotificationOutcome::Delivered
+        );
+        assert_eq!(
+            coordinator.handle_message(
+                "srv",
+                &message("m2", "geral", "bia", "@mention(<@me>)"),
+                CandidateSource::Live
+            ),
+            NotificationOutcome::Delivered
+        );
+        assert_eq!(
+            coordinator.handle_message(
+                "srv",
+                &message("m3", "geral", "bia", "@everyone"),
+                CandidateSource::Live
+            ),
+            NotificationOutcome::Ignored
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 2);
+    }
+
+    #[test]
     fn message_then_notification_converge_to_one_delivery() {
         let temp = TempDb::new("message-notification");
         let (coordinator, deliveries) = coordinator(temp.db(), false);
@@ -723,7 +815,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv",
-                &message("m1", "geral", "bia", "@everyone"),
+                &message("m1", "geral", "bia", "@mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::Delivered
@@ -755,7 +847,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv",
-                &message("m1", "geral", "bia", "@todos"),
+                &message("m1", "geral", "bia", "@mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::Duplicate

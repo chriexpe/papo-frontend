@@ -926,4 +926,5 @@
     <string name="notification_policy_applying">"Applying…"</string>
     <string name="composer_everyone_description">"Notify everyone in this channel"</string>
     <string name="composer_insert_unicode">"Insert %1$s"</string>
+    <string name="message_mentions_you">"Mentions you"</string>
 </resources>

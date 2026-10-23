@@ -74,6 +74,7 @@ internal fun MessageRow(
     val spotlight by
         animateColorAsState(
             if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = .14f)
+            else if (message.mentionsMe) MaterialTheme.colorScheme.primary.copy(alpha = .08f)
             else Color.Transparent,
             animationSpec = tween(250),
             label = ui(R.string.original_message_highlight),
@@ -86,6 +87,8 @@ internal fun MessageRow(
                 .background(spotlight, RoundedCornerShape(18.dp))
                 .semantics {
                     if (highlight) stateDescription = ui(R.string.original_message)
+                    else if (message.mentionsMe)
+                        stateDescription = ui(R.string.message_mentions_you)
                     else if (grouped)
                         stateDescription =
                             ui(R.string.continued_message_from_1_s_at_2_s, message.author, time)
