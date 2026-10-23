@@ -32,7 +32,12 @@ import io.github.chriexpe.papo.core.Capabilities
 import kotlinx.coroutines.CancellationException
 
 internal val Capabilities.canAdmin
-    get() = manageServer || manageChannels || manageRoles || manageWebhooks || banMembers
+    get() = manageServer || manageChannels || manageRoles || manageWebhooks
+
+// The backend currently checks manage_server on both ban and unban. The raw
+// banMembers bit still belongs to role editing and must round-trip independently.
+internal val Capabilities.canBanMembers
+    get() = manageServer
 
 @Composable
 internal fun ServerIcon(server: ServerState, model: PapoViewModel, modifier: Modifier = Modifier) {

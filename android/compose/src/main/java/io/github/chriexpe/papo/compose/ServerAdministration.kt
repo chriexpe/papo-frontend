@@ -325,7 +325,7 @@ internal fun serverSettingEntries(
             )
         }
     }
-    if (p.banMembers)
+    if (p.canBanMembers)
         add(
             SettingEntry(
                 "people",
@@ -696,7 +696,7 @@ private fun ServerSettingsOverview(
                         )
                     }
                 }
-            if (p.banMembers)
+            if (p.canBanMembers)
                 item {
                     SettingsCard {
                         SettingsLink(

@@ -24,6 +24,9 @@ use super::models::*;
 mod user_display;
 pub use user_display::{DisplayChange, DisplayFontSize, MessageDensity};
 
+#[path = "user_list.rs"]
+mod user_list;
+
 const COOKIE_NAME: &str = "Auth";
 
 /// Pedaço lido por vez ao mandar um anexo. Grande o bastante para não
@@ -1717,8 +1720,7 @@ impl Api {
     }
 
     pub async fn users(&self) -> ApiResult<Vec<UserSummary>> {
-        let list: UserList = self.get("/users").await?;
-        Ok(list.users)
+        self.all_users().await
     }
 }
 

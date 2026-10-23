@@ -35,12 +35,11 @@ References:
 | 4 | 5 | Structured custom embed composer/editor, preview, limits and protected-media preservation | Functionality accepted by user on 2026-10-23; UI provisional |
 | 5 | 7, 8 | Apply channel notification policy to all with partial-failure reporting; independent inbox pagination and mark-loaded-read | Accepted by user on 2026-10-23 |
 | 6 | 9, 10 | Permission-aware `@everyone` and shared-catalog Unicode emoji suggestions | Accepted by user on 2026-10-23, including the received-mention correction |
-| 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | 7a UI density/composer accepted by user; 7b implemented, APK awaiting user review |
+| 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | 7a UI density/composer accepted by user; 7b accepted by user on 2026-10-23 |
 
 Item 6 is a cross-cutting audit of existing administration, rather than a new
-administration implementation. Its remaining owner/delegate, channel, ban/reset,
-sticker, audit and mutation-refresh checks remain open until verified against the
-official backend. All eleven brief items must be implemented or explicitly
+administration implementation. Owner/delegate, channel, ban/reset, sticker, audit and mutation-refresh
+checks are recorded below; final device results are reported separately. All eleven brief items must be implemented or explicitly
 reported as gaps before the overall pass is complete.
 
 ## Expanded appearance scope (user feedback, 2026-10-23)
@@ -704,3 +703,58 @@ Review APK: `target/android-apks/papo-android-0.8.5-account-appearance.apk`.
 Try all three text sizes and spacing choices in Appearance, check the live preview
 and chat/composer, and reopen the app. Choices should follow the active account;
 changing interface density should remain independent.
+
+
+## Administration audit
+
+Checked the pinned backend routes, permission middleware, handlers and services
+against the existing native operations and Compose entry points. The permission
+matrix is:
+
+| Operation | Backend authority |
+| --- | --- |
+| Server name, visibility/password and icon; sticker creation; audit | Owner or `manage_server` |
+| Channel/category CRUD, global ordering and role access rules | Owner or `manage_channels` |
+| Role CRUD and membership assignment/removal | Owner or `manage_roles` |
+| Webhook management | Owner or `manage_webhooks` |
+| Ban and unban | Owner or `manage_server` on the current backend |
+| Generate somebody else's password-reset link | Owner only |
+
+The audit found and corrected two concrete gaps. `Api::users` previously returned
+only the first backend page (100 members). It now follows the exact nanosecond
+creation-time/ID cursor, deduplicates inclusive cursor entries, retains banned
+members, and rejects malformed/non-advancing cursors instead of publishing a
+partial snapshot as complete. The shared fix benefits role membership, people
+and unban lists as well as bootstrap. Separately, ban entry points had checked
+`ban_members`, but the current backend route checks `manage_server`. Compose and
+the native mutation gate now use the actual route permission; all eight raw role
+bits still round-trip independently. A ban-only role no longer exposes an unusable
+administration page, and a server-management delegate can reach Ban/Unban.
+
+Existing channel requests, four-field role access rules, ordering, deletions,
+eight-field role replacement, membership changes and sticker payloads match the
+canonical API. This backend derives category grouping from global channel order;
+its move route consumes old/new positions, not a parent assignment. The current
+Compose editor does not offer an unsupported parent-assignment control. Server
+PATCH preserves omitted icon/password fields. Reset-link generation remains
+owner-only, with account/token checks before exposing a late receipt. Native
+administration requests freeze credentials, reject stale completions, wait for
+mutation acknowledgement, and reconcile canonical metadata. A failed follow-up
+refresh produces a saved-with-refresh-warning outcome; it does not turn an
+acknowledged save into a rejected mutation. Audit filters retain raw-page cursors
+when local filtering hides every row, and Kotlin generations reject obsolete
+filter responses.
+
+New host checks cover each individual delegated role permission, denied unrelated
+operations, ban/unban authorization, audit access, complete member pagination,
+malformed/repeated cursors, and a real acknowledged save followed by a failed
+refresh, a rejected save and successful metadata retry. Existing wire/image,
+recovery, audit-pagination and scoped-response regressions remain in the suite.
+All 830 library tests pass (275 egui, 72 Android adapter, 483 core). Production
+administration data was not mutated for verification.
+
+Contract references:
+[route guards](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/handlers/routes.go),
+[permission middleware](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/middleware/permissions.go),
+[member paging](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/storage/users.go),
+[channel positions](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/handlers/channels.go).

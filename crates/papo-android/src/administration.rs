@@ -212,7 +212,9 @@ fn validate(s: &Store, change: &AdministrationChange) -> Result<(), String> {
         CreateRole { .. } | UpdateRole { .. } | DeleteRole { .. } | AssignRole { .. } => {
             p.manage_roles
         }
-        Ban { .. } => p.ban_members,
+        // The current backend's ban route requires manage_server. Preserve the
+        // independent ban_members role bit, but never advertise it as sufficient.
+        Ban { .. } => p.manage_server,
     };
     if !allowed {
         return Err("You don’t have permission for this change".into());
@@ -374,10 +376,7 @@ impl NativeClient {
         refresh: bool,
     ) -> Result<AdministrationState, CoreError> {
         self.inspect_admin(&owner, |s| {
-            if s.can_open_server_admin()
-                || s.can_manage_webhooks()
-                || Capabilities::from_store(s).ban_members
-            {
+            if s.can_open_server_admin() || s.can_manage_webhooks() {
                 Ok(())
             } else {
                 Err("You don’t have access to server settings".into())
@@ -955,6 +954,225 @@ fn apply_demo(s: &mut Store, change: AdministrationChange) -> Result<String, Str
 mod tests {
     use super::*;
     use base64::Engine;
+
+    #[test]
+    fn acknowledged_save_with_failed_refresh_is_distinct_from_a_rejected_save() {
+        use std::collections::VecDeque;
+        use std::io::{BufRead, Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Instant;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let script = Arc::new(Mutex::new(VecDeque::new()));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let queue = script.clone();
+        let stop = stopped.clone();
+        let worker = std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(2));
+                    continue;
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let first = line.clone();
+                let mut length = 0;
+                let mut authenticated = false;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((key, value)) = line.split_once(':') {
+                        if key.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse().unwrap();
+                        }
+                        if key.eq_ignore_ascii_case("cookie") {
+                            authenticated = value.trim() == "Auth=admin-refresh-fixture";
+                        }
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let (status, response) = if authenticated {
+                    let (expected, status, body): (&str, u16, &str) = queue
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("unexpected authenticated request");
+                    assert!(first.starts_with(expected), "{first}");
+                    (status, body)
+                } else {
+                    (401, r#"{"status":401}"#)
+                };
+                write!(stream,"HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
+            }
+        });
+        let directory =
+            std::env::temp_dir().join(format!("papo-admin-{}", papo_core::cache::new_local_id()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut live = Client::open(
+            &url,
+            directory.join("chat.db"),
+            Arc::new(papo_core::storage::MemorySecretStore::default()),
+            Wake::new(|| {}),
+        )
+        .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while live.runtime.store.screen != papo_core::state::Screen::Auth {
+            live.poll();
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        live.runtime.store = std::mem::take(&mut demo::Demo::new().store);
+        live.runtime
+            .net
+            .session
+            .set_token(Some("admin-refresh-fixture".into()));
+        let native = NativeClient {
+            backend: Mutex::new(Some(Backend::Live(Box::new(live)))),
+        };
+        let server = r#"{"id":"server","name":"Acknowledged","owner_id":"me","public":true}"#;
+        script.lock().unwrap().extend([
+            ("PATCH /server ", 200, server),
+            ("GET /server ", 503, r#"{"status":503}"#),
+            ("PATCH /server ", 403, r#"{"status":403}"#),
+            ("GET /server ", 200, server),
+            ("GET /channels ", 200, r#"{"channels":[]}"#),
+            ("GET /roles ", 200, r#"{"roles":[]}"#),
+            ("GET /users ", 200, r#"{"users":[],"has_more":false}"#),
+            (
+                "GET /emojis?order=asc ",
+                200,
+                r#"{"emojis":[],"has_more":false}"#,
+            ),
+        ]);
+        let change = || AdministrationChange::Server {
+            name: "Acknowledged".into(),
+            public: true,
+            password: None,
+        };
+        let saved = native.administer("me".into(), change()).unwrap();
+        assert!(!saved.refresh_error.is_empty());
+        assert!(native.administer("me".into(), change()).is_err());
+        native.administration("me".into(), true).unwrap();
+        assert_eq!(native.poll().unwrap().server_name, "Acknowledged");
+        assert!(script.lock().unwrap().is_empty());
+        native.shutdown();
+        stopped.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn delegates_receive_only_the_operations_the_backend_authorizes() {
+        let client = NativeClient::demo();
+        let cases = [
+            (
+                "manage_server",
+                AdministrationChange::Server {
+                    name: "Renamed".into(),
+                    public: true,
+                    password: None,
+                },
+            ),
+            (
+                "manage_channels",
+                AdministrationChange::CreateChannel {
+                    name: "room".into(),
+                    kind: "text".into(),
+                    topic: String::new(),
+                    parent_id: None,
+                    access_roles: vec![],
+                },
+            ),
+            (
+                "manage_roles",
+                AdministrationChange::CreateRole {
+                    name: "Role".into(),
+                    color: String::new(),
+                    permissions: Capabilities::default(),
+                },
+            ),
+            (
+                "manage_server",
+                AdministrationChange::Ban {
+                    user_id: "ana".into(),
+                    banned: true,
+                },
+            ),
+            (
+                "manage_server",
+                AdministrationChange::Ban {
+                    user_id: "ana".into(),
+                    banned: false,
+                },
+            ),
+            (
+                "manage_server",
+                AdministrationChange::CreateSticker {
+                    name: "rocket".into(),
+                    blob: "AQ==".into(),
+                    format: "PNG".into(),
+                },
+            ),
+        ];
+        for permission in [
+            "manage_server",
+            "manage_channels",
+            "manage_roles",
+            "manage_webhooks",
+            "ban_members",
+            "pin_message",
+            "everyone_message",
+            "send_attachment",
+        ] {
+            {
+                let mut backend = client.backend.lock().unwrap();
+                let Backend::Demo(demo) = backend.as_mut().unwrap() else {
+                    panic!()
+                };
+                let store = &mut demo.store;
+                store.server.as_mut().unwrap().owner_id = Some("another-owner".into());
+                store.roles = vec![
+                    serde_json::from_value(json!({
+                        "id":"delegate", "name":"Delegate", "permissions":{permission:true}
+                    }))
+                    .unwrap(),
+                ];
+                store
+                    .members
+                    .iter_mut()
+                    .find(|m| m.id == "me")
+                    .unwrap()
+                    .roles = vec!["delegate".into()];
+                for (required, change) in &cases {
+                    assert_eq!(
+                        validate(store, change).is_ok(),
+                        permission == *required,
+                        "{permission}: {change:?}"
+                    );
+                }
+            }
+            let admin = client.administration("me".into(), false);
+            assert_eq!(
+                admin.is_ok(),
+                matches!(
+                    permission,
+                    "manage_server" | "manage_channels" | "manage_roles" | "manage_webhooks"
+                )
+            );
+            let audit = client
+                .administration_audit("me".into(), crate::admin_audit::AuditFilter::default());
+            assert_eq!(audit.is_ok(), permission == "manage_server");
+        }
+    }
 
     #[test]
     fn administration_saves_roles_access_membership_moderation_and_audit() {
