@@ -38,9 +38,10 @@ References:
 | 7 | 11 | Account font size/message density, whole-app UI density, adaptive multiline composer, accessibility and preference migration | 7a UI density/composer accepted by user; 7b accepted by user on 2026-10-23 |
 
 Item 6 is a cross-cutting audit of existing administration, rather than a new
-administration implementation. Owner/delegate, channel, ban/reset, sticker, audit and mutation-refresh
-checks are recorded below; final device results are reported separately. All eleven brief items must be implemented or explicitly
-reported as gaps before the overall pass is complete.
+administration implementation. Owner/delegate, channel, ban/reset, sticker, audit
+and mutation-refresh checks are recorded below; device results are reported
+separately. All eleven brief items must be implemented or explicitly reported as
+gaps before the overall pass is complete.
 
 ## Expanded appearance scope (user feedback, 2026-10-23)
 
@@ -758,3 +759,32 @@ Contract references:
 [permission middleware](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/middleware/permissions.go),
 [member paging](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/storage/users.go),
 [channel positions](https://github.com/Papo-Chat/papo-backend/blob/af057d5e0e107ae666c4f6776b36222ef18b2105/backend/internal/handlers/channels.go).
+
+
+## Device regression and known remaining failure
+
+The complete Android suite contains 155 tests. The final regression pass updates
+fixtures for the accepted UI: all eight capability fields, the actual APP demo
+channel, empty-composer embed options, lazy settings/role rows, merged header
+semantics, pixel rounding for very wide media and the new localized spacing
+controls. Typography tests re-scroll their lazy item after reflow. The audit flow
+waits for the creation snackbar to clear before tapping the bottom row, verifies
+the native creation entry and then tests visible filtering. These corrections do
+not weaken the hourglass assertion or change production reading behavior.
+
+`catchUpPositionAndRemainingBlockSurviveLeavingAndActivityRecreation` remains an
+enabled, reproducibly failing device regression. After reopening the demo channel,
+the remaining-block target is `general-9` where the test expects `general-8`.
+This observation does not establish the root cause of the user's intermittent
+live incident, and no such claim is made. Production hourglass/read-state changes
+remain deferred as requested; the suite must not be described as fully passing.
+Exact final device counts and CI status are recorded in PR #124.
+
+Interrupted instrumentation launches were separately identified by Android
+`ApplicationExitInfo` as LOW_MEMORY kills, also affecting system/Google apps.
+The phone emulator was cold-started with 4 GiB RAM instead of 2 GiB for the final
+run, preserving its existing data. The TV emulator was not changed.
+
+The administration fixes are in the universal APK
+`target/android-apks/papo-android-0.8.5-administration-audit.apk`. The PR remains a
+draft with the restoration failure disclosed; no merge is performed by this pass.
