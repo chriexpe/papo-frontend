@@ -742,7 +742,9 @@ class PapoUiTest {
         compose.onNodeWithTag("webhook-name").performTextInput("Build updates")
         androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.onNodeWithTag("webhook-channel").performClick()
-        compose.onNodeWithText("geral", substring = false).performClick()
+        compose
+            .onNode(hasText("geral", substring = false) and hasAnyAncestor(isPopup()))
+            .performClick()
         compose.onNodeWithTag("save-new-webhook").performClick()
         compose.waitUntil(5000) {
             compose.onAllNodesWithTag("webhook-token-dialog").fetchSemanticsNodes().isNotEmpty()
@@ -806,7 +808,8 @@ class PapoUiTest {
             .onNode(hasText("Role name") and hasSetTextAction())
             .performTextReplacement("Creators")
         androidx.test.espresso.Espresso.closeSoftKeyboard()
-        compose.onNodeWithText("Save role").performScrollTo().performClick()
+        compose.onNodeWithTag("admin-role-editor").performScrollToNode(hasText("Save role"))
+        compose.onNodeWithText("Save role").performClick()
         compose.waitUntil(5000) {
             compose.onAllNodesWithText("Save role").fetchSemanticsNodes().isEmpty()
         }
@@ -866,6 +869,10 @@ class PapoUiTest {
     @Test
     fun administrationCreatesChannelsAndAuditFiltersTheSavedAction() {
         demo()
+        lateinit var model: PapoViewModel
+        activity.onActivity {
+            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+        }
         compose.onNodeWithContentDescription("Server settings").performClick()
         compose.onNodeWithText("Channels", substring = false).performClick()
         compose.onNodeWithText("Create channel", substring = false).performClick()
@@ -885,18 +892,38 @@ class PapoUiTest {
             )
             .assertIsDisplayed()
         systemBack()
+        // The confirmation snackbar overlaps the bottom Audit row on a small phone.
+        compose.waitUntil(10_000) {
+            compose
+                .onAllNodesWithText("Channel created", substring = false)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        }
         compose
             .onNodeWithTag("server-settings-overview")
             .performScrollToNode(hasText("Audit", substring = false))
         compose.onNodeWithText("Audit", substring = false).performClick()
+        val entries =
+            kotlinx.coroutines
+                .runBlocking {
+                    model.administrationAudit(
+                        model.state.value.active!!,
+                        io.github.chriexpe.papo.core.AuditFilter("", "all", "", "all", "", false),
+                    )
+                }
+                .entries
+        assertTrue(
+            "The acknowledged channel creation must be in the native audit page",
+            entries.any { entry -> entry.parts.any { it.text.contains("release-room") } },
+        )
         compose.waitUntil(5000) {
-            compose
-                .onAllNodes(
-                    hasText("release-room", substring = true) and
-                        hasAnyAncestor(hasTestTag("admin-audit"))
-                )
-                .fetchSemanticsNodes()
-                .isNotEmpty()
+            // Lazy rows below the filter controls have no semantics until scrolled in.
+            runCatching {
+                compose
+                    .onNodeWithTag("admin-audit")
+                    .performScrollToNode(hasText("release-room", substring = true))
+            }
+                .isSuccess
         }
         compose.onNodeWithTag("audit-person-search").performTextInput("no-such-person")
         androidx.test.espresso.Espresso.closeSoftKeyboard()
@@ -908,13 +935,12 @@ class PapoUiTest {
         }
         compose.onNodeWithContentDescription("Clear person filter").performClick()
         compose.waitUntil(5000) {
-            compose
-                .onAllNodes(
-                    hasText("release-room", substring = true) and
-                        hasAnyAncestor(hasTestTag("admin-audit"))
-                )
-                .fetchSemanticsNodes()
-                .isNotEmpty()
+            runCatching {
+                compose
+                    .onNodeWithTag("admin-audit")
+                    .performScrollToNode(hasText("release-room", substring = true))
+            }
+                .isSuccess
         }
     }
 
@@ -1022,6 +1048,7 @@ class PapoUiTest {
                                 manageChannels = false,
                                 manageRoles = false,
                                 banMembers = false,
+                                manageWebhooks = false,
                             ),
                     )
                 }
@@ -2068,9 +2095,16 @@ class PapoUiTest {
             compose.onNodeWithTag("appearance-settings").performScrollToNode(hasTestTag(tag))
             compose.onNodeWithTag(tag).performClick()
             compose.waitUntil(5000) {
-                val config = compose.onNodeWithTag(tag).fetchSemanticsNode().config
-                config.getOrNull(SemanticsProperties.Selected) == true &&
-                    config.getOrNull(SemanticsProperties.Disabled) == null
+                // Changing typography can reflow this lazy item out of the viewport.
+                runCatching {
+                        compose
+                            .onNodeWithTag("appearance-settings")
+                            .performScrollToNode(hasTestTag(tag))
+                        val config = compose.onNodeWithTag(tag).fetchSemanticsNode().config
+                        config.getOrNull(SemanticsProperties.Selected) == true &&
+                            config.getOrNull(SemanticsProperties.Disabled) == null
+                    }
+                    .getOrDefault(false)
             }
         }
         choose("account-font-huge")
@@ -2088,6 +2122,9 @@ class PapoUiTest {
             }
         assertEquals(20f, layouts.single().layoutInput.style.fontSize.value, .01f)
         activity.recreate()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithTag("appearance-settings").fetchSemanticsNodes().isNotEmpty()
+        }
         compose
             .onNodeWithTag("appearance-settings")
             .performScrollToNode(hasTestTag("account-font-huge"))
@@ -2830,6 +2867,9 @@ class PapoUiTest {
     @Test
     fun latestMessagesFloatsAboveSendWithoutResizingTheComposer() {
         chat()
+        // An empty composer exposes embed options; a draft exposes Send.
+        compose.onNodeWithTag("composer-input").performTextInput("Keep this draft")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
         val before = compose.onNodeWithTag("chat-composer").fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("message-list").performScrollToKey("general-0")
         compose.onNodeWithContentDescription("Latest messages").assertIsDisplayed()
@@ -3128,7 +3168,12 @@ class PapoUiTest {
         assertEquals(original.height, profile.height, 1f)
         assertEquals(
             original.center.x,
-            compose.onNodeWithTag("server-header-name").fetchSemanticsNode().boundsInRoot.center.x,
+            compose
+                .onNodeWithTag("server-header-name", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+                .center
+                .x,
             1f,
         )
         val systemScale =
@@ -3160,7 +3205,12 @@ class PapoUiTest {
         assertEquals(compact.height, compactProfile.height, 1f)
         assertEquals(
             compact.center.x,
-            compose.onNodeWithTag("server-header-name").fetchSemanticsNode().boundsInRoot.center.x,
+            compose
+                .onNodeWithTag("server-header-name", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+                .center
+                .x,
             1f,
         )
         assertEquals(
@@ -3263,7 +3313,8 @@ class PapoUiTest {
         compose.onNodeWithText("Dark").performClick()
         compose.onNodeWithContentDescription("Frosted controls").performScrollTo().performClick()
         systemBack()
-        compose.onNodeWithText("Leave demo").performScrollTo().performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("Leave demo"))
+        compose.onNodeWithText("Leave demo").performClick()
         compose.onNodeWithText("Explore demo").assertExists()
         compose.onNodeWithText("Add server").assertIsNotEnabled()
     }
@@ -4146,9 +4197,9 @@ class PapoUiTest {
         val wide = compose.onNodeWithTag("portrait-frame").fetchSemanticsNode().boundsInRoot
         assertEquals(
             "Wide media must not inherit a minimum-height letterbox",
-            40f,
-            wide.width / wide.height,
-            .2f,
+            wide.width / 40f,
+            wide.height,
+            1f, // A one-pixel height rounding is proportionally large for a 40:1 image.
         )
         assertTrue(wide.height < 72 * density)
     }
@@ -4839,16 +4890,22 @@ class PapoUiTest {
             systemBack()
             compose.onNodeWithTag("settings-search").performTextReplacement("compactas")
             androidx.test.espresso.Espresso.closeSoftKeyboard()
-            compose.onNodeWithText("Mensagens compactas", substring = false).performClick()
-            compose.onNodeWithContentDescription("Mensagens compactas").assertIsOff().performClick()
+            compose.onNodeWithText("Espaçamento das mensagens", substring = false).performClick()
+            compose.onNodeWithTag("message-density-compact").performClick()
+            compose.waitUntil(5000) {
+                val config =
+                    compose.onNodeWithTag("message-density-compact").fetchSemanticsNode().config
+                config.getOrNull(SemanticsProperties.Selected) == true &&
+                    config.getOrNull(SemanticsProperties.Disabled) == null
+            }
             activity.recreate()
             compose.waitUntil(10_000) {
                 compose
-                    .onAllNodesWithContentDescription("Mensagens compactas")
+                    .onAllNodesWithTag("message-density-compact")
                     .fetchSemanticsNodes()
                     .isNotEmpty()
             }
-            compose.onNodeWithContentDescription("Mensagens compactas").assertIsOn()
+            compose.onNodeWithTag("message-density-compact").assertIsSelected()
             systemBack()
             systemBack()
             // Channel names remain server content even though the app labels changed language.

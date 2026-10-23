@@ -46,6 +46,8 @@ class SearchEditorTest {
                 result.searchResults.all { it.authorId == "ana" && it.channelId == "general" }
             )
             assertTrue(result.capabilities.canAdmin)
+            assertTrue(result.capabilities.copy(banMembers = false).canBanMembers)
+            assertFalse(result.capabilities.copy(manageServer = false).canBanMembers)
             assertFalse(
                 result.capabilities
                     .copy(
@@ -53,6 +55,7 @@ class SearchEditorTest {
                         manageChannels = false,
                         manageRoles = false,
                         banMembers = false,
+                        manageWebhooks = false,
                     )
                     .canAdmin
             )

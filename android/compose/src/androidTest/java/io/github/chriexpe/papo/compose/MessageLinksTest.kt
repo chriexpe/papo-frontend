@@ -26,7 +26,7 @@ class MessageLinksTest {
                     .copy(
                         externalAuthor =
                             client.run {
-                                dispatch(Action.SelectChannel("media"))
+                                dispatch(Action.SelectChannel("design"))
                                 poll().messages.first { it.externalAuthor != null }.externalAuthor
                             }
                     )
