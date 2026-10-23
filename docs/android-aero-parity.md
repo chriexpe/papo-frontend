@@ -564,3 +564,20 @@ compares both baseline steps in each mode, alongside the author/body gap and act
 row-height reduction. It compiles with the instrumentation APK; execution remains
 deferred for the user's review. Formatting, universal APK construction and Android
 lint pass. APK: `target/android-apks/papo-android-0.8.5-message-spacing.apk`.
+
+### Reply-preview mention correction
+
+Reply bubbles and the composer's reply header previously read raw wire content,
+while the message body consumed the already resolved Markdown tree. Previews now
+use that same typed tree for names, formatting labels and code literals. Native
+cached-original fallback also resolves current member names before projection.
+APP/Wormhole messages share this path; no integration-specific mention parser is
+introduced. Copying, editing and sending retain the canonical source and user IDs.
+Direct-media URLs remain hidden in ordinary text spans without stripping code or
+named links that happen to contain the same URL.
+
+A new adapter regression verifies name changes in cached replies without source
+mutation; all 68 adapter tests and strict adapter Clippy pass. The compiled Android
+preview regression covers resolved names, APP metadata, canonical source retention
+and literal/label preservation. Device execution remains deferred for UI review.
+The same message-spacing APK includes both corrections.

@@ -63,7 +63,7 @@ pub(crate) fn project_message(store: &Store, url: &str, message: &Message) -> Va
         .reply_to
         .as_ref()
         .and_then(|id| store.message(id))
-        .map(|message| message.content.as_str())
+        .map(|message| store.display_mentions(&message.content))
         .unwrap_or_default();
     json!({
         "id": message.id,
@@ -355,6 +355,35 @@ pub(crate) fn project(store: &Store, url: &str, key: &str) -> Value {
 #[cfg(test)]
 mod mention_tests {
     use super::*;
+
+    #[test]
+    fn cached_reply_preview_resolves_current_names_without_changing_source() {
+        let mut demo = crate::demo::Demo::new();
+        let source = demo.store.messages.first_mut().unwrap();
+        source.content = "Hello @mention(<@ana>)".into();
+        let mut reply = source.clone();
+        reply.id = "preview-reply".into();
+        reply.reply_to = Some(source.id.clone());
+        reply.content = "A reply".into();
+        let preview = |store: &Store| {
+            project_message(store, "https://preview.test", &reply)["replyContent"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(preview(&demo.store), "Hello @Ana");
+        demo.store
+            .members
+            .iter_mut()
+            .find(|user| user.id == "ana")
+            .unwrap()
+            .name = "Ana Nova".into();
+        assert_eq!(preview(&demo.store), "Hello @Ana Nova");
+        assert_eq!(
+            demo.store.messages.first().unwrap().content,
+            "Hello @mention(<@ana>)"
+        );
+    }
 
     #[test]
     fn message_word_and_recipient_highlights_use_author_not_viewer_permissions() {

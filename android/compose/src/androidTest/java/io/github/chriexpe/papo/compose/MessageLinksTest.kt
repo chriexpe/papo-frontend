@@ -9,6 +9,44 @@ import org.junit.Test
 
 class MessageLinksTest {
     @Test
+    fun replyPreviewsResolveMentionsWithoutChangingWireContentOrCodeLiterals() {
+        val client = NativeClient.demo()
+        try {
+            val content = "**Hello** @mention(<@ana>)"
+            client.dispatch(
+                Action.Send("preview-mention", "general", content, null, true, emptyList())
+            )
+            val message = client.poll().messages.single { it.id == "preview-mention" }
+            assertEquals("Hello @Ana", message.previewText())
+            assertEquals(content, message.content)
+            // An APP author uses exactly the same resolved presentation tree.
+            assertEquals(
+                "Hello @Ana",
+                message
+                    .copy(
+                        externalAuthor =
+                            client.run {
+                                dispatch(Action.SelectChannel("media"))
+                                poll().messages.first { it.externalAuthor != null }.externalAuthor
+                            }
+                    )
+                    .previewText(),
+            )
+            val media = "https://cdn.test/native.gif"
+            val mixed = "**Caption** $media\n\n`$media` [named]($media)"
+            val literal =
+                message.copy(
+                    content = mixed,
+                    markdown = io.github.chriexpe.papo.core.parseMessageMarkdown(mixed),
+                    embeds = emptyList(),
+                )
+            assertEquals("Caption \n\n$media named", literal.previewText())
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun copiesExactUrlsAndHidesOnlyDirectMediaWhileKeepingCaptionAndOtherLinks() {
         assertEquals(
             listOf("https://cdn.example/image_(1).gif?sig=a%2Bb&x=2", "http://example.test/page"),

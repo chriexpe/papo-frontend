@@ -135,25 +135,50 @@ internal fun ChatMessage.visibleEmbeds(): List<io.github.chriexpe.papo.core.Embe
 internal fun ChatMessage.visibleContent(): String {
     val hidden = nativeLinks()
     if (hidden.isEmpty()) return content
-    return buildString {
-        var end = 0
-        hidden.forEach { link ->
-            append(content.substring(end, link.start))
-            end = link.end
-        }
-        append(content.substring(end))
-    }
-        .trim()
+    return withoutLinks(content, hidden).trim()
 }
 
-internal fun ChatMessage.previewText(): String =
-    visibleContent().ifBlank {
-        when {
-            nativeLinks().isNotEmpty() || embeds.any { it.nativeMedia } -> uiLabel("Media")
-            attachments.isNotEmpty() -> attachments.first().name
-            else -> uiLabel("Message")
+private fun withoutLinks(text: String, hidden: List<MessageLink>): String = buildString {
+    var end = 0
+    hidden.forEach { link ->
+        append(text.substring(end, link.start))
+        end = link.end
+    }
+    append(text.substring(end))
+}
+
+/** Previews consume the resolved tree too; raw wire content still owns copying and editing. */
+internal fun ChatMessage.previewText(): String {
+    val document = document()
+    val native = nativeLinks().map { it.url }.toSet()
+    fun plain(index: UInt, depth: Int = 0): String {
+        if (depth > 64) return ""
+        val node = document.nodes.getOrNull(index.toInt()) ?: return ""
+        if (node.kind == "code") return node.text
+        if (node.spans.isNotEmpty())
+            return node.spans.joinToString("") { span ->
+                if (span.kind == "text" && span.link.isBlank())
+                    withoutLinks(span.text, messageLinks(span.text).filter { it.url in native })
+                else span.text
+            }
+        return node.children.joinToString(if (node.kind == "row") " " else "\n") {
+            plain(it, depth + 1)
         }
     }
+    return document.roots
+        .joinToString("\n") { plain(it) }
+        .trim()
+        .ifBlank {
+            when {
+                native.isNotEmpty() ||
+                    embeds.any { it.nativeMedia } ||
+                    document.nodes.any { node -> node.spans.any { it.kind == "image" } } ->
+                    uiLabel("Media")
+                attachments.isNotEmpty() -> attachments.first().name
+                else -> uiLabel("Message")
+            }
+        }
+}
 
 internal fun publicMediaSource(url: String): MediaRequest {
     require(isPublicLink(url)) { ui(R.string.invalid_media_address) }
