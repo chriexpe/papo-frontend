@@ -515,10 +515,15 @@ impl ServerRuntime {
         }
     }
 
-    pub fn forget_server(&self) {
+    pub fn forget_server(&mut self) {
+        // No late auth refresh, outbox write or Drop flush may resurrect a
+        // namespace after forgetting it. Stop first, discard pending UI ops.
+        self.net.shutdown();
+        self.store.take_cache_ops();
         self.notification.remove_context(&self.server_key);
         self.cache.clear_server(&self.server_key);
         self.net.forget_credentials();
+        self.cache.flush();
     }
 
     fn presentation_effects(&self, update: &Update) -> Vec<RuntimeEffect> {
@@ -1019,7 +1024,7 @@ mod tests {
             Arc::clone(&cache),
             None,
         ));
-        let runtime = ServerRuntime::open(
+        let mut runtime = ServerRuntime::open(
             "http://127.0.0.1:9".to_owned(),
             Wake::noop(),
             secrets.clone(),

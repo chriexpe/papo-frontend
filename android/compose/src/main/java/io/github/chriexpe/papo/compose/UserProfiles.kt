@@ -468,15 +468,15 @@ internal fun ExternalAvatar(
             value = null
             if (url != null)
                 try {
-                    val source =
+                    val raw =
                         if (server.isDemo) publicGifSource(url)
                         else
-                            publicMediaSource(url).let {
-                                it.copy(
+                            publicMediaSource(url)
+                                .copy(
                                     cacheKey =
                                         "${server.url}/${server.me}/external/${author.source}/${author.id}/$url"
                                 )
-                            }
+                    val source = MediaCache.get(context).scoped(raw, server.url)
                     MediaCache.get(context).images(source).collect { value = it }
                 } catch (e: CancellationException) {
                     throw e

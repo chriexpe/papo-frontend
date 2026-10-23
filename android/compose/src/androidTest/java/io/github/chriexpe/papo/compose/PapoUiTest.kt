@@ -2818,6 +2818,205 @@ class PapoUiTest {
     }
 
     @Test
+    fun editingMentionsShowsNamesPreservesTheirIdsAndLeavesTheComposerDraftAlone() {
+        chat()
+        lateinit var model: PapoViewModel
+        activity.onActivity {
+            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+        }
+        val server = model.state.value.active!!
+        model.send(server, "Hello @mention(<@ana>)", null) {}
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.messages.any {
+                it.mine && it.content == "Hello @mention(<@ana>)" && !it.pending
+            }
+        }
+        val message =
+            model.state.value.active!!.messages.first {
+                it.mine && it.content == "Hello @mention(<@ana>)"
+            }
+        compose.onNodeWithTag("composer-input").performTextInput("Keep my unsent draft")
+        compose.onNodeWithTag("message-list").performScrollToKey(message.id)
+        compose.onNodeWithTag("message-${message.id}").performTouchInput { longClick() }
+        compose.onNodeWithText("Edit message").performClick()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithTag("edit-message-input").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("edit-message-input").assertTextContains("Hello @Ana")
+        compose.onNodeWithTag("edit-message-input").performClick()
+        compose
+            .onNodeWithTag("edit-message-input")
+            .performTextInputSelection(androidx.compose.ui.text.TextRange(10))
+        compose.onNodeWithTag("edit-message-input").performTextInput(" plus @An")
+        compose.onNodeWithTag("edit-message-input").assertTextEquals("Hello @Ana plus @An")
+        assertEquals(
+            androidx.compose.ui.text.TextRange(19),
+            compose
+                .onNodeWithTag("edit-message-input")
+                .fetchSemanticsNode()
+                .config[SemanticsProperties.TextSelectionRange],
+        )
+        compose.waitUntil(5000) {
+            compose
+                .onAllNodes(
+                    hasText("Ana", substring = false) and
+                        hasClickAction() and
+                        hasAnyAncestor(hasTestTag("composer-suggestions"))
+                )
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        compose
+            .onNode(
+                hasText("Ana", substring = false) and
+                    hasClickAction() and
+                    hasAnyAncestor(hasTestTag("composer-suggestions"))
+            )
+            .performClick()
+        compose.onNodeWithText("Save").performClick()
+        compose.waitUntil(10_000) {
+            model.state.value.active!!.messages.first { it.id == message.id }.content ==
+                "Hello @mention(<@ana>) plus @mention(<@ana>) "
+        }
+        compose.onNodeWithTag("composer-input").assertTextEquals("Keep my unsent draft")
+    }
+
+    @Test
+    fun forgettingAServerClearsLocalDataKeepsAnotherAndAllowsForgettingTheLastSignedOutEntry() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        lateinit var model: PapoViewModel
+        activity.onActivity {
+            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+        }
+        IncomingChatFixture(context).use { a ->
+            IncomingChatFixture(context).use { b ->
+                val secrets = AndroidSecrets(context)
+                var attachment: java.io.File? = null
+                var favorite: java.io.File? = null
+                var otherFavorite: java.io.File? = null
+                try {
+                    model.addServer(a.url)
+                    compose.waitUntil(10_000) { model.state.value.active?.url == a.url }
+                    model.command(
+                        io.github.chriexpe.papo.core.Action.Login("reader", "fixture"),
+                        a.url,
+                    )
+                    compose.waitUntil(30_000) {
+                        model.state.value.active?.let {
+                            it.url == a.url && it.screen == "chat" && it.me.isNotBlank()
+                        } == true
+                    }
+                    val target = model.state.value.active!!
+                    val key = "${a.url}/${target.me}/fixture-channel"
+                    model.saveDraft(key, "private text")
+                    model.saveReadingPosition(key, "m10", 31)
+                    attachment =
+                        AttachmentFiles.create(context, "txt").apply {
+                            writeText("private pending file")
+                        }
+                    kotlinx.coroutines.runBlocking {
+                        model.attachments
+                            .captured(key, attachment!!, "private.txt", "text/plain")
+                            .join()
+                    }
+                    val owner = model.expressions.owner(target)
+                    favorite =
+                        model.expressions.file(owner, "owned-gif").apply {
+                            writeText("private favorite")
+                        }
+                    model.expressions.favorite(
+                        owner,
+                        GifChoice("owned-gif", "Saved", path = favorite!!.absolutePath),
+                    )
+                    val otherOwner = "${b.url}/other"
+                    otherFavorite =
+                        model.expressions.file(otherOwner, "keep-gif").apply {
+                            writeText("keep private B")
+                        }
+                    model.expressions.favorite(
+                        otherOwner,
+                        GifChoice("keep-gif", "Keep", path = otherFavorite!!.absolutePath),
+                    )
+                    kotlinx.coroutines.runBlocking {
+                        model.mediaCache.blob("avatar", server = a.url) {
+                            "private cached media".toByteArray()
+                        }
+                        model.mediaCache.blob("other", server = b.url) { "keep B".toByteArray() }
+                    }
+                    model.addServer(b.url)
+                    compose.waitUntil(10_000) { model.state.value.active?.url == b.url }
+                    val other = model.state.value.active!!
+                    secrets.store(other.key, "server", "keep this server password")
+                    model.saveDraft("${b.url}/other/channel", "keep other draft")
+                    model.activate(a.url)
+                    compose.waitUntil(5000) { model.state.value.active?.url == a.url }
+                    compose.onNodeWithText("Servers").performClick()
+                    compose.onNodeWithTag("server-actions-${a.url}").performClick()
+                    compose.onNodeWithText("Forget server").performClick()
+                    compose.onNodeWithText("Cancel").performClick()
+                    assertTrue(model.state.value.servers.any { it.url == a.url })
+                    compose.onNodeWithTag("server-actions-${a.url}").performClick()
+                    compose.onNodeWithText("Forget server").performClick()
+                    compose.onNodeWithText("Forget server").performClick()
+                    compose.waitUntil(15_000) {
+                        model.state.value.servers.none { it.url == a.url } &&
+                            !context
+                                .getSharedPreferences("compose-client", 0)
+                                .contains("forgetting/${a.url}")
+                    }
+                    assertEquals(null, secrets.load(target.key, "token"))
+                    assertTrue(!attachment!!.exists() && !favorite!!.exists())
+                    assertEquals("keep private B", otherFavorite!!.readText())
+                    assertEquals("", model.draft(key))
+                    assertEquals(null, model.readingPosition(key))
+                    assertEquals("keep other draft", model.draft("${b.url}/other/channel"))
+                    assertEquals("keep this server password", secrets.load(other.key, "server"))
+                    kotlinx.coroutines.runBlocking {
+                        assertTrue(model.expressions.state(owner).favorites.isEmpty())
+                        assertEquals(
+                            "keep B",
+                            model.mediaCache
+                                .blob("other", server = b.url) { error("B cache was cleared") }
+                                .decodeToString(),
+                        )
+                    }
+                    assertTrue(a.requests.none { it.contains("logout") })
+                    activity.close()
+                    activity = ActivityScenario.launch(MainActivity::class.java)
+                    activity.onActivity {
+                        model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+                    }
+                    compose.waitUntil(10_000) { model.state.value.servers.size == 1 }
+                    assertEquals(b.url, model.state.value.servers.single().url)
+                    model.activate(b.url)
+                    compose.onNodeWithText("Your servers", substring = false).performClick()
+                    compose.onNodeWithTag("server-actions-${b.url}").performClick()
+                    compose.onNodeWithText("Forget server").performClick()
+                    compose.onNodeWithText("Forget server").performClick()
+                    compose.waitUntil(15_000) {
+                        model.state.value.servers.isEmpty() &&
+                            !context
+                                .getSharedPreferences("compose-client", 0)
+                                .contains("forgetting/${b.url}")
+                    }
+                    compose.onNodeWithText("Explore demo").assertIsDisplayed()
+                    assertEquals(null, secrets.load(other.key, "server"))
+                    assertTrue(!otherFavorite!!.exists())
+                } finally {
+                    attachment?.delete()
+                    favorite?.delete()
+                    otherFavorite?.delete()
+                    model.state.value.servers
+                        .filter { it.url in listOf(a.url, b.url) }
+                        .forEach { target ->
+                            kotlinx.coroutines.runBlocking { model.forgetServer(target) }
+                        }
+                }
+            }
+        }
+    }
+
+    @Test
     fun attachmentOptionsCancelCropApplyAndRevealSpoilersWithoutOfferingMetadataForDocuments() {
         chat()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -3979,68 +4178,5 @@ private fun MainActivity.setContentForMemberHeader(server: ServerState, model: P
                 ServerHeader(server, model, "")
             }
         }
-    }
-    @Test
-    fun editingMentionsShowsNamesPreservesTheirIdsAndLeavesTheComposerDraftAlone() {
-        chat()
-        lateinit var model: PapoViewModel
-        activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
-        }
-        val server = model.state.value.active!!
-        model.send(server, "Hello @mention(<@ana>)", null) {}
-        compose.waitUntil(10_000) {
-            model.state.value.active!!.messages.any {
-                it.mine && it.content == "Hello @mention(<@ana>)" && !it.pending
-            }
-        }
-        val message =
-            model.state.value.active!!.messages.first {
-                it.mine && it.content == "Hello @mention(<@ana>)"
-            }
-        compose.onNodeWithTag("composer-input").performTextInput("Keep my unsent draft")
-        compose.onNodeWithTag("message-list").performScrollToKey(message.id)
-        compose.onNodeWithTag("message-${message.id}").performTouchInput { longClick() }
-        compose.onNodeWithText("Edit message").performClick()
-        compose.waitUntil(5000) {
-            compose.onAllNodesWithTag("edit-message-input").fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.onNodeWithTag("edit-message-input").assertTextContains("Hello @Ana")
-        compose.onNodeWithTag("edit-message-input").performClick()
-        compose
-            .onNodeWithTag("edit-message-input")
-            .performTextInputSelection(androidx.compose.ui.text.TextRange(10))
-        compose.onNodeWithTag("edit-message-input").performTextInput(" plus @An")
-        compose.onNodeWithTag("edit-message-input").assertTextEquals("Hello @Ana plus @An")
-        assertEquals(
-            androidx.compose.ui.text.TextRange(19),
-            compose
-                .onNodeWithTag("edit-message-input")
-                .fetchSemanticsNode()
-                .config[SemanticsProperties.TextSelectionRange],
-        )
-        compose.waitUntil(5000) {
-            compose
-                .onAllNodes(
-                    hasText("Ana", substring = false) and
-                        hasClickAction() and
-                        hasAnyAncestor(hasTestTag("composer-suggestions"))
-                )
-                .fetchSemanticsNodes()
-                .isNotEmpty()
-        }
-        compose
-            .onNode(
-                hasText("Ana", substring = false) and
-                    hasClickAction() and
-                    hasAnyAncestor(hasTestTag("composer-suggestions"))
-            )
-            .performClick()
-        compose.onNodeWithText("Save").performClick()
-        compose.waitUntil(10_000) {
-            model.state.value.active!!.messages.first { it.id == message.id }.content ==
-                "Hello @mention(<@ana>) plus @mention(<@ana>) "
-        }
-        compose.onNodeWithTag("composer-input").assertTextEquals("Keep my unsent draft")
     }
 }

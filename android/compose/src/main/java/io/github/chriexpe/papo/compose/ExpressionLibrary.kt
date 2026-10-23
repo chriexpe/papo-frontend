@@ -87,6 +87,37 @@ internal class ExpressionLibrary(private val context: Context) {
     private val mutable = MutableStateFlow<Map<String, ExpressionState>>(emptyMap())
     val states = mutable.asStateFlow()
 
+    private val forgotten = mutableSetOf<String>()
+
+    private fun blocked(owner: String) = forgotten.any { owner.startsWith("$it/") }
+
+    @Synchronized
+    fun allowServer(server: String) {
+        forgotten.remove(server)
+    }
+
+    /** Capture old cache-only files under the current owner before a restart can lose that ID. */
+    @Synchronized
+    fun prepareForget(server: ServerState) {
+        if (server.me.isBlank()) return
+        val owner = owner(server)
+        if (!blocked(owner) && !preferences.contains(owner)) save(owner, state(owner))
+    }
+
+    @Synchronized
+    fun forgetServer(server: String) {
+        forgotten += server
+        (preferences.all.keys + mutable.value.keys)
+            .filter { it.startsWith("$server/") }
+            .toSet()
+            .forEach { owner ->
+                val directory = fileDirectory(owner)
+                if (directory.exists()) check(directory.deleteRecursively())
+                check(preferences.edit().remove(owner).commit())
+                mutable.value -= owner
+            }
+    }
+
     fun owner(server: ServerState) = "${server.url}/${server.me}"
 
     private fun decode(array: JSONArray) =
@@ -112,6 +143,7 @@ internal class ExpressionLibrary(private val context: Context) {
 
     @Synchronized
     fun state(owner: String): ExpressionState {
+        if (blocked(owner)) return ExpressionState()
         mutable.value[owner]?.let {
             return it
         }
@@ -144,6 +176,7 @@ internal class ExpressionLibrary(private val context: Context) {
     }
 
     private fun save(owner: String, state: ExpressionState) {
+        check(!blocked(owner)) { ui(R.string.server_is_closed) }
         val j =
             JSONObject()
                 .put("stickerFavorites", JSONArray(state.favoriteStickers))
@@ -216,15 +249,20 @@ internal class ExpressionLibrary(private val context: Context) {
         prune(owner)
     }
 
+    private fun hash(value: String) =
+        MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") {
+            "%02x".format(it)
+        }
+
+    private fun fileDirectory(owner: String) = File(context.filesDir, "gif-library/${hash(owner)}")
+
+    @Synchronized
     fun file(owner: String, key: String): File {
-        fun hash(value: String) =
-            MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") {
-                "%02x".format(it)
-            }
-        return File(
-            File(context.filesDir, "gif-library/${hash(owner)}").apply { mkdirs() },
-            "${hash(key)}.gif",
-        )
+        check(!blocked(owner)) { ui(R.string.server_is_closed) }
+        // Persist ownership before creating files, so cleanup can resume after process death.
+        val current = state(owner)
+        if (!preferences.contains(owner)) save(owner, current)
+        return File(fileDirectory(owner).apply { mkdirs() }, "${hash(key)}.gif")
     }
 
     private fun prune(owner: String) {

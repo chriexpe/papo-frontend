@@ -9,6 +9,7 @@ import io.github.chriexpe.papo.core.MediaRequest
 import java.net.ServerSocket
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -84,6 +85,62 @@ class MediaCacheTest {
             executor.shutdownNow()
         }
     }
+
+    @Test
+    fun forgettingOneServerClearsItsMediaAndRejectsLateWritesWithoutTouchingAnother() =
+        runBlocking {
+            AppLanguage.update(context)
+            val directory = context.cacheDir.resolve("forget-media-${System.nanoTime()}")
+            val a = "https://a-${System.nanoTime()}.example"
+            val b = "https://b-${System.nanoTime()}.example"
+            val cache = MediaCache.isolated(context, directory)
+            val original = "private A".toByteArray()
+            val retained = "private B".toByteArray()
+            try {
+                cache.blob("photo", server = a) { original }
+                cache.blob("photo", server = b) { retained }
+                val source =
+                    cache.scoped(
+                        MediaRequest(
+                            "https://media.example/image.png",
+                            emptyMap(),
+                            "public/image",
+                            "https://media.example",
+                        ),
+                        a,
+                    )
+                val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+                val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+                val late =
+                    kotlinx.coroutines.CoroutineScope(coroutineContext).async {
+                        runCatching {
+                            cache.blob("late", server = a) {
+                                started.complete(Unit)
+                                release.await()
+                                original
+                            }
+                        }
+                    }
+                started.await()
+                cache.forgetServer(a)
+                release.complete(Unit)
+                assertTrue(late.await().isFailure)
+                assertEquals(retained.size.toLong(), cache.size)
+                assertArrayEquals(
+                    retained,
+                    cache.blob("photo", server = b) {
+                        error("Other server media must remain cached")
+                    },
+                )
+                cache.allowServer(a)
+                val new = "new A".toByteArray()
+                assertArrayEquals(new, cache.blob("photo", server = a) { new })
+                assertTrue(runCatching { cache.images(source).first() }.isFailure)
+            } finally {
+                cache.close()
+                directory.deleteRecursively()
+            }
+        }
 
     @Test
     fun imagesAndPlaybackSharePersistentBytesAndSeparateAccounts() = runBlocking {

@@ -355,7 +355,13 @@ internal fun AttachmentThumbnail(
     ) {
         if (spoiler) Icon(Icons.Outlined.VisibilityOff, ui(R.string.attachment_spoiler))
         else if (mime.startsWith("image/"))
-            AsyncImage(File(path), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            AsyncImage(
+                File(path),
+                null,
+                imageLoader = MediaImages.loader(LocalContext.current),
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
         else
             Icon(
                 if (mime.startsWith("audio/")) Icons.Outlined.Mic

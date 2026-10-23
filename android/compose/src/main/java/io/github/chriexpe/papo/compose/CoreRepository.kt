@@ -143,6 +143,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val snapshots = linkedMapOf<String, ServerState>()
     private val mutableState = MutableStateFlow(PapoState())
     val state = mutableState.asStateFlow()
+    private val forgottenServers = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var activeUrl = preferences.getString("active-server", "").orEmpty()
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
     private var networkEpoch = 0L
@@ -156,9 +157,18 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val pendingNotification = MutableStateFlow<NotificationTarget?>(null)
     internal val notificationTarget = pendingNotification.asStateFlow()
     private var callbackRegistered = false
-    private val awaitingUploads = mutableMapOf<String, CompletableDeferred<UploadReceipt>>()
+
+    private data class PendingUpload(
+        val server: String,
+        val receipt: CompletableDeferred<UploadReceipt>,
+    )
+
+    private data class PendingMessage(val server: String, val callback: (Boolean) -> Unit)
+
+    private val awaitingUploads = mutableMapOf<String, PendingUpload>()
+    internal val expressions = ExpressionLibrary(getApplication())
     internal val attachments = AttachmentDrafts(application, viewModelScope, ::uploadFiles)
-    private val awaitingPersistence = mutableMapOf<String, (Boolean) -> Unit>()
+    private val awaitingPersistence = mutableMapOf<String, PendingMessage>()
     private var networkFingerprint: Pair<Long?, Boolean>? = null
     private val networkCallback =
         object : ConnectivityManager.NetworkCallback() {
@@ -211,6 +221,25 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                         error = it.message ?: ui(R.string.could_not_import_previous_android_data)
                     )
                 }
+            // Resume the tombstone before opening saved servers. Forgetting must
+            // survive process death during IO cleanup without reconnecting first.
+            var cleanupFailed = false
+            preferences.all.keys
+                .filter { it.startsWith("forgetting/") }
+                .forEach { marker ->
+                    val url = marker.removePrefix("forgetting/")
+                    forgottenServers += url
+                    try {
+                        clearServerLocalData(url)
+                        check(preferences.edit().remove(marker).commit())
+                    } catch (error: kotlinx.coroutines.CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        // Keep the tombstone for retry without preventing other servers from
+                        // opening.
+                        cleanupFailed = true
+                    }
+                }
             activeUrl = preferences.getString("active-server", activeUrl).orEmpty()
             val saved = runCatching {
                 JSONArray(preferences.getString("servers", "[]"))
@@ -218,7 +247,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 .getOrDefault(JSONArray())
             for (i in 0 until saved.length()) open(saved.getString(i), activate = false)
             if (activeUrl !in handles) activeUrl = handles.keys.firstOrNull().orEmpty()
-            publish()
+            if (cleanupFailed) publish(error = ui(R.string.forget_server_failed)) else publish()
             signals.trySend(Unit)
             for (signal in signals) poll()
         }
@@ -235,16 +264,24 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private fun open(input: String, activate: Boolean = true): Boolean =
         try {
             publish(error = "", opening = true)
+            val normalized = io.github.chriexpe.papo.core.canonicalServerUrl(input)
+            check(!preferences.contains("forgetting/$normalized")) {
+                ui(R.string.server_cleanup_pending)
+            }
             val path = messageDatabasePath(getApplication())
             val handle =
                 NativeClient.openNotifying(
-                    input,
+                    normalized,
                     path,
                     secrets,
                     CoreWake { signals.trySend(Unit) },
                     MessageAlerts.listener,
                 )
             val server = handle.poll()
+            mediaCache.allowServer(server.url)
+            attachments.allowServer(server.url)
+            expressions.allowServer(server.url)
+            forgottenServers.remove(server.url)
             val old = handles[server.url]
             if (old != null) {
                 handle.release()
@@ -286,6 +323,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 for (event in snapshot.events) {
                     awaitingUploads
                         .remove(event.localId)
+                        ?.receipt
                         ?.complete(
                             UploadReceipt(
                                 event.kind == "accepted",
@@ -293,7 +331,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                                 event.error,
                             )
                         )
-                    val callback = awaitingPersistence.remove(event.localId) ?: continue
+                    val callback = awaitingPersistence.remove(event.localId)?.callback ?: continue
                     val accepted = event.kind == "accepted"
                     if (!accepted) publish(error = event.error)
                     viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
@@ -406,13 +444,28 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun addServer(address: String, onSuccess: () -> Unit = {}) =
         viewModelScope.launch(dispatcher) {
-            if (open(address)) launch(kotlinx.coroutines.Dispatchers.Main) { onSuccess() }
+            try {
+                val url = io.github.chriexpe.papo.core.canonicalServerUrl(address)
+                if (preferences.contains("forgetting/$url")) {
+                    clearServerLocalData(url)
+                    check(preferences.edit().remove("forgetting/$url").commit())
+                }
+                if (open(url)) launch(kotlinx.coroutines.Dispatchers.Main) { onSuccess() }
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                publish(error = error.message ?: ui(R.string.could_not_open_server))
+            }
         }
 
     fun exploreDemo() =
         viewModelScope.launch(dispatcher) {
             try {
                 if ("demo://papo" !in handles) handles["demo://papo"] = NativeClient.demo()
+                mediaCache.allowServer("demo://papo")
+                attachments.allowServer("demo://papo")
+                expressions.allowServer("demo://papo")
+                forgottenServers.remove("demo://papo")
                 activeUrl = "demo://papo"
                 poll()
             } catch (e: Exception) {
@@ -427,6 +480,125 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             activeUrl = handles.keys.firstOrNull().orEmpty()
             publish(error = "")
         }
+
+    /** Forget is local teardown, never an account-delete or remote logout request. */
+    internal suspend fun forgetServer(server: ServerState) =
+        withContext(dispatcher) {
+            val client = handles[server.url]
+            if (client == null && !preferences.contains("forgetting/${server.url}"))
+                return@withContext
+            val remaining = handles.keys.filter { it != server.url && it != "demo://papo" }
+            val next =
+                if (activeUrl == server.url) handles.keys.firstOrNull { it != server.url }.orEmpty()
+                else activeUrl
+            expressions.prepareForget(server)
+            // Persist removal first so a process killed during cleanup cannot reconnect.
+            check(
+                preferences
+                    .edit()
+                    .putString("servers", JSONArray(remaining).toString())
+                    .putString("active-server", next)
+                    .putString("forgetting/${server.url}", server.key)
+                    .commit()
+            )
+            forgottenServers += server.url
+            pushJobs.remove(server.url)?.cancel()
+            pushApplied.remove(server.url)
+            pushRetryAt.remove(server.url)
+            val token = MessageAlerts.registration(server.url)?.second
+            MessageAlerts.forgetServer(server.url, server.key)
+            if (pendingNotification.value?.server == server.url) pendingNotification.value = null
+            withContext(kotlinx.coroutines.NonCancellable) {
+                handles.remove(server.url)
+                snapshots.remove(server.url)
+                activeUrl = next
+                awaitingUploads
+                    .filterValues { it.server == server.url }
+                    .keys
+                    .toList()
+                    .forEach {
+                        awaitingUploads.remove(it)?.receipt?.cancel()
+                    }
+                awaitingPersistence
+                    .filterValues { it.server == server.url }
+                    .keys
+                    .toList()
+                    .forEach(awaitingPersistence::remove)
+                publish(error = "")
+                try {
+                    withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        try {
+                            client?.forgetServer(token)
+                        } finally {
+                            client?.close()
+                        }
+                    }
+                    activeUrl = next
+                    if (visibleConversationUrl == server.url) visibleConversationUrl = ""
+                    publish(error = "")
+                    syncNotifications()
+                    clearServerLocalData(server.url)
+                    check(preferences.edit().remove("forgetting/${server.url}").commit())
+                } catch (error: Exception) {
+                    // This screen may already be gone (last server); surface cleanup failures
+                    // globally.
+                    publish(error = ui(R.string.forget_server_failed))
+                    throw error
+                }
+            }
+        }
+
+    private suspend fun clearServerLocalData(url: String) {
+        attachments.forgetServer(url)
+        withContext(kotlinx.coroutines.Dispatchers.IO) {
+            if (!url.startsWith("demo:"))
+                io.github.chriexpe.papo.core.forgetSavedServer(
+                    url,
+                    getApplication<Application>().filesDir.absolutePath,
+                    messageDatabasePath(getApplication()),
+                    secrets,
+                )
+            expressions.forgetServer(url)
+            withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                pendingGifs.keys
+                    .filter { it.startsWith("$url/") }
+                    .toList()
+                    .forEach(pendingGifs::remove)
+            }
+            gifLocks.keys.filter { it.startsWith("$url/") }.toList().forEach(gifLocks::remove)
+            mediaCache.forgetServer(url)
+            androidx.work.WorkManager.getInstance(getApplication())
+                .pruneWork()
+                .result
+                .get(10, java.util.concurrent.TimeUnit.SECONDS)
+            val edit = preferences.edit()
+            preferences.all.keys
+                .filter { key ->
+                    listOf("draft/", "draft-mentions/", "position/").any {
+                        key.startsWith("$it$url/")
+                    }
+                }
+                .forEach(edit::remove)
+            check(edit.commit())
+            val context = getApplication<Application>()
+            listOf("image-editor", "attachment-options", "media-exports").forEach {
+                context.cacheDir.resolve(it).deleteRecursively()
+            }
+            context.cacheDir
+                .listFiles()
+                .orEmpty()
+                .filter { it.name.startsWith("download-image-") }
+                .forEach { it.delete() }
+        }
+        waveforms.forgetAllMemory()
+        withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+            MediaImages.loader(getApplication()).memoryCache?.clear()
+            android.webkit.WebView(getApplication()).apply {
+                clearCache(true)
+                destroy()
+            }
+        }
+    }
 
     fun activate(url: String) =
         viewModelScope.launch(dispatcher) {
@@ -498,9 +670,15 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+    internal fun publicMediaRequest(server: ServerState, url: String, gif: Boolean = false) =
+        mediaCache.scoped(if (gif) publicGifSource(url) else publicMediaSource(url), server.url)
+
     suspend fun mediaRequest(url: String, resource: MediaResource): MediaRequest =
         withContext(dispatcher) {
-            (handles[url] ?: error(ui(R.string.server_is_closed))).mediaRequest(resource)
+            mediaCache.scoped(
+                (handles[url] ?: error(ui(R.string.server_is_closed))).mediaRequest(resource),
+                url,
+            )
         }
 
     internal suspend fun analyzeSearch(
@@ -516,14 +694,17 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
 
     internal suspend fun serverIcon(server: ServerState): ByteArray =
-        mediaCache.blob("${server.url}/${server.me}/server-icon/${server.serverIconRevision}") {
+        mediaCache.blob(
+            "${server.url}/${server.me}/server-icon/${server.serverIconRevision}",
+            server = server.url,
+        ) {
             withContext(dispatcher) {
                 (handles[server.url] ?: error(ui(R.string.server_is_closed))).serverIcon()
             }
         }
 
     internal suspend fun avatarImage(server: ServerState, id: String, revision: String): ByteArray =
-        mediaCache.blob("${server.url}/${server.me}/avatar/$id/$revision") {
+        mediaCache.blob("${server.url}/${server.me}/avatar/$id/$revision", server = server.url) {
             withContext(dispatcher) {
                 check(snapshots[server.url]?.me == server.me) { ui(R.string.account_changed) }
                 (handles[server.url] ?: error(ui(R.string.server_is_closed))).avatarImage(id)
@@ -532,7 +713,10 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     internal suspend fun emojiImage(server: ServerState, id: String): ByteArray {
         val revision = server.emojis.firstOrNull { it.id == id }?.revision.orEmpty()
-        return mediaCache.blob("${server.url}/${server.me}/emoji/$id/$revision") {
+        return mediaCache.blob(
+            "${server.url}/${server.me}/emoji/$id/$revision",
+            server = server.url,
+        ) {
             withContext(dispatcher) {
                 check(snapshots[server.url]?.me == server.me) { ui(R.string.account_changed) }
                 (handles[server.url] ?: error(ui(R.string.server_is_closed))).emojiImage(id)
@@ -706,7 +890,6 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    internal val expressions = ExpressionLibrary(getApplication())
     private val gifLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private val pendingGifs = mutableMapOf<String, List<Pair<GifChoice, String>>>()
 
@@ -791,8 +974,13 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                         val source =
                             withContext(dispatcher) {
                                 check(snapshots[server.url]?.me == server.me)
-                                (handles[server.url] ?: error(ui(R.string.server_is_closed)))
-                                    .mediaRequest(MediaResource.Attachment(gif.attachment, false))
+                                mediaCache.scoped(
+                                    (handles[server.url] ?: error(ui(R.string.server_is_closed)))
+                                        .mediaRequest(
+                                            MediaResource.Attachment(gif.attachment, false)
+                                        ),
+                                    server.url,
+                                )
                             }
                         mediaCache.export(source, temporary)
                     }
@@ -801,7 +989,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                             if (gif.url.isBlank() && gif.providerId.isNotBlank())
                                 gifItem(server, gif.providerId)
                             else gif
-                        val source = publicGifSource(resolved.url)
+                        val source = publicMediaRequest(server, resolved.url, gif = true)
                         mediaCache.export(source, temporary)
                     }
                 }
@@ -846,6 +1034,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         onDone: () -> Unit,
     ) = viewModelScope.launch {
         try {
+            if (server.url in forgottenServers) return@launch
             if (gif.providerId.isNotBlank()) {
                 pendingGifs[draftKey] = pendingGifs[draftKey].orEmpty() + (gif to "")
                 onMarker("giphy:${gif.providerId}")
@@ -866,6 +1055,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                         "image/gif",
                     )
                     .join()
+                if (server.url in forgottenServers) return@launch
                 pendingGifs[draftKey] =
                     pendingGifs[draftKey].orEmpty() +
                         (gif.copy(path = file.absolutePath) to copy.absolutePath)
@@ -885,13 +1075,18 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         val source =
             withContext(dispatcher) {
                 check(snapshots[server.url]?.me == server.me) { ui(R.string.account_changed) }
-                (handles[server.url] ?: error(ui(R.string.server_is_closed))).mediaRequest(resource)
+                mediaCache.scoped(
+                    (handles[server.url] ?: error(ui(R.string.server_is_closed))).mediaRequest(
+                        resource
+                    ),
+                    server.url,
+                )
             }
         return waveforms.load(source)
     }
 
-    internal suspend fun publicAudioWaveform(url: String): AudioWaveform =
-        waveforms.load(publicMediaSource(url))
+    internal suspend fun publicAudioWaveform(server: ServerState, url: String): AudioWaveform =
+        waveforms.load(publicMediaRequest(server, url))
 
     suspend fun embedImage(
         server: ServerState,
@@ -899,7 +1094,10 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         revision: String,
         author: Boolean = false,
     ): ByteArray =
-        mediaCache.blob("${server.url}/${server.me}/embed/$id/$revision/$author") {
+        mediaCache.blob(
+            "${server.url}/${server.me}/embed/$id/$revision/$author",
+            server = server.url,
+        ) {
             val client =
                 withContext(dispatcher) {
                     check(snapshots[server.url]?.me == server.me) { ui(R.string.account_changed) }
@@ -908,12 +1106,20 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             withContext(kotlinx.coroutines.Dispatchers.IO) { client.embedImage(id, author) }
         }
 
-    fun send(server: ServerState, text: String, reply: String?, onResult: (Boolean) -> Unit) =
+    fun send(
+        server: ServerState,
+        text: String,
+        reply: String?,
+        onResult: (Boolean) -> Unit,
+    ) =
         viewModelScope.launch(dispatcher) {
             val id = UUID.randomUUID().toString()
             try {
                 val handle = handles[server.url] ?: error(ui(R.string.server_is_closed))
-                awaitingPersistence[id] = onResult
+                check(snapshots[server.url]?.me == server.me) {
+                    ui(R.string.account_changed_before_sending)
+                }
+                awaitingPersistence[id] = PendingMessage(server.url, onResult)
                 handle.dispatch(Action.Send(id, server.selected, text, reply))
                 signals.trySend(Unit)
             } catch (e: Exception) {
@@ -938,7 +1144,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                     check(snapshots[server.url]?.me == server.me) {
                         ui(R.string.account_changed_before_sending)
                     }
-                    awaitingUploads[id] = completion
+                    awaitingUploads[id] = PendingUpload(server.url, completion)
                     client.dispatch(
                         Action.SendAttachments(
                             id,
@@ -1005,6 +1211,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         .getOrNull()
 
     internal fun saveReadingPosition(key: String, id: String, offset: Int) {
+        if (forgottenServers.any { key.startsWith("$it/") }) return
         preferences
             .edit()
             .putString(
@@ -1019,6 +1226,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     fun draftMentions(key: String) = preferences.getString("draft-mentions/$key", "[]").orEmpty()
 
     fun saveDraft(key: String, text: String, mentions: String = "[]") {
+        if (forgottenServers.any { key.startsWith("$it/") }) return
         preferences
             .edit()
             .putString("draft/$key", text)

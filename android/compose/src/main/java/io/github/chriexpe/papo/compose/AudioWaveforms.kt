@@ -248,6 +248,12 @@ internal class AudioWaveforms(private val context: Context, private val scope: C
     private val decoders = Semaphore(2)
     private val mediaCache = MediaCache.get(context)
 
+    suspend fun forgetAllMemory() = lock.withLock {
+        jobs.values.forEach { it.result.cancel() }
+        jobs.clear()
+        memory.evictAll()
+    }
+
     suspend fun load(source: MediaRequest): AudioWaveform {
         val key =
             MessageDigest.getInstance("SHA-256")
@@ -263,7 +269,10 @@ internal class AudioWaveforms(private val context: Context, private val scope: C
                         scope.async(Dispatchers.IO) {
                             decoders.withPermit {
                                 val bytes =
-                                    mediaCache.blob("waveform/$key", 4096) {
+                                    mediaCache.blob(
+                                        mediaCache.derivedIdentity(source, "waveform"),
+                                        4096,
+                                    ) {
                                         val decoded =
                                             mediaCache.extractorSource(source).use {
                                                 AudioWaveformDecoder.decode(it)

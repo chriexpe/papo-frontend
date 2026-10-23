@@ -580,7 +580,7 @@ private fun AudioPreview(
                 value =
                     WaveformState(
                         if (media.resource != null) model.audioWaveform(server, media.resource)
-                        else model.publicAudioWaveform(media.url)
+                        else model.publicAudioWaveform(server, media.url)
                     )
             } catch (e: CancellationException) {
                 throw e
@@ -664,7 +664,7 @@ internal fun BoxScope.MediaImage(
                     value = model.embedImage(server, embed.id, embed.revision, author)
                 else {
                     val source =
-                        if (publicUrl.isNotBlank()) publicMediaSource(publicUrl)
+                        if (publicUrl.isNotBlank()) model.publicMediaRequest(server, publicUrl)
                         else model.mediaRequest(server.url, requireNotNull(resource))
                     MediaCache.get(context).images(source).collect { value = it }
                 }
@@ -1039,7 +1039,7 @@ private fun BoxScope.PlayableMediaContent(
             try {
                 value =
                     existing?.source
-                        ?: if (publicUrl.isNotBlank()) publicMediaSource(publicUrl)
+                        ?: if (publicUrl.isNotBlank()) model.publicMediaRequest(server, publicUrl)
                         else model.mediaRequest(server.url, requireNotNull(resource))
             } catch (e: CancellationException) {
                 throw e

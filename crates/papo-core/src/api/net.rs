@@ -895,18 +895,23 @@ impl Net {
                     }
                 };
                 if mode.opens_websocket() {
-                    runtime.block_on(worker(
-                        base_url,
-                        worker_storage_key,
-                        worker_storage,
-                        worker_session,
-                        worker_cache,
-                        commands_rx,
-                        updates_tx,
-                        wake,
-                        worker_hooks,
-                        worker_diagnostics,
-                    ));
+                    runtime.block_on(async {
+                        tokio::select! {
+                            _ = worker(
+                                base_url,
+                                worker_storage_key,
+                                worker_storage,
+                                worker_session,
+                                worker_cache,
+                                commands_rx,
+                                updates_tx,
+                                wake,
+                                worker_hooks,
+                                worker_diagnostics,
+                            ) => {},
+                            _ = wait_background_cancel(worker_cancel) => {},
+                        }
+                    });
                 } else {
                     runtime.block_on(background_worker(
                         base_url,
@@ -993,6 +998,15 @@ impl Net {
             return;
         }
         self.cancel_background();
+        if let Some(thread) = self.worker_thread.take() {
+            let _ = thread.join();
+        }
+    }
+
+    /// Explicit teardown joins the worker before callers erase durable state.
+    /// Ordinary interactive Drop keeps its historical detached lifetime.
+    pub fn shutdown(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Release);
         if let Some(thread) = self.worker_thread.take() {
             let _ = thread.join();
         }

@@ -147,6 +147,21 @@ impl NativeClient {
         }
     }
 
+    /// Takes ownership away from every retained foreign reference before cleanup.
+    pub fn forget_server(&self, push_token: Option<String>) -> Result<(), CoreError> {
+        let mut backend = self
+            .backend
+            .lock()
+            .map_err(|_| "Client lock failed".to_owned())?;
+        if let Some(Backend::Live(mut client)) = backend.take() {
+            if let Some(token) = push_token {
+                client.runtime.release_push_device(token);
+            }
+            client.runtime.forget_server();
+        }
+        Ok(())
+    }
+
     pub fn media_request(
         &self,
         resource: media::MediaResource,
@@ -572,6 +587,42 @@ pub struct GifPageView {
 pub struct EditableMessage {
     pub text: String,
     pub mentions: Vec<MentionSelection>,
+}
+
+#[uniffi::export]
+pub fn canonical_server_url(input: String) -> Result<String, CoreError> {
+    normalize_url(&input).map_err(CoreError::from)
+}
+
+/// Crash recovery for an interrupted forget does not reconnect or require authentication.
+#[uniffi::export]
+pub fn forget_saved_server(
+    url: String,
+    root: String,
+    database_path: String,
+    credentials: Arc<dyn Credentials>,
+) -> Result<(), CoreError> {
+    let url = normalize_url(&url)?;
+    let key = papo_core::server_key(&url);
+    let cache = database(PathBuf::from(&database_path))?;
+    cache.clear_server(&key);
+    cache.flush();
+    credentials.remove(key.clone(), "token".into())?;
+    credentials.remove(key.clone(), "server".into())?;
+    crate::legacy::forget_android_data(std::path::Path::new(&root), &url)?;
+    let parent = std::path::Path::new(&database_path)
+        .parent()
+        .ok_or("Invalid database path".to_owned())?;
+    for name in [
+        format!("reading-debug-{key}.jsonl"),
+        format!("reading-debug-{key}.previous.jsonl"),
+    ] {
+        let file = parent.join(name);
+        if file.exists() {
+            std::fs::remove_file(file).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 /// Start is a Unicode scalar index, matching papo-core's mention bindings.

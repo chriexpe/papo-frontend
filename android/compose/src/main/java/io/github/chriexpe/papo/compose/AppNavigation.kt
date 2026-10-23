@@ -24,6 +24,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun FloatingNavigation(
@@ -114,6 +116,50 @@ internal fun ServerList(
     onDirect: () -> Unit,
     onNotifications: () -> Unit,
 ) {
+    var forgetting by remember { mutableStateOf<ServerState?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    forgetting?.let { target ->
+        AlertDialog(
+            onDismissRequest = { if (!busy) forgetting = null },
+            title = { Text(ui(R.string.forget_server_title, target.name)) },
+            text = {
+                Column {
+                    Text(ui(R.string.forget_server_description))
+                    if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !busy,
+                    onClick = {
+                        busy = true
+                        error = ""
+                        scope.launch {
+                            try {
+                                model.forgetServer(target)
+                                forgetting = null
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                error = ui(R.string.forget_server_failed)
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    },
+                ) {
+                    Text(ui(R.string.forget_server), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !busy, onClick = { forgetting = null }) {
+                    Text(ui(R.string.cancel))
+                }
+            },
+        )
+    }
     LazyColumn(
         Modifier.fillMaxSize().hazeSource(LocalHaze.current).statusBarsPadding(),
         contentPadding = PaddingValues(24.dp, 24.dp, 24.dp, 140.dp),
@@ -162,11 +208,10 @@ internal fun ServerList(
                 },
                 leadingContent = { ServerIcon(server, model) },
                 trailingContent = {
-                    Icon(
-                        if (state.activeUrl == server.url) Icons.Outlined.CheckCircle
-                        else Icons.Outlined.ChevronRight,
-                        null,
-                    )
+                    ServerEntryActions(server, state.activeUrl == server.url) {
+                        error = ""
+                        forgetting = server
+                    }
                 },
                 modifier =
                     Modifier.clip(RoundedCornerShape(22.dp)).clickable { onSelect(server.url) },
@@ -180,6 +225,32 @@ internal fun ServerList(
                 Icon(Icons.Outlined.Add, null)
                 Spacer(Modifier.width(8.dp))
                 Text(ui(R.string.add_server))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerEntryActions(server: ServerState, active: Boolean, onForget: () -> Unit) {
+    var expanded by remember(server.url) { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (active) Icon(Icons.Outlined.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
+        Box {
+            IconButton(
+                onClick = { expanded = true },
+                modifier = Modifier.testTag("server-actions-${server.url}"),
+            ) {
+                Icon(Icons.Outlined.MoreVert, ui(R.string.server_actions_named, server.name))
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                DropdownMenuItem(
+                    text = { Text(ui(R.string.forget_server)) },
+                    leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null) },
+                    onClick = {
+                        expanded = false
+                        onForget()
+                    },
+                )
             }
         }
     }

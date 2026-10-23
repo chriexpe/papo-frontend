@@ -131,6 +131,26 @@ internal object MessageAlerts {
         preferences.edit().putString("owner/$server", owner).remove("registered/$server").apply()
     }
 
+    fun forgetServer(server: String, key: String) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.activeNotifications
+            .filter { it.tag?.startsWith("papo-message:$server:") == true }
+            .forEach { manager.cancel(it.tag, it.id) }
+        val workName = "compose-reconcile-$key"
+        WorkManager.getInstance(context).cancelUniqueWork(workName)
+        check(
+            preferences
+                .edit()
+                .remove("owner/$server")
+                .remove("registered/$server")
+                .putStringSet(
+                    "work-names",
+                    preferences.getStringSet("work-names", emptySet()).orEmpty() - workName,
+                )
+                .commit()
+        )
+    }
+
     fun registered(server: String, owner: String) =
         configured &&
             preferences.getString("registered/$server", null)?.let {

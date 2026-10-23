@@ -601,7 +601,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         }
                 if (!attachmentsOnly && attachmentDraft.files.isEmpty())
                     model.send(server, encoded, sentReply, onResult)
-                else model.attachments.send(draftKey, server, encoded, sentReply, onResult)
+                else
+                    model.attachments.send(
+                        draftKey,
+                        server,
+                        encoded,
+                        sentReply,
+                        onResult,
+                    )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {

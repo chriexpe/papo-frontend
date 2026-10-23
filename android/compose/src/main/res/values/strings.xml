@@ -792,4 +792,10 @@
     <string name="attachment_apply">"Apply"</string>
     <string name="edit_message_load_failed">"Couldn\'t open this message for editing. Close it and try again."</string>
     <string name="edit_message_save_failed">"Couldn\'t save this edit. Your changes are still here."</string>
+    <string name="forget_server">"Forget server"</string>
+    <string name="forget_server_title">"Forget %1$s?"</string>
+    <string name="forget_server_description">"Removes this server and its local data from this device: saved sign-in, message and media caches, drafts, favorites and notification settings. Your account and messages on the server are not deleted. You can add the server again."</string>
+    <string name="forget_server_failed">"Couldn\'t finish clearing this server. Try again; unfinished cleanup will also resume when the app restarts."</string>
+    <string name="server_actions_named">"Server options for %1$s"</string>
+    <string name="server_cleanup_pending">"Server cleanup is still in progress. Try again shortly."</string>
 </resources>

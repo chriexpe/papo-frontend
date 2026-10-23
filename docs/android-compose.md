@@ -417,12 +417,30 @@ credentials; only the documented server-local webhook avatar route is resolved
 relative to the connected server. External profile links accept HTTP(S) only.
 
 
+### Forgetting saved servers
+
+Every saved server has an overflow action to forget it, including signed-out entries
+and the final server. Confirmation removes its local credentials, SQLite namespace,
+message/mention drafts, pending private files, saved reading positions, expression
+favorites/recents, cached media/waveforms, push registration and notification jobs.
+Accounts and messages on the remote server are untouched. Explicit MediaStore downloads
+remain user-owned files outside Papo's private storage.
+
+The network worker is stopped and joined before deleting durable state. A persisted
+cleanup tombstone prevents reconnecting after process death until deletion is retried;
+other saved servers remain usable if one cleanup fails. Legacy egui settings, session
+files and server cache directories are cleaned too, without replacing unrelated settings.
+
 ### Shared media cache
 
 `MediaCache` is the sole Compose client cache for encoded media: native and
 integration avatars, banners, stickers, GIFs, attachment images, direct image
 links, video/audio ranges, embed image bytes and derived waveform envelopes.
 A single Media3 `SimpleCache` has a 256 MiB LRU budget across those resources.
+Keys include the server namespace and a revocable generation. Forgetting closes its
+readers and rejects late writes without adding another cache or evicting other current
+server namespaces. The older unscoped v1 cache is discarded once because its owner
+cannot be recovered; v2 remains one shared LRU store.
 Image decoding uses one shared Coil loader with its separate disk cache disabled;
 streaming playback and waveform extraction read through the same cache data source.
 Live HLS/DASH playlists bypass storage while their media segments can be cached.

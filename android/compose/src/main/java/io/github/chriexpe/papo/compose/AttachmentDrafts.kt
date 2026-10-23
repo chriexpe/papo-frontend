@@ -131,6 +131,47 @@ internal class AttachmentDrafts(
     val drafts = mutableDrafts.asStateFlow()
     private val locks = mutableMapOf<String, Mutex>()
 
+    private val forgotten = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val sendJobs = mutableMapOf<String, kotlinx.coroutines.Job>()
+
+    private fun blocked(key: String) = forgotten.any { key.startsWith("$it/") }
+
+    fun allowServer(server: String) {
+        forgotten.remove(server)
+    }
+
+    suspend fun forgetServer(server: String) {
+        withContext(Dispatchers.Main.immediate) {
+            forgotten += server
+            sendJobs
+                .filterKeys { it.startsWith("$server/") }
+                .values
+                .toList()
+                .forEach { it.cancel() }
+            sendJobs.filterKeys { it.startsWith("$server/") }.values.toList().forEach { it.join() }
+            ready()
+            mutableDrafts.value.keys
+                .filter { it.startsWith("$server/") }
+                .forEach { key ->
+                    lock(key).withLock {
+                        val draft = get(key)
+                        withContext(Dispatchers.IO) {
+                            draft.files
+                                .flatMap { it.paths() }
+                                .distinct()
+                                .forEach { path ->
+                                    val file = File(path)
+                                    if (AttachmentFiles.owns(context, file) && file.exists())
+                                        check(file.delete())
+                                }
+                            check(preferences.edit().remove(key).commit())
+                        }
+                        mutableDrafts.value -= key
+                    }
+                }
+        }
+    }
+
     private fun lock(key: String) = locks.getOrPut(key) { Mutex() }
 
     private var initialized = false
@@ -385,13 +426,13 @@ internal class AttachmentDrafts(
 
     fun report(key: String, message: String) = scope.launch {
         ready()
-        update(key, get(key).copy(error = message))
+        if (!blocked(key)) update(key, get(key).copy(error = message))
     }
 
     fun stage(key: String, uris: List<Uri>) = scope.launch {
         lock(key).withLock {
             ready()
-            if (uris.isEmpty()) return@launch
+            if (uris.isEmpty() || blocked(key)) return@launch
             if (get(key).sending || get(key).preparing) {
                 report(key, ui(R.string.wait_for_the_current_attachment_action_to_finish))
                 return@launch
@@ -448,6 +489,10 @@ internal class AttachmentDrafts(
     private suspend fun addCaptured(key: String, file: File, name: String, mime: String): Boolean =
         lock(key).withLock {
             ready()
+            if (blocked(key)) {
+                file.delete()
+                return@withLock false
+            }
             if (!AttachmentFiles.owns(context, file) || !file.isFile || file.length() == 0L) {
                 report(key, ui(R.string.the_capture_was_empty_try_again))
                 return@withLock false
@@ -479,7 +524,7 @@ internal class AttachmentDrafts(
     fun remove(key: String, file: PendingAttachment) = scope.launch {
         lock(key).withLock {
             ready()
-            if (get(key).sending || get(key).preparing) return@launch
+            if (blocked(key) || get(key).sending || get(key).preparing) return@launch
             val remaining = get(key).files - file
             update(
                 key,
@@ -509,73 +554,82 @@ internal class AttachmentDrafts(
         text: String,
         reply: String?,
         onResult: (Boolean) -> Unit,
-    ) = scope.launch {
-        lock(key).withLock {
-            ready()
-            val draft = get(key)
-            if (draft.sending || draft.preparing || draft.files.isEmpty()) {
-                onResult(false)
-                return@launch
-            }
-            update(key, draft.copy(sending = true, error = ""))
-            var dispatched = false
-            try {
-                // Persist the in-flight marker before dispatch. A restarted process
-                // cannot silently resend a POST whose outcome it never received.
-                persist(key)
-                dispatched = true
-                val result = upload(server, text, reply, draft.files)
-                if (result.accepted) {
-                    update(
-                        key,
-                        get(key)
-                            .copy(
-                                files = get(key).files - draft.files.toSet(),
-                                sending = false,
-                                uncertain = false,
-                                error = "",
-                            ),
-                    )
-                    persist(key)
-                    withContext(Dispatchers.IO) {
-                        draft.files.forEach {
-                            it.paths().forEach { path ->
-                                File(path)
-                                    .takeIf { file -> AttachmentFiles.owns(context, file) }
-                                    ?.delete()
-                            }
-                        }
+    ) =
+        scope
+            .launch {
+                lock(key).withLock {
+                    ready()
+                    val draft = get(key)
+                    if (blocked(key) || draft.sending || draft.preparing || draft.files.isEmpty()) {
+                        onResult(false)
+                        return@launch
                     }
-                    onResult(true)
-                } else {
-                    update(
-                        key,
-                        get(key)
-                            .copy(
-                                sending = false,
-                                uncertain = result.uncertain,
-                                error = result.error,
-                            ),
-                    )
-                    persist(key)
-                    onResult(false)
+                    update(key, draft.copy(sending = true, error = ""))
+                    var dispatched = false
+                    try {
+                        // Persist the in-flight marker before dispatch. A restarted process
+                        // cannot silently resend a POST whose outcome it never received.
+                        persist(key)
+                        dispatched = true
+                        val result = upload(server, text, reply, draft.files)
+                        if (result.accepted) {
+                            update(
+                                key,
+                                get(key)
+                                    .copy(
+                                        files = get(key).files - draft.files.toSet(),
+                                        sending = false,
+                                        uncertain = false,
+                                        error = "",
+                                    ),
+                            )
+                            persist(key)
+                            withContext(Dispatchers.IO) {
+                                draft.files.forEach {
+                                    it.paths().forEach { path ->
+                                        File(path)
+                                            .takeIf { file -> AttachmentFiles.owns(context, file) }
+                                            ?.delete()
+                                    }
+                                }
+                            }
+                            onResult(true)
+                        } else {
+                            update(
+                                key,
+                                get(key)
+                                    .copy(
+                                        sending = false,
+                                        uncertain = result.uncertain,
+                                        error = result.error,
+                                    ),
+                            )
+                            persist(key)
+                            onResult(false)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        update(
+                            key,
+                            get(key)
+                                .copy(
+                                    files = (get(key).files + draft.files).distinctBy { it.path },
+                                    sending = false,
+                                    uncertain = dispatched || draft.uncertain,
+                                    error =
+                                        e.message ?: ui(R.string.upload_unconfirmed_description),
+                                ),
+                        )
+                        runCatching { persist(key) }
+                        onResult(false)
+                    }
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                update(
-                    key,
-                    get(key)
-                        .copy(
-                            files = (get(key).files + draft.files).distinctBy { it.path },
-                            sending = false,
-                            uncertain = dispatched || draft.uncertain,
-                            error = e.message ?: ui(R.string.upload_unconfirmed_description),
-                        ),
-                )
-                runCatching { persist(key) }
-                onResult(false)
             }
-        }
-    }
+            .also { job ->
+                sendJobs[key] = job
+                job.invokeOnCompletion {
+                    scope.launch { if (sendJobs[key] === job) sendJobs.remove(key) }
+                }
+            }
 }

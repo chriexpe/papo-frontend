@@ -244,7 +244,11 @@ internal fun MediaViewer(
                                                                 server,
                                                                 media.resource,
                                                             )
-                                                        else model.publicAudioWaveform(media.url)
+                                                        else
+                                                            model.publicAudioWaveform(
+                                                                server,
+                                                                media.url,
+                                                            )
                                                     )
                                             } catch (e: CancellationException) {
                                                 throw e
@@ -389,13 +393,16 @@ private fun BoxScope.ViewerImage(
                                         MediaResource.Attachment(gif.attachment, false),
                                     )
                                 gif != null ->
-                                    publicGifSource(
+                                    model.publicMediaRequest(
+                                        server,
                                         (if (gif.url.isBlank() && gif.providerId.isNotBlank())
                                                 model.gifItem(server, gif.providerId)
                                             else gif)
-                                            .url
+                                            .url,
+                                        gif = true,
                                     )
-                                media.url.isNotBlank() -> publicMediaSource(media.url)
+                                media.url.isNotBlank() ->
+                                    model.publicMediaRequest(server, media.url)
                                 else ->
                                     model.mediaRequest(server.url, requireNotNull(media.resource))
                             }
@@ -464,11 +471,13 @@ private suspend fun downloadViewerMedia(
                                 MediaResource.Attachment(gif.attachment, false),
                             )
                         else
-                            publicGifSource(
+                            model.publicMediaRequest(
+                                server,
                                 (if (gif.url.isBlank() && gif.providerId.isNotBlank())
                                         model.gifItem(server, gif.providerId)
                                     else gif)
-                                    .url
+                                    .url,
+                                gif = true,
                             )
                     MediaNetwork.download(context, source, media.title).also { temporary = it }
                 }
@@ -482,7 +491,7 @@ private suspend fun downloadViewerMedia(
                     }
                 else -> {
                     val source =
-                        if (media.url.isNotBlank()) publicMediaSource(media.url)
+                        if (media.url.isNotBlank()) model.publicMediaRequest(server, media.url)
                         else model.mediaRequest(server.url, requireNotNull(media.resource))
                     MediaNetwork.download(context, source, media.title).also { temporary = it }
                 }

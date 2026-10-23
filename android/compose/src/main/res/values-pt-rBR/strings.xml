@@ -792,4 +792,10 @@
     <string name="attachment_apply">"Aplicar"</string>
     <string name="edit_message_load_failed">"Não foi possível abrir a mensagem para editar. Feche e tente novamente."</string>
     <string name="edit_message_save_failed">"Não foi possível salvar a edição. Suas alterações continuam aqui."</string>
+    <string name="forget_server">"Esquecer servidor"</string>
+    <string name="forget_server_title">"Esquecer %1$s?"</string>
+    <string name="forget_server_description">"Remove este servidor e seus dados locais deste dispositivo: acesso salvo, cache de mensagens e mídias, rascunhos, favoritos e ajustes de avisos. Sua conta e mensagens no servidor não são apagadas. Você pode adicionar o servidor novamente."</string>
+    <string name="forget_server_failed">"Não foi possível concluir a limpeza do servidor. Tente novamente; a limpeza pendente também continuará ao reiniciar o app."</string>
+    <string name="server_actions_named">"Opções do servidor %1$s"</string>
+    <string name="server_cleanup_pending">"A limpeza do servidor ainda está em andamento. Tente novamente em instantes."</string>
 </resources>

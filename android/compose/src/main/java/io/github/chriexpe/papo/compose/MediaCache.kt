@@ -65,7 +65,74 @@ private constructor(
             "%02x".format(it)
         }
 
-    private fun key(source: MediaRequest) = hash(source.cacheKey)
+    private val generations =
+        context.getSharedPreferences("compose-media-scopes", Context.MODE_PRIVATE)
+    private val readers = ConcurrentHashMap<String, MutableSet<DataSource>>()
+    // Publish revocation atomically with blob writes and streaming-reader registration.
+    private val revocations = Any()
+
+    internal fun allowServer(server: String) {
+        generations.edit().remove("blocked/${hash(server)}").commit()
+    }
+
+    private fun scopedIdentity(identity: String, server: String): String {
+        val scope = hash(server)
+        check(!generations.getBoolean("blocked/$scope", false)) { ui(R.string.server_is_closed) }
+        return "papo:$scope:${generations.getLong("epoch/$scope", 0)}:$identity"
+    }
+
+    internal fun scoped(source: MediaRequest, server: String) =
+        source.copy(cacheKey = scopedIdentity(source.cacheKey, server))
+
+    internal fun derivedIdentity(source: MediaRequest, kind: String) = "${source.cacheKey}/$kind"
+
+    private fun storageKey(identity: String): String {
+        val parts = identity.split(':', limit = 4)
+        return if (parts.size == 4 && parts[0] == "papo")
+            "${parts[0]}:${parts[1]}:${parts[2]}:${hash(parts[3])}"
+        else hash(identity)
+    }
+
+    private fun allowed(key: String): Boolean {
+        val parts = key.split(':', limit = 4)
+        return parts.size != 4 ||
+            parts[0] != "papo" ||
+            (!generations.getBoolean("blocked/${parts[1]}", false) &&
+                parts[2].toLongOrNull() == generations.getLong("epoch/${parts[1]}", 0))
+    }
+
+    private fun checkAllowed(key: String) {
+        check(allowed(key)) { ui(R.string.server_is_closed) }
+    }
+
+    private fun key(source: MediaRequest) = storageKey(source.cacheKey)
+
+    /** Revoke before closing readers: late image loads and range writers cannot repopulate it. */
+    internal suspend fun forgetServer(server: String) =
+        withContext(Dispatchers.IO) {
+            val scope = hash(server)
+            val activeReaders =
+                synchronized(revocations) {
+                    check(
+                        generations
+                            .edit()
+                            .putBoolean("blocked/$scope", true)
+                            .putLong("epoch/$scope", generations.getLong("epoch/$scope", 0) + 1)
+                            .commit()
+                    )
+                    readers[scope]?.toList().orEmpty()
+                }
+            activeReaders.forEach { runCatching { it.close() } }
+            cache.keys
+                .toList()
+                .filter { it.startsWith("papo:$scope:") }
+                .forEach { key ->
+                    locks.getOrPut(key) { Mutex() }.withLock { cache.removeResource(key) }
+                }
+            // v1 hashes had no owner. Discard the old disposable cache rather than
+            // retain untraceable media after promising a complete server removal.
+            context.cacheDir.resolve("media-cache-v1").deleteRecursively()
+        }
 
     private fun spec(key: String, uri: String = "cache://media") =
         DataSpec.Builder().setUri(uri).setKey(key).build()
@@ -84,24 +151,28 @@ private constructor(
             .getOrNull()
     }
 
-    private fun store(key: String, bytes: ByteArray) {
-        require(bytes.isNotEmpty()) { ui(R.string.empty_media) }
-        cache.removeResource(key)
-        val factory =
-            CacheDataSource.Factory()
-                .setCache(cache)
-                .setFlags(CacheDataSource.FLAG_BLOCK_ON_CACHE)
-                .setUpstreamDataSourceFactory { ByteArrayDataSource(bytes) }
-        CacheWriter(factory.createDataSource(), spec(key), null, null).cache()
-    }
+    private fun store(key: String, bytes: ByteArray) =
+        synchronized(revocations) {
+            checkAllowed(key)
+            require(bytes.isNotEmpty()) { ui(R.string.empty_media) }
+            cache.removeResource(key)
+            val factory =
+                CacheDataSource.Factory()
+                    .setCache(cache)
+                    .setFlags(CacheDataSource.FLAG_BLOCK_ON_CACHE)
+                    .setUpstreamDataSourceFactory { ByteArrayDataSource(bytes) }
+            CacheWriter(factory.createDataSource(), spec(key), null, null).cache()
+        }
 
     suspend fun blob(
         identity: String,
         limit: Int = MAX_IMAGE,
+        server: String = "",
         load: suspend () -> ByteArray,
-    ): ByteArray =
-        withContext(Dispatchers.IO) {
-            val key = hash(identity)
+    ): ByteArray {
+        val key = storageKey(if (server.isEmpty()) identity else scopedIdentity(identity, server))
+        return withContext(Dispatchers.IO) {
+            checkAllowed(key)
             peek(key, limit)
                 ?: locks
                     .getOrPut(key) { Mutex() }
@@ -114,9 +185,11 @@ private constructor(
                             }
                     }
         }
+    }
 
     fun images(source: MediaRequest): Flow<ByteArray> = flow {
         val key = key(source)
+        checkAllowed(key)
         val cached = peek(key)
         cached?.let { emit(it) }
         val mutable =
@@ -198,6 +271,7 @@ private constructor(
             } catch (e: Exception) {
                 if (cached == null) throw e else null
             }
+        checkAllowed(key)
         if (bytes != null && (cached == null || !cached.contentEquals(bytes))) emit(bytes)
     }
         .flowOn(Dispatchers.IO)
@@ -245,7 +319,7 @@ private constructor(
                 .setCacheKeyFactory { data ->
                     if (data.key != null) data.key!!
                     else if (data.uri.toString() == source.url) key(source)
-                    else hash("${source.cacheKey}/${data.uri}")
+                    else storageKey("${source.cacheKey}/${data.uri}")
                 }
         val cached =
             ResolvingDataSource.Factory(factory) { data ->
@@ -266,7 +340,13 @@ private constructor(
                     delegate?.addTransferListener(listener)
                 }
 
+                @Synchronized
                 override fun open(data: DataSpec): Long {
+                    synchronized(revocations) {
+                        checkAllowed(key(source))
+                        val scope = key(source).split(':').getOrNull(1).orEmpty()
+                        readers.getOrPut(scope) { ConcurrentHashMap.newKeySet() }.add(this)
+                    }
                     // Live playlists change while their segment URLs identify media.
                     // Never freeze a playlist in the disk cache.
                     val path = data.uri.path.orEmpty().lowercase()
@@ -277,17 +357,31 @@ private constructor(
                     return delegate!!.open(data)
                 }
 
-                override fun read(buffer: ByteArray, offset: Int, length: Int) =
-                    requireNotNull(delegate).read(buffer, offset, length)
+                @Synchronized
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    checkAllowed(key(source))
+                    return requireNotNull(delegate).read(buffer, offset, length)
+                }
 
                 override fun getUri(): Uri? = delegate?.uri
 
                 override fun getResponseHeaders(): Map<String, List<String>> =
                     delegate?.responseHeaders.orEmpty()
 
+                @Synchronized
                 override fun close() {
-                    delegate?.close()
-                    delegate = null
+                    try {
+                        delegate?.close()
+                    } finally {
+                        delegate = null
+                        val scope = key(source).split(':').getOrNull(1).orEmpty()
+                        readers[scope]?.remove(this)
+                        if (!allowed(key(source)))
+                            cache.keys
+                                .toList()
+                                .filter { it.startsWith("papo:$scope:") && !allowed(it) }
+                                .forEach(cache::removeResource)
+                    }
                 }
             }
         }
@@ -380,7 +474,7 @@ private constructor(
             shared
                 ?: MediaCache(
                         context.applicationContext,
-                        context.cacheDir.resolve("media-cache-v1"),
+                        context.cacheDir.resolve("media-cache-v2"),
                         256 * 1024 * 1024L,
                         System::currentTimeMillis,
                         15 * 60 * 1000L,
@@ -392,10 +486,16 @@ private constructor(
                         kotlinx.coroutines
                             .CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
                             .launch {
-                                listOf("audio", "waveforms", "media", "coil3_disk_cache").forEach {
-                                    name ->
-                                    context.cacheDir.resolve(name).deleteRecursively()
-                                }
+                                listOf(
+                                        "audio",
+                                        "waveforms",
+                                        "media",
+                                        "coil3_disk_cache",
+                                        "media-cache-v1",
+                                    )
+                                    .forEach { name ->
+                                        context.cacheDir.resolve(name).deleteRecursively()
+                                    }
                                 context.filesDir.resolve("external-avatars").deleteRecursively()
                             }
                     }

@@ -105,7 +105,11 @@ internal fun BoxScope.GifArtwork(
                             else gif
                         MediaCache.get(context)
                             .images(
-                                publicGifSource(if (preview) resolved.preview else resolved.url)
+                                model.publicMediaRequest(
+                                    server,
+                                    if (preview) resolved.preview else resolved.url,
+                                    gif = true,
+                                )
                             )
                             .collect { value = it }
                     }

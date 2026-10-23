@@ -204,3 +204,209 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+/// Preserve unrelated legacy settings verbatim, including enum and nested values.
+struct RawSettings(std::collections::BTreeMap<String, Box<ron::value::RawValue>>);
+impl<'de> serde::Deserialize<'de> for RawSettings {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Fields;
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = RawSettings;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("legacy settings fields")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut fields = std::collections::BTreeMap::new();
+                while let Some((key, value)) = map.next_entry()? {
+                    fields.insert(key, value);
+                }
+                Ok(RawSettings(fields))
+            }
+        }
+        deserializer.deserialize_struct("Settings", &[], Fields)
+    }
+}
+
+pub(super) fn forget_android_data(root: &std::path::Path, url: &str) -> Result<(), String> {
+    use ron::value::RawValue;
+    let key = papo_core::server_key(url);
+    let settings_path = root.join("data/app.ron");
+    if settings_path.exists() {
+        let bytes = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+        let mut outer: HashMap<String, String> =
+            ron::from_str(&bytes).map_err(|e| e.to_string())?;
+        if let Some(raw) = outer.get("app") {
+            let mut fields: RawSettings = ron::from_str(raw).map_err(|e| e.to_string())?;
+            if let Some(servers) = fields.0.get("servers") {
+                let servers: Vec<Box<RawValue>> = servers.into_rust().map_err(|e| e.to_string())?;
+                let old_active = fields
+                    .0
+                    .get("active")
+                    .and_then(|v| v.into_rust::<usize>().ok())
+                    .unwrap_or(0);
+                let active_url = servers
+                    .get(old_active)
+                    .and_then(|v| v.into_rust::<Server>().ok())
+                    .map(|s| s.url);
+                let keep: Vec<_> = servers
+                    .into_iter()
+                    .filter(|s| {
+                        s.into_rust::<Server>()
+                            .ok()
+                            .and_then(|s| normalize_url(&s.url).ok())
+                            .as_deref()
+                            != Some(url)
+                    })
+                    .collect();
+                let active = active_url
+                    .and_then(|active| {
+                        keep.iter().position(|s| {
+                            s.into_rust::<Server>()
+                                .ok()
+                                .is_some_and(|s| s.url == active)
+                        })
+                    })
+                    .unwrap_or(0);
+                let first = keep
+                    .get(active)
+                    .and_then(|s| s.into_rust::<Server>().ok())
+                    .map(|s| s.url)
+                    .unwrap_or_default();
+                fields.0.insert(
+                    "servers".into(),
+                    RawValue::from_rust(&keep).map_err(|e| e.to_string())?,
+                );
+                fields.0.insert(
+                    "active".into(),
+                    RawValue::from_rust(&active).map_err(|e| e.to_string())?,
+                );
+                if fields
+                    .0
+                    .get("server_url")
+                    .and_then(|v| v.into_rust::<String>().ok())
+                    .and_then(|s| normalize_url(&s).ok())
+                    .as_deref()
+                    == Some(url)
+                {
+                    fields.0.insert(
+                        "server_url".into(),
+                        RawValue::from_rust(&first).map_err(|e| e.to_string())?,
+                    );
+                }
+            }
+            if fields
+                .0
+                .get("server_url")
+                .and_then(|v| v.into_rust::<String>().ok())
+                .and_then(|s| normalize_url(&s).ok())
+                .as_deref()
+                == Some(url)
+            {
+                fields.0.insert(
+                    "server_url".into(),
+                    RawValue::from_rust(&String::new()).map_err(|e| e.to_string())?,
+                );
+            }
+            for value in fields.0.values_mut() {
+                if let Ok(mut map) = value.into_rust::<HashMap<String, Box<RawValue>>>() {
+                    let before = map.len();
+                    map.retain(|k, _| k != &key && k != url && !k.starts_with(&format!("{url}/")));
+                    if map.len() != before {
+                        *value = RawValue::from_rust(&map).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            let updated = format!(
+                "({})",
+                fields
+                    .0
+                    .iter()
+                    .map(|(k, v)| format!("{k}:{v}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            // Validate before replacing the existing file; a failed cleanup is retryable.
+            ron::from_str::<Settings>(&updated).map_err(|e| e.to_string())?;
+            outer.insert("app".into(), updated);
+            let temporary = settings_path.with_extension("forget.tmp");
+            std::fs::write(
+                &temporary,
+                ron::to_string(&outer).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            std::fs::rename(temporary, settings_path).map_err(|e| e.to_string())?;
+        }
+    }
+    for path in [
+        root.join(format!("data/sessions/{key}.token")),
+        root.join(format!("data/sessions/{key}.server")),
+    ] {
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+    }
+    let old_media = root.join("cache/servers").join(&key);
+    if old_media.exists() {
+        std::fs::remove_dir_all(old_media).map_err(|e| e.to_string())?;
+    }
+    let public_media = root.join("cache/public");
+    if public_media.exists() {
+        std::fs::remove_dir_all(public_media).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod forget_tests {
+    use super::*;
+    #[test]
+    fn forget_legacy_data_preserves_other_servers_and_unknown_settings() {
+        let root = std::env::temp_dir().join(format!(
+            "papo-legacy-forget-{}",
+            papo_core::cache::new_local_id()
+        ));
+        let data = root.join("data");
+        std::fs::create_dir_all(data.join("sessions")).unwrap();
+        let a = papo_core::server_key("https://a.example");
+        let b = papo_core::server_key("https://b.example");
+        let settings = format!(
+            r#"(servers:[(url:"https://a.example",label:"A"),(url:"https://b.example",label:"B")],server_url:"https://a.example",active:0,theme:Dark,server_marks:{{"{a}":true,"{b}":false}},future_setting:(mode:Something,nested:[1,2,3]))"#
+        );
+        std::fs::write(
+            data.join("app.ron"),
+            ron::to_string(&HashMap::from([
+                ("app", settings),
+                ("other", "unchanged".into()),
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        for key in [&a, &b] {
+            std::fs::write(data.join(format!("sessions/{key}.token")), "secret").unwrap();
+        }
+        forget_android_data(&root, "https://a.example").unwrap();
+        let outer: HashMap<String, String> =
+            ron::from_str(&std::fs::read_to_string(data.join("app.ron")).unwrap()).unwrap();
+        let remaining: Settings = ron::from_str(&outer["app"]).unwrap();
+        assert_eq!(remaining.servers.len(), 1);
+        assert_eq!(remaining.servers[0].url, "https://b.example");
+        assert_eq!(remaining.server_url, "https://b.example");
+        assert!(outer["app"].contains("future_setting:(mode:Something,nested:[1,2,3])"));
+        assert!(outer["app"].contains("theme:Dark"));
+        assert!(!outer["app"].contains(&a));
+        assert!(outer["app"].contains(&b));
+        assert_eq!(outer["other"], "unchanged");
+        assert!(!data.join(format!("sessions/{a}.token")).exists());
+        assert!(data.join(format!("sessions/{b}.token")).exists());
+        forget_android_data(&root, "https://b.example").unwrap();
+        let outer: HashMap<String, String> =
+            ron::from_str(&std::fs::read_to_string(data.join("app.ron")).unwrap()).unwrap();
+        let remaining: Settings = ron::from_str(&outer["app"]).unwrap();
+        assert!(remaining.servers.is_empty());
+        assert!(remaining.server_url.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
