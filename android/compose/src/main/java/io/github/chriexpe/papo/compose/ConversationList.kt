@@ -149,6 +149,7 @@ internal fun ConversationList(
                 }
             }
         }
+        CallBrowsingHeader(Modifier.padding(horizontal = dimensions.screenPadding, vertical = 4.dp))
         if (server.connection != "online")
             ConnectionBanner(server.connection) { model.command(Action.Refresh, server.url) }
         OutlinedTextField(
@@ -317,7 +318,9 @@ internal fun ConversationList(
                         val conversations =
                             if (direct) server.dms
                             else
-                                server.channels.filter { it.kind != "direct" && it.kind != "voice" }
+                                server.channels.filter {
+                                    it.kind != "direct" && (it.kind != "voice" || server.isDemo)
+                                }
                         if (conversations.isEmpty())
                             item {
                                 EmptyState(
@@ -415,7 +418,13 @@ private fun ChannelItem(
                     .background(MaterialTheme.colorScheme.surfaceContainer),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("#", fontSize = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (channel.kind == "voice")
+                    Icon(
+                        Icons.Outlined.VolumeUp,
+                        ui(R.string.voice_channel),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                else Text("#", fontSize = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
         trailingContent = {

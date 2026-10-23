@@ -124,10 +124,12 @@ internal fun ServerList(
     onSelect: (String) -> Unit,
     onDirect: () -> Unit,
     onNotifications: () -> Unit,
+    onDemo: () -> Unit,
 ) {
     var forgetting by remember { mutableStateOf<ServerState?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+    val callActive = LocalVoiceCall.current?.active == true
     val scope = rememberCoroutineScope()
     forgetting?.let { target ->
         AlertDialog(
@@ -180,6 +182,7 @@ internal fun ServerList(
             ),
         verticalArrangement = Arrangement.spacedBy(LocalUiDimensions.current.contentGap),
     ) {
+        if (callActive) item { CallBrowsingHeader() }
         item {
             Row(
                 Modifier.fillMaxWidth().testTag("global-actions"),
@@ -244,6 +247,15 @@ internal fun ServerList(
                 Text(ui(R.string.add_server))
             }
         }
+        if (state.servers.none { it.isDemo })
+            item {
+                TextButton(
+                    onClick = onDemo,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) {
+                    Text(ui(R.string.explore_demo))
+                }
+            }
     }
 }
 

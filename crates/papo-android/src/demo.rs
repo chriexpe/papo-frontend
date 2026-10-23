@@ -51,7 +51,9 @@ impl Demo {
             {"id":"design","name":"design","type":"text","position":2,"topic":"Small details, better experiences.","parent_id":"projects"},
             {"id":"dev","name":"dev","type":"text","position":3,"topic":"What are you building?","parent_id":"projects"},
             {"id":"music","name":"música","type":"text","position":4,"topic":"Something worth listening to."},
-            {"id":"media","name":"mídia","type":"text","position":5,"topic":"Photos, GIFs, video and rich cards."}
+            {"id":"media","name":"mídia","type":"text","position":5,"topic":"Photos, GIFs, video and rich cards."},
+            {"id":"voice-lounge","name":"Lounge","type":"voice","position":6,"topic":"A place to catch up."},
+            {"id":"voice-studio","name":"Studio","type":"voice","position":7,"topic":"Build something together."}
         ]))));
         store.apply(Update::Users(decode(json!([
             {"id":"me","username":"christian","nickname":"Christian","status":"online"},
@@ -142,6 +144,8 @@ impl Demo {
                 )],
             ),
             ("music", vec![("ana", "trilha sonora do dia? 🎧", None)]),
+            ("voice-lounge", vec![("ana", "Podemos conversar por aqui também 👋", None)]),
+            ("voice-studio", vec![("bruno", "Ideias para a próxima versão?", None)]),
             ("dm-ana", vec![("ana", "oi! bem-vindo ao Papo 👋", None)]),
         ] {
             let ticket = store.mark_loading(channel);

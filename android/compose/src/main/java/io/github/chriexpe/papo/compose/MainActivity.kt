@@ -83,6 +83,13 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
     val localeConfiguration = androidx.compose.ui.platform.LocalConfiguration.current
     LaunchedEffect(localeConfiguration) { AppLanguage.update(context) }
     val state by model.state.collectAsStateWithLifecycle()
+    val callUi by model.voiceCalls.state.collectAsStateWithLifecycle()
+    val calls = VoiceCallContext(callUi, model.voiceCalls, state.servers, model)
+    val callOwners =
+        state.servers.map {
+            listOf(it.url, it.me, it.screen, it.channels.map { channel -> channel.id })
+        }
+    LaunchedEffect(callOwners) { model.voiceCalls.synchronize(state.servers) }
     val preferences = LocalContext.current.getSharedPreferences("compose-appearance", 0)
     val appearance = remember(preferences) { ClientPreferences(preferences) }
     DisposableEffect(appearance) { onDispose { appearance.close() } }
@@ -243,7 +250,12 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                 val leaveConversation: () -> Unit = { inConversation = false }
                 SideEffect {
                     model.visibleConversation(
-                        if (showingConversation && profileId == null && externalProfile == null)
+                        if (
+                            showingConversation &&
+                                profileId == null &&
+                                externalProfile == null &&
+                                callUi.screen == null
+                        )
                             server?.url.orEmpty()
                         else ""
                     )
@@ -296,6 +308,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                 }
 
                 CompositionLocalProvider(
+                    LocalVoiceCall provides calls,
                     LocalProfileContext provides server?.let { ProfileContext(it, model) },
                     LocalOpenProfile provides openProfile,
                     LocalOpenExternalProfile provides
@@ -304,7 +317,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                             externalProfile = author
                         },
                     LocalMediaOverlayBlocking provides
-                        (profileId != null || externalProfile != null),
+                        (profileId != null || externalProfile != null || callUi.screen != null),
                 ) {
                     // Child dialogs, sheets and the IME consume Back first. Keep the
                     // activity alive until navigation reaches the conversation list.
@@ -372,11 +385,20 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                                                     tab = "Settings"
                                                 },
                                                 onOpen = { id ->
-                                                    model.navigate(
-                                                        server,
-                                                        Action.SelectChannel(id),
+                                                    if (
+                                                        server.isDemo &&
+                                                            server.channels.any {
+                                                                it.id == id && it.kind == "voice"
+                                                            }
                                                     ) {
-                                                        enterConversation(server)
+                                                        model.voiceCalls.open(server, id)
+                                                    } else {
+                                                        model.navigate(
+                                                            server,
+                                                            Action.SelectChannel(id),
+                                                        ) {
+                                                            enterConversation(server)
+                                                        }
                                                     }
                                                 },
                                                 onProfile = openProfile,
@@ -403,6 +425,11 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                                             },
                                             onDirect = { tab = "GlobalDirect" },
                                             onNotifications = { tab = "GlobalNotifications" },
+                                            onDemo = {
+                                                inConversation = false
+                                                tab = "Chats"
+                                                model.exploreDemo()
+                                            },
                                         )
                                     "GlobalDirect" ->
                                         conversationStates.SaveableStateProvider("global/direct") {
@@ -475,7 +502,18 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                                     .padding(12.dp),
                             )
                         }
+                        if (callUi.screen != null) {
+                            Surface(Modifier.fillMaxSize()) {
+                                VoiceCallScreen(calls) { target, id ->
+                                    model.navigate(target, Action.SelectChannel(id)) {
+                                        enterConversation(target)
+                                        model.voiceCalls.minimize()
+                                    }
+                                }
+                            }
+                        }
                     }
+                    CallSwitchConfirmation(calls)
                     if (server?.screen == "chat")
                         externalProfile?.let { author ->
                             ExternalProfileSheet(server, author) { externalProfile = null }

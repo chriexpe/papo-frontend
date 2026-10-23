@@ -54,4 +54,8 @@
         <item quantity="one">%d canal não confirmado</item>
         <item quantity="other">%d canais não confirmados</item>
     </plurals>
+    <plurals name="call_people_in_room">
+        <item quantity="one">%d pessoa na sala</item>
+        <item quantity="other">%d pessoas na sala</item>
+    </plurals>
 </resources>

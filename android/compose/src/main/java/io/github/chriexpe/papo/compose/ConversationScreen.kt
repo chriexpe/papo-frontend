@@ -880,13 +880,17 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             Modifier.fillMaxWidth().padding(dimensions.surfaceInset),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Box(Modifier.width(96.dp)) {
+                            Row(
+                                Modifier.width(96.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 IconButton(onClick = onBack) {
                                     Icon(
                                         Icons.Outlined.ArrowBack,
                                         ui(R.string.back_to_conversations),
                                     )
                                 }
+                                if (LocalVoiceCall.current?.active == true) SpeakingCallAvatar()
                             }
                             Text(
                                 channel.name,
@@ -909,6 +913,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             IconButton(onClick = { members = true }) {
                                 Icon(Icons.Outlined.PeopleOutline, ui(R.string.community_members))
                             }
+                        }
+                        ActiveCallHeaderRow(showAvatar = false)
+                        if (server.isDemo && channel.kind == "voice") {
+                            VoiceChannelTabs(
+                                chat = true,
+                                onChat = {},
+                                onCall = { model.voiceCalls.open(server, channel.id) },
+                            )
                         }
                         if (descriptionExpanded) {
                             Text(

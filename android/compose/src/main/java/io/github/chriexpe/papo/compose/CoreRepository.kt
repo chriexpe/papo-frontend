@@ -144,6 +144,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val snapshots = linkedMapOf<String, ServerState>()
     private val mutableState = MutableStateFlow(PapoState())
     val state = mutableState.asStateFlow()
+    internal val voiceCalls = VoiceCallPreviewController(viewModelScope)
     internal val accountAppearance =
         AccountAppearanceCoordinator(
             application,

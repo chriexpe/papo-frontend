@@ -48,4 +48,8 @@
         <item quantity="one">%d channel unconfirmed</item>
         <item quantity="other">%d channels unconfirmed</item>
     </plurals>
+    <plurals name="call_people_in_room">
+        <item quantity="one">%d person in the room</item>
+        <item quantity="other">%d people in the room</item>
+    </plurals>
 </resources>
