@@ -20,8 +20,8 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun CallDock(
-    session: CallPreviewSession,
-    controller: VoiceCallPreviewController,
+    session: CallSession,
+    controller: VoiceCallController,
     onAudio: () -> Unit,
 ) {
     GlassPill(
@@ -52,8 +52,7 @@ internal fun CallDock(
                 controller.toggleCamera(session)
             }
             CallDockAction(
-                if (session.output == CallPreviewOutput.Speaker)
-                    Icons.AutoMirrored.Outlined.VolumeUp
+                if (session.output == CallAudioOutput.Speaker) Icons.AutoMirrored.Outlined.VolumeUp
                 else Icons.Outlined.Hearing,
                 ui(R.string.call_audio),
                 false,
@@ -101,8 +100,8 @@ private fun CallDockAction(
 @Composable
 internal fun CallOptionsSheet(
     kind: String,
-    session: CallPreviewSession?,
-    controller: VoiceCallPreviewController,
+    session: CallSession?,
+    controller: VoiceCallController,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -114,37 +113,54 @@ internal fun CallOptionsSheet(
                 .selectableGroup()
         ) {
             Text(
-                ui(if (kind == "audio") R.string.call_audio else R.string.call_preview_layout),
+                ui(
+                    if (kind == "audio") R.string.call_audio
+                    else if (session?.demo == false) R.string.call_options
+                    else R.string.call_preview_layout
+                ),
                 style = MaterialTheme.typography.titleLarge,
             )
-            Text(
-                ui(R.string.call_demo_description),
-                Modifier.padding(vertical = 12.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (session?.demo != false)
+                Text(
+                    ui(R.string.call_demo_description),
+                    Modifier.padding(vertical = 12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             if (session == null) {
                 Text(ui(R.string.call_join_to_preview_layout), Modifier.padding(vertical = 16.dp))
             } else if (kind == "audio") {
-                CallPreviewOutput.entries.forEach { output ->
-                    CallOption(
-                        ui(
-                            if (output == CallPreviewOutput.Speaker) R.string.call_speaker
-                            else R.string.call_earpiece
-                        ),
-                        session.output == output,
-                    ) {
-                        controller.output(session, output)
+                (if (session.demo) listOf(CallAudioOutput.Speaker, CallAudioOutput.Earpiece)
+                    else AndroidCallRuntime.availableOutputs())
+                    .forEach { output ->
+                        CallOption(
+                            ui(
+                                when (output) {
+                                    CallAudioOutput.Speaker -> R.string.call_speaker
+                                    CallAudioOutput.Earpiece -> R.string.call_earpiece
+                                    CallAudioOutput.Bluetooth -> R.string.call_bluetooth
+                                    CallAudioOutput.Wired -> R.string.call_wired
+                                }
+                            ),
+                            session.output == output,
+                        ) {
+                            controller.output(session, output)
+                            onDismiss()
+                        }
+                    }
+            } else if (!session.demo) {
+                if (session.camera && AndroidCallRuntime.canSwitchCamera())
+                    SheetAction(ui(R.string.call_switch_camera), Icons.Outlined.Cameraswitch) {
+                        controller.switchCamera(session)
                         onDismiss()
                     }
-                }
             } else {
-                CallPreviewLayout.entries.forEach { layout ->
+                CallLayout.entries.forEach { layout ->
                     val label =
                         when (layout) {
-                            CallPreviewLayout.Voice -> R.string.call_voice_only
-                            CallPreviewLayout.Video -> R.string.call_video
-                            CallPreviewLayout.Screen -> R.string.call_screen_sharing
+                            CallLayout.Voice -> R.string.call_voice_only
+                            CallLayout.Video -> R.string.call_video
+                            CallLayout.Screen -> R.string.call_screen_sharing
                         }
                     CallOption(ui(label), session.layout == layout) {
                         controller.layout(session, layout)

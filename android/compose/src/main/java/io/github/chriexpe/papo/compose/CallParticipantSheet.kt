@@ -35,8 +35,7 @@ internal fun CallParticipantSheet(
             it.route == target.route && it.sessionId == target.sessionId
         }
     val person =
-        previewCallParticipants(server, channel.id, session).firstOrNull { it.id == target.id }
-            ?: return
+        callParticipants(server, channel.id, session).firstOrNull { it.id == target.id } ?: return
     val member = server.members.firstOrNull { it.id == person.id }
     val dismiss = calls.controller::dismissParticipant
     CompositionLocalProvider(LocalProfileContext provides ProfileContext(server, calls.model)) {
@@ -85,14 +84,19 @@ internal fun CallParticipantSheet(
                     }
                 }
                 Text(
-                    ui(
-                        R.string.call_participant_status,
-                        ui(if (person.muted) R.string.call_muted else R.string.call_microphone_on),
+                    if (!person.stateKnown) ui(R.string.call_status_unknown)
+                    else
                         ui(
-                            if (person.camera) R.string.call_camera_enabled
-                            else R.string.call_camera_disabled
+                            R.string.call_participant_status,
+                            ui(
+                                if (person.muted) R.string.call_muted
+                                else R.string.call_microphone_on
+                            ),
+                            ui(
+                                if (person.camera) R.string.call_camera_enabled
+                                else R.string.call_camera_disabled
+                            ),
                         ),
-                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -124,6 +128,14 @@ internal fun CallParticipantSheet(
                         }
                     }
                 }
+                if (
+                    person.mine &&
+                        session?.camera == true &&
+                        (session.demo || AndroidCallRuntime.canSwitchCamera())
+                )
+                    SheetAction(ui(R.string.call_switch_camera), Icons.Outlined.Cameraswitch) {
+                        calls.controller.switchCamera(session)
+                    }
                 HorizontalDivider()
                 SheetAction(ui(R.string.call_view_profile), Icons.Outlined.Person) {
                     dismiss()

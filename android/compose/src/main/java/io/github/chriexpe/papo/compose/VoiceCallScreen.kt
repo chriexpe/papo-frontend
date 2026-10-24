@@ -43,7 +43,7 @@ internal fun VoiceCallScreen(
             mutableStateOf<String?>(null)
         }
     var sheet by remember(route, session != null) { mutableStateOf("") }
-    val people = previewCallParticipants(server, channel.id, session)
+    val people = callParticipants(server, channel.id, session)
     val configuration = LocalConfiguration.current
     val wide = configuration.screenWidthDp > configuration.screenHeightDp
     val focus = LocalFocusManager.current
@@ -75,18 +75,28 @@ internal fun VoiceCallScreen(
                 channel.name,
                 server.name,
                 calls.controller::minimize,
-                onMore = if (session != null) ({ sheet = "layout" }) else null,
+                onMore =
+                    if (
+                        session != null &&
+                            (session.demo ||
+                                (session.camera && AndroidCallRuntime.canSwitchCamera()))
+                    )
+                        ({ sheet = "layout" })
+                    else null,
+                optionsLabel =
+                    ui(if (server.isDemo) R.string.call_preview_layout else R.string.call_options),
                 onChat = if (wide) ({ onChat(server, channel.id) }) else null,
             )
             if (!wide)
                 VoiceChannelTabs(chat = false, onChat = { onChat(server, channel.id) }, onCall = {})
-            Text(
-                ui(R.string.call_demo_description),
-                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
+            if (server.isDemo)
+                Text(
+                    ui(R.string.call_demo_description),
+                    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
             if (session == null) {
                 CallLobby(people, Modifier.weight(1f))
                 Column(
@@ -102,12 +112,21 @@ internal fun VoiceCallScreen(
                     Spacer(Modifier.height(12.dp))
                     Button(
                         onClick = { calls.controller.join(route, calls.servers) },
+                        enabled =
+                            calls.state.joining != route &&
+                                (server.isDemo || server.connection == "online"),
                         modifier = Modifier.heightIn(min = 56.dp).testTag("call-join"),
                         contentPadding = PaddingValues(horizontal = 32.dp),
                     ) {
                         Icon(Icons.Outlined.Headphones, null)
                         Spacer(Modifier.width(10.dp))
-                        Text(ui(R.string.call_preview_join))
+                        Text(
+                            ui(
+                                if (calls.state.joining == route) R.string.call_connecting
+                                else if (server.isDemo) R.string.call_preview_join
+                                else R.string.call_join
+                            )
+                        )
                     }
                 }
             } else {
@@ -125,6 +144,7 @@ private fun CallScreenHeader(
     server: String,
     onMinimize: () -> Unit,
     onMore: (() -> Unit)?,
+    optionsLabel: String,
     onChat: (() -> Unit)?,
 ) {
     GlassPill(
@@ -154,7 +174,7 @@ private fun CallScreenHeader(
             if (onChat != null) TextButton(onClick = onChat) { Text(ui(R.string.call_chat_tab)) }
             if (onMore != null)
                 IconButton(onClick = onMore, modifier = Modifier.testTag("call-options")) {
-                    Icon(Icons.Outlined.MoreHoriz, ui(R.string.call_preview_layout))
+                    Icon(Icons.Outlined.MoreHoriz, optionsLabel)
                 }
             else Spacer(Modifier.size(48.dp))
         }

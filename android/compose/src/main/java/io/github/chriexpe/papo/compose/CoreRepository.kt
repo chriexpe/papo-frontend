@@ -144,7 +144,27 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val snapshots = linkedMapOf<String, ServerState>()
     private val mutableState = MutableStateFlow(PapoState())
     val state = mutableState.asStateFlow()
-    internal val voiceCalls = VoiceCallPreviewController(viewModelScope)
+    internal val voiceCalls =
+        VoiceCallController(
+            viewModelScope,
+            request = { route, action, success, failure ->
+                val target = route.server(state.value.servers)
+                if (target == null) failure()
+                else
+                    command(
+                        action,
+                        target.url,
+                        onFailure = {
+                            if (action is Action.JoinVoice) AndroidCallRuntime.failedJoin()
+                            failure()
+                        },
+                        onSuccess = success,
+                    )
+            },
+            granted = AndroidCallRuntime::granted,
+            prepare = AndroidCallRuntime::prepare,
+            routeAudio = AndroidCallRuntime::routeAudio,
+        )
     internal val accountAppearance =
         AccountAppearanceCoordinator(
             application,
@@ -205,6 +225,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
 
     init {
+        AndroidCallRuntime.attach(this)
         MessageAlerts.start(application)
         viewModelScope.launch(dispatcher) {
             MessageAlerts.changes.collect { signals.trySend(Unit) }
@@ -275,6 +296,10 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun publish(error: String = mutableState.value.error, opening: Boolean = false) {
         mutableState.value = PapoState(snapshots.values.toList(), activeUrl, error, opening)
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+            voiceCalls.synchronize(state.value.servers)
+            AndroidCallRuntime.sync(state.value.servers, voiceCalls.state.value)
+        }
     }
 
     private fun open(input: String, activate: Boolean = true): Boolean =
@@ -293,6 +318,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                     CoreWake { signals.trySend(Unit) },
                     MessageAlerts.listener,
                 )
+            handle.setCallHost(AndroidCallRuntime.host { signals.trySend(Unit) })
             val server = handle.poll()
             mediaCache.allowServer(server.url)
             attachments.allowServer(server.url)
@@ -315,7 +341,16 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 .putString("active-server", activeUrl)
                 .apply()
             publish(error = "")
-            networkChanged(force = true)
+            // Initialize only the new connection. Opening another server must not recycle
+            // an existing call socket by broadcasting an artificial network epoch.
+            if (old == null) {
+                val available =
+                    connectivity.activeNetwork
+                        ?.let { connectivity.getNetworkCapabilities(it) }
+                        ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                handle.dispatch(Action.Network(available, networkEpoch.toULong()))
+            }
+            networkChanged()
             true
         } catch (e: Exception) {
             publish(error = e.message ?: ui(R.string.could_not_open_server))
@@ -731,7 +766,23 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                publish(error = e.message ?: ui(R.string.could_not_complete_action))
+                publish(
+                    error =
+                        if (
+                            action is Action.JoinVoice ||
+                                action is Action.LeaveVoice ||
+                                action is Action.MuteVoice ||
+                                action is Action.CameraVoice ||
+                                action is Action.CameraFacing ||
+                                action is Action.VoicePlayback
+                        )
+                            callIssueText(
+                                (e as? io.github.chriexpe.papo.core.CoreException.Operation)
+                                    ?.details
+                                    .orEmpty()
+                            )
+                        else e.message ?: ui(R.string.could_not_complete_action)
+                )
                 launch(kotlinx.coroutines.Dispatchers.Main) { onFailure() }
             }
         }
@@ -1351,6 +1402,12 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearError() {
+        voiceCalls.clearError()
+        voiceCalls.state.value.session
+            ?.route
+            ?.serverUrl
+            ?.takeIf { it != state.value.activeUrl }
+            ?.let { command(Action.ClearError, it) }
         mutableState.value = mutableState.value.copy(error = "")
         command(Action.ClearError)
     }
@@ -1482,6 +1539,31 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             val valid = mentions.filter { it.valid(text) }.map { it.native(text) }
             (handles[server.url] ?: error(ui(R.string.server_is_closed))).encodeMessage(text, valid)
         }
+
+    internal suspend fun callVideoFrame(
+        session: CallSession,
+        user: String,
+        kind: String,
+        after: ULong,
+    ): io.github.chriexpe.papo.core.CallVideoFrame? {
+        val client =
+            withContext(dispatcher) {
+                if (snapshots[session.route.serverUrl]?.me != session.route.ownerId) null
+                else handles[session.route.serverUrl]
+            } ?: return null
+        return withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                client.callVideoFrame(
+                    session.route.ownerId,
+                    session.sessionId.toULong(),
+                    user,
+                    kind,
+                    after,
+                )
+            }
+                .getOrNull()
+        }
+    }
 
     override fun onCleared() {
         if (callbackRegistered) connectivity.unregisterNetworkCallback(networkCallback)

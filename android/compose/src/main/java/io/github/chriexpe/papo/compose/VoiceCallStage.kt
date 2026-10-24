@@ -21,8 +21,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -32,7 +30,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 internal fun CallStage(
     people: List<CallParticipant>,
-    session: CallPreviewSession,
+    session: CallSession,
     focused: String?,
     onFocus: (String?) -> Unit,
     modifier: Modifier,
@@ -56,7 +54,7 @@ internal fun CallStage(
                     Text(ui(R.string.call_show_everyone))
                 }
             }
-        session.layout == CallPreviewLayout.Screen ->
+        session.layout == CallLayout.Screen ->
             Column(
                 modifier.padding(horizontal = 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -76,17 +74,14 @@ internal fun CallStage(
                             tint = MaterialTheme.colorScheme.primary,
                         )
                         Text(
-                            ui(R.string.call_sample_screen),
+                            if (session.demo) ui(R.string.call_sample_screen)
+                            else people.firstOrNull { it.screen }?.name.orEmpty(),
                             Modifier.padding(12.dp),
                             style = MaterialTheme.typography.labelMedium,
                         )
-                        ManagedAsyncImage(
-                            "file:///android_asset/demo/landscape.png",
-                            ui(R.string.call_sample_screen),
-                            MediaImages.loader(LocalContext.current),
-                            Modifier.fillMaxWidth().weight(1f),
-                            ContentScale.Fit,
-                        )
+                        val presenter = people.firstOrNull { it.screen }
+                        if (presenter != null)
+                            CallVideoImage(presenter.id, true, Modifier.fillMaxWidth().weight(1f))
                     }
                 }
                 LazyRow(
@@ -117,7 +112,7 @@ internal fun CallStage(
                     }
                 }
             }
-        session.layout == CallPreviewLayout.Video && people.size == 2 ->
+        session.layout == CallLayout.Video && people.size == 2 ->
             Box(modifier.padding(12.dp)) {
                 val remote = people.first { !it.mine }
                 val local = people.first { it.mine }
@@ -141,9 +136,7 @@ internal fun CallStage(
                     CallParticipantTile(
                         person,
                         Modifier.fillMaxWidth()
-                            .aspectRatio(
-                                if (session.layout == CallPreviewLayout.Video) .85f else 1f
-                            ),
+                            .aspectRatio(if (session.layout == CallLayout.Video) .85f else 1f),
                     ) {
                         onFocus(person.id)
                     }
@@ -173,6 +166,7 @@ private fun CallParticipantTile(person: CallParticipant, modifier: Modifier, onF
                 stateDescription =
                     when {
                         person.speaking -> ui(R.string.call_person_speaking, person.name)
+                        !person.stateKnown -> ui(R.string.call_status_unknown)
                         person.muted -> ui(R.string.call_muted)
                         else -> ui(R.string.call_listening)
                     }
@@ -180,13 +174,7 @@ private fun CallParticipantTile(person: CallParticipant, modifier: Modifier, onF
         contentAlignment = Alignment.Center,
     ) {
         if (person.camera) {
-            ManagedAsyncImage(
-                "file:///android_asset/demo/portrait.png",
-                null,
-                MediaImages.loader(LocalContext.current),
-                Modifier.fillMaxSize(),
-                ContentScale.Crop,
-            )
+            CallVideoImage(person.id, false, Modifier.fillMaxSize(), crop = true)
             Box(
                 Modifier.fillMaxSize()
                     .background(
@@ -195,16 +183,17 @@ private fun CallParticipantTile(person: CallParticipant, modifier: Modifier, onF
                         )
                     )
             )
-            Text(
-                ui(R.string.call_sample_video),
-                Modifier.align(Alignment.TopStart)
-                    .padding(12.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.Black.copy(alpha = .7f))
-                    .padding(6.dp),
-                color = Color.White,
-                style = MaterialTheme.typography.labelSmall,
-            )
+            if (LocalVoiceCall.current?.state?.session?.demo != false)
+                Text(
+                    ui(R.string.call_sample_video),
+                    Modifier.align(Alignment.TopStart)
+                        .padding(12.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = .7f))
+                        .padding(6.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                )
         } else {
             Box(
                 Modifier.size(64.dp).clip(RoundedCornerShape(22.dp)).clickable(

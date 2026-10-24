@@ -206,7 +206,10 @@ listOf("debug", "release").forEach { variant ->
                     .orElse("unconfigured"),
             )
             papoAbis.forEach { abi ->
-                outputs.file(nativeDirectory.map { it.file("$abi/libpapo_compose.so") })
+                listOf("libpapo_compose.so", "libgstreamer_android.so", "libc++_shared.so")
+                    .forEach { library ->
+                        outputs.file(nativeDirectory.map { it.file("$abi/$library") })
+                    }
             }
             commandLine(
                 "bash",

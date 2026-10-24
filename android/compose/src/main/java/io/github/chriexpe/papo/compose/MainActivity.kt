@@ -3,12 +3,14 @@
 package io.github.chriexpe.papo.compose
 
 import android.app.Activity
+import android.app.PictureInPictureParams
+import android.content.res.Configuration
 import android.os.Bundle
+import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -25,15 +27,19 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.chrisbanes.haze.HazeState
 import io.github.chriexpe.papo.core.Action
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    private val model: PapoViewModel by viewModels()
+    private val model: PapoViewModel by lazy { (application as PapoApplication).model }
+
+    private var pictureInPicture by mutableStateOf(false)
 
     override fun attachBaseContext(base: android.content.Context) {
         super.attachBaseContext(AppLanguage.context(base))
@@ -45,7 +51,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         if (savedInstanceState == null) MessageAlerts.target(intent)?.let(model::offerNotification)
         consumeRecovery(intent)
-        setContent { PapoApp(model) }
+        consumeCall(intent)
+        lifecycleScope.launch {
+            combine(model.state, model.voiceCalls.state) { state, calls -> state.servers to calls }
+                .collect { (servers, calls) -> updateCallPictureInPicture(servers, calls) }
+        }
+        setContent {
+            if (pictureInPicture) CallPictureInPicture(model) else PapoApp(model)
+        }
     }
 
     override fun onStart() {
@@ -66,6 +79,53 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         MessageAlerts.target(intent)?.let(model::offerNotification)
         consumeRecovery(intent)
+        consumeCall(intent)
+    }
+
+    private fun consumeCall(intent: android.content.Intent?) {
+        if (intent?.getBooleanExtra("openCall", false) == true) {
+            intent.removeExtra("openCall")
+            model.voiceCalls.reopen()
+        }
+    }
+
+    private fun updateCallPictureInPicture(servers: List<ServerState>, calls: VoiceCallUiState) {
+        if (
+            !packageManager.hasSystemFeature(
+                android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE
+            )
+        )
+            return
+        val session = calls.session?.takeUnless { it.demo }
+        volumeControlStream =
+            if (session != null) android.media.AudioManager.STREAM_VOICE_CALL
+            else android.media.AudioManager.USE_DEFAULT_STREAM_TYPE
+        val server = session?.route?.server(servers)
+        val video =
+            session != null &&
+                server != null &&
+                callParticipants(server, session.route.channelId, session).any {
+                    it.camera || it.screen
+                }
+        val params =
+            PictureInPictureParams.Builder()
+                .setAspectRatio(Rational(16, 9))
+                .setAutoEnterEnabled(video)
+                .setSeamlessResizeEnabled(true)
+                .setActions(
+                    if (session != null) callPictureInPictureActions(this, session) else emptyList()
+                )
+                .build()
+        setPictureInPictureParams(params)
+        if (pictureInPicture && session == null) finish()
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        pictureInPicture = isInPictureInPictureMode
     }
 
     private fun consumeRecovery(intent: android.content.Intent?) {
@@ -78,18 +138,17 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun PapoApp(model: PapoViewModel = viewModel()) {
+fun PapoApp(
+    model: PapoViewModel = (LocalContext.current.applicationContext as PapoApplication).model
+) {
     val context = LocalContext.current
     val localeConfiguration = androidx.compose.ui.platform.LocalConfiguration.current
     LaunchedEffect(localeConfiguration) { AppLanguage.update(context) }
     val state by model.state.collectAsStateWithLifecycle()
     val callUi by model.voiceCalls.state.collectAsStateWithLifecycle()
     val calls = VoiceCallContext(callUi, model.voiceCalls, state.servers, model)
-    val callOwners =
-        state.servers.map {
-            listOf(it.url, it.me, it.screen, it.channels.map { channel -> channel.id })
-        }
-    LaunchedEffect(callOwners) { model.voiceCalls.synchronize(state.servers) }
+    CallPermissions(model.voiceCalls, callUi.permission)
+    LocalNetworkPermission(model, state.servers)
     val preferences = LocalContext.current.getSharedPreferences("compose-appearance", 0)
     val appearance = remember(preferences) { ClientPreferences(preferences) }
     DisposableEffect(appearance) { onDispose { appearance.close() } }
@@ -390,10 +449,9 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                                                 },
                                                 onOpen = { id ->
                                                     if (
-                                                        server.isDemo &&
-                                                            server.channels.any {
-                                                                it.id == id && it.kind == "voice"
-                                                            }
+                                                        server.channels.any {
+                                                            it.id == id && it.kind == "voice"
+                                                        }
                                                     ) {
                                                         model.voiceCalls.open(server, id)
                                                     } else {
@@ -494,18 +552,6 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                                     )
                             }
                         }
-                        val error =
-                            if (state.servers.isEmpty()) ""
-                            else state.error.ifBlank { server?.error.orEmpty() }
-                        if (error.isNotBlank() && server?.screen == "chat") {
-                            FeedbackPill(
-                                error,
-                                model::clearError,
-                                Modifier.align(Alignment.TopCenter)
-                                    .statusBarsPadding()
-                                    .padding(12.dp),
-                            )
-                        }
                         if (callUi.screen != null) {
                             Surface(Modifier.fillMaxSize()) {
                                 VoiceCallScreen(calls) { target, id ->
@@ -515,6 +561,22 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                                     }
                                 }
                             }
+                        }
+                        val error =
+                            if (callUi.error.isNotEmpty()) callIssueText(callUi.error)
+                            else if (state.servers.isEmpty()) ""
+                            else state.error.ifBlank { server?.error.orEmpty() }
+                        if (error.isNotBlank() && server?.screen == "chat") {
+                            FeedbackPill(
+                                error,
+                                {
+                                    model.voiceCalls.clearError()
+                                    model.clearError()
+                                },
+                                Modifier.align(Alignment.TopCenter)
+                                    .statusBarsPadding()
+                                    .padding(12.dp),
+                            )
                         }
                     }
                     CallSwitchConfirmation(calls)

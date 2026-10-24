@@ -1004,4 +1004,26 @@
     <string name="call_participant_audio_demo">Only affects what you hear. Demo preview: no audio is playing.</string>
     <string name="call_view_profile">View profile</string>
     <string name="call_join_for_participant_audio">Join this voice channel to adjust participant audio.</string>
+    <string name="call_notification_channel">Calls</string>
+    <string name="call_connecting">Connecting…</string>
+    <string name="call_join">Join call</string>
+    <string name="call_participant_audio_local">Only affects what you hear.</string>
+    <string name="call_bluetooth">Bluetooth headset</string>
+    <string name="call_wired">Wired / USB headset</string>
+    <string name="call_options">Call options</string>
+    <string name="call_switch_camera">Switch camera</string>
+    <string name="call_microphone_permission_error">Allow microphone access to join or speak in calls. You can change this in Android app settings.</string>
+    <string name="call_camera_permission_error">Allow camera access to turn on video. You can change this in Android app settings.</string>
+    <string name="call_camera_background_error">Open Papo to turn on the camera.</string>
+    <string name="call_connection_error">The call is disconnected. Connect to the server and join again.</string>
+    <string name="call_room_error">This voice channel is no longer available.</string>
+    <string name="call_permission_error">You do not have permission to join this call.</string>
+    <string name="call_full_error">This call is full. Try again when someone leaves.</string>
+    <string name="call_audio_error">Could not use that audio device. Check your audio output and try again.</string>
+    <string name="call_device_error">A microphone or camera could not be opened. You can stay in the call.</string>
+    <string name="call_media_error">Could not start or continue the call. Please try joining again.</string>
+    <string name="call_local_network_error">Allow local network access in Android app settings to connect to servers on your network.</string>
+    <string name="call_audio_routing_unavailable">This server does not provide participant audio routing. Individual volume and mute are unavailable.</string>
+    <string name="call_status_unknown">Microphone and camera status unavailable</string>
+    <string name="call_leave_timeout">The previous call has not finished leaving. Wait for the server or reconnect before joining again.</string>
 </resources>

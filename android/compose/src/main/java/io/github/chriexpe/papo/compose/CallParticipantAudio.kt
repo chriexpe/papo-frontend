@@ -21,9 +21,16 @@ import kotlin.math.roundToInt
 @Composable
 internal fun CallParticipantAudioControls(
     calls: VoiceCallContext,
-    session: CallPreviewSession,
+    session: CallSession,
     id: String,
 ) {
+    if (!session.playbackAvailable) {
+        Text(
+            ui(R.string.call_audio_routing_unavailable),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        return
+    }
     val audio = session.participantAudio[id] ?: CallParticipantAudio()
     Column(Modifier.testTag("call-participant-audio-$id")) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -98,7 +105,10 @@ internal fun CallParticipantAudioControls(
             Switch(checked = audio.muted, onCheckedChange = null)
         }
         Text(
-            ui(R.string.call_participant_audio_demo),
+            ui(
+                if (session.demo) R.string.call_participant_audio_demo
+                else R.string.call_participant_audio_local
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

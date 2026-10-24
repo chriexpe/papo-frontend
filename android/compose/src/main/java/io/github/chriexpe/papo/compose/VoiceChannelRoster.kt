@@ -20,9 +20,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-/** The Demo roster is room-scoped: a session in Lounge must not mute/add You in Studio. */
+/** Membership belongs to its room; browsing another room never changes the active call. */
 @Composable
-internal fun DemoVoiceChannelItem(
+internal fun VoiceChannelItem(
     server: ServerState,
     channel: Conversation,
     onOpen: (String) -> Unit,
@@ -34,7 +34,7 @@ internal fun DemoVoiceChannelItem(
                 it.route.ownerId == server.me &&
                 it.route.channelId == channel.id
         }
-    val people = previewCallParticipants(server, channel.id, session)
+    val people = callParticipants(server, channel.id, session)
     val count =
         if (people.isEmpty()) ui(R.string.call_room_empty)
         else uiQuantity(R.plurals.call_people_in_voice, people.size)
@@ -42,7 +42,9 @@ internal fun DemoVoiceChannelItem(
         ChannelItem(
             channel,
             onOpen,
-            voiceSummary = if (session != null) ui(R.string.call_joined_room, count) else count,
+            voiceSummary =
+                if (session != null && !session.connected) ui(R.string.call_connecting)
+                else if (session != null) ui(R.string.call_joined_room, count) else count,
             joined = session != null,
         )
         Column(Modifier.fillMaxWidth().padding(start = 64.dp, end = 20.dp, bottom = 8.dp)) {
@@ -76,7 +78,9 @@ private fun VoiceChannelParticipant(person: CallParticipant, onParticipant: () -
             .semantics(mergeDescendants = true) {
                 stateDescription =
                     listOfNotNull(
-                            ui(R.string.call_participant_status, muted, camera),
+                            if (person.stateKnown)
+                                ui(R.string.call_participant_status, muted, camera)
+                            else ui(R.string.call_status_unknown),
                             if (person.audio.muted || person.audio.volumePercent == 0)
                                 ui(R.string.call_muted_for_me)
                             else null,
@@ -122,22 +126,24 @@ private fun VoiceChannelParticipant(person: CallParticipant, onParticipant: () -
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        Icon(
-            if (person.muted) Icons.Outlined.MicOff
-            else if (person.speaking) Icons.Outlined.GraphicEq else Icons.Outlined.Mic,
-            muted,
-            Modifier.size(16.dp),
-            tint =
-                if (person.speaking) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Icon(
-            if (person.camera) Icons.Outlined.Videocam else Icons.Outlined.VideocamOff,
-            camera,
-            Modifier.size(16.dp),
-            tint =
-                if (person.camera) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (person.stateKnown) {
+            Icon(
+                if (person.muted) Icons.Outlined.MicOff
+                else if (person.speaking) Icons.Outlined.GraphicEq else Icons.Outlined.Mic,
+                muted,
+                Modifier.size(16.dp),
+                tint =
+                    if (person.speaking) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Icon(
+                if (person.camera) Icons.Outlined.Videocam else Icons.Outlined.VideocamOff,
+                camera,
+                Modifier.size(16.dp),
+                tint =
+                    if (person.camera) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

@@ -11,6 +11,7 @@ list(APPEND CMAKE_MODULE_PATH "${GStreamer_ROOT_DIR}/share/cmake")
 set(GStreamer_JAVA_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/java")
 set(GStreamer_ASSETS_DIR "compose/build/gstreamer-assets")
 find_package(GStreamerMobile REQUIRED COMPONENTS
+    ca_certificates
     coreelements app autodetect
     audioconvert audioresample audiorate volume level opus opensles
     videoconvertscale videorate videofilter videocrop androidmedia vpx

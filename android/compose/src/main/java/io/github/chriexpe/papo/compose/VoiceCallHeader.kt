@@ -28,7 +28,7 @@ import androidx.compose.ui.unit.dp
 
 internal data class VoiceCallContext(
     val state: VoiceCallUiState,
-    val controller: VoiceCallPreviewController,
+    val controller: VoiceCallController,
     val servers: List<ServerState>,
     val model: PapoViewModel,
 ) {
@@ -45,12 +45,12 @@ internal val LocalVoiceCall = compositionLocalOf<VoiceCallContext?> { null }
 @Composable
 private fun ActiveCallHeaderRow(
     calls: VoiceCallContext,
-    session: CallPreviewSession,
+    session: CallSession,
     server: ServerState,
 ) {
     val channel = server.channels.firstOrNull { it.id == session.route.channelId } ?: return
-    val people = previewCallParticipants(server, channel.id, session)
-    val hasVideo = people.any { it.camera } || session.layout == CallPreviewLayout.Screen
+    val people = callParticipants(server, channel.id, session)
+    val hasVideo = people.any { it.camera || it.screen } || session.layout == CallLayout.Screen
     val reopenVideos = hasVideo && !session.videoPreviewsVisible
     val showViewSwitcher = hasVideo && session.videoPreviewsVisible
     BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -80,7 +80,9 @@ private fun ActiveCallHeaderRow(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        ui(R.string.call_preview_server, server.name),
+                        if (!session.connected) ui(R.string.call_connecting)
+                        else if (server.isDemo) ui(R.string.call_preview_server, server.name)
+                        else server.name,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -203,7 +205,7 @@ internal fun CallBrowsingHeader(modifier: Modifier = Modifier) {
     val calls = LocalVoiceCall.current ?: return
     val session = calls.state.session ?: return
     val server = calls.server ?: return
-    val people = previewCallParticipants(server, session.route.channelId, session)
+    val people = callParticipants(server, session.route.channelId, session)
     CompositionLocalProvider(LocalProfileContext provides ProfileContext(server, calls.model)) {
         GlassPill(modifier.fillMaxWidth().padding(top = 4.dp), radius = 24) {
             Column {

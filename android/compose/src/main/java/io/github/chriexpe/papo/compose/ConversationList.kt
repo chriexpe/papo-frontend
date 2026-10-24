@@ -322,7 +322,7 @@ internal fun ConversationList(
                             if (direct) server.dms
                             else
                                 server.channels.filter {
-                                    it.kind != "direct" && (it.kind != "voice" || server.isDemo)
+                                    it.kind != "direct"
                                 }
                         if (conversations.isEmpty())
                             item {
@@ -343,8 +343,8 @@ internal fun ConversationList(
                                     onOpen = { onOpen(channel.id) },
                                     onProfile = { onProfile(channel.userId) },
                                 )
-                            else if (channel.kind == "voice" && server.isDemo)
-                                DemoVoiceChannelItem(server, channel, onOpen)
+                            else if (channel.kind == "voice")
+                                VoiceChannelItem(server, channel, onOpen)
                             else ChannelItem(channel, onOpen)
                         }
                     }

@@ -31,9 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -47,11 +45,12 @@ private data class CallVideoPreview(val person: CallParticipant, val screen: Boo
 }
 
 private fun previewVideos(
-    session: CallPreviewSession,
+    session: CallSession,
     people: List<CallParticipant>,
 ): List<CallVideoPreview> {
     val screen =
-        if (session.layout == CallPreviewLayout.Screen) {
+        if (!session.demo) people.filter { it.screen }.map { CallVideoPreview(it, screen = true) }
+        else if (session.layout == CallLayout.Screen) {
             people
                 .firstOrNull { !it.mine }
                 ?.let { listOf(CallVideoPreview(it, screen = true)) }
@@ -72,7 +71,7 @@ private fun visibleVideos(videos: List<CallVideoPreview>, limit: Int): List<Call
 @Composable
 internal fun MinimizedCallVideos(
     calls: VoiceCallContext,
-    session: CallPreviewSession,
+    session: CallSession,
     people: List<CallParticipant>,
 ) {
     val available = previewVideos(session, people)
@@ -134,7 +133,7 @@ internal fun MinimizedCallVideos(
  * A normal header control beside the participant strip; it exists only with an open video panel.
  */
 @Composable
-internal fun CallVideoCountButton(calls: VoiceCallContext, session: CallPreviewSession) {
+internal fun CallVideoCountButton(calls: VoiceCallContext, session: CallSession) {
     IconButton(
         onClick = { calls.controller.cycleVideoLimit(session) },
         modifier =
@@ -218,14 +217,7 @@ private fun MinimizedCallVideoTile(
             .clickable(onClickLabel = ui(R.string.call_expand_video), onClick = onExpand)
             .testTag("call-mini-video-${video.id}")
     ) {
-        ManagedAsyncImage(
-            if (video.screen) "file:///android_asset/demo/landscape.png"
-            else "file:///android_asset/demo/portrait.png",
-            ui(if (video.screen) R.string.call_sample_screen else R.string.call_sample_video),
-            MediaImages.loader(LocalContext.current),
-            Modifier.fillMaxSize(),
-            if (video.screen) ContentScale.Fit else ContentScale.Crop,
-        )
+        CallVideoImage(video.person.id, video.screen, Modifier.fillMaxSize())
         Box(
             Modifier.fillMaxSize()
                 .background(

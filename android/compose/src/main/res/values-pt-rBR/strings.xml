@@ -1004,4 +1004,26 @@
     <string name="call_participant_audio_demo">Afeta apenas o que você ouve. Prévia de demonstração: nenhum áudio está tocando.</string>
     <string name="call_view_profile">Ver perfil</string>
     <string name="call_join_for_participant_audio">Entre neste canal de voz para ajustar o áudio dos participantes.</string>
+    <string name="call_notification_channel">Chamadas</string>
+    <string name="call_connecting">Conectando…</string>
+    <string name="call_join">Entrar na chamada</string>
+    <string name="call_participant_audio_local">Afeta apenas o que você ouve.</string>
+    <string name="call_bluetooth">Fone Bluetooth</string>
+    <string name="call_wired">Fone com fio / USB</string>
+    <string name="call_options">Opções da chamada</string>
+    <string name="call_switch_camera">Trocar câmera</string>
+    <string name="call_microphone_permission_error">Permita o acesso ao microfone para entrar ou falar nas chamadas. Você pode alterar isso nos ajustes do aplicativo no Android.</string>
+    <string name="call_camera_permission_error">Permita o acesso à câmera para ativar o vídeo. Você pode alterar isso nos ajustes do aplicativo no Android.</string>
+    <string name="call_camera_background_error">Abra o Papo para ligar a câmera.</string>
+    <string name="call_connection_error">A chamada foi desconectada. Conecte-se ao servidor e entre novamente.</string>
+    <string name="call_room_error">Este canal de voz não está mais disponível.</string>
+    <string name="call_permission_error">Você não tem permissão para entrar nesta chamada.</string>
+    <string name="call_full_error">Esta chamada está cheia. Tente novamente quando alguém sair.</string>
+    <string name="call_audio_error">Não foi possível usar esse dispositivo de áudio. Verifique a saída de áudio e tente novamente.</string>
+    <string name="call_device_error">Não foi possível abrir o microfone ou a câmera. Você pode continuar na chamada.</string>
+    <string name="call_media_error">Não foi possível iniciar ou continuar a chamada. Tente entrar novamente.</string>
+    <string name="call_local_network_error">Permita o acesso à rede local nos ajustes do aplicativo no Android para conectar aos servidores da sua rede.</string>
+    <string name="call_audio_routing_unavailable">Este servidor não informa o roteamento de áudio dos participantes. Volume e silenciamento individuais indisponíveis.</string>
+    <string name="call_status_unknown">Estado do microfone e da câmera indisponível</string>
+    <string name="call_leave_timeout">A saída da chamada anterior ainda não foi confirmada. Aguarde o servidor ou reconecte antes de entrar novamente.</string>
 </resources>

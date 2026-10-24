@@ -910,7 +910,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 Icon(Icons.Outlined.PeopleOutline, ui(R.string.community_members))
                             }
                         }
-                        if (server.isDemo && channel.kind == "voice") {
+                        if (channel.kind == "voice") {
                             VoiceChannelTabs(
                                 chat = true,
                                 onChat = {},
