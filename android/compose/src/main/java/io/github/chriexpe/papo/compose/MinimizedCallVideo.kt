@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -79,7 +78,7 @@ internal fun MinimizedCallVideos(
     if (available.isEmpty()) return
     val visible = visibleVideos(available, session.videoLimit)
     val motion = callMotionEnabled()
-    // The full extra surface enters/exits together, including its toolbar. A separate visibility
+    // The video surface enters/exits as one piece. A separate visibility
     // flag preserves the 1–4 count when closed; hiding never changes publication or membership.
     val visibility = remember(session.sessionId) { MutableTransitionState(false) }
     LaunchedEffect(session.videoPreviewsVisible) {
@@ -102,50 +101,13 @@ internal fun MinimizedCallVideos(
                 ) + fadeOut(tween(90))
             else ExitTransition.None,
     ) {
-        Column(Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("call-minimized-video")) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
+        Box(Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("call-minimized-video")) {
+            MinimizedVideoGrid(visible, calls.controller::reopen)
+            Surface(
+                modifier = Modifier.align(Alignment.TopEnd).padding(end = 12.dp, top = 4.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = .94f),
             ) {
-                Text(
-                    uiQuantity(R.plurals.call_video_count, visible.size),
-                    Modifier.weight(1f),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                IconButton(
-                    onClick = { calls.controller.cycleVideoLimit(session) },
-                    modifier =
-                        Modifier.size(48.dp).testTag("call-video-count").semantics {
-                            contentDescription =
-                                ui(
-                                    R.string.call_cycle_video_count,
-                                    uiQuantity(
-                                        R.plurals.call_video_count,
-                                        session.videoLimit % 4 + 1,
-                                    ),
-                                )
-                            stateDescription =
-                                uiQuantity(R.plurals.call_video_count, session.videoLimit)
-                        },
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
-                        Icon(Icons.Outlined.GridView, null, Modifier.size(18.dp))
-                        Text(
-                            session.videoLimit.toString(),
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
-                }
-                CallIconButton(
-                    Icons.Outlined.Fullscreen,
-                    ui(R.string.call_expand_video),
-                    tag = "call-video-expand",
-                    onClick = calls.controller::reopen,
-                )
                 CallIconButton(
                     Icons.Outlined.Close,
                     ui(R.string.call_hide_videos),
@@ -154,7 +116,37 @@ internal fun MinimizedCallVideos(
                     calls.controller.hideVideoPreviews(session)
                 }
             }
-            MinimizedVideoGrid(visible, calls.controller::reopen)
+        }
+    }
+}
+
+/**
+ * A normal header control beside the participant strip; it exists only with an open video panel.
+ */
+@Composable
+internal fun CallVideoCountButton(calls: VoiceCallContext, session: CallPreviewSession) {
+    IconButton(
+        onClick = { calls.controller.cycleVideoLimit(session) },
+        modifier =
+            Modifier.size(48.dp).testTag("call-video-count").semantics {
+                contentDescription =
+                    ui(
+                        R.string.call_cycle_video_count,
+                        uiQuantity(R.plurals.call_video_count, session.videoLimit % 4 + 1),
+                    )
+                stateDescription = uiQuantity(R.plurals.call_video_count, session.videoLimit)
+            },
+    ) {
+        Row(
+            Modifier.size(38.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Icon(Icons.Outlined.GridView, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(3.dp))
+            Text(session.videoLimit.toString(), style = MaterialTheme.typography.labelSmall)
         }
     }
 }

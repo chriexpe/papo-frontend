@@ -50,72 +50,78 @@ private fun ActiveCallHeaderRow(
 ) {
     val channel = server.channels.firstOrNull { it.id == session.route.channelId } ?: return
     val people = previewCallParticipants(server, channel.id, session)
-    val reopenVideos =
-        !session.videoPreviewsVisible &&
-            (people.any { it.camera } || session.layout == CallPreviewLayout.Screen)
-    Row(
-        Modifier.fillMaxWidth()
-            .testTag("active-call-header")
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TextButton(
-            onClick = calls.controller::reopen,
-            modifier =
-                Modifier.widthIn(min = 64.dp, max = 112.dp)
-                    .heightIn(min = 48.dp)
-                    .testTag("call-reopen"),
-            contentPadding = PaddingValues(horizontal = 8.dp),
+    val hasVideo = people.any { it.camera } || session.layout == CallPreviewLayout.Screen
+    val reopenVideos = hasVideo && !session.videoPreviewsVisible
+    val showViewSwitcher = hasVideo && session.videoPreviewsVisible
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        // Preserve room for a speaker avatar and 48dp controls on narrow phones.
+        val controlsWidth = 48.dp * (if (showViewSwitcher) 4 else 3)
+        val labelWidth = (maxWidth - controlsWidth - 8.dp - 48.dp).coerceIn(56.dp, 112.dp)
+        Row(
+            Modifier.fillMaxWidth()
+                .testTag("active-call-header")
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.fillMaxWidth()) {
-                Text(
-                    channel.name,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    ui(R.string.call_preview_server, server.name),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            TextButton(
+                onClick = calls.controller::reopen,
+                modifier =
+                    Modifier.widthIn(min = 56.dp, max = labelWidth)
+                        .heightIn(min = 48.dp)
+                        .testTag("call-reopen"),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) {
+                Column(Modifier.fillMaxWidth()) {
+                    Text(
+                        channel.name,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        ui(R.string.call_preview_server, server.name),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
-        }
-        MinimizedCallParticipants(
-            people,
-            onOpen = {
-                if (reopenVideos) calls.controller.showVideoPreviews(session)
-                else calls.controller.reopen()
-            },
-            showVideoSlot = reopenVideos,
-            modifier = Modifier.weight(1f),
-        )
-        CallIconButton(
-            if (session.muted) Icons.Outlined.MicOff else Icons.Outlined.Mic,
-            ui(if (session.muted) R.string.call_unmute else R.string.call_mute),
-            selected = session.muted,
-            tag = "call-header-microphone",
-        ) {
-            calls.controller.toggleMute(session)
-        }
-        CallIconButton(
-            if (session.camera) Icons.Outlined.Videocam else Icons.Outlined.VideocamOff,
-            ui(if (session.camera) R.string.call_camera_off else R.string.call_camera_on),
-            selected = session.camera,
-            tag = "call-header-camera",
-        ) {
-            calls.controller.toggleCamera(session)
-        }
-        CallIconButton(
-            Icons.Outlined.CallEnd,
-            ui(R.string.call_leave),
-            danger = true,
-            tag = "call-header-leave",
-        ) {
-            calls.controller.leave(session)
+            MinimizedCallParticipants(
+                people,
+                onOpen = {
+                    if (reopenVideos) calls.controller.showVideoPreviews(session)
+                    else calls.controller.reopen()
+                },
+                showPreviewsOnTap = reopenVideos,
+                modifier = Modifier.weight(1f),
+            )
+            if (showViewSwitcher) CallVideoCountButton(calls, session)
+            CallIconButton(
+                if (session.muted) Icons.Outlined.MicOff else Icons.Outlined.Mic,
+                ui(if (session.muted) R.string.call_unmute else R.string.call_mute),
+                selected = session.muted,
+                tag = "call-header-microphone",
+            ) {
+                calls.controller.toggleMute(session)
+            }
+            CallIconButton(
+                if (session.camera) Icons.Outlined.Videocam else Icons.Outlined.VideocamOff,
+                ui(if (session.camera) R.string.call_camera_off else R.string.call_camera_on),
+                selected = session.camera,
+                tag = "call-header-camera",
+            ) {
+                calls.controller.toggleCamera(session)
+            }
+            CallIconButton(
+                Icons.Outlined.CallEnd,
+                ui(R.string.call_leave),
+                danger = true,
+                tag = "call-header-leave",
+            ) {
+                calls.controller.leave(session)
+            }
         }
     }
 }
@@ -125,7 +131,7 @@ private fun ActiveCallHeaderRow(
 private fun MinimizedCallParticipants(
     people: List<CallParticipant>,
     onOpen: () -> Unit,
-    showVideoSlot: Boolean,
+    showPreviewsOnTap: Boolean,
     modifier: Modifier,
 ) {
     val ordered = people.sortedByDescending { it.speaking }
@@ -135,7 +141,7 @@ private fun MinimizedCallParticipants(
             .clip(RoundedCornerShape(12.dp))
             .clickable(
                 onClickLabel =
-                    ui(if (showVideoSlot) R.string.call_show_videos else R.string.call_open),
+                    ui(if (showPreviewsOnTap) R.string.call_show_videos else R.string.call_open),
                 onClick = onOpen,
             )
             .testTag("call-header-participants")
@@ -150,11 +156,8 @@ private fun MinimizedCallParticipants(
         contentAlignment = Alignment.CenterStart,
     ) {
         val slots = ((maxWidth + 3.dp) / 33.dp).toInt().coerceAtLeast(0)
-        // The video affordance takes one existing avatar slot. Keep every remaining slot for
-        // faces rather than also replacing another face with an overflow count.
-        val overflow = !showVideoSlot && slots >= 2 && ordered.size > slots
-        val visible =
-            ordered.take(if (showVideoSlot || overflow) (slots - 1).coerceAtLeast(0) else slots)
+        val overflow = slots >= 2 && ordered.size > slots
+        val visible = ordered.take(if (overflow) slots - 1 else slots)
         Row(
             horizontalArrangement = Arrangement.spacedBy(3.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -189,21 +192,6 @@ private fun MinimizedCallParticipants(
                     Text(
                         "+${ordered.size - visible.size}",
                         style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            if (showVideoSlot && slots > 0)
-                Box(
-                    Modifier.size(30.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MaterialTheme.colorScheme.secondaryContainer)
-                        .testTag("call-video-avatar-slot"),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Outlined.PictureInPictureAlt,
-                        null,
-                        Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
                 }
         }

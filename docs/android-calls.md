@@ -28,12 +28,14 @@ part of Demo, not real users or a connection to a server.
 - The call screen's overflow offers voice, sample video and sample shared-screen
   layouts. Tap a participant to enlarge; a filled Show everyone button or Back
   restores the grid before minimizing.
-- When video is available, the browsing call pill includes an expand button,
-  a direct 1 → 2 → 3 → 4 → 1 count switch (default 2), and an × to close the
-  entire extra video section. No count menu or zero-count state is used.
-- Closing previews leaves camera publication and membership alone. A video
-  squircle occupying one avatar slot in the participant strip reopens previews with the same count.
-  With no camera/shared-screen sources, no video section or reopen squircle appears.
+- While the video panel is open, a normal 48dp view-count button sits beside
+  the participant strip, before the microphone. It cycles 1 → 2 → 3 → 4 → 1
+  (default 2), with no menu or zero state. It never occupies an avatar slot and
+  is absent when the video panel is closed or no video sources exist.
+- The video toolbar/count label/fullscreen button are removed. Tap participants
+  once to show hidden video, then again to open the full call screen. An × on
+  the video area closes previews without changing camera publication or call
+  membership. The remaining strip contains participant avatars/overflow only.
 - Fewer available videos leave no empty tiles. Speaker priority chooses videos
   when capped; retained tiles keep their relative order. Preview height adapts
   to the viewport and keyboard.
@@ -44,6 +46,10 @@ part of Demo, not real users or a connection to a server.
 - Audio output choices preview selection only. They do not change Android routing.
 - Speaker changes are a five-second Demo cycle. Tiles retain their order. Studio
   has one remote participant and therefore retains that participant as its speaker.
+- Demo video sources follow the selected preview layout, not a live transport.
+  Turning on the local camera also selects Video for convenience; choosing Video
+  in the layout menu shows remote sample feeds with the local camera still off.
+  Real incoming tracks must not depend on local camera publication.
 
 The preview controller belongs to the ViewModel, separately from selected server,
 conversation and full-screen presentation. Activity recreation preserves a preview;
@@ -82,3 +88,8 @@ confirmed the 2 → 3 → 4 → 1 → 2 count cycle without a menu, closing the 
 video section while the camera remains on, reopening through the participant
 strip, expansion to the call screen, and removal of video UI after selecting
 voice-only. Device instrumentation remains deferred pending UI acceptance.
+
+The revised header was also checked with remote Demo videos and the local camera
+off: its count control disappears with the video panel, and successive taps on
+the participant strip reopen previews then the full call. The standalone video
+toolbar and avatar-slot control are absent.
