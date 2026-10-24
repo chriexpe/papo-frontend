@@ -105,12 +105,23 @@ class PapoUiTest {
         }
         listOf("compose-client", "compose-appearance", "compose-expressions", "compose-attachments")
             .forEach { restore(it, emptyMap<String, Any>()) }
+        // MainActivity shares its model with the Application so calls survive recreation.
+        // Each test needs a new process-owned model, while recreation within a test retains it.
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            (context.applicationContext as PapoApplication).viewModelStore.clear()
+        }
         activity = ActivityScenario.launch(MainActivity::class.java)
     }
 
     @After
     fun close() {
         activity.close()
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            (InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+                    as PapoApplication)
+                .viewModelStore
+                .clear()
+        }
         restore("compose-expressions", savedExpressions)
         restore("compose-attachments", savedAttachments)
         restore("compose-client", savedClient)
@@ -415,7 +426,7 @@ class PapoUiTest {
     fun globalNotificationsKeepHealthyResultsWhenAnotherAccountFails() {
         demo()
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             val source = model.state.value.active!!
             val unavailable =
                 source.copy(
@@ -488,7 +499,7 @@ class PapoUiTest {
         )
         var opened = ""
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             host.setContent {
                 androidx.compose.material3.MaterialTheme {
                     androidx.compose.runtime.CompositionLocalProvider(
@@ -563,7 +574,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         compose.onNodeWithTag("server-header").performClick()
         compose.onNodeWithTag("notification-policy-choice").performScrollTo().performClick()
@@ -687,7 +698,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         val server = model.state.value.active!!
         model.send(
@@ -789,7 +800,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val settings = context.getSharedPreferences("compose-appearance", 0)
@@ -978,7 +989,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         compose.onNodeWithContentDescription("Server settings").performClick()
         compose.onNodeWithText("Channels", substring = false).performClick()
@@ -1086,7 +1097,7 @@ class PapoUiTest {
             }
         try {
             activity.onActivity { host ->
-                val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+                val model = (host.application as PapoApplication).model
                 host.setContent {
                     androidx.compose.material3.MaterialTheme {
                         val visible =
@@ -1164,7 +1175,7 @@ class PapoUiTest {
                 client.close()
             }
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             host.setContentForMemberHeader(server, model)
         }
         compose.onNodeWithContentDescription("Server settings").assertDoesNotExist()
@@ -1656,7 +1667,7 @@ class PapoUiTest {
                 )
             )
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             host.setContent {
                 androidx.compose.material3.MaterialTheme {
                     androidx.compose.runtime.CompositionLocalProvider(
@@ -1833,7 +1844,7 @@ class PapoUiTest {
     fun pinManagementIsHiddenWithoutPermissionButPinsRemainBrowsable() {
         chat()
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             val server =
                 checkNotNull(model.state.value.active).let {
                     it.copy(canPin = false, capabilities = it.capabilities.copy(pinMessage = false))
@@ -1866,7 +1877,7 @@ class PapoUiTest {
         lateinit var model: PapoViewModel
         lateinit var server: ServerState
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
             server = checkNotNull(model.state.value.active)
         }
         kotlinx.coroutines.runBlocking {
@@ -2041,7 +2052,7 @@ class PapoUiTest {
     fun markdownRendersRichBlocksAndCopiesCode() {
         chat()
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             val server = checkNotNull(model.state.value.active)
             val text =
                 "# Rich message\n\n**Bold** and *italic* with :papo_wave: and @mention(<@ana>).\n\n> A quoted thought\n\n- [x] Completed task\n- [ ] Next task\n\n```kotlin\nval answer = 42\n```\n\n| Name | State |\n| :-- | --: |\n| Papo | Ready |"
@@ -2144,7 +2155,7 @@ class PapoUiTest {
         val people = androidx.compose.runtime.mutableStateOf(listOf("Ana"))
         val phrase = androidx.compose.runtime.mutableStateOf("is sketching…")
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             val server = checkNotNull(model.state.value.active)
             host.setContent {
                 androidx.compose.material3.MaterialTheme {
@@ -2261,7 +2272,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         model.command(
             io.github.chriexpe.papo.core.Action.Send(
@@ -2486,7 +2497,7 @@ class PapoUiTest {
             val secrets = AndroidSecrets(context)
             lateinit var model: PapoViewModel
             activity.onActivity {
-                model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+                model = (it.application as PapoApplication).model
             }
             try {
                 model.addServer(fixture.url)
@@ -2634,7 +2645,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         for (i in 0 until 5) model.command(
             io.github.chriexpe.papo.core.Action.Send(
@@ -2666,7 +2677,7 @@ class PapoUiTest {
         compose.onNodeWithTag("message-list").performScrollToKey("general-0")
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         for (i in 0 until 20) model.command(
             io.github.chriexpe.papo.core.Action.Send(
@@ -2715,7 +2726,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         model.command(
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-0"), false, "me")
@@ -2749,7 +2760,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         compose.onNodeWithContentDescription("Client settings").performClick()
         compose.onNodeWithText("Appearance").performClick()
@@ -2830,7 +2841,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         model.command(
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-0"), false, "me")
@@ -2875,7 +2886,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         // Load the preference through the Activity's real observable settings source.
@@ -2937,14 +2948,9 @@ class PapoUiTest {
             var replied = false
             activity.onActivity { host ->
                 replied =
-                    androidx.lifecycle
-                        .ViewModelProvider(host)[PapoViewModel::class.java]
-                        .state
-                        .value
-                        .active
-                        ?.messages
-                        ?.any { it.content == "A swiped reply" && it.replyTo == "general-9" } ==
-                        true
+                    (host.application as PapoApplication).model.state.value.active?.messages?.any {
+                        it.content == "A swiped reply" && it.replyTo == "general-9"
+                    } == true
             }
             replied && compose.onAllNodesWithTag("composer-reply").fetchSemanticsNodes().isEmpty()
         }
@@ -3366,7 +3372,7 @@ class PapoUiTest {
                 .edit()
                 .putString("ui-density", "compact")
                 .apply()
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             host.setContent {
                 val density = androidx.compose.ui.platform.LocalDensity.current
                 androidx.compose.runtime.CompositionLocalProvider(
@@ -3592,7 +3598,7 @@ class PapoUiTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         IncomingChatFixture(context).use { fixture ->
             try {
@@ -3639,7 +3645,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         val server = model.state.value.active!!
         model.send(server, "Hello @mention(<@ana>)", null) {}
@@ -3704,7 +3710,7 @@ class PapoUiTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         IncomingChatFixture(context).use { a ->
             IncomingChatFixture(context).use { b ->
@@ -3802,7 +3808,7 @@ class PapoUiTest {
                     activity.close()
                     activity = ActivityScenario.launch(MainActivity::class.java)
                     activity.onActivity {
-                        model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+                        model = (it.application as PapoApplication).model
                     }
                     compose.waitUntil(10_000) { model.state.value.servers.size == 1 }
                     assertEquals(b.url, model.state.value.servers.single().url)

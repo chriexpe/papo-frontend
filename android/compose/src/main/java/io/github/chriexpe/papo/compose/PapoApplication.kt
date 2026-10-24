@@ -8,10 +8,10 @@ import androidx.lifecycle.ViewModelStoreOwner
 /** The connection actor belongs to the process; an Activity disappearing must not end a call. */
 class PapoApplication : Application(), ViewModelStoreOwner {
     override val viewModelStore = ViewModelStore()
-    val model: PapoViewModel by lazy {
-        ViewModelProvider(this, ViewModelProvider.AndroidViewModelFactory.getInstance(this))[
-            PapoViewModel::class.java]
-    }
+    val model: PapoViewModel
+        get() =
+            ViewModelProvider(this, ViewModelProvider.AndroidViewModelFactory.getInstance(this))[
+                PapoViewModel::class.java]
 
     override fun onCreate() {
         super.onCreate()

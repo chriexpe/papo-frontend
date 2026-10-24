@@ -641,6 +641,14 @@ become mention targets. A mention is removed when exposed, or when the channel
 is acknowledged at the live head. Cached mention timestamps preserve the order
 of targets whose messages are not loaded.
 
+Viewport observations use a typed read-state response rather than polling every
+server and rebuilding message, member and resource projections. The normal core
+reducer still receives every report, persists read spans and sends read receipts.
+Android patches only reading state, channel badges and the notification count,
+retaining message/resource objects. Account, channel and live-message IDs guard
+against applying a response to a stale timeline. Transport wakes and other
+commands continue to drain updates through full snapshots.
+
 While reading behind the head, the down arrow counts incoming messages that
 have not appeared in the viewport. Its first press opens the oldest remaining
 arrival. The next press jumps to the live head, preserving skipped content as
