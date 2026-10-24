@@ -18,7 +18,7 @@ pub const VIDEO_SLOTS: usize = 6;
 /// preenche sozinho com quem está falando — não se pede áudio de ninguém.
 pub const AUDIO_SLOTS: usize = 8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     Camera,
     /// Compartilhar tela. O caminho do vídeo é o mesmo da câmera e o

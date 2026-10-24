@@ -90,11 +90,20 @@ pub(super) fn spawn(
     std::thread::Builder::new()
         .name("papo-call".into())
         .spawn(move || {
-            let mut engine =
-                match Engine::build(channel_id, &ice, shared.clone(), inbox, signals, host) {
-                    Some(engine) => engine,
-                    None => return,
-                };
+            let mut engine = match Engine::build(
+                channel_id,
+                &ice,
+                shared.clone(),
+                inbox,
+                signals,
+                host.clone(),
+            ) {
+                Some(engine) => engine,
+                None => {
+                    host.wake();
+                    return;
+                }
+            };
             engine.run(commands);
         })
         .ok()
@@ -123,11 +132,13 @@ struct Engine {
     /// De quem a janela quer ver a câmera. Pode ser mais gente do que cabe:
     /// o que sobra espera um lugar vagar.
     wanted: Vec<String>,
+    screens: Vec<String>,
+    camera_front: bool,
     /// Assinaturas de vídeo são otimistas: o backend pode anunciar
     /// camera_on alguns milissegundos antes de OnTrack registrar a track.
     /// Enquanto o slot reservado ainda não recebeu quadro, repetimos o
     /// subscribe com backoff; Subscribe é idempotente para o mesmo publisher.
-    subscribe_retry: HashMap<String, SubscribeRetry>,
+    subscribe_retry: HashMap<(String, Kind), SubscribeRetry>,
     host: Arc<dyn Host>,
     /// A volta para a própria thread: as promessas do GStreamer respondem
     /// por aqui, em vez de mexerem no estado de outra thread.
@@ -355,6 +366,8 @@ impl Engine {
             camera_src: None,
             camera_on: false,
             wanted: Vec::new(),
+            screens: Vec::new(),
+            camera_front: true,
             subscribe_retry: HashMap::new(),
             host,
             inbox,
@@ -366,6 +379,11 @@ impl Engine {
     }
 
     fn run(&mut self, commands: mpsc::Receiver<Command>) {
+        let mut last_status = (
+            self.shared.camera_state(),
+            self.shared.is_live(),
+            self.shared.failed(),
+        );
         let bus = self.pipeline.bus();
         loop {
             match commands.recv_timeout(TICK) {
@@ -399,6 +417,18 @@ impl Engine {
                 camera.turn.follow();
             }
             self.retry_video_subscriptions();
+            let status = (
+                self.shared.camera_state(),
+                self.shared.is_live(),
+                self.shared.failed(),
+            );
+            if status != last_status {
+                last_status = status;
+                self.host.wake();
+            }
+            if self.shared.failed() {
+                break;
+            }
         }
         self.camera = None;
         let _ = self.pipeline.set_state(gst::State::Null);
@@ -446,6 +476,29 @@ impl Engine {
                 }));
             }
             Command::Camera(on) => self.set_camera(on),
+            Command::CameraFacing(front) => {
+                if self.camera_front != front {
+                    self.camera_front = front;
+                    if self.camera_on {
+                        self.set_camera(false);
+                        self.set_camera(true);
+                    }
+                }
+            }
+            Command::Playback { user_id, setting } => {
+                if let Ok(mut audio) = self.shared.audio.lock() {
+                    audio.playback(user_id, setting);
+                }
+            }
+            Command::AudioRoutes(routes) => {
+                if let Ok(mut audio) = self.shared.audio.lock() {
+                    audio.route(routes);
+                }
+            }
+            Command::WatchingScreens(publishers) => {
+                self.screens = publishers;
+                self.reconcile_kind(Kind::Screen);
+            }
             Command::Watching(publishers) => {
                 self.wanted = publishers;
                 self.reconcile();
@@ -600,13 +653,19 @@ impl Engine {
     /// quando uma das seis primeiras desliga; era o furo de manter a conta
     /// do lado de fora, onde não se sabe o que coube.
     fn reconcile(&mut self) {
-        let kind = Kind::Camera;
-        let wanted = std::mem::take(&mut self.wanted);
+        self.reconcile_kind(Kind::Camera);
+        self.reconcile_kind(Kind::Screen);
+    }
+
+    fn reconcile_kind(&mut self, kind: Kind) {
+        let wanted = match kind {
+            Kind::Camera => self.wanted.clone(),
+            Kind::Screen => self.screens.clone(),
+        };
         let (leaving, entering) = self.slots.reconcile(&wanted, kind);
-        self.wanted = wanted;
 
         for publisher in leaving {
-            self.subscribe_retry.remove(&publisher);
+            self.subscribe_retry.remove(&(publisher.clone(), kind));
             self.signal(serde_json::json!({
                 "type": "track_unsubscribe",
                 "channel_id": self.channel_id,
@@ -622,7 +681,7 @@ impl Engine {
                 "kind": kind.wire(),
             }));
             self.subscribe_retry.insert(
-                publisher,
+                (publisher, kind),
                 SubscribeRetry {
                     next: Instant::now() + SUBSCRIBE_RETRY_MIN,
                     delay: SUBSCRIBE_RETRY_MIN,
@@ -647,14 +706,19 @@ impl Engine {
         let mut confirmed = Vec::new();
         let mut due = Vec::new();
 
-        for (publisher, retry) in &self.subscribe_retry {
-            if !self.wanted.contains(publisher) {
-                confirmed.push(publisher.clone());
+        for ((publisher, kind), retry) in &self.subscribe_retry {
+            let wanted = if *kind == Kind::Camera {
+                &self.wanted
+            } else {
+                &self.screens
+            };
+            if !wanted.contains(publisher) {
+                confirmed.push((publisher.clone(), *kind));
                 continue;
             }
 
-            let Some(index) = self.slots.find(publisher, Kind::Camera) else {
-                confirmed.push(publisher.clone());
+            let Some(index) = self.slots.find(publisher, *kind) else {
+                confirmed.push((publisher.clone(), *kind));
                 continue;
             };
 
@@ -667,9 +731,9 @@ impl Engine {
                 .unwrap_or(false);
 
             if has_frame {
-                confirmed.push(publisher.clone());
+                confirmed.push((publisher.clone(), *kind));
             } else if now >= retry.next {
-                due.push(publisher.clone());
+                due.push((publisher.clone(), *kind));
             }
         }
 
@@ -677,15 +741,15 @@ impl Engine {
             self.subscribe_retry.remove(&publisher);
         }
 
-        for publisher in due {
+        for (publisher, kind) in due {
             log::info!("call: repetindo track_subscribe para câmera de {publisher}");
             self.signal(serde_json::json!({
                 "type": "track_subscribe",
                 "channel_id": self.channel_id,
                 "publisher_id": publisher,
-                "kind": Kind::Camera.wire(),
+                "kind": kind.wire(),
             }));
-            if let Some(retry) = self.subscribe_retry.get_mut(&publisher) {
+            if let Some(retry) = self.subscribe_retry.get_mut(&(publisher, kind)) {
                 retry.delay = (retry.delay * 2).min(SUBSCRIBE_RETRY_MAX);
                 retry.next = now + retry.delay;
             }
@@ -701,7 +765,7 @@ impl Engine {
         for (index, tile) in tiles.iter_mut().enumerate() {
             let occupant = self.slots.occupant(index);
             let publisher = occupant.map(|slot| slot.publisher.clone());
-            if tile.publisher != publisher {
+            if tile.publisher != publisher || tile.kind != occupant.map(|slot| slot.kind) {
                 tile.frame = None;
                 tile.seq = tile.seq.wrapping_add(1);
             }
@@ -754,7 +818,12 @@ impl Engine {
             self.shared.set_camera(false);
             return;
         };
-        match capture(src, Arc::clone(&self.shared), self.host.clone()) {
+        match capture(
+            src,
+            Arc::clone(&self.shared),
+            self.host.clone(),
+            self.camera_front,
+        ) {
             Some(camera) => {
                 self.camera = Some(camera);
                 self.shared.set_camera(true);
@@ -1358,7 +1427,25 @@ fn connect_signals(
             .unwrap_or_default();
         let line = pad.property::<Option<gst_webrtc::WebRTCRTPTransceiver>>("transceiver");
         match media.as_str() {
-            "audio" => play_audio(&bin, pad),
+            "audio" => {
+                let track = line
+                    .as_ref()
+                    .and_then(|line| {
+                        let remote = _webrtc
+                            .property::<Option<gst_webrtc::WebRTCSessionDescription>>(
+                                "remote-description",
+                            )?;
+                        remote
+                            .sdp()
+                            .media(line.mlineindex())?
+                            .attribute_val("msid")?
+                            .split_whitespace()
+                            .nth(1)
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| pad.name().to_string());
+                play_audio(&bin, pad, &tiles, track);
+            }
             "video" => {
                 let known = video_lines.lock().ok();
                 let Some(index) = line
@@ -1388,7 +1475,7 @@ fn is_loopback(candidate: &str) -> bool {
 /// Áudio que chega: um alto-falante por fluxo. Deixar o servidor de som
 /// misturar é mais simples (e mais robusto) do que um `audiomixer` que
 /// precisa esperar todas as entradas.
-fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad) {
+fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad, shared: &Shared, track: String) {
     let Some(depay) = make("rtpopusdepay") else {
         drain_receive_pad(pipeline, pad, "sem rtpopusdepay");
         return;
@@ -1413,7 +1500,22 @@ fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad) {
         drain_receive_pad(pipeline, pad, "sem saída de áudio");
         return;
     };
-    let elements = [depay.clone(), decoder, convert, resample, queue, sink];
+    let Some(volume) = make("volume") else {
+        drain_receive_pad(pipeline, pad, "sem filtro de volume");
+        return;
+    };
+    if let Ok(mut audio) = shared.audio.lock() {
+        audio.attach(track, volume.clone());
+    }
+    let elements = [
+        depay.clone(),
+        decoder,
+        convert,
+        resample,
+        volume,
+        queue,
+        sink,
+    ];
     if pipeline.add_many(&elements).is_err() {
         drop_dynamic_branch(pipeline, &elements);
         drain_receive_pad(pipeline, pad, "não deu para adicionar a saída de áudio");
@@ -1549,7 +1651,7 @@ fn show_video(
                         tile.frame = Some(Arc::new(frame));
                         tile.seq = tile.seq.wrapping_add(1);
                     }
-                    host.wake();
+                    host.frame_ready();
                 }
                 Ok(gst::FlowSuccess::Ok)
             })
@@ -1597,7 +1699,12 @@ fn show_video(
 
 /// A captura da câmera: um pipeline à parte que entrega o mesmo quadro duas
 /// vezes — cru para o codificador, RGBA para o retrato na tela.
-fn capture(target: gst_app::AppSrc, shared: Arc<Shared>, host: Arc<dyn Host>) -> Option<Camera> {
+fn capture(
+    target: gst_app::AppSrc,
+    shared: Arc<Shared>,
+    host: Arc<dyn Host>,
+    _front: bool,
+) -> Option<Camera> {
     // Permissions belong to the shell, never to the media worker or an Activity singleton.
     if !host.camera_allowed() {
         shared.warn("camera-permission");
@@ -1616,7 +1723,7 @@ fn capture(target: gst_app::AppSrc, shared: Arc<Shared>, host: Arc<dyn Host>) ->
         // quem está falando. O `device-facing` do `ahcsrc` só informa, não
         // escolhe — quem escolhe é o índice, e no Android a de trás é
         // sempre a 0 e a da frente a 1.
-        source.set_property("device", "1");
+        source.set_property("device", host.camera_device(_front));
         source
     };
     #[cfg(not(target_os = "android"))]
@@ -1821,7 +1928,7 @@ fn capture(target: gst_app::AppSrc, shared: Arc<Shared>, host: Arc<dyn Host>) ->
                     shared.preview_seq.fetch_add(1, Ordering::Relaxed);
                     // Sem isto o seu próprio retrato congelava numa janela
                     // parada: ninguém pedia o quadro seguinte.
-                    host.wake();
+                    host.frame_ready();
                 }
                 Ok(gst::FlowSuccess::Ok)
             })

@@ -1,6 +1,8 @@
 //! Shared SFU/WebRTC transport. No egui types, Android Activity, textures or UI navigation.
 //! Frames are immutable RGBA snapshots; the host owns permissions and presentation callbacks.
+mod audio;
 mod engine;
+pub use audio::Playback;
 pub mod ice;
 pub mod platform;
 pub mod slots;
@@ -16,8 +18,14 @@ use std::sync::{Arc, Mutex, mpsc};
 pub trait Host: Send + Sync + 'static {
     fn initialize(&self) -> bool;
     fn wake(&self);
+    fn frame_ready(&self) {
+        self.wake();
+    }
     fn camera_allowed(&self) -> bool {
         true
+    }
+    fn camera_device(&self, front: bool) -> String {
+        if front { "1" } else { "0" }.into()
     }
     fn display_rotation(&self) -> i32 {
         0
@@ -50,6 +58,7 @@ pub struct Tile {
 /// O que a thread da call publica e a janela lê.
 #[derive(Default)]
 pub struct Shared {
+    audio: Mutex<audio::AudioMix>,
     pub tiles: Mutex<Vec<Tile>>,
     /// A sua própria câmera, para o retrato de canto.
     pub preview: Mutex<Option<Arc<Frame>>>,
@@ -147,6 +156,13 @@ pub enum Command {
     Ready,
     Muted(bool),
     Camera(bool),
+    CameraFacing(bool),
+    Playback {
+        user_id: String,
+        setting: Playback,
+    },
+    AudioRoutes(Vec<(String, String)>),
+    WatchingScreens(Vec<String>),
     /// De quem queremos ver a câmera. Vai o conjunto inteiro, não a
     /// diferença: quem decide o que cabe nos seis lugares é a thread da
     /// call, que é quem sabe quais estão livres.
@@ -234,6 +250,14 @@ impl Call {
                     candidate: candidate.clone(),
                     sdp_mline_index: sdp_mline_index.unwrap_or(0),
                 },
+                Event::VoiceAudioRoutes { channel_id, routes } if channel_id == &channel => {
+                    Command::AudioRoutes(
+                        routes
+                            .iter()
+                            .map(|route| (route.track_id.clone(), route.user_id.clone()))
+                            .collect(),
+                    )
+                }
                 _ => return,
             };
             let _ = commands.send(command);
