@@ -1,9 +1,29 @@
 # Android voice/video calls — PR #125
 
-This follow-up starts from merged PR #124. The first review gate is an interactive
-**Demo-only UI**. Live-server call integration and media-engine extraction follow
-approval of this presentation. No call transport, microphone/camera capture,
-permissions or Android background-call behavior is enabled by this first slice.
+This follow-up starts from merged PR #124. The Demo presentation was accepted,
+including the separate call pill, sequential video count control, channel rosters
+and participant action drawer. Live integration now proceeds in independently
+verified commits; the accepted Demo remains available throughout.
+
+## Integration checkpoints
+
+- [x] Extract the existing GStreamer worker into `papo-call`, with immutable RGBA
+  frames and host callbacks instead of egui/Activity types. Keep the egui texture
+  adapter and validate its build against the shared implementation.
+- [ ] Connect the Android adapter to authoritative core room/session state and
+  signaling, including join/leave, stale-attempt rejection and connection loss.
+- [ ] Package/init the Android GStreamer runtime; wire microphone, incoming audio,
+  0–200% receiver gain/mute, incoming video, camera and shared-screen reception.
+- [ ] Preserve the accepted presentation with live state, permission/error paths,
+  camera selection and explicit audio routing.
+- [ ] Add process-owned call lifetime, foreground notification actions and PiP.
+- [ ] Enable voice-channel chat history/cache and run host/device/live regression.
+
+`papo-core` continues owning protocol state; `papo-call` owns media workers;
+Android owns permissions, audio focus/routing, services and rendering. No
+Activity or egui context crosses the media boundary. Presentation translations
+remain the responsibility of each shell; legacy engine diagnostics are retained
+during extraction and will be exposed as semantic errors at the Android boundary.
 
 ## UI review build
 

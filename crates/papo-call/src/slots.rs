@@ -106,7 +106,6 @@ impl Slots {
     pub fn occupant(&self, index: usize) -> Option<&Occupant> {
         self.places.get(index).and_then(Option::as_ref)
     }
-
 }
 
 #[cfg(test)]

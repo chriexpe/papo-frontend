@@ -7,7 +7,7 @@ description = "Cliente nativo do Papo — chat self-hosted"
 license = "AGPL-3.0-or-later"
 
 [workspace]
-members = ["crates/papo-core", "crates/papo-android"]
+members = ["crates/papo-core", "crates/papo-android", "crates/papo-call"]
 resolver = "2"
 
 # O Android carrega uma biblioteca, não executa um binário: o sistema abre a
@@ -25,6 +25,7 @@ path = "src/main.rs"
 
 [dependencies]
 papo-core = { path = "crates/papo-core" }
+papo-call = { path = "crates/papo-call" }
 # As features de janela são por plataforma: Wayland/X11 só no Linux e
 # `android-game-activity` só no Android. Os dois back-ends de Activity do
 # eframe são exclusivos — nunca ligar os dois.
