@@ -36,6 +36,7 @@ mod notifications;
 mod projection;
 mod social;
 mod webhooks;
+mod viewport;
 use projection::project;
 #[cfg(any(test, all(debug_assertions, target_os = "android")))]
 mod reading_debug;

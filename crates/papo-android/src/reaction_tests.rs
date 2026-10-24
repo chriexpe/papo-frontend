@@ -197,6 +197,45 @@ fn settle(client: &mut Client) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
+
+#[test]
+fn viewport_persists_and_schedules_live_receipts_without_a_full_poll() {
+    use crate::bindings::{Backend, NativeClient};
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    client.runtime.store.connection = Connection::Online;
+    let native = NativeClient {
+        backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+    };
+    let update = native
+        .observe_viewport(
+            "general".into(),
+            vec!["general-9".into()],
+            true,
+            "me".into(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(!update.channel_unread);
+    assert!(update.reading.sync_pending);
+    let mut guard = native.backend.lock().unwrap();
+    let Some(Backend::Live(client)) = guard.as_mut() else {
+        panic!()
+    };
+    assert!(
+        client.read_in_flight.contains("general"),
+        "Receipt dispatch must not depend on a subsequent full poll"
+    );
+    assert!(!client.runtime.store.pending_read_receipts().is_empty());
+    assert!(
+        client.runtime.store.take_cache_ops().is_empty(),
+        "Viewport changes must already be submitted to durable storage"
+    );
+    let full: crate::bindings::ReadingView =
+        serde_json::from_value(client.snapshot()["reading"].clone()).unwrap();
+    assert_eq!(update.reading, full);
+}
+
 fn react(client: &mut Client, id: &str, emoji: &Emoji, add: bool) {
     client
         .dispatch(Action::React {

@@ -77,26 +77,70 @@ class CoreBridgeTest {
         try {
             val start = handle.poll()
             val messages = start.messages
+            val first =
+                requireNotNull(
+                    handle.observeViewport(
+                        start.selectedChannel,
+                        listOf(messages.first().id),
+                        false,
+                        start.me,
+                    )
+                )
+            val firstState = start.withViewport(first)
+            assertEquals(handle.poll().reading, firstState.reading)
+            assertSame(start.messages, firstState.messages)
+            assertSame(start.emojis, firstState.emojis)
+            assertSame(start.members, firstState.members)
+            assertSame(start.profiles, firstState.profiles)
             handle.dispatch(
-                io.github.chriexpe.papo.core.Action.Visible(
-                    start.selectedChannel,
+                io.github.chriexpe.papo.core.Action.BreakReadSpan(start.selectedChannel)
+            )
+            val latest =
+                requireNotNull(
+                    handle.observeViewport(
+                        start.selectedChannel,
+                        listOf(messages.last().id),
+                        true,
+                        start.me,
+                    )
+                )
+            val atNewest = firstState.withViewport(latest)
+            assertEquals(handle.poll().reading, atNewest.reading)
+            assertSame(start.messages, atNewest.messages)
+            val repeated =
+                requireNotNull(
+                    handle.observeViewport(
+                        start.selectedChannel,
+                        listOf(messages.last().id),
+                        true,
+                        start.me,
+                    )
+                )
+            assertSame(atNewest, atNewest.withViewport(repeated))
+            assertNull(
+                handle.observeViewport(
+                    "previous-chat",
                     listOf(messages.first().id),
                     false,
                     start.me,
                 )
             )
-            handle.dispatch(
-                io.github.chriexpe.papo.core.Action.BreakReadSpan(start.selectedChannel)
-            )
-            handle.dispatch(
-                io.github.chriexpe.papo.core.Action.Visible(
+            assertNull(
+                handle.observeViewport(
                     start.selectedChannel,
-                    listOf(messages.last().id),
-                    true,
-                    start.me,
+                    listOf(messages.first().id),
+                    false,
+                    "previous-owner",
                 )
             )
-            val atNewest = handle.poll()
+            assertSame(atNewest, atNewest.withViewport(latest.copy(ownerUserId = "previous-owner")))
+            assertSame(atNewest, atNewest.withViewport(latest.copy(channelId = "previous-chat")))
+            assertSame(
+                atNewest,
+                atNewest.withViewport(
+                    latest.copy(reading = latest.reading.copy(liveIds = listOf("new-message")))
+                ),
+            )
             assertFalse(atNewest.channels.first { it.id == start.selectedChannel }.unread)
             assertTrue(atNewest.reading.hourglassTarget.isNotBlank())
             assertFalse(atNewest.reading.syncPending)

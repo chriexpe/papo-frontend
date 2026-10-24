@@ -398,16 +398,20 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             syncNotifications()
-            if (snapshots.values.any { it.reading.syncPending } && readRetry?.isActive != true) {
-                readRetry =
-                    viewModelScope.launch(dispatcher) {
-                        kotlinx.coroutines.delay(10_000)
-                        readRetry = null
-                        signals.trySend(Unit)
-                    }
-            }
+            scheduleReadRetry()
         } catch (e: Exception) {
             publish(error = e.message ?: ui(R.string.could_not_update_messages))
+        }
+    }
+
+    private fun scheduleReadRetry() {
+        if (snapshots.values.any { it.reading.syncPending } && readRetry?.isActive != true) {
+            readRetry =
+                viewModelScope.launch(dispatcher) {
+                    kotlinx.coroutines.delay(10_000)
+                    readRetry = null
+                    signals.trySend(Unit)
+                }
         }
     }
 
@@ -760,8 +764,50 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(dispatcher) {
             try {
                 val handle = handles[url] ?: error(ui(R.string.server_is_closed))
-                handle.dispatch(action)
-                poll()
+                if (action is Action.Visible) {
+                    val update =
+                        handle.observeViewport(
+                            action.channelId,
+                            action.ids,
+                            action.atLatest,
+                            action.ownerUserId,
+                        )
+                    val previous = snapshots[url]
+                    if (
+                        update != null &&
+                            previous != null &&
+                            previous.me == update.ownerUserId &&
+                            previous.selected == update.channelId
+                    ) {
+                        if (previous.reading.liveIds != update.reading.liveIds) {
+                            signals.trySend(Unit)
+                        } else {
+                            val next = previous.withViewport(update)
+                            if (next !== previous) {
+                                snapshots[url] = next
+                                if (
+                                    next.conversation?.unread == false &&
+                                        next.reading.mentions.isEmpty() &&
+                                        next.me.isNotBlank() &&
+                                        !next.isDemo
+                                )
+                                    MessageAlerts.clear(url, next.me, next.selected)
+                                publish()
+                                launch(kotlinx.coroutines.Dispatchers.Main) {
+                                    notificationInbox.synchronize(
+                                        state.value.servers.filter {
+                                            it.screen == "chat" && it.me.isNotBlank()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    scheduleReadRetry()
+                } else {
+                    handle.dispatch(action)
+                    poll()
+                }
                 launch(kotlinx.coroutines.Dispatchers.Main) { onSuccess() }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
