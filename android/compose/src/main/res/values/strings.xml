@@ -984,9 +984,8 @@
     <string name="call_switch_title">Switch voice channels?</string>
     <string name="call_switch_description">Leave %1$s and join %2$s? Browsing a channel does not leave your current call.</string>
     <string name="call_switch_confirm">Leave and join</string>
-    <string name="call_videos_hidden">Videos hidden</string>
     <string name="call_hide_videos">Hide videos</string>
-    <string name="call_choose_video_count">Videos while browsing</string>
     <string name="call_expand_video">Expand video call</string>
-    <string name="call_video_count_description">Choose how many videos to show while browsing. Hiding previews keeps your camera and call unchanged. If fewer videos are available, only those are shown.</string>
+    <string name="call_show_videos">Show video previews</string>
+    <string name="call_cycle_video_count">Switch to %1$s</string>
 </resources>

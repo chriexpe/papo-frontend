@@ -28,18 +28,19 @@ part of Demo, not real users or a connection to a server.
 - The call screen's overflow offers voice, sample video and sample shared-screen
   layouts. Tap a participant to enlarge; a filled Show everyone button or Back
   restores the grid before minimizing.
-- When video is available, the browsing call pill includes an expand button and
-  a 0–4 preview-count picker (default 2). Zero hides video previews without
-  switching off the camera or leaving. Fewer available videos leave no empty
-  tiles. Speaker priority chooses videos when capped; retained tiles keep their
-  relative order. Preview height adapts to the viewport and keyboard.
-- Opening video slightly separates the call pill from the channel header and
-  expands the controls and previews into one glass surface; hiding reverses it.
-  A short spring/opacity transition respects app and Android motion settings.
+- When video is available, the browsing call pill includes an expand button,
+  a direct 1 → 2 → 3 → 4 → 1 count switch (default 2), and an × to close the
+  entire extra video section. No count menu or zero-count state is used.
+- Closing previews leaves camera publication and membership alone. The small
+  video badge in the participant strip reopens previews with the same count.
+  With no camera/shared-screen sources, no video section or reopen badge appears.
+- Fewer available videos leave no empty tiles. Speaker priority chooses videos
+  when capped; retained tiles keep their relative order. Preview height adapts
+  to the viewport and keyboard.
+- The call pill sits 4dp below either server or channel navigation, unchanged by
+  video expansion. Controls and previews expand into one glass surface with a
+  short spring/opacity transition that respects app and Android motion settings.
   Speaker changes do not replay this transition.
-- The video-count sheet is hosted once above navigation and bound to the active
-  session token, so changing chat/account cannot create competing pickers. Like
-  the full-screen call, it uses the existing covered-conversation visibility guard.
 - Audio output choices preview selection only. They do not change Android routing.
 - Speaker changes are a five-second Demo cycle. Tiles retain their order. Studio
   has one remote participant and therefore retains that participant as its speaker.
@@ -73,3 +74,11 @@ The previously deferred hourglass investigation remains separate. This UI slice
 changes no production read-state/navigation algorithm, core media transport or
 live-server voice-channel visibility. Device instrumentation follows the user's
 UI review; it has not been run for this slice.
+
+## Latest preview validation
+
+Formatting, universal debug assembly and Android lint passed. ADB UI checks
+confirmed the 2 → 3 → 4 → 1 → 2 count cycle without a menu, closing the whole
+video section while the camera remains on, reopening through the participant
+strip, expansion to the call screen, and removal of video UI after selecting
+voice-only. Device instrumentation remains deferred pending UI acceptance.

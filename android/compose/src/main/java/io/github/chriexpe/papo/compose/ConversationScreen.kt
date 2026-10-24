@@ -937,7 +937,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         }
                     }
                 }
-                CallBrowsingHeader(separateFromChannel = true)
+                CallBrowsingHeader()
                 if (server.connection != "online")
                     GlassPill(Modifier.padding(top = 8.dp), radius = 24) {
                         ConnectionBanner(server.connection) { model.command(Action.Refresh) }

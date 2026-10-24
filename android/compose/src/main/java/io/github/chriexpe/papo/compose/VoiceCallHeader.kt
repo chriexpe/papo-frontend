@@ -1,9 +1,6 @@
 package io.github.chriexpe.papo.compose
 
 import android.animation.ValueAnimator
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -53,6 +50,9 @@ private fun ActiveCallHeaderRow(
 ) {
     val channel = server.channels.firstOrNull { it.id == session.route.channelId } ?: return
     val people = previewCallParticipants(server, channel.id, session)
+    val reopenVideos =
+        !session.videoPreviewsVisible &&
+            (people.any { it.camera } || session.layout == CallPreviewLayout.Screen)
     Row(
         Modifier.fillMaxWidth()
             .testTag("active-call-header")
@@ -84,7 +84,15 @@ private fun ActiveCallHeaderRow(
                 )
             }
         }
-        MinimizedCallParticipants(people, calls.controller::reopen, Modifier.weight(1f))
+        MinimizedCallParticipants(
+            people,
+            onOpen = {
+                if (reopenVideos) calls.controller.showVideoPreviews(session)
+                else calls.controller.reopen()
+            },
+            showVideoBadge = reopenVideos,
+            modifier = Modifier.weight(1f),
+        )
         CallIconButton(
             if (session.muted) Icons.Outlined.MicOff else Icons.Outlined.Mic,
             ui(if (session.muted) R.string.call_unmute else R.string.call_mute),
@@ -117,6 +125,7 @@ private fun ActiveCallHeaderRow(
 private fun MinimizedCallParticipants(
     people: List<CallParticipant>,
     onOpen: () -> Unit,
+    showVideoBadge: Boolean,
     modifier: Modifier,
 ) {
     val ordered = people.sortedByDescending { it.speaking }
@@ -124,7 +133,11 @@ private fun MinimizedCallParticipants(
         modifier
             .height(48.dp)
             .clip(RoundedCornerShape(12.dp))
-            .clickable(onClickLabel = ui(R.string.call_open), onClick = onOpen)
+            .clickable(
+                onClickLabel =
+                    ui(if (showVideoBadge) R.string.call_show_videos else R.string.call_open),
+                onClick = onOpen,
+            )
             .testTag("call-header-participants")
             .semantics(mergeDescendants = true) {
                 contentDescription = uiQuantity(R.plurals.call_people_in_room, people.size)
@@ -176,30 +189,28 @@ private fun MinimizedCallParticipants(
                     )
                 }
         }
+        if (showVideoBadge)
+            Icon(
+                Icons.Outlined.PictureInPictureAlt,
+                null,
+                Modifier.align(Alignment.BottomEnd)
+                    .size(18.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                    .padding(2.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
     }
 }
 
 @Composable
-internal fun CallBrowsingHeader(
-    modifier: Modifier = Modifier,
-    separateFromChannel: Boolean = false,
-) {
+internal fun CallBrowsingHeader(modifier: Modifier = Modifier) {
     val calls = LocalVoiceCall.current ?: return
     val session = calls.state.session ?: return
     val server = calls.server ?: return
     val people = previewCallParticipants(server, session.route.channelId, session)
-    val expanded =
-        session.videoLimit > 0 &&
-            (people.any { it.camera } || session.layout == CallPreviewLayout.Screen)
-    val motion = callMotionEnabled()
-    val separation by
-        animateDpAsState(
-            targetValue = if (!separateFromChannel) 0.dp else if (expanded) 12.dp else 4.dp,
-            animationSpec = if (motion) spring(dampingRatio = .9f, stiffness = 500f) else snap(),
-            label = "call-pill-separation",
-        )
     CompositionLocalProvider(LocalProfileContext provides ProfileContext(server, calls.model)) {
-        GlassPill(modifier.fillMaxWidth().padding(top = separation), radius = 24) {
+        GlassPill(modifier.fillMaxWidth().padding(top = 4.dp), radius = 24) {
             Column {
                 ActiveCallHeaderRow(calls, session, server)
                 MinimizedCallVideos(
@@ -212,7 +223,7 @@ internal fun CallBrowsingHeader(
     }
 }
 
-/** App and Android motion settings also apply to the glass pill's split/expand transition. */
+/** App and Android motion settings also apply to the glass pill's video expansion transition. */
 @Composable
 internal fun callMotionEnabled(): Boolean =
     LocalClientPreferences.current.animations && ValueAnimator.areAnimatorsEnabled()

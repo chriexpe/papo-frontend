@@ -68,6 +68,7 @@ internal fun ConversationList(
     onMessage: (String, String) -> Unit,
 ) {
     val dimensions = LocalUiDimensions.current
+    val callActive = LocalVoiceCall.current?.active == true
     // A server owns its search; changing servers never leaks terms/results.
     var query by
         rememberSaveable(server.url, stateSaver = TextFieldValue.Saver) {
@@ -123,7 +124,9 @@ internal fun ConversationList(
     val hints = if (focused) analysis?.suggestions.orEmpty() else emptyList()
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = dimensions.screenPadding, vertical = 8.dp),
+            Modifier.fillMaxWidth()
+                .padding(horizontal = dimensions.screenPadding)
+                .padding(top = 8.dp, bottom = if (callActive) 0.dp else 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(dimensions.contentGap),
         ) {
@@ -149,7 +152,7 @@ internal fun ConversationList(
                 }
             }
         }
-        CallBrowsingHeader(Modifier.padding(horizontal = dimensions.screenPadding, vertical = 4.dp))
+        CallBrowsingHeader(Modifier.padding(horizontal = dimensions.screenPadding))
         if (server.connection != "online")
             ConnectionBanner(server.connection) { model.command(Action.Refresh, server.url) }
         OutlinedTextField(

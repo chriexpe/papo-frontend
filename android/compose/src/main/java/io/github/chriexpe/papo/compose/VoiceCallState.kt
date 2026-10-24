@@ -37,13 +37,13 @@ internal data class CallPreviewSession(
     val layout: CallPreviewLayout = CallPreviewLayout.Voice,
     val output: CallPreviewOutput = CallPreviewOutput.Speaker,
     val videoLimit: Int = 2,
+    val videoPreviewsVisible: Boolean = true,
 )
 
 internal data class VoiceCallUiState(
     val screen: CallRoute? = null,
     val session: CallPreviewSession? = null,
     val switchingTo: CallRoute? = null,
-    val videoLimitPicker: Long? = null,
 )
 
 /**
@@ -63,22 +63,17 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
     fun open(server: ServerState, channelId: String) {
         if (!server.isDemo || server.channels.none { it.id == channelId && it.kind == "voice" })
             return
-        mutableState.value =
-            state.value.copy(
-                screen = CallRoute(server.url, server.me, channelId),
-                videoLimitPicker = null,
-            )
+        mutableState.value = state.value.copy(screen = CallRoute(server.url, server.me, channelId))
     }
 
     fun reopen() {
         state.value.session?.let {
-            mutableState.value = state.value.copy(screen = it.route, videoLimitPicker = null)
+            mutableState.value = state.value.copy(screen = it.route)
         }
     }
 
     fun minimize() {
-        mutableState.value =
-            state.value.copy(screen = null, switchingTo = null, videoLimitPicker = null)
+        mutableState.value = state.value.copy(screen = null, switchingTo = null)
     }
 
     fun join(route: CallRoute, servers: List<ServerState>) {
@@ -106,7 +101,6 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
                 session = started,
                 switchingTo = null,
                 screen = route,
-                videoLimitPicker = null,
             )
         // Demo voices alternate without reordering tiles, exercising the same header as the grid.
         speaking = scope.launch {
@@ -143,33 +137,28 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
         }
 
     fun layout(session: CallPreviewSession, layout: CallPreviewLayout) =
-        change(session) { it.copy(layout = layout) }
+        change(session) {
+            it.copy(layout = layout, camera = it.camera && layout != CallPreviewLayout.Voice)
+        }
 
     fun output(session: CallPreviewSession, output: CallPreviewOutput) =
         change(session) { it.copy(output = output) }
 
-    /** Hiding previews never switches off a camera or ends the call. */
-    fun videoLimit(session: CallPreviewSession, limit: Int) =
-        change(session) { it.copy(videoLimit = limit.coerceIn(0, 4)) }
+    fun cycleVideoLimit(session: CallPreviewSession) =
+        change(session) { it.copy(videoLimit = it.videoLimit % 4 + 1) }
 
-    fun openVideoLimit(session: CallPreviewSession) {
-        if (state.value.session?.sessionId == session.sessionId) {
-            mutableState.value = state.value.copy(videoLimitPicker = session.sessionId)
-        }
-    }
+    /** Closing the video surface never switches off a camera or ends the call. */
+    fun hideVideoPreviews(session: CallPreviewSession) =
+        change(session) { it.copy(videoPreviewsVisible = false) }
 
-    fun dismissVideoLimit(session: CallPreviewSession) {
-        if (state.value.videoLimitPicker == session.sessionId) {
-            mutableState.value = state.value.copy(videoLimitPicker = null)
-        }
-    }
+    fun showVideoPreviews(session: CallPreviewSession) =
+        change(session) { it.copy(videoPreviewsVisible = true) }
 
     fun leave(session: CallPreviewSession) {
         if (state.value.session?.sessionId != session.sessionId) return
         speaking?.cancel()
         speaking = null
-        mutableState.value =
-            state.value.copy(session = null, switchingTo = null, videoLimitPicker = null)
+        mutableState.value = state.value.copy(session = null, switchingTo = null)
     }
 
     /**
@@ -187,7 +176,6 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
                 session = active,
                 screen = current.screen?.takeIf { it.server(servers)?.isDemo == true },
                 switchingTo = current.switchingTo?.takeIf { it.server(servers)?.isDemo == true },
-                videoLimitPicker = current.videoLimitPicker?.takeIf { active?.sessionId == it },
             )
     }
 }
