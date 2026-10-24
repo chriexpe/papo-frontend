@@ -22,6 +22,13 @@ part of Demo, not real users or a connection to a server.
 - The room label reopens the call. Its server label and account-scoped avatars
   continue identifying the call while another server's conversation is open.
 - Chats and Servers also keep a compact call header available while browsing.
+- Demo voice channels in Chats show their occupant count and an indented compact
+  roster with speaking, microphone and camera indicators. The joined channel is
+  labelled Connected; viewing another room never joins it. Membership/status is
+  scoped to the session owner and room, so You/mute/camera state cannot leak to
+  another channel. Real rosters will use authoritative server presence.
+- The video close control uses a quiet 24dp scrim circle and 16dp icon within a
+  48dp touch target, without the former large opaque background.
 - The Chat/Call views share the voice channel's Demo messages and saved composer.
   Opening Chat doesn't join, mute, leave or replace a call.
 - Joining another room asks to leave the current one. Cancel leaves it intact.

@@ -988,4 +988,10 @@
     <string name="call_expand_video">Expandir chamada de vídeo</string>
     <string name="call_show_videos">Mostrar prévias de vídeo</string>
     <string name="call_cycle_video_count">Alternar para %1$s</string>
+    <string name="call_room_empty">Ninguém na chamada</string>
+    <string name="call_joined_room">Conectado · %1$s</string>
+    <string name="call_microphone_on">Microfone ligado</string>
+    <string name="call_camera_enabled">Câmera ligada</string>
+    <string name="call_camera_disabled">Câmera desligada</string>
+    <string name="call_participant_status">%1$s · %2$s</string>
 </resources>

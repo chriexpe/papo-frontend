@@ -343,6 +343,8 @@ internal fun ConversationList(
                                     onOpen = { onOpen(channel.id) },
                                     onProfile = { onProfile(channel.userId) },
                                 )
+                            else if (channel.kind == "voice" && server.isDemo)
+                                DemoVoiceChannelItem(server, channel, onOpen)
                             else ChannelItem(channel, onOpen)
                         }
                     }
@@ -399,20 +401,28 @@ private fun PersonItem(
 }
 
 @Composable
-private fun ChannelItem(
+internal fun ChannelItem(
     channel: io.github.chriexpe.papo.core.ChannelView,
     onOpen: (String) -> Unit,
+    voiceSummary: String? = null,
+    joined: Boolean = false,
 ) {
     DensityListItem(
         headlineContent = {
             Text(
                 channel.name,
-                fontWeight = if (channel.unread) FontWeight.Bold else FontWeight.Medium,
+                fontWeight = if (channel.unread || joined) FontWeight.Bold else FontWeight.Medium,
             )
         },
         supportingContent =
-            if (channel.topic.isNotBlank())
-                ({ Text(channel.topic, maxLines = 1, overflow = TextOverflow.Ellipsis) })
+            if (voiceSummary != null || channel.topic.isNotBlank())
+                ({
+                    Text(
+                        voiceSummary ?: channel.topic,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                })
             else null,
         leadingContent = {
             Box(
@@ -425,7 +435,9 @@ private fun ChannelItem(
                     Icon(
                         Icons.Outlined.VolumeUp,
                         ui(R.string.voice_channel),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint =
+                            if (joined) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 else Text("#", fontSize = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -441,7 +453,13 @@ private fun ChannelItem(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
         },
-        modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable { onOpen(channel.id) },
+        modifier =
+            Modifier.clip(RoundedCornerShape(18.dp))
+                .background(
+                    if (joined) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .35f)
+                    else androidx.compose.ui.graphics.Color.Transparent
+                )
+                .clickable { onOpen(channel.id) },
     )
 }
 

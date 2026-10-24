@@ -16,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
@@ -103,17 +104,26 @@ internal fun MinimizedCallVideos(
     ) {
         Box(Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("call-minimized-video")) {
             MinimizedVideoGrid(visible, calls.controller::reopen)
-            Surface(
-                modifier = Modifier.align(Alignment.TopEnd).padding(end = 12.dp, top = 4.dp),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = .94f),
+            IconButton(
+                onClick = { calls.controller.hideVideoPreviews(session) },
+                modifier =
+                    Modifier.align(Alignment.TopEnd)
+                        .padding(end = 12.dp, top = 4.dp)
+                        .size(48.dp)
+                        .testTag("call-video-close"),
             ) {
-                CallIconButton(
-                    Icons.Outlined.Close,
-                    ui(R.string.call_hide_videos),
-                    tag = "call-video-close",
+                Box(
+                    Modifier.size(24.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = .5f)),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    calls.controller.hideVideoPreviews(session)
+                    Icon(
+                        Icons.Outlined.Close,
+                        ui(R.string.call_hide_videos),
+                        Modifier.size(16.dp),
+                        tint = Color.White.copy(alpha = .9f),
+                    )
                 }
             }
         }

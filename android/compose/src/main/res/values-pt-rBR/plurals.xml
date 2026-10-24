@@ -62,4 +62,8 @@
         <item quantity="one">%d vídeo</item>
         <item quantity="other">%d vídeos</item>
     </plurals>
+    <plurals name="call_people_in_voice">
+        <item quantity="one">%d pessoa na chamada</item>
+        <item quantity="other">%d pessoas na chamada</item>
+    </plurals>
 </resources>
