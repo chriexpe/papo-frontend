@@ -154,18 +154,6 @@ internal fun UserProfileSheet(
     val username = person?.username.orEmpty()
     val clipboard = LocalClipboardManager.current
     val blocked = id in server.blockedUsers
-    val calls = LocalVoiceCall.current
-    // Match the signed-in owner as well as the server: profiles can be opened across servers.
-    val callSession =
-        calls?.state?.session?.takeIf {
-            server.isDemo &&
-                it.route.serverUrl == server.url &&
-                it.route.ownerId == server.me &&
-                id != server.me &&
-                previewCallParticipants(server, it.route.channelId, it).any { person ->
-                    person.id == id
-                }
-        }
     var blockDialog by remember(server.url, server.me, id) { mutableStateOf(false) }
     var resetLink by remember(id) { mutableStateOf(false) }
     var copied by remember(id) { mutableStateOf(false) }
@@ -293,13 +281,6 @@ internal fun UserProfileSheet(
                             contentDescription = ui(R.string.loading_profile)
                         }
                     )
-                }
-            if (callSession != null)
-                item {
-                    val room = server.channels.firstOrNull { it.id == callSession.route.channelId }
-                    ProfileSection(ui(R.string.call_participant_audio_room, room?.name.orEmpty())) {
-                        CallParticipantAudioControls(calls, callSession, id)
-                    }
                 }
             if (!profile?.roles.isNullOrEmpty())
                 item {

@@ -344,7 +344,7 @@ internal fun ConversationList(
                                     onProfile = { onProfile(channel.userId) },
                                 )
                             else if (channel.kind == "voice" && server.isDemo)
-                                DemoVoiceChannelItem(server, channel, onOpen, onProfile)
+                                DemoVoiceChannelItem(server, channel, onOpen)
                             else ChannelItem(channel, onOpen)
                         }
                     }

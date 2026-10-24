@@ -27,10 +27,14 @@ part of Demo, not real users or a connection to a server.
   labelled Connected; viewing another room never joins it. Membership/status is
   scoped to the session owner and room, so You/mute/camera state cannot leak to
   another channel. Real rosters will use authoritative server presence.
-- Participant roster rows, lobby rows and full-call avatar/name targets open the
-  existing profile sheet. Tapping a tile's remaining area still enlarges it.
-  Call profiles stay scoped to the call's server/account while browsing elsewhere.
-- Profiles of other participants in your joined Demo room include receiver-side
+- Participant roster rows, lobby rows and full-call avatar/name targets open a
+  dedicated call action drawer using the message-action sheet pattern: compact
+  identity/status, playback controls, View profile and Message actions. Profiles
+  contain no call controls. Tapping a tile's remaining area still enlarges it.
+  Drawer identity/actions stay scoped to the room's server/account while browsing
+  elsewhere. Before joining, the drawer shows a join hint; your own drawer offers
+  microphone/camera controls instead of playback controls for your own voice.
+- Drawers for other participants in your joined Demo room include receiver-side
   volume (0–200%, default/reset 100%) and Mute for me. Mute preserves the chosen
   volume and never changes the sender's mic status; rosters/tiles show a separate
   local speaker-off indicator. Overrides survive minimizing/Activity recreation
@@ -44,7 +48,7 @@ part of Demo, not real users or a connection to a server.
   Opening Chat doesn't join, mute, leave or replace a call.
 - Joining another room asks to leave the current one. Cancel leaves it intact.
 - The call screen's overflow offers voice, sample video and sample shared-screen
-  layouts. Tap a participant to enlarge; a filled Show everyone button or Back
+  layouts. Tap a participant tile’s background to enlarge; a filled Show everyone button or Back
   restores the grid before minimizing.
 - While the video panel is open, a normal 48dp view-count button sits beside
   the participant strip, before the microphone. It cycles 1 → 2 → 3 → 4 → 1

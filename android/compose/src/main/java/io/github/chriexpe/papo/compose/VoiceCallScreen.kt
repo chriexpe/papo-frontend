@@ -32,7 +32,6 @@ import dev.chrisbanes.haze.hazeSource
 @Composable
 internal fun VoiceCallScreen(
     calls: VoiceCallContext,
-    onProfile: (ServerState, String) -> Unit,
     onChat: (ServerState, String) -> Unit,
 ) {
     val route = calls.state.screen ?: return
@@ -58,7 +57,10 @@ internal fun VoiceCallScreen(
     }
     CompositionLocalProvider(
         LocalProfileContext provides ProfileContext(server, calls.model),
-        LocalOpenProfile provides { id -> onProfile(server, id) },
+        LocalOpenCallParticipant provides
+            { id ->
+                calls.controller.openParticipant(server, channel.id, id)
+            },
         LocalMediaOverlayBlocking provides true,
     ) {
         Column(
@@ -161,7 +163,7 @@ private fun CallScreenHeader(
 
 @Composable
 private fun CallLobby(people: List<CallParticipant>, modifier: Modifier) {
-    val onProfile = LocalOpenProfile.current
+    val onParticipant = LocalOpenCallParticipant.current
     Column(
         modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -187,7 +189,7 @@ private fun CallLobby(people: List<CallParticipant>, modifier: Modifier) {
                     .heightIn(min = 48.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .clickable(onClickLabel = ui(R.string.call_open_participant, person.name)) {
-                        onProfile(person.id)
+                        onParticipant(person.id)
                     }
                     .padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,

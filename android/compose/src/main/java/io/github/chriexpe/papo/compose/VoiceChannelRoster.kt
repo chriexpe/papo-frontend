@@ -26,10 +26,10 @@ internal fun DemoVoiceChannelItem(
     server: ServerState,
     channel: Conversation,
     onOpen: (String) -> Unit,
-    onProfile: (String) -> Unit,
 ) {
+    val calls = LocalVoiceCall.current
     val session =
-        LocalVoiceCall.current?.state?.session?.takeIf {
+        calls?.state?.session?.takeIf {
             it.route.serverUrl == server.url &&
                 it.route.ownerId == server.me &&
                 it.route.channelId == channel.id
@@ -47,15 +47,19 @@ internal fun DemoVoiceChannelItem(
         )
         Column(Modifier.fillMaxWidth().padding(start = 64.dp, end = 20.dp, bottom = 8.dp)) {
             people.forEach { person ->
-                key(person.id) { VoiceChannelParticipant(person) { onProfile(person.id) } }
+                key(person.id) {
+                    VoiceChannelParticipant(person) {
+                        calls?.controller?.openParticipant(server, channel.id, person.id)
+                    }
+                }
             }
         }
     }
 }
 
-/** Opening a participant uses the same profile sheet as the friend list, never joins the room. */
+/** Participant actions open independently of profile navigation and never join the room. */
 @Composable
-private fun VoiceChannelParticipant(person: CallParticipant, onProfile: () -> Unit) {
+private fun VoiceChannelParticipant(person: CallParticipant, onParticipant: () -> Unit) {
     val muted = ui(if (person.muted) R.string.call_muted else R.string.call_microphone_on)
     val camera =
         ui(if (person.camera) R.string.call_camera_enabled else R.string.call_camera_disabled)
@@ -65,7 +69,7 @@ private fun VoiceChannelParticipant(person: CallParticipant, onProfile: () -> Un
             .clip(RoundedCornerShape(12.dp))
             .clickable(
                 onClickLabel = ui(R.string.call_open_participant, person.name),
-                onClick = onProfile,
+                onClick = onParticipant,
             )
             .padding(vertical = 4.dp)
             .testTag("voice-participant-${person.id}")

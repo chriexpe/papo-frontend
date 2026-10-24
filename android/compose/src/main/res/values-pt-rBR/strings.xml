@@ -426,7 +426,7 @@
     <string name="online">"Online"</string>
     <string name="online_away_or_do_not_disturb">"Online, ausente ou não perturbe"</string>
     <string name="only_the_server_owner_can_generate_recovery_links">"Só o dono do servidor pode gerar links de recuperação"</string>
-    <string name="open_1_s_profile">"Abrir perfil de %1$s"</string>
+    <string name="open_1_s_profile">"Abrir controles da chamada de %1$s"</string>
     <string name="open_at_newest_message">"Abrir na mensagem mais nova"</string>
     <string name="open_external_link">"Abrir link externo?"</string>
     <string name="open_external_profile">"Abrir perfil externo"</string>
@@ -994,7 +994,7 @@
     <string name="call_camera_enabled">Câmera ligada</string>
     <string name="call_camera_disabled">Câmera desligada</string>
     <string name="call_participant_status">%1$s · %2$s</string>
-    <string name="call_open_participant">Abrir perfil de %1$s</string>
+    <string name="call_open_participant">Abrir controles da chamada de %1$s</string>
     <string name="call_participant_audio_room">Voz · %1$s</string>
     <string name="call_participant_volume">Volume</string>
     <string name="call_volume_percent">%1$d%%</string>
@@ -1002,4 +1002,6 @@
     <string name="call_mute_for_me">Silenciar para mim</string>
     <string name="call_muted_for_me">Silenciado para você</string>
     <string name="call_participant_audio_demo">Afeta apenas o que você ouve. Prévia de demonstração: nenhum áudio está tocando.</string>
+    <string name="call_view_profile">Ver perfil</string>
+    <string name="call_join_for_participant_audio">Entre neste canal de voz para ajustar o áudio dos participantes.</string>
 </resources>

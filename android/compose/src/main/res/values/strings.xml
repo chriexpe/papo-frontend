@@ -994,7 +994,7 @@
     <string name="call_camera_enabled">Camera on</string>
     <string name="call_camera_disabled">Camera off</string>
     <string name="call_participant_status">%1$s · %2$s</string>
-    <string name="call_open_participant">Open %1$s’s profile</string>
+    <string name="call_open_participant">Open call controls for %1$s</string>
     <string name="call_participant_audio_room">Voice · %1$s</string>
     <string name="call_participant_volume">Volume</string>
     <string name="call_volume_percent">%1$d%%</string>
@@ -1002,4 +1002,6 @@
     <string name="call_mute_for_me">Mute for me</string>
     <string name="call_muted_for_me">Muted for you</string>
     <string name="call_participant_audio_demo">Only affects what you hear. Demo preview: no audio is playing.</string>
+    <string name="call_view_profile">View profile</string>
+    <string name="call_join_for_participant_audio">Join this voice channel to adjust participant audio.</string>
 </resources>

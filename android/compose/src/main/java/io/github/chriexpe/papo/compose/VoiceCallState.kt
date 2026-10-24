@@ -48,6 +48,14 @@ internal data class VoiceCallUiState(
     val screen: CallRoute? = null,
     val session: CallPreviewSession? = null,
     val switchingTo: CallRoute? = null,
+    val participant: CallParticipantTarget? = null,
+)
+
+/** A drawer belongs to a room and to the join instance that was visible when it opened. */
+internal data class CallParticipantTarget(
+    val route: CallRoute,
+    val id: String,
+    val sessionId: Long?,
 )
 
 /**
@@ -67,7 +75,25 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
     fun open(server: ServerState, channelId: String) {
         if (!server.isDemo || server.channels.none { it.id == channelId && it.kind == "voice" })
             return
-        mutableState.value = state.value.copy(screen = CallRoute(server.url, server.me, channelId))
+        mutableState.value =
+            state.value.copy(
+                screen = CallRoute(server.url, server.me, channelId),
+                participant = null,
+            )
+    }
+
+    fun openParticipant(server: ServerState, channelId: String, id: String) {
+        if (!server.isDemo || server.channels.none { it.id == channelId && it.kind == "voice" })
+            return
+        val route = CallRoute(server.url, server.me, channelId)
+        val session = state.value.session?.takeIf { it.route == route }
+        if (previewCallParticipants(server, channelId, session).none { it.id == id }) return
+        mutableState.value =
+            state.value.copy(participant = CallParticipantTarget(route, id, session?.sessionId))
+    }
+
+    fun dismissParticipant() {
+        mutableState.value = state.value.copy(participant = null)
     }
 
     fun reopen() {
@@ -77,7 +103,7 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
     }
 
     fun minimize() {
-        mutableState.value = state.value.copy(screen = null, switchingTo = null)
+        mutableState.value = state.value.copy(screen = null, switchingTo = null, participant = null)
     }
 
     fun join(route: CallRoute, servers: List<ServerState>) {
@@ -105,6 +131,7 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
                 session = started,
                 switchingTo = null,
                 screen = route,
+                participant = null,
             )
         // Demo voices alternate without reordering tiles, exercising the same header as the grid.
         speaking = scope.launch {
@@ -181,7 +208,8 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
         if (state.value.session?.sessionId != session.sessionId) return
         speaking?.cancel()
         speaking = null
-        mutableState.value = state.value.copy(session = null, switchingTo = null)
+        mutableState.value =
+            state.value.copy(session = null, switchingTo = null, participant = null)
     }
 
     /**
@@ -199,6 +227,12 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
                 session = active,
                 screen = current.screen?.takeIf { it.server(servers)?.isDemo == true },
                 switchingTo = current.switchingTo?.takeIf { it.server(servers)?.isDemo == true },
+                participant =
+                    current.participant?.takeIf { target ->
+                        target.route.server(servers)?.let { server ->
+                            server.isDemo && server.members.any { it.id == target.id }
+                        } == true
+                    },
             )
     }
 }

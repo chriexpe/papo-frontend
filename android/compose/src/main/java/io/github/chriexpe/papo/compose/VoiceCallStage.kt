@@ -37,7 +37,7 @@ internal fun CallStage(
     onFocus: (String?) -> Unit,
     modifier: Modifier,
 ) {
-    val onProfile = LocalOpenProfile.current
+    val onParticipant = LocalOpenCallParticipant.current
     val selected = people.firstOrNull { it.id == focused }
     when {
         selected != null ->
@@ -100,7 +100,7 @@ internal fun CallStage(
                                 .clickable(
                                     onClickLabel = ui(R.string.call_open_participant, person.name)
                                 ) {
-                                    onProfile(person.id)
+                                    onParticipant(person.id)
                                 }
                                 .padding(8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -155,7 +155,7 @@ internal fun CallStage(
 @Composable
 private fun CallParticipantTile(person: CallParticipant, modifier: Modifier, onFocus: () -> Unit) {
     val shape = RoundedCornerShape(24.dp)
-    val onProfile = LocalOpenProfile.current
+    val onParticipant = LocalOpenCallParticipant.current
     Box(
         modifier
             .clip(shape)
@@ -210,7 +210,7 @@ private fun CallParticipantTile(person: CallParticipant, modifier: Modifier, onF
                 Modifier.size(64.dp).clip(RoundedCornerShape(22.dp)).clickable(
                     onClickLabel = ui(R.string.call_open_participant, person.name)
                 ) {
-                    onProfile(person.id)
+                    onParticipant(person.id)
                 }
             ) {
                 CallParticipantAvatar(person, 64)
@@ -227,7 +227,7 @@ private fun CallParticipantTile(person: CallParticipant, modifier: Modifier, onF
                     .heightIn(min = 48.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .clickable(onClickLabel = ui(R.string.call_open_participant, person.name)) {
-                        onProfile(person.id)
+                        onParticipant(person.id)
                     }
                     .wrapContentHeight(Alignment.Bottom),
                 style = MaterialTheme.typography.labelLarge,

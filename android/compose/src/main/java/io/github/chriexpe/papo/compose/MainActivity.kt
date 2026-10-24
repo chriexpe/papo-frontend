@@ -254,7 +254,8 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                             showingConversation &&
                                 profileId == null &&
                                 externalProfile == null &&
-                                callUi.screen == null
+                                callUi.screen == null &&
+                                callUi.participant == null
                         )
                             server?.url.orEmpty()
                         else ""
@@ -317,7 +318,10 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                             externalProfile = author
                         },
                     LocalMediaOverlayBlocking provides
-                        (profileId != null || externalProfile != null || callUi.screen != null),
+                        (profileId != null ||
+                            externalProfile != null ||
+                            callUi.screen != null ||
+                            callUi.participant != null),
                 ) {
                     // Child dialogs, sheets and the IME consume Back first. Keep the
                     // activity alive until navigation reaches the conversation list.
@@ -504,7 +508,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                         }
                         if (callUi.screen != null) {
                             Surface(Modifier.fillMaxSize()) {
-                                VoiceCallScreen(calls, openScopedProfile) { target, id ->
+                                VoiceCallScreen(calls) { target, id ->
                                     model.navigate(target, Action.SelectChannel(id)) {
                                         enterConversation(target)
                                         model.voiceCalls.minimize()
@@ -514,6 +518,16 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                         }
                     }
                     CallSwitchConfirmation(calls)
+                    CallParticipantSheet(
+                        calls,
+                        onProfile = openScopedProfile,
+                        onMessage = { target, id ->
+                            model.navigate(target, Action.OpenDm(id)) {
+                                enterConversation(target)
+                                model.voiceCalls.minimize()
+                            }
+                        },
+                    )
                     if (server?.screen == "chat")
                         externalProfile?.let { author ->
                             ExternalProfileSheet(server, author) { externalProfile = null }
