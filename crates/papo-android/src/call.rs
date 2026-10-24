@@ -18,11 +18,14 @@ fn next_attempt() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|time| time.as_nanos() as u64)
         .unwrap_or(1);
-    LAST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
-        Some(now.max(last.saturating_add(1)))
-    })
-    .map(|last| now.max(last.saturating_add(1)))
-    .unwrap()
+    let mut last = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(last.saturating_add(1));
+        match LAST.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(current) => last = current,
+        }
+    }
 }
 
 #[uniffi::export(with_foreign)]
@@ -705,5 +708,26 @@ mod tests {
         let _replacement = super::Calls::default();
         let second = super::next_attempt();
         assert!(second > first);
+    }
+
+    #[test]
+    fn concurrent_clients_receive_distinct_attempt_ids() {
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let start = std::sync::Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    (0..128).map(|_| super::next_attempt()).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut ids: Vec<_> = workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 8 * 128);
     }
 }
