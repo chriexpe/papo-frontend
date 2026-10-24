@@ -2501,7 +2501,15 @@ class PapoUiTest {
             }
             try {
                 model.addServer(fixture.url)
-                compose.waitUntil(5000) { model.state.value.active?.url == fixture.url }
+                compose.waitUntil(5000) {
+                    model.state.value.active?.url == fixture.url ||
+                        model.state.value.error.isNotBlank()
+                }
+                assertEquals(
+                    "Fixture server setup failed: " + model.state.value.error,
+                    fixture.url,
+                    model.state.value.active?.url,
+                )
                 model.command(
                     io.github.chriexpe.papo.core.Action.Login("reader", "fixture"),
                     fixture.url,
@@ -2619,16 +2627,21 @@ class PapoUiTest {
                 context.cacheDir
                     .resolve("incoming-read-failure.txt")
                     .writeText(
-                        "state=" +
+                        "failure=" +
+                            error.stackTraceToString() +
+                            "\nstate=" +
                             model.state.value +
                             "\nrequests=" +
                             fixture.requests +
                             "\nfailures=" +
                             fixture.failures +
                             "\n" +
-                            compose
-                                .onAllNodes(isRoot(), useUnmergedTree = true)
-                                .printToString(maxDepth = 20)
+                            runCatching {
+                                compose
+                                    .onAllNodes(isRoot(), useUnmergedTree = true)
+                                    .printToString(maxDepth = 20)
+                            }
+                                .getOrElse { "Hierarchy unavailable: " + it.message }
                     )
                 throw error
             } finally {
@@ -2722,6 +2735,34 @@ class PapoUiTest {
     }
 
     @Test
+    fun newestEntryKeepsTheHourglassWithoutMarkingTheReadHeadUnread() {
+        demo()
+        lateinit var model: PapoViewModel
+        activity.onActivity { model = (it.application as PapoApplication).model }
+        model.command(
+            io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-0"), false, "me")
+        )
+        model.command(io.github.chriexpe.papo.core.Action.BreakReadSpan("general"))
+        model.command(
+            io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
+        )
+        compose.waitUntil(5000) { model.state.value.active?.reading?.hasCatchUp == true }
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("message-general-9", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag("hourglass-shortcut").assertIsDisplayed()
+        compose.waitUntil(5000) {
+            val reading = model.state.value.active?.reading
+            reading != null && reading.gapEnd.isNotBlank() && reading.gapEnd != "general-9"
+        }
+        val before = model.state.value.active!!.reading.hourglassTarget
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("message-general-9", useUnmergedTree = true).assertIsDisplayed()
+        assertEquals(before, model.state.value.active!!.reading.hourglassTarget)
+        assertTrue(model.state.value.active!!.reading.gapEnd != "general-9")
+    }
+
+    @Test
     fun newestClearsChannelBadgeButKeepsCatchUpUntilSecondLatestPress() {
         demo()
         lateinit var model: PapoViewModel
@@ -2762,6 +2803,16 @@ class PapoUiTest {
         activity.onActivity {
             model = (it.application as PapoApplication).model
         }
+        // Keep a genuine unread remainder beyond the destination viewport.
+        // A short demo timeline otherwise fits completely after the jump.
+        model.command(
+            io.github.chriexpe.papo.core.Action.Edit(
+                "general-2",
+                List(35) { "A longer message keeps later unread messages off screen." }
+                    .joinToString("\n"),
+                null,
+            )
+        )
         compose.onNodeWithContentDescription("Client settings").performClick()
         compose.onNodeWithText("Appearance").performClick()
         compose

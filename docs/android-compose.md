@@ -654,9 +654,12 @@ have not appeared in the viewport. Its first press opens the oldest remaining
 arrival. The next press jumps to the live head, preserving skipped content as
 catch-up history; once at the head, another deliberate press clears the block.
 A small arrival batch that is fully exposed must not create a phantom block.
-If an older catch-up interval still exists, newer skipped content extends the
-single interval rather than dropping the older unread content. The resulting
-interval can include already-seen messages between the two skipped sections.
+Only one catch-up interval is retained. Skipping a newer unread section replaces
+an older unfinished interval, starting after the saved previously seen head.
+Opening at newest captures that boundary before advancing the head. The newer
+boundary excludes the destination viewport's read messages, so the unread-end
+marker cannot be attached below the newest message just exposed. An unloaded
+interval keeps the hourglass available while history resolves its destination.
 
 Hourglass navigation and its markers use the same unread boundary. When the
 prefix is outside the loaded window, the existing cache/server history

@@ -466,6 +466,8 @@ pub struct ClientSnapshot {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadingView {
+    #[serde(default)]
+    pub has_catch_up: bool,
     pub gap_start: String,
     pub gap_end: String,
     pub hourglass_target: String,

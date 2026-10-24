@@ -179,6 +179,7 @@ pub(crate) fn reading_view(store: &Store, url: &str) -> crate::bindings::Reading
         .iter()
         .any(|(pending, _)| pending == channel);
     crate::bindings::ReadingView {
+        has_catch_up: store.has_catch_up(channel),
         gap_start: if store.catch_up_needs_history(channel) {
             String::new()
         } else {

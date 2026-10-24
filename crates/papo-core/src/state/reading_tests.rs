@@ -91,14 +91,14 @@ fn android_latest_acknowledges_channel_without_erasing_catch_up() {
     store.observe_chat_viewport("geral", &ids(7..=8), false);
     assert_eq!(
         store.hourglass_range("geral"),
-        Some(("m2".into(), "m8".into()))
+        Some(("m2".into(), "m6".into()))
     );
     assert!(!store.channel("geral").unwrap().unread);
     store.reset_read_span("geral");
     store.observe_chat_viewport("geral", &ids(9..=10), true);
     assert_eq!(
         store.hourglass_range("geral"),
-        Some(("m2".into(), "m8".into()))
+        Some(("m2".into(), "m6".into()))
     );
     store.mark_read("geral");
     assert_eq!(store.hourglass_range("geral"), None);
@@ -113,7 +113,7 @@ fn catch_up_can_be_consumed_from_both_ends_after_channel_acknowledgement() {
     store.observe_chat_viewport("geral", &ids(2..=4), false);
     assert_eq!(
         store.hourglass_range("geral"),
-        Some(("m5".into(), "m8".into()))
+        Some(("m5".into(), "m6".into()))
     );
     store.observe_chat_viewport("geral", &ids(5..=8), false);
     assert_eq!(store.hourglass_range("geral"), None);
@@ -171,13 +171,13 @@ fn reaching_a_history_window_end_is_not_reaching_the_live_head() {
 }
 
 #[test]
-fn skipping_a_second_new_block_extends_the_single_preserved_hourglass() {
+fn skipping_a_second_new_block_replaces_the_previous_interval() {
     let mut store = navigation_store(10);
     store.observe_chat_viewport("geral", &ids(9..=10), true);
     store.observe_chat_viewport("geral", &ids(7..=8), false);
     assert_eq!(
         store.hourglass_range("geral"),
-        Some(("m2".into(), "m8".into()))
+        Some(("m2".into(), "m6".into()))
     );
     for i in 11..=30 {
         store.messages.push(navigation_message(&format!("m{i}"), i));
@@ -186,14 +186,14 @@ fn skipping_a_second_new_block_extends_the_single_preserved_hourglass() {
     store.reset_read_span("geral");
     store.observe_chat_viewport("geral", &ids(11..=13), false);
     assert!(store.channel("geral").unwrap().unread);
-    // Second down-arrow skips the rest. Keep one conservative interval,
-    // retaining the older block rather than silently throwing it away.
+    // Second down-arrow skips the rest. Only the newest unread interval survives;
+    // the saved previous head is its lower boundary.
     store.reset_read_span("geral");
     store.observe_chat_viewport("geral", &ids(28..=30), true);
     assert!(!store.channel("geral").unwrap().unread);
     assert_eq!(
         store.hourglass_range("geral"),
-        Some(("m2".into(), "m30".into()))
+        Some(("m14".into(), "m27".into()))
     );
 }
 
@@ -242,7 +242,7 @@ fn reading_a_context_page_does_not_consume_the_unloaded_middle_of_catch_up() {
     assert_eq!(frontier_id(&store).as_deref(), Some("m4"));
     assert_eq!(
         store.hourglass_range("geral"),
-        Some(("m5".into(), "m10".into()))
+        Some(("m5".into(), "m8".into()))
     );
     assert!(!store.channel("geral").unwrap().unread);
 }
@@ -517,4 +517,117 @@ fn deleting_the_read_anchor_does_not_prevent_reading_a_contiguous_loaded_prefix(
     store.observe_chat_viewport("geral", &ids(2..=5), false);
     assert_eq!(frontier_id(&store).as_deref(), Some("m5"));
     assert_eq!(store.hourglass_target("geral").as_deref(), Some("m6"));
+}
+
+#[test]
+fn newest_interval_replaces_old_bounds_across_database_reopen_and_history_hydration() {
+    let mut store = navigation_store(10);
+    store.observe_chat_viewport("geral", &ids(9..=10), true);
+    store.observe_chat_viewport("geral", &ids(7..=8), false);
+    assert_eq!(
+        store.hourglass_range("geral"),
+        Some(("m2".into(), "m6".into()))
+    );
+    let path = std::env::temp_dir().join(format!(
+        "papo-single-interval-{}.db",
+        Utc::now().timestamp_nanos_opt().unwrap()
+    ));
+    let db = crate::cache::ClientDb::open(Some(path.clone()));
+    let mut ops = vec![
+        CacheOp::SetOwner {
+            owner_user_id: store.me.clone(),
+            me_name: String::new(),
+            me_username: String::new(),
+        },
+        CacheOp::ReplaceChannels(store.channels.iter().map(CachedChannel::from).collect()),
+    ];
+    ops.extend(store.take_cache_ops());
+    db.submit("server", ops);
+    db.flush();
+    drop(db);
+    let db = crate::cache::ClientDb::open(Some(path.clone()));
+    let metadata = db.load_metadata("server").unwrap();
+    let mut reopened = Store::default();
+    reopened.restore_cached_metadata(metadata);
+    reopened.me = store.me.clone();
+    reopened.selected_channel = "geral".into();
+    // At startup only the latest viewport is loaded. No older row is needed
+    // to preserve the previous visit's head as the new interval's boundary.
+    reopened.messages = (28..=30)
+        .map(|i| navigation_message(&format!("m{i}"), i))
+        .collect();
+    reopened.history_has_more.insert("geral".into(), true);
+    reopened.observe_chat_viewport("geral", &ids(28..=30), true);
+    assert_eq!(frontier_id(&reopened).as_deref(), Some("m10"));
+    assert_eq!(
+        reopened.read_states["geral"].seen_to_id.as_deref(),
+        Some("m30")
+    );
+    assert!(reopened.has_catch_up("geral"));
+    assert_eq!(
+        reopened.hourglass_range("geral"),
+        None,
+        "No unread marker on the read newest rows"
+    );
+    reopened.messages = (1..=30)
+        .map(|i| navigation_message(&format!("m{i}"), i))
+        .collect();
+    assert_eq!(
+        reopened.hourglass_range("geral"),
+        Some(("m11".into(), "m27".into()))
+    );
+    assert_eq!(
+        reopened.hourglass_navigation_target("geral").as_deref(),
+        Some("m11")
+    );
+    db.submit("server", reopened.take_cache_ops());
+    db.flush();
+    let mut restored = Store::default();
+    restored.restore_cached_metadata(db.load_metadata("server").unwrap());
+    restored.me = store.me.clone();
+    restored.messages = reopened.messages.clone();
+    assert_eq!(
+        restored.hourglass_range("geral"),
+        Some(("m11".into(), "m27".into()))
+    );
+    restored.reset_read_span("geral");
+    restored.observe_chat_viewport("geral", &ids(28..=30), true);
+    assert_eq!(
+        restored.hourglass_range("geral"),
+        Some(("m11".into(), "m27".into())),
+        "Reopening the same head preserves the current interval"
+    );
+    restored.reset_read_span("geral");
+    restored.observe_chat_viewport("geral", &ids(11..=27), false);
+    assert_eq!(restored.hourglass_range("geral"), None);
+    assert_eq!(frontier_id(&restored).as_deref(), Some("m30"));
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_fully_visible_new_batch_does_not_replace_an_older_interval() {
+    let mut store = navigation_store(10);
+    store.observe_chat_viewport("geral", &ids(9..=10), true);
+    let previous = store.hourglass_range("geral");
+    store.messages.push(navigation_message("m11", 11));
+    store.reset_read_span("geral");
+    store.observe_chat_viewport("geral", &ids(9..=11), true);
+    assert_eq!(store.hourglass_range("geral"), previous);
+}
+
+#[test]
+fn previous_acknowledged_head_is_retained_when_the_seen_cursor_is_missing() {
+    let mut store = navigation_store(30);
+    let old_head = store.message("m10").unwrap().clone();
+    let state = store.read_states.get_mut("geral").unwrap();
+    state.acknowledged_at = Some(old_head.at.with_timezone(&Utc));
+    state.acknowledged_id = Some(old_head.id);
+    assert!(state.seen_to_key().is_none());
+    store.observe_chat_viewport("geral", &ids(28..=30), true);
+    assert_eq!(frontier_id(&store).as_deref(), Some("m10"));
+    assert_eq!(
+        store.hourglass_range("geral"),
+        Some(("m11".into(), "m27".into()))
+    );
 }

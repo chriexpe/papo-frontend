@@ -67,9 +67,9 @@ pub struct Channel {
 
 /// Estado de leitura de um canal, reduzido ao que não dá para derivar:
 ///
-/// - `read_*`: a fronteira. Tudo até ela (inclusive) foi lido.
+/// - `read_*`: a fronteira. Tudo até ela foi lido ou substituído por uma lacuna nova.
 /// - `seen_to_*`: a marca d'água, a mensagem mais adiante que já esteve na
-///   tela. Saltar para o fim a empurra sem mexer na fronteira.
+///   tela. Um novo intervalo pulado usa o valor anterior como fronteira.
 /// - `unread_mentions`: menções ainda não vistas.
 ///
 /// The catch-up interval is derived from this frontier and its tracked end.
@@ -559,9 +559,8 @@ pub struct Store {
     /// Trecho contínuo da timeline coberto desde o último salto, por canal.
     /// Serve para saber o que a rolagem contínua já atravessou; não é persistido.
     read_spans: HashMap<String, (MessageKey, MessageKey)>,
-    /// Teto atual da lacuna não lida, por canal. Nasce na marca d'água (`seen_to`)
-    /// quando uma lacuna se abre e recua conforme o usuário rola de baixo para
-    /// cima; quando encontra a fronteira, a lacuna inteira se fecha.
+    /// Exclusive upper boundary of the single unread interval: the first read
+    /// row at its newer end. A newer skipped interval replaces the old bounds.
     gap_ends: HashMap<String, MessageKey>,
     /// Server cursors awaiting the referenced message's actual creation key.
     /// last_read_at is wall-clock acknowledgement time, NOT a message timestamp.
@@ -2936,7 +2935,41 @@ impl Store {
         // A cursor before an unloaded history window is not proof that
         // the intervening messages were read. Wait for older pages.
         let browsing_history = self.browsing_history(channel_id);
-        let previous_frontier = self.frontier_key(channel_id);
+        let previous_seen = self
+            .read_states
+            .get(channel_id)
+            .and_then(ChannelReadState::seen_to_key)
+            .max(self.acknowledged_key(channel_id));
+        let previous_span = self.read_spans.get(channel_id).cloned();
+        // A new skipped interval replaces the previous one. Its lower boundary
+        // is the saved previous head, captured before this viewport moves it.
+        // The acknowledged head also preserves that boundary in older caches
+        // without seen_to. Missing history must not make replacement depend on
+        // which page loaded.
+        let replaces_interval = previous_span.is_none()
+            && previous_seen.as_ref().is_some_and(|seen| {
+                lo > *seen
+                    && (ordered
+                        .iter()
+                        .any(|(key, own)| !*own && key > seen && key < &lo)
+                        || ordered.first().is_some_and(|(first, _)| first > seen)
+                            && (browsing_history
+                                || self
+                                    .history_has_more
+                                    .get(channel_id)
+                                    .copied()
+                                    .unwrap_or(false)
+                                || self
+                                    .cache_history_has_more
+                                    .get(channel_id)
+                                    .copied()
+                                    .unwrap_or(false)))
+            });
+        let previous_frontier = if replaces_interval {
+            previous_seen.clone()
+        } else {
+            self.frontier_key(channel_id)
+        };
         let unresolved_prefix = previous_frontier
             .as_ref()
             .is_some_and(|frontier| ordered.first().is_none_or(|(oldest, _)| oldest > frontier))
@@ -2952,7 +2985,6 @@ impl Store {
                     .copied()
                     .unwrap_or(false));
 
-        let previous_span = self.read_spans.get(channel_id).cloned();
         let (from, to) = match &previous_span {
             Some((previous_lo, previous_hi)) => (
                 lo.clone().min(previous_lo.clone()),
@@ -2971,7 +3003,10 @@ impl Store {
             state.read_at = legacy;
         }
 
-        let previous_seen = state.seen_to_key();
+        if replaces_interval && let Some((at, id)) = &previous_seen {
+            state.read_at = Some(*at);
+            state.read_message_id = Some(id.clone());
+        }
         // Marca d'água.
         if state.seen_to_key().is_none_or(|seen| hi > seen) {
             state.seen_to_at = Some(hi.0);
@@ -2979,48 +3014,26 @@ impl Store {
         }
         let seen_to = state.seen_to_key();
 
-        // Teto da lacuna não lida (`gap_end`). Quando o usuário salta para o
-        // fundo, a lacuna vai até `seen_to`. Se ele passa a rolar de baixo
-        // para cima a partir do fim da lacuna, o teto recua junto com a base
-        // da viewport (`hi`), consumindo o bloco pelo fim.
+        // Exclusive upper boundary: the first actually read message at the
+        // newer end. Visible rows must never be included in the unread block.
         let before_gap_end = self.gap_ends.get(channel_id).cloned();
-        // A jump or viewport reopening must not re-expand a tail that has
-        // already been consumed. The seen_to watermark is independent.
-        let mut gap_end = before_gap_end.clone().or(seen_to.clone());
-        let skipped_newer = previous_span.is_none()
-            && previous_seen.as_ref().is_some_and(|seen| {
-                hi > *seen
-                    && ordered
-                        .iter()
-                        .any(|(key, own)| !*own && key > seen && key < &lo)
-            });
-        if skipped_newer {
-            gap_end = Some(hi.clone());
-        }
+        let mut gap_end = if replaces_interval {
+            Some(lo.clone())
+        } else {
+            before_gap_end.clone().or_else(|| Some(lo.clone()))
+        };
         if previous_span.is_some()
             && let Some(end) = &gap_end
             && to >= *end
-            && hi < *end
+            && from < *end
         {
-            gap_end = Some(hi.clone());
-        }
-
-        if unresolved_prefix {
-            // Retain a loaded navigation target until pagination proves that
-            // the prefix between the persisted anchor and the window is whole.
-            if let Some(first) = ordered.iter()
-                .map(|(key, _)| key)
-                .find(|key| previous_frontier.as_ref().is_none_or(|mark| *key > mark))
-                && gap_end.as_ref().is_some_and(|end| end < first)
-            {
-                gap_end = Some(first.clone());
-            }
+            gap_end = Some(from.clone());
         }
 
         // Fronteira. Enquanto a viewport percorre a timeline, só o trecho
         // coberto pode avançar a leitura: um salto para o meio não confirma o
         // que ficou para trás. Se o usuário já consumiu a cauda da lacuna de
-        // baixo para cima (`(gap_end, seen_to]`), esse trecho também se fecha
+        // baixo para cima (`[gap_end, seen_to]`), esse trecho também se fecha
         // assim que a fronteira o alcança.
         let mut frontier: Option<MessageKey> = previous_frontier.or_else(|| {
             state
@@ -3035,7 +3048,7 @@ impl Store {
             let covered_from_bottom = gap_end
                 .as_ref()
                 .zip(seen_to.as_ref())
-                .is_some_and(|(end, seen)| key > *end && key <= *seen);
+                .is_some_and(|(end, seen)| key >= *end && key <= *seen);
             if !unresolved_prefix && (*own || (from <= key && key <= to) || covered_from_bottom) {
                 frontier = Some(key);
             } else {
@@ -3061,7 +3074,7 @@ impl Store {
                     })
                     .any(|message| {
                         let key = (message.at.with_timezone(&Utc), message.id.clone());
-                        frontier.as_ref().is_none_or(|mark| &key > mark) && &key <= end
+                        frontier.as_ref().is_none_or(|mark| &key > mark) && &key < end
                     });
                 // Reaching the end of a context page proves nothing about the
                 // unloaded interval between that page and the preserved gap end.
@@ -3088,10 +3101,9 @@ impl Store {
         // intervalo durante um salto. Só a preferência da interface pode
         // transformar a chegada ao head em leitura da lacuna antiga; a
         // ampulheta continua sendo a navegação secundária desse intervalo.
-        let at_newest = !browsing_history && mark_read_at_newest
-            && ordered
-                .last()
-                .is_some_and(|(newest, _)| newest == &hi);
+        let at_newest = !browsing_history
+            && mark_read_at_newest
+            && ordered.last().is_some_and(|(newest, _)| newest == &hi);
         if at_newest && frontier.as_ref().is_none_or(|current| current < &hi) {
             frontier = Some(hi.clone());
             self.gap_ends.remove(channel_id);
@@ -3403,7 +3415,7 @@ impl Store {
             if frontier.as_ref().is_some_and(|mark| key <= *mark) {
                 continue;
             }
-            if key > effective_end {
+            if key >= effective_end {
                 continue;
             }
             if first.as_ref().is_none_or(|current| key < *current) {
@@ -3418,6 +3430,18 @@ impl Store {
             return None;
         }
         Some((first.1, last.1))
+    }
+
+    /// The interval can exist entirely outside the loaded window. Button
+    /// availability must not require attaching a divider to a visible read row.
+    pub fn has_catch_up(&self, channel_id: &str) -> bool {
+        self.hourglass_range(channel_id).is_some()
+            || self.gap_ends.get(channel_id).is_some_and(|end| {
+                self.frontier_key(channel_id)
+                    .is_some_and(|frontier| frontier < *end)
+                    && (self.catch_up_needs_history(channel_id)
+                        || self.browsing_history(channel_id) && self.can_load_newer(channel_id))
+            })
     }
 
     /// Destino da ampulheta: o começo do bloco que foi pulado. Só existe
@@ -7838,16 +7862,16 @@ mod tests {
         let mut store = navigation_store(6);
         store.observe_visible_messages("geral", &ids(5..=6));
         store.observe_visible_messages("geral", &ids(4..=5));
-        assert_eq!(store.hourglass_range("geral"), Some(("m2".into(), "m5".into())));
+        assert_eq!(store.hourglass_range("geral"), Some(("m2".into(), "m3".into())));
         let writes = store.take_cache_ops();
         let cached = writes.iter().rev().find_map(|op| match op {
             CacheOp::UpsertReadState(read) => Some(read),
             _ => None,
         }).expect("gap-end write");
-        assert_eq!(cached.gap_end_message_id.as_deref(), Some("m5"));
+        assert_eq!(cached.gap_end_message_id.as_deref(), Some("m4"));
         store.reset_read_span("geral");
         store.observe_visible_messages("geral", &ids(5..=6));
-        assert_eq!(store.hourglass_range("geral"), Some(("m2".into(), "m5".into())));
+        assert_eq!(store.hourglass_range("geral"), Some(("m2".into(), "m3".into())));
     }
 
     #[test]
@@ -7864,7 +7888,7 @@ mod tests {
         store.observe_visible_messages("geral", &ids(3..=5));
         store.observe_visible_messages("geral", &ids(1..=3));
         assert_eq!(frontier_id(&store).as_deref(), Some("ghost"));
-        assert!(store.hourglass_target("geral").is_some());
+        assert!(store.has_catch_up("geral"));
         assert!(store.channel("geral").unwrap().unread);
         store.history_has_more.insert("geral".into(), false);
         store.reset_read_span("geral");
@@ -7878,7 +7902,7 @@ mod tests {
         store.observe_visible_messages("geral", &ids(5..=6));
         assert_eq!(
             store.hourglass_range("geral"),
-            Some(("m2".to_owned(), "m6".to_owned()))
+            Some(("m2".to_owned(), "m4".to_owned()))
         );
 
         // Rolando de baixo para cima a partir do fim da lacuna: o marcador
@@ -7886,12 +7910,12 @@ mod tests {
         store.observe_visible_messages("geral", &ids(4..=5));
         assert_eq!(
             store.hourglass_range("geral"),
-            Some(("m2".to_owned(), "m5".to_owned()))
+            Some(("m2".to_owned(), "m3".to_owned()))
         );
         store.observe_visible_messages("geral", &ids(3..=4));
         assert_eq!(
             store.hourglass_range("geral"),
-            Some(("m2".to_owned(), "m4".to_owned()))
+            Some(("m2".to_owned(), "m2".to_owned()))
         );
 
         // Ao alcançar o começo da lacuna (`m2`), todo o bloco foi percorrido e
@@ -7909,26 +7933,21 @@ mod tests {
         store.observe_visible_messages("geral", &ids(5..=6));
         assert_eq!(
             store.hourglass_range("geral"),
-            Some(("m2".to_owned(), "m6".to_owned()))
+            Some(("m2".to_owned(), "m4".to_owned()))
         );
 
         // Consome o fim da lacuna rolando um pouco para cima (`m6` sai por baixo).
         store.observe_visible_messages("geral", &ids(4..=5));
         assert_eq!(
             store.hourglass_range("geral"),
-            Some(("m2".to_owned(), "m5".to_owned()))
+            Some(("m2".to_owned(), "m3".to_owned()))
         );
 
         // Salta pela ampulheta para o início (`m2`) e rola de cima para baixo.
         store.reset_read_span("geral");
         store.observe_visible_messages("geral", &ids(2..=3));
-        assert_eq!(
-            store.hourglass_range("geral"),
-            Some(("m4".to_owned(), "m5".to_owned()))
-        );
-
-        // Alcançar `m5` (o teto restante) já fecha toda a lacuna até `m6`.
-        store.observe_visible_messages("geral", &ids(4..=5));
+        // The two read sections meet: no already-read boundary row remains.
+        assert_eq!(store.hourglass_range("geral"), None);
         assert_eq!(store.hourglass_range("geral"), None);
         assert_eq!(frontier_id(&store).as_deref(), Some("m6"));
         assert!(!store.channel("geral").unwrap().unread);

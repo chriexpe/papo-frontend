@@ -14001,11 +14001,11 @@ mod unread_divider_tests {
         );
         store.messages = vec![m1, m2, m3, m4];
 
-        // Simula abertura no fundo (`m4`) sem `mark_read_at_newest`: abre lacuna `m2..=m4`.
+        // Simula abertura no fundo (`m4`) sem `mark_read_at_newest`: abre lacuna `m2..=m3`; `m4` está visível.
         store.observe_visible_messages_with_policy("c1", &["m4".to_owned()], false);
         assert_eq!(
             store.hourglass_range("c1"),
-            Some(("m2".to_owned(), "m4".to_owned()))
+            Some(("m2".to_owned(), "m3".to_owned()))
         );
 
         let mut state = UiState {

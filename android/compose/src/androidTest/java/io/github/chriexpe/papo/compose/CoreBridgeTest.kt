@@ -142,7 +142,9 @@ class CoreBridgeTest {
                 ),
             )
             assertFalse(atNewest.channels.first { it.id == start.selectedChannel }.unread)
+            assertTrue(atNewest.reading.hasCatchUp)
             assertTrue(atNewest.reading.hourglassTarget.isNotBlank())
+            assertTrue(atNewest.reading.gapEnd != messages.last().id)
             assertFalse(atNewest.reading.syncPending)
             handle.dispatch(
                 io.github.chriexpe.papo.core.Action.ClearCatchUp(start.selectedChannel, start.me)

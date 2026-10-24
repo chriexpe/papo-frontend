@@ -487,7 +487,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 nearBottom &&
                 !server.browsingHistory &&
                 latestPhase == LatestPhase.ClearCatchUp &&
-                server.reading.hourglassTarget.isNotBlank()
+                server.reading.hasCatchUp
         ) {
             model.command(Action.ClearCatchUp(channel.id, server.me), url = server.url)
             latestPhase = LatestPhase.FirstNew
@@ -1230,7 +1230,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             }
                         }
                     }
-                if (appearance.catchUpHourglass && server.reading.hourglassTarget.isNotBlank())
+                if (appearance.catchUpHourglass && server.reading.hasCatchUp)
                     GlassPill(radius = 18) {
                         IconButton(
                             onClick = {
@@ -1256,8 +1256,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 if (
                     (!nearBottom ||
                         server.browsingHistory ||
-                        appearance.catchUpHourglass &&
-                            server.reading.hourglassTarget.isNotBlank()) &&
+                        appearance.catchUpHourglass && server.reading.hasCatchUp) &&
                         server.messages.isNotEmpty()
                 )
                     BadgedBox(
@@ -1279,7 +1278,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                         appearance.catchUpHourglass &&
                                             nearBottom &&
                                             latestPhase == LatestPhase.ClearCatchUp &&
-                                            server.reading.hourglassTarget.isNotBlank()
+                                            server.reading.hasCatchUp
                                     )
                                         ui(R.string.clear_catch_up_block)
                                     else if (
