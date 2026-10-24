@@ -49,6 +49,8 @@ pub struct CallState {
     pub rooms: HashMap<String, Vec<VoiceMember>>,
     /// track_id -> user_id dos slots de áudio desta PeerConnection.
     pub audio_routes: HashMap<String, String>,
+    /// Older servers do not publish track ownership; participant mixing is unavailable there.
+    pub audio_routes_known: bool,
     /// Quem está falando agora, do mais alto para o mais baixo.
     pub speakers: Vec<String>,
     pub muted: bool,
@@ -86,7 +88,9 @@ pub fn fatal(code: &str, joining: bool) -> bool {
         // mundo mudo porque uma câmera desligou no instante errado. Quando é
         // a nossa sessão que sumiu de verdade, quem avisa é a conexão de
         // mídia caindo.
-        "voice-room-closed" | "voice-forbidden" | "voice-invalid-sdp"
+        "voice-room-closed"
+        | "voice-forbidden"
+        | "voice-invalid-sdp"
         | "voice-codec-unsupported" => true,
         // Sala cheia e "já está dentro" só falam da entrada. Depois dela,
         // sala cheia é falta de lugar de vídeo — o vídeo é que não vem.
@@ -142,6 +146,7 @@ impl CallState {
         if channel_id != self.channel_id {
             return;
         }
+        self.audio_routes_known = true;
         self.audio_routes = routes
             .into_iter()
             .map(|route| (route.track_id, route.user_id))
@@ -180,6 +185,7 @@ impl CallState {
         self.phase = Phase::Joining;
         self.speakers.clear();
         self.audio_routes.clear();
+        self.audio_routes_known = false;
         self.muted = true;
         self.camera = false;
         self.collapsed = false;
@@ -195,11 +201,11 @@ impl CallState {
     }
 
     pub fn left(&mut self) {
-        let channel_id = std::mem::take(&mut self.channel_id);
-        self.rooms.remove(&channel_id);
+        self.channel_id.clear();
         self.phase = Phase::Off;
         self.speakers.clear();
         self.audio_routes.clear();
+        self.audio_routes_known = false;
         self.camera = false;
         self.collapsed = false;
         self.floating = false;
@@ -236,7 +242,9 @@ impl CallState {
                 self.rooms.remove(channel_id);
             }
         }
-        self.speakers.retain(|speaker| speaker != user_id);
+        if channel_id == self.channel_id {
+            self.speakers.retain(|speaker| speaker != user_id);
+        }
     }
 
     pub fn speaking(&self, user_id: &str) -> bool {
@@ -251,6 +259,7 @@ mod tests {
     fn member(id: &str, camera: bool) -> VoiceMember {
         VoiceMember {
             user_id: id.to_owned(),
+            state_known: true,
             muted: false,
             camera_on: camera,
             screen_sharing: false,
@@ -333,5 +342,37 @@ mod tests {
         assert_eq!(call.members().len(), 1);
         call.remove("c1", "beto");
         assert!(call.members().is_empty());
+    }
+    #[test]
+    fn leaving_preserves_other_occupants_and_room_events_are_scoped() {
+        let mut call = CallState::default();
+        call.joining("c1".into());
+        call.joined(
+            "c1",
+            vec![member("me", false), member("ana", true)],
+            vec!["ana".into()],
+        );
+        call.remove("c2", "ana");
+        assert!(call.speaking("ana"));
+        call.remove("c1", "me");
+        call.left();
+        assert_eq!(call.room("c1")[0].user_id, "ana");
+        assert!(!call.active());
+        assert!(!call.audio_routes_known);
+    }
+
+    #[test]
+    fn cold_presence_does_not_invent_device_status() {
+        let mut call = CallState::default();
+        call.seed_presence([("ana".into(), vec!["c1".into()])]);
+        assert!(!call.room("c1")[0].state_known);
+        call.update("c1", member("ana", true));
+        call.seed_presence([("ana".into(), vec!["c1".into()])]);
+        assert!(call.room("c1")[0].state_known);
+        call.joining("c1".into());
+        call.set_audio_routes("c2", []);
+        assert!(!call.audio_routes_known);
+        call.set_audio_routes("c1", []);
+        assert!(call.audio_routes_known);
     }
 }

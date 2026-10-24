@@ -1700,7 +1700,6 @@ impl Store {
             || !self.cached_channels.contains(id)
             || self.hydrated_channels.contains(id)
             || self.cache_loading.contains(id)
-            || self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice)
         {
             return None;
         }
@@ -2026,9 +2025,6 @@ impl Store {
         if id.is_empty()
             || matches!(self.timeline_status(id), TimelineStatus::Fresh | TimelineStatus::Refreshing)
         {
-            return None;
-        }
-        if self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice) {
             return None;
         }
         Some(id.clone())
@@ -5923,6 +5919,23 @@ mod tests {
         assert_eq!(diagnostics.timelines[0].channel_id, "geral");
     }
 
+
+    #[test]
+    fn voice_channel_chat_uses_normal_history_and_cache() {
+        let mut store = store_com_canal_carregado("voice");
+        store.channels.push(Channel {
+            id: "voice".into(), name: "Voice".into(), kind: ChannelKind::Voice, topic: None,
+            position: 0, permissions: Vec::new(), notification_settings: "all".into(),
+            parent_id: None, unread: false, mentions: 0,
+        });
+        store.cached_channels.insert("voice".into());
+        assert_eq!(store.channel_needing_cache(), Some("voice".into()));
+        store.mark_cache_loading("voice");
+        assert_eq!(store.channel_needing_cache(), None);
+        store.apply(Update::Connection(Connection::Offline));
+        store.apply(Update::Connection(Connection::Online));
+        assert_eq!(store.channel_needing_messages(), Some("voice".into()));
+    }
 
     fn store_com_canal_carregado(channel_id: &str) -> Store {
         let mut store = Store {
