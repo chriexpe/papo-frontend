@@ -27,18 +27,21 @@ pub fn call_members() -> Vec<crate::api::ws::VoiceMember> {
             muted: true,
             camera_on: false,
             screen_sharing: false,
+            state_known: true,
         },
         crate::api::ws::VoiceMember {
             user_id: "u-ana".into(),
             muted: false,
             camera_on: false,
             screen_sharing: false,
+            state_known: true,
         },
         crate::api::ws::VoiceMember {
             user_id: "u-bruno".into(),
             muted: false,
             camera_on: false,
             screen_sharing: false,
+            state_known: true,
         },
     ]
 }

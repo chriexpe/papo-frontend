@@ -4298,6 +4298,7 @@ dependencies = [
  "libc",
  "libloading 0.8.9",
  "log",
+ "papo-call",
  "papo-core",
  "raw-window-handle",
  "reqwest",
@@ -4332,7 +4333,9 @@ dependencies = [
  "android_logger",
  "base64",
  "chrono",
+ "gstreamer",
  "log",
+ "papo-call",
  "papo-core",
  "ron",
  "serde",
@@ -4341,6 +4344,21 @@ dependencies = [
  "tokio",
  "uniffi",
  "url",
+]
+
+[[package]]
+name = "papo-call"
+version = "0.8.5"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-rtp",
+ "gstreamer-sdp",
+ "gstreamer-video",
+ "gstreamer-webrtc",
+ "log",
+ "papo-core",
+ "serde_json",
 ]
 
 [[package]]

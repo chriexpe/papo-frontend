@@ -421,6 +421,8 @@ jobs:
           fi
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/papo-release.jks"
 
+      - uses: ./.github/actions/setup-call-gstreamer
+
       - name: Build signed Android APK
         env:
           PAPO_ANDROID_KEYSTORE: ${{ runner.temp }}/papo-release.jks

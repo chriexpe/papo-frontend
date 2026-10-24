@@ -910,6 +910,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 Icon(Icons.Outlined.PeopleOutline, ui(R.string.community_members))
                             }
                         }
+                        if (channel.kind == "voice") {
+                            VoiceChannelTabs(
+                                chat = true,
+                                onChat = {},
+                                onCall = { model.voiceCalls.open(server, channel.id) },
+                            )
+                        }
                         if (descriptionExpanded) {
                             Text(
                                 channel.topic.ifBlank {
@@ -930,6 +937,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         }
                     }
                 }
+                CallBrowsingHeader()
                 if (server.connection != "online")
                     GlassPill(Modifier.padding(top = 8.dp), radius = 24) {
                         ConnectionBanner(server.connection) { model.command(Action.Refresh) }

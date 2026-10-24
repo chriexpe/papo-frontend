@@ -410,7 +410,7 @@ pub fn present_pip_frame(frame: &Frame) {
             let sy = y * frame.height / draw_h;
             for x in 0..draw_w {
                 let sx = x * frame.width / draw_w;
-                let [r, g, b, a] = frame.pixels[sy * frame.width + sx].to_array();
+                let [r, g, b, a] = frame.pixels[sy * frame.width + sx];
                 let at = dst.add(((y0 + y) * stride + x0 + x) * 4);
                 *at = r;
                 *at.add(1) = g;

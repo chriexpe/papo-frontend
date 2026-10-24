@@ -18,7 +18,7 @@ pub const VIDEO_SLOTS: usize = 6;
 /// preenche sozinho com quem está falando — não se pede áudio de ninguém.
 pub const AUDIO_SLOTS: usize = 8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     Camera,
     /// Compartilhar tela. O caminho do vídeo é o mesmo da câmera e o
@@ -106,7 +106,6 @@ impl Slots {
     pub fn occupant(&self, index: usize) -> Option<&Occupant> {
         self.places.get(index).and_then(Option::as_ref)
     }
-
 }
 
 #[cfg(test)]

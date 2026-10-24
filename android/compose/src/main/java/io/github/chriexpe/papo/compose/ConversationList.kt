@@ -68,6 +68,7 @@ internal fun ConversationList(
     onMessage: (String, String) -> Unit,
 ) {
     val dimensions = LocalUiDimensions.current
+    val callActive = LocalVoiceCall.current?.active == true
     // A server owns its search; changing servers never leaks terms/results.
     var query by
         rememberSaveable(server.url, stateSaver = TextFieldValue.Saver) {
@@ -123,7 +124,9 @@ internal fun ConversationList(
     val hints = if (focused) analysis?.suggestions.orEmpty() else emptyList()
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = dimensions.screenPadding, vertical = 8.dp),
+            Modifier.fillMaxWidth()
+                .padding(horizontal = dimensions.screenPadding)
+                .padding(top = 8.dp, bottom = if (callActive) 0.dp else 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(dimensions.contentGap),
         ) {
@@ -149,6 +152,7 @@ internal fun ConversationList(
                 }
             }
         }
+        CallBrowsingHeader(Modifier.padding(horizontal = dimensions.screenPadding))
         if (server.connection != "online")
             ConnectionBanner(server.connection) { model.command(Action.Refresh, server.url) }
         OutlinedTextField(
@@ -317,7 +321,9 @@ internal fun ConversationList(
                         val conversations =
                             if (direct) server.dms
                             else
-                                server.channels.filter { it.kind != "direct" && it.kind != "voice" }
+                                server.channels.filter {
+                                    it.kind != "direct"
+                                }
                         if (conversations.isEmpty())
                             item {
                                 EmptyState(
@@ -337,6 +343,8 @@ internal fun ConversationList(
                                     onOpen = { onOpen(channel.id) },
                                     onProfile = { onProfile(channel.userId) },
                                 )
+                            else if (channel.kind == "voice")
+                                VoiceChannelItem(server, channel, onOpen)
                             else ChannelItem(channel, onOpen)
                         }
                     }
@@ -393,20 +401,28 @@ private fun PersonItem(
 }
 
 @Composable
-private fun ChannelItem(
+internal fun ChannelItem(
     channel: io.github.chriexpe.papo.core.ChannelView,
     onOpen: (String) -> Unit,
+    voiceSummary: String? = null,
+    joined: Boolean = false,
 ) {
     DensityListItem(
         headlineContent = {
             Text(
                 channel.name,
-                fontWeight = if (channel.unread) FontWeight.Bold else FontWeight.Medium,
+                fontWeight = if (channel.unread || joined) FontWeight.Bold else FontWeight.Medium,
             )
         },
         supportingContent =
-            if (channel.topic.isNotBlank())
-                ({ Text(channel.topic, maxLines = 1, overflow = TextOverflow.Ellipsis) })
+            if (voiceSummary != null || channel.topic.isNotBlank())
+                ({
+                    Text(
+                        voiceSummary ?: channel.topic,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                })
             else null,
         leadingContent = {
             Box(
@@ -415,7 +431,15 @@ private fun ChannelItem(
                     .background(MaterialTheme.colorScheme.surfaceContainer),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("#", fontSize = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (channel.kind == "voice")
+                    Icon(
+                        Icons.Outlined.VolumeUp,
+                        ui(R.string.voice_channel),
+                        tint =
+                            if (joined) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                else Text("#", fontSize = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
         trailingContent = {
@@ -429,7 +453,13 @@ private fun ChannelItem(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
         },
-        modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable { onOpen(channel.id) },
+        modifier =
+            Modifier.clip(RoundedCornerShape(18.dp))
+                .background(
+                    if (joined) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .35f)
+                    else androidx.compose.ui.graphics.Color.Transparent
+                )
+                .clickable { onOpen(channel.id) },
     )
 }
 

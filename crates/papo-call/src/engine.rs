@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use gstreamer as gst;
@@ -38,8 +38,8 @@ use gstreamer_video::prelude::VideoFrameExt;
 use gstreamer_webrtc as gst_webrtc;
 
 use super::ice::IceConfig;
-use super::slots::{Kind, Slots, AUDIO_SLOTS, VIDEO_SLOTS};
-use super::{Command, Frame, Shared, Tile};
+use super::slots::{AUDIO_SLOTS, Kind, Slots, VIDEO_SLOTS};
+use super::{Command, Frame, Host, Shared, Tile};
 
 /// Tamanho da imagem que sai da câmera. 360p a 30 quadros cabe folgado no
 /// que um SFU de sala pequena aguenta e é o que a grade mostra.
@@ -81,20 +81,29 @@ pub(super) fn spawn(
     commands: mpsc::Receiver<Command>,
     inbox: mpsc::Sender<Command>,
     signals: mpsc::Sender<String>,
-    repaint: egui::Context,
+    host: Arc<dyn Host>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    if !crate::media::player::init() {
+    if !host.initialize() {
         shared.fail("GStreamer indisponível");
         return None;
     }
     std::thread::Builder::new()
         .name("papo-call".into())
         .spawn(move || {
-            let mut engine =
-                match Engine::build(channel_id, &ice, shared.clone(), inbox, signals, repaint) {
-                    Some(engine) => engine,
-                    None => return,
-                };
+            let mut engine = match Engine::build(
+                channel_id,
+                &ice,
+                shared.clone(),
+                inbox,
+                signals,
+                host.clone(),
+            ) {
+                Some(engine) => engine,
+                None => {
+                    host.wake();
+                    return;
+                }
+            };
             engine.run(commands);
         })
         .ok()
@@ -123,12 +132,14 @@ struct Engine {
     /// De quem a janela quer ver a câmera. Pode ser mais gente do que cabe:
     /// o que sobra espera um lugar vagar.
     wanted: Vec<String>,
+    screens: Vec<String>,
+    camera_front: bool,
     /// Assinaturas de vídeo são otimistas: o backend pode anunciar
     /// camera_on alguns milissegundos antes de OnTrack registrar a track.
     /// Enquanto o slot reservado ainda não recebeu quadro, repetimos o
     /// subscribe com backoff; Subscribe é idempotente para o mesmo publisher.
-    subscribe_retry: HashMap<String, SubscribeRetry>,
-    repaint: egui::Context,
+    subscribe_retry: HashMap<(String, Kind), SubscribeRetry>,
+    host: Arc<dyn Host>,
     /// A volta para a própria thread: as promessas do GStreamer respondem
     /// por aqui, em vez de mexerem no estado de outra thread.
     inbox: mpsc::Sender<Command>,
@@ -153,6 +164,7 @@ struct Camera {
 /// medidas do quadro. O resto do pipeline acompanha renegociando.
 #[cfg(target_os = "android")]
 struct Turn {
+    host: Arc<dyn Host>,
     flip: gst::Element,
     filter: gst::Element,
     /// Graus entre o sensor e a posição natural do aparelho, como o `ahcsrc`
@@ -170,7 +182,7 @@ impl Turn {
             return;
         }
         self.checked = Instant::now();
-        let Some(display) = crate::platform::jvm::call_activity_int("displayRotation") else {
+        let Some(display) = Some(self.host.display_rotation()) else {
             return;
         };
         if display != self.display {
@@ -187,7 +199,8 @@ impl Turn {
             self.mount,
             self.display
         );
-        self.flip.set_property_from_str("method", flip_method(degrees));
+        self.flip
+            .set_property_from_str("method", flip_method(degrees));
         self.filter.set_property("caps", frame_caps(width, height));
     }
 }
@@ -249,7 +262,7 @@ impl Engine {
         shared: Arc<Shared>,
         inbox: mpsc::Sender<Command>,
         signals: mpsc::Sender<String>,
-        repaint: egui::Context,
+        host: Arc<dyn Host>,
     ) -> Option<Self> {
         let pipeline = gst::Pipeline::new();
         let webrtc = match gst::ElementFactory::make("webrtcbin")
@@ -292,7 +305,7 @@ impl Engine {
             &signals,
             &channel_id,
             Arc::clone(&video_lines_slot),
-            repaint.clone(),
+            host.clone(),
         );
 
         // O transporte sobe primeiro, sozinho. Assim uma falha aqui é uma
@@ -353,8 +366,10 @@ impl Engine {
             camera_src: None,
             camera_on: false,
             wanted: Vec::new(),
+            screens: Vec::new(),
+            camera_front: true,
             subscribe_retry: HashMap::new(),
-            repaint,
+            host,
             inbox,
             ready: false,
             negotiating: false,
@@ -364,6 +379,11 @@ impl Engine {
     }
 
     fn run(&mut self, commands: mpsc::Receiver<Command>) {
+        let mut last_status = (
+            self.shared.camera_state(),
+            self.shared.is_live(),
+            self.shared.failed(),
+        );
         let bus = self.pipeline.bus();
         loop {
             match commands.recv_timeout(TICK) {
@@ -397,6 +417,18 @@ impl Engine {
                 camera.turn.follow();
             }
             self.retry_video_subscriptions();
+            let status = (
+                self.shared.camera_state(),
+                self.shared.is_live(),
+                self.shared.failed(),
+            );
+            if status != last_status {
+                last_status = status;
+                self.host.wake();
+            }
+            if self.shared.failed() {
+                break;
+            }
         }
         self.camera = None;
         let _ = self.pipeline.set_state(gst::State::Null);
@@ -444,6 +476,29 @@ impl Engine {
                 }));
             }
             Command::Camera(on) => self.set_camera(on),
+            Command::CameraFacing(front) => {
+                if self.camera_front != front {
+                    self.camera_front = front;
+                    if self.camera_on {
+                        self.set_camera(false);
+                        self.set_camera(true);
+                    }
+                }
+            }
+            Command::Playback { user_id, setting } => {
+                if let Ok(mut audio) = self.shared.audio.lock() {
+                    audio.playback(user_id, setting);
+                }
+            }
+            Command::AudioRoutes(routes) => {
+                if let Ok(mut audio) = self.shared.audio.lock() {
+                    audio.route(routes);
+                }
+            }
+            Command::WatchingScreens(publishers) => {
+                self.screens = publishers;
+                self.reconcile_kind(Kind::Screen);
+            }
             Command::Watching(publishers) => {
                 self.wanted = publishers;
                 self.reconcile();
@@ -481,7 +536,9 @@ impl Engine {
         let shared = Arc::clone(&self.shared);
         let promise = gst::Promise::with_change_func(move |reply| {
             let offer = match reply {
-                Ok(Some(reply)) => reply.get::<gst_webrtc::WebRTCSessionDescription>("offer").ok(),
+                Ok(Some(reply)) => reply
+                    .get::<gst_webrtc::WebRTCSessionDescription>("offer")
+                    .ok(),
                 _ => None,
             };
             let Some(offer) = offer else {
@@ -497,13 +554,8 @@ impl Engine {
                 .lines()
                 .filter(|line| line.starts_with("m=video "))
                 .count();
-            let sendonly = text
-                .lines()
-                .filter(|line| *line == "a=sendonly")
-                .count();
-            log::info!(
-                "call: oferta SDP com {video_lines} m=video e {sendonly} linhas sendonly"
-            );
+            let sendonly = text.lines().filter(|line| *line == "a=sendonly").count();
+            log::info!("call: oferta SDP com {video_lines} m=video e {sendonly} linhas sendonly");
             let _ = signals.send(
                 serde_json::json!({
                     "type": "voice_offer",
@@ -601,13 +653,19 @@ impl Engine {
     /// quando uma das seis primeiras desliga; era o furo de manter a conta
     /// do lado de fora, onde não se sabe o que coube.
     fn reconcile(&mut self) {
-        let kind = Kind::Camera;
-        let wanted = std::mem::take(&mut self.wanted);
+        self.reconcile_kind(Kind::Camera);
+        self.reconcile_kind(Kind::Screen);
+    }
+
+    fn reconcile_kind(&mut self, kind: Kind) {
+        let wanted = match kind {
+            Kind::Camera => self.wanted.clone(),
+            Kind::Screen => self.screens.clone(),
+        };
         let (leaving, entering) = self.slots.reconcile(&wanted, kind);
-        self.wanted = wanted;
 
         for publisher in leaving {
-            self.subscribe_retry.remove(&publisher);
+            self.subscribe_retry.remove(&(publisher.clone(), kind));
             self.signal(serde_json::json!({
                 "type": "track_unsubscribe",
                 "channel_id": self.channel_id,
@@ -623,7 +681,7 @@ impl Engine {
                 "kind": kind.wire(),
             }));
             self.subscribe_retry.insert(
-                publisher,
+                (publisher, kind),
                 SubscribeRetry {
                     next: Instant::now() + SUBSCRIBE_RETRY_MIN,
                     delay: SUBSCRIBE_RETRY_MIN,
@@ -648,14 +706,19 @@ impl Engine {
         let mut confirmed = Vec::new();
         let mut due = Vec::new();
 
-        for (publisher, retry) in &self.subscribe_retry {
-            if !self.wanted.contains(publisher) {
-                confirmed.push(publisher.clone());
+        for ((publisher, kind), retry) in &self.subscribe_retry {
+            let wanted = if *kind == Kind::Camera {
+                &self.wanted
+            } else {
+                &self.screens
+            };
+            if !wanted.contains(publisher) {
+                confirmed.push((publisher.clone(), *kind));
                 continue;
             }
 
-            let Some(index) = self.slots.find(publisher, Kind::Camera) else {
-                confirmed.push(publisher.clone());
+            let Some(index) = self.slots.find(publisher, *kind) else {
+                confirmed.push((publisher.clone(), *kind));
                 continue;
             };
 
@@ -668,9 +731,9 @@ impl Engine {
                 .unwrap_or(false);
 
             if has_frame {
-                confirmed.push(publisher.clone());
+                confirmed.push((publisher.clone(), *kind));
             } else if now >= retry.next {
-                due.push(publisher.clone());
+                due.push((publisher.clone(), *kind));
             }
         }
 
@@ -678,15 +741,15 @@ impl Engine {
             self.subscribe_retry.remove(&publisher);
         }
 
-        for publisher in due {
+        for (publisher, kind) in due {
             log::info!("call: repetindo track_subscribe para câmera de {publisher}");
             self.signal(serde_json::json!({
                 "type": "track_subscribe",
                 "channel_id": self.channel_id,
                 "publisher_id": publisher,
-                "kind": Kind::Camera.wire(),
+                "kind": kind.wire(),
             }));
-            if let Some(retry) = self.subscribe_retry.get_mut(&publisher) {
+            if let Some(retry) = self.subscribe_retry.get_mut(&(publisher, kind)) {
                 retry.delay = (retry.delay * 2).min(SUBSCRIBE_RETRY_MAX);
                 retry.next = now + retry.delay;
             }
@@ -702,7 +765,7 @@ impl Engine {
         for (index, tile) in tiles.iter_mut().enumerate() {
             let occupant = self.slots.occupant(index);
             let publisher = occupant.map(|slot| slot.publisher.clone());
-            if tile.publisher != publisher {
+            if tile.publisher != publisher || tile.kind != occupant.map(|slot| slot.kind) {
                 tile.frame = None;
                 tile.seq = tile.seq.wrapping_add(1);
             }
@@ -755,7 +818,12 @@ impl Engine {
             self.shared.set_camera(false);
             return;
         };
-        match capture(src, Arc::clone(&self.shared), self.repaint.clone()) {
+        match capture(
+            src,
+            Arc::clone(&self.shared),
+            self.host.clone(),
+            self.camera_front,
+        ) {
             Some(camera) => {
                 self.camera = Some(camera);
                 self.shared.set_camera(true);
@@ -817,7 +885,11 @@ impl Engine {
             ),
             (&encoder, "sink", "primeiro quadro entrou no vp8enc"),
             (&encoder, "src", "primeiro quadro VP8 saiu do vp8enc"),
-            (&payloader, "src", "primeiro pacote RTP da câmera saiu do rtpvp8pay"),
+            (
+                &payloader,
+                "src",
+                "primeiro pacote RTP da câmera saiu do rtpvp8pay",
+            ),
         ] {
             if let Some(probe_pad) = element.static_pad(pad_name) {
                 let seen = Arc::new(AtomicBool::new(false));
@@ -944,8 +1016,8 @@ fn add_receiver(
 /// plugin — pode ser o soquete do PipeWire, ou a câmera que o sandbox não
 /// entrega —, e de fora as duas falhas têm a mesma cara. Aqui cada peça é
 /// testada de verdade, uma por uma.
-pub fn check() {
-    if !crate::media::player::init() {
+pub fn check(host: Arc<dyn Host>) {
+    if !host.initialize() {
         println!("GStreamer não iniciou: a call não tem como existir");
         return;
     }
@@ -954,7 +1026,10 @@ pub fn check() {
     println!("peças:");
     for (name, purpose) in [
         ("webrtcbin", "o transporte"),
-        ("nicesrc", "ICE — é o que falta quando a call não entra no ar"),
+        (
+            "nicesrc",
+            "ICE — é o que falta quando a call não entra no ar",
+        ),
         ("dtlssrtpenc", "DTLS"),
         ("srtpenc", "SRTP"),
         ("rtpbin", "sessão RTP"),
@@ -971,21 +1046,24 @@ pub fn check() {
         ("appsink", "os quadros para a janela"),
     ] {
         let found = gst::ElementFactory::find(name).is_some();
-        println!("  [{}] {name:<26} {purpose}", if found { "ok" } else { "--" });
+        println!(
+            "  [{}] {name:<26} {purpose}",
+            if found { "ok" } else { "--" }
+        );
     }
 
     println!("\nmicrofone (o primeiro que abrir é o usado):");
-    for factory in crate::media::platform::audio_source_candidates() {
+    for factory in crate::platform::audio_source_candidates() {
         report(factory, probe(factory, "audioconvert", "fakesink"));
     }
 
     println!("\nalto-falante:");
-    for factory in crate::media::platform::audio_sink_candidates() {
+    for factory in crate::platform::audio_sink_candidates() {
         report(factory, probe("audiotestsrc", "audioconvert", factory));
     }
 
     println!("\ncâmera:");
-    for factory in crate::media::platform::camera_source_candidates() {
+    for factory in crate::platform::camera_source_candidates() {
         report(factory, probe(factory, "videoconvert", "fakesink"));
     }
 
@@ -1003,9 +1081,7 @@ pub fn check() {
                         Err(_) => Err(drain_error(&pipeline)
                             .unwrap_or_else(|| "não chegou a tocar".to_owned())),
                     },
-                    Err(error) => {
-                        Err(drain_error(&pipeline).unwrap_or_else(|| error.to_string()))
-                    }
+                    Err(error) => Err(drain_error(&pipeline).unwrap_or_else(|| error.to_string())),
                 },
                 Err(error) => Err(error.to_string()),
             };
@@ -1045,24 +1121,23 @@ fn probe(source: &str, bridge: &str, sink: &str) -> Result<(), String> {
         source.set_property("do-timestamp", true);
     }
     let elements = [source, bridge, sink];
-    let outcome = if pipeline.add_many(&elements).is_err()
-        || gst::Element::link_many(&elements).is_err()
-    {
-        Err("não deu para montar".to_owned())
-    } else {
-        match pipeline.set_state(gst::State::Playing) {
-            Ok(_) => match pipeline.state(gst::ClockTime::from_mseconds(1500)).0 {
-                // Subir não basta: a fonte pode morrer logo depois, na
-                // thread de fluxo, e é no barramento que isso aparece.
-                Ok(_) => match drain_error(&pipeline) {
-                    Some(reason) => Err(reason),
-                    None => Ok(()),
+    let outcome =
+        if pipeline.add_many(&elements).is_err() || gst::Element::link_many(&elements).is_err() {
+            Err("não deu para montar".to_owned())
+        } else {
+            match pipeline.set_state(gst::State::Playing) {
+                Ok(_) => match pipeline.state(gst::ClockTime::from_mseconds(1500)).0 {
+                    // Subir não basta: a fonte pode morrer logo depois, na
+                    // thread de fluxo, e é no barramento que isso aparece.
+                    Ok(_) => match drain_error(&pipeline) {
+                        Some(reason) => Err(reason),
+                        None => Ok(()),
+                    },
+                    Err(_) => Err(drain_error(&pipeline).unwrap_or_else(|| "não abriu".to_owned())),
                 },
-                Err(_) => Err(drain_error(&pipeline).unwrap_or_else(|| "não abriu".to_owned())),
-            },
-            Err(error) => Err(drain_error(&pipeline).unwrap_or_else(|| error.to_string())),
-        }
-    };
+                Err(error) => Err(drain_error(&pipeline).unwrap_or_else(|| error.to_string())),
+            }
+        };
     let _ = pipeline.set_state(gst::State::Null);
     outcome
 }
@@ -1104,7 +1179,7 @@ fn microphone(
 ) -> Option<gst::Element> {
     // A ordem das fontes pertence à política de plataforma. Cada candidata
     // ainda precisa abrir de verdade antes de ser aceita.
-    for factory in crate::media::platform::audio_source_candidates() {
+    for factory in crate::platform::audio_source_candidates() {
         let Some((elements, volume)) = mic_chain(factory) else {
             continue;
         };
@@ -1180,6 +1255,10 @@ fn microphone(
 /// ligação e o silenciador, que é quem o mudo desliga.
 fn mic_chain(factory: &str) -> Option<(Vec<gst::Element>, gst::Element)> {
     let source = make(factory)?;
+    // Android routes/preprocesses communication capture separately from ordinary recording.
+    if factory == "openslessrc" && source.has_property("preset") {
+        source.set_property_from_str("preset", "voice-communication");
+    }
     if source.has_property("do-timestamp") {
         source.set_property("do-timestamp", true);
     }
@@ -1266,39 +1345,41 @@ fn connect_signals(
     signals: &mpsc::Sender<String>,
     channel_id: &str,
     video_lines: Arc<Mutex<Vec<gst_webrtc::WebRTCRTPTransceiver>>>,
-    repaint: egui::Context,
+    host: Arc<dyn Host>,
 ) {
     let out = signals.clone();
     let id = channel_id.to_owned();
     webrtc.connect_closure(
         "on-ice-candidate",
         false,
-        glib::closure!(move |_webrtc: &gst::Element, mline: u32, candidate: String| {
-            // Algumas implementações sinalizam o fim da coleta com candidato
-            // vazio. Isso não é um ICE candidate e o backend o rejeita como
-            // "evento inválido".
-            if candidate.trim().is_empty() {
-                log::debug!("call: fim da coleta ICE sem candidato");
-                return;
+        glib::closure!(
+            move |_webrtc: &gst::Element, mline: u32, candidate: String| {
+                // Algumas implementações sinalizam o fim da coleta com candidato
+                // vazio. Isso não é um ICE candidate e o backend o rejeita como
+                // "evento inválido".
+                if candidate.trim().is_empty() {
+                    log::debug!("call: fim da coleta ICE sem candidato");
+                    return;
+                }
+                // O servidor recusa candidato de loopback (e tem razão: ninguém
+                // fora desta máquina chega em 127.0.0.1). Mandar assim mesmo só
+                // renderia um erro por candidato.
+                if is_loopback(&candidate) {
+                    log::debug!("call: ignorando ICE loopback: {candidate}");
+                    return;
+                }
+                log::info!("call: ICE local mline={mline}: {candidate}");
+                let _ = out.send(
+                    serde_json::json!({
+                        "type": "voice_ice_candidate",
+                        "channel_id": id,
+                        "candidate": candidate,
+                        "sdp_mline_index": mline,
+                    })
+                    .to_string(),
+                );
             }
-            // O servidor recusa candidato de loopback (e tem razão: ninguém
-            // fora desta máquina chega em 127.0.0.1). Mandar assim mesmo só
-            // renderia um erro por candidato.
-            if is_loopback(&candidate) {
-                log::debug!("call: ignorando ICE loopback: {candidate}");
-                return;
-            }
-            log::info!("call: ICE local mline={mline}: {candidate}");
-            let _ = out.send(
-                serde_json::json!({
-                    "type": "voice_ice_candidate",
-                    "channel_id": id,
-                    "candidate": candidate,
-                    "sdp_mline_index": mline,
-                })
-                .to_string(),
-            );
-        }),
+        ),
     );
 
     // As mudanças locais que exigem SDP são conhecidas pelo motor:
@@ -1326,14 +1407,12 @@ fn connect_signals(
     });
 
     webrtc.connect_notify(Some("ice-gathering-state"), move |webrtc, _| {
-        let value =
-            webrtc.property::<gst_webrtc::WebRTCICEGatheringState>("ice-gathering-state");
+        let value = webrtc.property::<gst_webrtc::WebRTCICEGatheringState>("ice-gathering-state");
         log::info!("call: ICE gathering -> {value:?}");
     });
 
     webrtc.connect_notify(Some("ice-connection-state"), move |webrtc, _| {
-        let value =
-            webrtc.property::<gst_webrtc::WebRTCICEConnectionState>("ice-connection-state");
+        let value = webrtc.property::<gst_webrtc::WebRTCICEConnectionState>("ice-connection-state");
         log::info!("call: ICE connection -> {value:?}");
     });
 
@@ -1345,20 +1424,42 @@ fn connect_signals(
         }
         let media = pad
             .current_caps()
-            .and_then(|caps| caps.structure(0).and_then(|s| s.get::<String>("media").ok()))
+            .and_then(|caps| {
+                caps.structure(0)
+                    .and_then(|s| s.get::<String>("media").ok())
+            })
             .unwrap_or_default();
         let line = pad.property::<Option<gst_webrtc::WebRTCRTPTransceiver>>("transceiver");
         match media.as_str() {
-            "audio" => play_audio(&bin, pad),
+            "audio" => {
+                let track = line
+                    .as_ref()
+                    .and_then(|line| {
+                        let remote = _webrtc
+                            .property::<Option<gst_webrtc::WebRTCSessionDescription>>(
+                                "remote-description",
+                            )?;
+                        remote
+                            .sdp()
+                            .media(line.mlineindex())?
+                            .attribute_val("msid")?
+                            .split_whitespace()
+                            .nth(1)
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| pad.name().to_string());
+                play_audio(&bin, pad, &tiles, track);
+            }
             "video" => {
                 let known = video_lines.lock().ok();
-                let Some(index) = line.zip(known).and_then(|(line, known)| {
-                    known.iter().position(|slot| *slot == line)
-                }) else {
+                let Some(index) = line
+                    .zip(known)
+                    .and_then(|(line, known)| known.iter().position(|slot| *slot == line))
+                else {
                     log::warn!("call: chegou vídeo num lugar que não pedimos");
                     return;
                 };
-                show_video(&bin, pad, index, Arc::clone(&tiles), repaint.clone());
+                show_video(&bin, pad, index, Arc::clone(&tiles), host.clone());
             }
             _ => {}
         }
@@ -1378,7 +1479,7 @@ fn is_loopback(candidate: &str) -> bool {
 /// Áudio que chega: um alto-falante por fluxo. Deixar o servidor de som
 /// misturar é mais simples (e mais robusto) do que um `audiomixer` que
 /// precisa esperar todas as entradas.
-fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad) {
+fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad, shared: &Shared, track: String) {
     let Some(depay) = make("rtpopusdepay") else {
         drain_receive_pad(pipeline, pad, "sem rtpopusdepay");
         return;
@@ -1403,7 +1504,22 @@ fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad) {
         drain_receive_pad(pipeline, pad, "sem saída de áudio");
         return;
     };
-    let elements = [depay.clone(), decoder, convert, resample, queue, sink];
+    let Some(volume) = make("volume") else {
+        drain_receive_pad(pipeline, pad, "sem filtro de volume");
+        return;
+    };
+    if let Ok(mut audio) = shared.audio.lock() {
+        audio.attach(track, volume.clone());
+    }
+    let elements = [
+        depay.clone(),
+        decoder,
+        convert,
+        resample,
+        volume,
+        queue,
+        sink,
+    ];
     if pipeline.add_many(&elements).is_err() {
         drop_dynamic_branch(pipeline, &elements);
         drain_receive_pad(pipeline, pad, "não deu para adicionar a saída de áudio");
@@ -1487,8 +1603,12 @@ fn audio_sink() -> Option<gst::Element> {
     // A call compartilhava a lista da área de trabalho e, no Android,
     // acabava dependendo de autoaudiosink por acaso. O player de anexos já
     // usa o sink nativo diretamente; a call deve fazer o mesmo.
-    for factory in crate::media::platform::audio_sink_candidates() {
+    for factory in crate::platform::audio_sink_candidates() {
         let Some(sink) = make(factory) else { continue };
+        // Match AudioManager communication-device routing, including earpiece/Bluetooth.
+        if *factory == "openslessink" && sink.has_property("stream-type") {
+            sink.set_property_from_str("stream-type", "voice");
+        }
         // Um sink que entra com o pipeline já andando não pode segurar a
         // troca de estado esperando o próprio preroll.
         if sink.has_property("async") {
@@ -1505,12 +1625,14 @@ fn show_video(
     pad: &gst::Pad,
     index: usize,
     shared: Arc<Shared>,
-    repaint: egui::Context,
+    host: Arc<dyn Host>,
 ) {
     let Some(depay) = make("rtpvp8depay") else {
         return;
     };
-    let Some(decoder) = make("vp8dec") else { return };
+    let Some(decoder) = make("vp8dec") else {
+        return;
+    };
     let Some(convert) = make("videoconvert") else {
         return;
     };
@@ -1532,17 +1654,12 @@ fn show_video(
                     if let Ok(mut tiles) = shared.tiles.lock()
                         && let Some(tile) = tiles.get_mut(index)
                     {
-                        #[cfg(target_os = "android")]
-                        if let Some(publisher) = tile.publisher.as_deref()
-                            && crate::platform::android_call::pip_wants(publisher)
-                        {
-                            crate::platform::android_call::present_pip_frame(&frame);
-                        }
+                        host.present_frame(tile.publisher.as_deref(), &frame);
 
-                        tile.frame = Some(frame);
+                        tile.frame = Some(Arc::new(frame));
                         tile.seq = tile.seq.wrapping_add(1);
                     }
-                    repaint.request_repaint();
+                    host.frame_ready();
                 }
                 Ok(gst::FlowSuccess::Ok)
             })
@@ -1593,25 +1710,13 @@ fn show_video(
 fn capture(
     target: gst_app::AppSrc,
     shared: Arc<Shared>,
-    repaint: egui::Context,
+    host: Arc<dyn Host>,
+    _front: bool,
 ) -> Option<Camera> {
-    // A permissão da câmera é pedida aqui, no momento em que alguém liga a
-    // câmera. A primeira vez recusa com a caixa na tela; o toque seguinte
-    // já abre.
-    #[cfg(target_os = "android")]
-    {
-        use crate::platform::permission::{self, Status};
-        match permission::ensure(permission::CAMERA) {
-            Status::Granted => {}
-            Status::Asking => {
-                shared.warn("esperando a permissão da câmera");
-                return None;
-            }
-            Status::Denied => {
-                shared.warn("sem permissão para abrir a câmera");
-                return None;
-            }
-        }
+    // Permissions belong to the shell, never to the media worker or an Activity singleton.
+    if !host.camera_allowed() {
+        shared.warn("camera-permission");
+        return None;
     }
 
     let pipeline = gst::Pipeline::new();
@@ -1626,11 +1731,11 @@ fn capture(
         // quem está falando. O `device-facing` do `ahcsrc` só informa, não
         // escolhe — quem escolhe é o índice, e no Android a de trás é
         // sempre a 0 e a da frente a 1.
-        source.set_property("device", "1");
+        source.set_property("device", host.camera_device(_front));
         source
     };
     #[cfg(not(target_os = "android"))]
-    let source = crate::media::platform::camera_source_candidates()
+    let source = crate::platform::camera_source_candidates()
         .iter()
         .find_map(|factory| make(factory))?;
     let tee = make("tee")?;
@@ -1652,10 +1757,17 @@ fn capture(
         #[cfg(target_os = "android")]
         crop.set_property("aspect-ratio", gst::Fraction::new(4, 3));
         #[cfg(not(target_os = "android"))]
-        crop.set_property("aspect-ratio", gst::Fraction::new(CAMERA_WIDTH, CAMERA_HEIGHT));
+        crop.set_property(
+            "aspect-ratio",
+            gst::Fraction::new(CAMERA_WIDTH, CAMERA_HEIGHT),
+        );
     }
 
-    let feed = gst_app::AppSink::builder().max_buffers(2).drop(true).sync(false).build();
+    let feed = gst_app::AppSink::builder()
+        .max_buffers(2)
+        .drop(true)
+        .sync(false)
+        .build();
     let preview_queue = make("queue")?;
     let preview_convert = make("videoconvert")?;
     let preview_scale = make("videoscale")?;
@@ -1695,7 +1807,8 @@ fn capture(
             flip: flip.clone(),
             filter: filter.clone(),
             mount,
-            display: crate::platform::jvm::call_activity_int("displayRotation").unwrap_or(0),
+            display: host.display_rotation(),
+            host: Arc::clone(&host),
             checked: Instant::now(),
         };
         turn.apply();
@@ -1733,10 +1846,7 @@ fn capture(
     pipeline.add_many(&main).ok()?;
     gst::Element::link_many(&main).ok()?;
 
-    let encode_branch = [
-        make("queue")?,
-        feed.upcast_ref::<gst::Element>().clone(),
-    ];
+    let encode_branch = [make("queue")?, feed.upcast_ref::<gst::Element>().clone()];
     pipeline.add_many(&encode_branch).ok()?;
     gst::Element::link_many(&encode_branch).ok()?;
     tee.link(&encode_branch[0]).ok()?;
@@ -1802,7 +1912,9 @@ fn capture(
                         }
                     }
                     Err(error) => {
-                        log::error!("call: quadro da câmera não entrou no appsrc WebRTC: {error:?}");
+                        log::error!(
+                            "call: quadro da câmera não entrou no appsrc WebRTC: {error:?}"
+                        );
                         return Err(gst::FlowError::Error);
                     }
                 }
@@ -1816,18 +1928,15 @@ fn capture(
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 if let Some(frame) = to_frame(&sample) {
-                    #[cfg(target_os = "android")]
-                    if crate::platform::android_call::pip_wants_local() {
-                        crate::platform::android_call::present_pip_frame(&frame);
-                    }
+                    host.present_frame(None, &frame);
 
                     if let Ok(mut slot) = shared.preview.lock() {
-                        *slot = Some(frame);
+                        *slot = Some(Arc::new(frame));
                     }
                     shared.preview_seq.fetch_add(1, Ordering::Relaxed);
                     // Sem isto o seu próprio retrato congelava numa janela
                     // parada: ninguém pedia o quadro seguinte.
-                    repaint.request_repaint();
+                    host.frame_ready();
                 }
                 Ok(gst::FlowSuccess::Ok)
             })
@@ -1861,7 +1970,7 @@ fn to_frame(sample: &gst::Sample) -> Option<Frame> {
         let start = row * stride;
         let line = data.get(start..start + width * 4)?;
         for [r, g, b, a] in line.as_chunks::<4>().0 {
-            pixels.push(egui::Color32::from_rgba_premultiplied(*r, *g, *b, *a));
+            pixels.push([*r, *g, *b, *a]);
         }
     }
     Some(Frame {
@@ -1880,7 +1989,9 @@ mod tests {
         assert!(is_loopback(
             "candidate:1 1 UDP 2015363327 127.0.0.1 51234 typ host"
         ));
-        assert!(is_loopback("candidate:2 1 UDP 2015363327 ::1 51234 typ host"));
+        assert!(is_loopback(
+            "candidate:2 1 UDP 2015363327 ::1 51234 typ host"
+        ));
         assert!(!is_loopback(
             "candidate:3 1 UDP 2015363327 192.168.0.114 51234 typ host"
         ));

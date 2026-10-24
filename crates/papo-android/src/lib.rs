@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 mod account;
+mod call;
 mod admin_audit;
 mod administration;
 mod appearance;
@@ -50,6 +51,12 @@ fn reply_notifications_default() -> bool {
 #[derive(Debug, Deserialize, uniffi::Enum)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    JoinVoice { channel_id: String },
+    LeaveVoice { attempt: u64 },
+    MuteVoice { attempt: u64, muted: bool },
+    CameraVoice { attempt: u64, on: bool },
+    CameraFacing { attempt: u64, front: bool },
+    VoicePlayback { attempt: u64, user_id: String, volume_percent: u16, muted: bool },
     Login {
         username: String,
         password: String,
@@ -265,6 +272,7 @@ pub struct Client {
     #[cfg(all(debug_assertions, target_os = "android"))]
     reading_debug: reading_debug::ReadingDebug,
     runtime: ServerRuntime,
+    calls: call::Calls,
     notification_listener: Option<Arc<dyn notifications::NotificationListener>>,
     notification_visible: bool,
     push_registration: Option<(String, String)>,
@@ -345,6 +353,7 @@ impl Client {
             #[cfg(all(debug_assertions, target_os = "android"))]
             reading_debug,
             runtime: ServerRuntime::open(url, wake, secrets, cache, notifications),
+            calls: call::Calls::default(),
             notification_listener: listener,
             notification_visible: false,
             push_registration: None,
@@ -546,10 +555,11 @@ impl Client {
             }
             self.observe_inbox_update(&update);
             self.observe_pin_update(&update);
-            self.runtime.process_update(update);
+            for effect in self.runtime.process_update(update) { self.calls.effect(&mut self.runtime, effect); }
             self.sync_notification_context();
             count += 1;
         }
+        self.calls.pump(&mut self.runtime);
         if !self.navigation_target.is_empty()
             && !self
                 .runtime
@@ -734,6 +744,7 @@ impl Client {
         }
         let store = &mut self.runtime.store;
         let command = match action {
+            action @ (Action::JoinVoice { .. } | Action::LeaveVoice { .. } | Action::MuteVoice { .. } | Action::CameraVoice { .. } | Action::CameraFacing { .. } | Action::VoicePlayback { .. }) => return self.calls.action(&mut self.runtime, action),
             Action::Search { .. } => unreachable!(),
             Action::ClearSearch => {
                 store.reset_search();
@@ -1233,6 +1244,7 @@ impl Client {
                 epoch,
             }),
             Action::ClearError => {
+                self.calls.clear_error();
                 store.error = None;
                 return Ok(());
             }
@@ -1248,6 +1260,7 @@ impl Client {
             &self.runtime.url,
             &self.runtime.server_key,
         );
+        value["call"] = serde_json::to_value(self.calls.projection(&self.runtime.store)).unwrap_or_default();
         value["pushRegistered"] = json!(
             self.push_registration
                 .as_ref()
@@ -1266,6 +1279,7 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
+        self.calls.stop(&mut self.runtime, true);
         self.flush_store();
         self.runtime.cache.flush();
     }

@@ -8,7 +8,7 @@
 //! precisa ser escapada — sem isso o coturn recusa a autenticação e a call
 //! atravessa NAT nenhum.
 
-use crate::api::models::IceServer;
+use papo_core::api::models::IceServer;
 
 /// Endereços prontos para o `webrtcbin`: um STUN (ele só aceita um) e
 /// quantos TURN houver.
@@ -93,8 +93,12 @@ mod tests {
 
     #[test]
     fn stun_ganha_as_duas_barras() {
-        let config = IceConfig::from_servers(&[server(&["stun:stun.l.google.com:19302"], None, None)]);
-        assert_eq!(config.stun.as_deref(), Some("stun://stun.l.google.com:19302"));
+        let config =
+            IceConfig::from_servers(&[server(&["stun:stun.l.google.com:19302"], None, None)]);
+        assert_eq!(
+            config.stun.as_deref(),
+            Some("stun://stun.l.google.com:19302")
+        );
     }
 
     /// A credencial do TURN é Base64 de um HMAC: sem escapar, um `+` viraria

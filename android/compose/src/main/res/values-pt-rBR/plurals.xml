@@ -54,4 +54,16 @@
         <item quantity="one">%d canal não confirmado</item>
         <item quantity="other">%d canais não confirmados</item>
     </plurals>
+    <plurals name="call_people_in_room">
+        <item quantity="one">%d pessoa na sala</item>
+        <item quantity="other">%d pessoas na sala</item>
+    </plurals>
+    <plurals name="call_video_count">
+        <item quantity="one">%d vídeo</item>
+        <item quantity="other">%d vídeos</item>
+    </plurals>
+    <plurals name="call_people_in_voice">
+        <item quantity="one">%d pessoa na chamada</item>
+        <item quantity="other">%d pessoas na chamada</item>
+    </plurals>
 </resources>

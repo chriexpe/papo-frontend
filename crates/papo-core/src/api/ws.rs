@@ -176,12 +176,19 @@ pub enum Event {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct VoiceMember {
     pub user_id: String,
+    /// Cold presence only provides membership; socket states include device status.
+    #[serde(skip, default = "voice_state_known")]
+    pub state_known: bool,
     #[serde(default)]
     pub muted: bool,
     #[serde(default)]
     pub camera_on: bool,
     #[serde(default)]
     pub screen_sharing: bool,
+}
+
+fn voice_state_known() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]

@@ -42,6 +42,8 @@ val releaseKeystore = firebaseValue("PAPO_ANDROID_KEYSTORE")
 
 android {
     sourceSets["main"].java.srcDir(rootProject.file("shared/src/main/java"))
+    sourceSets["main"].java.srcDir(rootProject.file("app/src/main/java/org"))
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("gstreamer-assets").get().asFile)
     namespace = "io.github.chriexpe.papo.compose"
     compileSdk = 37
     ndkVersion = "30.0.16248370"
@@ -161,7 +163,8 @@ listOf("debug", "release").forEach { variant ->
     val native =
         tasks.register<Exec>("buildRust${suffix}Native") {
             group = "build"
-            description = "Build $variant papo-core and UniFFI without egui or GStreamer"
+            description =
+                "Build $variant papo-core, shared GStreamer call engine and UniFFI without egui"
             workingDir(rootProject.file(".."))
             inputs.files(rootProject.file("../Cargo.toml"), rootProject.file("../Cargo.lock"))
             inputs.files(
@@ -173,6 +176,15 @@ listOf("debug", "release").forEach { variant ->
                 fileTree(rootProject.file("../crates/papo-android")) {
                     include("Cargo.toml", "src/**")
                 }
+            )
+            inputs.files(
+                fileTree(rootProject.file("../crates/papo-call")) {
+                    include("Cargo.toml", "src/**")
+                }
+            )
+            inputs.files(
+                rootProject.file("../scripts/android-compose-native.sh"),
+                rootProject.file("call-gstreamer/CMakeLists.txt"),
             )
             inputs.files(fileTree("src/main/assets/demo"))
             inputs.property("abis", papoAbis)
@@ -194,23 +206,17 @@ listOf("debug", "release").forEach { variant ->
                     .orElse("unconfigured"),
             )
             papoAbis.forEach { abi ->
-                outputs.file(nativeDirectory.map { it.file("$abi/libpapo_compose.so") })
+                listOf("libpapo_compose.so", "libgstreamer_android.so", "libc++_shared.so")
+                    .forEach { library ->
+                        outputs.file(nativeDirectory.map { it.file("$abi/$library") })
+                    }
             }
             commandLine(
-                listOf("cargo", "ndk") +
-                    papoAbis.flatMap { listOf("-t", it) } +
-                    listOf(
-                        "--platform",
-                        "31",
-                        "-o",
-                        nativeDirectory.get().asFile.absolutePath,
-                        "build",
-                        "--locked",
-                        "-p",
-                        "papo-android",
-                        "--lib",
-                    ) +
-                    if (release) listOf("--release") else emptyList()
+                "bash",
+                "scripts/android-compose-native.sh",
+                variant,
+                nativeDirectory.get().asFile.absolutePath,
+                papoAbis.joinToString(","),
             )
             doFirst {
                 environment(

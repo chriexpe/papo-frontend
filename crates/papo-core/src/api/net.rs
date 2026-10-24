@@ -487,6 +487,9 @@ pub enum Command {
         /// Número desta tentativa de entrada, devolvido nas respostas.
         attempt: u64,
     },
+    /// Fetch ICE without entering the room. The caller sends voice_join only after
+    /// validating that this attempt still owns the call.
+    FetchVoiceIce { channel_id: String, attempt: u64 },
     /// Sinalização crua da call (oferta, resposta, candidato, mudo…), já em
     /// JSON: quem a escreve é a thread da call.
     VoiceSignal(String),
@@ -4077,34 +4080,41 @@ async fn handle(
                 }
             }
         }
-        Command::JoinVoice {
-            channel_id,
-            attempt,
-        } => match api.ice_servers().await {
-            Ok(servers) => {
-                publish(
+        command @ (Command::JoinVoice { .. } | Command::FetchVoiceIce { .. }) => {
+            let enter = matches!(command, Command::JoinVoice { .. });
+            let (channel_id, attempt) = match command {
+                Command::JoinVoice { channel_id, attempt }
+                | Command::FetchVoiceIce { channel_id, attempt } => (channel_id, attempt),
+                _ => unreachable!(),
+            };
+            match api.ice_servers().await {
+                Ok(servers) => {
+                    publish(
+                        updates,
+                        wake,
+                        Update::VoiceReady {
+                            channel_id: channel_id.clone(),
+                            attempt,
+                            servers,
+                        },
+                    );
+                    if enter {
+                        let _ = outbound.send(format!(
+                            r#"{{"type":"voice_join","channel_id":"{channel_id}"}}"#
+                        ));
+                    }
+                }
+                Err(error) => publish(
                     updates,
                     wake,
-                    Update::VoiceReady {
-                        channel_id: channel_id.clone(),
+                    Update::VoiceFailed {
+                        channel_id,
                         attempt,
-                        servers,
+                        message: error.to_string(),
                     },
-                );
-                let _ = outbound.send(format!(
-                    r#"{{"type":"voice_join","channel_id":"{channel_id}"}}"#
-                ));
+                ),
             }
-            Err(error) => publish(
-                updates,
-                wake,
-                Update::VoiceFailed {
-                    channel_id,
-                    attempt,
-                    message: error.to_string(),
-                },
-            ),
-        },
+        }
         Command::VoiceSignal(json) => {
             let _ = outbound.send(json);
         }
