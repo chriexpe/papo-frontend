@@ -31,9 +31,9 @@ part of Demo, not real users or a connection to a server.
 - When video is available, the browsing call pill includes an expand button,
   a direct 1 → 2 → 3 → 4 → 1 count switch (default 2), and an × to close the
   entire extra video section. No count menu or zero-count state is used.
-- Closing previews leaves camera publication and membership alone. The small
-  video badge in the participant strip reopens previews with the same count.
-  With no camera/shared-screen sources, no video section or reopen badge appears.
+- Closing previews leaves camera publication and membership alone. A video
+  squircle occupying one avatar slot in the participant strip reopens previews with the same count.
+  With no camera/shared-screen sources, no video section or reopen squircle appears.
 - Fewer available videos leave no empty tiles. Speaker priority chooses videos
   when capped; retained tiles keep their relative order. Preview height adapts
   to the viewport and keyboard.

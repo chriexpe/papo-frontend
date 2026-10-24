@@ -90,7 +90,7 @@ private fun ActiveCallHeaderRow(
                 if (reopenVideos) calls.controller.showVideoPreviews(session)
                 else calls.controller.reopen()
             },
-            showVideoBadge = reopenVideos,
+            showVideoSlot = reopenVideos,
             modifier = Modifier.weight(1f),
         )
         CallIconButton(
@@ -125,7 +125,7 @@ private fun ActiveCallHeaderRow(
 private fun MinimizedCallParticipants(
     people: List<CallParticipant>,
     onOpen: () -> Unit,
-    showVideoBadge: Boolean,
+    showVideoSlot: Boolean,
     modifier: Modifier,
 ) {
     val ordered = people.sortedByDescending { it.speaking }
@@ -135,7 +135,7 @@ private fun MinimizedCallParticipants(
             .clip(RoundedCornerShape(12.dp))
             .clickable(
                 onClickLabel =
-                    ui(if (showVideoBadge) R.string.call_show_videos else R.string.call_open),
+                    ui(if (showVideoSlot) R.string.call_show_videos else R.string.call_open),
                 onClick = onOpen,
             )
             .testTag("call-header-participants")
@@ -150,8 +150,11 @@ private fun MinimizedCallParticipants(
         contentAlignment = Alignment.CenterStart,
     ) {
         val slots = ((maxWidth + 3.dp) / 33.dp).toInt().coerceAtLeast(0)
-        val overflow = slots >= 2 && ordered.size > slots
-        val visible = ordered.take(if (overflow) slots - 1 else slots)
+        // The video affordance takes one existing avatar slot. Keep every remaining slot for
+        // faces rather than also replacing another face with an overflow count.
+        val overflow = !showVideoSlot && slots >= 2 && ordered.size > slots
+        val visible =
+            ordered.take(if (showVideoSlot || overflow) (slots - 1).coerceAtLeast(0) else slots)
         Row(
             horizontalArrangement = Arrangement.spacedBy(3.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -188,18 +191,22 @@ private fun MinimizedCallParticipants(
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
+            if (showVideoSlot && slots > 0)
+                Box(
+                    Modifier.size(30.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.secondaryContainer)
+                        .testTag("call-video-avatar-slot"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.PictureInPictureAlt,
+                        null,
+                        Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
         }
-        if (showVideoBadge)
-            Icon(
-                Icons.Outlined.PictureInPictureAlt,
-                null,
-                Modifier.align(Alignment.BottomEnd)
-                    .size(18.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                    .padding(2.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
     }
 }
 
