@@ -1,146 +1,119 @@
 # Android voice/video calls — PR #125
 
-This follow-up starts from merged PR #124. The Demo presentation was accepted,
-including the separate call pill, sequential video count control, channel rosters
-and participant action drawer. Live integration now proceeds in independently
-verified commits; the accepted Demo remains available throughout.
+The accepted Material 3 call presentation now uses live server state and the
+shared GStreamer engine. Demo still uses labelled sample content and never opens
+a microphone or camera.
 
-## Integration checkpoints
+## Ownership and integration
 
-- [x] Extract the existing GStreamer worker into `papo-call`, with immutable RGBA
-  frames and host callbacks instead of egui/Activity types. Keep the egui texture
-  adapter and validate its build against the shared implementation.
-- [ ] Connect the Android adapter to authoritative core room/session state and
-  signaling, including join/leave, stale-attempt rejection and connection loss.
-- [ ] Package/init the Android GStreamer runtime; wire microphone, incoming audio,
-  0–200% receiver gain/mute, incoming video, camera and shared-screen reception.
-- [ ] Preserve the accepted presentation with live state, permission/error paths,
-  camera selection and explicit audio routing.
-- [ ] Add process-owned call lifetime, foreground notification actions and PiP.
-- [ ] Enable voice-channel chat history/cache and run host/device/live regression.
+- `papo-core` owns protocol state, room presence and voice-channel message history.
+- `papo-call` owns GStreamer/WebRTC workers, SFU camera/screen slots, immutable RGBA
+  frames and per-publisher audio mixing. It has no egui or Activity dependency.
+  egui retains a texture/presentation adapter over the same worker.
+- `papo-android` exposes typed call snapshots, semantic errors, attempt-guarded
+  actions and frame reads. Media/signaling continue without Compose collection.
+- Android owns runtime permissions, audio focus/device routing, foreground
+  service, notification actions, PiP and rendering. Connections belong to the
+  Application's ViewModelStore, independently of Activity recreation.
 
-`papo-core` continues owning protocol state; `papo-call` owns media workers;
-Android owns permissions, audio focus/routing, services and rendering. No
-Activity or egui context crosses the media boundary. Presentation translations
-remain the responsibility of each shell; legacy engine diagnostics are retained
-during extraction and will be exposed as semantic errors at the Android boundary.
+Native media workers never invoke Java callbacks directly. GStreamer caches its
+JNI environment per thread; foreign callback attachment/detachment can invalidate
+that cache. Device permissions/rotation are sampled on the JVM-owned actor into
+native state, and a dedicated notifier thread delivers wake callbacks. Frames use
+an independent latest-frame path instead of publishing chat snapshots at video
+rate. Android's renderer reuses a bitmap and pauses when its surface is stopped.
 
-## Native bridge checkpoint
+Android packaging uses the pinned, checksummed GStreamer 1.28.7 Android SDK,
+including CA assets. CI caches its arm64 and x86_64 SDK directories. Both ABIs
+build the native call runtime; ordinary chat media remains on Media3. Default
+host bindings/tools builds do not require GStreamer; Android enables `calls`.
 
-The shared engine passes 15 host tests, including real GStreamer volume-property
-checks and SFU slot reassignment. The egui adapter still compiles. Android's typed
-bridge now carries room/member state, join-attempt guarded commands and bounded
-RGBA frame reads. The x86_64 GStreamer runtime and Kotlin bindings have built.
-Android packaging uses a pinned, checksummed 1.28.7 SDK with CI caching; ordinary
-chat media remains on Media3. Device/SFU validation of the connected UI follows.
+## Behavior
 
-## UI review build
+Opening a voice channel shows its lobby without joining. Joining starts muted
+with the camera off. Back/minimize returns to browsing; Leave ends the call.
+Chat/Call tabs share that voice channel's real messages, cache and draft.
 
-Open **Servers → Explore demo**, then **Lounge** or **Studio** in Chats.
-Opening a voice channel shows its lobby without joining it. Join preview starts
-muted with the camera off. Lounge exercises a group; Studio exercises a two-person
-call. The participant roster and any sample camera/screen content are explicitly
-part of Demo, not real users or a connection to a server.
+The current conversation keeps its channel/pin/people navigation. A separate
+call pill immediately below it contains room/server identity, speaker-prioritized
+participant squircles and mic/camera/leave controls. It also remains available in
+Chats and Servers, scoped to the call's original account and room.
 
-- Back and the downward chevron minimize the call. Only Leave ends its session.
-- The current conversation header keeps its name, pin and people buttons. All
-  call identity, participant avatars, microphone/camera and Leave controls live
-  in a separate pill immediately below it, matching the call pill while browsing
-  Chats or Servers. The room/server label sits on the left; the space before the
-  controls holds as many participant squircles as fit, prioritizing speakers.
-- The room label reopens the call. Its server label and account-scoped avatars
-  continue identifying the call while another server's conversation is open.
-- Chats and Servers also keep a compact call header available while browsing.
-- Demo voice channels in Chats show their occupant count and an indented compact
-  roster with speaking, microphone and camera indicators. The joined channel is
-  labelled Connected; viewing another room never joins it. Membership/status is
-  scoped to the session owner and room, so You/mute/camera state cannot leak to
-  another channel. Real rosters will use authoritative server presence.
-- Participant roster rows, lobby rows and full-call avatar/name targets open a
-  dedicated call action drawer using the message-action sheet pattern: compact
-  identity/status, playback controls, View profile and Message actions. Profiles
-  contain no call controls. Tapping a tile's remaining area still enlarges it.
-  Drawer identity/actions stay scoped to the room's server/account while browsing
-  elsewhere. Before joining, the drawer shows a join hint; your own drawer offers
-  microphone/camera controls instead of playback controls for your own voice.
-- Drawers for other participants in your joined Demo room include receiver-side
-  volume (0–200%, default/reset 100%) and Mute for me. Mute preserves the chosen
-  volume and never changes the sender's mic status; rosters/tiles show a separate
-  local speaker-off indicator. Overrides survive minimizing/Activity recreation
-  for that session and reset on leave/replacement; stale session controls cannot
-  change a replacement call. These are labelled UI previews with no audio output.
-  Live integration needs a per-publisher GStreamer `volume` stage in received
-  audio branches; the current egui receive path has no per-user gain/mute API.
-- The video close control uses a quiet 24dp scrim circle and 16dp icon within a
-  48dp touch target, without the former large opaque background.
-- The Chat/Call views share the voice channel's Demo messages and saved composer.
-  Opening Chat doesn't join, mute, leave or replace a call.
-- Joining another room asks to leave the current one. Cancel leaves it intact.
-- The call screen's overflow offers voice, sample video and sample shared-screen
-  layouts. Tap a participant tile’s background to enlarge; a filled Show everyone button or Back
-  restores the grid before minimizing.
-- While the video panel is open, a normal 48dp view-count button sits beside
-  the participant strip, before the microphone. It cycles 1 → 2 → 3 → 4 → 1
-  (default 2), with no menu or zero state. It never occupies an avatar slot and
-  is absent when the video panel is closed or no video sources exist.
-- The video toolbar/count label/fullscreen button are removed. Tap participants
-  once to show hidden video, then again to open the full call screen. An × on
-  the video area closes previews without changing camera publication or call
-  membership. The remaining strip contains participant avatars/overflow only.
-- Fewer available videos leave no empty tiles. Speaker priority chooses videos
-  when capped; retained tiles keep their relative order. Preview height adapts
-  to the viewport and keyboard.
-- The call pill sits 4dp below either server or channel navigation, unchanged by
-  video expansion. Controls and previews expand into one glass surface with a
-  short spring/opacity transition that respects app and Android motion settings.
-  Speaker changes do not replay this transition.
-- Audio output choices preview selection only. They do not change Android routing.
-- Speaker changes are a five-second Demo cycle. Tiles retain their order. Studio
-  has one remote participant and therefore retains that participant as its speaker.
-- Demo video sources follow the selected preview layout, not a live transport.
-  Turning on the local camera also selects Video for convenience; choosing Video
-  in the layout menu shows remote sample feeds with the local camera still off.
-  Real incoming tracks must not depend on local camera publication.
+When real camera or shared-screen sources exist, participant-strip taps first
+reopen hidden previews, then open the call screen. The adjacent count control
+cycles 1 → 2 → 3 → 4 → 1, only while previews are visible. A subtle × closes the
+preview area without stopping publication. No sources means no extra video area;
+remote video reception never depends on enabling the local camera. Retained
+tiles preserve their order while speakers receive selection priority.
 
-The preview controller belongs to the ViewModel, separately from selected server,
-conversation and full-screen presentation. Activity recreation preserves a preview;
-process death does not restore a fictional connection. Session tokens reject stale
-controls after leaving/rejoining the same channel. Removing the Demo account ends
-its preview. Foreground call presentation uses the existing overlay visibility
-mechanism so the covered conversation is not reported visible/read.
+Roster/lobby rows and call avatar/name targets open the dedicated participant
+action drawer. View profile and Message remain separate actions. Other joined
+participants offer receiver-side 0–200% volume, reset to 100%, and Mute for me.
+These controls preserve each other and never alter the sender's microphone
+indicator. Overrides reset on leave/replacement. Your own drawer offers mic,
+camera and camera switching. Tile backgrounds enlarge the participant; a filled
+Show everyone button restores the grid.
 
-UI copy is in English/Portuguese Android string/plural resources. Presentation uses
-the existing theme, UI-density preferences and 48dp minimum control hit regions.
-The screen and grid, controls, header and preview state are separated into files.
+Track-to-user ownership comes from `voice_audio_routes`. Older servers without
+that event retain normal audio, but individual gain/mute controls explain their
+unavailability rather than modifying unidentified audio. Cold presence only
+identifies occupants; unknown microphone/camera status is not presented as a
+confirmed device state.
 
-## Subsequent stages (after UI acceptance)
+## Lifecycle and ordering
 
-1. Separate signaling/media ownership from egui, preserving core session/attempt
-   guards and authoritative room membership. Verify the current backend contract
-   before exposing any direct-call/ringing or screen-publishing features.
-2. Connect actual microphone/audio reception, routing, permission denial, mute,
-   disconnect and room switching to the approved UI.
-3. Connect video reception/publication, camera switching and shared-screen viewing.
-4. Integrate Android call lifetime, notification controls and picture-in-picture;
-   verify activity/process/network transitions and supported background behavior.
-5. Enable voice-channel message history/cache for live servers. The existing core
-   deliberately skips it; the backend supports voice-channel messages, but that
-   production change is deferred with the rest of the wiring.
+The foreground call notification opens the call, toggles mute and hangs up.
+Audio uses communication mode, exclusive transient focus and Android's explicit
+communication device selection (speaker, earpiece, wired/USB or Bluetooth).
+OpenSL ES capture/playback use communication/voice presets to match that routing.
+Device changes update routing. Focus loss mutes the microphone; focus recovery
+does not silently unmute it. Permission/initialization failures remain semantic
+errors translated by Compose in English/Portuguese resources.
 
-The previously deferred hourglass investigation remains separate. This UI slice
-changes no production read-state/navigation algorithm, core media transport or
-live-server voice-channel visibility. Device instrumentation follows the user's
-UI review; it has not been run for this slice.
+Active video/screen calls enter system PiP when leaving the app. PiP shows a
+shared screen or the current/last speaker, with camera/avatar fallback and
+attempt-scoped mute/leave actions. Audio-only calls continue through the service.
+Call teardown releases communication mode, focus, service and scoped wake lock.
+Process death does not restart a fictional call; reconnect does not autojoin.
 
-## Latest preview validation
+Attempt IDs remain unique when native clients are recreated. Stale UI/frame/
+notification actions cannot affect replacement calls. ICE discovery alone never
+enters a room: Android validates its attempt before sending `voice_join`.
+Because server leave events have no attempt ID, rapid rejoining waits for the
+previous leave acknowledgement. A timeout reports failure and retains that
+barrier until acknowledgement/disconnect. Cancelling during discovery discards
+the eventual result without joining later.
 
-Formatting, universal debug assembly and Android lint passed. ADB UI checks
-confirmed the 2 → 3 → 4 → 1 → 2 count cycle without a menu, closing the whole
-video section while the camera remains on, reopening through the participant
-strip, expansion to the call screen, and removal of video UI after selecting
-voice-only. Device instrumentation remains deferred pending UI acceptance.
+## Scope and limitations
 
-The revised header was also checked with remote Demo videos and the local camera
-off: its count control disappears with the video panel, and successive taps on
-the participant strip reopen previews then the full call. The standalone video
-toolbar and avatar-slot control are absent.
+This implements voice-channel calls, camera publication/reception, camera
+switching and incoming shared-screen viewing. It does not add Android screen
+capture/publication or invent a direct-call invitation/ringing protocol. Those
+need separate UI/platform work and backend support where applicable.
+
+The hourglass/read-state investigation remains deferred. Voice channels now use
+the existing history/cache path; its reading/navigation algorithms are unchanged.
+Physical microphone/speaker quality, Bluetooth hardware and multi-device internet
+TURN behavior still require testing on actual devices/servers. Emulator tests
+prove transport, frames and lifecycle rather than acoustic quality.
+
+## Validation and review
+
+- 15 shared media host tests, including actual GStreamer volume properties and
+  SFU slot reassignment; 486 core tests; 73 Android adapter host tests.
+- Existing egui library still compiles against the shared engine.
+- Universal arm64-v8a/x86_64 debug APK, Kotlin formatting check and Android lint.
+- Two focused Android tests against the isolated Pion SFU: actual media/camera/
+  screen frames, cancellation/rejoin/stale actions and socket-loss behavior;
+  process-owned calls, browsing, Activity recreation, foreground service/audio
+  mode, PiP and notification controls.
+
+Fixture setup and exact device-test commands: [`tests/call-sfu/README.md`](../tests/call-sfu/README.md).
+Use synthetic cameras and that local fixture for automated tests; never connect
+an automated microphone/camera test to a user's saved real server.
+
+For a UI-only review, open **Servers → Explore demo → Lounge/Studio**. Demo's
+sample video/screen layouts remain in its overflow. Live calls expose only actual
+sources/devices. Presentation follows existing density/theme/motion preferences
+and keeps 48dp interactive targets. The latest real-call review APK is
+`target/android-apks/papo-android-0.8.5-calls-live.apk`.
