@@ -1244,6 +1244,7 @@ impl Client {
                 epoch,
             }),
             Action::ClearError => {
+                self.calls.clear_error();
                 store.error = None;
                 return Ok(());
             }

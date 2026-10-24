@@ -187,7 +187,9 @@ pub struct VoiceMember {
     pub screen_sharing: bool,
 }
 
-fn voice_state_known() -> bool { true }
+fn voice_state_known() -> bool {
+    true
+}
 
 #[derive(Debug, Deserialize)]
 struct VoiceJoinedPayload {

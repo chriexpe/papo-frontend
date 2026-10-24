@@ -10,6 +10,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Notification/UI handles must stay unique after forgetting/reopening a server or process restart.
+fn next_attempt() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|time| time.as_nanos() as u64)
+        .unwrap_or(1);
+    LAST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+        Some(now.max(last.saturating_add(1)))
+    })
+    .map(|last| now.max(last.saturating_add(1)))
+    .unwrap()
+}
+
 #[uniffi::export(with_foreign)]
 pub trait CallHost: Send + Sync {
     fn ready(&self) -> bool;
@@ -24,6 +39,7 @@ pub trait CallHost: Send + Sync {
 #[serde(rename_all = "camelCase")]
 pub struct VoiceMemberView {
     pub user_id: String,
+    pub state_known: bool,
     pub muted: bool,
     pub camera: bool,
     pub screen: bool,
@@ -49,6 +65,7 @@ pub struct VoiceCallView {
     pub attempt: u64,
     pub phase: String,
     pub connected: bool,
+    pub playback_available: bool,
     pub muted: bool,
     pub camera: bool,
     pub front_camera: bool,
@@ -76,6 +93,7 @@ pub(crate) fn project(store: &Store) -> VoiceCallView {
                 .iter()
                 .map(|person| VoiceMemberView {
                     user_id: person.user_id.clone(),
+                    state_known: person.state_known,
                     muted: person.muted,
                     camera: person.camera_on,
                     screen: person.screen_sharing,
@@ -95,6 +113,7 @@ pub(crate) fn project(store: &Store) -> VoiceCallView {
             Phase::In => "in",
         }
         .into(),
+        playback_available: store.call.audio_routes_known,
         muted: store.call.muted,
         camera: store.call.camera,
         front_camera: true,
@@ -111,6 +130,8 @@ pub(crate) struct Calls {
     warning: String,
     playback: HashMap<String, VoicePlaybackView>,
     front: bool,
+    leaving: Option<(String, String, std::time::Instant)>,
+    queued: Option<(String, String)>,
     #[cfg(feature = "calls")]
     media: Option<Media>,
 }
@@ -202,6 +223,10 @@ impl papo_call::Host for Host {
 }
 
 impl Calls {
+    pub fn clear_error(&mut self) {
+        self.error.clear();
+        self.warning.clear();
+    }
     pub fn projection(&self, store: &Store) -> VoiceCallView {
         let mut value = project(store);
         value.error = self.error.clone();
@@ -219,7 +244,24 @@ impl Calls {
         value
     }
     pub(super) fn stop(&mut self, runtime: &mut ServerRuntime, tell_server: bool) {
-        if tell_server && runtime.store.call.active() {
+        #[cfg(not(feature = "calls"))]
+        let _ = tell_server;
+        // The protocol has no attempt id on leave acknowledgements. Do not enter another
+        // room until the old acknowledgement has passed through Store; otherwise a late
+        // same-room leave can terminate the new session. ICE fetches alone never join.
+        #[cfg(feature = "calls")]
+        if tell_server && self.media.is_some() && runtime.store.call.active() {
+            self.leaving = Some((
+                runtime.store.call.channel_id.clone(),
+                runtime.store.me.clone(),
+                std::time::Instant::now(),
+            ));
+            if let Some(host) = self.host.clone() {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    host.state_changed();
+                });
+            }
             runtime.net.send(Command::VoiceSignal(serde_json::json!({"type":"voice_leave", "channel_id": runtime.store.call.channel_id}).to_string()));
         }
         runtime.net.set_event_callback(None);
@@ -227,6 +269,8 @@ impl Calls {
         {
             self.media = None;
         }
+        let channel = runtime.store.call.channel_id.clone();
+        runtime.store.call.remove(&channel, &runtime.store.me);
         runtime.store.call.left();
         self.playback.clear();
         self.owner.clear();
@@ -249,13 +293,17 @@ impl Calls {
                 };
                 let devices = Arc::new(Devices::new(host.as_ref()));
                 match papo_call::Call::start(
-                    channel_id,
+                    channel_id.clone(),
                     papo_call::IceConfig::from_servers(&servers),
                     Arc::new(Host::new(host, Arc::clone(&devices))),
                     runtime.net.sender(),
                 ) {
                     Some(call) => {
                         runtime.net.set_event_callback(Some(call.event_callback()));
+                        runtime.net.send(Command::VoiceSignal(
+                            serde_json::json!({"type": "voice_join", "channel_id": channel_id})
+                                .to_string(),
+                        ));
                         self.media = Some(Media {
                             call,
                             devices,
@@ -271,6 +319,8 @@ impl Calls {
                 }
             }
             CallRuntimeEffect::ConnectionOffline => {
+                self.leaving = None;
+                self.queued = None;
                 if !self.owner.is_empty() {
                     self.error = "connection-lost".into();
                     self.stop(runtime, false);
@@ -283,23 +333,77 @@ impl Calls {
                 self.stop(runtime, false);
             }
             CallRuntimeEffect::Event { event, .. } => {
+                if let papo_core::api::ws::Event::VoiceLeft {
+                    channel_id,
+                    user_id,
+                } = event.as_ref()
+                    && self.leaving.as_ref().is_some_and(|(channel, owner, _)| {
+                        channel == channel_id && owner == user_id
+                    })
+                {
+                    self.leaving = None;
+                    if let Some((channel, owner)) = self.queued.take()
+                        && owner == runtime.store.me
+                        && runtime.store.connection == Connection::Online
+                    {
+                        self.begin_join(runtime, channel);
+                    }
+                }
                 if let papo_core::api::ws::Event::Failure {
                     code: Some(code), ..
                 } = *event
+                    && !runtime.store.call.active()
                 {
-                    if !runtime.store.call.active() {
-                        self.error = code;
-                    }
+                    self.error = code;
                 }
             }
             _ => {}
         }
     }
+    #[cfg_attr(not(feature = "calls"), allow(dead_code))]
+    fn begin_join(&mut self, runtime: &mut ServerRuntime, channel_id: String) {
+        if !runtime
+            .store
+            .channel(&channel_id)
+            .is_some_and(|channel| channel.kind == ChannelKind::Voice)
+        {
+            self.error = "call-room-unavailable".into();
+            return;
+        }
+        self.owner = runtime.store.me.clone();
+        self.error.clear();
+        self.warning.clear();
+        self.front = true;
+        runtime.store.call.joining(channel_id.clone());
+        let attempt = next_attempt();
+        runtime.store.call.attempt = attempt;
+        runtime.net.send(Command::FetchVoiceIce {
+            channel_id,
+            attempt,
+        });
+    }
     pub fn pump(&mut self, runtime: &mut ServerRuntime) {
+        if self
+            .leaving
+            .as_ref()
+            .is_some_and(|(_, _, since)| since.elapsed() >= std::time::Duration::from_secs(10))
+        {
+            // Keep the barrier until acknowledgement/disconnect. A timeout cannot prove
+            // that the old server session disappeared or make its future events safe.
+            if self.queued.take().is_some() {
+                self.error = "leave-timeout".into();
+            }
+        }
         if !self.owner.is_empty()
-            && (self.owner != runtime.store.me || !runtime.store.call.active())
+            && (self.owner != runtime.store.me
+                || !runtime.store.call.active()
+                || !runtime
+                    .store
+                    .channel(&runtime.store.call.channel_id)
+                    .is_some_and(|channel| channel.kind == ChannelKind::Voice))
         {
             self.stop(runtime, false);
+            #[cfg(feature = "calls")]
             return;
         }
         #[cfg(feature = "calls")]
@@ -391,15 +495,16 @@ impl Calls {
             #[cfg(feature = "calls")]
             {
                 self.stop(runtime, true);
-                self.owner = runtime.store.me.clone();
-                self.error.clear();
-                self.warning.clear();
-                self.front = true;
-                let attempt = runtime.store.call.joining(channel_id.clone());
-                runtime.net.send(Command::JoinVoice {
-                    channel_id,
-                    attempt,
-                });
+                if self.leaving.as_ref().is_some_and(|(_, _, since)| {
+                    since.elapsed() >= std::time::Duration::from_secs(10)
+                }) {
+                    return Err("leave-timeout".into());
+                }
+                if self.leaving.is_some() {
+                    self.queued = Some((channel_id, runtime.store.me.clone()));
+                } else {
+                    self.begin_join(runtime, channel_id);
+                }
                 return Ok(());
             }
         }
@@ -411,6 +516,10 @@ impl Calls {
             | Action::CameraFacing { attempt, .. } => *attempt,
             _ => return Err("invalid-call-action".into()),
         };
+        if matches!(action, Action::LeaveVoice { .. }) && runtime.store.call.attempt == attempt {
+            // A queued replacement has no media/room yet, but must still be cancellable.
+            self.queued = None;
+        }
         if !runtime.store.call.active()
             || runtime.store.call.attempt != attempt
             || self.owner != runtime.store.me
@@ -470,6 +579,9 @@ impl Calls {
                         .any(|member| member.user_id == user_id)
                 {
                     return Ok(());
+                }
+                if !runtime.store.call.audio_routes_known {
+                    return Err("audio-routing-unavailable".into());
                 }
                 let volume_percent = volume_percent.min(200);
                 self.playback.insert(
@@ -582,5 +694,16 @@ impl NativeClient {
             }
             _ => None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn attempt_ids_do_not_restart_with_a_new_client() {
+        let first = super::next_attempt();
+        let _replacement = super::Calls::default();
+        let second = super::next_attempt();
+        assert!(second > first);
     }
 }

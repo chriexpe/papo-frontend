@@ -18,8 +18,8 @@ impl papo_call::Host for EguiHost {
     fn camera_allowed(&self) -> bool {
         #[cfg(target_os = "android")]
         {
-            return crate::platform::permission::ensure(crate::platform::permission::CAMERA)
-                == crate::platform::permission::Status::Granted;
+            crate::platform::permission::ensure(crate::platform::permission::CAMERA)
+                == crate::platform::permission::Status::Granted
         }
         #[cfg(not(target_os = "android"))]
         {
@@ -29,7 +29,7 @@ impl papo_call::Host for EguiHost {
     fn display_rotation(&self) -> i32 {
         #[cfg(target_os = "android")]
         {
-            return crate::platform::jvm::call_activity_int("displayRotation").unwrap_or(0);
+            crate::platform::jvm::call_activity_int("displayRotation").unwrap_or(0)
         }
         #[cfg(not(target_os = "android"))]
         {

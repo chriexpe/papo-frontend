@@ -1255,6 +1255,10 @@ fn microphone(
 /// ligação e o silenciador, que é quem o mudo desliga.
 fn mic_chain(factory: &str) -> Option<(Vec<gst::Element>, gst::Element)> {
     let source = make(factory)?;
+    // Android routes/preprocesses communication capture separately from ordinary recording.
+    if factory == "openslessrc" && source.has_property("preset") {
+        source.set_property_from_str("preset", "voice-communication");
+    }
     if source.has_property("do-timestamp") {
         source.set_property("do-timestamp", true);
     }
@@ -1601,6 +1605,10 @@ fn audio_sink() -> Option<gst::Element> {
     // usa o sink nativo diretamente; a call deve fazer o mesmo.
     for factory in crate::platform::audio_sink_candidates() {
         let Some(sink) = make(factory) else { continue };
+        // Match AudioManager communication-device routing, including earpiece/Bluetooth.
+        if *factory == "openslessink" && sink.has_property("stream-type") {
+            sink.set_property_from_str("stream-type", "voice");
+        }
         // Um sink que entra com o pipeline já andando não pode segurar a
         // troca de estado esperando o próprio preroll.
         if sink.has_property("async") {
