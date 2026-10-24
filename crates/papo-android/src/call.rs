@@ -117,37 +117,87 @@ pub(crate) struct Calls {
 #[cfg(feature = "calls")]
 struct Media {
     call: papo_call::Call,
+    devices: Arc<Devices>,
     attempt: u64,
     ready: bool,
     camera_revision: u64,
 }
 #[cfg(feature = "calls")]
-struct Host(Arc<dyn CallHost>);
+struct Devices {
+    allowed: std::sync::atomic::AtomicBool,
+    rotation: std::sync::atomic::AtomicI32,
+    cameras: [String; 2],
+}
+#[cfg(feature = "calls")]
+impl Devices {
+    fn new(host: &dyn CallHost) -> Self {
+        Self {
+            allowed: std::sync::atomic::AtomicBool::new(host.camera_allowed()),
+            rotation: std::sync::atomic::AtomicI32::new(host.display_rotation()),
+            cameras: [host.camera_device(false), host.camera_device(true)],
+        }
+    }
+    fn refresh(&self, host: &dyn CallHost) {
+        use std::sync::atomic::Ordering;
+        self.allowed.store(host.camera_allowed(), Ordering::Relaxed);
+        self.rotation
+            .store(host.display_rotation(), Ordering::Relaxed);
+    }
+}
+#[cfg(feature = "calls")]
+struct Host {
+    devices: Arc<Devices>,
+    ready: bool,
+    wake: std::sync::mpsc::SyncSender<()>,
+}
+#[cfg(feature = "calls")]
+impl Host {
+    fn new(callback: Arc<dyn CallHost>, devices: Arc<Devices>) -> Self {
+        let ready = callback.ready();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        // JNA may detach native threads after a foreign callback. GStreamer's Android plugins
+        // cache JNIEnv in thread-local storage; detaching that media thread invalidates it and
+        // crashes a later camera/JNI operation. Only this separate notifier calls into Kotlin.
+        std::thread::Builder::new()
+            .name("papo-call-wake".into())
+            .spawn(move || {
+                while rx.recv().is_ok() {
+                    callback.state_changed();
+                }
+            })
+            .expect("call wake worker");
+        Self {
+            devices,
+            ready,
+            wake: tx,
+        }
+    }
+}
 #[cfg(feature = "calls")]
 impl papo_call::Host for Host {
     fn initialize(&self) -> bool {
-        if !self.0.ready() {
-            return false;
-        }
-        if gstreamer::init().is_err() {
+        if !self.ready || gstreamer::init().is_err() {
             return false;
         }
         papo_call::platform::initialize_platform();
         true
     }
     fn camera_allowed(&self) -> bool {
-        self.0.camera_allowed()
+        self.devices
+            .allowed
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
     fn camera_device(&self, front: bool) -> String {
-        self.0.camera_device(front)
+        self.devices.cameras[usize::from(front)].clone()
     }
     fn display_rotation(&self) -> i32 {
-        self.0.display_rotation()
+        self.devices
+            .rotation
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
     fn wake(&self) {
-        self.0.state_changed();
+        let _ = self.wake.try_send(());
     }
-    // Compose pulls the latest bounded RGBA frame independently of JSON/chat snapshots.
     fn frame_ready(&self) {}
 }
 
@@ -197,16 +247,18 @@ impl Calls {
                     self.stop(runtime, true);
                     return;
                 };
+                let devices = Arc::new(Devices::new(host.as_ref()));
                 match papo_call::Call::start(
                     channel_id,
                     papo_call::IceConfig::from_servers(&servers),
-                    Arc::new(Host(host)),
+                    Arc::new(Host::new(host, Arc::clone(&devices))),
                     runtime.net.sender(),
                 ) {
                     Some(call) => {
                         runtime.net.set_event_callback(Some(call.event_callback()));
                         self.media = Some(Media {
                             call,
+                            devices,
                             attempt,
                             ready: false,
                             camera_revision: 0,
@@ -259,6 +311,9 @@ impl Calls {
             {
                 self.stop(runtime, false);
                 return;
+            }
+            if let Some(host) = &self.host {
+                media.devices.refresh(host.as_ref());
             }
             let shared = media.call.shared();
             if shared.failed() {
@@ -385,6 +440,9 @@ impl Calls {
                 }
                 #[cfg(feature = "calls")]
                 if let Some(media) = &self.media {
+                    if let Some(host) = &self.host {
+                        media.devices.refresh(host.as_ref());
+                    }
                     if media.ready {
                         media.call.send(papo_call::Command::Camera(on));
                     }
