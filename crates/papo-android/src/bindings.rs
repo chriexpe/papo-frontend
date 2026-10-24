@@ -388,6 +388,8 @@ impl NativeClient {
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientSnapshot {
+    #[serde(default)]
+    pub call: crate::call::VoiceCallView,
     pub version: i32,
     pub url: String,
     pub key: String,

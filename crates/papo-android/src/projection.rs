@@ -353,6 +353,7 @@ pub(crate) fn project(store: &Store, url: &str, key: &str) -> Value {
             .unwrap_or_default()
     );
     snapshot["pinsKnown"] = json!(store.pinned_messages.contains_key(&store.selected_channel));
+    snapshot["call"] = json!(crate::call::project(store));
     snapshot["canPin"] = json!(store.can_pin_in(&store.selected_channel));
     snapshot["typingPhrase"] = json!(store.typing_phrase().unwrap_or_default());
     snapshot

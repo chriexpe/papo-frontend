@@ -1,0 +1,13 @@
+name: Android call media SDK
+description: Cache the pinned GStreamer runtime used by both Android call ABIs
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/Android/gst/arm64
+          ~/Android/gst/x86_64
+        key: ${{ runner.os }}-papo-call-gstreamer-1.28.7
+    - shell: bash
+      run: bash scripts/setup-android-call-sdk.sh

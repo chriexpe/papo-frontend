@@ -25,6 +25,15 @@ Activity or egui context crosses the media boundary. Presentation translations
 remain the responsibility of each shell; legacy engine diagnostics are retained
 during extraction and will be exposed as semantic errors at the Android boundary.
 
+## Native bridge checkpoint
+
+The shared engine passes 15 host tests, including real GStreamer volume-property
+checks and SFU slot reassignment. The egui adapter still compiles. Android's typed
+bridge now carries room/member state, join-attempt guarded commands and bounded
+RGBA frame reads. The x86_64 GStreamer runtime and Kotlin bindings have built.
+Android packaging uses a pinned, checksummed 1.28.7 SDK with CI caching; ordinary
+chat media remains on Media3. Device/SFU validation of the connected UI follows.
+
 ## UI review build
 
 Open **Servers → Explore demo**, then **Lounge** or **Studio** in Chats.

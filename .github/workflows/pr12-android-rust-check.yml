@@ -80,6 +80,7 @@ jobs:
           cargo install cargo-ndk --locked
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.16248370" "platforms;android-37.0" "platforms;android-37.2"
+      - uses: ./.github/actions/setup-call-gstreamer
       - name: Build native Compose APK and run lint
         env:
           PAPO_COMPOSE_FIREBASE_APP_ID: ${{ secrets.PAPO_COMPOSE_FIREBASE_APP_ID }}
