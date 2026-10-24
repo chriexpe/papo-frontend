@@ -994,4 +994,12 @@
     <string name="call_camera_enabled">Câmera ligada</string>
     <string name="call_camera_disabled">Câmera desligada</string>
     <string name="call_participant_status">%1$s · %2$s</string>
+    <string name="call_open_participant">Abrir perfil de %1$s</string>
+    <string name="call_participant_audio_room">Voz · %1$s</string>
+    <string name="call_participant_volume">Volume</string>
+    <string name="call_volume_percent">%1$d%%</string>
+    <string name="call_volume_reset">Redefinir para %1$d%%</string>
+    <string name="call_mute_for_me">Silenciar para mim</string>
+    <string name="call_muted_for_me">Silenciado para você</string>
+    <string name="call_participant_audio_demo">Afeta apenas o que você ouve. Prévia de demonstração: nenhum áudio está tocando.</string>
 </resources>

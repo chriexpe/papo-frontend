@@ -4,6 +4,7 @@ package io.github.chriexpe.papo.compose
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -28,7 +30,11 @@ import dev.chrisbanes.haze.hazeSource
 
 /** Full-screen presentation only. Back minimizes; only Leave ends the preview session. */
 @Composable
-internal fun VoiceCallScreen(calls: VoiceCallContext, onChat: (ServerState, String) -> Unit) {
+internal fun VoiceCallScreen(
+    calls: VoiceCallContext,
+    onProfile: (ServerState, String) -> Unit,
+    onChat: (ServerState, String) -> Unit,
+) {
     val route = calls.state.screen ?: return
     val server = route.server(calls.servers) ?: return
     val channel = server.channels.firstOrNull { it.id == route.channelId } ?: return
@@ -52,6 +58,7 @@ internal fun VoiceCallScreen(calls: VoiceCallContext, onChat: (ServerState, Stri
     }
     CompositionLocalProvider(
         LocalProfileContext provides ProfileContext(server, calls.model),
+        LocalOpenProfile provides { id -> onProfile(server, id) },
         LocalMediaOverlayBlocking provides true,
     ) {
         Column(
@@ -154,6 +161,7 @@ private fun CallScreenHeader(
 
 @Composable
 private fun CallLobby(people: List<CallParticipant>, modifier: Modifier) {
+    val onProfile = LocalOpenProfile.current
     Column(
         modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -174,7 +182,14 @@ private fun CallLobby(people: List<CallParticipant>, modifier: Modifier) {
         Spacer(Modifier.height(24.dp))
         people.forEach { person ->
             Row(
-                Modifier.widthIn(max = 360.dp).fillMaxWidth().padding(vertical = 8.dp),
+                Modifier.widthIn(max = 360.dp)
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable(onClickLabel = ui(R.string.call_open_participant, person.name)) {
+                        onProfile(person.id)
+                    }
+                    .padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {

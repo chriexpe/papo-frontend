@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ScreenShare
+import androidx.compose.material.icons.automirrored.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,6 +37,7 @@ internal fun CallStage(
     onFocus: (String?) -> Unit,
     modifier: Modifier,
 ) {
+    val onProfile = LocalOpenProfile.current
     val selected = people.firstOrNull { it.id == focused }
     when {
         selected != null ->
@@ -95,7 +97,11 @@ internal fun CallStage(
                         Column(
                             Modifier.width(80.dp)
                                 .clip(RoundedCornerShape(16.dp))
-                                .clickable { onFocus(person.id) }
+                                .clickable(
+                                    onClickLabel = ui(R.string.call_open_participant, person.name)
+                                ) {
+                                    onProfile(person.id)
+                                }
                                 .padding(8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
@@ -149,6 +155,7 @@ internal fun CallStage(
 @Composable
 private fun CallParticipantTile(person: CallParticipant, modifier: Modifier, onFocus: () -> Unit) {
     val shape = RoundedCornerShape(24.dp)
+    val onProfile = LocalOpenProfile.current
     Box(
         modifier
             .clip(shape)
@@ -198,7 +205,17 @@ private fun CallParticipantTile(person: CallParticipant, modifier: Modifier, onF
                 color = Color.White,
                 style = MaterialTheme.typography.labelSmall,
             )
-        } else CallParticipantAvatar(person, 64)
+        } else {
+            Box(
+                Modifier.size(64.dp).clip(RoundedCornerShape(22.dp)).clickable(
+                    onClickLabel = ui(R.string.call_open_participant, person.name)
+                ) {
+                    onProfile(person.id)
+                }
+            ) {
+                CallParticipantAvatar(person, 64)
+            }
+        }
         Row(
             Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -206,12 +223,27 @@ private fun CallParticipantTile(person: CallParticipant, modifier: Modifier, onF
         ) {
             Text(
                 if (person.mine) ui(R.string.you) else person.name,
-                Modifier.weight(1f),
+                Modifier.weight(1f)
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClickLabel = ui(R.string.call_open_participant, person.name)) {
+                        onProfile(person.id)
+                    }
+                    .wrapContentHeight(Alignment.Bottom),
                 style = MaterialTheme.typography.labelLarge,
                 color = if (person.camera) Color.White else userNameColor(person.id),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (person.audio.muted || person.audio.volumePercent == 0)
+                Icon(
+                    Icons.AutoMirrored.Outlined.VolumeOff,
+                    ui(R.string.call_muted_for_me),
+                    Modifier.size(18.dp),
+                    tint =
+                        if (person.camera) Color.White
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             if (person.muted || person.speaking)
                 Icon(
                     if (person.muted) Icons.Outlined.MicOff else Icons.Outlined.GraphicEq,

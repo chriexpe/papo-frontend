@@ -1,15 +1,18 @@
 package io.github.chriexpe.papo.compose
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -23,6 +26,7 @@ internal fun DemoVoiceChannelItem(
     server: ServerState,
     channel: Conversation,
     onOpen: (String) -> Unit,
+    onProfile: (String) -> Unit,
 ) {
     val session =
         LocalVoiceCall.current?.state?.session?.takeIf {
@@ -43,27 +47,38 @@ internal fun DemoVoiceChannelItem(
         )
         Column(Modifier.fillMaxWidth().padding(start = 64.dp, end = 20.dp, bottom = 8.dp)) {
             people.forEach { person ->
-                key(person.id) { VoiceChannelParticipant(person) }
+                key(person.id) { VoiceChannelParticipant(person) { onProfile(person.id) } }
             }
         }
     }
 }
 
-/** Status indicators are descriptive; the channel row remains the explicit route into the call. */
+/** Opening a participant uses the same profile sheet as the friend list, never joins the room. */
 @Composable
-private fun VoiceChannelParticipant(person: CallParticipant) {
+private fun VoiceChannelParticipant(person: CallParticipant, onProfile: () -> Unit) {
     val muted = ui(if (person.muted) R.string.call_muted else R.string.call_microphone_on)
     val camera =
         ui(if (person.camera) R.string.call_camera_enabled else R.string.call_camera_disabled)
     Row(
         Modifier.fillMaxWidth()
-            .heightIn(min = 36.dp)
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(
+                onClickLabel = ui(R.string.call_open_participant, person.name),
+                onClick = onProfile,
+            )
             .padding(vertical = 4.dp)
             .testTag("voice-participant-${person.id}")
             .semantics(mergeDescendants = true) {
                 stateDescription =
-                    ui(R.string.call_participant_status, muted, camera) +
-                        if (person.speaking) "; " + ui(R.string.call_speaking) else ""
+                    listOfNotNull(
+                            ui(R.string.call_participant_status, muted, camera),
+                            if (person.audio.muted || person.audio.volumePercent == 0)
+                                ui(R.string.call_muted_for_me)
+                            else null,
+                            if (person.speaking) ui(R.string.call_speaking) else null,
+                        )
+                        .joinToString("; ")
             },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -90,6 +105,19 @@ private fun VoiceChannelParticipant(person: CallParticipant) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        if (person.audio.muted || person.audio.volumePercent == 0)
+            Icon(
+                Icons.AutoMirrored.Outlined.VolumeOff,
+                ui(R.string.call_muted_for_me),
+                Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        else if (!person.mine && person.audio.volumePercent != 100)
+            Text(
+                ui(R.string.call_volume_percent, person.audio.volumePercent),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         Icon(
             if (person.muted) Icons.Outlined.MicOff
             else if (person.speaking) Icons.Outlined.GraphicEq else Icons.Outlined.Mic,

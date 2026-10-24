@@ -28,6 +28,9 @@ internal enum class CallPreviewOutput {
     Earpiece,
 }
 
+/** Receiver-side settings, independent of the participant's published microphone state. */
+internal data class CallParticipantAudio(val volumePercent: Int = 100, val muted: Boolean = false)
+
 internal data class CallPreviewSession(
     val route: CallRoute,
     val sessionId: Long,
@@ -38,6 +41,7 @@ internal data class CallPreviewSession(
     val output: CallPreviewOutput = CallPreviewOutput.Speaker,
     val videoLimit: Int = 2,
     val videoPreviewsVisible: Boolean = true,
+    val participantAudio: Map<String, CallParticipantAudio> = emptyMap(),
 )
 
 internal data class VoiceCallUiState(
@@ -128,6 +132,25 @@ internal class VoiceCallPreviewController(private val scope: CoroutineScope) {
 
     fun toggleMute(session: CallPreviewSession) = change(session) { it.copy(muted = !it.muted) }
 
+    /**
+     * Session-scoped: leaving/replacing the call discards overrides; stale sheets cannot edit it.
+     */
+    fun participantVolume(session: CallPreviewSession, id: String, percent: Int) =
+        change(session) {
+            val audio = it.participantAudio[id] ?: CallParticipantAudio()
+            it.copy(
+                participantAudio =
+                    it.participantAudio +
+                        (id to audio.copy(volumePercent = percent.coerceIn(0, 200)))
+            )
+        }
+
+    fun participantMute(session: CallPreviewSession, id: String, muted: Boolean) =
+        change(session) {
+            val audio = it.participantAudio[id] ?: CallParticipantAudio()
+            it.copy(participantAudio = it.participantAudio + (id to audio.copy(muted = muted)))
+        }
+
     fun toggleCamera(session: CallPreviewSession) =
         change(session) {
             it.copy(
@@ -187,6 +210,7 @@ internal data class CallParticipant(
     val muted: Boolean,
     val speaking: Boolean,
     val camera: Boolean,
+    val audio: CallParticipantAudio = CallParticipantAudio(),
 )
 
 internal fun previewCallParticipants(
@@ -208,6 +232,7 @@ internal fun previewCallParticipants(
             speaking = session?.speakerId == id,
             camera =
                 if (mine) session?.camera == true else session?.layout == CallPreviewLayout.Video,
+            audio = session?.participantAudio?.get(id) ?: CallParticipantAudio(),
         )
     }
 }

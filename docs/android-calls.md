@@ -27,6 +27,17 @@ part of Demo, not real users or a connection to a server.
   labelled Connected; viewing another room never joins it. Membership/status is
   scoped to the session owner and room, so You/mute/camera state cannot leak to
   another channel. Real rosters will use authoritative server presence.
+- Participant roster rows, lobby rows and full-call avatar/name targets open the
+  existing profile sheet. Tapping a tile's remaining area still enlarges it.
+  Call profiles stay scoped to the call's server/account while browsing elsewhere.
+- Profiles of other participants in your joined Demo room include receiver-side
+  volume (0–200%, default/reset 100%) and Mute for me. Mute preserves the chosen
+  volume and never changes the sender's mic status; rosters/tiles show a separate
+  local speaker-off indicator. Overrides survive minimizing/Activity recreation
+  for that session and reset on leave/replacement; stale session controls cannot
+  change a replacement call. These are labelled UI previews with no audio output.
+  Live integration needs a per-publisher GStreamer `volume` stage in received
+  audio branches; the current egui receive path has no per-user gain/mute API.
 - The video close control uses a quiet 24dp scrim circle and 16dp icon within a
   48dp touch target, without the former large opaque background.
 - The Chat/Call views share the voice channel's Demo messages and saved composer.

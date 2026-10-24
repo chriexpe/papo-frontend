@@ -504,7 +504,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                         }
                         if (callUi.screen != null) {
                             Surface(Modifier.fillMaxSize()) {
-                                VoiceCallScreen(calls) { target, id ->
+                                VoiceCallScreen(calls, openScopedProfile) { target, id ->
                                     model.navigate(target, Action.SelectChannel(id)) {
                                         enterConversation(target)
                                         model.voiceCalls.minimize()
@@ -532,6 +532,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                                         profileId = null
                                         model.navigate(target, Action.OpenDm(user)) {
                                             enterConversation(target)
+                                            model.voiceCalls.minimize()
                                         }
                                     },
                                 )
