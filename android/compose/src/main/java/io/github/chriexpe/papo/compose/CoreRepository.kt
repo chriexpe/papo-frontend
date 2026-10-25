@@ -361,7 +361,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         try {
             for ((url, handle) in handles) {
                 handle.notificationVisibility(url == visibleConversationUrl)
-                val snapshot = handle.poll()
+                val snapshot = handle.poll().retainPresentation(snapshots[url])
                 snapshots[url] = snapshot
                 if (!snapshot.isDemo) MessageAlerts.setOwner(url, snapshot.me)
                 if (

@@ -678,6 +678,53 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
 
+    val presentation = rememberMessagePresentation(server)
+    val replyMessages = remember(server.messages) { server.messages.associateBy { it.id } }
+    val currentInteraction =
+        rememberUpdatedState<(TimelineInteraction) -> Unit>(
+            handler@{ action ->
+                val current = latestServer
+                fun message(id: String) = current.messages.firstOrNull { it.id == id }
+                fun emoji(reaction: Reaction) =
+                    EmojiChoice(
+                        reaction.emoji,
+                        reaction.custom,
+                        current.emojis.firstOrNull { it.id == reaction.emoji }?.name
+                            ?: reaction.emoji,
+                    )
+                when (action) {
+                    is TimelineInteraction.Reply -> beginReply(action.id, true)
+                    is TimelineInteraction.Mention -> {
+                        updateComposer(composer.mention(action.person))
+                        if (!recording) {
+                            composerFocus.requestFocus()
+                            keyboard?.show()
+                        }
+                    }
+                    is TimelineInteraction.Jump -> openOriginal(action.id)
+                    is TimelineInteraction.Player -> activeMedia = action.id
+                    is TimelineInteraction.Select -> {
+                        val target = message(action.id) ?: return@handler
+                        selectedEmbedIndex =
+                            action.embed?.let { id ->
+                                target.embeds
+                                    .filter { it.sourceType == "custom" }
+                                    .indexOfFirst { it.id == id }
+                                    .takeIf { it >= 0 }
+                            }
+                        selected = target
+                    }
+                    is TimelineInteraction.React ->
+                        message(action.id)?.let {
+                            model.react(current, it, emoji(action.reaction))
+                        }
+                    is TimelineInteraction.People ->
+                        reactionPeople = action.id to emoji(action.reaction)
+                }
+            }
+        )
+    val interactions = remember(draftKey) { TimelineInteractions(currentInteraction) }
+
     CompositionLocalProvider(
         LocalMediaViewer provides
             { media ->
@@ -723,96 +770,37 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         }
                     }
                 items(server.messages.asReversed(), key = { it.id }) { message ->
-                    CompositionLocalProvider(
-                        LocalMediaViewport provides viewport,
-                        LocalTimelineMediaVisible provides
-                            (message.id in visibleRows &&
-                                viewedMedia == null &&
-                                !embedEditor &&
-                                edit == null &&
-                                !pins &&
-                                !overlayBlocking),
-                        LocalMediaRowId provides message.id,
-                    ) {
-                        Column {
-                            if (
-                                appearance.catchUpHourglass && message.id == server.reading.gapStart
-                            )
-                                UnreadDivider(ui(R.string.unread_below), "unread-gap-start")
-                            else if (message.id == entryUnread)
-                                UnreadDivider(ui(R.string.new_messages), "unread-new")
-                            MessageRow(
-                                message,
-                                server,
-                                model,
-                                grouped = message.id in groupedMessages,
-                                canReply =
-                                    !recording &&
-                                        !submitting &&
-                                        !attachmentDraft.sending &&
-                                        !overlayBlocking &&
-                                        viewedMedia == null,
-                                onReply = { beginReply(message.id, true) },
-                                highlight = highlighted?.first == message.id,
-                                onMention = { person ->
-                                    updateComposer(composer.mention(person))
-                                    if (!recording) {
-                                        composerFocus.requestFocus()
-                                        keyboard?.show()
-                                    }
-                                },
-                                onJump = ::openOriginal,
-                                onActions = {
-                                    selectedEmbedIndex = null
-                                    selected = message
-                                },
-                                onReaction = { r ->
-                                    model.react(
-                                        server,
-                                        message,
-                                        EmojiChoice(
-                                            r.emoji,
-                                            r.custom,
-                                            server.emojis.firstOrNull { it.id == r.emoji }?.name
-                                                ?: r.emoji,
-                                        ),
-                                    )
-                                },
-                                onReactionPeople = { r ->
-                                    reactionPeople =
-                                        message.id to
-                                            EmojiChoice(
-                                                r.emoji,
-                                                r.custom,
-                                                server.emojis.firstOrNull { it.id == r.emoji }?.name
-                                                    ?: r.emoji,
-                                            )
-                                },
-                                media = {
-                                    MessageMedia(
-                                        message,
-                                        server,
-                                        model,
-                                        activeMedia,
-                                        { activeMedia = it },
-                                        {
-                                            selectedEmbedIndex = null
-                                            selected = message
-                                        },
-                                        onEmbedActions = { embed ->
-                                            selectedEmbedIndex =
-                                                message.embeds
-                                                    .filter { it.sourceType == "custom" }
-                                                    .indexOf(embed)
-                                                    .takeIf { it >= 0 }
-                                            selected = message
-                                        },
-                                    )
-                                },
-                            )
-                            if (appearance.catchUpHourglass && message.id == server.reading.gapEnd)
-                                UnreadDivider(ui(R.string.unread_above), "unread-gap-end")
-                        }
+                    Column {
+                        if (appearance.catchUpHourglass && message.id == server.reading.gapStart)
+                            UnreadDivider(ui(R.string.unread_below), "unread-gap-start")
+                        else if (message.id == entryUnread)
+                            UnreadDivider(ui(R.string.new_messages), "unread-new")
+                        TimelineMessage(
+                            message,
+                            presentation,
+                            replyMessages[message.replyTo],
+                            model,
+                            grouped = message.id in groupedMessages,
+                            canReply =
+                                !recording &&
+                                    !submitting &&
+                                    !attachmentDraft.sending &&
+                                    !overlayBlocking &&
+                                    viewedMedia == null,
+                            highlighted = highlighted?.first == message.id,
+                            viewport = viewport,
+                            mediaVisible =
+                                message.id in visibleRows &&
+                                    viewedMedia == null &&
+                                    !embedEditor &&
+                                    edit == null &&
+                                    !pins &&
+                                    !overlayBlocking,
+                            activePlayer = activeMedia,
+                            interactions = interactions,
+                        )
+                        if (appearance.catchUpHourglass && message.id == server.reading.gapEnd)
+                            UnreadDivider(ui(R.string.unread_above), "unread-gap-end")
                     }
                 }
                 if (server.canLoadOlder)

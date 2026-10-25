@@ -10,6 +10,7 @@ import org.junit.runners.Suite
     MediaEditorTest::class,
     NotificationTest::class,
     MessageGroupsTest::class,
+    MessagePresentationTest::class,
     SearchEditorTest::class,
     MediaCacheTest::class,
     MediaNetworkTest::class,

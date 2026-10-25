@@ -49,6 +49,7 @@ internal fun MessageRow(
     onReaction: (Reaction) -> Unit,
     onReactionPeople: (Reaction) -> Unit,
     media: @Composable () -> Unit,
+    replyMessage: ChatMessage? = server.messages.firstOrNull { it.id == message.replyTo },
 ) {
     val appearance = LocalClientPreferences.current
     val messageAppearance = LocalMessageAppearance.current
@@ -181,10 +182,10 @@ internal fun MessageRow(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            server.messages.firstOrNull { it.id == message.replyTo }?.previewText()
-                                ?: message.replyContent.ifBlank {
-                                    ui(R.string.reply_to_an_earlier_message)
-                                },
+                            remember(replyMessage, message.replyContent) {
+                                    replyMessage?.previewText() ?: message.replyContent
+                                }
+                                .ifBlank { ui(R.string.reply_to_an_earlier_message) },
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.bodySmall,
