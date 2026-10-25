@@ -65,6 +65,7 @@ import kotlinx.coroutines.launch
 internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBack: () -> Unit) {
     val channel = server.conversation ?: return
     val draftKey = "${server.url}/${server.me}/${channel.id}"
+    val timeline = remember(server.messages) { MessageTimelineIndex(server.messages) }
     var composer by
         rememberSaveable(draftKey, stateSaver = ComposerDraft.Saver) {
             mutableStateOf(
@@ -189,21 +190,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     // The divider reflects the shared unread cursor. A remembered arrival ID
     // outlives its acknowledgement and creates a second, stale unread marker.
     val entryUnread = server.reading.unreadStart
-    val groupedMessages =
-        remember(
-            server.messages,
-            entryUnread,
-            server.reading.gapStart,
-            server.reading.gapEnd,
-            appearance.catchUpHourglass,
-        ) {
-            messageContinuations(
-                server.messages,
-                setOf(entryUnread) +
-                    if (appearance.catchUpHourglass) setOf(server.reading.gapStart) else emptySet(),
-                if (appearance.catchUpHourglass) setOf(server.reading.gapEnd) else emptySet(),
-            )
-        }
+    val groupedMessages = remember(timeline) { messageContinuations(timeline.messages) }
     val readingBlocked =
         attachmentOptions != null ||
             embedEditor ||
@@ -232,6 +219,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     }
     val clipboard = LocalClipboardManager.current
     val latestServer by rememberUpdatedState(server)
+    val latestTimeline by rememberUpdatedState(timeline)
     val viewport =
         with(density) {
             Rect(
@@ -261,7 +249,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         snapshotFlow {
             Triple(
                 listState.layoutInfo,
-                latestServer.messages.asReversed().map { it.id },
+                latestTimeline.reversedIds,
                 viewedMedia == null &&
                     attachmentOptions == null &&
                     !embedEditor &&
@@ -316,7 +304,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         draftKey,
         server.loadingContext,
         server.timeline,
-        server.messages.map { it.id },
+        timeline.orderedIds,
     ) {
         if (positionReady || server.messages.isEmpty() || server.loadingContext)
             return@LaunchedEffect
@@ -359,7 +347,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             layout.beforeContentPadding -
                             layout.afterContentPadding)
                         .coerceAtLeast(0)
-                val messages = current.messages.map { it.id }.toSet()
+                val messages = latestTimeline.ids
                 val exposed =
                     layout.visibleItemsInfo
                         .filter { row ->
@@ -502,7 +490,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         server.navigationSerial,
         server.navigationTarget,
         server.loadingContext,
-        server.messages.map { it.id },
+        timeline.orderedIds,
         server.canLoadNewer,
     ) {
         if (server.navigationTarget.isBlank()) {
@@ -679,7 +667,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     }
 
     val presentation = rememberMessagePresentation(server)
-    val replyMessages = remember(server.messages) { server.messages.associateBy { it.id } }
+    val replyMessages = timeline.byId
     val currentInteraction =
         rememberUpdatedState<(TimelineInteraction) -> Unit>(
             handler@{ action ->
@@ -769,39 +757,31 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             Text(ui(R.string.load_later_messages))
                         }
                     }
-                items(server.messages.asReversed(), key = { it.id }) { message ->
-                    Column {
-                        if (appearance.catchUpHourglass && message.id == server.reading.gapStart)
-                            UnreadDivider(ui(R.string.unread_below), "unread-gap-start")
-                        else if (message.id == entryUnread)
-                            UnreadDivider(ui(R.string.new_messages), "unread-new")
-                        TimelineMessage(
-                            message,
-                            presentation,
-                            replyMessages[message.replyTo],
-                            model,
-                            grouped = message.id in groupedMessages,
-                            canReply =
-                                !recording &&
-                                    !submitting &&
-                                    !attachmentDraft.sending &&
-                                    !overlayBlocking &&
-                                    viewedMedia == null,
-                            highlighted = highlighted?.first == message.id,
-                            viewport = viewport,
-                            mediaVisible =
-                                message.id in visibleRows &&
-                                    viewedMedia == null &&
-                                    !embedEditor &&
-                                    edit == null &&
-                                    !pins &&
-                                    !overlayBlocking,
-                            activePlayer = activeMedia,
-                            interactions = interactions,
-                        )
-                        if (appearance.catchUpHourglass && message.id == server.reading.gapEnd)
-                            UnreadDivider(ui(R.string.unread_above), "unread-gap-end")
-                    }
+                items(timeline.reversedMessages, key = { it.id }) { message ->
+                    TimelineMessage(
+                        message,
+                        presentation,
+                        replyMessages[message.replyTo],
+                        model,
+                        grouped = message.id in groupedMessages,
+                        canReply =
+                            !recording &&
+                                !submitting &&
+                                !attachmentDraft.sending &&
+                                !overlayBlocking &&
+                                viewedMedia == null,
+                        highlighted = highlighted?.first == message.id,
+                        viewport = viewport,
+                        mediaVisible =
+                            message.id in visibleRows &&
+                                viewedMedia == null &&
+                                !embedEditor &&
+                                edit == null &&
+                                !pins &&
+                                !overlayBlocking,
+                        activePlayer = activeMedia,
+                        interactions = interactions,
+                    )
                 }
                 if (server.canLoadOlder)
                     item("history") {
@@ -816,6 +796,49 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         }
                     }
             }
+
+            val boundaries = buildList {
+                if (appearance.catchUpHourglass && server.reading.gapStart.isNotBlank())
+                    add(
+                        ReadBoundary(
+                            server.reading.gapStart,
+                            ui(R.string.unread_below),
+                            "unread-gap-start",
+                            true,
+                            "↓",
+                        )
+                    )
+                if (
+                    entryUnread.isNotBlank() &&
+                        (!appearance.catchUpHourglass || entryUnread != server.reading.gapStart)
+                )
+                    add(
+                        ReadBoundary(
+                            entryUnread,
+                            ui(R.string.new_messages),
+                            "unread-new",
+                            true,
+                            "•",
+                        )
+                    )
+                if (appearance.catchUpHourglass && server.reading.gapEnd.isNotBlank())
+                    add(
+                        ReadBoundary(
+                            server.reading.gapEnd,
+                            ui(R.string.unread_above),
+                            "unread-gap-end",
+                            false,
+                            "↑",
+                        )
+                    )
+            }
+            ReadBoundaryOverlay(
+                listState,
+                boundaries,
+                headerHeight + 8.dp,
+                composerHeight + 8.dp,
+                appearance.avatars,
+            )
 
             // Content can continue behind glass, while system status symbols keep
             // a quiet, legible background even when a message scrolls under them.
@@ -1614,29 +1637,6 @@ private data class ReadViewport(
     val anchor: Pair<String, Int>?,
     val arrivals: Set<String>,
 )
-
-@Composable
-private fun UnreadDivider(label: String, tag: String) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).testTag(tag),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        HorizontalDivider(
-            Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = .4f),
-        )
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        HorizontalDivider(
-            Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = .4f),
-        )
-    }
-}
 
 private fun shortcutCount(count: Int) = if (count > 99) "99+" else count.toString()
 

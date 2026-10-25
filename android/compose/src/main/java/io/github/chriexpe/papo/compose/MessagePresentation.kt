@@ -46,3 +46,12 @@ internal fun ServerState.retainPresentation(previous: ServerState?): ServerState
         blockedUsers = blockedUsers.retaining(previous.blockedUsers),
     )
 }
+
+/** Timeline-derived lookups are rebuilt only when messages change, never on pixel scrolls. */
+internal class MessageTimelineIndex(val messages: List<ChatMessage>) {
+    val byId = messages.associateBy { it.id }
+    val orderedIds = messages.map { it.id }
+    val ids = orderedIds.toSet()
+    val reversedMessages = messages.asReversed()
+    val reversedIds = orderedIds.asReversed()
+}

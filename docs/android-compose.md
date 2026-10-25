@@ -34,7 +34,7 @@ If multiple devices are connected, set `ANDROID_SERIAL` before installing.
 Android Studio can open `android` and run the `compose` module. Gradle builds
 the Rust adapter and generates Kotlin bindings automatically. UniFFI is pinned
 to 0.32.2, and the generator reads metadata from the exact library packaged in
-the APK. Generated sources stay under `compose/build/generated/uniffi/{debug,release}`. A direct build supports both ABIs by default:
+the APK. Generated sources stay under `compose/build/generated/uniffi/{debug,release,benchmark}`. A direct build supports both ABIs by default:
 
 ```bash
 cd android
@@ -51,6 +51,13 @@ variant. Signing uses the existing `PAPO_ANDROID_KEYSTORE`,
 The tagged release workflow now builds and signs Compose with the existing
 artifact name, package ID and Firebase secrets; it requires complete Firebase
 configuration. PR builds upload a separate debug APK.
+
+For scrolling measurements, `./gradlew :compose:assembleBenchmark -PpapoAbis=arm64-v8a`
+builds optimized Kotlin and release-profile Rust with shell profiling enabled.
+This non-debuggable variant uses the development package ID, Firebase identity
+and debug signing key, so it can replace a local debug installation while
+preserving its data. Its APK is `compose/build/outputs/apk/benchmark/compose-benchmark.apk`.
+The normal release variant does not enable shell profiling.
 
 ## First launch and demo
 
@@ -648,6 +655,17 @@ Android patches only reading state, channel badges and the notification count,
 retaining message/resource objects. Account, channel and live-message IDs guard
 against applying a response to a stale timeline. Transport wakes and other
 commands continue to drain updates through full snapshots.
+
+Message rendering retains its account/display resources independently of reading,
+badge and background-work changes. Full snapshots retain equal message/resource
+objects, while edits, reply updates and changed display resources still invalidate
+the affected rendering. Timeline ID lookups are rebuilt when messages change,
+rather than on every scroll layout. Message actions resolve the current snapshot.
+
+Unread and new-message indicators are overlays anchored to visible message edges.
+Moving a boundary changes neither row height nor author grouping. Pixel movement
+repositions the overlay during placement; labels retain accessibility descriptions
+and do not intercept message taps. All viewport read reports remain immediate.
 
 While reading behind the head, the down arrow counts incoming messages that
 have not appeared in the viewport. Its first press opens the oldest remaining
