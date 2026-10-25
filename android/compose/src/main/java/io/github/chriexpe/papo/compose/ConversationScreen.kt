@@ -232,17 +232,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     }
     val clipboard = LocalClipboardManager.current
     val latestServer by rememberUpdatedState(server)
-    val viewport =
-        with(density) {
-            Rect(
-                listBounds.left,
-                listBounds.top + (headerHeight + 8.dp).toPx(),
-                listBounds.right,
-                (listBounds.bottom - (composerHeight + 8.dp).toPx()).coerceAtLeast(
-                    listBounds.top + (headerHeight + 8.dp).toPx()
-                ),
-            )
-        }
+    // Content scrolls beneath the translucent header and composer and stays visible there, so
+    // media must load for the whole list rather than only the gap between the two bars.
+    val viewport = listBounds
     val visibleRows by remember {
         derivedStateOf {
             val layout = listState.layoutInfo

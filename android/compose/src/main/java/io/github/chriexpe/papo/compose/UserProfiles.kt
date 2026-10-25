@@ -86,6 +86,7 @@ internal fun UserAvatar(
                     onSuccess = { loaded = true },
                     onError = { loaded = false },
                     retentionKey = "avatar/$id/$revision",
+                    eager = true,
                 )
         }
     }
