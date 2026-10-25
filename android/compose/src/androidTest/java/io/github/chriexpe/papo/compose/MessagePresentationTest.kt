@@ -1,9 +1,11 @@
 package io.github.chriexpe.papo.compose
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
@@ -11,6 +13,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.test.core.app.ApplicationProvider
 import io.github.chriexpe.papo.core.NativeClient
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.*
@@ -107,6 +111,58 @@ class MessagePresentationTest {
     }
 
     @Test
+    fun inheritedProfilesDoNotInvalidateContentAndActionsUseTheLatestHandler() {
+        val client = NativeClient.demo()
+        try {
+            val state = mutableStateOf(client.poll())
+            val model = ApplicationProvider.getApplicationContext<PapoApplication>().model
+            val renders = AtomicInteger()
+            var invoked: String? = null
+            compose.setContent {
+                MaterialTheme {
+                    val current = state.value
+                    CompositionLocalProvider(
+                        LocalProfileContext provides ProfileContext(current, model),
+                        LocalOpenProfile provides
+                            { id ->
+                                invoked = "$id/${current.notificationCount}"
+                            },
+                    ) {
+                        MessagePresentationScope(rememberMessagePresentation(current), model) {
+                            ProfilePresentationProbe(renders)
+                        }
+                    }
+                }
+            }
+            compose.waitForIdle()
+            assertEquals(1, renders.get())
+            repeat(5) { n ->
+                compose.runOnIdle {
+                    state.value = state.value.copy(notificationCount = (n + 1).toUInt())
+                }
+            }
+            compose.waitForIdle()
+            assertEquals("Profile locals must not bypass rendering isolation", 1, renders.get())
+            compose.onNodeWithTag("profile-probe").performClick()
+            compose.runOnIdle { assertEquals("author/5", invoked) }
+            compose.runOnIdle {
+                state.value =
+                    state.value.copy(
+                        members =
+                            state.value.members.mapIndexed { i, person ->
+                                if (i == 0) person.copy(name = "Changed profile") else person
+                            }
+                    )
+            }
+            compose.onNodeWithTag("profile-probe").assertTextEquals("Changed profile")
+            assertEquals(2, renders.get())
+        } finally {
+            client.shutdown()
+            client.close()
+        }
+    }
+
+    @Test
     fun fullSnapshotsRetainUnchangedObjectsWithoutHidingEditsOrCrossingAccounts() {
         val client = NativeClient.demo()
         try {
@@ -140,6 +196,17 @@ class MessagePresentationTest {
             client.close()
         }
     }
+}
+
+@Composable
+private fun ProfilePresentationProbe(renders: AtomicInteger) {
+    val profile = LocalProfileContext.current!!
+    val open = LocalOpenProfile.current
+    SideEffect { renders.incrementAndGet() }
+    Text(
+        profile.server.members.first().name,
+        Modifier.testTag("profile-probe").clickable { open("author") },
+    )
 }
 
 @Composable

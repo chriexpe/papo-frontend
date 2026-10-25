@@ -661,6 +661,8 @@ badge and background-work changes. Full snapshots retain equal message/resource
 objects, while edits, reply updates and changed display resources still invalidate
 the affected rendering. Timeline ID lookups are rebuilt when messages change,
 rather than on every scroll layout. Message actions resolve the current snapshot.
+Inherited avatar/author contexts use the same retained display resources, and
+stable profile callbacks forward to the latest navigation handlers.
 
 Unread and new-message indicators are overlays anchored to visible message edges.
 Moving a boundary changes neither row height nor author grouping. Pixel movement
