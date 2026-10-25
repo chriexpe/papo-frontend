@@ -656,6 +656,16 @@ retaining message/resource objects. Account, channel and live-message IDs guard
 against applying a response to a stale timeline. Transport wakes and other
 commands continue to drain updates through full snapshots.
 
+Android publishes reading progress on a separate server/account/channel stream.
+The reading field of an application snapshot is only a seed; UI consumers use
+`PapoViewModel.reading(server)` for current progress. A boundary-only change does
+not emit application/timeline state or synchronize calls and the notification
+inbox. Full polls also update the reading stream without republishing content
+when only reading differs. Badge/count changes still publish normally.
+Only the marker composition observes moving boundary IDs. The conversation
+observes a derived set of control values (hourglass visibility, mentions, seeking
+and live IDs), so moving the boundary does not rebuild the list or composer.
+
 Message rendering retains its account/display resources independently of reading,
 badge and background-work changes. Full snapshots retain equal message/resource
 objects, while edits, reply updates and changed display resources still invalidate

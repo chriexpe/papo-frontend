@@ -13,6 +13,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -30,7 +31,38 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import io.github.chriexpe.papo.core.ReadingView
 import kotlin.math.roundToInt
+
+/** This is the only composition that observes the moving read-boundary IDs. */
+@Composable
+internal fun ConversationReadMarkers(
+    list: LazyListState,
+    reading: State<ReadingView>,
+    catchUp: Boolean,
+    topPadding: Dp,
+    bottomPadding: Dp,
+    avatars: Boolean,
+) {
+    val value = reading.value
+    val boundaries = buildList {
+        if (catchUp && value.gapStart.isNotBlank())
+            add(
+                ReadBoundary(
+                    value.gapStart,
+                    ui(R.string.unread_below),
+                    "unread-gap-start",
+                    true,
+                    "↓",
+                )
+            )
+        if (value.unreadStart.isNotBlank() && (!catchUp || value.unreadStart != value.gapStart))
+            add(ReadBoundary(value.unreadStart, ui(R.string.new_messages), "unread-new", true, "•"))
+        if (catchUp && value.gapEnd.isNotBlank())
+            add(ReadBoundary(value.gapEnd, ui(R.string.unread_above), "unread-gap-end", false, "↑"))
+    }
+    ReadBoundaryOverlay(list, boundaries, topPadding, bottomPadding, avatars)
+}
 
 internal data class ReadBoundary(
     val message: String,

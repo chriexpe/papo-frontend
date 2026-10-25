@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -32,6 +33,8 @@ import org.junit.runner.RunWith
 class PapoUiTest {
     @get:Rule val compose = createEmptyComposeRule()
     private lateinit var activity: ActivityScenario<MainActivity>
+
+    private fun PapoViewModel.activeReading() = state.value.active?.let { reading(it).value }
 
     private lateinit var savedClient: Map<String, *>
     private lateinit var savedAppearance: Map<String, *>
@@ -2529,37 +2532,38 @@ class PapoUiTest {
                         .fetchSemanticsNodes()
                         .isNotEmpty() && model.readingPosition(fixture.url + "/me/incoming") != null
                 }
-                assertTrue(model.state.value.active!!.reading.hourglassTarget.isBlank())
+                assertTrue(model.activeReading()!!.hourglassTarget.isBlank())
                 val unexpected = java.util.concurrent.CopyOnWriteArrayList<String>()
                 val observer =
                     kotlinx.coroutines
                         .CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
                         .launch {
-                            model.state.collect { state ->
+                            model.state.collectLatest { state ->
                                 state.active
                                     ?.takeIf { it.url == fixture.url }
-                                    ?.reading
-                                    ?.let { read ->
-                                        if (read.hourglassTarget.isNotBlank())
-                                            unexpected.add(
-                                                "target=" +
-                                                    read.hourglassTarget +
-                                                    ", gap=" +
-                                                    read.gapStart +
-                                                    ".." +
-                                                    read.gapEnd +
-                                                    ", new=" +
-                                                    read.unreadStart
-                                            )
+                                    ?.let { server ->
+                                        model.reading(server).collect { read ->
+                                            if (read.hourglassTarget.isNotBlank())
+                                                unexpected.add(
+                                                    "target=" +
+                                                        read.hourglassTarget +
+                                                        ", gap=" +
+                                                        read.gapStart +
+                                                        ".." +
+                                                        read.gapEnd +
+                                                        ", new=" +
+                                                        read.unreadStart
+                                                )
+                                        }
                                     }
                             }
                         }
                 fun settle(id: String) {
                     compose.waitUntil(10_000) {
                         model.state.value.active?.let {
-                            it.reading.liveIds.contains(id) &&
+                            model.reading(it).value.liveIds.contains(id) &&
                                 it.conversation?.unread == false &&
-                                !it.reading.syncPending
+                                !model.reading(it).value.syncPending
                         } == true
                     }
                     compose
@@ -2671,7 +2675,7 @@ class PapoUiTest {
             )
         )
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.liveIds?.contains("head-arrival-4") == true
+            model.activeReading()?.liveIds?.contains("head-arrival-4") == true
         }
         compose.waitUntil(5000) {
             compose
@@ -2704,7 +2708,7 @@ class PapoUiTest {
             )
         )
         compose.waitUntil(10_000) {
-            model.state.value.active?.reading?.liveIds?.contains("read-arrival-19") == true &&
+            model.activeReading()?.liveIds?.contains("read-arrival-19") == true &&
                 compose.onAllNodesWithTag("latest-count").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("latest-count").assert(hasAnyDescendant(hasText("20")))
@@ -2735,6 +2739,57 @@ class PapoUiTest {
     }
 
     @Test
+    fun advancingUnreadBoundaryDoesNotPublishOrRebuildTheMessageTimeline() {
+        demo()
+        lateinit var model: PapoViewModel
+        activity.onActivity { model = (it.application as PapoApplication).model }
+        // These are the demo reader's own messages. Keep unread messages beyond
+        // two large rows so exposing one boundary cannot finish the whole block.
+        for (n in listOf(2, 6)) {
+            model.command(
+                io.github.chriexpe.papo.core.Action.Edit(
+                    "general-$n",
+                    List(35) { "Message $n keeps the unread block larger than the viewport." }
+                        .joinToString("\n\n"),
+                    null,
+                )
+            )
+        }
+        model.command(
+            io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-0"), false, "me")
+        )
+        model.command(io.github.chriexpe.papo.core.Action.BreakReadSpan("general"))
+        model.command(
+            io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
+        )
+        compose.waitUntil(5000) { model.activeReading()?.hasCatchUp == true }
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("hourglass-shortcut").assertIsDisplayed()
+        compose.waitForIdle()
+        val application = model.state.value
+        val boundary = model.activeReading()!!.gapEnd
+        assertTrue(boundary.isNotBlank())
+        // Move the real LazyColumn to the currently unread tail. Its normal
+        // visibility observer, native reducer and persistence remain active.
+        compose.onNodeWithTag("message-list").performScrollToKey(boundary)
+        compose.waitUntil(5000) { model.activeReading()?.gapEnd != boundary }
+        compose.waitForIdle()
+        assertTrue(
+            "The test must advance an unfinished unread block",
+            model.activeReading()!!.hasCatchUp,
+        )
+        org.junit.Assert.assertSame(
+            "A boundary advance must not emit application/timeline state",
+            application,
+            model.state.value,
+        )
+        org.junit.Assert.assertSame(
+            application.active!!.messages,
+            model.state.value.active!!.messages,
+        )
+    }
+
+    @Test
     fun newestEntryKeepsTheHourglassWithoutMarkingTheReadHeadUnread() {
         demo()
         lateinit var model: PapoViewModel
@@ -2746,20 +2801,20 @@ class PapoUiTest {
         model.command(
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
         )
-        compose.waitUntil(5000) { model.state.value.active?.reading?.hasCatchUp == true }
+        compose.waitUntil(5000) { model.activeReading()?.hasCatchUp == true }
         compose.onNodeWithText("geral").performClick()
         compose.onNodeWithTag("message-general-9", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithTag("hourglass-shortcut").assertIsDisplayed()
         compose.waitUntil(5000) {
-            val reading = model.state.value.active?.reading
+            val reading = model.activeReading()
             reading != null && reading.gapEnd.isNotBlank() && reading.gapEnd != "general-9"
         }
-        val before = model.state.value.active!!.reading.hourglassTarget
+        val before = model.activeReading()!!.hourglassTarget
         compose.onNodeWithContentDescription("Back to conversations").performClick()
         compose.onNodeWithText("geral").performClick()
         compose.onNodeWithTag("message-general-9", useUnmergedTree = true).assertIsDisplayed()
-        assertEquals(before, model.state.value.active!!.reading.hourglassTarget)
-        assertTrue(model.state.value.active!!.reading.gapEnd != "general-9")
+        assertEquals(before, model.activeReading()!!.hourglassTarget)
+        assertTrue(model.activeReading()!!.gapEnd != "general-9")
     }
 
     @Test
@@ -2772,13 +2827,13 @@ class PapoUiTest {
         model.command(
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-0"), false, "me")
         )
-        compose.waitUntil(5000) { model.state.value.active?.reading?.gapStart?.isBlank() == true }
+        compose.waitUntil(5000) { model.activeReading()?.gapStart?.isBlank() == true }
         model.command(io.github.chriexpe.papo.core.Action.BreakReadSpan("general"))
         model.command(
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
         )
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.hourglassTarget?.isNotBlank() == true
+            model.activeReading()?.hourglassTarget?.isNotBlank() == true
         }
         compose.onNodeWithText("geral").performClick()
         compose.waitUntil(5000) {
@@ -2790,7 +2845,7 @@ class PapoUiTest {
         compose.onNodeWithContentDescription("Clear catch-up block").assertIsDisplayed()
         compose.onNodeWithContentDescription("Clear catch-up block").performClick()
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.hourglassTarget?.isBlank() == true
+            model.activeReading()?.hourglassTarget?.isBlank() == true
         }
         compose.onNodeWithTag("hourglass-shortcut").assertDoesNotExist()
         compose.onNodeWithTag("latest-messages").assertDoesNotExist()
@@ -2829,7 +2884,7 @@ class PapoUiTest {
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
         )
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.hourglassTarget?.isNotBlank() == true
+            model.activeReading()?.hourglassTarget?.isNotBlank() == true
         }
         compose.onNodeWithText("geral").performClick()
         compose.onNodeWithTag("hourglass-shortcut").performClick()
@@ -2838,7 +2893,7 @@ class PapoUiTest {
             model.readingPosition(key)?.first?.let { it != "general-9" } == true
         }
         val anchor = model.readingPosition(key)!!.first
-        val remaining = model.state.value.active!!.reading.hourglassTarget
+        val remaining = model.activeReading()!!.hourglassTarget
         val beforeBounds =
             compose
                 .onNodeWithTag("message-$anchor", useUnmergedTree = true)
@@ -2853,7 +2908,7 @@ class PapoUiTest {
         compose.onNodeWithContentDescription("Back to conversations").performClick()
         compose.onNodeWithText("geral").performClick()
         compose.onNodeWithTag("message-$anchor", useUnmergedTree = true).assertIsDisplayed()
-        assertEquals(remaining, model.state.value.active!!.reading.hourglassTarget)
+        assertEquals(remaining, model.activeReading()!!.hourglassTarget)
         val reopenedBounds =
             compose
                 .onNodeWithTag("message-$anchor", useUnmergedTree = true)
@@ -2873,7 +2928,7 @@ class PapoUiTest {
                 .isNotEmpty()
         }
         compose.onNodeWithTag("message-$anchor", useUnmergedTree = true).assertIsDisplayed()
-        assertEquals(remaining, model.state.value.active!!.reading.hourglassTarget)
+        assertEquals(remaining, model.activeReading()!!.hourglassTarget)
         val recreatedBounds =
             compose
                 .onNodeWithTag("message-$anchor", useUnmergedTree = true)
@@ -2902,7 +2957,7 @@ class PapoUiTest {
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
         )
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.hourglassTarget?.isNotBlank() == true
+            model.activeReading()?.hourglassTarget?.isNotBlank() == true
         }
         compose.onNodeWithContentDescription("Client settings").performClick()
         compose.onNodeWithText("Appearance").performClick()
@@ -2920,7 +2975,7 @@ class PapoUiTest {
         compose.onNodeWithTag("hourglass-shortcut").assertDoesNotExist()
         compose.onNodeWithTag("unread-gap-start").assertDoesNotExist()
         compose.onNodeWithTag("unread-gap-end").assertDoesNotExist()
-        assertTrue(model.state.value.active!!.reading.hourglassTarget.isNotBlank())
+        assertTrue(model.activeReading()!!.hourglassTarget.isNotBlank())
         compose.onNodeWithTag("message-list").performScrollToKey("general-0")
         compose.waitUntil(5000) {
             model.readingPosition("demo://papo/me/general")?.first?.let { it != "general-9" } ==

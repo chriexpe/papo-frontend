@@ -7,6 +7,7 @@ import org.junit.runners.Suite
 @Suite.SuiteClasses(
     LinkRecoveryTest::class,
     CoreBridgeTest::class,
+    ChatStatePublicationTest::class,
     MediaEditorTest::class,
     NotificationTest::class,
     MessageGroupsTest::class,

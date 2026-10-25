@@ -1,6 +1,29 @@
 package io.github.chriexpe.papo.compose
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.structuralEqualityPolicy
+import io.github.chriexpe.papo.core.ReadingView
 import io.github.chriexpe.papo.core.ViewportSnapshot
+
+/** Only control changes invalidate the conversation; moving boundary IDs do not. */
+internal data class ReadingControls(
+    val liveIds: List<String>,
+    val mentions: List<String>,
+    val hasCatchUp: Boolean,
+    val seekingCatchUp: Boolean,
+)
+
+@Composable
+internal fun rememberReadingControls(reading: State<ReadingView>): State<ReadingControls> =
+    remember(reading) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            val value = reading.value
+            ReadingControls(value.liveIds, value.mentions, value.hasCatchUp, value.seekingCatchUp)
+        }
+    }
 
 /** Patch read state while retaining the existing message and resource objects. */
 internal fun ServerState.withViewport(update: ViewportSnapshot): ServerState {
