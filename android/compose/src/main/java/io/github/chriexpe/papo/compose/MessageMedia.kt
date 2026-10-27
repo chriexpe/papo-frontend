@@ -5,9 +5,6 @@ package io.github.chriexpe.papo.compose
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -409,7 +406,7 @@ private fun EmbedCard(
                 "iframe" ->
                     ReservedMedia(e.width, e.height, tag = "embed-${e.id}") {
                         val id = "${server.url}/${server.me}/iframe/${e.id}"
-                        if (activePlayer == id) ProviderPlayer(e.iframeUrl, server, onPlayer)
+                        if (activePlayer == id) ProviderPlayer(e.iframeUrl, onPlayer)
                         else {
                             if (e.hasImage)
                                 MediaImage(server, model, e.title, embed = e, viewer = false)
@@ -1342,96 +1339,6 @@ private fun AudioControls(
 private fun audioTime(milliseconds: Long): String {
     val seconds = milliseconds.coerceAtLeast(0) / 1000
     return "%d:%02d".format(seconds / 60, seconds % 60)
-}
-
-@Suppress("SetJavaScriptEnabled")
-@Composable
-private fun ProviderPlayer(url: String, server: ServerState, onPlayer: (String?) -> Unit) {
-    val activity = rememberMediaActivity()
-    Box(Modifier.fillMaxSize().then(activity.modifier)) {
-        if (activity.retained) ProviderPlayerContent(url, server, onPlayer, activity.visible)
-    }
-}
-
-@Suppress("SetJavaScriptEnabled")
-@Composable
-private fun ProviderPlayerContent(
-    url: String,
-    server: ServerState,
-    onPlayer: (String?) -> Unit,
-    visible: Boolean,
-) {
-    val context = LocalContext.current
-    val externalLinks by rememberUpdatedState(LocalUriHandler.current)
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val webView =
-        remember(url) {
-            WebView(context).apply {
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.allowFileAccess = false
-                settings.allowContentAccess = false
-                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                settings.mediaPlaybackRequiresUserGesture = true
-                webViewClient =
-                    object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(
-                            view: WebView?,
-                            request: WebResourceRequest?,
-                        ): Boolean {
-                            val target = request?.url ?: return true
-                            if (!request.isForMainFrame) return false
-                            if (
-                                target.scheme == "https" &&
-                                    target.host in
-                                        listOf("www.youtube.com", "www.youtube-nocookie.com")
-                            )
-                                return false
-                            if (isPublicLink(target.toString()))
-                                runCatching { externalLinks.openUri(target.toString()) }
-                            return true
-                        }
-                    }
-                // Never install the Papo session cookie in the provider browser.
-                val referer =
-                    if (server.isDemo) "https://github.com/chriexpe/papo-frontend/" else server.url
-                loadUrl(url, mapOf("Referer" to referer))
-            }
-        }
-    val registry = LocalMediaVisibilityRegistry.current
-    val row = LocalMediaRowId.current
-    val owner = remember { Any() }
-    DisposableEffect(webView, registry, row) {
-        registry?.register(owner, row) { pauseProviderMedia(webView) }
-        onDispose { registry?.unregister(owner) }
-    }
-    DisposableEffect(webView, lifecycle) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE) {
-                pauseProviderMedia(webView)
-                onPlayer(null)
-            }
-        }
-        lifecycle.addObserver(observer)
-        onDispose {
-            lifecycle.removeObserver(observer)
-            webView.stopLoading()
-            webView.onPause()
-            webView.destroy()
-        }
-    }
-    LaunchedEffect(webView, visible) {
-        if (visible) webView.onResume() else pauseProviderMedia(webView)
-    }
-    AndroidView(factory = { webView }, modifier = Modifier.fillMaxSize())
-}
-
-private fun pauseProviderMedia(webView: WebView) {
-    webView.evaluateJavascript(
-        "document.querySelectorAll('video,audio').forEach(function(media){media.pause();});",
-        null,
-    )
-    webView.onPause()
 }
 
 internal fun isPublicLink(raw: String): Boolean = runCatching {

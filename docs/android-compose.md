@@ -161,7 +161,11 @@ video texture while playback controls keep their normal size.
 Every open viewer uses Android's FULL_SENSOR orientation policy, following the
 device even with system auto-rotate disabled. Closing restores the prior policy.
 Compose handles size/orientation changes directly so rotation preserves the
-viewer and player. YouTube retains its isolated provider controls.
+viewer and player. YouTube retains its isolated provider controls. Its WebView
+fills the reserved frame with explicit native layout dimensions so Chromium's
+viewport-based video and controls do not collapse to zero height. Provider gestures
+stay with the player. Fullscreen uses Chromium's original custom view, with system
+Back returning to the same inline session and restoring orientation/system bars.
 
 Coil decodes images/GIFs, and Media3 plays video/audio only after a tap. Leaving
 the app pauses playback; disposed players release their resources. Only one
