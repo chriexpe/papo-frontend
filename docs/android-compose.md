@@ -127,6 +127,18 @@ the draft is preserved. Conversation Back returns to its Chats or Direct list. C
 to the destination it opened from; Servers and Direct return to Chats before
 the activity can exit.
 
+**Appearance → Message density → Extra compact** is a device-local preview for the
+current account. The inline variant repeats the author beside each message; **Extra compact
+(stacked)** places the body below the author. Both use a narrow timestamp gutter
+with one time per minute and omit avatars. Author changes have a small spacing gap,
+and external APP badges reserve their full measured label and padding. Rich text, provider
+media, replies, message actions and account text sizing use their existing renderers.
+The other density choices retain their account sync behavior.
+
+Conversation history has centered Today, Yesterday or localized date headers at
+local-calendar day boundaries, matching egui. Headers have separate lazy-list keys;
+message jumps, saved reading positions and viewport read receipts target messages.
+
 Form failures stay inline, connection state has a persistent indicator, delivery
 state stays on the message, and app-wide failures use one dismissible feedback
 pill. There are no per-screen Android Toast styles.

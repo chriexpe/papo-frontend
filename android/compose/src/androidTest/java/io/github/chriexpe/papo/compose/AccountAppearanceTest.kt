@@ -12,6 +12,42 @@ import org.junit.Test
 
 class AccountAppearanceTest {
     @Test
+    fun extraCompactIsAnAccountScopedLocalPreviewAndPreservesServerDensity() {
+        val client = NativeClient.demo()
+        val server =
+            try {
+                client.poll()
+            } finally {
+                client.close()
+            }
+        val preferences = ClientPreferences()
+        val comfortable = server.copy(appearance = AppearanceView("huge", "comfortable"))
+        preferences.setExtraCompact(comfortable, true)
+        assertEquals(
+            MessageDensity.ExtraCompact,
+            preferences.messageAppearance(comfortable).density,
+        )
+        assertEquals(AccountFontSize.Large, preferences.messageAppearance(comfortable).font)
+        assertEquals(
+            MessageDensity.Comfortable,
+            preferences.messageAppearance(comfortable.copy(me = "other")).density,
+        )
+        assertEquals(
+            MessageDensity.Comfortable,
+            preferences.messageAppearance(comfortable.copy(url = "https://other.test")).density,
+        )
+        assertEquals("comfortable", comfortable.appearance?.messageDensity)
+        preferences.setExtraCompact(comfortable, true, stacked = true)
+        assertEquals(
+            MessageDensity.ExtraCompactStacked,
+            preferences.messageAppearance(comfortable).density,
+        )
+        assertEquals("comfortable", comfortable.appearance?.messageDensity)
+        preferences.setExtraCompact(comfortable, false)
+        assertEquals(MessageDensity.Comfortable, preferences.messageAppearance(comfortable).density)
+    }
+
+    @Test
     fun migration_ack_cache_retry_and_late_results_remain_per_account() {
         val base = InstrumentationRegistry.getInstrumentation().targetContext
         val name = "appearance-fixture-${System.nanoTime()}"

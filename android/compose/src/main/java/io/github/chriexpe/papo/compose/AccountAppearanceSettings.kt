@@ -41,7 +41,8 @@ internal fun AccountFontSetting(server: ServerState, model: PapoViewModel, busy:
 
 @Composable
 internal fun AccountDensitySetting(server: ServerState, model: PapoViewModel, busy: Boolean) {
-    val selected = LocalClientPreferences.current.messageAppearance(server).density
+    val preferences = LocalClientPreferences.current
+    val selected = preferences.messageAppearance(server).density
     SettingsCard {
         Column(Modifier.then(settingTarget("message-density")).padding(16.dp)) {
             Text(ui(R.string.message_density), style = MaterialTheme.typography.titleMedium)
@@ -55,10 +56,16 @@ internal fun AccountDensitySetting(server: ServerState, model: PapoViewModel, bu
                     FilterChip(
                         selected == choice,
                         {
-                            model.accountAppearance.change(
+                            preferences.setExtraCompact(
                                 server,
-                                AppearanceChange.MessageDensity(choice.value),
+                                choice.localPreview,
+                                stacked = choice == MessageDensity.ExtraCompactStacked,
                             )
+                            if (!choice.localPreview)
+                                model.accountAppearance.change(
+                                    server,
+                                    AppearanceChange.MessageDensity(choice.value),
+                                )
                         },
                         label = { Text(ui(choice.labelId)) },
                         enabled = !busy,
@@ -66,6 +73,11 @@ internal fun AccountDensitySetting(server: ServerState, model: PapoViewModel, bu
                     )
                 }
             }
+            Text(
+                ui(R.string.extra_compact_description),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

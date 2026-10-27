@@ -47,12 +47,14 @@ internal fun MessageContent(
     server: ServerState,
     model: PapoViewModel,
     onActions: () -> Unit,
+    prefix: MessageTextPrefix? = null,
     media: @Composable () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(LocalMessageAppearance.current.contentGap)) {
         val content = remember(message.content, message.embeds) { message.visibleContent() }
         if (content.isNotBlank() && GifChoice.marker(message.content) == null)
-            MessageText(message, server, model, onActions)
+            MessageText(message, server, model, onActions, prefix)
+        else if (prefix != null) MarkdownPrefix(prefix)
         media()
     }
 }

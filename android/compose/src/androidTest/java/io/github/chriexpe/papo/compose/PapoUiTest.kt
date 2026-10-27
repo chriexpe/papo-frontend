@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -2268,6 +2269,270 @@ class PapoUiTest {
                     .density,
             .001f,
         )
+    }
+
+    @Test
+    fun extraCompactKeepsRichMessagesInlineAndSurvivesRecreation() {
+        chat()
+        lateinit var model: PapoViewModel
+        var remoteDensity: String? = null
+        activity.onActivity {
+            model = (it.application as PapoApplication).model
+            remoteDensity = model.state.value.active?.appearance?.messageDensity
+        }
+        listOf("First **inline** message", "Second inline message", "Third inline message")
+            .forEachIndexed { index, text ->
+                model.command(
+                    io.github.chriexpe.papo.core.Action.Send(
+                        "extra-$index",
+                        "general",
+                        text,
+                        null,
+                        true,
+                        emptyList(),
+                    )
+                )
+            }
+        compose.waitUntil(5000) {
+            compose
+                .onAllNodesWithTag("message-extra-2", useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        val normalHeight =
+            compose
+                .onNodeWithTag("message-extra-0", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+                .height
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithText("Appearance").performClick()
+        compose
+            .onNodeWithTag("appearance-settings")
+            .performScrollToNode(hasTestTag("message-density-extra-compact"))
+        compose.onNodeWithTag("message-density-extra-compact").performClick()
+        compose.onNodeWithTag("message-density-extra-compact").assertIsSelected()
+        activity.onActivity {
+            assertEquals(remoteDensity, model.state.value.active?.appearance?.messageDensity)
+        }
+        compose
+            .onNodeWithTag("appearance-settings")
+            .performScrollToNode(hasTestTag("message-density-extra-compact-stacked"))
+        compose.onNodeWithTag("message-density-extra-compact-stacked").performClick()
+        compose.onNodeWithTag("message-density-extra-compact-stacked").assertIsSelected()
+        activity.recreate()
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithTag("appearance-settings").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose
+            .onNodeWithTag("appearance-settings")
+            .performScrollToNode(hasTestTag("message-density-extra-compact"))
+        compose
+            .onNodeWithTag("appearance-settings")
+            .performScrollToNode(hasTestTag("message-density-extra-compact-stacked"))
+        compose.onNodeWithTag("message-density-extra-compact-stacked").assertIsSelected()
+        compose.onNodeWithTag("message-density-extra-compact").performClick()
+        compose.onNodeWithTag("message-density-extra-compact").assertIsSelected()
+        androidx.test.espresso.Espresso.pressBack()
+        androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithText("geral").performClick()
+        val first =
+            compose.onNodeWithText("First inline message", substring = true, useUnmergedTree = true)
+        val second =
+            compose.onNodeWithText(
+                "Second inline message",
+                substring = true,
+                useUnmergedTree = true,
+            )
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        first.performSemanticsAction(
+            androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult
+        ) {
+            it(layouts)
+        }
+        val text = layouts.single().layoutInput.text
+        val bodyStart = text.text.indexOf("First")
+        assertTrue(
+            "Author and body must share the first line",
+            bodyStart > 0 && layouts.single().getLineForOffset(bodyStart) == 0,
+        )
+        assertTrue(
+            "Markdown emphasis must survive the inline author prefix",
+            text.spanStyles.any {
+                it.item.fontWeight == androidx.compose.ui.text.font.FontWeight.Bold
+            },
+        )
+        second.assertTextContains(text.text.substring(0, bodyStart).trim(), substring = true)
+        assertTrue(
+            compose
+                .onNodeWithTag("message-extra-0", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+                .height < normalHeight
+        )
+        compose.onNodeWithTag("author-extra-0", useUnmergedTree = true).assertDoesNotExist()
+        val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
+        InstrumentationRegistry.getInstrumentation()
+            .targetContext
+            .cacheDir
+            .resolve("extra-compact-verified.png")
+            .outputStream()
+            .use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
+        compose.onNodeWithTag("message-extra-1", useUnmergedTree = true).performTouchInput {
+            longClick()
+        }
+        compose.onNodeWithText("Reply", substring = false).performClick()
+        compose.onNodeWithTag("composer-reply").assertIsDisplayed()
+    }
+
+    @Test
+    fun extraCompactBadgePaddingAuthorGapsAndStackedVariantSurviveLargeText() {
+        chat()
+        val layout = androidx.compose.runtime.mutableStateOf(MessageDensity.ExtraCompact)
+        activity.onActivity { host ->
+            val model = (host.application as PapoApplication).model
+            val server = checkNotNull(model.state.value.active)
+            val seed = server.messages.first()
+            val messages =
+                listOf("Bom dia", "Bom dia Sony", "Bom dia amigos").mapIndexed { index, body ->
+                    val author = if (index < 2) "Bread" else "Sone"
+                    seed.copy(
+                        id = "compact-badge-$index",
+                        author = author,
+                        authorId = author,
+                        externalAuthor =
+                            io.github.chriexpe.papo.core.ExternalAuthorView(
+                                "wormhole",
+                                author,
+                                author,
+                                "",
+                                "",
+                            ),
+                        content = body,
+                        replyTo = "",
+                        replyContent = "",
+                        edited = false,
+                        pinned = false,
+                        reactions = emptyList(),
+                        attachments = emptyList(),
+                        embeds = emptyList(),
+                        pending = false,
+                    )
+                }
+            host.setContent {
+                val baseDensity = androidx.compose.ui.platform.LocalDensity.current
+                androidx.compose.runtime.CompositionLocalProvider(
+                    LocalMessageAppearance provides
+                        MessageAppearance(AccountFontSize.Large, layout.value),
+                    androidx.compose.ui.platform.LocalDensity provides
+                        androidx.compose.ui.unit.Density(baseDensity.density, 1.6f),
+                ) {
+                    androidx.compose.material3.MaterialTheme(
+                        colorScheme = androidx.compose.material3.darkColorScheme(),
+                        typography = messageTypography(AccountFontSize.Large),
+                    ) {
+                        androidx.compose.material3.Surface {
+                            androidx.compose.foundation.layout.Column(
+                                Modifier.width(360.dp).padding(8.dp)
+                            ) {
+                                messages.forEachIndexed { index, message ->
+                                    MessageRow(
+                                        message,
+                                        server,
+                                        model,
+                                        grouped = index == 1,
+                                        canReply = false,
+                                        onReply = {},
+                                        highlight = false,
+                                        onMention = {},
+                                        onJump = {},
+                                        onActions = {},
+                                        onReaction = {},
+                                        onReactionPeople = {},
+                                        media = {},
+                                        showCompactTime = index != 1,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fun assertBadgesFit() {
+            val badges = compose.onAllNodesWithText("APP", useUnmergedTree = true)
+            badges.assertCountEquals(3)
+            repeat(3) { index ->
+                val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+                badges[index].performSemanticsAction(
+                    androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult
+                ) {
+                    it(results)
+                }
+                val result = results.single()
+                assertFalse("APP badge must reserve its full text height", result.didOverflowHeight)
+                assertTrue(
+                    "All APP glyphs must fit inside the pill",
+                    result.getLineRight(0) <= result.size.width + 1f,
+                )
+                assertEquals(1, results.single().lineCount)
+            }
+        }
+        assertBadgesFit()
+        val inline = compose.onAllNodesWithText("Bom dia", substring = true, useUnmergedTree = true)
+        val sameAuthorGap =
+            inline[1].fetchSemanticsNode().boundsInRoot.top -
+                inline[0].fetchSemanticsNode().boundsInRoot.bottom
+        val newAuthorGap =
+            inline[2].fetchSemanticsNode().boundsInRoot.top -
+                inline[1].fetchSemanticsNode().boundsInRoot.bottom
+        assertTrue(
+            "Author changes must have more breathing room than continuations",
+            newAuthorGap > sameAuthorGap + 4f,
+        )
+        fun screenshot(name: String) {
+            val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .cacheDir
+                .resolve(name)
+                .outputStream()
+                .use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap.recycle()
+        }
+        screenshot("extra-compact-badges-verified.png")
+        compose.runOnIdle { layout.value = MessageDensity.ExtraCompactStacked }
+        assertBadgesFit()
+        val author =
+            compose
+                .onAllNodesWithText("Bread", substring = true, useUnmergedTree = true)[0]
+                .fetchSemanticsNode()
+                .boundsInRoot
+        val body =
+            compose
+                .onNodeWithText("Bom dia", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+        assertTrue("Stacked messages must start below the author", body.top >= author.bottom)
+        screenshot("extra-compact-stacked-verified.png")
+    }
+
+    @Test
+    fun conversationDateHeaderHasItsOwnRowAndJumpTargetsStillReachMessages() {
+        chat()
+        compose.onNodeWithTag("message-list").performScrollToKey("date/general-0")
+        compose
+            .onNodeWithTag(
+                "conversation-date-${java.time.Instant.ofEpochMilli(checkNotNull((InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as PapoApplication).model.state.value.active).messages.first().at).atZone(java.time.ZoneId.systemDefault()).toLocalDate()}",
+                useUnmergedTree = true,
+            )
+            .assertIsDisplayed()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-0")
+        compose.onNodeWithTag("message-general-0", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-4")
+        compose.onNodeWithTag("message-general-4", useUnmergedTree = true).assertIsDisplayed()
     }
 
     @Test

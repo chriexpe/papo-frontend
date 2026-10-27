@@ -281,7 +281,7 @@ private fun settingsEntries(server: ServerState, prefs: ClientPreferences): List
                 "Appearance",
                 ui(R.string.message_density),
                 ui(accountAppearance.density.labelId),
-                "compact messages normal comfortable spacing espaçamento mensagens compactas",
+                "extra compact messages normal comfortable spacing espaçamento mensagens compactas",
             )
         )
         add(

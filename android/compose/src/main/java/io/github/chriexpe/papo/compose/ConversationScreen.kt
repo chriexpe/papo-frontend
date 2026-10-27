@@ -68,7 +68,10 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val draftKey = "${server.url}/${server.me}/${channel.id}"
     val readingState = remember(draftKey) { model.reading(server) }.collectAsStateWithLifecycle()
     val readingControls by rememberReadingControls(readingState)
-    val timeline = remember(server.messages) { MessageTimelineIndex(server.messages) }
+    val timeline =
+        remember(server.messages, java.time.ZoneId.systemDefault()) {
+            MessageTimelineIndex(server.messages)
+        }
     var composer by
         rememberSaveable(draftKey, stateSaver = ComposerDraft.Saver) {
             mutableStateOf(
@@ -332,7 +335,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 return@LaunchedEffect
             }
             listState.scrollToItem(
-                server.messages.lastIndex - position,
+                timeline.position(saved.first) ?: 0,
                 saved.second,
             )
         } else listState.scrollToItem(0)
@@ -505,7 +508,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         if (server.navigationSerial == handledNavigation) return@LaunchedEffect
         val position = server.messages.indexOfFirst { it.id == server.navigationTarget }
         if (position < 0) return@LaunchedEffect
-        val index = server.messages.lastIndex - position
+        val index = timeline.position(server.navigationTarget) ?: return@LaunchedEffect
         val layout = listState.layoutInfo
         val item = layout.visibleItemsInfo.firstOrNull { it.key == server.navigationTarget }
         val available =
@@ -752,31 +755,39 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             else ui(R.string.messages_will_appear_when_the_server_is_reachable),
                         )
                     }
-                items(timeline.reversedMessages, key = { it.id }) { message ->
-                    TimelineMessage(
-                        message,
-                        presentation,
-                        replyMessages[message.replyTo],
-                        model,
-                        grouped = message.id in groupedMessages,
-                        canReply =
-                            !recording &&
-                                !submitting &&
-                                !attachmentDraft.sending &&
-                                !overlayBlocking &&
-                                viewedMedia == null,
-                        highlighted = highlighted?.first == message.id,
-                        viewport = viewport,
-                        mediaVisible =
-                            message.id in visibleRows &&
-                                viewedMedia == null &&
-                                !embedEditor &&
-                                edit == null &&
-                                !pins &&
-                                !overlayBlocking,
-                        activePlayer = activeMedia,
-                        interactions = interactions,
-                    )
+                items(
+                    timeline.rows,
+                    key = { it.key },
+                    contentType = { if (it.date != null) "date" else "message" },
+                ) { row ->
+                    if (row.date != null) ConversationDateHeader(row.date)
+                    val message = row.message
+                    if (message != null)
+                        TimelineMessage(
+                            message,
+                            presentation,
+                            replyMessages[message.replyTo],
+                            model,
+                            grouped = message.id in groupedMessages,
+                            canReply =
+                                !recording &&
+                                    !submitting &&
+                                    !attachmentDraft.sending &&
+                                    !overlayBlocking &&
+                                    viewedMedia == null,
+                            highlighted = highlighted?.first == message.id,
+                            viewport = viewport,
+                            mediaVisible =
+                                message.id in visibleRows &&
+                                    viewedMedia == null &&
+                                    !embedEditor &&
+                                    edit == null &&
+                                    !pins &&
+                                    !overlayBlocking,
+                            activePlayer = activeMedia,
+                            interactions = interactions,
+                            showCompactTime = message.id in timeline.timestampIds,
+                        )
                 }
             }
 
@@ -786,7 +797,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 appearance.catchUpHourglass,
                 headerHeight + 8.dp,
                 composerHeight + 8.dp,
-                appearance.avatars,
+                appearance.avatars && !LocalMessageAppearance.current.extraCompact,
             )
 
             // Content can continue behind glass, while system status symbols keep
