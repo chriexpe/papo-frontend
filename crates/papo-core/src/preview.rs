@@ -6,6 +6,9 @@
 //! publicadas pela própria resposta (Content-Type, Open Graph, Twitter Cards,
 //! oEmbed, <video>/<source> e iframe) decidem o resultado.
 
+mod social;
+pub use social::PostQuote;
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -157,6 +160,8 @@ pub struct PostMeta {
     /// preto de chrome).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<PostQuote>,
 }
 
 impl PostMeta {
@@ -185,7 +190,8 @@ impl PostMeta {
             shares,
             views,
             site_icon,
-            accent
+            accent,
+            quote
         );
     }
 }
@@ -1031,6 +1037,8 @@ async fn sanitize_preview_targets(preview: &mut ResolvedPreview) {
         &mut preview.media_url,
         &mut preview.image_url,
         &mut preview.embed_url,
+        &mut preview.post.author_avatar,
+        &mut preview.post.author_url,
     ] {
         let Some(raw) = target.as_deref() else {
             continue;
@@ -1087,6 +1095,8 @@ async fn resolve_oembed(
             ..PostMeta::default()
         }),
     };
+
+    preview.post.fill_from(social::engagement(value.get("provider_name").and_then(|v| v.as_str()).unwrap_or_default()));
 
     match kind {
         "photo" => {
@@ -1491,6 +1501,7 @@ async fn parse_html_preview(
     .filter(|_| !video_type.starts_with("text/html"));
 
     let mut post = html_post_meta(html, base, title.as_deref());
+    social::enrich(&mut post, html, base, description.as_deref());
     // Página de um post (tem autor): o estado que ela hidrata no player
     // costuma trazer números e o stream que as meta tags omitem.
     let post_page = post.author_name.is_some() || post.author_handle.is_some();

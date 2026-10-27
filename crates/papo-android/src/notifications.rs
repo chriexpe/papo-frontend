@@ -161,6 +161,7 @@ impl NativeClient {
         )?;
         Ok(Arc::new(Self {
             backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+            previews: Default::default(),
         }))
     }
     pub fn notification_visibility(&self, visible: bool) {

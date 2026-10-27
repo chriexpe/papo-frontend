@@ -1037,6 +1037,7 @@ mod tests {
             .set_token(Some("admin-refresh-fixture".into()));
         let native = NativeClient {
             backend: Mutex::new(Some(Backend::Live(Box::new(live)))),
+            previews: Default::default(),
         };
         let server = r#"{"id":"server","name":"Acknowledged","owner_id":"me","public":true}"#;
         script.lock().unwrap().extend([

@@ -1,5 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
+    <string name="embed_quoting">Citando %1$s</string>
     <string name="a_little_more_like_you">"Um pouco mais a sua cara."</string>
     <string name="a_little_privacy">"Um pouco de privacidade."</string>
     <string name="a_little_quiet_here">"Está um pouco quieto por aqui."</string>

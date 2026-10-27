@@ -40,6 +40,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import coil3.request.ImageRequest
 import io.github.chriexpe.papo.core.AttachmentView
+import io.github.chriexpe.papo.core.EmbedDetailsView
 import io.github.chriexpe.papo.core.EmbedView
 import io.github.chriexpe.papo.core.MediaRequest
 import io.github.chriexpe.papo.core.MediaResource
@@ -132,6 +133,7 @@ internal fun MessageMedia(
             onPlayer,
             actions,
             contextualActions = editCustom != null,
+            sourceUrl = embedSourceUrl(message, embed),
         )
     }
     message
@@ -360,6 +362,7 @@ private fun EmbedCard(
     onPlayer: (String?) -> Unit,
     onActions: () -> Unit,
     contextualActions: Boolean = false,
+    sourceUrl: String = e.url,
 ) {
     if (e.nativeMedia) {
         ReservedMedia(
@@ -369,6 +372,46 @@ private fun EmbedCard(
             tag = "embed-${e.id}",
         ) {
             EmbedVisual(e, server, model, onPlayer, onActions)
+        }
+        return
+    }
+    if (e.sourceType != "custom" && e.kind != "gif") {
+        val activity = rememberMediaActivity()
+        val details =
+            rememberEmbedDetails(
+                e,
+                server,
+                model,
+                sourceUrl,
+                activity.retained && e.kind != "iframe",
+            )
+        Box(Modifier.fillMaxWidth().then(activity.modifier)) {
+            SocialEmbedCard(e, server, model, details) {
+                when (e.kind) {
+                    "image",
+                    "video" ->
+                        ReservedMedia(
+                            e.width,
+                            e.height,
+                            tag = "embed-${e.id}",
+                            heightLimit = null,
+                        ) {
+                            EmbedVisual(e, server, model, onPlayer, onActions, details, sourceUrl)
+                        }
+                    "iframe" ->
+                        ReservedMedia(e.width, e.height, tag = "embed-${e.id}") {
+                            val id = "${server.url}/${server.me}/iframe/${e.id}"
+                            if (activePlayer == id) ProviderPlayer(e.iframeUrl, onPlayer)
+                            else {
+                                if (e.hasImage)
+                                    MediaImage(server, model, e.title, embed = e, viewer = false)
+                                PlayButton(e.title.ifBlank { ui(R.string.youtube_video) }) {
+                                    onPlayer(id)
+                                }
+                            }
+                        }
+                }
+            }
         }
         return
     }
@@ -514,6 +557,8 @@ private fun BoxScope.EmbedVisual(
     model: PapoViewModel,
     onPlayer: (String?) -> Unit,
     onActions: () -> Unit,
+    details: EmbedDetailsView? = null,
+    sourceUrl: String = e.url,
 ) {
     if (e.kind == "video")
         VideoPreview(
@@ -527,8 +572,11 @@ private fun BoxScope.EmbedVisual(
                 e.width,
                 e.height,
                 resource = MediaResource.EmbedVideo(e.id),
+                embed = e,
+                details = details,
+                embedSource = sourceUrl,
             ),
-            embedPoster = e.takeIf { it.hasImage },
+            embedPoster = e.takeIf { it.hasImage || it.sourceType != "custom" },
             onPlayer = onPlayer,
             onActions = onActions,
         )
@@ -672,7 +720,7 @@ internal fun BoxScope.MediaImage(
 ) {
     val context = LocalContext.current
     var retry by remember { mutableStateOf(0) }
-    val openViewer = LocalMediaViewer.current
+    val openViewer = if (viewer) LocalMediaViewer.current else null
     val media =
         ViewerMedia(
             "${server.url}/${server.me}/image/${embed?.id ?: resource ?: publicUrl}",
@@ -737,7 +785,7 @@ internal fun BoxScope.MediaImage(
                         .then(
                             if (viewer)
                                 Modifier.combinedClickable(
-                                    onClick = { openViewer(media) },
+                                    onClick = { openViewer?.invoke(media) },
                                     onLongClick = onActions,
                                     onLongClickLabel = ui(R.string.message_actions),
                                 )
@@ -805,6 +853,7 @@ internal class PlaybackHandle(
     }
 
     private var view: PlayerView? = null
+    private var controllerVisible = true
 
     private data class Host(
         val container: android.widget.FrameLayout,
@@ -812,6 +861,7 @@ internal class PlaybackHandle(
         val toggle: (() -> Unit)?,
         val scale: Float,
         val pan: androidx.compose.ui.geometry.Offset,
+        val controlsVisible: (Boolean) -> Unit,
     )
 
     private var inlineHost: Host? = null
@@ -880,14 +930,25 @@ internal class PlaybackHandle(
         toggle: (() -> Unit)?,
         scale: Float,
         pan: androidx.compose.ui.geometry.Offset,
+        controlsVisible: (Boolean) -> Unit = {},
     ) {
-        val host = Host(container, fullscreen, toggle, scale, pan)
+        val host = Host(container, fullscreen, toggle, scale, pan, controlsVisible)
         if (fullscreen) fullscreenHost = host else inlineHost = host
         if (view == null)
             view =
                 (android.view.LayoutInflater.from(container.context)
                         .inflate(R.layout.compose_player, null) as PlayerView)
-                    .apply { this.player = this@PlaybackHandle.player }
+                    .apply {
+                        this.player = this@PlaybackHandle.player
+                        setControllerVisibilityListener(
+                            PlayerView.ControllerVisibilityListener { visibility ->
+                                controllerVisible = visibility == android.view.View.VISIBLE
+                                (fullscreenHost ?: inlineHost)
+                                    ?.controlsVisible
+                                    ?.invoke(controllerVisible)
+                            }
+                        )
+                    }
         attach()
     }
 
@@ -925,6 +986,7 @@ internal class PlaybackHandle(
             else null
         )
         native.setFullscreenButtonState(host.fullscreen)
+        host.controlsVisible(controllerVisible)
         native.videoSurfaceView?.doOnLayout { surface ->
             (surface as? android.view.TextureView)?.setTransform(
                 android.graphics.Matrix().apply {
@@ -959,6 +1021,7 @@ internal fun BoxScope.PlayableMedia(
     handoff: PlaybackHandle? = null,
     fullscreen: Boolean = false,
     onFullscreen: ((PlaybackHandle) -> Unit)? = null,
+    onControlsVisible: (Boolean) -> Unit = {},
 ) {
     val activity = rememberMediaActivity()
     Box(Modifier.fillMaxSize().then(activity.modifier)) {
@@ -983,6 +1046,7 @@ internal fun BoxScope.PlayableMedia(
             fullscreen,
             onFullscreen,
             activity.visible,
+            onControlsVisible,
         )
     }
 }
@@ -1010,6 +1074,7 @@ private fun BoxScope.PlayableMediaContent(
     fullscreen: Boolean,
     onFullscreen: ((PlaybackHandle) -> Unit)?,
     mediaVisible: Boolean,
+    onControlsVisible: (Boolean) -> Unit,
 ) {
     var initialSeek by remember(id) { mutableStateOf<Float?>(null) }
     if (!active) {
@@ -1060,7 +1125,9 @@ private fun BoxScope.PlayableMediaContent(
                 }
             }
         else {
-            if (poster != null || embedPoster != null)
+            if (embedPoster != null && embedPoster.sourceType != "custom")
+                VideoPoster(server, model, resource, publicUrl, embedPoster)
+            else if (poster != null || embedPoster != null)
                 MediaImage(
                     server,
                     model,
@@ -1220,6 +1287,7 @@ private fun BoxScope.PlayableMediaContent(
                             } else null,
                             videoScale,
                             videoPan,
+                            onControlsVisible,
                         )
                     },
                     modifier = Modifier.fillMaxSize(),

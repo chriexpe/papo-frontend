@@ -295,6 +295,22 @@ creating inline players. The native snapshot contains the parsed layout, with
 a bounded account-scoped parse cache, so parsing does not cause a later reflow.
 Excessively nested Markdown falls back to readable literal text.
 
+Received social embeds share one card layout for text, images, and video:
+author/avatar, linked caption, quoted post when supplied, engagement counts,
+media, then source. Media fills the card's inner width with matching 14 dp
+insets. Custom authored embeds and direct-media attachments retain their own layouts.
+The shared `papo-core` preview coordinator enriches missing presentation fields
+from the original public link (including embed-fix links whose backend URL is
+canonicalized). It uses its bounded queue, cache, oEmbed/HTML discovery and URL
+validation; backend relay/player capabilities remain authoritative. Missing or
+unavailable metadata retains the backend card without inventing counts or avatars.
+The resolver recognizes advertised author artwork, oEmbed engagement text and
+quoted-post bylines, and also makes those fields available to the egui renderer.
+Video covers use a bounded, cached frame decode through the existing media range
+cache; a provider thumbnail remains the fallback. Native fullscreen playback keeps
+the same player and shows attribution with the controls, with a compact treatment
+for landscape video. YouTube continues using its provider player.
+
 Composer auto-pairing also lives in core. Typed backticks, bold/strikethrough
 and the existing egui markers receive closers; typing a closer advances through
 it, Backspace removes empty pairs, and hardware Tab exits a pending pair. IME

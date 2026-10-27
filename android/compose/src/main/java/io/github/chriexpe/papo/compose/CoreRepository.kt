@@ -1372,6 +1372,16 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             withContext(kotlinx.coroutines.Dispatchers.IO) { client.embedImage(id, author) }
         }
 
+    internal suspend fun embedDetails(
+        server: ServerState,
+        id: String,
+        source: String,
+    ): io.github.chriexpe.papo.core.EmbedDetailsView =
+        withContext(dispatcher) {
+            check(snapshots[server.url]?.me == server.me) { ui(R.string.account_changed) }
+            (handles[server.url] ?: error(ui(R.string.server_is_closed))).embedDetails(id, source)
+        }
+
     fun send(
         server: ServerState,
         text: String,

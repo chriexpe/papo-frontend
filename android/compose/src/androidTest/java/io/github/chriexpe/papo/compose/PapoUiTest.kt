@@ -3,6 +3,7 @@ package io.github.chriexpe.papo.compose
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
@@ -1873,6 +1874,238 @@ class PapoUiTest {
         systemBack()
         compose.onNodeWithContentDescription("Pinned messages").performClick()
         compose.onNodeWithTag("pinned-messages").assertIsDisplayed()
+    }
+
+    @Test
+    fun socialCardsKeepReactionsQuotesAndLinksAboveEitherMediaKind() {
+        media()
+        val opened = mutableListOf<String>()
+        for (kind in listOf("image", "video")) {
+            activity.onActivity { host ->
+                val model = (host.application as PapoApplication).model
+                val server = checkNotNull(model.state.value.active)
+                val embed =
+                    server.messages
+                        .flatMap { it.embeds }
+                        .first { it.id == "embed-video" }
+                        .copy(kind = kind, title = "An author (@author)", description = "Fallback")
+                val details =
+                    io.github.chriexpe.papo.core.EmbedDetailsView(
+                        pending = false,
+                        author = "An author",
+                        authorUrl = "https://example.test/author",
+                        handle = "@author",
+                        avatar = "",
+                        caption = "Read https://example.test/story.",
+                        provider = "FixupX",
+                        likes = 850UL,
+                        comments = 48UL,
+                        shares = 38UL,
+                        views = 14600UL,
+                        quote =
+                            io.github.chriexpe.papo.core.EmbedQuoteView(
+                                "Quoted author",
+                                "@quoted",
+                                "The quoted post.",
+                            ),
+                    )
+                host.setContent {
+                    androidx.compose.material3.MaterialTheme {
+                        androidx.compose.runtime.CompositionLocalProvider(
+                            androidx.compose.ui.platform.LocalUriHandler provides
+                                object : androidx.compose.ui.platform.UriHandler {
+                                    override fun openUri(uri: String) {
+                                        opened += uri
+                                    }
+                                }
+                        ) {
+                            SocialEmbedCard(embed, server, model, details) {
+                                androidx.compose.foundation.layout.Box(
+                                    Modifier.width(200.dp).height(100.dp).testTag("card-media")
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            compose.onNodeWithText("The quoted post.", useUnmergedTree = true).assertIsDisplayed()
+            val statistics =
+                compose
+                    .onNodeWithTag("embed-statistics", useUnmergedTree = true)
+                    .fetchSemanticsNode()
+                    .boundsInRoot
+            val frame =
+                compose
+                    .onNodeWithTag("card-media", useUnmergedTree = true)
+                    .fetchSemanticsNode()
+                    .boundsInRoot
+            assertTrue(
+                "Reactions belong above both image and video media",
+                statistics.bottom <= frame.top,
+            )
+            compose
+                .onNodeWithText("💬 48   🔁 38   ❤️ 850   👁 14.6K", useUnmergedTree = true)
+                .assertIsDisplayed()
+            val caption =
+                compose.onNodeWithText("Read https://example.test/story.", useUnmergedTree = true)
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            caption.performSemanticsAction(
+                androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult
+            ) {
+                it(layouts)
+            }
+            val layout = layouts.single()
+            val link =
+                layout.layoutInput.text
+                    .getLinkAnnotations(0, layout.layoutInput.text.length)
+                    .single()
+            assertEquals(
+                "https://example.test/story",
+                (link.item as androidx.compose.ui.text.LinkAnnotation.Clickable).tag,
+            )
+            caption.performTouchInput { click(layout.getBoundingBox(link.start + 4).center) }
+            compose.runOnIdle { assertEquals("https://example.test/story", opened.last()) }
+        }
+    }
+
+    @Test
+    fun portraitSocialVideoFillsTheCardWithEqualHorizontalPadding() {
+        media()
+        activity.onActivity { host ->
+            val model = (host.application as PapoApplication).model
+            val server = checkNotNull(model.state.value.active)
+            val embed =
+                server.messages
+                    .flatMap { it.embeds }
+                    .first { it.id == "embed-video" }
+                    .copy(
+                        title = "An author (@author)",
+                        description = "❤️ 12  💬 3\n\nCaption text",
+                        width = 480,
+                        height = 854,
+                    )
+            host.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    SocialEmbedCard(embed, server, model) {
+                        ReservedMedia(
+                            embed.width,
+                            embed.height,
+                            tag = "portrait-preview",
+                            heightLimit = null,
+                        ) {
+                            androidx.compose.foundation.layout.Box(
+                                Modifier.fillMaxSize()
+                                    .background(androidx.compose.ui.graphics.Color.DarkGray)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        val card =
+            compose.onNodeWithTag("social-embed-embed-video").fetchSemanticsNode().boundsInRoot
+        val frame = compose.onNodeWithTag("portrait-preview").fetchSemanticsNode().boundsInRoot
+        val scale =
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .resources
+                .displayMetrics
+                .density
+        assertEquals(14f * scale, frame.left - card.left, 1f)
+        assertEquals(14f * scale, card.right - frame.right, 1f)
+        assertEquals(frame.width * 854f / 480f, frame.height, 2f)
+        val stats =
+            compose
+                .onNodeWithTag("embed-statistics", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+        assertTrue(stats.bottom <= frame.top)
+        compose.onNodeWithText("An author").assertIsDisplayed()
+        compose.onNodeWithText("@author").assertIsDisplayed()
+        compose.onNodeWithText("Caption text").assertIsDisplayed()
+    }
+
+    @Test
+    fun videoEmbedFullscreenKeepsItsMetadataAndHidesItWithTheControls() {
+        media()
+        activity.onActivity { host ->
+            val model = (host.application as PapoApplication).model
+            val server = checkNotNull(model.state.value.active)
+            val embed =
+                server.messages
+                    .flatMap { it.embeds }
+                    .first { it.id == "embed-video" }
+                    .copy(
+                        title = "An author (@author)",
+                        description = "❤️ 12  💬 3\n\nA caption in fullscreen.",
+                        hasAuthorImage = true,
+                    )
+            host.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    MediaViewer(
+                        server,
+                        model,
+                        ViewerMedia(
+                            "preview-video",
+                            embed.title,
+                            "video",
+                            embed.mime,
+                            embed.width,
+                            embed.height,
+                            resource =
+                                io.github.chriexpe.papo.core.MediaResource.EmbedVideo(embed.id),
+                            embed = embed,
+                        ),
+                        {},
+                    )
+                }
+            }
+        }
+        compose.waitUntil(15_000) {
+            compose
+                .onAllNodes(
+                    hasTestTag("player-preview-video") and
+                        SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"),
+                    useUnmergedTree = true,
+                )
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        fun controls(visible: Boolean) {
+            androidx.test.espresso.Espresso.onView(
+                    androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(
+                        androidx.media3.ui.PlayerView::class.java
+                    )
+                )
+                .check { view, _ ->
+                    val native = view as androidx.media3.ui.PlayerView
+                    native.player!!.pause()
+                    native.controllerShowTimeoutMs = 0
+                    if (visible) native.showController() else native.hideController()
+                }
+        }
+        controls(true)
+        compose.waitUntil(5000) {
+            compose
+                .onAllNodesWithTag("viewer-embed-details", useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        compose.onNodeWithText("An author", useUnmergedTree = true).assertIsDisplayed()
+        controls(false)
+        compose.waitUntil(5000) {
+            compose
+                .onAllNodesWithTag("viewer-embed-details", useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        }
+        controls(true)
+        compose.waitUntil(5000) {
+            compose
+                .onAllNodesWithTag("viewer-embed-details", useUnmergedTree = true)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
     }
 
     @Test

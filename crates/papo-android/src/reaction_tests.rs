@@ -206,6 +206,7 @@ fn viewport_persists_and_schedules_live_receipts_without_a_full_poll() {
     client.runtime.store.connection = Connection::Online;
     let native = NativeClient {
         backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+        previews: Default::default(),
     };
     let update = native
         .observe_viewport(
@@ -691,6 +692,7 @@ fn result_hydration_and_acknowledged_pins_share_detached_media_without_reading_t
     .unwrap();
     let native = NativeClient {
         backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+        previews: Default::default(),
     };
     assert!(
         native
@@ -828,6 +830,7 @@ fn visible_pins_refresh_unknown_live_events_and_keep_events_during_inflight_snap
         .set_token(Some("test-session".into()));
     let native = NativeClient {
         backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+        previews: Default::default(),
     };
     assert!(
         native
@@ -934,6 +937,7 @@ fn moderator_deletion_is_permission_gated_acknowledged_and_shared_by_all_message
         .insert("general".into(), vec![message]);
     let native = NativeClient {
         backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+        previews: Default::default(),
     };
     assert!(
         native
