@@ -30,7 +30,7 @@ case "$abi" in
     *) echo "Unsupported ABI: $abi" >&2; exit 2 ;;
 esac
 for target in "${targets[@]}"; do
-    if ! rustup target list --installed | rg -q "^$target$"; then
+    if ! rustup target list --installed | grep -Fxq "$target"; then
         echo "Install Rust's target first: rustup target add $target" >&2
         exit 1
     fi
@@ -52,7 +52,7 @@ if [ "$test_app" = 1 ]; then
         io.github.chriexpe.papo.compose.AllTests \
         io.github.chriexpe.papo.compose.test/androidx.test.runner.AndroidJUnitRunner)
     printf '%s\n' "$test_output"
-    if ! printf '%s\n' "$test_output" | rg -q '^OK \([1-9][0-9]* tests?\)'; then
+    if ! printf '%s\n' "$test_output" | grep -Eq '^OK \([1-9][0-9]* tests?\)'; then
         echo "Device tests did not report a nonzero passing test count" >&2
         exit 1
     fi
