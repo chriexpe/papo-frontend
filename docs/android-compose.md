@@ -346,10 +346,45 @@ mentions, attachments and the selected reply.
 Loaded originals open immediately, including offline. Older originals use the
 shared core’s cancellable message-context request and reconciliation tickets;
 no second history fetcher lives in Kotlin. A loading pill offers Cancel, and
-missing/deleted originals report a clear error. Older contexts expose Load later
-messages plus Latest messages to return to the live window. Sending successfully
+missing/deleted originals report a clear error. Older contexts page automatically
+in both directions; Latest messages returns to the live window. Sending successfully
 also returns to latest. Navigation commands are scoped to their conversation so
 a delayed callback cannot reset another conversation’s history.
+
+## Cache-first startup and history
+
+Startup metadata restores the bounded Turso profile-image and emoji tables before
+starting the transport. The first projection can identify the saved server icon,
+avatars and custom emojis without waiting for REST bootstrap. Authoritative
+updates still replace changed assets and remove deleted ones. The 128-avatar
+retention limit protects the signed-in user's avatar. Server icons and avatars
+use stable server/account/revision identities in Coil's shared bitmap cache.
+Profile banners consume the first cached image emission rather than waiting for
+the image flow to finish refreshing.
+
+Chat history has no Load earlier/later buttons. A `snapshotFlow` observer requests
+pages near either end of the reverse-layout list, without feeding pixel offsets
+into message composition. Requests are scoped to server, account and channel and
+wait for initial positioning and hourglass navigation. Stable message keys retain
+the visible anchor when pages are added at either end.
+
+Online paging starts HTTP and reads a connected local page before publishing.
+Cached rows are provisional and never advance the HTTP cursor. The database must
+contain the exact timestamp/nanosecond/ID anchor in continuous history before it
+can extend a window; a detached pin or disjoint cache is not a bridge over a gap.
+HTTP pages reconcile edits and missing rows, then replay concurrent live mutations.
+Detached reply windows keep separate cursors for both directions and do not become
+continuous cached history. Offline paging continues through retained local rows.
+Retention remains 500 confirmed messages per channel, with 100-row database pages.
+
+Unchanged message upserts skip SQL updates while still promoting newly proven
+chronological rows. Unchanged member/profile refreshes skip member-table rewrites.
+The existing presentation retention and state publication keep equal message and
+resource objects, and unchanged public-image revalidation emits no replacement
+bytes. Attachments, images/GIFs, external avatars, audio/video ranges and waveform
+data continue using the existing shared, account-scoped 256 MiB media LRU; a
+restart does not discard it. This is functional cache/pagination work, not a claim
+that physical-device scroll performance has been resolved.
 
 ## Scope
 

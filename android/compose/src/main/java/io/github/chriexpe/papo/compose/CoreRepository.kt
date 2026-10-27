@@ -761,15 +761,29 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    internal fun loadHistory(server: ServerState, newer: Boolean) =
+        command(
+            if (newer) Action.Newer(server.selectedChannel) else Action.Older,
+            url = server.url,
+            expectedConversation = server.me to server.selectedChannel,
+        )
+
     fun command(
         action: Action,
         url: String = state.value.activeUrl,
         onFailure: () -> Unit = {},
+        expectedConversation: Pair<String, String>? = null,
         onSuccess: () -> Unit = {},
     ) =
         viewModelScope.launch(dispatcher) {
             try {
                 val handle = handles[url] ?: error(ui(R.string.server_is_closed))
+                // A prefetch queued before navigation must not load the next chat's history.
+                if (
+                    expectedConversation != null &&
+                        snapshots[url]?.let { it.me to it.selectedChannel } != expectedConversation
+                )
+                    return@launch
                 if (action is Action.Visible) {
                     val update =
                         handle.observeViewport(

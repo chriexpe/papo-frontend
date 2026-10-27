@@ -239,7 +239,17 @@ fn paginating_online_revalidates_cached_rows_and_removes_missing_messages() {
         },
         false,
     );
-    assert!(store.begin_load_cached_older("chat").is_none());
+    assert_eq!(store.begin_load_cached_older("chat").unwrap().2, "m008");
+    let cached_ticket = store.history_ticket("chat").unwrap();
+    store.restore_cached_history(&cached_ticket, CachedMessagePage {
+        channel_id: "chat".into(),
+        messages: vec![CachedMessage::from_api(&wire(6)), CachedMessage::from_api(&wire(7))],
+        has_more: false,
+        pins: Vec::new(),
+    });
+    assert!(store.message("m006").is_some(), "Cached history is usable before HTTP completes");
+    assert!(!store.loading_older("chat"));
+    // Local extension must not advance the server cursor and hide edits/deletions behind it.
     assert_eq!(store.begin_load_older("chat").unwrap().1, "m010");
     let ticket = store.history_ticket("chat").unwrap();
     let mut edited = wire(8);
@@ -272,6 +282,66 @@ fn history_snapshot_cannot_resurrect_a_concurrent_delete() {
     assert!(
         matches!(store.take_cache_ops().last(), Some(CacheOp::DeleteMessage { message_id }) if message_id == "m009")
     );
+}
+
+#[test]
+fn cached_newer_preview_keeps_the_http_cursor_and_revalidates_missing_rows() {
+    let mut store = fresh();
+    open_context(&mut store);
+    assert_eq!(store.begin_load_newer("chat").unwrap().1, "m003");
+    let ticket = store.history_ticket("chat").unwrap();
+    store.preview_cached_history(&ticket, CachedMessagePage {
+        channel_id: "chat".into(),
+        messages: (4..=8).map(|n| CachedMessage::from_api(&wire(n))).collect(),
+        has_more: false,
+        pins: Vec::new(),
+    });
+    assert!(store.loading_older("chat"), "The HTTP request remains in flight");
+    assert_eq!(ids(&store), ["m001", "m002", "m003", "m004", "m005", "m006", "m007", "m008"]);
+    let mut changed = wire(4);
+    changed.content = Some("server edit".into());
+    store.apply(Update::NewerMessages {
+        ticket,
+        messages: vec![changed, wire(6)],
+        has_more: true,
+    });
+    assert_eq!(ids(&store), ["m001", "m002", "m003", "m004", "m006", "m007", "m008"]);
+    assert_eq!(store.messages_in("chat").find(|m| m.id == "m004").unwrap().content, "server edit");
+    assert_eq!(store.begin_load_newer("chat").unwrap().1, "m006", "Cached m008 is not a validated cursor");
+    let ticket = store.history_ticket("chat").unwrap();
+    store.apply(Update::NewerMessages { ticket, messages: vec![wire(8)], has_more: false });
+    assert!(!store.messages_in("chat").any(|m| m.id == "m007"));
+    assert!(!store.can_load_newer("chat"));
+    assert!(store.take_cache_ops().iter().all(|op| !matches!(op,
+        CacheOp::AppendChannelHistory { .. } | CacheOp::MergeChannelHead { .. }
+    )), "Detached context must never become continuous cached history");
+}
+
+#[test]
+fn cached_older_context_does_not_skip_validation_or_keep_deleted_rows() {
+    let mut store = fresh();
+    let ticket = store.begin_message_context("chat");
+    store.apply(Update::MessageContext {
+        ticket, message_id: "m008".into(),
+        context: models::MessageContext {
+            channel_id: "chat".into(), messages: vec![wire(7), wire(8), wire(9)],
+            has_more_before: true, has_more_after: true,
+        },
+    });
+    assert_eq!(store.begin_load_older("chat").unwrap().1, "m007");
+    let ticket = store.history_ticket("chat").unwrap();
+    store.preview_cached_history(&ticket, CachedMessagePage {
+        channel_id: "chat".into(),
+        messages: (0..=6).map(|n| CachedMessage::from_api(&wire(n))).collect(),
+        has_more: false, pins: Vec::new(),
+    });
+    assert!(store.messages_in("chat").any(|m| m.id == "m000"));
+    store.apply(Update::OlderMessages { ticket, messages: vec![wire(5), wire(6)], has_more: true });
+    assert_eq!(store.begin_load_older("chat").unwrap().1, "m005");
+    let ticket = store.history_ticket("chat").unwrap();
+    store.apply(Update::OlderMessages { ticket, messages: Vec::new(), has_more: false });
+    assert_eq!(ids(&store), ["m005", "m006", "m007", "m008", "m009"]);
+    assert!(!store.can_load_older("chat"));
 }
 
 #[test]

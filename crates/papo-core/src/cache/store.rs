@@ -95,7 +95,19 @@ const UPSERT_MESSAGE: &str = "INSERT INTO messages (
         reactions = excluded.reactions,
         embeds = excluded.embeds,
         external_author = excluded.external_author,
-        created_at_nanos = excluded.created_at_nanos";
+        created_at_nanos = excluded.created_at_nanos
+    WHERE messages.channel_id IS NOT excluded.channel_id
+       OR messages.author_id IS NOT excluded.author_id
+       OR messages.content IS NOT excluded.content
+       OR messages.created_at IS NOT excluded.created_at
+       OR messages.edited IS NOT excluded.edited
+       OR messages.reply_to IS NOT excluded.reply_to
+       OR messages.pinned IS NOT excluded.pinned
+       OR messages.attachments IS NOT excluded.attachments
+       OR messages.reactions IS NOT excluded.reactions
+       OR messages.embeds IS NOT excluded.embeds
+       OR messages.external_author IS NOT excluded.external_author
+       OR messages.created_at_nanos IS NOT excluded.created_at_nanos";
 
 static UPSERT_TIMELINE_MESSAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     UPSERT_MESSAGE
@@ -108,6 +120,7 @@ static UPSERT_TIMELINE_MESSAGE: std::sync::LazyLock<String> = std::sync::LazyLoc
             "created_at_nanos = excluded.created_at_nanos",
             "created_at_nanos = excluded.created_at_nanos, timeline = 1",
         )
+        + " OR messages.timeline IS NOT 1"
 });
 
 fn message_params(server_key: &str, message: &CachedMessage) -> Vec<Value> {
@@ -400,7 +413,9 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                             AND resource_id NOT IN (
                                 SELECT resource_id FROM profile_images
                                 WHERE server_key = ?1 AND kind = 'avatar'
-                                ORDER BY updated_at DESC, resource_id DESC LIMIT ?2
+                                ORDER BY CASE WHEN resource_id = (
+                                    SELECT me_user_id FROM server_cache WHERE server_key = ?1
+                                ) THEN 1 ELSE 0 END DESC, updated_at DESC, resource_id DESC LIMIT ?2
                             )"
                     .into(),
                     params: vec![text(server_key), integer(MAX_CACHED_AVATARS)],
@@ -1461,6 +1476,11 @@ impl TursoCache {
             metadata.cached_channels.insert(row.get(0)?);
         }
 
+        // These bounded asset tables were written but never restored by the runtime. Without
+        // their identities the presentation cannot look up already-cached image bytes.
+        drop(rows);
+        metadata.profile_images = self.load_profile_images(server_key).await?;
+        metadata.emojis = self.load_emojis(server_key).await?;
         Ok(metadata)
     }
 
@@ -1473,24 +1493,45 @@ impl TursoCache {
         channel_id: &str,
         before: Option<(i64, u32, &str)>,
     ) -> Result<CachedMessagePage, turso::Error> {
-        let initial = before.is_none();
+        self.load_channel_page_direction(server_key, channel_id, before, false, false).await
+    }
+
+    pub(super) async fn load_channel_page_direction(
+        &self,
+        server_key: &str,
+        channel_id: &str,
+        before: Option<(i64, u32, &str)>,
+        forward: bool,
+        require_anchor: bool,
+    ) -> Result<CachedMessagePage, turso::Error> {
+        let initial = before.is_none() && !forward;
         let (before_at, before_nanos, before_id) = before
             .map(|(at, nanos, id)| (integer(at), integer(i64::from(nanos)), text(id)))
             .unwrap_or((Value::Null, Value::Null, Value::Null));
         let limit = CACHE_PAGE_SIZE.saturating_add(1);
+        let comparison = if forward { ">" } else { "<" };
+        let order = if forward { "ASC" } else { "DESC" };
+        let sql = format!(
+            "SELECT message_id, channel_id, author_id, content, created_at,
+                    edited, reply_to, pinned, attachments, reactions, embeds, external_author, created_at_nanos
+             FROM messages
+             WHERE server_key = ?1 AND channel_id = ?2 AND timeline = 1
+               AND (?3 IS NULL OR created_at {comparison} ?3
+                    OR (created_at = ?3 AND created_at_nanos {comparison} ?4)
+                    OR (created_at = ?3 AND created_at_nanos = ?4 AND message_id {comparison} ?5))
+               AND (?7 = 0 OR EXISTS (
+                   SELECT 1 FROM messages anchor
+                   WHERE anchor.server_key = ?1 AND anchor.channel_id = ?2 AND anchor.timeline = 1
+                     AND anchor.message_id = ?5 AND anchor.created_at = ?3 AND anchor.created_at_nanos = ?4
+               ))
+             ORDER BY created_at {order}, created_at_nanos {order}, message_id {order}
+             LIMIT ?6"
+        );
         let mut rows = self
             .conn
             .query(
-                "SELECT message_id, channel_id, author_id, content, created_at,
-                        edited, reply_to, pinned, attachments, reactions, embeds, external_author, created_at_nanos
-                 FROM messages
-                 WHERE server_key = ?1 AND channel_id = ?2 AND timeline = 1
-                   AND (?3 IS NULL OR created_at < ?3
-                        OR (created_at = ?3 AND created_at_nanos < ?4)
-                        OR (created_at = ?3 AND created_at_nanos = ?4 AND message_id < ?5))
-                 ORDER BY created_at DESC, created_at_nanos DESC, message_id DESC
-                 LIMIT ?6",
-                vec![text(server_key), text(channel_id), before_at, before_nanos, before_id, integer(limit)],
+                &sql,
+                vec![text(server_key), text(channel_id), before_at, before_nanos, before_id, integer(limit), boolean(require_anchor)],
             )
             .await?;
 
@@ -1715,6 +1756,37 @@ impl TursoCache {
 #[cfg(test)]
 mod draft_decode_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unchanged_messages_do_not_write_but_edits_and_history_promotion_do() {
+        let directory = std::env::temp_dir().join(format!("papo-write-dedup-{}-{}",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&directory).unwrap();
+        {
+            let cache = TursoCache::open(directory.join("cache.db").to_str().unwrap()).await.unwrap();
+            let api: crate::api::models::Message = serde_json::from_value(serde_json::json!({
+                "id":"m1", "channel_id":"chat", "author_id":"me", "content":"cached",
+                "created_at":"2026-10-27T00:00:00.123456789Z"
+            })).unwrap();
+            let mut message = CachedMessage::from_api(&api);
+            cache.conn.execute(UPSERT_MESSAGE, message_params("server", &message)).await.unwrap();
+            async fn changes(cache: &TursoCache) -> i64 {
+                let mut rows = cache.conn.query("SELECT total_changes()", ()).await.unwrap();
+                rows.next().await.unwrap().unwrap().get(0).unwrap()
+            }
+            let initial = changes(&cache).await;
+            cache.conn.execute(UPSERT_MESSAGE, message_params("server", &message)).await.unwrap();
+            assert_eq!(changes(&cache).await, initial);
+            message.content = "edited".into();
+            cache.conn.execute(UPSERT_MESSAGE, message_params("server", &message)).await.unwrap();
+            assert_eq!(changes(&cache).await, initial + 1);
+            cache.conn.execute(UPSERT_TIMELINE_MESSAGE.as_str(), message_params("server", &message)).await.unwrap();
+            assert_eq!(changes(&cache).await, initial + 2, "Same body still needs timeline promotion");
+            cache.conn.execute(UPSERT_TIMELINE_MESSAGE.as_str(), message_params("server", &message)).await.unwrap();
+            assert_eq!(changes(&cache).await, initial + 2);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn malformed_draft_mentions_fail_gracefully_and_individually() {

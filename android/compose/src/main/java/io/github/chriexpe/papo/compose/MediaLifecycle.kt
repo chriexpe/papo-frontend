@@ -234,6 +234,9 @@ internal fun ManagedAsyncImage(
     onSuccess: (AsyncImagePainter.State.Success) -> Unit = {},
     onError: (AsyncImagePainter.State.Error) -> Unit = {},
     retentionKey: String = "",
+    // Small static images (avatars) are cheap and are already limited by the lazy list; waiting
+    // for placement inside the viewport makes them pop in after the row is on screen.
+    eager: Boolean = false,
 ) {
     val context = LocalContext.current
     val frame = LocalMediaFrame.current
@@ -296,14 +299,15 @@ internal fun ManagedAsyncImage(
             this[MediaAnimationRunning] = { animation?.isRunning == true }
         }
     ) {
-        if (activity.retained && retained != null)
+        val shown = eager || activity.retained
+        if (shown && retained != null)
             Image(
                 retained.painter,
                 description,
                 Modifier.fillMaxSize(),
                 contentScale = contentScale,
             )
-        else if (activity.retained)
+        else if (shown)
             AsyncImage(
                 request,
                 description,

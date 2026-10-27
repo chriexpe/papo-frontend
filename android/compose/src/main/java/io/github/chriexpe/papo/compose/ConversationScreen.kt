@@ -220,17 +220,21 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val clipboard = LocalClipboardManager.current
     val latestServer by rememberUpdatedState(server)
     val latestTimeline by rememberUpdatedState(timeline)
-    val viewport =
-        with(density) {
-            Rect(
-                listBounds.left,
-                listBounds.top + (headerHeight + 8.dp).toPx(),
-                listBounds.right,
-                (listBounds.bottom - (composerHeight + 8.dp).toPx()).coerceAtLeast(
-                    listBounds.top + (headerHeight + 8.dp).toPx()
-                ),
-            )
-        }
+    HistoryPrefetch(
+        listState,
+        draftKey,
+        ready =
+            (positionReady || server.messages.isEmpty()) &&
+                !server.loadingContext && !readingControls.seekingCatchUp,
+        canLoadOlder = server.canLoadOlder,
+        canLoadNewer = server.canLoadNewer,
+        loading = server.loadingOlder,
+        loadOlder = { model.loadHistory(server, newer = false) },
+        loadNewer = { model.loadHistory(server, newer = true) },
+    )
+    // Content scrolls beneath the translucent header and composer and stays visible there, so
+    // media must load for the whole list rather than only the gap between the two bars.
+    val viewport = listBounds
     val visibleRows by remember {
         derivedStateOf {
             val layout = listState.layoutInfo
@@ -327,7 +331,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 return@LaunchedEffect
             }
             listState.scrollToItem(
-                server.messages.lastIndex - position + if (server.canLoadNewer) 1 else 0,
+                server.messages.lastIndex - position,
                 saved.second,
             )
         } else listState.scrollToItem(0)
@@ -492,7 +496,6 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         server.navigationTarget,
         server.loadingContext,
         timeline.orderedIds,
-        server.canLoadNewer,
     ) {
         if (server.navigationTarget.isBlank()) {
             handledNavigation = server.navigationSerial
@@ -501,7 +504,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         if (server.navigationSerial == handledNavigation) return@LaunchedEffect
         val position = server.messages.indexOfFirst { it.id == server.navigationTarget }
         if (position < 0) return@LaunchedEffect
-        val index = server.messages.lastIndex - position + if (server.canLoadNewer) 1 else 0
+        val index = server.messages.lastIndex - position
         val layout = listState.layoutInfo
         val item = layout.visibleItemsInfo.firstOrNull { it.key == server.navigationTarget }
         val available =
@@ -748,16 +751,6 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             else ui(R.string.messages_will_appear_when_the_server_is_reachable),
                         )
                     }
-                if (server.canLoadNewer)
-                    item("newer") {
-                        TextButton(
-                            onClick = { model.command(Action.Newer(channel.id), url = server.url) },
-                            enabled = !server.loadingOlder,
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        ) {
-                            Text(ui(R.string.load_later_messages))
-                        }
-                    }
                 items(timeline.reversedMessages, key = { it.id }) { message ->
                     TimelineMessage(
                         message,
@@ -784,18 +777,6 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         interactions = interactions,
                     )
                 }
-                if (server.canLoadOlder)
-                    item("history") {
-                        TextButton(
-                            onClick = { model.command(Action.Older) },
-                            enabled = !server.loadingOlder,
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        ) {
-                            if (server.loadingOlder)
-                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            else Text(ui(R.string.load_earlier_messages))
-                        }
-                    }
             }
 
             ConversationReadMarkers(

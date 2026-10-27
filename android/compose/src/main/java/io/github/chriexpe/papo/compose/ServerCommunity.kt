@@ -29,7 +29,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.chriexpe.papo.core.Action
 import io.github.chriexpe.papo.core.Capabilities
-import kotlinx.coroutines.CancellationException
 
 internal val Capabilities.canAdmin
     get() = manageServer || manageChannels || manageRoles || manageWebhooks
@@ -43,17 +42,14 @@ internal val Capabilities.canBanMembers
 internal fun ServerIcon(server: ServerState, model: PapoViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val revision = server.serverIconRevision
-    val bytes by
-        produceState<ByteArray?>(null, server.url, server.me, revision) {
-            value = null
-            if (revision.isNotEmpty())
-                try {
-                    value = model.serverIcon(server)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {}
+    val image =
+        remember(server.url, server.me, revision) {
+            if (revision.isBlank()) null
+            else CachedImage("${server.url}/${server.me}/server-icon/$revision") {
+                model.serverIcon(server)
+            }
         }
-    var loaded by remember(server.url, revision) { mutableStateOf(false) }
+    var loaded by remember(server.url, server.me, revision) { mutableStateOf(false) }
     Box(
         modifier.size(48.dp).clip(RoundedCornerShape(16.dp)).testTag("server-icon").semantics {
             contentDescription = ui(R.string.label_1_s_server_icon, server.name)
@@ -61,7 +57,7 @@ internal fun ServerIcon(server: ServerState, model: PapoViewModel, modifier: Mod
         }
     ) {
         if (!loaded) Avatar(server.name, Modifier.fillMaxSize())
-        bytes?.let {
+        image?.let {
             ManagedAsyncImage(
                 it,
                 null,
@@ -71,6 +67,7 @@ internal fun ServerIcon(server: ServerState, model: PapoViewModel, modifier: Mod
                 onSuccess = { loaded = true },
                 onError = { loaded = false },
                 retentionKey = "server/${server.url}/$revision",
+                eager = true,
             )
         }
     }

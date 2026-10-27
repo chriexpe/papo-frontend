@@ -539,6 +539,9 @@ pub struct CachedServerMetadata {
     pub read_states: Vec<CachedReadState>,
     /// Canais que têm um snapshot/cache persistido, inclusive quando vazio.
     pub cached_channels: HashSet<String>,
+    /// Asset identities must be available in the first projection, before network bootstrap.
+    pub profile_images: CachedProfileImages,
+    pub emojis: Option<Vec<CachedEmoji>>,
 }
 
 impl CachedServerMetadata {

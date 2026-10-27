@@ -318,8 +318,7 @@ pub struct Server {
     pub public: bool,
     /// Dono do servidor; o backend concede a ele capacidades administrativas.
     pub owner_id: Option<String>,
-    /// Ícone em base64, como o servidor entrega. Não vai para o cache em
-    /// disco: chega de novo na carga inicial.
+    /// Ícone em base64; restored from the bounded asset cache before network bootstrap.
     pub icon: Option<String>,
 }
 
@@ -491,6 +490,8 @@ struct ChannelMutationJournal {
 #[derive(Debug)]
 struct HistoryContext {
     messages: Vec<Message>,
+    older_server_cursor: Option<MessageKey>,
+    newer_server_cursor: Option<MessageKey>,
     has_older: bool,
     has_newer: bool,
 }
@@ -1477,6 +1478,10 @@ impl Store {
             self.connection = Connection::Offline;
         }
 
+        self.restore_cached_profile_images(metadata.profile_images);
+        if let Some(emojis) = metadata.emojis {
+            self.restore_cached_emojis(emojis);
+        }
         self.pending_cache.clear();
     }
 
@@ -1524,6 +1529,7 @@ impl Store {
             members,
             read_states: Vec::new(),
             cached_channels,
+            ..Default::default()
         });
         for message in messages {
             self.timeline_ids.insert(message.id.clone());
@@ -1839,8 +1845,7 @@ impl Store {
 
     /// Reserva primeiro uma página antiga do Turso.
     pub fn begin_load_cached_older(&mut self, channel_id: &str) -> Option<(i64, u32, String)> {
-        if self.connection == Connection::Online
-            || self.browsing_history(channel_id)
+        if self.browsing_history(channel_id)
             || self.loading_message_context(channel_id)
             || self.loading_channels.contains_key(channel_id)
             || self.cache_loading.contains(channel_id)
@@ -1876,11 +1881,7 @@ impl Store {
             return None;
         }
         let cursor = if self.browsing_history(channel_id) {
-            let oldest = self
-                .messages_in(channel_id)
-                .filter(|message| !message.pending)
-                .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
-            (oldest.at.with_timezone(&Utc), oldest.id.clone())
+            self.message_contexts.get(channel_id)?.older_server_cursor.clone()?
         } else {
             self.history_server_cursor.get(channel_id)?.clone()
         };
@@ -1907,13 +1908,50 @@ impl Store {
         if !self.can_load_newer(channel_id) {
             return None;
         }
-        let newest = self
-            .messages_in(channel_id)
-            .filter(|message| !message.pending)
-            .max_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
-        let cursor = (newest.at.with_timezone(&Utc), newest.id.clone());
+        // Cached previews may extend beyond the authoritative window. They must not move the
+        // HTTP cursor past unvalidated rows, including deletions absent from the cached copy.
+        let cursor = self.message_contexts.get(channel_id)?.newer_server_cursor.clone()?;
         self.reserve_history(channel_id, cursor.clone(), true);
         Some(cursor)
+    }
+
+    /// A connected cached page is provisional: expose it without completing the HTTP ticket,
+    /// changing coverage, persisting it as new history, or acknowledging unseen messages.
+    pub fn preview_cached_history(&mut self, ticket: &RefreshTicket, page: CachedMessagePage) {
+        if !self.history_ticket_is_current(ticket) || page.channel_id != ticket.channel_id {
+            return;
+        }
+        let request = &self.history_requests[&ticket.channel_id];
+        if page.messages.iter().any(|message| {
+            let key = (message.to_store().at.with_timezone(&Utc), message.id.clone());
+            message.channel_id != ticket.channel_id || if request.forward {
+                key <= request.cursor
+            } else {
+                key >= request.cursor
+            }
+        }) {
+            return;
+        }
+        let barrier = request.barrier_revision;
+        let forward = request.forward;
+        if let Some(context) = self.message_contexts.get_mut(&ticket.channel_id) {
+            for message in page.messages {
+                if !context.messages.iter().any(|known| known.id == message.id) {
+                    project_messages(&mut context.messages,
+                        &TimelineMutation::MessageUpsert(message.to_store()), true);
+                }
+            }
+        } else if !forward {
+            self.cache_history_has_more.insert(ticket.channel_id.clone(), page.has_more);
+            for message in page.messages {
+                if !self.timeline_ids.contains(&message.id) {
+                    self.timeline_ids.insert(message.id.clone());
+                    self.upsert_message(message.to_store());
+                }
+            }
+            self.sort_messages();
+        }
+        self.replay_timeline_mutations(&ticket.channel_id, barrier);
     }
 
     fn reserve_history(&mut self, channel_id: &str, cursor: MessageKey, forward: bool) {
@@ -4029,6 +4067,8 @@ impl Store {
                         self.my_username = username.clone();
                     }
                     if let Some(member) = self.members.iter_mut().find(|member| member.id == id) {
+                        members_changed |= member.username != username || member.name != name
+                            || member.roles != roles || member.role_color != color;
                         member.username = username;
                         member.name = name;
                         member.status_message = status_message;
@@ -4036,6 +4076,7 @@ impl Store {
                         member.roles = roles;
                         member.role_color = color;
                     } else {
+                        members_changed = true;
                         self.members.push(Member {
                             id,
                             username,
@@ -4048,7 +4089,6 @@ impl Store {
                             roles,
                         });
                     }
-                    members_changed = true;
                 }
                 if members_changed {
                     self.sort_members();
@@ -4072,6 +4112,17 @@ impl Store {
                 let barrier = self.history_requests[&channel_id].barrier_revision;
                 let has_more = has_more && !messages.is_empty();
                 if let Some(context) = self.message_contexts.get_mut(&channel_id) {
+                    let from = self.history_requests[&channel_id].cursor.clone();
+                    let end = messages.iter().map(|message| (message.created_at, message.id.clone())).min();
+                    let present: HashSet<_> = messages.iter().map(|message| message.id.clone()).collect();
+                    context.messages.retain(|message| {
+                        let key = (message.at.with_timezone(&Utc), message.id.clone());
+                        message.pending || key >= from || present.contains(&message.id)
+                            || (has_more && end.as_ref().is_some_and(|last| key < *last))
+                    });
+                    if let Some(end) = end {
+                        context.older_server_cursor = Some(end);
+                    }
                     for message in messages {
                         project_messages(
                             &mut context.messages,
@@ -4159,7 +4210,18 @@ impl Store {
                 }
                 let channel_id = &ticket.channel_id;
                 let barrier = self.history_requests[channel_id].barrier_revision;
+                let from = self.history_requests[channel_id].cursor.clone();
+                let end = messages.iter().map(|message| (message.created_at, message.id.clone())).max();
+                let present: HashSet<_> = messages.iter().map(|message| message.id.clone()).collect();
                 if let Some(context) = self.message_contexts.get_mut(channel_id) {
+                    context.messages.retain(|message| {
+                        let key = (message.at.with_timezone(&Utc), message.id.clone());
+                        message.pending || key <= from || present.contains(&message.id)
+                            || (has_more && end.as_ref().is_some_and(|last| key > *last))
+                    });
+                    if let Some(end) = end {
+                        context.newer_server_cursor = Some(end);
+                    }
                     context.has_newer = has_more && !messages.is_empty();
                     for message in messages {
                         project_messages(
@@ -4231,6 +4293,10 @@ impl Store {
                 self.message_contexts.insert(
                     ticket.channel_id.clone(),
                     HistoryContext {
+                        older_server_cursor: messages.first().map(|message|
+                            (message.at.with_timezone(&Utc), message.id.clone())),
+                        newer_server_cursor: messages.last().map(|message|
+                            (message.at.with_timezone(&Utc), message.id.clone())),
                         messages,
                         has_older: context.has_more_before,
                         has_newer: context.has_more_after,
@@ -4349,6 +4415,9 @@ impl Store {
                     let roles = user.roles.iter().map(|role| role.id.clone()).collect();
                     let name = user.display_name().to_owned();
                     if let Some(member) = self.members.iter_mut().find(|member| member.id == user.id) {
+                        changed |= member.username != user.username || member.name != name
+                            || member.banned != user.banned || member.role_color != role_color
+                            || member.roles != roles;
                         member.username = user.username;
                         member.name = name;
                         member.banned = user.banned;
@@ -4360,6 +4429,7 @@ impl Store {
                             member.presence = Presence::parse(status);
                         }
                     } else {
+                        changed = true;
                         self.members.push(Member {
                             id: user.id,
                             username: user.username,
@@ -4372,7 +4442,6 @@ impl Store {
                             roles,
                         });
                     }
-                    changed = true;
                 }
                 if changed {
                     self.sort_members();
@@ -4382,6 +4451,7 @@ impl Store {
                 }
             }
             Update::Users(users) => {
+                let previous: Vec<_> = self.members.iter().map(CachedMember::from).collect();
                 let presence: HashMap<String, Presence> = self
                     .members
                     .iter()
@@ -4413,7 +4483,9 @@ impl Store {
                 self.sort_members();
                 let cached: Vec<CachedMember> =
                     self.members.iter().map(CachedMember::from).collect();
-                self.pending_cache.push(CacheOp::ReplaceMembers(cached));
+                if cached != previous {
+                    self.pending_cache.push(CacheOp::ReplaceMembers(cached));
+                }
             }
             Update::Messages {
                 ticket,
@@ -5862,6 +5934,7 @@ mod tests {
             }],
             read_states: Vec::new(),
             cached_channels: HashSet::new(),
+            ..Default::default()
         });
         assert_eq!(store.member("u1").map(|member| member.name.as_str()), Some("jenosmobile"));
         assert_eq!(store.display_mentions("@mention(<@u1>)"), "@jenosmobile");

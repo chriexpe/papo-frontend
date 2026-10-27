@@ -378,6 +378,7 @@ impl Client {
     // thread. Cache responses are bounded and checked against the owner epoch.
     fn hydrate(&mut self, channel: &str, before: Option<(i64, u32, String)>, older: bool) {
         let epoch = self.runtime.store.cache_restore_epoch();
+        let ticket = older.then(|| self.runtime.store.history_ticket(channel)).flatten();
         let result = self
             .runtime
             .cache
@@ -387,7 +388,9 @@ impl Client {
             return;
         }
         match result {
+            Some(Ok(page)) if ticket.is_some() => self.runtime.store.restore_cached_history(&ticket.unwrap(), page),
             Some(Ok(page)) => self.runtime.store.restore_cached_page(page, older),
+            _ if ticket.is_some() => self.runtime.store.cached_history_failed(&ticket.unwrap()),
             _ => self.runtime.store.cached_page_failed(channel, older),
         }
     }
@@ -1137,28 +1140,46 @@ impl Client {
                 let Some((since, last_id)) = store.begin_load_newer(&channel_id) else {
                     return Ok(());
                 };
-                Command::LoadNewerMessages {
-                    ticket: store
-                        .history_ticket(&channel_id)
-                        .ok_or("History request expired")?,
-                    since,
-                    last_id,
+                let ticket = store.history_ticket(&channel_id).ok_or("History request expired")?;
+                let cached_edge = store.messages_in(&channel_id).max_by(|a, b|
+                    a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                    .map(|m| (m.at.timestamp_millis(), m.at.timestamp_subsec_nanos(), m.id.clone()));
+                self.runtime.net.send(Command::LoadNewerMessages { ticket: ticket.clone(), since, last_id });
+                if let Some(edge) = cached_edge {
+                    if let Some(Ok(page)) = self.runtime.cache.load_newer_channel_page_async(
+                        &self.runtime.server_key, &channel_id, edge,
+                    ).and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok()) {
+                        self.runtime.store.preview_cached_history(&ticket, page);
+                    }
                 }
+                return Ok(());
             }
             Action::Older => {
                 let id = store.selected_channel.clone();
-                if let Some(before) = store.begin_load_cached_older(&id) {
-                    self.hydrate(&id, Some(before), true);
+                if store.connection != Connection::Online {
+                    if let Some(before) = store.begin_load_cached_older(&id) {
+                        self.hydrate(&id, Some(before), true);
+                    }
                     return Ok(());
                 }
                 let Some((since, last_id)) = store.begin_load_older(&id) else {
                     return Ok(());
                 };
-                Command::LoadOlderMessages {
-                    ticket: store.history_ticket(&id).ok_or("History request expired")?,
-                    since,
-                    last_id,
+                let ticket = store.history_ticket(&id).ok_or("History request expired")?;
+                let cached_edge = store.messages_in(&id).min_by(|a, b|
+                    a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                    .map(|m| (m.at.timestamp_millis(), m.at.timestamp_subsec_nanos(), m.id.clone()));
+                // Start HTTP before the local read; cache and network work overlap. Their
+                // independent cursors prevent cached display from skipping server validation.
+                self.runtime.net.send(Command::LoadOlderMessages { ticket: ticket.clone(), since, last_id });
+                if let Some(edge) = cached_edge {
+                    if let Some(Ok(page)) = self.runtime.cache.load_older_context_page_async(
+                        &self.runtime.server_key, &id, edge,
+                    ).and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok()) {
+                        self.runtime.store.preview_cached_history(&ticket, page);
+                    }
                 }
+                return Ok(());
             }
             Action::Refresh => Command::ProbeConnection,
             Action::Typing { channel_id } => Command::Typing { channel_id },

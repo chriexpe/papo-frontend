@@ -99,6 +99,8 @@ enum WorkerMsg {
         server_key: String,
         channel_id: String,
         before: Option<(i64, u32, String)>,
+        forward: bool,
+        require_anchor: bool,
         reply: std::sync::mpsc::Sender<Result<CachedMessagePage, String>>,
     },
     EnqueueOutgoing {
@@ -576,12 +578,43 @@ impl ClientDb {
         channel_id: &str,
         before: Option<(i64, u32, String)>,
     ) -> Option<std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>> {
+        self.load_channel_page_direction_async(server_key, channel_id, before, false, false)
+    }
+
+    pub fn load_newer_channel_page_async(
+        &self,
+        server_key: &str,
+        channel_id: &str,
+        after: (i64, u32, String),
+    ) -> Option<std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>> {
+        self.load_channel_page_direction_async(server_key, channel_id, Some(after), true, true)
+    }
+
+    pub fn load_older_context_page_async(
+        &self,
+        server_key: &str,
+        channel_id: &str,
+        before: (i64, u32, String),
+    ) -> Option<std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>> {
+        self.load_channel_page_direction_async(server_key, channel_id, Some(before), false, true)
+    }
+
+    fn load_channel_page_direction_async(
+        &self,
+        server_key: &str,
+        channel_id: &str,
+        before: Option<(i64, u32, String)>,
+        forward: bool,
+        require_anchor: bool,
+    ) -> Option<std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         if !self.enqueue(
             WorkerMsg::LoadChannelPage {
                 server_key: server_key.to_owned(),
                 channel_id: channel_id.to_owned(),
                 before,
+                forward,
+                require_anchor,
                 reply: reply_tx,
             },
             false,
@@ -794,13 +827,17 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
             server_key,
             channel_id,
             before,
+            forward,
+            require_anchor,
             reply,
         } => {
             let result = cache
-                .load_channel_page(
+                .load_channel_page_direction(
                     &server_key,
                     &channel_id,
                     before.as_ref().map(|(at, nanos, id)| (*at, *nanos, id.as_str())),
+                    forward,
+                    require_anchor,
                 )
                 .await
                 .map_err(|error| error.to_string());
