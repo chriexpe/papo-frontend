@@ -48,7 +48,7 @@ fn em() -> f32 {
 fn font(scale: f32, bold: bool) -> FontId {
     let base = text::message();
     let family = if bold {
-        FontFamily::Name("semibold".into())
+        FontFamily::Name("chat-semibold".into())
     } else {
         base.family
     };
@@ -66,7 +66,7 @@ fn line_color(t: &Tokens) -> Color32 {
 }
 
 /// Desenha a mensagem inteira, na largura da coluna.
-pub fn draw(ui: &mut egui::Ui, state: &mut UiState, v: &View, blocks: &[Block], width: f32) {
+pub fn draw(ui: &mut egui::Ui, state: &mut UiState, v: &View, blocks: &[Block], width: f32, prefix: Option<&mut dyn FnMut(&mut egui::Ui)>) {
     ui.set_max_width(width);
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
@@ -86,7 +86,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut UiState, v: &View, blocks: &[Block], 
             Some(Block::Paragraph(_) | Block::Heading(..))
         );
         let inline_suffix = if inline_last { suffix.as_deref() } else { None };
-        draw_blocks(ui, state, v, blocks, inline_suffix);
+        draw_blocks(ui, state, v, blocks, inline_suffix, prefix);
         if !inline_last && let Some(suffix) = &suffix {
             ui.label(
                 RichText::new(suffix.trim_start())
@@ -103,12 +103,24 @@ fn draw_blocks(
     v: &View,
     blocks: &[Block],
     suffix: Option<&str>,
+    mut prefix: Option<&mut dyn FnMut(&mut egui::Ui)>,
 ) {
     let last = blocks.len().saturating_sub(1);
     for (index, block) in blocks.iter().enumerate() {
         let suffix = if index == last { suffix } else { None };
+        // Only the first paragraph shares its line with the compact sender.
+        // Structural blocks keep their normal layout below the sender.
+        let first_prefix = prefix.take();
+        if !matches!(block, Block::Paragraph(_)) {
+            if let Some(prefix) = first_prefix {
+                ui.horizontal_wrapped(|ui| prefix(ui));
+            }
+        } else if let Block::Paragraph(inlines) = block {
+            draw_inlines(ui, state, v, inlines, 1.0, false, suffix, first_prefix);
+            continue;
+        }
         match block {
-            Block::Paragraph(inlines) => draw_inlines(ui, state, v, inlines, 1.0, false, suffix),
+            Block::Paragraph(_) => unreachable!(),
             Block::Heading(level, inlines) => {
                 let scale = match level {
                     1 => 1.6,
@@ -117,7 +129,7 @@ fn draw_blocks(
                     _ => 1.0,
                 };
                 ui.add_space(0.2 * em());
-                draw_inlines(ui, state, v, inlines, scale, true, suffix);
+                draw_inlines(ui, state, v, inlines, scale, true, suffix, None);
                 ui.add_space(0.2 * em());
             }
             Block::Quote(inner) => quote(ui, state, v, inner),
@@ -154,8 +166,9 @@ fn draw_inlines(
     scale: f32,
     bold: bool,
     suffix: Option<&str>,
+    prefix: Option<&mut dyn FnMut(&mut egui::Ui)>,
 ) {
-    if items.is_empty() && suffix.is_none() {
+    if items.is_empty() && suffix.is_none() && prefix.is_none() {
         return;
     }
     // A largura da coluna, medida antes de entrar na linha que quebra: lá
@@ -164,7 +177,8 @@ fn draw_inlines(
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(0.0, space::XXS);
         let line_height = ui.fonts_mut(|fonts| fonts.row_height(&font(scale, bold)));
-        let mut row_empty = true;
+        let mut row_empty = prefix.is_none();
+        if let Some(prefix) = prefix { prefix(ui); }
         for item in items {
             match item {
                 Inline::Break => {
@@ -504,7 +518,7 @@ fn quote(ui: &mut egui::Ui, state: &mut UiState, v: &View, inner: &[Block]) {
     ui.add_space(0.15 * em());
     let row = ui.horizontal_top(|ui| {
         ui.add_space(2.0 + 0.7 * em());
-        ui.vertical(|ui| draw_blocks(ui, state, v, inner, None));
+        ui.vertical(|ui| draw_blocks(ui, state, v, inner, None, None));
     });
     let rect = row.response.rect;
     ui.painter().rect_filled(
@@ -559,7 +573,7 @@ fn list(ui: &mut egui::Ui, state: &mut UiState, v: &View, start: Option<u64>, it
                     );
                 }
             }
-            ui.vertical(|ui| draw_blocks(ui, state, v, &item.blocks, None));
+            ui.vertical(|ui| draw_blocks(ui, state, v, &item.blocks, None, None));
         });
         ui.add_space(0.05 * em());
     }
@@ -693,11 +707,11 @@ fn table(
                                     ui.add_space(offset);
                                     ui.vertical(|ui| {
                                         ui.set_width(width - offset);
-                                        draw_inlines(ui, state, v, cell, 1.0, bold, None);
+                                        draw_inlines(ui, state, v, cell, 1.0, bold, None, None);
                                     });
                                 });
                             } else {
-                                draw_inlines(ui, state, v, cell, 1.0, bold, None);
+                                draw_inlines(ui, state, v, cell, 1.0, bold, None, None);
                             }
                         }
                         ui.add_space(pad_y);
@@ -829,7 +843,7 @@ mod tests {
                 ui.scope_builder(
                     UiBuilder::new()
                         .max_rect(Rect::from_min_size(pos2(LEFT, 20.0), vec2(*width, 3800.0))),
-                    |ui| draw(ui, state, &view, blocks, *width),
+                    |ui| draw(ui, state, &view, blocks, *width, None),
                 );
             });
             output.textures_delta.clear();

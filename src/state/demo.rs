@@ -70,6 +70,12 @@ pub fn seed(store: &mut Store, server_key: &str) {
     ];
     profiles(store);
     store.audit_logs = audit_logs();
+    store.webhooks.loaded = true;
+    store.webhooks.items = vec![crate::api::models::Webhook {
+        id: "demo-builds".into(), channel_id: "c-dev".into(), name: "Builds".into(),
+        display_name: Some("Papo CI".into()), created_by: "u-eu".into(),
+        created_at: chrono::Utc::now(), revoked_at: None,
+    }];
 
     store.channels = vec![
         channel("c-geral", "geral", "Onde tudo começa — avisos e conversa solta", 1),

@@ -73,208 +73,25 @@ impl ServerEntry {
     }
 }
 
-/// O que da rede é da call: os servidores ICE, que a fazem nascer, e a
-/// sinalização, que vai direto para a thread dela sem passar pelo estado da
-/// tela.
-fn route_call_effect(ws: &mut Workspace, effect: CallRuntimeEffect, ctx: &egui::Context) {
-    use crate::api::ws::Event;
+mod calls;
+mod inbox;
+use calls::{begin_call, route_call_effect, leave_call, pump_call};
 
-    match effect {
-        CallRuntimeEffect::VoiceReady {
-            channel_id,
-            attempt,
-            servers,
-        } => {
-            if !ws.runtime.store.call.current(&channel_id, attempt) {
-                return;
-            }
-            ws.call = Call::start(
-                channel_id.clone(),
-                IceConfig::from_servers(&servers),
-                ctx.clone(),
-                ws.runtime.net.sender(),
-            );
-            ws.call_ready = false;
-            if let Some(call) = &ws.call {
-                let names = ws
-                    .runtime
-                    .store
-                    .members
-                    .iter()
-                    .map(|member| (member.id.clone(), member.name.clone()))
-                    .collect();
-                ws.runtime.net.set_event_callback(Some(call.event_callback(
-                    ws.runtime.store.me.clone(),
-                    names,
-                )));
-                #[cfg(target_os = "android")]
-                crate::platform::android_call::bind(
-                    call.command_sender(),
-                    ws.runtime.net.sender(),
-                    channel_id,
-                    ws.runtime.store.call.muted,
-                    ws.runtime.store.call.camera,
-                    ws.runtime.store.me.clone(),
-                );
-            } else {
-                ws.runtime.store.call.error = Some("a call não abriu".to_owned());
-                ws.runtime.store.call.left();
-                #[cfg(target_os = "android")]
-                crate::platform::android_call::stop_service();
-            }
-        }
-        CallRuntimeEffect::Event {
-            event,
-            me_before,
-            phase_before,
-            store_error_before,
-            call_error_before,
-        } => {
-            let Some(call) = &ws.call else { return };
-            let mut over = false;
-            let mut tell_server = false;
-            match *event {
-                Event::VoiceLeft {
-                    channel_id,
-                    user_id,
-                } if channel_id == call.channel_id && user_id == me_before => over = true,
-                Event::Failure { code, .. }
-                    if code.as_deref().is_some_and(|code| {
-                        crate::state::call::fatal(code, phase_before == Phase::Joining)
-                    }) =>
-                {
-                    over = true;
-                    tell_server = phase_before == Phase::In;
-                }
-                _ => {}
-            }
-            if over {
-                if tell_server {
-                    let channel_id = call.channel_id.clone();
-                    ws.runtime.net.send(Command::VoiceSignal(format!(
-                        r#"{{"type":"voice_leave","channel_id":"{}"}}"#,
-                        channel_id
-                    )));
-                    // Before the runtime split, this teardown happened before
-                    // Store::apply. Restore the pre-update error projection so
-                    // a structural refactor does not change call UX.
-                    ws.runtime.store.error = store_error_before;
-                    ws.runtime.store.call.error = call_error_before;
-                    ws.camera_revision = 0;
-                }
-                ws.runtime.net.set_event_callback(None);
-                ws.call = None;
-                ws.call_ready = false;
-                ws.watching.clear();
-                #[cfg(target_os = "android")]
-                crate::platform::android_call::stop_service();
-            }
-        }
-        CallRuntimeEffect::ConnectionOffline if ws.runtime.store.call.active() => {
-            ws.runtime.net.set_event_callback(None);
-            ws.call = None;
-            ws.call_ready = false;
-            ws.watching.clear();
-            ws.runtime.store.call.error = None;
-            ws.runtime.store.call.left();
-            #[cfg(target_os = "android")]
-            crate::platform::android_call::stop_service();
-        }
-        CallRuntimeEffect::VoiceFailed { was_current: true, .. } => {
-            #[cfg(target_os = "android")]
-            crate::platform::android_call::stop_service();
-        }
-        _ => {}
-    }
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PendingUserSettings {
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    owner: String,
+    #[serde(default)]
+    patch: crate::api::client::AccountSettingsPatch,
+    #[serde(flatten)]
+    config: crate::api::models::UserConfig,
 }
 
-/// Sai da call: avisa o servidor, desmonta o pipeline e limpa o retrato.
-fn leave_call(ws: &mut Workspace) {
-    #[cfg(target_os = "android")]
-    let had_call = ws.runtime.store.call.active() || ws.call.is_some();
-    if ws.runtime.store.call.active() && !ws.runtime.store.call.channel_id.is_empty() {
-        ws.runtime.net.send(Command::VoiceSignal(format!(
-            r#"{{"type":"voice_leave","channel_id":"{}"}}"#,
-            ws.runtime.store.call.channel_id
-        )));
-    }
-    ws.runtime.net.set_event_callback(None);
-    ws.call = None;
-    ws.call_ready = false;
-    ws.watching.clear();
-    ws.camera_revision = 0;
-    ws.runtime.store.call.left();
-    #[cfg(target_os = "android")]
-    if had_call {
-        crate::platform::android_call::stop_service();
-    }
-}
-
-/// O vaivém da call a cada quadro. SDP/ICE já circulam diretamente entre a
-/// thread de rede e a thread da call; aqui ficam apenas estado visual e
-/// seleção das câmeras que queremos receber.
-fn pump_call(ws: &mut Workspace) {
-    let Some(call) = &ws.call else { return };
-
-    // A oferta só pode sair depois do `voice_joined`: antes disso o servidor
-    // ainda não tem peer para receber a SDP.
-    if !ws.call_ready && ws.runtime.store.call.phase == Phase::In {
-        call.ready();
-        ws.call_ready = true;
-        // O que foi clicado enquanto a call abria vale: entramos mudos, como
-        // o servidor assume, mas quem já tinha ligado a câmera não pode ficar
-        // com o botão aceso e a câmera parada.
-        call.set_muted(ws.runtime.store.call.muted);
-        if ws.runtime.store.call.camera {
-            call.set_camera(true);
-        }
-    }
-
-    // Aviso que não derruba a call (sem microfone, sem câmera): aparece uma
-    // vez, como os outros recados passageiros da tela.
-    if let Some(warning) = call.take_warning() {
-        ws.runtime.store.error = Some(warning);
-    }
-    // O botão da câmera segue o dispositivo, não o clique: onde não há
-    // webcam — no Flatpak de hoje, por exemplo — ligar não liga nada, e ele
-    // tem de voltar sozinho. O mesmo vale para a câmera que morre no meio.
-    //
-    // Compara-se a conta de respostas, não o valor: a tentativa que não
-    // acha câmera nenhuma termina onde começou, e olhar só o valor não veria
-    // resposta — o botão ficaria aceso com câmera nenhuma.
-    let (revision, camera) = call.camera_state();
-    if ws.camera_revision != revision {
-        ws.camera_revision = revision;
-        ws.runtime.store.call.camera = camera;
-    }
-
-    if call.failed() {
-        let message = call.error();
-        ws.runtime.store.call.error = message.clone();
-        // O mesmo aviso passageiro dos outros erros: quem está na tela
-        // precisa saber por que a call sumiu.
-        ws.runtime.store.error = message;
-        leave_call(ws);
-        return;
-    }
-
-    // Quem ligou a câmera passa a ser assistido sozinho — a escolha de
-    // desenho. Daqui sai só a lista de quem se quer ver; quem decide o que
-    // cabe nos seis lugares é a thread da call, que é quem sabe quais estão
-    // livres e reaproveita o que vaga.
-    let me = ws.runtime.store.me.clone();
-    let mut wanted: Vec<String> = ws.runtime
-        .store
-        .call
-        .members()
-        .iter()
-        .filter(|member| member.camera_on && member.user_id != me)
-        .map(|member| member.user_id.clone())
-        .collect();
-    wanted.sort();
-    if wanted != ws.watching {
-        call.watch(wanted.clone());
-        ws.watching = wanted;
+impl PendingUserSettings {
+    fn acknowledged(&self, remote: Option<&crate::api::models::UserConfig>, acknowledgement: Option<u64>) -> bool {
+        acknowledgement == Some(self.revision) && remote.is_some_and(|config| self.patch.matches(config))
     }
 }
 
@@ -295,6 +112,13 @@ pub struct Settings {
     /// Multiplicador local do DPI do monitor, apenas para a interface.
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
+    #[serde(default)]
+    pub font_size: crate::api::client::DisplayFontSize,
+    #[serde(default)]
+    pub message_density: crate::api::client::MessageDensity,
+    /// Device-only inline variant of the account's compact spacing.
+    #[serde(default)]
+    pub extra_compact: bool,
     /// Vidro fosco nas barras; desligado usa fundos opacos.
     pub translucency: bool,
     pub show_members: bool,
@@ -373,7 +197,7 @@ pub struct Settings {
     /// servidor. A chave é o server_key; persiste para sobreviver offline.
     #[serde(default)]
     pub pending_user_settings:
-        std::collections::HashMap<String, crate::api::models::UserConfig>,
+        std::collections::HashMap<String, PendingUserSettings>,
     /// Último snapshot remoto conhecido por servidor. Serve para startup e
     /// troca offline; nunca vence um pending local nem um whoami fresco.
     #[serde(default)]
@@ -420,6 +244,9 @@ impl Default for Settings {
             lang: Lang::PtBr,
             theme: ThemePref::System,
             ui_scale: default_ui_scale(),
+            font_size: Default::default(),
+            message_density: Default::default(),
+            extra_compact: false,
             translucency: true,
             show_members: true,
             close_to_tray: true,
@@ -452,10 +279,19 @@ impl Default for Settings {
 }
 
 impl Settings {
+    fn forget_local_server(&mut self, key: &str) {
+        self.server_marks.remove(key);
+        self.pending_user_settings.remove(key);
+        self.cached_user_settings.remove(key);
+        self.push_devices.remove(key);
+    }
+
     /// Garante que a lista de servidores existe e que o ativo aponta para um
     /// item de verdade. Ajustes gravados antes do trilho só têm `server_url`.
     fn normalise(&mut self) {
         self.ui_scale = normalise_ui_scale(self.ui_scale);
+        // Legacy full-config writes have no account identity; never replay them into a new account.
+        self.pending_user_settings.retain(|_, pending| !pending.owner.is_empty());
         self.server_url = normalise_server_url(&self.server_url);
         self.gif_favourites.retain(|slug| crate::giphy::valid_id(slug));
         self.trusted_link_hosts = std::mem::take(&mut self.trusted_link_hosts)
@@ -515,6 +351,7 @@ impl Settings {
         if let Some(config) = self
             .pending_user_settings
             .get(&active_key)
+            .map(|pending| &pending.config)
             .or_else(|| self.cached_user_settings.get(&active_key))
         {
             self.theme = match config.theme.as_str() {
@@ -523,6 +360,8 @@ impl Settings {
                 _ => ThemePref::System,
             };
             self.notifications = config.notifications.enabled;
+            self.font_size = crate::api::client::DisplayFontSize::parse(&config.display.font_size).unwrap_or_default();
+            self.message_density = crate::api::client::MessageDensity::parse(&config.display.message_density).unwrap_or_default();
         }
     }
 }
@@ -545,31 +384,28 @@ impl SystemTheme {
     }
 }
 
-struct PendingProfileImages {
-    owner: String,
-    restore_epoch: u64,
-    receiver: std::sync::mpsc::Receiver<Result<papo_core::cache::CachedProfileImages, String>>,
-}
-
-struct PendingEmojiCache {
-    owner: String,
-    restore_epoch: u64,
-    receiver: std::sync::mpsc::Receiver<Result<Option<Vec<papo_core::cache::CachedEmoji>>, String>>,
-}
-
 struct PendingCachePage {
     channel_id: String,
     restore_epoch: u64,
     receiver: std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>,
     history_ticket: Option<papo_core::api::net::RefreshTicket>,
+    provisional: bool,
 }
 
 /// Um servidor conectado: rede, estado e o que a interface guarda dele.
 ///
 /// Todos ficam ligados ao mesmo tempo — é o que faz a menção de um servidor
 /// que não está na tela ainda acender o contador da bandeja.
+struct PendingTextEnqueue {
+    owner: String,
+    channel: String,
+    draft: shell::DraftState,
+    embeds: Vec<crate::api::models::CustomEmbedInput>,
+}
+
 pub struct Workspace {
     pub runtime: ServerRuntime,
+    pending_text_enqueues: std::collections::HashMap<String, PendingTextEnqueue>,
     pub label: String,
     pub form: AuthForm,
     /// O pedaço da interface deste servidor, fora enquanto outro está na tela.
@@ -584,6 +420,9 @@ pub struct Workspace {
     /// De quem pedimos vídeo por último, em ordem: o pedido só sai de novo
     /// quando a lista muda.
     watching: Vec<String>,
+    watching_screens: Vec<String>,
+    call_owner: String,
+    leave_barrier: papo_core::state::call::LeaveBarrier,
     /// Quantas mudanças de câmera a thread da call já publicou quando
     /// olhamos pela última vez.
     camera_revision: u64,
@@ -596,10 +435,9 @@ pub struct Workspace {
     applied_user_config: Option<crate::api::models::UserConfig>,
     /// Config já enviado nesta conexão; evita PUT a cada frame.
     sent_user_config: Option<crate::api::models::UserConfig>,
+    user_settings_ack: Option<u64>,
     /// Leituras Turso em voo. O worker de cache faz SQL; egui só sonda o receiver.
     cache_pages: Vec<PendingCachePage>,
-    emoji_cache: Option<PendingEmojiCache>,
-    profile_images_cache: Option<PendingProfileImages>,
     /// Último pedido de push feito nesta conexão: (token, registrar?). O
     /// pedido só sai de novo quando um dos dois muda.
     #[cfg(target_os = "android")]
@@ -616,6 +454,15 @@ impl Workspace {
         cache: &std::sync::Arc<ClientDb>,
         notification: &std::sync::Arc<NotificationCoordinator>,
     ) -> Self {
+        Self::open_with_storage(entry, marks, ctx, cache, notification,
+            std::sync::Arc::new(crate::storage::FileSecretStore::new()))
+    }
+
+    fn open_with_storage(
+        entry: &ServerEntry, marks: &ReadMarks, ctx: &egui::Context,
+        cache: &std::sync::Arc<ClientDb>, notification: &std::sync::Arc<NotificationCoordinator>,
+        secrets: std::sync::Arc<dyn papo_core::storage::SecretStore>,
+    ) -> Self {
         let server_key = crate::state::server_key(&entry.url);
         let mut store = Store::default();
         store.read_marks = marks.get(&server_key).cloned().unwrap_or_default();
@@ -625,26 +472,10 @@ impl Workspace {
             entry.url.clone(),
             store,
             Wake::new(move || repaint.request_repaint()),
-            std::sync::Arc::new(crate::storage::FileSecretStore::new()),
+            secrets,
             std::sync::Arc::clone(cache),
             std::sync::Arc::clone(notification),
         );
-
-        let emoji_cache = runtime.cached_owner().and_then(|owner| {
-            cache.load_emojis_async(&server_key).map(|receiver| PendingEmojiCache {
-                owner: owner.to_owned(),
-                restore_epoch: runtime.store.cache_restore_epoch(),
-                receiver,
-            })
-        });
-
-        let profile_images_cache = runtime.cached_owner().and_then(|owner| {
-            cache.load_profile_images_async(&server_key).map(|receiver| PendingProfileImages {
-                owner: owner.to_owned(),
-                restore_epoch: runtime.store.cache_restore_epoch(),
-                receiver,
-            })
-        });
 
         #[cfg(target_os = "android")]
         let network_registration =
@@ -658,9 +489,10 @@ impl Workspace {
         );
         Self {
             runtime,
+            pending_text_enqueues: Default::default(),
             label: entry.label.clone(),
             form: AuthForm {
-                server_url: entry.url.clone(),
+                server_url: if entry.url == DRAFT_SERVER_URL { String::new() } else { entry.url.clone() },
                 ..AuthForm::default()
             },
             stash: shell::Stash::new(crate::media::MediaStore::new(media)),
@@ -668,14 +500,16 @@ impl Workspace {
             call: None,
             call_ready: false,
             watching: Vec::new(),
+            watching_screens: Vec::new(),
+            call_owner: String::new(),
+            leave_barrier: Default::default(),
             camera_revision: 0,
             published_activity: None,
             last_presence_activity: None,
             applied_user_config: None,
             sent_user_config: None,
+            user_settings_ack: None,
             cache_pages: Vec::new(),
-            emoji_cache,
-            profile_images_cache,
             #[cfg(target_os = "android")]
             push_sent: None,
             #[cfg(target_os = "android")]
@@ -703,8 +537,40 @@ impl Workspace {
             restore_epoch,
             history_ticket: if older { self.runtime.store.history_ticket(&channel_id) } else { None },
             receiver,
+            provisional: false,
         });
         true
+    }
+
+    /// Start HTTP first. Connected cache may preview rows but cannot complete its ticket.
+    fn load_history(&mut self, newer: bool) {
+        let channel = self.runtime.store.selected_channel.clone();
+        if !newer && self.runtime.store.connection != crate::api::ws::Connection::Online {
+            if let Some(before) = self.runtime.store.begin_load_cached_older(&channel) {
+                self.queue_cached_page(channel, Some(before), true);
+            }
+            return;
+        }
+        let cursor = if newer { self.runtime.store.begin_load_newer(&channel) }
+            else { self.runtime.store.begin_load_older(&channel) };
+        let Some((since, last_id)) = cursor else { return; };
+        let ticket = self.runtime.store.history_ticket(&channel).expect("reserved history");
+        let edge = if newer {
+            self.runtime.store.messages_in(&channel).max_by(|a,b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+        } else {
+            self.runtime.store.messages_in(&channel).min_by(|a,b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+        }.map(|m| (m.at.timestamp_millis(), m.at.timestamp_subsec_nanos(), m.id.clone()));
+        self.runtime.net.send(if newer { Command::LoadNewerMessages { ticket: ticket.clone(), since, last_id } }
+            else { Command::LoadOlderMessages { ticket: ticket.clone(), since, last_id } });
+        let Some(edge) = edge else { return; };
+        let receiver = if newer { self.runtime.cache.load_newer_channel_page_async(&self.runtime.server_key, &channel, edge) }
+            else { self.runtime.cache.load_older_context_page_async(&self.runtime.server_key, &channel, edge) };
+        if let Some(receiver) = receiver {
+            self.cache_pages.push(PendingCachePage {
+                channel_id: channel, restore_epoch: self.runtime.store.cache_restore_epoch(),
+                history_ticket: Some(ticket), receiver, provisional: true,
+            });
+        }
     }
 
     fn ensure_channel_cache_hydrated(&mut self) {
@@ -849,6 +715,7 @@ pub struct PapoApp {
     window_attached: bool,
     /// Servidor de mentira: a rede é ignorada.
     demo: bool,
+    inbox_open: bool,
     /// Enquanto o servidor criado pelo botão + ainda está no modal, guarda
     /// qual servidor estava na tela para poder cancelar sem deixar lixo no trilho.
     add_server_previous: Option<usize>,
@@ -863,7 +730,17 @@ impl PapoApp {
             .storage
             .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
             .unwrap_or_default();
+        let secrets = crate::storage::FileSecretStore::new();
+        let forgotten = secrets.forgotten_servers().unwrap_or_else(|error| {
+            log::error!("could not read server cleanup journal: {error:?}"); vec![]
+        });
+        for key in &forgotten {
+            settings.servers.retain(|entry| crate::state::server_key(&entry.url) != *key);
+            if crate::state::server_key(&settings.server_url) == *key { settings.server_url = DRAFT_SERVER_URL.into(); }
+            settings.forget_local_server(key);
+        }
         settings.normalise();
+        theme::set_account_font(settings.font_size);
 
         #[cfg(target_os = "android")]
         let runtime_lease = crate::platform::runtime_lease::ForegroundLease::acquire();
@@ -878,6 +755,7 @@ impl PapoApp {
                     let enabled = settings
                         .pending_user_settings
                         .get(&key)
+                        .map(|pending| &pending.config)
                         .or_else(|| settings.cached_user_settings.get(&key))
                         .map(|config| config.notifications.enabled)
                         .unwrap_or(settings.notifications);
@@ -987,6 +865,13 @@ impl PapoApp {
 
         // Todos os servidores sobem juntos: o que chega num deles enquanto
         // outro está na tela ainda conta para o contador e a notificação.
+        for key in &forgotten {
+            use papo_core::storage::SecretStore;
+            cache.clear_server(key);
+            if let Err(error) = secrets.forget_server(key) { log::error!("server cleanup retry: {error:?}"); }
+            crate::media::clear_server_media_cache(key);
+        }
+        if !forgotten.is_empty() { cache.flush(); }
         let mut workspaces: Vec<Workspace> = settings
             .servers
             .iter()
@@ -1046,6 +931,8 @@ impl PapoApp {
 
         // O servidor que está na tela entrega o seu guardado para a interface.
         let mut ui_state = UiState::default();
+        ui_state.message_density = settings.message_density;
+        ui_state.extra_compact = settings.extra_compact;
         ui_state.previews = Some(std::sync::Arc::clone(&previews));
         ui_state.show_members = settings.show_members;
         ui_state.translucent = settings.translucency;
@@ -1159,6 +1046,7 @@ impl PapoApp {
             hidden_viewports: Vec::new(),
             window_attached: false,
             demo,
+            inbox_open: false,
             add_server_previous: None,
             #[cfg(target_os = "android")]
             _runtime_lease: runtime_lease,
@@ -1632,6 +1520,17 @@ impl PapoApp {
             return;
         }
 
+        let key = crate::state::server_key(&url);
+        let secrets = crate::storage::FileSecretStore::new();
+        if secrets.is_forgotten(&key) {
+            use papo_core::storage::SecretStore;
+            self.cache.clear_server(&key);
+            self.cache.flush();
+            if let Err(error) = secrets.forget_server(&key).and_then(|_| secrets.allow_server(&key)) {
+                self.workspaces[index].runtime.store.error = Some(format!("Server cleanup pending: {error:?}"));
+                return;
+            }
+        }
         if url != self.workspaces[index].runtime.url {
             self.reopen(index, url, ctx);
         }
@@ -1795,6 +1694,10 @@ impl PapoApp {
 
     /// Abre "Adicionar servidor" como rascunho cancelável.
     fn add_server(&mut self, ctx: &egui::Context) {
+        if self.workspaces[self.active].runtime.url == DRAFT_SERVER_URL {
+            self.workspaces[self.active].form.server_url.clear();
+            return;
+        }
         // O novo servidor é provisório até a autenticação terminar. Se o
         // usuário clicar fora do cartão, voltamos exatamente para quem estava
         // ativo e descartamos este workspace.
@@ -1859,10 +1762,15 @@ impl PapoApp {
     /// Tira um servidor do trilho. A conta no servidor continua existindo; o
     /// que sai é a conexão e o que ela guardava aqui.
     fn remove_server(&mut self, index: usize, ctx: &egui::Context) {
-        // O último não sai: sem nenhum servidor não há para onde ir.
-        if self.workspaces.len() <= 1 || index >= self.workspaces.len() {
+        if index >= self.workspaces.len() || self.workspaces[index].runtime.url == DRAFT_SERVER_URL {
             return;
         }
+        let key = self.workspaces[index].runtime.server_key.clone();
+        if let Err(error) = crate::storage::FileSecretStore::new().mark_forgotten(&key) {
+            self.workspaces[index].runtime.store.error = Some(format!("Could not persist server removal: {error:?}"));
+            return;
+        }
+        leave_call(&mut self.workspaces[index]);
         // Só o servidor que está na tela tem o seu guardado na interface.
         let was_active = index == self.active;
         if was_active {
@@ -1874,9 +1782,15 @@ impl PapoApp {
             self.workspaces[index].runtime.release_push_device(token);
         }
         self.workspaces[index].runtime.forget_server();
+        self.settings.forget_local_server(&key);
         crate::media::clear_server_media_cache(&key);
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
+        if self.workspaces.is_empty() {
+            let entry = ServerEntry::new(DRAFT_SERVER_URL.into());
+            self.workspaces.push(Workspace::open(&entry, &self.settings.server_marks, ctx, &self.cache, &self.notification));
+            self.settings.servers.push(entry);
+        }
 
         let active = if self.active > index {
             self.active - 1
@@ -1920,7 +1834,9 @@ impl PapoApp {
                 || store.timeline_status(&store.selected_channel)
                     == crate::state::TimelineStatus::Fresh
         };
-        if focused && timeline_settled && !ws.runtime.store.selected_channel.is_empty() {
+        if focused && timeline_settled && !self.inbox_open && self.sheet.open.is_none() && self.crop.is_none()
+            && self.ui.reading_uncovered(&ws.runtime.store)
+            && !ws.runtime.store.selected_channel.is_empty() {
             let channel_id = ws.runtime.store.selected_channel.clone();
             if std::mem::take(&mut self.ui.read_span_break) {
                 ws.runtime.store.reset_read_span(&channel_id);
@@ -2057,11 +1973,14 @@ impl PapoApp {
             }
             let ws = &mut self.workspaces[self.active];
             ws.runtime.store.selected_channel = channel_id.clone();
-            let attempt = ws.runtime.store.call.joining(channel_id.clone());
-            ws.runtime.net.send(Command::JoinVoice {
-                channel_id,
-                attempt,
-            });
+            if ws.leave_barrier.waiting() {
+                if !ws.leave_barrier.timed_out() {
+                    ws.leave_barrier.queue(channel_id, ws.runtime.store.me.clone());
+                    ctx.request_repaint_after(papo_core::state::call::LeaveBarrier::TIMEOUT);
+                } else { ws.runtime.store.error = Some("call-leave-timeout".into()); }
+            } else {
+                begin_call(ws, channel_id);
+            }
             return;
         }
         // The shared inbox can target a different workspace. Dispatch its
@@ -2086,40 +2005,12 @@ impl PapoApp {
         let s = self.settings.lang.strings();
         let ws = &mut self.workspaces[self.active];
         match action {
-            ChatAction::LoadOlderMessages => {
-                let channel_id = ws.runtime.store.selected_channel.clone();
-                if let Some(before) = ws.runtime.store.begin_load_cached_older(&channel_id) {
-                    ws.queue_cached_page(channel_id, Some(before), true);
-                } else if let Some((since, last_id)) = ws.runtime.store.begin_load_older(&channel_id) {
-                    ws.runtime.net.send(Command::LoadOlderMessages {
-                        ticket: ws
-                            .runtime
-                            .store
-                            .history_ticket(&channel_id)
-                            .expect("reserved history"),
-                        since,
-                        last_id,
-                    });
-                }
-            }
+            ChatAction::LoadOlderMessages => ws.load_history(false),
             ChatAction::CancelMessageNavigation(channel_id) => ws
                 .runtime
                 .net
                 .send(Command::CancelMessageNavigation { channel_id }),
-            ChatAction::LoadNewerMessages => {
-                let channel = ws.runtime.store.selected_channel.clone();
-                if let Some((since, last_id)) = ws.runtime.store.begin_load_newer(&channel) {
-                    ws.runtime.net.send(Command::LoadNewerMessages {
-                        ticket: ws
-                            .runtime
-                            .store
-                            .history_ticket(&channel)
-                            .expect("reserved history"),
-                        since,
-                        last_id,
-                    });
-                }
-            }
+            ChatAction::LoadNewerMessages => ws.load_history(true),
             ChatAction::LoadMessageContext {
                 channel_id,
                 message_id,
@@ -2185,6 +2076,9 @@ impl PapoApp {
                     }
                     let local_id = papo_core::cache::new_local_id();
                     let created_at = papo_core::cache::now_millis();
+                    ws.pending_text_enqueues.insert(local_id.clone(), PendingTextEnqueue {
+                        owner: owner_user_id.clone(), channel: channel_id.clone(), draft: self.ui.draft_state(), embeds: embeds.clone(),
+                    });
                     ws.runtime
                         .store
                         .project_outgoing(papo_core::cache::CachedOutgoing {
@@ -2244,13 +2138,16 @@ impl PapoApp {
                 embeds,
                 message_id,
                 content,
-            } => ws.runtime.net.send(Command::EditMessage {
-                embeds,
-                message_id,
-                content,
-            }),
+            } => {
+                if ws.runtime.store.message(&message_id).is_some_and(|m| ws.runtime.store.can_edit_message(m)
+                    && (embeds.is_none() || papo_core::embed_authoring::editable(&m.previews).is_some())) {
+                    ws.runtime.net.send(Command::EditMessage { owner: ws.runtime.store.me.clone(), embeds, message_id, content });
+                }
+            }
             ChatAction::Delete(message_id) => {
-                ws.runtime.net.send(Command::DeleteMessage { message_id })
+                if ws.runtime.store.message(&message_id).is_some_and(|m| ws.runtime.store.can_delete_message(m)) {
+                    ws.runtime.net.send(Command::DeleteMessage { owner: ws.runtime.store.me.clone(), message_id });
+                }
             }
             ChatAction::RetryOutgoing(local_id) => {
                 if let Some(command) = self.ui.pending_uploads.get(&local_id).cloned() {
@@ -2295,12 +2192,15 @@ impl PapoApp {
                 });
             }
             ChatAction::Pin { message_id, pin } => {
+                let Some(message) = ws.runtime.store.message(&message_id) else { return; };
+                if message.pending || !ws.runtime.store.can_pin_in(&message.channel_id) { return; }
                 let channel_id = ws.runtime
                     .store
                     .message(&message_id)
                     .map(|message| message.channel_id.clone())
                     .unwrap_or_else(|| ws.runtime.store.selected_channel.clone());
                 ws.runtime.net.send(Command::Pin {
+                    owner: ws.runtime.store.me.clone(),
                     channel_id,
                     message_id,
                     pin,
@@ -2371,20 +2271,9 @@ impl PapoApp {
             ChatAction::DeleteChannel(channel_id) => {
                 ws.runtime.net.send(Command::DeleteChannel { channel_id })
             }
-            ChatAction::ChannelNotifications {
-                channel_id,
-                setting,
-            } => {
-                if let Some(channel) = ws
-                    .runtime
-                    .store
-                    .channels
-                    .iter_mut()
-                    .find(|channel| channel.id == channel_id)
-                {
-                    channel.notification_settings = setting.to_owned();
-                }
+            ChatAction::ChannelNotifications { channel_id, setting } => {
                 ws.runtime.net.send(Command::SetChannelNotifications {
+                    owner: ws.runtime.store.me.clone(),
                     channel_id,
                     setting: setting.to_owned(),
                 });
@@ -2401,9 +2290,15 @@ impl PapoApp {
                 parent_id,
             }),
             ChatAction::BanUser { user_id, banned } => {
-                ws.runtime.net.send(Command::BanUser { user_id, banned })
+                if ws.runtime.store.can_manage_server() && user_id != ws.runtime.store.me {
+                    ws.runtime.net.send(Command::BanUser { user_id, banned });
+                }
             }
-            ChatAction::ResetUser(user_id) => ws.runtime.net.send(Command::ResetUser { user_id }),
+            ChatAction::ResetUser(user_id) => {
+                if ws.runtime.store.is_server_owner() && user_id != ws.runtime.store.me {
+                    ws.runtime.net.send(Command::ResetUser { user_id });
+                }
+            }
             ChatAction::LoadProfile(user_id) => ws.runtime.net.send(Command::LoadProfile { user_id }),
             ChatAction::OpenDirectMessage(user_id) => {
                 if !self.ui.dm_surface
@@ -2435,6 +2330,23 @@ impl PapoApp {
             // Entrar já foi tratado antes do `match`, porque mexe em todos
             // os servidores de uma vez.
             ChatAction::JoinVoice(_) => {}
+            ChatAction::VoicePlayback { channel_id, attempt, user_id, setting } => {
+                if ws.runtime.store.call.current(&channel_id, attempt)
+                    && ws.call_owner == ws.runtime.store.me
+                    && ws.runtime.store.call.audio_routes_known
+                    && user_id != ws.runtime.store.me
+                    && ws.runtime.store.call.members().iter().any(|m| m.user_id == user_id)
+                    && let Some(call) = &mut ws.call {
+                    call.set_playback(user_id, setting);
+                }
+            }
+            ChatAction::DismissWebhookCredential => ws.runtime.store.webhooks.created = None,
+            ChatAction::WebhookAdmin(action) => {
+                if ws.runtime.store.can_manage_webhooks() && let Some(request) = ws.runtime.store.webhooks.begin() {
+                    ws.runtime.net.send(Command::Webhooks { owner: ws.runtime.store.me.clone(),
+                        epoch: ws.runtime.store.cache_restore_epoch(), request, action });
+                }
+            }
             ChatAction::LeaveVoice => leave_call(ws),
             ChatAction::ToggleMute => {
                 let muted = !ws.runtime.store.call.muted;
@@ -2519,6 +2431,8 @@ impl PapoApp {
         let ws = &mut self.workspaces[self.active];
         match action {
             ChatAction::Send { content, reply_to, .. } => {
+                self.ui.composer.clear(); self.ui.composer_mentions.clear(); self.ui.custom_embeds.clear();
+                self.ui.replying = None; self.ui.text_enqueue_pending = false;
                 let channel_id = ws.runtime.store.selected_channel.clone();
                 let message_id = ws.runtime.store.push_pending(&channel_id, &content, reply_to);
                 ws.runtime.store.set_message_pending_local(&message_id, false);
@@ -2699,6 +2613,34 @@ impl PapoApp {
                     vec!["u-ana".to_owned()],
                 );
             }
+            ChatAction::WebhookAdmin(action) => {
+                use papo_core::state::webhooks::{WebhookAction, WebhookOutcome};
+                let outcome = match action {
+                    WebhookAction::Load => WebhookOutcome::Listed(ws.runtime.store.webhooks.items.clone()),
+                    WebhookAction::Create { channel, name } => {
+                        let created = crate::api::models::CreatedWebhook {
+                            webhook: crate::api::models::Webhook {
+                                id: format!("demo-hook-{}", papo_core::next_operation_id()),
+                                channel_id: channel, name, display_name: None,
+                                created_by: ws.runtime.store.me.clone(), created_at: chrono::Utc::now(), revoked_at: None,
+                            },
+                            token: "demo-only-credential-not-valid-on-any-server".into(),
+                        };
+                        WebhookOutcome::Created(created)
+                    }
+                    WebhookAction::Identity { id, display_name } => {
+                        let Some(mut hook) = ws.runtime.store.webhooks.items.iter().find(|hook| hook.id == id).cloned() else { return; };
+                        hook.display_name = Some(display_name);
+                        WebhookOutcome::Updated(hook)
+                    }
+                    WebhookAction::Revoke { id } => WebhookOutcome::Revoked(id),
+                };
+                if let Some(request) = ws.runtime.store.webhooks.begin() {
+                    ws.runtime.store.webhooks.complete(request, Ok(outcome));
+                }
+            }
+            ChatAction::DismissWebhookCredential => ws.runtime.store.webhooks.created = None,
+            ChatAction::VoicePlayback { .. } => {},
             ChatAction::LeaveVoice => ws.runtime.store.call.left(),
             ChatAction::ToggleMute => ws.runtime.store.call.muted = !ws.runtime.store.call.muted,
             ChatAction::ToggleCamera => ws.runtime.store.call.camera = !ws.runtime.store.call.camera,
@@ -2831,55 +2773,6 @@ impl PapoApp {
         use std::sync::mpsc::TryRecvError;
 
         for workspace in &mut self.workspaces {
-            if let Some(request) = workspace.profile_images_cache.as_ref() {
-                match request.receiver.try_recv() {
-                    Ok(result) => {
-                        let request = workspace.profile_images_cache.take().expect("checked");
-                        if request.restore_epoch == workspace.runtime.store.cache_restore_epoch()
-                            && workspace.runtime.store.me == request.owner
-                        {
-                            match result {
-                                Ok(images) => workspace.runtime.store.restore_cached_profile_images(images),
-                                Err(error) => log::warn!(
-                                    "cache: profile image restore failed server={}: {error}",
-                                    workspace.runtime.server_key
-                                ),
-                            }
-                        }
-                    }
-                    Err(TryRecvError::Empty) => {
-                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        workspace.profile_images_cache = None;
-                    }
-                }
-            }
-            if let Some(request) = workspace.emoji_cache.as_ref() {
-                match request.receiver.try_recv() {
-                    Ok(result) => {
-                        let request = workspace.emoji_cache.take().expect("checked");
-                        if request.restore_epoch == workspace.runtime.store.cache_restore_epoch()
-                            && workspace.runtime.store.me == request.owner
-                        {
-                            match result {
-                                Ok(Some(emojis)) => workspace.runtime.store.restore_cached_emojis(emojis),
-                                Ok(None) => {}
-                                Err(error) => log::warn!(
-                                    "cache: emoji restore failed server={}: {error}",
-                                    workspace.runtime.server_key
-                                ),
-                            }
-                        }
-                    }
-                    Err(TryRecvError::Empty) => {
-                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        workspace.emoji_cache = None;
-                    }
-                }
-            }
             let mut finished = Vec::new();
             for (index, request) in workspace.cache_pages.iter().enumerate() {
                 match request.receiver.try_recv() {
@@ -2907,14 +2800,18 @@ impl PapoApp {
                 match result {
                     Ok(page) => {
                         if let Some(ticket) = request.history_ticket.as_ref() {
-                            workspace.runtime.store.restore_cached_history(ticket, page);
+                            if request.provisional {
+                                workspace.runtime.store.preview_cached_history(ticket, page);
+                            } else {
+                                workspace.runtime.store.restore_cached_history(ticket, page);
+                            }
                         } else {
                             workspace.runtime.store.restore_cached_page(page, false);
                         }
                     },
                     Err(error) => {
                         if let Some(ticket) = request.history_ticket.as_ref() {
-                            workspace.runtime.store.cached_history_failed(ticket);
+                            if !request.provisional { workspace.runtime.store.cached_history_failed(ticket); }
                         } else {
                             workspace.runtime.store.cached_page_failed(&request.channel_id, false);
                         }
@@ -2961,13 +2858,35 @@ impl PapoApp {
                                 self.settings.servers[index].label = name;
                             }
                         }
+                        RuntimeEffect::UserSettingsPatched { owner, request, success } => {
+                            if owner == ws.runtime.store.me && success { ws.user_settings_ack = Some(request); }
+                        }
+                        RuntimeEffect::OutgoingEnqueued { local_id, owner_user_id, channel_id } => {
+                            if let Some(pending) = ws.pending_text_enqueues.remove(&local_id)
+                                && pending.owner == owner_user_id && pending.channel == channel_id
+                                && ws.runtime.store.me == owner_user_id {
+                                let ops = if index == self.active {
+                                    self.ui.acknowledge_text_enqueue(&channel_id, &pending.draft, &pending.embeds);
+                                    self.ui.drafts.take_persistence_ops(&owner_user_id, true)
+                                } else {
+                                    ws.stash.acknowledge_text_enqueue(&channel_id, &pending.draft, &pending.embeds);
+                                    ws.stash.drafts.take_persistence_ops(&owner_user_id, true)
+                                };
+                                if !ops.is_empty() { self.cache.submit(&ws.runtime.server_key, ops); }
+                            }
+                        }
                         RuntimeEffect::OutgoingRejected {
+                            local_id,
                             owner_user_id,
                             channel_id,
                             content,
                             reply_to,
                             notify_reply,
                         } => {
+                            if ws.pending_text_enqueues.remove(&local_id).is_some() {
+                                if index == self.active { self.ui.text_enqueue_pending = false; }
+                                continue;
+                            }
                             let (visible, bindings) =
                                 ws.runtime.store.display_mentions_with_bindings(&content);
                             let draft = crate::ui::shell::DraftState {
@@ -2978,12 +2897,6 @@ impl PapoApp {
                             };
                             let server_key = ws.runtime.server_key.clone();
                             if ws.runtime.cached_owner() != Some(owner_user_id.as_str()) {
-                                if index == self.active && self.ui.last_channel == channel_id {
-                                    self.ui.composer = draft.text;
-                                    self.ui.composer_mentions = draft.mentions;
-                                    self.ui.replying = draft.reply_to;
-                                    self.ui.reply_notify = draft.notify_reply;
-                                }
                                 continue;
                             }
                             if index == self.active {
@@ -3128,6 +3041,7 @@ impl PapoApp {
     /// Esc pertence a uma única camada; as views de baixo não recebem o
     /// mesmo evento e o compositor só é cancelado depois dos flutuantes.
     fn handle_escape(&mut self, ctx: &egui::Context) {
+        if self.inbox_open { self.inbox_open = false; return; }
         if !shell::take_escape(ctx) {
             return;
         }
@@ -3205,6 +3119,7 @@ impl PapoApp {
                             s,
                         );
                     });
+                crate::ui::call::participant_menu(ctx, &ws.runtime.store, interface, ws.call.as_ref(), &t, s);
                 if ctx.input(|input| input.viewport().close_requested()) {
                     closing = true;
                 }
@@ -3227,6 +3142,7 @@ impl PapoApp {
     fn rail_entries(&mut self, ctx: &egui::Context) -> Vec<crate::ui::rail::Entry> {
         let mut entries = Vec::with_capacity(self.workspaces.len());
         for ws in &self.workspaces {
+            if ws.runtime.url == DRAFT_SERVER_URL { continue; }
             let mut entry = ws.entry(&self.settings);
             entry.icon = ws
                 .runtime
@@ -3416,6 +3332,10 @@ impl PapoApp {
                     self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
                 }
             }
+            crate::ui::rail::RailAction::Notifications => {
+                self.inbox_open = true;
+                for ws in &mut self.workspaces { inbox::load(ws, false); }
+            }
             crate::ui::rail::RailAction::Add => self.add_server(ctx),
             crate::ui::rail::RailAction::Remove(index) => self.remove_server(index, ctx),
         }
@@ -3571,6 +3491,9 @@ impl PapoApp {
             self.system.accent,
         );
         self.ui.translucent = self.settings.translucency;
+        theme::set_account_font(self.settings.font_size);
+        self.ui.message_density = self.settings.message_density;
+        self.ui.extra_compact = self.settings.extra_compact;
         theme::apply(
             ctx,
             &self.tokens,
@@ -3591,6 +3514,7 @@ impl PapoApp {
             }
             MenuCommand::ToggleNotifications => {
                 self.settings.notifications = !self.settings.notifications;
+                self.queue_portable_settings();
             }
             MenuCommand::ToggleBadge => {
                 self.settings.badge = !self.settings.badge;
@@ -3864,7 +3788,8 @@ impl PapoApp {
         // que vale é o arquivo em disco, então ele é lido e escrito à parte.
         let autostart_before = crate::platform::autostart::is_enabled();
         let mut autostart = autostart_before;
-        let before_portable = (self.settings.theme, self.settings.notifications);
+        let before_extra_compact = self.settings.extra_compact;
+        let before_portable = (self.settings.theme, self.settings.notifications, self.settings.font_size, self.settings.message_density);
         let before_primary = (
             self.settings.lang,
             self.settings.theme,
@@ -3919,6 +3844,9 @@ impl PapoApp {
                 lang: &mut self.settings.lang,
                 theme: &mut self.settings.theme,
                 ui_scale: &mut self.settings.ui_scale,
+                font_size: &mut self.settings.font_size,
+                message_density: &mut self.settings.message_density,
+                extra_compact: &mut self.settings.extra_compact,
                 translucency: &mut self.settings.translucency,
                 glass: self.ui.glass.clone(),
                 notifications: &mut self.settings.notifications,
@@ -4007,7 +3935,10 @@ impl PapoApp {
             self.retheme(ctx);
         }
 
-        let after_portable = (self.settings.theme, self.settings.notifications);
+        let after_portable = (self.settings.theme, self.settings.notifications, self.settings.font_size, self.settings.message_density);
+        if before_portable != after_portable || before_extra_compact != self.settings.extra_compact {
+            self.apply_local_appearance(ctx);
+        }
         if before_portable != after_portable {
             self.queue_portable_settings();
         }
@@ -4244,17 +4175,30 @@ impl PapoApp {
             "light" => ThemePref::Light,
             _ => ThemePref::System,
         };
+        let font = crate::api::client::DisplayFontSize::parse(&config.display.font_size).unwrap_or_default();
+        let density = crate::api::client::MessageDensity::parse(&config.display.message_density).unwrap_or_default();
         let changed = self.settings.theme != theme
-            || self.settings.notifications != config.notifications.enabled;
+            || self.settings.notifications != config.notifications.enabled
+            || self.settings.font_size != font || self.settings.message_density != density;
+        self.settings.font_size = font;
+        self.settings.message_density = density;
         self.settings.theme = theme;
         self.settings.notifications = config.notifications.enabled;
         if changed {
-            self.retheme(ctx);
+            self.apply_local_appearance(ctx);
             #[cfg(target_os = "android")]
             if self.settings.notifications {
                 crate::platform::android_message::ensure_permission();
             }
         }
+    }
+
+    fn apply_local_appearance(&mut self, ctx: &egui::Context) {
+        theme::set_account_font(self.settings.font_size);
+        self.ui.message_density = self.settings.message_density;
+        self.ui.extra_compact = self.settings.extra_compact;
+        self.ui.relayout = true;
+        self.retheme(ctx);
     }
 
     fn portable_config_from_local(
@@ -4268,6 +4212,8 @@ impl PapoApp {
         }
         .to_owned();
         config.notifications.enabled = self.settings.notifications;
+        config.display.font_size = self.settings.font_size.wire().into();
+        config.display.message_density = self.settings.message_density.wire().into();
         config
     }
 
@@ -4277,20 +4223,25 @@ impl PapoApp {
         }
         let index = self.active;
         let key = self.workspaces[index].runtime.server_key.clone();
-        let base = self.workspaces[index]
-            .runtime
-            .store
-            .user_settings
-            .as_ref()
-            .map(|settings| settings.config.clone())
-            .or_else(|| self.settings.cached_user_settings.get(&key).cloned());
-        let Some(base) = base else {
-            return;
+        let owner = self.workspaces[index].runtime.store.me.clone();
+        if owner.is_empty() { return; }
+        let base = self.workspaces[index].applied_user_config.clone()
+            .or_else(|| self.workspaces[index].runtime.store.user_settings.as_ref().map(|s| s.config.clone()));
+        let Some(base) = base else { return; };
+        let config = self.portable_config_from_local(base.clone());
+        let patch = crate::api::client::AccountSettingsPatch {
+            theme: (config.theme != base.theme).then(|| config.theme.clone()),
+            notifications_enabled: (config.notifications.enabled != base.notifications.enabled).then_some(config.notifications.enabled),
+            font_size: (config.display.font_size != base.display.font_size).then(|| crate::api::client::DisplayFontSize::parse(&config.display.font_size)).flatten(),
+            message_density: (config.display.message_density != base.display.message_density).then(|| crate::api::client::MessageDensity::parse(&config.display.message_density)).flatten(),
         };
-        let config = self.portable_config_from_local(base);
-        self.settings
-            .pending_user_settings
-            .insert(key, config.clone());
+        let pending = self.settings.pending_user_settings.entry(key).or_insert_with(|| PendingUserSettings {
+            revision: 0, owner: owner.clone(), patch: Default::default(), config: config.clone(),
+        });
+        if pending.owner != owner { *pending = PendingUserSettings { revision: 0, owner, patch: Default::default(), config: config.clone() }; }
+        pending.revision = papo_core::next_operation_id();
+        pending.patch.merge(patch);
+        pending.config = config.clone();
         self.workspaces[index].applied_user_config = Some(config);
         self.workspaces[index].sent_user_config = None;
     }
@@ -4324,29 +4275,31 @@ impl PapoApp {
                 .insert(key.clone(), remote.clone());
         }
 
+        let owner = &self.workspaces[index].runtime.store.me;
+        if self.settings.pending_user_settings.get(&key).is_some_and(|p| &p.owner != owner) {
+            self.settings.pending_user_settings.remove(&key);
+            self.workspaces[index].sent_user_config = None;
+        }
         if let Some(pending) = self.settings.pending_user_settings.get(&key).cloned() {
-            if remote.as_ref() == Some(&pending) {
+            if pending.acknowledged(remote.as_ref(), self.workspaces[index].user_settings_ack) {
                 self.settings.pending_user_settings.remove(&key);
                 self.workspaces[index].sent_user_config = None;
-                if self.workspaces[index].applied_user_config.as_ref() != Some(&pending) {
-                    self.apply_portable_config(ctx, &pending);
-                    self.workspaces[index].applied_user_config = Some(pending);
+            } else {
+                // Retain unrelated fresh account fields in the optimistic projection too.
+                let mut effective = remote.clone().unwrap_or(pending.config.clone());
+                pending.patch.apply_to(&mut effective);
+                if self.workspaces[index].applied_user_config.as_ref() != Some(&effective) {
+                    self.apply_portable_config(ctx, &effective);
+                    self.workspaces[index].applied_user_config = Some(effective);
+                }
+                if online && self.workspaces[index].sent_user_config.as_ref() != Some(&pending.config) {
+                    self.workspaces[index].runtime.net.send(Command::PatchUserSettings {
+                        owner: pending.owner, request: pending.revision, patch: pending.patch,
+                    });
+                    self.workspaces[index].sent_user_config = Some(pending.config);
                 }
                 return;
             }
-
-            if self.workspaces[index].applied_user_config.as_ref() != Some(&pending) {
-                self.apply_portable_config(ctx, &pending);
-                self.workspaces[index].applied_user_config = Some(pending.clone());
-            }
-            if online && self.workspaces[index].sent_user_config.as_ref() != Some(&pending) {
-                self.workspaces[index]
-                    .runtime
-                    .net
-                    .send(Command::UpdateUserSettings(Box::new(pending.clone())));
-                self.workspaces[index].sent_user_config = Some(pending);
-            }
-            return;
         }
 
         let effective = remote.or_else(|| self.settings.cached_user_settings.get(&key).cloned());
@@ -4404,7 +4357,8 @@ impl PapoApp {
         self.settings
             .pending_user_settings
             .get(&workspace.runtime.server_key)
-            .map(|config| config.notifications.enabled)
+            .filter(|pending| pending.owner == workspace.runtime.store.me)
+            .map(|pending| pending.config.notifications.enabled)
             .or_else(|| {
                 workspace
                     .runtime
@@ -4786,6 +4740,8 @@ impl eframe::App for PapoApp {
                 let direct_active = self.ui.dm_surface;
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
+                    self.ui.text_enqueue_pending = ws.pending_text_enqueues.values().any(|p|
+                        p.owner == ws.runtime.store.me && p.channel == ws.runtime.store.selected_channel);
                     shell::draw(
                         ui,
                         &mut ws.runtime.store,
@@ -4803,6 +4759,23 @@ impl eframe::App for PapoApp {
                         active,
                     )
                 };
+                calls::pending_join(&mut self.workspaces[active], &ctx, strings);
+                if !self.workspaces[active].runtime.store.call.popped_out {
+                    let ws = &self.workspaces[active];
+                    crate::ui::call::participant_menu(&ctx, &ws.runtime.store, &mut self.ui, ws.call.as_ref(), &self.tokens, strings);
+                }
+                if self.inbox_open {
+                    let navigation = inbox::draw(&ctx, &mut self.inbox_open, &mut self.workspaces, strings);
+                    if let Some((workspace, channel, message)) = navigation {
+                        self.inbox_open = false;
+                        self.activate(workspace, &ctx);
+                        self.workspaces[workspace].runtime.store.selected_channel = channel.clone();
+                        self.ui.dm_surface = self.workspaces[workspace].runtime.store.channel(&channel)
+                            .is_some_and(|c| c.kind == crate::state::ChannelKind::Direct);
+                        shell::request_message_jump(&self.workspaces[workspace].runtime.store, &mut self.ui,
+                            &channel, &message, ctx.input(|i| i.time));
+                    }
+                }
                 self.settings.webembed_float_width = self.ui.webembed_float_width;
                 self.settings.webembed_float_pos = self.ui.webembed_float_pos;
                 self.settings.trusted_link_hosts = self.ui.trusted_link_hosts.clone();
@@ -5253,5 +5226,32 @@ mod tests {
         );
         assert_eq!(normalise_server_url("  http://x  "), "http://x");
         assert_eq!(normalise_server_url(""), "");
+    }
+}
+
+#[cfg(test)]
+mod parity_settings_tests {
+    use super::*;
+    #[test]
+    fn parity_rapid_settings_reversal_waits_for_the_latest_write_acknowledgement() {
+        let config = crate::api::models::UserConfig::default();
+        let pending = PendingUserSettings { revision: 42, owner: "me".into(),
+            patch: crate::api::client::AccountSettingsPatch { notifications_enabled: Some(true), ..Default::default() }, config: config.clone() };
+        assert!(!pending.acknowledged(Some(&config), None));
+        assert!(!pending.acknowledged(Some(&config), Some(41)));
+        assert!(pending.acknowledged(Some(&config), Some(42)));
+    }
+    #[test]
+    fn parity_forgetting_clears_only_the_selected_servers_appearance_and_read_marks() {
+        let mut settings = Settings::default();
+        for key in ["first", "second"] {
+            settings.cached_user_settings.insert(key.into(), Default::default());
+            settings.server_marks.insert(key.into(), Default::default());
+        }
+        settings.forget_local_server("first");
+        assert!(!settings.cached_user_settings.contains_key("first"));
+        assert!(!settings.server_marks.contains_key("first"));
+        assert!(settings.cached_user_settings.contains_key("second"));
+        assert!(settings.server_marks.contains_key("second"));
     }
 }

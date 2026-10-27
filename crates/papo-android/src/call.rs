@@ -10,23 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Notification/UI handles must stay unique after forgetting/reopening a server or process restart.
-fn next_attempt() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static LAST: AtomicU64 = AtomicU64::new(0);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|time| time.as_nanos() as u64)
-        .unwrap_or(1);
-    let mut last = LAST.load(Ordering::Relaxed);
-    loop {
-        let next = now.max(last.saturating_add(1));
-        match LAST.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => return next,
-            Err(current) => last = current,
-        }
-    }
-}
+use papo_core::state::call::{next_attempt, LeaveBarrier};
 
 #[uniffi::export(with_foreign)]
 pub trait CallHost: Send + Sync {
@@ -133,8 +117,7 @@ pub(crate) struct Calls {
     warning: String,
     playback: HashMap<String, VoicePlaybackView>,
     front: bool,
-    leaving: Option<(String, String, std::time::Instant)>,
-    queued: Option<(String, String)>,
+    leave_barrier: LeaveBarrier,
     #[cfg(feature = "calls")]
     media: Option<Media>,
 }
@@ -254,11 +237,7 @@ impl Calls {
         // same-room leave can terminate the new session. ICE fetches alone never join.
         #[cfg(feature = "calls")]
         if tell_server && self.media.is_some() && runtime.store.call.active() {
-            self.leaving = Some((
-                runtime.store.call.channel_id.clone(),
-                runtime.store.me.clone(),
-                std::time::Instant::now(),
-            ));
+            self.leave_barrier.begin(runtime.store.call.channel_id.clone(), runtime.store.me.clone());
             if let Some(host) = self.host.clone() {
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(10));
@@ -322,8 +301,7 @@ impl Calls {
                 }
             }
             CallRuntimeEffect::ConnectionOffline => {
-                self.leaving = None;
-                self.queued = None;
+                self.leave_barrier.disconnected();
                 if !self.owner.is_empty() {
                     self.error = "connection-lost".into();
                     self.stop(runtime, false);
@@ -340,17 +318,11 @@ impl Calls {
                     channel_id,
                     user_id,
                 } = event.as_ref()
-                    && self.leaving.as_ref().is_some_and(|(channel, owner, _)| {
-                        channel == channel_id && owner == user_id
-                    })
+                    && let Some((channel, owner)) = self.leave_barrier.acknowledge(channel_id, user_id)
+                    && owner == runtime.store.me
+                    && runtime.store.connection == Connection::Online
                 {
-                    self.leaving = None;
-                    if let Some((channel, owner)) = self.queued.take()
-                        && owner == runtime.store.me
-                        && runtime.store.connection == Connection::Online
-                    {
-                        self.begin_join(runtime, channel);
-                    }
+                    self.begin_join(runtime, channel);
                 }
                 if let papo_core::api::ws::Event::Failure {
                     code: Some(code), ..
@@ -386,16 +358,8 @@ impl Calls {
         });
     }
     pub fn pump(&mut self, runtime: &mut ServerRuntime) {
-        if self
-            .leaving
-            .as_ref()
-            .is_some_and(|(_, _, since)| since.elapsed() >= std::time::Duration::from_secs(10))
-        {
-            // Keep the barrier until acknowledgement/disconnect. A timeout cannot prove
-            // that the old server session disappeared or make its future events safe.
-            if self.queued.take().is_some() {
-                self.error = "leave-timeout".into();
-            }
+        if self.leave_barrier.timed_out() && self.leave_barrier.cancel_queued() {
+            self.error = "leave-timeout".into();
         }
         if !self.owner.is_empty()
             && (self.owner != runtime.store.me
@@ -498,16 +462,10 @@ impl Calls {
             #[cfg(feature = "calls")]
             {
                 self.stop(runtime, true);
-                if self.leaving.as_ref().is_some_and(|(_, _, since)| {
-                    since.elapsed() >= std::time::Duration::from_secs(10)
-                }) {
-                    return Err("leave-timeout".into());
-                }
-                if self.leaving.is_some() {
-                    self.queued = Some((channel_id, runtime.store.me.clone()));
-                } else {
-                    self.begin_join(runtime, channel_id);
-                }
+                if self.leave_barrier.timed_out() { return Err("leave-timeout".into()); }
+                if self.leave_barrier.waiting() {
+                    self.leave_barrier.queue(channel_id, runtime.store.me.clone());
+                } else { self.begin_join(runtime, channel_id); }
                 return Ok(());
             }
         }
@@ -521,7 +479,7 @@ impl Calls {
         };
         if matches!(action, Action::LeaveVoice { .. }) && runtime.store.call.attempt == attempt {
             // A queued replacement has no media/room yet, but must still be cancellable.
-            self.queued = None;
+            self.leave_barrier.cancel_queued();
         }
         if !runtime.store.call.active()
             || runtime.store.call.attempt != attempt

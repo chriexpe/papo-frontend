@@ -17,7 +17,7 @@ use super::scheduler::{
 };
 use super::models::{
     Channel, DirectConversation, Emoji, Message, Notification, PushDeviceRequest, ReactionRequest,
-    Server, UserConfig, UserSettings, UserSummary, Whoami,
+    Server, UserSettings, UserSummary, Whoami,
 };
 use super::ws::{self, Connection, Event};
 use crate::storage::{Secret, SecretStore};
@@ -348,7 +348,7 @@ pub enum Command {
     },
     PatchServer(Box<crate::api::models::PatchServerRequest>),
     UpdateProfile(Box<crate::api::models::UpdateUserRequest>),
-    UpdateUserSettings(Box<UserConfig>),
+    PatchUserSettings { owner: String, request: u64, patch: super::client::AccountSettingsPatch },
     SetStatus {
         status: Option<String>,
     },
@@ -384,6 +384,7 @@ pub enum Command {
         parent_id: Option<String>,
     },
     SetChannelNotifications {
+        owner: String,
         channel_id: String,
         setting: String,
     },
@@ -439,11 +440,13 @@ pub enum Command {
         message: String,
     },
     EditMessage {
+        owner: String,
         embeds: Option<Vec<super::models::CustomEmbedInput>>,
         message_id: String,
         content: String,
     },
     DeleteMessage {
+        owner: String,
         message_id: String,
     },
     React {
@@ -453,6 +456,7 @@ pub enum Command {
         add: bool,
     },
     Pin {
+        owner: String,
         channel_id: String,
         message_id: String,
         pin: bool,
@@ -471,6 +475,8 @@ pub enum Command {
         channel_id: String,
         message_id: String,
     },
+    Webhooks { owner: String, epoch: u64, request: u64, action: crate::state::webhooks::WebhookAction },
+    LoadNotificationInbox { owner: String, epoch: u64, flight: crate::inbox::Flight },
     MarkNotificationsRead {
         user_id: String,
         ids: Vec<String>,
@@ -637,7 +643,11 @@ pub enum Update {
         channel_id: String,
         messages: Vec<Message>,
     },
+    UserSettingsPatched { owner: String, request: u64, result: Result<Box<UserSettings>, String> },
     Notifications(Vec<Notification>),
+    Webhooks { owner: String, epoch: u64, request: u64, result: Result<crate::state::webhooks::WebhookOutcome, String> },
+    NotificationInbox { owner: String, epoch: u64, flight: crate::inbox::Flight,
+        result: Result<super::models::NotificationList, String> },
     Event(Box<Event>),
     /// Os servidores ICE chegaram e o `voice_join` já saiu: dá para montar a
     /// call e esperar o `voice_joined`.
@@ -2162,7 +2172,9 @@ async fn worker(
                         }
                     }
                     Command::CreateServer { name } => {
-                        let api = api.clone();
+                        let scoped_session = Arc::new(Session::default());
+                        scoped_session.set_token(session.token());
+                        let Ok(api) = Api::new(&base_url, scoped_session) else { continue; };
                         let owner_epoch = session_epoch;
                         create_server_tasks.spawn(async move {
                             (owner_epoch, api.create_server(&name).await)
@@ -2339,6 +2351,26 @@ async fn worker(
                         );
                         abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
                         diagnostics_dirty = true;
+                    }
+                    Command::Webhooks { owner, epoch, request, action } => {
+                        if me.lock().ok().and_then(|m| m.clone()).as_deref() != Some(owner.as_str()) { continue; }
+                        let scoped_session = Arc::new(Session::default());
+                        scoped_session.set_token(session.token());
+                        let Ok(api) = Api::new(&base_url, scoped_session) else { continue; }; let updates = updates.clone(); let wake = wake.clone();
+                        tokio::spawn(async move {
+                            let result = crate::state::webhooks::execute(&api, &owner, action).await.map_err(|e| e.to_string());
+                            publish(&updates, &wake, Update::Webhooks { owner, epoch, request, result });
+                        });
+                    }
+                    Command::LoadNotificationInbox { owner, epoch, flight } => {
+                        if me.lock().ok().and_then(|m| m.clone()).as_deref() != Some(owner.as_str()) { continue; }
+                        let api = api.clone();
+                        let updates = updates.clone();
+                        let wake = wake.clone();
+                        tokio::spawn(async move {
+                            let result = api.notification_page(&owner, flight.cursor.as_ref()).await.map_err(|e| e.to_string());
+                            publish(&updates, &wake, Update::NotificationInbox { owner, epoch, flight, result });
+                        });
                     }
                     other => {
                         handle(
@@ -3669,9 +3701,15 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
-        Command::UpdateUserSettings(config) => match api.put_user_settings(&config).await {
-            Ok(settings) => publish(updates, wake, Update::UserSettings(Box::new(settings))),
-            Err(error) => report(storage_key, updates, wake, error),
+        Command::PatchUserSettings { owner, request, patch } => {
+            match api.patch_account_settings(&owner, &patch).await {
+                Ok(settings) => publish(updates, wake, Update::UserSettingsPatched { owner, request, result: Ok(Box::new(settings)) }),
+                Err(error) => {
+                    let message = error.to_string();
+                    report(storage_key, updates, wake, error);
+                    publish(updates, wake, Update::UserSettingsPatched { owner, request, result: Err(message) });
+                }
+            }
         },
         Command::SetStatus { status } => {
             let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
@@ -3745,13 +3783,9 @@ async fn handle(
             Ok(_) => relist_channels(api, storage_key, updates, wake).await,
             Err(error) => report(storage_key, updates, wake, error),
         },
-        Command::SetChannelNotifications {
-            channel_id,
-            setting,
-        } => {
-            let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
-                return;
-            };
+        Command::SetChannelNotifications { owner, channel_id, setting } => {
+            if me.lock().ok().and_then(|slot| slot.clone()).as_deref() != Some(owner.as_str()) { return; }
+            let user_id = owner;
             match api
                 .set_channel_notifications(&channel_id, &user_id, &setting)
                 .await
@@ -3908,15 +3942,15 @@ async fn handle(
                 }
             }
         }
-        Command::EditMessage {
-            embeds,
-            message_id,
-            content,
-        } => match api.edit_message(&message_id, &content, embeds).await {
-            Ok(message) => publish(updates, wake, Update::Edited(Box::new(message))),
-            Err(error) => report(storage_key, updates, wake, error),
+        Command::EditMessage { owner, embeds, message_id, content } => {
+            if me.lock().ok().and_then(|slot| slot.clone()).as_deref() != Some(owner.as_str()) { return; }
+            match api.edit_message(&message_id, &content, embeds).await {
+                Ok(message) => publish(updates, wake, Update::Edited(Box::new(message))),
+                Err(error) => report(storage_key, updates, wake, error),
+            }
         },
-        Command::DeleteMessage { message_id } => {
+        Command::DeleteMessage { owner, message_id } => {
+            if me.lock().ok().and_then(|slot| slot.clone()).as_deref() != Some(owner.as_str()) { return; }
             match api.delete_message(&message_id).await {
                 Ok(()) => publish(updates, wake, Update::Deleted(message_id)),
                 Err(error) => report(storage_key, updates, wake, error),
@@ -3941,10 +3975,12 @@ async fn handle(
             }
         }
         Command::Pin {
+            owner,
             channel_id,
             message_id,
             pin,
         } => {
+            if me.lock().ok().and_then(|slot| slot.clone()).as_deref() != Some(owner.as_str()) { return; }
             let outcome = if pin {
                 api.pin_message(&channel_id, &message_id).await.map(|_| ())
             } else {
@@ -4048,6 +4084,7 @@ async fn handle(
                 },
             );
         }
+        Command::LoadNotificationInbox { .. } | Command::Webhooks { .. } => {},
         Command::MarkNotificationsRead { user_id, ids } => {
             if ids.is_empty()
                 || me.lock().ok().and_then(|user| user.clone()).as_deref() != Some(user_id.as_str())

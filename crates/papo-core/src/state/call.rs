@@ -13,6 +13,63 @@ use std::collections::HashMap;
 
 use crate::api::ws::VoiceMember;
 
+pub use crate::next_operation_id as next_attempt;
+
+/// The protocol has no attempt ID on leave events. A timeout cannot release this barrier;
+/// only the matching acknowledgement (after Store applies it) or disconnect can do so.
+#[derive(Default)]
+pub struct LeaveBarrier {
+    pending: Option<(String, String, std::time::Instant)>,
+    queued: Option<(String, String)>,
+}
+
+impl LeaveBarrier {
+    pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    pub fn begin(&mut self, channel: String, owner: String) {
+        if self.pending.is_none() {
+            self.pending = Some((channel, owner, std::time::Instant::now()));
+        }
+    }
+
+    pub fn queued(&self) -> Option<(&str, &str)> {
+        self.queued.as_ref().map(|(c, o)| (c.as_str(), o.as_str()))
+    }
+    pub fn waiting(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn timed_out(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|(_, _, since)| since.elapsed() >= Self::TIMEOUT)
+    }
+
+    pub fn queue(&mut self, channel: String, owner: String) {
+        self.queued = Some((channel, owner));
+    }
+
+    pub fn cancel_queued(&mut self) -> bool {
+        self.queued.take().is_some()
+    }
+
+    pub fn acknowledge(&mut self, channel: &str, owner: &str) -> Option<(String, String)> {
+        if !self
+            .pending
+            .as_ref()
+            .is_some_and(|(c, o, _)| c == channel && o == owner)
+        {
+            return None;
+        }
+        self.pending = None;
+        self.queued.take()
+    }
+
+    pub fn disconnected(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Em que pé está a nossa entrada na call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -255,6 +312,48 @@ impl CallState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parity_replacement_waits_for_its_own_leave_and_can_be_cancelled() {
+        let mut barrier = LeaveBarrier::default();
+        barrier.begin("room".into(), "me".into());
+        barrier.queue("replacement".into(), "me".into());
+        assert!(barrier.acknowledge("other-room", "me").is_none());
+        assert!(barrier.acknowledge("room", "other-account").is_none());
+        assert!(barrier.waiting());
+        assert_eq!(
+            barrier.acknowledge("room", "me"),
+            Some(("replacement".into(), "me".into()))
+        );
+        assert!(!barrier.waiting());
+        barrier.begin("room".into(), "me".into());
+        barrier.queue("room".into(), "me".into());
+        barrier.cancel_queued();
+        assert!(barrier.acknowledge("room", "me").is_none());
+        assert!(!barrier.waiting());
+    }
+
+    #[test]
+    fn parity_timeout_cancels_replacement_but_never_releases_the_leave_barrier() {
+        let mut barrier = LeaveBarrier {
+            pending: Some((
+                "room".into(),
+                "me".into(),
+                std::time::Instant::now() - LeaveBarrier::TIMEOUT,
+            )),
+            queued: Some(("room".into(), "me".into())),
+        };
+        assert!(barrier.timed_out());
+        assert!(barrier.cancel_queued());
+        assert!(barrier.waiting());
+        assert!(barrier.acknowledge("room", "me").is_none());
+        assert!(!barrier.waiting());
+        barrier.begin("room".into(), "me".into());
+        barrier.queue("room".into(), "me".into());
+        barrier.disconnected();
+        assert!(!barrier.waiting());
+        assert!(barrier.acknowledge("room", "me").is_none());
+    }
 
     fn member(id: &str, camera: bool) -> VoiceMember {
         VoiceMember {

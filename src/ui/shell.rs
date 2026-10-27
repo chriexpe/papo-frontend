@@ -3,7 +3,7 @@
 //! As barras funcionais (laterais, topo e caixa de mensagem) formam a camada
 //! translúcida; a lista de mensagens é a camada de conteúdo, sempre opaca.
 
-use chrono::{DateTime, Datelike, Local};
+use chrono::{DateTime, Local};
 use egui::{
     Align, Align2, Color32, CornerRadius, Frame, Id, Layout, Rect, RichText, Sense, Stroke,
     UiBuilder, Vec2,
@@ -262,7 +262,10 @@ pub enum ChatAction {
     },
     ResetUser(String),
     /// Entra na call do canal de voz.
+    WebhookAdmin(papo_core::state::webhooks::WebhookAction),
+    DismissWebhookCredential,
     JoinVoice(String),
+    VoicePlayback { channel_id: String, attempt: u64, user_id: String, setting: papo_call::Playback },
     LeaveVoice,
     ToggleMute,
     ToggleCamera,
@@ -770,6 +773,19 @@ impl Stash {
     }
 
     /// Troca este guardado com o que está na tela.
+    pub fn acknowledge_text_enqueue(&mut self, channel: &str, draft: &DraftState,
+        embeds: &[crate::api::models::CustomEmbedInput]) {
+        let current = DraftState { text: self.composer.clone(), mentions: self.composer_mentions.clone(),
+            reply_to: self.replying.clone(), notify_reply: self.reply_notify };
+        if self.last_channel == channel && current == *draft && self.custom_embeds == embeds {
+            self.composer.clear(); self.composer_mentions.clear(); self.replying = None;
+            self.custom_embeds.clear();
+            self.drafts.put(channel, DraftState::default());
+        } else if self.drafts.get(channel).as_ref() == Some(draft) {
+            self.drafts.put(channel, DraftState::default()); self.drafts.embeds.remove(channel);
+        }
+    }
+
     pub fn swap(&mut self, ui: &mut UiState) {
         std::mem::swap(&mut self.media, &mut ui.media);
         std::mem::swap(&mut self.composer, &mut ui.composer);
@@ -906,6 +922,10 @@ fn external_author_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
 }
 
 pub struct UiState {
+    pub call_participant: Option<super::call::ParticipantTarget>,
+    pub message_density: crate::api::client::MessageDensity,
+    pub extra_compact: bool,
+    pub text_enqueue_pending: bool,
     /// Mensagens já interpretadas como markdown, por texto final; recomeça
     /// quando passa de `markdown::CACHE_LIMIT`.
     pub markdown_cache: std::collections::HashMap<String, std::sync::Arc<Vec<markdown::Block>>>,
@@ -1163,6 +1183,10 @@ impl UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            call_participant: None,
+            message_density: Default::default(),
+            extra_compact: false,
+            text_enqueue_pending: false,
             markdown_cache: Default::default(),
             composer: String::new(),
             composer_mentions: Vec::new(),
@@ -1300,6 +1324,16 @@ impl UiState {
         }
     }
 
+    /// Covered content is not observed. Keep saved viewport state independent of read receipts.
+    pub fn reading_uncovered(&self, store: &Store) -> bool {
+        self.viewer.is_none() && self.link_viewer.is_none() && self.external_link_prompt.is_none()
+            && self.profile.is_none() && self.external_author_popup.is_none()
+            && self.server_card.is_none() && self.panel.is_none() && self.call_participant.is_none()
+            && self.popup.is_none() && !self.custom_embed_editor
+            && self.mobile_surface == MobileSurface::Chat
+            && (!store.call.active() || !matches!(store.call.stage(), crate::state::Stage::Sheet | crate::state::Stage::Window | crate::state::Stage::Floating))
+    }
+
     /// Um aperto fecha uma superfície, cancela o compositor ou volta ao fim.
     pub fn handle_escape(&mut self, ctx: &egui::Context, store: &mut Store) {
         if self.dismiss_floating(store) || self.cancel_composer_actions() {
@@ -1339,6 +1373,7 @@ impl UiState {
             self.gif_picker_anchor = None;
         } else if self.popup.is_some() {
             self.close_popup();
+        } else if self.call_participant.take().is_some() {
         } else if self.profile.take().is_some() || self.server_card.take().is_some() {
         } else if self.custom_embed_editor {
             self.custom_embed_editor = false;
@@ -1394,6 +1429,18 @@ impl UiState {
 
     pub fn draft_state(&self) -> DraftState {
         DraftState::from_ui(self)
+    }
+
+    pub fn acknowledge_text_enqueue(&mut self, channel: &str, draft: &DraftState,
+        embeds: &[crate::api::models::CustomEmbedInput]) {
+        if self.last_channel == channel && self.draft_state() == *draft && self.custom_embeds == embeds {
+            self.composer.clear(); self.composer_mentions.clear(); self.replying = None;
+            self.custom_embeds.clear(); self.capture_draft(channel);
+        } else if self.drafts.get(channel).as_ref() == Some(draft) {
+            self.drafts.put(channel, DraftState::default());
+            self.drafts.embeds.remove(channel);
+        }
+        self.text_enqueue_pending = false;
     }
 
     pub fn capture_draft(&mut self, channel_id: &str) {
@@ -1541,6 +1588,7 @@ pub fn draw(
     // nunca o lia: um 403 ao criar canal, ou um envio recusado, sumiam sem
     // deixar rastro — e o que se via era um botão que não faz nada.
     if let Some(message) = store.error.take() {
+        let message = if message == "call-leave-timeout" { s.call_leave_timeout.into() } else { message };
         state.error = Some((message, ui.input(|input| input.time)));
     }
 
@@ -5395,6 +5443,7 @@ fn result_row_contents(
                         t.label,
                         false,
                         max_text_width,
+                        None,
                     );
                 }
                 panel_attachments(
@@ -5516,7 +5565,7 @@ fn blink_alpha(state: &mut UiState, message_id: &str, ui: &egui::Ui, row: Rect) 
     Some(phase.sin().abs() as f32)
 }
 
-fn request_message_jump(
+pub(crate) fn request_message_jump(
     store: &Store,
     state: &mut UiState,
     channel_id: &str,
@@ -5605,11 +5654,11 @@ fn row_signature(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     width.to_bits().hash(&mut hasher);
     ppp.to_bits().hash(&mut hasher);
+    super::theme::font_scale().to_bits().hash(&mut hasher);
     grouped.hash(&mut hasher);
     new_day.hash(&mut hasher);
-    unread_divider.hash(&mut hasher);
-    hourglass_start.hash(&mut hasher);
-    hourglass_end.hash(&mut hasher);
+    // Read markers are overlays. Their motion never invalidates content geometry.
+    let _ = (unread_divider, hourglass_start, hourglass_end);
     message.content.hash(&mut hasher);
     message.external_author.hash(&mut hasher);
     message.edited.hash(&mut hasher);
@@ -5819,7 +5868,7 @@ fn message_list(
 
     let mut last_author: Option<String> = None;
     let mut last_at: Option<chrono::DateTime<Local>> = None;
-    let mut last_day: Option<u32> = None;
+    let mut last_day: Option<chrono::NaiveDate> = None;
 
     // Montar toda linha carregada a cada quadro custa O(mensagens): com umas
     // centenas, a rolagem trava. Linha longe da tela, cuja altura já se
@@ -5841,7 +5890,7 @@ fn message_list(
         if let Some(anchor) = previous_anchor.as_ref().filter(|anchor| anchor.message_id == message.id) {
             state.anchor_drift = content_y - anchor.content_y;
         }
-        let day = message.at.day();
+        let day = message.at.date_naive();
         let new_day = last_day != Some(day);
         let hourglass_start = hourglass_range
             .as_ref()
@@ -5852,8 +5901,6 @@ fn message_list(
         let unread_start = !hourglass_start
             && unread_marker_id.as_deref() == Some(message.id.as_str());
         let will_group = !new_day
-            && !unread_start
-            && !hourglass_start
             && last_author.as_deref() == Some(author_key.as_str())
             && last_at.is_some_and(|prev| (message.at - prev).num_minutes() < GROUP_GAP_MINUTES);
         let signature = row_signature(
@@ -5865,7 +5912,9 @@ fn message_list(
             hourglass_end,
             width,
             ui.pixels_per_point(),
-        );
+        ) ^ match state.message_density { crate::api::client::MessageDensity::Compact => 1,
+            crate::api::client::MessageDensity::Normal => 2, crate::api::client::MessageDensity::Comfortable => 3 }
+            ^ if state.extra_compact { 4 } else { 0 };
         if can_cull
             && state.jump.as_ref().is_none_or(|jump| jump.message_id != message.id)
             && previous_anchor.as_ref().is_none_or(|anchor| anchor.message_id != message.id)
@@ -5882,21 +5931,13 @@ fn message_list(
                 Sense::hover(),
             );
             last_day = Some(day);
-            last_author = (!hourglass_end).then(|| author_key.clone());
+            last_author = Some(author_key.clone());
             last_at = Some(message.at);
             continue;
         }
         if last_day != Some(day) {
             day_divider(ui, t, s, message.at, width);
             last_day = Some(day);
-            last_author = None;
-        }
-        if hourglass_start {
-            hourglass_divider(ui, t, s.unread_gap_start, width);
-            last_author = None;
-        }
-        if unread_start {
-            unread_divider(ui, t, s, width);
             last_author = None;
         }
 
@@ -5908,9 +5949,16 @@ fn message_list(
         // O realce da linha é pintado depois, quando já sabemos a altura.
         // O respiro entre grupos fica fora da linha: dentro dela, ele jogaria
         // o texto para baixo e o realce ficaria torto.
-        if !grouped {
-            ui.add_space(space::LG);
-        }
+        use crate::api::client::MessageDensity;
+        let gap = match (state.message_density, grouped) {
+            (MessageDensity::Compact, false) => if state.extra_compact { 0.0 } else { 6.0 },
+            (MessageDensity::Normal, false) => 12.0,
+            (MessageDensity::Comfortable, false) => 20.0,
+            (MessageDensity::Compact, true) => 0.0,
+            (MessageDensity::Normal, true) => 2.0,
+            (MessageDensity::Comfortable, true) => 6.0,
+        };
+        ui.add_space(gap);
         let backdrop = ui.painter().add(egui::Shape::Noop);
 
         // Puxada para responder: a linha anda para a esquerda junto com o
@@ -5960,6 +6008,47 @@ fn message_list(
             builder = builder.layer_id(layer);
         }
         let inner = ui.scope_builder(builder, |ui| {
+            if state.message_density == MessageDensity::Compact && state.extra_compact {
+                ui.spacing_mut().interact_size.y = 0.0;
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                let time_width = ui.painter().layout_no_wrap("00:00".into(), text::message_time(), t.label_tertiary).size().x;
+                let body_width = (width - gutter - time_width - space::SM - space::XL).max(80.0);
+                if let Some(reply_to) = &message.reply_to {
+                    ui.horizontal_top(|ui| {
+                        ui.add_space(gutter + time_width + space::SM);
+                        reply_quote(ui, store, state, t, s, reply_to, body_width);
+                    });
+                }
+                ui.horizontal_top(|ui| {
+                    ui.add_space(gutter);
+                    let show_time = new_day || last_at.is_none_or(|at| at.timestamp().div_euclid(60) != message.at.timestamp().div_euclid(60));
+                    let line_height = ui.fonts_mut(|fonts| fonts.row_height(&text::message()));
+                    let (time_rect, _) = ui.allocate_exact_size(Vec2::new(time_width, line_height), Sense::hover());
+                    if show_time {
+                        ui.painter().text(time_rect.right_center(), egui::Align2::RIGHT_CENTER,
+                            message.at.format("%H:%M").to_string(), text::message_time(), t.label_tertiary);
+                    }
+                    ui.add_space(space::SM);
+                    ui.vertical(|ui| {
+                        ui.set_max_width(body_width);
+                        let mut prefix = |ui: &mut egui::Ui| {
+                            let name = ui.add(egui::Label::new(
+                                RichText::new(message_display_name(message, store))
+                                    .font(text::message_author())
+                                    .color(if message.external_author.is_some() { t.label } else { author.and_then(|a| a.role_color.map(rgb)).unwrap_or(t.label) }))
+                                .selectable(false).sense(Sense::click()));
+                            if name.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
+                            if name.clicked() { open_author = Some(name.rect); }
+                            if message.pinned {
+                                ui.label(RichText::new(icon::PUSH_PIN).font(text::icon(11.0)).color(t.label_tertiary));
+                            }
+                            ui.add_space(space::SM);
+                        };
+                        message_body(ui, store, state, t, s, message, body_width, network_eligible, Some(&mut prefix));
+                    });
+                });
+                return;
+            }
             ui.horizontal_top(|ui| {
                 ui.add_space(gutter);
                 if grouped {
@@ -6030,7 +6119,7 @@ fn message_list(
                             let name = ui.add(
                                 egui::Label::new(
                                     RichText::new(message_display_name(message, store))
-                                        .font(text::headline())
+                                        .font(text::message_author())
                                         .color(if message.external_author.is_some() { t.label } else { author.and_then(|a| a.role_color.map(rgb)).unwrap_or(t.label) }),
                                 )
                                 .selectable(false)
@@ -6051,7 +6140,7 @@ fn message_list(
                             ui.add_space(space::XS);
                             ui.label(
                                 RichText::new(message.at.format("%H:%M").to_string())
-                                    .font(text::footnote())
+                                    .font(text::message_time())
                                     .color(t.label_tertiary),
                             );
                             if message.pinned {
@@ -6077,6 +6166,7 @@ fn message_list(
                         message,
                         text_width,
                         network_eligible,
+                        None,
                     );
                 });
             });
@@ -6107,6 +6197,10 @@ fn message_list(
         }
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
+        let marker_rect = |edge: f32| Rect::from_min_size(egui::pos2(area.min.x, edge - 8.0), Vec2::new(width, 16.0));
+        if hourglass_start { hourglass_divider(ui, t, s.unread_gap_start, marker_rect(row.min.y)); }
+        if unread_start { unread_divider(ui, t, s, marker_rect(row.min.y)); }
+        if hourglass_end { hourglass_divider(ui, t, s.unread_gap_end, marker_rect(row.max.y)); }
         let visible_height = row.intersect(readable).height().max(0.0);
         if !opening_pass && next_anchor.is_none() && visible_height > 0.0 {
             next_anchor = Some(ChatAnchor {
@@ -6244,12 +6338,7 @@ fn message_list(
             }
         }
 
-        if hourglass_end {
-            hourglass_divider(ui, t, s.unread_gap_end, width);
-            last_author = None;
-        } else {
-            last_author = Some(author_key);
-        }
+        last_author = Some(author_key);
         last_at = Some(message.at);
         let height = ui.cursor().top() - y_start;
         state.row_heights.insert(message.id.clone(), (signature, height));
@@ -6317,7 +6406,7 @@ fn reply_quote(
     // A citação leva à original, como um resultado de busca ou uma fixada.
     // Ela some do banco quando a original é apagada; aí não há aonde ir.
     let sense = Sense::click();
-    let preview_font = text::footnote();
+    let preview_font = text::message_reply();
     let preview_size = 14.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), sense);
     if state.panel.is_none() && response.hovered() {
@@ -6336,7 +6425,7 @@ fn reply_quote(
     );
     let mut x = rect.min.x + 16.0;
     if !name.is_empty() {
-        let galley = painter.layout_no_wrap(name, text::caption(), t.label_secondary);
+        let galley = painter.layout_no_wrap(name, text::message_reply_author(), t.label_secondary);
         painter.galley(
             egui::pos2(x, rect.center().y - galley.size().y / 2.0),
             galley.clone(),
@@ -6386,7 +6475,7 @@ fn reply_quote(
             paint_text(ui, &mut x, cursor, binding.start);
             let end = (binding.start + 1 + binding.label.chars().count()).min(chars.len());
             let label: String = chars[binding.start + 1..end].iter().collect();
-            let pill = markdown_view::MentionPill::new(ui, &label, text::footnote().size / text::message().size);
+            let pill = markdown_view::MentionPill::new(ui, &label, text::message_reply().size / text::message().size);
             let size = pill.size();
             let pill_rect = Rect::from_min_size(egui::pos2(x, rect.center().y - size.y / 2.0), size);
             pill.paint(ui, t, pill_rect, false);
@@ -6407,7 +6496,17 @@ fn message_body(
     message: &Message,
     width: f32,
     allow_network: bool,
+    mut prefix: Option<&mut dyn FnMut(&mut egui::Ui)>,
 ) {
+    // Media-only messages and editors keep the compact sender above their
+    // content; normal text consumes it inside its first wrapped line.
+    let standalone_prefix = prefix.is_some() && (state.editing.as_ref().is_some_and(|(id, _)| id == &message.id)
+        || message.content.is_empty()
+        || crate::giphy::message_id(&message.content).is_some()
+        || direct_media_message_url(state, &message.content, &message.previews, allow_network).is_some());
+    if standalone_prefix && let Some(prefix) = prefix.take() {
+        ui.horizontal_wrapped(|ui| prefix(ui));
+    }
     // Em edição, o corpo vira uma caixa de texto no lugar exato do texto.
     if let Some((id, buffer)) = &mut state.editing
         && id == &message.id
@@ -6529,25 +6628,10 @@ fn message_body(
                 .previews
                 .iter()
                 .any(|preview| preview.source_type.as_deref() == Some("custom"))
-                && message
-                    .previews
-                    .iter()
-                    .filter(|preview| preview.source_type.as_deref() == Some("custom"))
-                    .all(|preview| {
-                        crate::api::models::CustomEmbedInput::from_media_free_preview(preview)
-                            .is_some()
-                    })
-                && ui.button("Editar embeds personalizados").clicked()
+                && papo_core::embed_authoring::editable(&message.previews).is_some()
+                && ui.button(s.edit_custom_embeds).clicked()
             {
-                state.editing_custom_embeds = Some(
-                    message
-                        .previews
-                        .iter()
-                        .filter_map(
-                            crate::api::models::CustomEmbedInput::from_media_free_preview,
-                        )
-                        .collect(),
-                );
+                state.editing_custom_embeds = papo_core::embed_authoring::editable(&message.previews);
                 state.custom_embed_editor = true;
             }
             let cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
@@ -6598,7 +6682,7 @@ fn message_body(
         } else if direct_media_message_url(state, &message.content, &message.previews, allow_network).is_none() {
             let (shown_content, bindings) =
                 store.display_mentions_with_bindings(&message.content);
-            let color = t.label;
+            let color = t.message_body();
             let tokens = emoji::tokenize(&shown_content, &store.emojis);
             // Texto sem sintaxe de markdown, sem menção e a mensagem só de
             // emoji seguem o caminho simples: nada para interpretar, e o
@@ -6626,7 +6710,7 @@ fn message_body(
                 // URL hit-testing needs individual widgets even for otherwise
                 // plain text. Keeping a separate LayoutJob fast path made
                 // normal messages skip the hyperlink path entirely.
-                rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
+                rich_body(ui, t, s, store, state, &tokens, color, message.edited, width, prefix.take());
             } else {
                 let prepared = markdown::substitute_mentions(&shown_content, &bindings);
                 let key = prepared.key();
@@ -6650,7 +6734,7 @@ fn message_body(
                     network: allow_network,
                     tags: &tags,
                 };
-                markdown_view::draw(ui, state, &view, &blocks, width);
+                markdown_view::draw(ui, state, &view, &blocks, width, prefix.take());
             }
         }
     }
@@ -6894,14 +6978,16 @@ fn rich_body(
     color: Color32,
     edited: bool,
     width: f32,
+    prefix: Option<&mut dyn FnMut(&mut egui::Ui)>,
 ) {
-    // Mensagem só de emoji aparece grande, como manda o costume.
-    let size = if emoji::jumbo(tokens) { 34.0 } else { 18.0 };
+    // Compact chat keeps emoji inline with the sender, like ordinary text.
+    let size = if prefix.is_some() { text::message().size + 2.0 } else if emoji::jumbo(tokens) { 34.0 } else { 18.0 };
     let font = text::message();
 
     ui.set_max_width(width);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(0.0, space::XXS);
+        if let Some(prefix) = prefix { prefix(ui); }
         for token in tokens {
             match token {
                 emoji::Token::Text(text) => {
@@ -8768,7 +8854,7 @@ fn hover_pill_rect(message: &Message, row: Rect, store: &Store) -> Option<Rect> 
     if message.pending {
         return None;
     }
-    let count = if message.mine(&store.me) { 4.0 } else { 3.0 };
+    let count = if store.can_edit_message(message) { 4.0 } else { 3.0 };
     let height = 30.0;
     let button = 26.0;
     let width = button * count + space::XS * 2.0;
@@ -8794,7 +8880,7 @@ fn hover_pill(
     if message.pending {
         return;
     }
-    let mine = message.mine(&store.me);
+    let mine = store.can_edit_message(message);
     let buttons: Vec<(&str, &str)> = if mine {
         vec![
             (icon::SMILEY_STICKER, s.react),
@@ -9246,7 +9332,6 @@ fn context_menu(
         state.close_popup();
         return;
     };
-    let mine = message.mine(&store.me);
     // Mensagem que é só uma mídia (link direto ou GIF): copiar é copiar o
     // link. Qualquer outra com link ganha "Copiar link" além de "Copiar
     // texto", e ele leva só o endereço.
@@ -9265,7 +9350,7 @@ fn context_menu(
         (icon::SMILEY_STICKER, s.add_reaction, MessageCommand::React),
         (icon::ARROW_BEND_UP_LEFT, s.reply, MessageCommand::Reply),
     ];
-    if mine {
+    if store.can_edit_message(&message) {
         items.push((icon::PENCIL_SIMPLE, s.edit, MessageCommand::Edit));
     }
     if media_link.is_none() && !message.content.trim().is_empty() {
@@ -9274,11 +9359,9 @@ fn context_menu(
     if copy_link.is_some() {
         items.push((icon::LINK_SIMPLE, s.copy_link, MessageCommand::CopyLink));
     }
-    items.push((
-        icon::PUSH_PIN,
-        if message.pinned { s.unpin } else { s.pin },
-        MessageCommand::Pin,
-    ));
+    if !message.pending && store.can_pin_in(&message.channel_id) {
+        items.push((icon::PUSH_PIN, if message.pinned { s.unpin } else { s.pin }, MessageCommand::Pin));
+    }
     if !message.attachments.is_empty() {
         items.push((
             icon::DOWNLOAD_SIMPLE,
@@ -9286,7 +9369,7 @@ fn context_menu(
             MessageCommand::Download,
         ));
     }
-    if mine {
+    if store.can_delete_message(&message) {
         items.push((icon::TRASH, s.delete, MessageCommand::Delete));
     }
 
@@ -9568,14 +9651,14 @@ fn day_divider(
     ui.add_space(space::XS);
 }
 
-fn unread_divider(ui: &mut egui::Ui, t: &Tokens, s: &Strings, width: f32) {
-    timeline_status_divider(ui, width, s.unread_divider, t.danger, Color32::WHITE);
+fn unread_divider(ui: &mut egui::Ui, t: &Tokens, s: &Strings, rect: Rect) {
+    timeline_status_divider(ui, rect, s.unread_divider, t.danger, Color32::WHITE);
 }
 
-fn hourglass_divider(ui: &mut egui::Ui, t: &Tokens, label: &str, width: f32) {
+fn hourglass_divider(ui: &mut egui::Ui, t: &Tokens, label: &str, rect: Rect) {
     timeline_status_divider(
         ui,
-        width,
+        rect,
         label,
         t.away,
         Color32::from_rgb(0x16, 0x16, 0x18),
@@ -9584,7 +9667,7 @@ fn hourglass_divider(ui: &mut egui::Ui, t: &Tokens, label: &str, width: f32) {
 
 fn timeline_status_divider(
     ui: &mut egui::Ui,
-    width: f32,
+    rect: Rect,
     label: &str,
     color: Color32,
     text_color: Color32,
@@ -9592,8 +9675,6 @@ fn timeline_status_divider(
     const HEIGHT: f32 = 16.0;
     const PILL_RADIUS: u8 = 8;
 
-    ui.add_space(space::LG);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, HEIGHT), Sense::hover());
     let galley = ui
         .painter()
         .layout_no_wrap(label.to_owned(), text::caption(), text_color);
@@ -9614,7 +9695,8 @@ fn timeline_status_divider(
     }
     painter.rect_filled(pill, CornerRadius::same(PILL_RADIUS), color);
     painter.galley(pill.center() - galley.size() / 2.0, galley, text_color);
-    ui.add_space(space::XS);
+    ui.interact(rect, ui.id().with(("read-marker", label)), Sense::hover())
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
 }
 
 /// Conversa vazia. Um servidor sem canal nenhum é um caso diferente de um
@@ -9713,25 +9795,24 @@ fn reanchor_mentions(text: &str, bindings: &mut Vec<MentionBinding>) {
 
 /// Tira o texto da caixa e o coloca na fila de envio.
 fn submit(store: &Store, state: &mut UiState) {
+    if state.text_enqueue_pending { return; }
     let visible = state.composer.trim().to_owned();
-    // An unfinished editor draft is not an embed; never turn a text-only
-    // message into an empty custom embed or enable an empty send button.
     state.custom_embeds.retain(|embed| embed.has_content());
-    if visible.is_empty() && state.attachments.is_empty() && state.custom_embeds.is_empty() {
-        return;
-    }
+    if visible.is_empty() && state.attachments.is_empty() && state.custom_embeds.is_empty() { return; }
     state.custom_embed_editor = false;
     state.clear_unread_marker(store);
     let content = store.encode_mentions(&visible, &state.composer_mentions);
-    state.composer.clear();
-    state.composer_mentions.clear();
+    state.text_enqueue_pending = state.attachments.is_empty();
     state.actions.push(ChatAction::Send {
-        embeds: std::mem::take(&mut state.custom_embeds),
-        content,
-        reply_to: state.replying.take(),
-        notify_reply: state.reply_notify,
+        embeds: state.custom_embeds.clone(), content,
+        reply_to: state.replying.clone(), notify_reply: state.reply_notify,
         attachments: std::mem::take(&mut state.attachments),
     });
+    // Text stays in the durable draft until the outbox worker acknowledges enqueue.
+    if !state.text_enqueue_pending {
+        state.composer.clear(); state.composer_mentions.clear();
+        state.replying = None; state.custom_embeds.clear();
+    }
 }
 
 fn webembed_chrome_occlusions(
@@ -13281,7 +13362,7 @@ mod reply_quote_tests {
                 egui::Shape::Text(text) if text.galley.text().starts_with('@')
                     && text.galley.job.sections.iter().all(|section|
                         section.format.color == mention_color
-                            && section.format.font_id.family == egui::FontFamily::Name("semibold".into())
+                            && section.format.font_id.family == egui::FontFamily::Name("chat-semibold".into())
                     )
             )).count();
             assert_eq!(highlighted, mention_count);
@@ -13321,7 +13402,7 @@ mod row_cache_tests {
             message.previews = vec![embed.clone()];
             let mut output = ctx.run_ui(Default::default(), |ui| {
                 message_body(ui, &store, &mut state, &tokens, &crate::i18n::PT_BR,
-                    &message, 500.0, false);
+                    &message, 500.0, false, None);
             });
             output.textures_delta.clear();
             assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
@@ -13765,15 +13846,15 @@ mod row_cache_tests {
             reference,
             sig(&base, false, true, false, false, false, 600.0)
         );
-        assert_ne!(
+        assert_eq!(
             reference,
             sig(&base, false, false, true, false, false, 600.0)
         );
-        assert_ne!(
+        assert_eq!(
             reference,
             sig(&base, false, false, false, true, false, 600.0)
         );
-        assert_ne!(
+        assert_eq!(
             reference,
             sig(&base, false, false, false, false, true, 600.0)
         );
@@ -13821,7 +13902,7 @@ mod unread_divider_tests {
         super::super::theme::install_fonts(&ctx, None);
         let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            unread_divider(ui, &tokens, &crate::i18n::PT_BR, 600.0);
+            unread_divider(ui, &tokens, &crate::i18n::PT_BR, Rect::from_min_size(ui.cursor().min, Vec2::new(600.0, 16.0)));
         });
         output.textures_delta.clear();
 
@@ -14133,5 +14214,131 @@ mod message_navigation_tests {
         request_message_jump(&store, &mut state, "chat", "loaded", 1.0);
         assert!(state.actions.is_empty());
         assert_eq!(state.jump.as_ref().unwrap().message_id, "loaded");
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn parity_text_draft_survives_until_enqueue_and_ack_does_not_erase_newer_edits() {
+        let mut store = Store::default(); store.me = "me".into(); store.selected_channel = "room".into();
+        let mut state = UiState { last_channel: "room".into(), composer: "durable text".into(),
+            replying: Some("original".into()), ..Default::default() };
+        let original = state.draft_state();
+        submit(&store, &mut state);
+        assert_eq!(state.draft_state(), original);
+        assert!(state.text_enqueue_pending);
+        submit(&store, &mut state);
+        assert_eq!(state.actions.len(), 1, "repeated Enter cannot enqueue twice");
+        state.composer.push_str(" edited while waiting");
+        state.acknowledge_text_enqueue("room", &original, &[]);
+        assert!(state.composer.ends_with("waiting"));
+        state.composer = original.text.clone(); state.replying = original.reply_to.clone();
+        state.acknowledge_text_enqueue("room", &original, &[]);
+        assert!(state.composer.is_empty());
+        assert!(state.replying.is_none());
+    }
+
+    #[test]
+    fn parity_covering_surfaces_pause_reading_without_clearing_saved_positions() {
+        let mut store = Store::default();
+        let mut state = UiState::default();
+        assert!(state.reading_uncovered(&store));
+        toggle_panel(&mut store, &mut state, PanelKind::Pinned);
+        assert!(!state.reading_uncovered(&store));
+        state.panel = None;
+        store.call.joining("room".into());
+        store.call.camera = true;
+        assert!(!state.reading_uncovered(&store));
+        store.call.collapsed = true;
+        assert!(state.reading_uncovered(&store));
+    }
+
+    #[test]
+    fn extra_compact_messages_share_sender_line_and_keep_original_compact() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut store = Store::default();
+        store.me = "me".into();
+        store.selected_channel = "c".into();
+        store.members.push(crate::state::Member {
+            id: "u".into(), username: "Ana".into(), name: "Ana".into(), banned: false,
+            presence: Presence::Online, status_message: None, typing_label: None,
+            role_color: None, roles: vec![],
+        });
+        let at = chrono::DateTime::from_timestamp(1_760_000_000, 0).unwrap().with_timezone(&Local);
+        store.messages = ["alpha body", "**bold** tail", "wrapped ".repeat(30).as_str()]
+            .iter().enumerate().map(|(i, content)| Message {
+                id: format!("m{i}"), channel_id: "c".into(), author_id: "u".into(),
+                external_author: None, content: (*content).into(), at: at + chrono::Duration::seconds(i as i64),
+                edited: false, reply_to: None, attachments: vec![], previews: vec![],
+                reactions: vec![], pinned: false, pending: false,
+            }).collect();
+        let mut state = UiState { last_channel: "c".into(),
+            message_density: crate::api::client::MessageDensity::Compact, extra_compact: true, ..Default::default() };
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let area = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(340.0, 600.0));
+            ui.set_max_width(area.width());
+            message_list(ui, &store, &mut state, &tokens, &crate::i18n::EN, area, area);
+        });
+        output.textures_delta.clear();
+        let texts: Vec<_> = output.shapes.iter().filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some((text.galley.text(), text.visual_bounding_rect().min)),
+            _ => None,
+        }).collect();
+        let names: Vec<_> = texts.iter().filter(|(text, _)| *text == "Ana").collect();
+        assert_eq!(names.len(), 3, "compact rows repeat the sender even for consecutive messages");
+        for (name, word) in names.iter().zip(["alpha ", "bold", "wrapped "]) {
+            let first_word = texts.iter().find(|(text, pos)| *text == word && (pos.y - name.1.y).abs() < 4.0)
+                .expect("plain and Markdown text must begin beside the sender");
+            assert!(first_word.1.x > name.1.x, "sender {name:?}, word {first_word:?}, all {texts:?}");
+        }
+        assert!(names[1].1.y - names[0].1.y < 30.0, "one-line rows must be dense");
+        assert!(texts.iter().any(|(text, pos)| *text == "wrapped " && pos.y > names[2].1.y + 10.0),
+            "long bodies must wrap within the chat column");
+        let time = at.format("%H:%M").to_string();
+        assert_eq!(texts.iter().filter(|(text, _)| *text == time).count(), 1,
+            "consecutive messages in the same minute share the timestamp gutter");
+
+        // The original compact option retains avatars and a separate grouped
+        // sender heading; it must not turn into the inline variant.
+        state.extra_compact = false;
+        let mut original = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let area = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(340.0, 600.0));
+            ui.set_max_width(area.width());
+            message_list(ui, &store, &mut state, &tokens, &crate::i18n::EN, area, area);
+        });
+        original.textures_delta.clear();
+        let sender_count = original.shapes.iter().filter(|clipped| matches!(&clipped.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Ana")).count();
+        assert_eq!(sender_count, 1, "original Compact retains author grouping");
+    }
+
+    #[test]
+    fn parity_moving_read_markers_do_not_change_rows_or_author_grouping() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut store = Store::default(); store.me = "me".into(); store.selected_channel = "c".into();
+        let at = chrono::DateTime::from_timestamp(1_760_000_000, 0).unwrap().with_timezone(&Local);
+        store.messages = (0..3).map(|i| Message { id: format!("m{i}"), channel_id: "c".into(), author_id: "u".into(),
+            external_author: None, content: format!("Message {i}"), at: at + chrono::Duration::seconds(i),
+            edited: false, reply_to: None, attachments: vec![], previews: vec![], reactions: vec![], pinned: false, pending: false }).collect();
+        let mut state = UiState { last_channel: "c".into(), ..Default::default() };
+        let render = |state: &mut UiState, store: &mut Store| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let area = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 600.0));
+                message_list(ui, store, state, &tokens, &crate::i18n::EN, area, area);
+            });
+            output.textures_delta.clear();
+            state.row_heights.clone()
+        };
+        let plain = render(&mut state, &mut store);
+        state.unread_marker = Some(("c".into(), "m1".into()));
+        assert_eq!(plain, render(&mut state, &mut store));
+        state.unread_marker = Some(("c".into(), "m2".into()));
+        assert_eq!(plain, render(&mut state, &mut store));
     }
 }

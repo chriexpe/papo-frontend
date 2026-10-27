@@ -30,7 +30,7 @@ pub enum PageError {
     NoProgress,
     Stale,
 }
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Inbox {
     items: HashMap<String, Notification>,
     deleted_messages: std::collections::HashSet<String>,
@@ -41,6 +41,21 @@ pub struct Inbox {
     flight: Option<u64>,
 }
 impl Inbox {
+    pub fn current(&self, flight: &Flight) -> bool { self.flight == Some(flight.generation) }
+    pub fn loading(&self) -> bool { self.flight.is_some() }
+    pub fn loaded(&self) -> bool { self.loaded }
+
+    /// Live records do not advance the HTTP cursor or undo acknowledged reads/deletions.
+    pub fn observe(&mut self, items: &[Notification]) {
+        if !self.loaded { return; }
+        for item in items {
+            if item.message_id.as_deref().is_some_and(|id| self.message_deleted(id)) { continue; }
+            let mut item = item.clone();
+            item.read |= self.items.get(&item.id).is_some_and(|old| old.read);
+            self.items.insert(item.id.clone(), item);
+        }
+    }
+
     pub fn reset(&mut self) {
         let generation = self.generation + 1;
         *self = Self {

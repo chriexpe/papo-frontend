@@ -3,9 +3,10 @@ use super::{Api, ApiError, ApiResult};
 use crate::api::models::{UserConfig, UserSettings};
 use serde_json::{Value, json};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DisplayFontSize {
     Small,
+    #[default]
     Normal,
     Large,
 }
@@ -26,9 +27,10 @@ impl DisplayFontSize {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MessageDensity {
     Compact,
+    #[default]
     Normal,
     Comfortable,
 }
@@ -57,12 +59,59 @@ pub enum DisplayChange {
     ImportLegacyCompact,
 }
 
+/// Only fields changed by this client. Merge into a fresh raw config, never a cached projection.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AccountSettingsPatch {
+    pub theme: Option<String>,
+    pub notifications_enabled: Option<bool>,
+    pub font_size: Option<DisplayFontSize>,
+    pub message_density: Option<MessageDensity>,
+}
+
+impl AccountSettingsPatch {
+    pub fn apply_to(&self, config: &mut UserConfig) {
+        if let Some(value) = &self.theme {
+            config.theme = value.clone();
+        }
+        if let Some(value) = self.notifications_enabled {
+            config.notifications.enabled = value;
+        }
+        if let Some(value) = self.font_size {
+            config.display.font_size = value.wire().into();
+        }
+        if let Some(value) = self.message_density {
+            config.display.message_density = value.wire().into();
+        }
+    }
+
+    pub fn merge(&mut self, newer: Self) {
+        if newer.theme.is_some() {
+            self.theme = newer.theme;
+        }
+        if newer.notifications_enabled.is_some() {
+            self.notifications_enabled = newer.notifications_enabled;
+        }
+        if newer.font_size.is_some() {
+            self.font_size = newer.font_size;
+        }
+        if newer.message_density.is_some() {
+            self.message_density = newer.message_density;
+        }
+    }
+
+    pub fn matches(&self, config: &UserConfig) -> bool {
+        let mut desired = config.clone();
+        self.apply_to(&mut desired);
+        desired == *config
+    }
+}
+
 fn incompatible() -> ApiError {
     ApiError::Decode("invalid_user_settings_config".into())
 }
 
 /// Fill only omitted defaults; retain every supplied field, including future protocol fields.
-fn merged_config(mut config: Value, change: DisplayChange) -> ApiResult<(Value, bool)> {
+fn with_defaults(mut config: Value) -> ApiResult<Value> {
     let defaults = serde_json::to_value(UserConfig::default()).map_err(|_| incompatible())?;
     let object = config.as_object_mut().ok_or_else(incompatible)?;
     for (key, value) in defaults.as_object().ok_or_else(incompatible)? {
@@ -77,6 +126,12 @@ fn merged_config(mut config: Value, change: DisplayChange) -> ApiResult<(Value, 
             fields.entry(key.clone()).or_insert_with(|| value.clone());
         }
     }
+    Ok(config)
+}
+
+fn merged_config(config: Value, change: DisplayChange) -> ApiResult<(Value, bool)> {
+    let mut config = with_defaults(config)?;
+    let object = config.as_object_mut().ok_or_else(incompatible)?;
     let display = object
         .get_mut("display")
         .and_then(Value::as_object_mut)
@@ -95,7 +150,51 @@ fn merged_config(mut config: Value, change: DisplayChange) -> ApiResult<(Value, 
     Ok((config, true))
 }
 
+fn merged_patch(config: Value, patch: &AccountSettingsPatch) -> ApiResult<Value> {
+    let mut config = with_defaults(config)?;
+    if let Some(theme) = &patch.theme {
+        if !matches!(theme.as_str(), "system" | "light" | "dark") {
+            return Err(incompatible());
+        }
+        config["theme"] = json!(theme);
+    }
+    if let Some(enabled) = patch.notifications_enabled {
+        config["notifications"]["enabled"] = json!(enabled);
+    }
+    if let Some(size) = patch.font_size {
+        config["display"]["fontSize"] = json!(size.wire());
+    }
+    if let Some(density) = patch.message_density {
+        config["display"]["messageDensity"] = json!(density.wire());
+    }
+    Ok(config)
+}
+
 impl Api {
+    pub async fn patch_account_settings(
+        &self,
+        owner: &str,
+        patch: &AccountSettingsPatch,
+    ) -> ApiResult<UserSettings> {
+        let who: Value = self.get("/auth/whoami").await?;
+        if owner.is_empty() || who.get("id").and_then(Value::as_str) != Some(owner) {
+            return Err(ApiError::Unauthorized);
+        }
+        let config = who
+            .get("settings")
+            .and_then(|s| s.get("config"))
+            .cloned()
+            .ok_or_else(incompatible)?;
+        let config = merged_patch(config, patch)?;
+        let acknowledged: UserSettings = self
+            .put("/users/settings", &json!({"config":config}))
+            .await?;
+        if acknowledged.user_id != owner {
+            return Err(ApiError::Unauthorized);
+        }
+        Ok(acknowledged)
+    }
+
     /// A fresh read prevents an unrelated change made by another client from being overwritten
     /// by our stale typed projection. The backend has no conditional/partial settings update.
     pub async fn account_display_settings(
@@ -134,7 +233,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn wire_updates_read_fresh_preserve_fields_and_never_write_for_another_owner() {
+    async fn parity_wire_updates_read_fresh_preserve_fields_and_never_write_for_another_owner() {
         use super::super::Session;
         use std::sync::Arc;
         use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -149,6 +248,8 @@ mod tests {
         remote["display"]["fontSize"] = json!("small");
         let mut density_ack = remote.clone();
         density_ack["display"]["messageDensity"] = json!("comfortable");
+        let mut patch_ack = density_ack.clone();
+        patch_ack["theme"] = json!("light");
         let who = |owner: &str, config: Value| json!({"id":owner,"settings":{"version":1,"config":config}});
         let ack = |config: Value| json!({"user_id":"owner","version":1,"config":config});
         let script = vec![
@@ -164,6 +265,9 @@ mod tests {
             ),
             ("GET /auth/whoami ", 200, who("other", font_ack.clone())),
             ("GET /auth/whoami ", 200, who("owner", density_ack.clone())),
+            ("GET /auth/whoami ", 200, who("owner", density_ack.clone())),
+            ("PUT /users/settings ", 200, ack(patch_ack.clone())),
+            ("GET /auth/whoami ", 200, who("other", density_ack.clone())),
         ];
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -256,9 +360,49 @@ mod tests {
                 .message_density,
             "comfortable"
         );
+        api.patch_account_settings(
+            "owner",
+            &AccountSettingsPatch {
+                theme: Some("light".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            api.patch_account_settings("owner", &AccountSettingsPatch::default())
+                .await,
+            Err(ApiError::Unauthorized)
+        ));
         let bodies = server.await.unwrap();
+        assert_eq!(bodies[3], json!({"config":patch_ack}));
         assert_eq!(bodies[0], json!({"config":font_ack}));
         assert_eq!(bodies[1], json!({"config":density_ack}));
+    }
+
+    #[test]
+    fn parity_portable_patches_preserve_fresh_appearance_and_unknown_fields() {
+        let mut original = serde_json::to_value(UserConfig::default()).unwrap();
+        original["future"] = json!({"client": "newer"});
+        original["display"]["fontSize"] = json!("huge");
+        original["display"]["messageDensity"] = json!("comfortable");
+        original["display"]["future"] = json!([1, 2]);
+        original["notifications"]["sound"] = json!(false);
+        original["notifications"]["future"] = json!("retain");
+        let patch = AccountSettingsPatch {
+            theme: Some("light".into()),
+            notifications_enabled: Some(false),
+            ..Default::default()
+        };
+        let merged = merged_patch(original.clone(), &patch).unwrap();
+        original["theme"] = json!("light");
+        original["notifications"]["enabled"] = json!(false);
+        assert_eq!(merged, original);
+        let invalid = AccountSettingsPatch {
+            theme: Some("translated-label".into()),
+            ..Default::default()
+        };
+        assert!(merged_patch(original, &invalid).is_err());
     }
 
     #[test]

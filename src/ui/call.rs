@@ -37,6 +37,7 @@ const TILE_RATIO: f32 = 16.0 / 9.0;
 const MIN_PORTRAIT_RATIO: f32 = 2.0 / 3.0;
 
 /// O que a grade precisa saber de cada pessoa na sala.
+#[derive(Clone)]
 struct Face {
     id: String,
     name: String,
@@ -44,6 +45,8 @@ struct Face {
     tint: Option<Color32>,
     muted: bool,
     camera: bool,
+    state_known: bool,
+    kind: Kind,
     speaking: bool,
     me: bool,
 }
@@ -57,12 +60,12 @@ fn faces(store: &Store) -> Vec<Face> {
         .call
         .members()
         .iter()
-        .map(|member| {
+        .flat_map(|member| {
             let person = store.member(&member.user_id);
             let name = person
                 .map(|person| person.name.clone())
                 .unwrap_or_else(|| member.user_id.clone());
-            Face {
+            let face = Face {
                 id: member.user_id.clone(),
                 initials: person
                     .map(crate::state::Member::initials)
@@ -71,9 +74,14 @@ fn faces(store: &Store) -> Vec<Face> {
                 tint: person.and_then(|person| person.role_color.map(rgb)),
                 muted: member.muted,
                 camera: member.camera_on,
+                state_known: member.state_known,
+                kind: Kind::Camera,
                 speaking: store.call.speaking(&member.user_id),
                 me: member.user_id == store.me,
-            }
+            };
+            if member.screen_sharing && member.user_id != store.me {
+                vec![face.clone(), Face { camera: true, kind: Kind::Screen, ..face }]
+            } else { vec![face] }
         })
         .collect()
 }
@@ -106,7 +114,8 @@ pub fn roster(
             .and_then(|texture| texture.frame(&ctx))
             .map(|handle| handle.id());
 
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::hover());
+        let backdrop = ui.painter().add(egui::Shape::Noop);
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(rect.shrink2(Vec2::new(space::XXL, 0.0)))
@@ -127,7 +136,7 @@ pub fn roster(
                 .font(text::caption())
                 .color(if speaking { t.label } else { t.label_secondary }),
         );
-        if member.muted {
+        if member.state_known && member.muted {
             child.add_space(space::XS);
             child.label(
                 egui::RichText::new(icon::MICROPHONE_SLASH)
@@ -135,7 +144,11 @@ pub fn roster(
                     .color(t.label_tertiary),
             );
         }
-        if member.camera_on {
+        if !member.state_known {
+            child.label(egui::RichText::new("?").font(text::caption()).color(t.label_tertiary))
+                .on_hover_text(s.call_state_unknown);
+        }
+        if member.state_known && member.camera_on {
             child.add_space(space::XXS);
             child.label(
                 egui::RichText::new(icon::VIDEO_CAMERA)
@@ -143,7 +156,142 @@ pub fn roster(
                     .color(t.label_tertiary),
             );
         }
+        // Register after the text so selectable labels cannot steal the row's
+        // click. The nickname, status and avatar all open the same menu.
+        let response = ui.interact(rect, ui.id().with(("voice-person", channel_id, &member.user_id)), Sense::click());
+        if response.hovered() {
+            ui.painter().set(backdrop, egui::Shape::rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft));
+        }
+        participant_target(&response, store, state, channel_id, &member.user_id);
     }
+}
+
+/// A menu target belongs to the account, call attempt and viewport that opened it.
+#[derive(Clone)]
+pub struct ParticipantTarget {
+    owner: String,
+    channel: String,
+    attempt: u64,
+    user: String,
+    anchor: Rect,
+    source: egui::Id,
+    layer: egui::LayerId,
+    viewport: egui::ViewportId,
+}
+
+impl ParticipantTarget {
+    fn popup_id(&self) -> egui::Id {
+        egui::Id::new(("call-participant-menu", &self.owner, self.attempt, &self.user))
+    }
+}
+
+fn participant_target(response: &egui::Response, store: &Store, state: &mut UiState, channel: &str, user: &str) {
+    let same = state.call_participant.as_ref().is_some_and(|target|
+        target.owner == store.me && target.attempt == store.call.attempt
+            && target.source == response.id && target.viewport == response.ctx.viewport_id());
+    if same && let Some(target) = &mut state.call_participant {
+        target.anchor = response.rect;
+    }
+    if response.clicked() {
+        if same {
+            if let Some(target) = state.call_participant.take() {
+                egui::Popup::close_id(&response.ctx, target.popup_id());
+            }
+        } else {
+            let target = ParticipantTarget {
+                owner: store.me.clone(), channel: channel.into(), attempt: store.call.attempt,
+                user: user.into(), anchor: response.rect, source: response.id,
+                layer: response.layer_id, viewport: response.ctx.viewport_id(),
+            };
+            egui::Popup::open_id(&response.ctx, target.popup_id());
+            state.call_participant = Some(target);
+        }
+    }
+    if response.hovered() { response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand); }
+}
+
+fn participant_mute(ui: &mut egui::Ui, t: &Tokens, muted: &mut bool, label: &str) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+    let enabled = ui.is_enabled();
+    if enabled && response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let box_rect = Rect::from_center_size(rect.left_center() + Vec2::new(space::MD + 7.0, 0.0), Vec2::splat(14.0));
+    ui.painter().rect(box_rect, CornerRadius::same(3), if *muted { t.accent } else { t.fill_soft },
+        Stroke::new(1.0, t.label_secondary), egui::StrokeKind::Inside);
+    if *muted {
+        ui.painter().text(box_rect.center(), egui::Align2::CENTER_CENTER, icon::CHECK, text::icon(10.0), t.accent_label);
+    }
+    ui.painter().text(rect.left_center() + Vec2::new(30.0, 0.0), egui::Align2::LEFT_CENTER, label,
+        text::body(), if enabled { t.label } else { t.label_secondary });
+    if enabled && response.clicked() { *muted = !*muted; }
+}
+
+fn participant_action(ui: &mut egui::Ui, t: &Tokens, label: &str) -> bool {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(rect.left_center() + Vec2::new(space::MD, 0.0), egui::Align2::LEFT_CENTER,
+        label, text::body(), t.label);
+    response.clicked()
+}
+
+pub fn participant_menu(ctx: &egui::Context, store: &Store, state: &mut UiState, call: Option<&Call>, t: &Tokens, s: &Strings) {
+    let Some(target) = state.call_participant.clone() else { return; };
+    if target.viewport != ctx.viewport_id() { return; }
+    if target.owner != store.me || target.attempt != store.call.attempt
+        || !store.call.room(&target.channel).iter().any(|m| m.user_id == target.user) {
+        egui::Popup::close_id(ctx, target.popup_id());
+        state.call_participant = None;
+        return;
+    }
+    let id = target.popup_id();
+    let width = (ctx.content_rect().width() - 32.0).clamp(160.0, 260.0);
+    egui::Popup::new(id, ctx.clone(), target.anchor, target.layer)
+        .kind(egui::PopupKind::Menu)
+        .align(egui::RectAlign::RIGHT_START)
+        .gap(space::SM)
+        .width(width)
+        .layout(egui::Layout::top_down_justified(egui::Align::Min))
+        .frame(super::widgets::menu_frame(ctx))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .open_memory(None)
+        .show(|ui| {
+            ui.set_width(width);
+            if target.user != store.me && store.call.current(&target.channel, target.attempt) {
+                let available = store.call.audio_routes_known && call.is_some();
+                let mut setting = call.map(|c| c.playback(&target.user)).unwrap_or_default();
+                let before = setting;
+                ui.add_enabled_ui(available, |ui| {
+                    participant_mute(ui, t, &mut setting.muted, s.call_mute_for_me);
+                    ui.spacing_mut().slider_width = (width - 58.0).max(80.0);
+                    ui.add(egui::Slider::new(&mut setting.volume_percent, 0..=200).suffix("%"));
+                });
+                if !available {
+                    ui.add(egui::Label::new(egui::RichText::new(s.call_playback_unavailable)
+                        .font(text::footnote()).color(t.label_secondary)).wrap());
+                }
+                if setting != before {
+                    state.actions.push(ChatAction::VoicePlayback { channel_id: target.channel.clone(),
+                        attempt: target.attempt, user_id: target.user.clone(), setting });
+                }
+                ui.separator();
+            }
+            if participant_action(ui, t, s.profile) {
+                super::profile::open(state, &target.user, super::profile::Anchor::Beside(target.anchor), ui.input(|i| i.time));
+                state.call_participant = None;
+                ui.close();
+            }
+            if target.user != store.me && participant_action(ui, t, s.profile_message_to) {
+                state.actions.push(ChatAction::OpenDirectMessage(target.user.clone()));
+                state.call_participant = None;
+                ui.close();
+            }
+        });
+    if !egui::Popup::is_id_open(ctx, id) { state.call_participant = None; }
 }
 
 /// Barra de conectado, acima da pastilha da conta: onde se está, se a mídia
@@ -887,7 +1035,7 @@ fn draw_faces(
         let texture = if face.camera {
             match (face.me, call.as_deref_mut()) {
                 (true, Some(call)) => call.preview(&ctx),
-                (false, Some(call)) => call.video(&ctx, &face.id, Kind::Camera),
+                (false, Some(call)) => call.video(&ctx, &face.id, face.kind),
                 _ => None,
             }
         } else {
@@ -899,7 +1047,7 @@ fn draw_faces(
             .filter(|size| size.x > 0.0 && size.y > 0.0)
             .map(|size| size.x / size.y)
             .unwrap_or(TILE_RATIO);
-        let ratio = presentation_ratio(source_ratio);
+        let ratio = if face.kind == Kind::Screen { source_ratio } else { presentation_ratio(source_ratio) };
 
         let column = index % columns;
         let row = index / columns;
@@ -917,9 +1065,11 @@ fn draw_faces(
             && !face.me
             && call
                 .as_deref()
-                .is_some_and(|call| !call.has_slot(&face.id, Kind::Camera));
+                .is_some_and(|call| !call.has_slot(&face.id, face.kind));
 
         tile(ui, state, store, t, s, rect, face, texture, crowded);
+        let response = ui.interact(rect, ui.id().with(("participant", store.call.attempt, &face.id, face.kind)), Sense::click());
+        participant_target(&response, store, state, &store.call.channel_id, &face.id);
     }
 }
 
@@ -1004,7 +1154,7 @@ fn tile(
         Some(texture) => {
             let source = texture.size_vec2();
             let source_ratio = source.x / source.y;
-            let display_ratio = presentation_ratio(source_ratio);
+            let display_ratio = if face.kind == Kind::Screen { source_ratio } else { presentation_ratio(source_ratio) };
             let uv = cover_uv(source_ratio, display_ratio);
 
             let mut mesh = egui::Mesh::with_texture(texture.id());
@@ -1054,7 +1204,9 @@ fn tile(
 
     // Nome e microfone no pé, sobre uma sombra curta para o texto sobreviver
     // a qualquer vídeo.
-    let name = if face.me {
+    let name = if face.kind == Kind::Screen {
+        format!("{} · {}", face.name, s.call_screen)
+    } else if face.me {
         format!("{} ({})", face.name, s.call_you)
     } else {
         face.name.clone()
@@ -1088,7 +1240,7 @@ fn tile(
         galley,
         text_color,
     );
-    if face.muted {
+    if face.state_known && face.muted {
         painter.text(
             egui::pos2(label.x + width + space::SM, label.y - 7.0),
             egui::Align2::LEFT_CENTER,
@@ -1229,4 +1381,24 @@ fn round_button(
 /// pediu (encolher, janela própria).
 pub fn stage_of(store: &Store) -> Option<Stage> {
     store.call.active().then(|| store.call.stage())
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn parity_camera_and_screen_are_separate_tiles_and_cold_presence_stays_unknown() {
+        let mut store = Store::default();
+        store.me = "me".into();
+        store.call.joining("room".into());
+        store.call.joined("room", vec![crate::api::ws::VoiceMember {
+            user_id: "remote".into(), state_known: true, camera_on: true, screen_sharing: true, muted: false,
+        }], vec![]);
+        let tiles = faces(&store);
+        assert_eq!(tiles.len(), 2);
+        assert_eq!(tiles[0].kind, Kind::Camera);
+        assert_eq!(tiles[1].kind, Kind::Screen);
+        store.call.seed_presence([("cold".into(), vec!["room".into()])]);
+        assert!(!faces(&store)[0].state_known);
+    }
 }

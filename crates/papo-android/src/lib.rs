@@ -761,6 +761,7 @@ impl Client {
             } => {
                 discovery::check_notifications(store, &channel_id, &setting)?;
                 Command::SetChannelNotifications {
+                    owner: store.me.clone(),
                     channel_id,
                     setting,
                 }
@@ -975,6 +976,7 @@ impl Client {
                     return Err("Protected embed media must be preserved".into());
                 }
                 Command::EditMessage {
+                    owner: store.me.clone(),
                     embeds: embeds
                         .map(|e| embed_authoring::inputs(e, &[]))
                         .transpose()?,
@@ -989,7 +991,7 @@ impl Client {
                 {
                     return Err("You cannot delete this message".into());
                 }
-                Command::DeleteMessage { message_id }
+                Command::DeleteMessage { owner: store.me.clone(), message_id }
             }
             Action::React {
                 channel_id,

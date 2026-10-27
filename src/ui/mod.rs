@@ -28,3 +28,5 @@ pub mod shell;
 pub mod theme;
 pub mod viewer;
 pub mod widgets;
+
+pub mod webhooks;

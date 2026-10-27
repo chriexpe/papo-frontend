@@ -312,8 +312,8 @@ fn contents(
             state.actions.push(ChatAction::MarkServerRead);
             *close = true;
         }
-        // O último servidor não sai: sem nenhum, não há para onde ir.
-        if state.server_count > 1 {
+        // Forgetting the final server returns to an empty sign-in surface.
+        {
             if card.confirm_leave {
                 ui.add_space(space::XS);
                 ui.horizontal(|ui| {

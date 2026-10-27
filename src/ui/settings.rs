@@ -54,6 +54,7 @@ pub enum ServerPane {
     Roles,
     Emojis,
     Audit,
+    Webhooks,
 }
 
 /// Avisos de um canal para esta conta. O cartão do servidor escolhe entre
@@ -125,12 +126,13 @@ impl AppPane {
 }
 
 impl ServerPane {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::General,
         Self::Channels,
         Self::Roles,
         Self::Emojis,
         Self::Audit,
+        Self::Webhooks,
     ];
 
     fn glyph(self) -> &'static str {
@@ -141,6 +143,7 @@ impl ServerPane {
             Self::Roles => icon::SHIELD,
             Self::Emojis => icon::SMILEY,
             Self::Audit => icon::CLOCK_COUNTER_CLOCKWISE,
+            Self::Webhooks => icon::PLUG,
         }
     }
 
@@ -153,6 +156,7 @@ impl ServerPane {
             Self::Roles => s.roles,
             Self::Emojis => s.pane_emojis,
             Self::Audit => s.pane_audit,
+            Self::Webhooks => s.webhooks,
         }
     }
 }
@@ -288,6 +292,7 @@ impl ChannelDraft {
 #[derive(Default)]
 pub struct Draft {
     pub loaded_account: bool,
+    pub webhooks: super::webhooks::Draft,
     pub nickname: String,
     pub status_message: String,
     pub description: String,
@@ -386,6 +391,8 @@ impl SettingsState {
             ServerPane::Channels
         } else if store.can_manage_roles() {
             ServerPane::Roles
+        } else if store.can_manage_webhooks() {
+            ServerPane::Webhooks
         } else {
             return false;
         };
@@ -469,7 +476,7 @@ const TILE_END: u8 = 16;
 const TILE_MID: u8 = 4;
 const TILE_INSET: f32 = space::LG + 2.0;
 
-fn section(ui: &mut egui::Ui, t: &Tokens, label: &str) {
+pub(super) fn section(ui: &mut egui::Ui, t: &Tokens, label: &str) {
     let top = ui.cursor().min.y;
     let spot = Rect::from_min_size(egui::pos2(ui.max_rect().min.x, top), Vec2::new(ui.available_width(), 28.0));
     spotlight(ui, spot, label);
@@ -1184,7 +1191,7 @@ fn segmented_inner<T: PartialEq + Copy>(
 
 /// Escolha em menu suspenso: o valor atual com a seta; tocar abre as
 /// opções por cima dele.
-fn dropdown_choice<T: PartialEq + Copy>(
+pub(super) fn dropdown_choice<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
     t: &Tokens,
     current: &mut T,
@@ -1238,13 +1245,13 @@ fn dropdown_choice<T: PartialEq + Copy>(
 /// normal é neutro, `Emphasis::Primary` fica para a ação principal do
 /// painel — uma por painel — e `Danger` para o que não tem volta.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Emphasis {
+pub(super) enum Emphasis {
     Quiet,
     Primary,
     Danger,
 }
 
-fn row_button(ui: &mut egui::Ui, t: &Tokens, label: &str, emphasis: Emphasis) -> bool {
+pub(super) fn row_button(ui: &mut egui::Ui, t: &Tokens, label: &str, emphasis: Emphasis) -> bool {
     let galley = ui
         .painter()
         .layout_no_wrap(label.to_owned(), text::callout(), t.label);
@@ -1335,6 +1342,9 @@ pub struct Context<'a> {
     pub lang: &'a mut crate::i18n::Lang,
     pub theme: &'a mut crate::ui::theme::ThemePref,
     pub ui_scale: &'a mut f32,
+    pub font_size: &'a mut crate::api::client::DisplayFontSize,
+    pub message_density: &'a mut crate::api::client::MessageDensity,
+    pub extra_compact: &'a mut bool,
     pub translucency: &'a mut bool,
     /// O desfoque do vidro, quando o renderizador sabe fazê-lo.
     pub glass: Option<crate::ui::glass::SharedGlass>,
@@ -1394,7 +1404,7 @@ fn sheet_tokens(base: &Tokens) -> Tokens {
 }
 
 /// Tamanho fixo com o peso pedido (o mock fala em px: 11.5, 14, 17).
-fn px(size: f32, weight: &str) -> egui::FontId {
+pub(super) fn px(size: f32, weight: &str) -> egui::FontId {
     let family = match weight {
         "medium" | "semibold" | "display" => egui::FontFamily::Name(weight.into()),
         _ => egui::FontFamily::Proportional,
@@ -1415,7 +1425,15 @@ fn caption_below(ui: &mut egui::Ui, t: &Tokens, caption: &str) {
 /// a translucidez e o emoji de uma cor, e a legenda embaixo.
 fn preview_chat(ui: &mut egui::Ui, t: &Tokens, data: &mut Context<'_>, caption: &str) {
     let width = fit_width(ui);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 133.0), Sense::hover());
+    use crate::api::client::{DisplayFontSize, MessageDensity};
+    let compact = *data.message_density == MessageDensity::Compact && *data.extra_compact;
+    let scale = match data.font_size { DisplayFontSize::Small => 0.875, DisplayFontSize::Normal => 1.0, DisplayFontSize::Large => 1.25 };
+    let chat_font = |size: f32, bold: bool| egui::FontId::new(size * scale,
+        egui::FontFamily::Name(if bold { "chat-semibold" } else { "chat" }.into()));
+    let line_height = ui.fonts_mut(|fonts| fonts.row_height(&chat_font(13.0, false)));
+    let gap = match data.message_density { MessageDensity::Compact => if compact { 2.0 } else { 6.0 }, MessageDensity::Normal => 10.0, MessageDensity::Comfortable => 18.0 };
+    let row_height = if compact { line_height + gap } else { (line_height * 2.0).max(28.0) + gap };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 48.0 + row_height * 2.0), Sense::hover());
     ui.painter().rect(rect, CornerRadius::same(10), t.elevated_bg, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
     let left = rect.min.x + 14.0;
     let mono = *data.channel_emoji_monochrome;
@@ -1438,24 +1456,33 @@ fn preview_chat(ui: &mut egui::Ui, t: &Tokens, data: &mut Context<'_>, caption: 
         ("CH", egui::Color32::from_rgb(0x0A, 0x84, 0xFF), "chriexpe", "14:03", "@Ana ficou limpo, gostei."),
     ];
     for (initials, color, name, time, body) in messages {
-        let avatar = Rect::from_min_size(egui::pos2(left, y), Vec2::splat(28.0));
-        ui.painter().circle_filled(avatar.center(), 14.0, color);
-        ui.painter().text(avatar.center(), egui::Align2::CENTER_CENTER, initials, px(11.0, "semibold"), egui::Color32::WHITE);
-        let x = avatar.max.x + 9.0;
-        let galley = ui.painter().layout_no_wrap(name.to_owned(), px(13.0, "semibold"), t.label);
-        ui.painter().galley(egui::pos2(x, y), galley.clone(), t.label);
-        ui.painter().text(egui::pos2(x + galley.size().x + 6.0, y + 2.0), egui::Align2::LEFT_TOP, time, px(11.0, "regular"), t.label_tertiary);
-        let line = y + 17.0;
+        let (x, line) = if compact {
+            let time_galley = ui.painter().layout_no_wrap(time.to_owned(), chat_font(10.0, false), t.label_tertiary);
+            ui.painter().galley(egui::pos2(left, y + 2.0), time_galley.clone(), t.label_tertiary);
+            let name_x = left + time_galley.size().x + 6.0;
+            let name_galley = ui.painter().layout_no_wrap(name.to_owned(), chat_font(13.0, true), color);
+            ui.painter().galley(egui::pos2(name_x, y), name_galley.clone(), color);
+            (name_x + name_galley.size().x + 6.0, y)
+        } else {
+            let avatar = Rect::from_min_size(egui::pos2(left, y), Vec2::splat(28.0));
+            ui.painter().circle_filled(avatar.center(), 14.0, color);
+            ui.painter().text(avatar.center(), egui::Align2::CENTER_CENTER, initials, px(11.0, "semibold"), egui::Color32::WHITE);
+            let x = avatar.max.x + 9.0;
+            let galley = ui.painter().layout_no_wrap(name.to_owned(), chat_font(13.0, true), t.label);
+            ui.painter().galley(egui::pos2(x, y), galley.clone(), t.label);
+            ui.painter().text(egui::pos2(x + galley.size().x + 6.0, y + 2.0), egui::Align2::LEFT_TOP, time, chat_font(11.0, false), t.label_tertiary);
+            (x, y + line_height)
+        };
         if let Some(rest) = body.strip_prefix("@Ana") {
-            let tag = ui.painter().layout_no_wrap("@Ana".to_owned(), px(13.0, "regular"), t.accent);
+            let tag = ui.painter().layout_no_wrap("@Ana".to_owned(), chat_font(13.0, false), t.accent);
             let pill = Rect::from_min_size(egui::pos2(x, line), Vec2::new(tag.size().x + 6.0, tag.size().y + 1.0));
             ui.painter().rect_filled(pill, CornerRadius::same(4), t.accent.gamma_multiply(0.16));
             ui.painter().galley(egui::pos2(x + 3.0, line), tag, t.accent);
-            ui.painter().text(egui::pos2(pill.max.x, line), egui::Align2::LEFT_TOP, rest, px(13.0, "regular"), t.label);
+            ui.painter().text(egui::pos2(pill.max.x, line), egui::Align2::LEFT_TOP, rest, chat_font(13.0, false), t.message_body());
         } else {
-            ui.painter().text(egui::pos2(x, line), egui::Align2::LEFT_TOP, body, px(13.0, "regular"), t.label);
+            ui.painter().text(egui::pos2(x, line), egui::Align2::LEFT_TOP, body, chat_font(13.0, false), t.message_body());
         }
-        y += 28.0 + 8.0 + 2.0;
+        y += row_height;
     }
     caption_below(ui, t, caption);
 }
@@ -1474,6 +1501,9 @@ pub fn sheet(
     let Some(surface) = state.open else {
         return actions;
     };
+    // A submenu can extend past the sheet. Its selection (or dismissal)
+    // belongs to that submenu even if it closes itself during this frame.
+    let popup_was_open = egui::Popup::is_any_open(ctx);
     // Os ajustes do servidor são só administração: sem nenhuma área
     // permitida (o cargo mudou com a folha aberta), a folha fecha.
     if surface == Surface::Server && !server_pane_allowed(data.store, state.server_pane) {
@@ -1605,7 +1635,8 @@ pub fn sheet(
     // pastilha que a abriu. Clique fora fecha; a própria pastilha fica de
     // fora desta regra porque ela já possui o comportamento de toggle.
     let just_opened = std::mem::take(&mut state.opened_by_click);
-    let outside = !state.modal_above && !just_opened && ctx.input(|input| {
+    let outside = !state.modal_above && !just_opened && !popup_was_open
+        && !egui::Popup::is_any_open(ctx) && ctx.input(|input| {
         input.pointer.any_click()
             && input.pointer.interact_pos().is_some_and(|position| {
                 !rect.contains(position) && !anchor.contains(position)
@@ -1892,7 +1923,7 @@ fn channel_name_input(
 
 /// O cartão do editor: seções separadas por fio, cada uma com a legenda em
 /// versalete em cima.
-struct CardUi<'a> {
+pub(super) struct CardUi<'a> {
     ui: &'a mut egui::Ui,
     t: Tokens,
     first: bool,
@@ -1900,7 +1931,7 @@ struct CardUi<'a> {
 }
 
 impl CardUi<'_> {
-    fn section(&mut self, caption: &str, contents: impl FnOnce(&mut egui::Ui)) {
+    pub(super) fn section(&mut self, caption: &str, contents: impl FnOnce(&mut egui::Ui)) {
         let t = self.t;
         if !self.first {
             let y = self.ui.cursor().min.y;
@@ -1929,7 +1960,7 @@ impl CardUi<'_> {
     }
 }
 
-fn sheet_card(ui: &mut egui::Ui, t: &Tokens, build: impl FnOnce(&mut CardUi)) {
+pub(super) fn sheet_card(ui: &mut egui::Ui, t: &Tokens, build: impl FnOnce(&mut CardUi)) {
     let width = fit_width(ui);
     let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
     let slot = ui.painter().add(egui::Shape::Noop);
@@ -2852,6 +2883,7 @@ fn server_settings_index(s: &Strings) -> Vec<(ServerPane, &'static str)> {
         (ServerPane::Emojis, s.add_emoji),
         (ServerPane::Emojis, s.server_emojis),
         (ServerPane::Audit, s.audit_log),
+        (ServerPane::Webhooks, s.webhooks),
     ]
 }
 
@@ -3329,6 +3361,7 @@ fn server_summaries(store: &Store, s: &Strings) -> Vec<(ServerPane, String)> {
         (ServerPane::Roles, format!("{} {}", store.roles.len(), s.sum_roles)),
         (ServerPane::Emojis, format!("{} {}", store.emojis.len(), s.sum_stickers)),
         (ServerPane::Audit, s.sum_audit.to_owned()),
+        (ServerPane::Webhooks, s.webhooks.to_owned()),
     ]
 }
 
@@ -3957,6 +3990,23 @@ fn app_pane(
                             (crate::ui::theme::ThemePref::System, s.theme_system),
                         ],
                     );
+                });
+                rows.row(s.account_font_size, None, |ui, t| {
+                    use crate::api::client::DisplayFontSize::*;
+                    segmented(ui, t, data.font_size, &[(Small, s.text_small), (Normal, s.text_normal), (Large, s.text_large)]);
+                });
+                rows.row(s.message_density, None, |ui, t| {
+                    use crate::api::client::MessageDensity::*;
+                    let mut layout = (*data.message_density, *data.extra_compact && *data.message_density == Compact);
+                    if segmented(ui, t, &mut layout, &[
+                        ((Compact, true), s.density_extra_compact),
+                        ((Compact, false), s.density_compact),
+                        ((Normal, false), s.text_normal),
+                        ((Comfortable, false), s.density_comfortable),
+                    ]) {
+                        *data.message_density = layout.0;
+                        *data.extra_compact = layout.1;
+                    }
                 });
                 #[cfg(not(target_os = "android"))]
                 rows.row(s.ui_scale, Some(s.ui_scale_hint), |ui, _t| {
@@ -4611,6 +4661,7 @@ fn server_pane_allowed(store: &Store, pane: ServerPane) -> bool {
         ServerPane::General | ServerPane::Emojis | ServerPane::Audit => store.can_manage_server(),
         ServerPane::Channels => store.can_manage_channels(),
         ServerPane::Roles => store.can_manage_roles(),
+        ServerPane::Webhooks => store.can_manage_webhooks(),
     }
 }
 
@@ -5177,6 +5228,7 @@ fn server_pane(
         }
 
         ServerPane::Audit => audit_pane(ui, data, state, t, s, actions),
+        ServerPane::Webhooks => super::webhooks::pane(ui, data.store, &mut state.draft.webhooks, t, s, actions),
     }
 }
 
