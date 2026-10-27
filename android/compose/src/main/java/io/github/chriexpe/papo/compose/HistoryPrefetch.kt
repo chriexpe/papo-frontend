@@ -34,8 +34,7 @@ internal fun HistoryPrefetch(
             // The list is reversed: index zero is the newer end. Start a page before reaching
             // an edge, allowing disk reads and server refreshes to overlap ordinary scrolling.
             else if (older && items.last().index >= layout.totalItemsCount - 8) true
-            else if (newer && items.first().index <= 6) false
-            else null
+            else if (newer && items.first().index <= 6) false else null
         }
             .distinctUntilChanged()
             .collect { direction ->

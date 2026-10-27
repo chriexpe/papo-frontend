@@ -45,9 +45,10 @@ internal fun ServerIcon(server: ServerState, model: PapoViewModel, modifier: Mod
     val image =
         remember(server.url, server.me, revision) {
             if (revision.isBlank()) null
-            else CachedImage("${server.url}/${server.me}/server-icon/$revision") {
-                model.serverIcon(server)
-            }
+            else
+                CachedImage("${server.url}/${server.me}/server-icon/$revision") {
+                    model.serverIcon(server)
+                }
         }
     var loaded by remember(server.url, server.me, revision) { mutableStateOf(false) }
     Box(

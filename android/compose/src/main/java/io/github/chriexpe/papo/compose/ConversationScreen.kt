@@ -225,7 +225,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         draftKey,
         ready =
             (positionReady || server.messages.isEmpty()) &&
-                !server.loadingContext && !readingControls.seekingCatchUp,
+                !server.loadingContext &&
+                !readingControls.seekingCatchUp,
         canLoadOlder = server.canLoadOlder,
         canLoadNewer = server.canLoadNewer,
         loading = server.loadingOlder,

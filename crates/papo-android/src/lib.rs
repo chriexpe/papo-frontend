@@ -1145,12 +1145,12 @@ impl Client {
                     a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
                     .map(|m| (m.at.timestamp_millis(), m.at.timestamp_subsec_nanos(), m.id.clone()));
                 self.runtime.net.send(Command::LoadNewerMessages { ticket: ticket.clone(), since, last_id });
-                if let Some(edge) = cached_edge {
-                    if let Some(Ok(page)) = self.runtime.cache.load_newer_channel_page_async(
+                if let Some(edge) = cached_edge
+                    && let Some(Ok(page)) = self.runtime.cache.load_newer_channel_page_async(
                         &self.runtime.server_key, &channel_id, edge,
-                    ).and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok()) {
-                        self.runtime.store.preview_cached_history(&ticket, page);
-                    }
+                    ).and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok())
+                {
+                    self.runtime.store.preview_cached_history(&ticket, page);
                 }
                 return Ok(());
             }
@@ -1172,12 +1172,12 @@ impl Client {
                 // Start HTTP before the local read; cache and network work overlap. Their
                 // independent cursors prevent cached display from skipping server validation.
                 self.runtime.net.send(Command::LoadOlderMessages { ticket: ticket.clone(), since, last_id });
-                if let Some(edge) = cached_edge {
-                    if let Some(Ok(page)) = self.runtime.cache.load_older_context_page_async(
+                if let Some(edge) = cached_edge
+                    && let Some(Ok(page)) = self.runtime.cache.load_older_context_page_async(
                         &self.runtime.server_key, &id, edge,
-                    ).and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok()) {
-                        self.runtime.store.preview_cached_history(&ticket, page);
-                    }
+                    ).and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok())
+                {
+                    self.runtime.store.preview_cached_history(&ticket, page);
                 }
                 return Ok(());
             }
