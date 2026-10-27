@@ -7,6 +7,8 @@
 //! O frontend decide como carregar imagens e destacar menções de grupos.
 //! O sinal `+` permanece literal no início de linhas; listas usam `-` ou `*`.
 
+pub mod composer;
+
 use std::{borrow::Cow, sync::Arc};
 
 use crate::state::MentionBinding;

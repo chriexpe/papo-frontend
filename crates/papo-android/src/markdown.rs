@@ -1,6 +1,8 @@
 //! Flat, typed presentation tree. Parsing and formatting rules live in core;
 //! Compose only lays out nodes. Parse before publishing a timeline snapshot so
 //! rich text cannot change row geometry after the reading reducer sees it.
+mod composer;
+
 use papo_core::{
     markdown::{self, Block, ColumnAlign, Inline},
     state::Store,

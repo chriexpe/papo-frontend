@@ -1088,7 +1088,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                         }
                                     AdaptiveComposer(
                                         draft = composer,
-                                        editor = { inputModifier ->
+                                        editor = { inputModifier, markdown ->
                                             ComposerInput(
                                                 composer,
                                                 server,
@@ -1104,6 +1104,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                                 },
                                                 modifier =
                                                     inputModifier.focusRequester(composerFocus),
+                                                markdown = markdown,
                                                 onSubmit =
                                                     if (appearance.enterToSend) requestComposerSend
                                                     else null,

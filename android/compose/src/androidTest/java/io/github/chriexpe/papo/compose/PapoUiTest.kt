@@ -2126,6 +2126,98 @@ class PapoUiTest {
     }
 
     @Test
+    fun composerPreviewsMarkdownWhileKeepingSourceAndSelectionEditable() {
+        chat()
+        val input = compose.onNodeWithTag("composer-input")
+        fun layout(): androidx.compose.ui.text.TextLayoutResult {
+            val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            input.performSemanticsAction(
+                androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult
+            ) {
+                it(results)
+            }
+            return results.single()
+        }
+        input.performTextReplacement("# Test")
+        val heading = layout()
+        assertTrue(heading.layoutInput.text.spanStyles.any { it.item.fontSize.value == 24f })
+        input.assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.InputText, AnnotatedString("# Test"))
+        )
+        input.performTextInputSelection(androidx.compose.ui.text.TextRange(2, 6))
+        input.performTextInput("Renamed")
+        input.assert(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.InputText,
+                AnnotatedString("# Renamed"),
+            )
+        )
+        assertTrue(layout().layoutInput.text.spanStyles.any { it.item.fontSize.value == 24f })
+
+        input.performTextReplacement("# Preview\nbody")
+        assertEquals(
+            "A newline after a heading must not add an empty paragraph",
+            2,
+            layout().lineCount,
+        )
+
+        val source = "# Preview\n**bold** *italic* ~~gone~~\n`val answer = 42`"
+        input.performTextReplacement(source)
+        input.assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.InputText, AnnotatedString(source))
+        )
+        val preview = layout().layoutInput.text
+        assertEquals(source, preview.text)
+        assertTrue(
+            preview.spanStyles.any {
+                preview.text.substring(it.start, it.end) == "**bold**" &&
+                    it.item.fontWeight == androidx.compose.ui.text.font.FontWeight.Bold
+            }
+        )
+        assertTrue(
+            preview.spanStyles.any {
+                it.item.fontStyle == androidx.compose.ui.text.font.FontStyle.Italic
+            }
+        )
+        assertTrue(
+            preview.spanStyles.any {
+                it.item.textDecoration == androidx.compose.ui.text.style.TextDecoration.LineThrough
+            }
+        )
+        assertTrue(
+            preview.spanStyles.any {
+                it.item.fontFamily == androidx.compose.ui.text.font.FontFamily.Monospace
+            }
+        )
+        compose.onNodeWithTag("adaptive-composer").captureToImage().asAndroidBitmap().let { bitmap
+            ->
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .cacheDir
+                .resolve("composer-markdown-preview.png")
+                .outputStream()
+                .use {
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+                }
+            bitmap.recycle()
+        }
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.waitUntil(10_000) {
+            compose
+                .onAllNodesWithText("Preview", substring = false)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        compose
+            .onNodeWithText("val answer = 42", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        input.assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.InputText, AnnotatedString(""))
+        )
+    }
+
+    @Test
     fun composerAutoClosesFormattingAndSendsRenderedText() {
         chat()
         val input = compose.onNodeWithTag("composer-input")

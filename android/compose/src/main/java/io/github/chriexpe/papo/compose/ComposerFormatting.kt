@@ -86,7 +86,7 @@ private fun ComposerDraft.applyFormatting(edit: FormatEdit): ComposerDraft {
  * A transient half-surrogate must stay with the editor, never cross UniFFI's strict UTF-8 boundary.
  * Normal emoji commits remain a single scalar edit.
  */
-private fun String.validUnicode(): Boolean {
+internal fun String.validUnicode(): Boolean {
     var at = 0
     while (at < length) {
         val c = this[at++]

@@ -303,6 +303,14 @@ existing closer. Programmatic inserts/reset do not infer formatting pairs.
 Android converts UTF-16 cursor positions to core's Unicode scalar offsets;
 formatting edits retain mention bindings and atomic sticker deletion.
 
+The native text box previews headings, bold, italic, strikethrough, code, links
+and quotes as you type using source ranges from that same CommonMark parser.
+Markdown markers stay visible and editable; cursor positions, selections, IME
+composition and the sent source remain unchanged. Heading sizes follow account
+typography and participate in composer wrapping. Bound mention labels cannot
+introduce Markdown, and sticker shortcodes inside code stay literal. Oversized
+or excessively nested drafts fall back to plain editing.
+
 The chat header has a pin button immediately left of People. Pins open an
 expandable sheet with full Markdown, playable attachments and supported provider
 embeds. Tapping the card outside media and author controls jumps to the original
