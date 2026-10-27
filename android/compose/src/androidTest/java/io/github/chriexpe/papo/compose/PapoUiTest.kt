@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -32,6 +33,8 @@ import org.junit.runner.RunWith
 class PapoUiTest {
     @get:Rule val compose = createEmptyComposeRule()
     private lateinit var activity: ActivityScenario<MainActivity>
+
+    private fun PapoViewModel.activeReading() = state.value.active?.let { reading(it).value }
 
     private lateinit var savedClient: Map<String, *>
     private lateinit var savedAppearance: Map<String, *>
@@ -105,12 +108,23 @@ class PapoUiTest {
         }
         listOf("compose-client", "compose-appearance", "compose-expressions", "compose-attachments")
             .forEach { restore(it, emptyMap<String, Any>()) }
+        // MainActivity shares its model with the Application so calls survive recreation.
+        // Each test needs a new process-owned model, while recreation within a test retains it.
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            (context.applicationContext as PapoApplication).viewModelStore.clear()
+        }
         activity = ActivityScenario.launch(MainActivity::class.java)
     }
 
     @After
     fun close() {
         activity.close()
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            (InstrumentationRegistry.getInstrumentation().targetContext.applicationContext
+                    as PapoApplication)
+                .viewModelStore
+                .clear()
+        }
         restore("compose-expressions", savedExpressions)
         restore("compose-attachments", savedAttachments)
         restore("compose-client", savedClient)
@@ -415,7 +429,7 @@ class PapoUiTest {
     fun globalNotificationsKeepHealthyResultsWhenAnotherAccountFails() {
         demo()
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             val source = model.state.value.active!!
             val unavailable =
                 source.copy(
@@ -488,7 +502,7 @@ class PapoUiTest {
         )
         var opened = ""
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             host.setContent {
                 androidx.compose.material3.MaterialTheme {
                     androidx.compose.runtime.CompositionLocalProvider(
@@ -563,7 +577,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         compose.onNodeWithTag("server-header").performClick()
         compose.onNodeWithTag("notification-policy-choice").performScrollTo().performClick()
@@ -687,7 +701,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         val server = model.state.value.active!!
         model.send(
@@ -789,7 +803,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val settings = context.getSharedPreferences("compose-appearance", 0)
@@ -978,7 +992,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         compose.onNodeWithContentDescription("Server settings").performClick()
         compose.onNodeWithText("Channels", substring = false).performClick()
@@ -1086,7 +1100,7 @@ class PapoUiTest {
             }
         try {
             activity.onActivity { host ->
-                val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+                val model = (host.application as PapoApplication).model
                 host.setContent {
                     androidx.compose.material3.MaterialTheme {
                         val visible =
@@ -1164,7 +1178,7 @@ class PapoUiTest {
                 client.close()
             }
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             host.setContentForMemberHeader(server, model)
         }
         compose.onNodeWithContentDescription("Server settings").assertDoesNotExist()
@@ -1656,7 +1670,7 @@ class PapoUiTest {
                 )
             )
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             host.setContent {
                 androidx.compose.material3.MaterialTheme {
                     androidx.compose.runtime.CompositionLocalProvider(
@@ -1833,7 +1847,7 @@ class PapoUiTest {
     fun pinManagementIsHiddenWithoutPermissionButPinsRemainBrowsable() {
         chat()
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             val server =
                 checkNotNull(model.state.value.active).let {
                     it.copy(canPin = false, capabilities = it.capabilities.copy(pinMessage = false))
@@ -1866,7 +1880,7 @@ class PapoUiTest {
         lateinit var model: PapoViewModel
         lateinit var server: ServerState
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
             server = checkNotNull(model.state.value.active)
         }
         kotlinx.coroutines.runBlocking {
@@ -2041,7 +2055,7 @@ class PapoUiTest {
     fun markdownRendersRichBlocksAndCopiesCode() {
         chat()
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             val server = checkNotNull(model.state.value.active)
             val text =
                 "# Rich message\n\n**Bold** and *italic* with :papo_wave: and @mention(<@ana>).\n\n> A quoted thought\n\n- [x] Completed task\n- [ ] Next task\n\n```kotlin\nval answer = 42\n```\n\n| Name | State |\n| :-- | --: |\n| Papo | Ready |"
@@ -2144,7 +2158,7 @@ class PapoUiTest {
         val people = androidx.compose.runtime.mutableStateOf(listOf("Ana"))
         val phrase = androidx.compose.runtime.mutableStateOf("is sketching…")
         activity.onActivity { host ->
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             val server = checkNotNull(model.state.value.active)
             host.setContent {
                 androidx.compose.material3.MaterialTheme {
@@ -2261,7 +2275,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         model.command(
             io.github.chriexpe.papo.core.Action.Send(
@@ -2486,11 +2500,19 @@ class PapoUiTest {
             val secrets = AndroidSecrets(context)
             lateinit var model: PapoViewModel
             activity.onActivity {
-                model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+                model = (it.application as PapoApplication).model
             }
             try {
                 model.addServer(fixture.url)
-                compose.waitUntil(5000) { model.state.value.active?.url == fixture.url }
+                compose.waitUntil(5000) {
+                    model.state.value.active?.url == fixture.url ||
+                        model.state.value.error.isNotBlank()
+                }
+                assertEquals(
+                    "Fixture server setup failed: " + model.state.value.error,
+                    fixture.url,
+                    model.state.value.active?.url,
+                )
                 model.command(
                     io.github.chriexpe.papo.core.Action.Login("reader", "fixture"),
                     fixture.url,
@@ -2510,37 +2532,38 @@ class PapoUiTest {
                         .fetchSemanticsNodes()
                         .isNotEmpty() && model.readingPosition(fixture.url + "/me/incoming") != null
                 }
-                assertTrue(model.state.value.active!!.reading.hourglassTarget.isBlank())
+                assertTrue(model.activeReading()!!.hourglassTarget.isBlank())
                 val unexpected = java.util.concurrent.CopyOnWriteArrayList<String>()
                 val observer =
                     kotlinx.coroutines
                         .CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
                         .launch {
-                            model.state.collect { state ->
+                            model.state.collectLatest { state ->
                                 state.active
                                     ?.takeIf { it.url == fixture.url }
-                                    ?.reading
-                                    ?.let { read ->
-                                        if (read.hourglassTarget.isNotBlank())
-                                            unexpected.add(
-                                                "target=" +
-                                                    read.hourglassTarget +
-                                                    ", gap=" +
-                                                    read.gapStart +
-                                                    ".." +
-                                                    read.gapEnd +
-                                                    ", new=" +
-                                                    read.unreadStart
-                                            )
+                                    ?.let { server ->
+                                        model.reading(server).collect { read ->
+                                            if (read.hourglassTarget.isNotBlank())
+                                                unexpected.add(
+                                                    "target=" +
+                                                        read.hourglassTarget +
+                                                        ", gap=" +
+                                                        read.gapStart +
+                                                        ".." +
+                                                        read.gapEnd +
+                                                        ", new=" +
+                                                        read.unreadStart
+                                                )
+                                        }
                                     }
                             }
                         }
                 fun settle(id: String) {
                     compose.waitUntil(10_000) {
                         model.state.value.active?.let {
-                            it.reading.liveIds.contains(id) &&
+                            model.reading(it).value.liveIds.contains(id) &&
                                 it.conversation?.unread == false &&
-                                !it.reading.syncPending
+                                !model.reading(it).value.syncPending
                         } == true
                     }
                     compose
@@ -2608,16 +2631,21 @@ class PapoUiTest {
                 context.cacheDir
                     .resolve("incoming-read-failure.txt")
                     .writeText(
-                        "state=" +
+                        "failure=" +
+                            error.stackTraceToString() +
+                            "\nstate=" +
                             model.state.value +
                             "\nrequests=" +
                             fixture.requests +
                             "\nfailures=" +
                             fixture.failures +
                             "\n" +
-                            compose
-                                .onAllNodes(isRoot(), useUnmergedTree = true)
-                                .printToString(maxDepth = 20)
+                            runCatching {
+                                compose
+                                    .onAllNodes(isRoot(), useUnmergedTree = true)
+                                    .printToString(maxDepth = 20)
+                            }
+                                .getOrElse { "Hierarchy unavailable: " + it.message }
                     )
                 throw error
             } finally {
@@ -2634,7 +2662,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         for (i in 0 until 5) model.command(
             io.github.chriexpe.papo.core.Action.Send(
@@ -2647,7 +2675,7 @@ class PapoUiTest {
             )
         )
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.liveIds?.contains("head-arrival-4") == true
+            model.activeReading()?.liveIds?.contains("head-arrival-4") == true
         }
         compose.waitUntil(5000) {
             compose
@@ -2666,7 +2694,7 @@ class PapoUiTest {
         compose.onNodeWithTag("message-list").performScrollToKey("general-0")
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         for (i in 0 until 20) model.command(
             io.github.chriexpe.papo.core.Action.Send(
@@ -2680,7 +2708,7 @@ class PapoUiTest {
             )
         )
         compose.waitUntil(10_000) {
-            model.state.value.active?.reading?.liveIds?.contains("read-arrival-19") == true &&
+            model.activeReading()?.liveIds?.contains("read-arrival-19") == true &&
                 compose.onAllNodesWithTag("latest-count").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("latest-count").assert(hasAnyDescendant(hasText("20")))
@@ -2711,22 +2739,101 @@ class PapoUiTest {
     }
 
     @Test
-    fun newestClearsChannelBadgeButKeepsCatchUpUntilSecondLatestPress() {
+    fun advancingUnreadBoundaryDoesNotPublishOrRebuildTheMessageTimeline() {
         demo()
         lateinit var model: PapoViewModel
-        activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+        activity.onActivity { model = (it.application as PapoApplication).model }
+        // These are the demo reader's own messages. Keep unread messages beyond
+        // two large rows so exposing one boundary cannot finish the whole block.
+        for (n in listOf(2, 6)) {
+            model.command(
+                io.github.chriexpe.papo.core.Action.Edit(
+                    "general-$n",
+                    List(35) { "Message $n keeps the unread block larger than the viewport." }
+                        .joinToString("\n\n"),
+                    null,
+                )
+            )
         }
         model.command(
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-0"), false, "me")
         )
-        compose.waitUntil(5000) { model.state.value.active?.reading?.gapStart?.isBlank() == true }
+        model.command(io.github.chriexpe.papo.core.Action.BreakReadSpan("general"))
+        model.command(
+            io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
+        )
+        compose.waitUntil(5000) { model.activeReading()?.hasCatchUp == true }
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("hourglass-shortcut").assertIsDisplayed()
+        compose.waitForIdle()
+        val application = model.state.value
+        val boundary = model.activeReading()!!.gapEnd
+        assertTrue(boundary.isNotBlank())
+        // Move the real LazyColumn to the currently unread tail. Its normal
+        // visibility observer, native reducer and persistence remain active.
+        compose.onNodeWithTag("message-list").performScrollToKey(boundary)
+        compose.waitUntil(5000) { model.activeReading()?.gapEnd != boundary }
+        compose.waitForIdle()
+        assertTrue(
+            "The test must advance an unfinished unread block",
+            model.activeReading()!!.hasCatchUp,
+        )
+        org.junit.Assert.assertSame(
+            "A boundary advance must not emit application/timeline state",
+            application,
+            model.state.value,
+        )
+        org.junit.Assert.assertSame(
+            application.active!!.messages,
+            model.state.value.active!!.messages,
+        )
+    }
+
+    @Test
+    fun newestEntryKeepsTheHourglassWithoutMarkingTheReadHeadUnread() {
+        demo()
+        lateinit var model: PapoViewModel
+        activity.onActivity { model = (it.application as PapoApplication).model }
+        model.command(
+            io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-0"), false, "me")
+        )
+        model.command(io.github.chriexpe.papo.core.Action.BreakReadSpan("general"))
+        model.command(
+            io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
+        )
+        compose.waitUntil(5000) { model.activeReading()?.hasCatchUp == true }
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("message-general-9", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag("hourglass-shortcut").assertIsDisplayed()
+        compose.waitUntil(5000) {
+            val reading = model.activeReading()
+            reading != null && reading.gapEnd.isNotBlank() && reading.gapEnd != "general-9"
+        }
+        val before = model.activeReading()!!.hourglassTarget
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("message-general-9", useUnmergedTree = true).assertIsDisplayed()
+        assertEquals(before, model.activeReading()!!.hourglassTarget)
+        assertTrue(model.activeReading()!!.gapEnd != "general-9")
+    }
+
+    @Test
+    fun newestClearsChannelBadgeButKeepsCatchUpUntilSecondLatestPress() {
+        demo()
+        lateinit var model: PapoViewModel
+        activity.onActivity {
+            model = (it.application as PapoApplication).model
+        }
+        model.command(
+            io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-0"), false, "me")
+        )
+        compose.waitUntil(5000) { model.activeReading()?.gapStart?.isBlank() == true }
         model.command(io.github.chriexpe.papo.core.Action.BreakReadSpan("general"))
         model.command(
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
         )
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.hourglassTarget?.isNotBlank() == true
+            model.activeReading()?.hourglassTarget?.isNotBlank() == true
         }
         compose.onNodeWithText("geral").performClick()
         compose.waitUntil(5000) {
@@ -2738,7 +2845,7 @@ class PapoUiTest {
         compose.onNodeWithContentDescription("Clear catch-up block").assertIsDisplayed()
         compose.onNodeWithContentDescription("Clear catch-up block").performClick()
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.hourglassTarget?.isBlank() == true
+            model.activeReading()?.hourglassTarget?.isBlank() == true
         }
         compose.onNodeWithTag("hourglass-shortcut").assertDoesNotExist()
         compose.onNodeWithTag("latest-messages").assertDoesNotExist()
@@ -2749,8 +2856,18 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
+        // Keep a genuine unread remainder beyond the destination viewport.
+        // A short demo timeline otherwise fits completely after the jump.
+        model.command(
+            io.github.chriexpe.papo.core.Action.Edit(
+                "general-2",
+                List(35) { "A longer message keeps later unread messages off screen." }
+                    .joinToString("\n"),
+                null,
+            )
+        )
         compose.onNodeWithContentDescription("Client settings").performClick()
         compose.onNodeWithText("Appearance").performClick()
         compose
@@ -2767,7 +2884,7 @@ class PapoUiTest {
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
         )
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.hourglassTarget?.isNotBlank() == true
+            model.activeReading()?.hourglassTarget?.isNotBlank() == true
         }
         compose.onNodeWithText("geral").performClick()
         compose.onNodeWithTag("hourglass-shortcut").performClick()
@@ -2776,7 +2893,7 @@ class PapoUiTest {
             model.readingPosition(key)?.first?.let { it != "general-9" } == true
         }
         val anchor = model.readingPosition(key)!!.first
-        val remaining = model.state.value.active!!.reading.hourglassTarget
+        val remaining = model.activeReading()!!.hourglassTarget
         val beforeBounds =
             compose
                 .onNodeWithTag("message-$anchor", useUnmergedTree = true)
@@ -2791,7 +2908,7 @@ class PapoUiTest {
         compose.onNodeWithContentDescription("Back to conversations").performClick()
         compose.onNodeWithText("geral").performClick()
         compose.onNodeWithTag("message-$anchor", useUnmergedTree = true).assertIsDisplayed()
-        assertEquals(remaining, model.state.value.active!!.reading.hourglassTarget)
+        assertEquals(remaining, model.activeReading()!!.hourglassTarget)
         val reopenedBounds =
             compose
                 .onNodeWithTag("message-$anchor", useUnmergedTree = true)
@@ -2811,7 +2928,7 @@ class PapoUiTest {
                 .isNotEmpty()
         }
         compose.onNodeWithTag("message-$anchor", useUnmergedTree = true).assertIsDisplayed()
-        assertEquals(remaining, model.state.value.active!!.reading.hourglassTarget)
+        assertEquals(remaining, model.activeReading()!!.hourglassTarget)
         val recreatedBounds =
             compose
                 .onNodeWithTag("message-$anchor", useUnmergedTree = true)
@@ -2830,7 +2947,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         model.command(
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-0"), false, "me")
@@ -2840,7 +2957,7 @@ class PapoUiTest {
             io.github.chriexpe.papo.core.Action.Visible("general", listOf("general-9"), true, "me")
         )
         compose.waitUntil(5000) {
-            model.state.value.active?.reading?.hourglassTarget?.isNotBlank() == true
+            model.activeReading()?.hourglassTarget?.isNotBlank() == true
         }
         compose.onNodeWithContentDescription("Client settings").performClick()
         compose.onNodeWithText("Appearance").performClick()
@@ -2858,7 +2975,7 @@ class PapoUiTest {
         compose.onNodeWithTag("hourglass-shortcut").assertDoesNotExist()
         compose.onNodeWithTag("unread-gap-start").assertDoesNotExist()
         compose.onNodeWithTag("unread-gap-end").assertDoesNotExist()
-        assertTrue(model.state.value.active!!.reading.hourglassTarget.isNotBlank())
+        assertTrue(model.activeReading()!!.hourglassTarget.isNotBlank())
         compose.onNodeWithTag("message-list").performScrollToKey("general-0")
         compose.waitUntil(5000) {
             model.readingPosition("demo://papo/me/general")?.first?.let { it != "general-9" } ==
@@ -2875,7 +2992,7 @@ class PapoUiTest {
         demo()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         // Load the preference through the Activity's real observable settings source.
@@ -2937,14 +3054,9 @@ class PapoUiTest {
             var replied = false
             activity.onActivity { host ->
                 replied =
-                    androidx.lifecycle
-                        .ViewModelProvider(host)[PapoViewModel::class.java]
-                        .state
-                        .value
-                        .active
-                        ?.messages
-                        ?.any { it.content == "A swiped reply" && it.replyTo == "general-9" } ==
-                        true
+                    (host.application as PapoApplication).model.state.value.active?.messages?.any {
+                        it.content == "A swiped reply" && it.replyTo == "general-9"
+                    } == true
             }
             replied && compose.onAllNodesWithTag("composer-reply").fetchSemanticsNodes().isEmpty()
         }
@@ -3366,7 +3478,7 @@ class PapoUiTest {
                 .edit()
                 .putString("ui-density", "compact")
                 .apply()
-            val model = androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val model = (host.application as PapoApplication).model
             host.setContent {
                 val density = androidx.compose.ui.platform.LocalDensity.current
                 androidx.compose.runtime.CompositionLocalProvider(
@@ -3592,7 +3704,7 @@ class PapoUiTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         IncomingChatFixture(context).use { fixture ->
             try {
@@ -3639,7 +3751,7 @@ class PapoUiTest {
         chat()
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         val server = model.state.value.active!!
         model.send(server, "Hello @mention(<@ana>)", null) {}
@@ -3704,7 +3816,7 @@ class PapoUiTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         lateinit var model: PapoViewModel
         activity.onActivity {
-            model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+            model = (it.application as PapoApplication).model
         }
         IncomingChatFixture(context).use { a ->
             IncomingChatFixture(context).use { b ->
@@ -3802,7 +3914,7 @@ class PapoUiTest {
                     activity.close()
                     activity = ActivityScenario.launch(MainActivity::class.java)
                     activity.onActivity {
-                        model = androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]
+                        model = (it.application as PapoApplication).model
                     }
                     compose.waitUntil(10_000) { model.state.value.servers.size == 1 }
                     assertEquals(b.url, model.state.value.servers.single().url)

@@ -2015,6 +2015,83 @@ fn profile_images_are_bounded_partitioned_and_cleared() {
 }
 
 #[test]
+fn startup_metadata_restores_assets_before_network_and_keeps_the_own_avatar() {
+    let temp = TempDb::new("startup-assets");
+    let image = "aGVsbG8=".to_owned();
+    let emoji = CachedEmoji { id: "ok".into(), name: "ok".into(), blob: Some(image.clone()) };
+    {
+        let db = open(&temp);
+        db.submit("server", vec![
+            CacheOp::SetOwner {
+                owner_user_id: "00-me".into(), me_name: "Me".into(), me_username: "me".into(),
+            },
+            CacheOp::UpsertServer(CachedServer {
+                name: "Server".into(), description: None, owner_user_id: Some("00-me".into()),
+                me_user_id: Some("00-me".into()), me_display_name: Some("Me".into()),
+                me_username: Some("me".into()), updated_at: now_millis(),
+            }),
+            CacheOp::SetServerIcon(Some(image.clone())),
+            CacheOp::SetAvatar { user_id: "00-me".into(), blob: Some(image.clone()) },
+            CacheOp::ReplaceEmojis(vec![emoji.clone()]),
+        ]);
+        // A busy server must not evict the account avatar behind the startup header.
+        db.submit("server", (0..140).map(|n| CacheOp::SetAvatar {
+            user_id: format!("user-{n:03}"), blob: Some(image.clone()),
+        }).collect());
+        db.flush();
+    }
+    let db = open(&temp);
+    let metadata = db.load_metadata("server").unwrap();
+    assert_eq!(metadata.profile_images.avatars.len(), 128);
+    assert!(metadata.profile_images.avatars.iter().any(|(id, _)| id == "00-me"));
+    let mut store = crate::state::Store::default();
+    store.restore_cached_metadata(metadata);
+    assert_eq!(store.server.as_ref().unwrap().icon.as_deref(), Some(image.as_str()));
+    assert_eq!(store.avatars.get("00-me"), Some(&image));
+    assert_eq!(store.emojis[0].blob, emoji.blob);
+    assert_eq!(store.connection, crate::api::ws::Connection::Offline);
+    assert!(store.take_cache_ops().is_empty(), "A restore must not rewrite unchanged assets");
+    // A real removal wins, including against any later cached restore.
+    let profile: crate::api::models::UserProfile = serde_json::from_value(
+        serde_json::json!({"id":"00-me", "username":"me", "roles":[]})
+    ).unwrap();
+    store.apply(crate::api::net::Update::Profiles(vec![profile.clone()]));
+    store.take_cache_ops();
+    store.apply(crate::api::net::Update::Profiles(vec![profile]));
+    assert!(store.take_cache_ops().is_empty(), "Unchanged profiles must not rewrite member/avatar tables");
+    store.restore_cached_profile_images(db.load_metadata("server").unwrap().profile_images);
+    assert!(!store.avatars.contains_key("00-me"));
+    db.submit("server", vec![CacheOp::ClearCachedData]);
+    db.flush();
+    let cleared = db.load_metadata("server").unwrap();
+    assert!(cleared.profile_images.avatars.is_empty());
+    assert_eq!(cleared.emojis, None);
+}
+
+#[test]
+fn cached_forward_pages_require_a_continuous_anchor_and_keep_exact_order() {
+    let temp = TempDb::new("forward-cache");
+    let db = open(&temp);
+    db.submit("server", vec![CacheOp::ReplaceChannelSnapshot {
+        channel_id: "chat".into(), cached_at: now_millis(),
+        messages: (1..=5).map(|n| message(&format!("m{n}"), "chat", "cached", n * 1000)).collect(),
+    }]);
+    db.flush();
+    let load = |id: &str, at| db.load_newer_channel_page_async(
+        "server", "chat", (at, 0, id.into())
+    ).unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+    let page = load("m2", 2000);
+    assert_eq!(page.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m3", "m4", "m5"]);
+    assert!(!page.has_more);
+    assert!(load("missing", 2000).messages.is_empty(), "Do not skip a hole to reach cached rows");
+    assert!(load("m2", 1999).messages.is_empty(), "The full cursor, including time, must match");
+    let older = |id: &str| db.load_older_context_page_async("server", "chat", (4000, 0, id.into()))
+        .unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+    assert_eq!(older("m4").messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m1", "m2", "m3"]);
+    assert!(older("missing").messages.is_empty());
+}
+
+#[test]
 fn detached_pins_never_enter_the_timeline_even_after_unpinning() {
     let temp = TempDb::new("detached-pin-timeline");
     let db = open(&temp);

@@ -9,8 +9,6 @@ import java.time.ZoneId
  */
 internal fun messageContinuations(
     messages: List<ChatMessage>,
-    breakBefore: Set<String>,
-    breakAfter: Set<String>,
     zone: ZoneId = ZoneId.systemDefault(),
 ): Set<String> {
     fun identity(message: ChatMessage): Pair<String, String> =
@@ -23,9 +21,7 @@ internal fun messageContinuations(
                 current.at >= previous.at &&
                 current.at - previous.at < 5 * 60 * 1000 &&
                 Instant.ofEpochMilli(previous.at).atZone(zone).toLocalDate() ==
-                    Instant.ofEpochMilli(current.at).atZone(zone).toLocalDate() &&
-                current.id !in breakBefore &&
-                previous.id !in breakAfter
+                    Instant.ofEpochMilli(current.at).atZone(zone).toLocalDate()
         }
         .map { (_, current) -> current.id }
         .toSet()

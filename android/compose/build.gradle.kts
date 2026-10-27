@@ -77,8 +77,16 @@ android {
             isMinifyEnabled = false
             if (releaseKeystore != null) signingConfig = signingConfigs.getByName("release")
         }
+        create("benchmark") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            applicationIdSuffix = ".compose"
+            versionNameSuffix = "-benchmark"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
         all {
-            val debug = name == "debug"
+            val debug = name != "release"
             val config = firebaseConfig(debug)
             val configured = config.values.all { it != null }
             val required =
@@ -152,11 +160,11 @@ dependencies {
 // -PpapoAbis=x86_64 speeds up emulator-only builds; default APKs support both.
 // Keep native debug/release artifacts and bindings separate: the official
 // release must not accidentally package a development-profile Rust library.
-listOf("debug", "release").forEach { variant ->
-    val release = variant == "release"
-    val suffix = if (release) "Release" else ""
-    val nativeDirectory =
-        layout.buildDirectory.dir(if (release) "rustReleaseJniLibs" else "rustJniLibs")
+listOf("debug", "release", "benchmark").forEach { variant ->
+    val release = variant != "debug"
+    val capitalized = variant.replaceFirstChar { it.uppercaseChar() }
+    val suffix = if (variant == "debug") "" else capitalized
+    val nativeDirectory = layout.buildDirectory.dir("rust${suffix}JniLibs")
     val generatedDirectory = layout.buildDirectory.dir("generated/uniffi/$variant")
     android.sourceSets[variant].jniLibs.setSrcDirs(listOf(nativeDirectory.get().asFile))
     android.sourceSets[variant].kotlin.srcDir(generatedDirectory.get().asFile)
@@ -214,7 +222,7 @@ listOf("debug", "release").forEach { variant ->
             commandLine(
                 "bash",
                 "scripts/android-compose-native.sh",
-                variant,
+                if (release) "release" else "debug",
                 nativeDirectory.get().asFile.absolutePath,
                 papoAbis.joinToString(","),
             )
@@ -260,9 +268,7 @@ listOf("debug", "release").forEach { variant ->
                 generatedDirectory.get().asFile.absolutePath,
             )
         }
-    tasks
-        .matching { it.name == if (release) "preReleaseBuild" else "preDebugBuild" }
-        .configureEach { dependsOn(bindings) }
+    tasks.matching { it.name == "pre${capitalized}Build" }.configureEach { dependsOn(bindings) }
 }
 
 // Format only checked-in Compose sources. UniFFI output belongs to its generator.

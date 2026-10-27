@@ -142,8 +142,11 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     internal val mediaCache = MediaCache.get(application)
     private val waveforms = AudioWaveforms(application, viewModelScope)
     private val snapshots = linkedMapOf<String, ServerState>()
-    private val mutableState = MutableStateFlow(PapoState())
-    val state = mutableState.asStateFlow()
+    private val publications = ChatStatePublication()
+    val state = publications.state
+
+    internal fun reading(server: ServerState) = publications.reading(server)
+
     internal val voiceCalls =
         VoiceCallController(
             viewModelScope,
@@ -294,12 +297,15 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun publish(error: String = mutableState.value.error, opening: Boolean = false) {
-        mutableState.value = PapoState(snapshots.values.toList(), activeUrl, error, opening)
+    private fun publish(error: String = state.value.error, opening: Boolean = false): Boolean {
+        val changed =
+            publications.publish(PapoState(snapshots.values.toList(), activeUrl, error, opening))
+        if (!changed) return false
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
             voiceCalls.synchronize(state.value.servers)
             AndroidCallRuntime.sync(state.value.servers, voiceCalls.state.value)
         }
+        return true
     }
 
     private fun open(input: String, activate: Boolean = true): Boolean =
@@ -361,7 +367,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         try {
             for ((url, handle) in handles) {
                 handle.notificationVisibility(url == visibleConversationUrl)
-                val snapshot = handle.poll()
+                val snapshot = handle.poll().retainPresentation(snapshots[url])
                 snapshots[url] = snapshot
                 if (!snapshot.isDemo) MessageAlerts.setOwner(url, snapshot.me)
                 if (
@@ -398,16 +404,20 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             syncNotifications()
-            if (snapshots.values.any { it.reading.syncPending } && readRetry?.isActive != true) {
-                readRetry =
-                    viewModelScope.launch(dispatcher) {
-                        kotlinx.coroutines.delay(10_000)
-                        readRetry = null
-                        signals.trySend(Unit)
-                    }
-            }
+            scheduleReadRetry()
         } catch (e: Exception) {
             publish(error = e.message ?: ui(R.string.could_not_update_messages))
+        }
+    }
+
+    private fun scheduleReadRetry() {
+        if (snapshots.values.any { it.reading.syncPending } && readRetry?.isActive != true) {
+            readRetry =
+                viewModelScope.launch(dispatcher) {
+                    kotlinx.coroutines.delay(10_000)
+                    readRetry = null
+                    signals.trySend(Unit)
+                }
         }
     }
 
@@ -751,17 +761,77 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    internal fun loadHistory(server: ServerState, newer: Boolean) =
+        command(
+            if (newer) Action.Newer(server.selectedChannel) else Action.Older,
+            url = server.url,
+            expectedConversation = server.me to server.selectedChannel,
+        )
+
     fun command(
         action: Action,
         url: String = state.value.activeUrl,
         onFailure: () -> Unit = {},
+        expectedConversation: Pair<String, String>? = null,
         onSuccess: () -> Unit = {},
     ) =
         viewModelScope.launch(dispatcher) {
             try {
                 val handle = handles[url] ?: error(ui(R.string.server_is_closed))
-                handle.dispatch(action)
-                poll()
+                // A prefetch queued before navigation must not load the next chat's history.
+                if (
+                    expectedConversation != null &&
+                        snapshots[url]?.let { it.me to it.selectedChannel } != expectedConversation
+                )
+                    return@launch
+                if (action is Action.Visible) {
+                    val update =
+                        handle.observeViewport(
+                            action.channelId,
+                            action.ids,
+                            action.atLatest,
+                            action.ownerUserId,
+                        )
+                    val previous = snapshots[url]
+                    if (
+                        update != null &&
+                            previous != null &&
+                            previous.me == update.ownerUserId &&
+                            previous.selected == update.channelId
+                    ) {
+                        if (previous.reading.liveIds != update.reading.liveIds) {
+                            signals.trySend(Unit)
+                        } else {
+                            val next = previous.withViewport(update)
+                            if (next !== previous) {
+                                snapshots[url] = next
+                                if (
+                                    (previous.conversation?.unread != next.conversation?.unread ||
+                                        previous.reading.mentions != next.reading.mentions ||
+                                        previous.notificationCount != next.notificationCount) &&
+                                        next.conversation?.unread == false &&
+                                        next.reading.mentions.isEmpty() &&
+                                        next.me.isNotBlank() &&
+                                        !next.isDemo
+                                )
+                                    MessageAlerts.clear(url, next.me, next.selected)
+                                if (publish()) {
+                                    launch(kotlinx.coroutines.Dispatchers.Main) {
+                                        notificationInbox.synchronize(
+                                            state.value.servers.filter {
+                                                it.screen == "chat" && it.me.isNotBlank()
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    scheduleReadRetry()
+                } else {
+                    handle.dispatch(action)
+                    poll()
+                }
                 launch(kotlinx.coroutines.Dispatchers.Main) { onSuccess() }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -1408,7 +1478,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             ?.serverUrl
             ?.takeIf { it != state.value.activeUrl }
             ?.let { command(Action.ClearError, it) }
-        mutableState.value = mutableState.value.copy(error = "")
+        publications.clearError()
         command(Action.ClearError)
     }
 

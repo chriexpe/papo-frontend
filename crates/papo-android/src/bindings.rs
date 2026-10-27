@@ -61,6 +61,27 @@ pub(super) enum Backend {
     Demo(Box<demo::Demo>),
 }
 
+impl Backend {
+    pub(super) fn dispatch(&mut self, action: Action) -> Result<(), String> {
+        match self {
+            Backend::Live(client) => {
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                let before = client.reading_debug_state();
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                let detail = client.reading_debug_action(&action);
+                let result = client.dispatch(action);
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                {
+                    let after = client.reading_debug_state();
+                    client.reading_debug.record("action", before, after, detail);
+                }
+                result
+            }
+            Backend::Demo(client) => client.dispatch(action),
+        }
+    }
+}
+
 #[uniffi::export]
 impl NativeClient {
     #[uniffi::constructor]
@@ -117,26 +138,11 @@ impl NativeClient {
             .backend
             .lock()
             .map_err(|_| "Native client lock failed".to_owned())?;
-        match backend
+        backend
             .as_mut()
             .ok_or_else(|| "Client is closed".to_owned())?
-        {
-            Backend::Live(client) => {
-                #[cfg(all(debug_assertions, target_os = "android"))]
-                let before = client.reading_debug_state();
-                #[cfg(all(debug_assertions, target_os = "android"))]
-                let detail = client.reading_debug_action(&action);
-                let result = client.dispatch(action);
-                #[cfg(all(debug_assertions, target_os = "android"))]
-                {
-                    let after = client.reading_debug_state();
-                    client.reading_debug.record("action", before, after, detail);
-                }
-                result
-            }
-            Backend::Demo(client) => client.dispatch(action),
-        }
-        .map_err(CoreError::from)
+            .dispatch(action)
+            .map_err(CoreError::from)
     }
 
     /// Explicitly stops transport even if a foreign reference is retained by a
@@ -457,9 +463,11 @@ pub struct ClientSnapshot {
     pub events: Vec<DeliveryEvent>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, uniffi::Record)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadingView {
+    #[serde(default)]
+    pub has_catch_up: bool,
     pub gap_start: String,
     pub gap_end: String,
     pub hourglass_target: String,

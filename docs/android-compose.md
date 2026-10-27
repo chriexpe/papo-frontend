@@ -34,7 +34,7 @@ If multiple devices are connected, set `ANDROID_SERIAL` before installing.
 Android Studio can open `android` and run the `compose` module. Gradle builds
 the Rust adapter and generates Kotlin bindings automatically. UniFFI is pinned
 to 0.32.2, and the generator reads metadata from the exact library packaged in
-the APK. Generated sources stay under `compose/build/generated/uniffi/{debug,release}`. A direct build supports both ABIs by default:
+the APK. Generated sources stay under `compose/build/generated/uniffi/{debug,release,benchmark}`. A direct build supports both ABIs by default:
 
 ```bash
 cd android
@@ -51,6 +51,13 @@ variant. Signing uses the existing `PAPO_ANDROID_KEYSTORE`,
 The tagged release workflow now builds and signs Compose with the existing
 artifact name, package ID and Firebase secrets; it requires complete Firebase
 configuration. PR builds upload a separate debug APK.
+
+For scrolling measurements, `./gradlew :compose:assembleBenchmark -PpapoAbis=arm64-v8a`
+builds optimized Kotlin and release-profile Rust with shell profiling enabled.
+This non-debuggable variant uses the development package ID, Firebase identity
+and debug signing key, so it can replace a local debug installation while
+preserving its data. Its APK is `compose/build/outputs/apk/benchmark/compose-benchmark.apk`.
+The normal release variant does not enable shell profiling.
 
 ## First launch and demo
 
@@ -339,10 +346,45 @@ mentions, attachments and the selected reply.
 Loaded originals open immediately, including offline. Older originals use the
 shared core’s cancellable message-context request and reconciliation tickets;
 no second history fetcher lives in Kotlin. A loading pill offers Cancel, and
-missing/deleted originals report a clear error. Older contexts expose Load later
-messages plus Latest messages to return to the live window. Sending successfully
+missing/deleted originals report a clear error. Older contexts page automatically
+in both directions; Latest messages returns to the live window. Sending successfully
 also returns to latest. Navigation commands are scoped to their conversation so
 a delayed callback cannot reset another conversation’s history.
+
+## Cache-first startup and history
+
+Startup metadata restores the bounded Turso profile-image and emoji tables before
+starting the transport. The first projection can identify the saved server icon,
+avatars and custom emojis without waiting for REST bootstrap. Authoritative
+updates still replace changed assets and remove deleted ones. The 128-avatar
+retention limit protects the signed-in user's avatar. Server icons and avatars
+use stable server/account/revision identities in Coil's shared bitmap cache.
+Profile banners consume the first cached image emission rather than waiting for
+the image flow to finish refreshing.
+
+Chat history has no Load earlier/later buttons. A `snapshotFlow` observer requests
+pages near either end of the reverse-layout list, without feeding pixel offsets
+into message composition. Requests are scoped to server, account and channel and
+wait for initial positioning and hourglass navigation. Stable message keys retain
+the visible anchor when pages are added at either end.
+
+Online paging starts HTTP and reads a connected local page before publishing.
+Cached rows are provisional and never advance the HTTP cursor. The database must
+contain the exact timestamp/nanosecond/ID anchor in continuous history before it
+can extend a window; a detached pin or disjoint cache is not a bridge over a gap.
+HTTP pages reconcile edits and missing rows, then replay concurrent live mutations.
+Detached reply windows keep separate cursors for both directions and do not become
+continuous cached history. Offline paging continues through retained local rows.
+Retention remains 500 confirmed messages per channel, with 100-row database pages.
+
+Unchanged message upserts skip SQL updates while still promoting newly proven
+chronological rows. Unchanged member/profile refreshes skip member-table rewrites.
+The existing presentation retention and state publication keep equal message and
+resource objects, and unchanged public-image revalidation emits no replacement
+bytes. Attachments, images/GIFs, external avatars, audio/video ranges and waveform
+data continue using the existing shared, account-scoped 256 MiB media LRU; a
+restart does not discard it. This is functional cache/pagination work, not a claim
+that physical-device scroll performance has been resolved.
 
 ## Scope
 
@@ -641,14 +683,48 @@ become mention targets. A mention is removed when exposed, or when the channel
 is acknowledged at the live head. Cached mention timestamps preserve the order
 of targets whose messages are not loaded.
 
+Viewport observations use a typed read-state response rather than polling every
+server and rebuilding message, member and resource projections. The normal core
+reducer still receives every report, persists read spans and sends read receipts.
+Android patches only reading state, channel badges and the notification count,
+retaining message/resource objects. Account, channel and live-message IDs guard
+against applying a response to a stale timeline. Transport wakes and other
+commands continue to drain updates through full snapshots.
+
+Android publishes reading progress on a separate server/account/channel stream.
+The reading field of an application snapshot is only a seed; UI consumers use
+`PapoViewModel.reading(server)` for current progress. A boundary-only change does
+not emit application/timeline state or synchronize calls and the notification
+inbox. Full polls also update the reading stream without republishing content
+when only reading differs. Badge/count changes still publish normally.
+Only the marker composition observes moving boundary IDs. The conversation
+observes a derived set of control values (hourglass visibility, mentions, seeking
+and live IDs), so moving the boundary does not rebuild the list or composer.
+
+Message rendering retains its account/display resources independently of reading,
+badge and background-work changes. Full snapshots retain equal message/resource
+objects, while edits, reply updates and changed display resources still invalidate
+the affected rendering. Timeline ID lookups are rebuilt when messages change,
+rather than on every scroll layout. Message actions resolve the current snapshot.
+Inherited avatar/author contexts use the same retained display resources, and
+stable profile callbacks forward to the latest navigation handlers.
+
+Unread and new-message indicators are overlays anchored to visible message edges.
+Moving a boundary changes neither row height nor author grouping. Pixel movement
+repositions the overlay during placement; labels retain accessibility descriptions
+and do not intercept message taps. All viewport read reports remain immediate.
+
 While reading behind the head, the down arrow counts incoming messages that
 have not appeared in the viewport. Its first press opens the oldest remaining
 arrival. The next press jumps to the live head, preserving skipped content as
 catch-up history; once at the head, another deliberate press clears the block.
 A small arrival batch that is fully exposed must not create a phantom block.
-If an older catch-up interval still exists, newer skipped content extends the
-single interval rather than dropping the older unread content. The resulting
-interval can include already-seen messages between the two skipped sections.
+Only one catch-up interval is retained. Skipping a newer unread section replaces
+an older unfinished interval, starting after the saved previously seen head.
+Opening at newest captures that boundary before advancing the head. The newer
+boundary excludes the destination viewport's read messages, so the unread-end
+marker cannot be attached below the newest message just exposed. An unloaded
+interval keeps the hourglass available while history resolves its destination.
 
 Hourglass navigation and its markers use the same unread boundary. When the
 prefix is outside the loaded window, the existing cache/server history

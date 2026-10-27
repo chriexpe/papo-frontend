@@ -171,33 +171,42 @@ fn project_reaction_details(store: &Store) -> Vec<Value> {
     }).collect()
 }
 
-fn project_reading(store: &Store, url: &str) -> Value {
+pub(crate) fn reading_view(store: &Store, url: &str) -> crate::bindings::ReadingView {
     let channel = &store.selected_channel;
     let range = store.hourglass_range(channel);
     let initializing = store
         .pending_remote_read_anchors()
         .iter()
         .any(|(pending, _)| pending == channel);
-    json!({
-        "gapStart": if store.catch_up_needs_history(channel) {
+    crate::bindings::ReadingView {
+        has_catch_up: store.has_catch_up(channel),
+        gap_start: if store.catch_up_needs_history(channel) {
             String::new()
         } else {
-            range.as_ref().map(|range| range.0.clone()).unwrap_or_default()
+            range
+                .as_ref()
+                .map(|range| range.0.clone())
+                .unwrap_or_default()
         },
-        "gapEnd": range.map(|range| range.1).unwrap_or_default(),
-        "hourglassTarget": store.hourglass_navigation_target(channel).unwrap_or_default(),
-        "unreadStart": store.first_badge_unread(channel).unwrap_or_default(),
-        "mentions": store.unread_mention_ids(channel),
-        "syncPending": !url.starts_with("demo:") && (
-            !store.pending_read_receipts().is_empty()
-            || !store.pending_notification_reads().is_empty()
-            || initializing
-        ),
-        "initializing": initializing,
-        "liveIds": store.messages.iter()
+        gap_end: range.map(|range| range.1).unwrap_or_default(),
+        hourglass_target: store
+            .hourglass_navigation_target(channel)
+            .unwrap_or_default(),
+        unread_start: store.first_badge_unread(channel).unwrap_or_default(),
+        mentions: store.unread_mention_ids(channel),
+        sync_pending: !url.starts_with("demo:")
+            && (!store.pending_read_receipts().is_empty()
+                || !store.pending_notification_reads().is_empty()
+                || initializing),
+        initializing,
+        live_ids: store
+            .messages
+            .iter()
             .filter(|message| message.channel_id == *channel && !message.pending)
-            .map(|message| message.id.clone()).collect::<Vec<_>>(),
-    })
+            .map(|message| message.id.clone())
+            .collect(),
+        seeking_catch_up: false,
+    }
 }
 
 pub(crate) fn project(store: &Store, url: &str, key: &str) -> Value {
@@ -320,7 +329,7 @@ pub(crate) fn project(store: &Store, url: &str, key: &str) -> Value {
         "canLoadNewer": store.can_load_newer(&store.selected_channel),
         "navigationSerial": 0,
         "navigationTarget": "",
-        "reading": project_reading(store, url),
+        "reading": reading_view(store, url),
         "loadingOlder": store.loading_older(&store.selected_channel),
         "timeline": format!("{:?}", store.timeline_status(&store.selected_channel)).to_lowercase(),
     });

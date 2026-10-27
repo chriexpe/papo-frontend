@@ -34,7 +34,6 @@ import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.last
 
 internal data class ProfileContext(val server: ServerState, val model: PapoViewModel)
 
@@ -86,6 +85,7 @@ internal fun UserAvatar(
                     onSuccess = { loaded = true },
                     onError = { loaded = false },
                     retentionKey = "avatar/$id/$revision",
+                    eager = true,
                 )
         }
     }
@@ -100,15 +100,17 @@ internal fun ProfileBanner(
     modifier: Modifier,
 ) {
     val context = LocalContext.current
-    val image =
-        remember(server.url, server.me, id, revision) {
-            if (revision.isBlank()) null
-            else
-                CachedImage("${server.url}/${server.me}/banner/$id/$revision") {
+    val image by
+        produceState<ByteArray?>(null, server.url, server.me, id, revision) {
+            value = null
+            if (revision.isNotBlank())
+                try {
                     MediaCache.get(context)
                         .images(model.mediaRequest(server.url, MediaResource.ProfileBanner(id)))
-                        .last()
-                }
+                        .collect { bytes -> value = bytes }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {}
         }
     Box(modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = .16f))) {
         image?.let {
@@ -540,6 +542,7 @@ internal fun ExternalAvatar(
                 onError = { loaded = false },
                 retentionKey =
                     "external/${author.source}/${author.id}/$url/${bytes?.contentHashCode()}",
+                eager = true,
             )
         }
     }

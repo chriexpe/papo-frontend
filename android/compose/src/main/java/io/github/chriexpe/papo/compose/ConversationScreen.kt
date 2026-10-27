@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import dev.chrisbanes.haze.hazeSource
 import io.github.chriexpe.papo.core.Action
@@ -65,6 +66,9 @@ import kotlinx.coroutines.launch
 internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBack: () -> Unit) {
     val channel = server.conversation ?: return
     val draftKey = "${server.url}/${server.me}/${channel.id}"
+    val readingState = remember(draftKey) { model.reading(server) }.collectAsStateWithLifecycle()
+    val readingControls by rememberReadingControls(readingState)
+    val timeline = remember(server.messages) { MessageTimelineIndex(server.messages) }
     var composer by
         rememberSaveable(draftKey, stateSaver = ComposerDraft.Saver) {
             mutableStateOf(
@@ -186,24 +190,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var latestPhase by remember(draftKey) { mutableStateOf(LatestPhase.FirstNew) }
     var knownLive by remember(draftKey) { mutableStateOf(server.reading.liveIds) }
     var arrived by remember(draftKey) { mutableStateOf(setOf<String>()) }
-    // The divider reflects the shared unread cursor. A remembered arrival ID
-    // outlives its acknowledgement and creates a second, stale unread marker.
-    val entryUnread = server.reading.unreadStart
-    val groupedMessages =
-        remember(
-            server.messages,
-            entryUnread,
-            server.reading.gapStart,
-            server.reading.gapEnd,
-            appearance.catchUpHourglass,
-        ) {
-            messageContinuations(
-                server.messages,
-                setOf(entryUnread) +
-                    if (appearance.catchUpHourglass) setOf(server.reading.gapStart) else emptySet(),
-                if (appearance.catchUpHourglass) setOf(server.reading.gapEnd) else emptySet(),
-            )
-        }
+    val groupedMessages = remember(timeline) { messageContinuations(timeline.messages) }
     val readingBlocked =
         attachmentOptions != null ||
             embedEditor ||
@@ -220,8 +207,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             gifPicker ||
             reactionPeople != null
     val currentBlocked by rememberUpdatedState(readingBlocked)
-    LaunchedEffect(draftKey, server.reading.liveIds) {
-        val live = server.reading.liveIds
+    LaunchedEffect(draftKey, readingControls.liveIds) {
+        val live = readingControls.liveIds
         val previousTail = knownLive.lastOrNull()
         val index = live.indexOf(previousTail)
         val added =
@@ -232,17 +219,23 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     }
     val clipboard = LocalClipboardManager.current
     val latestServer by rememberUpdatedState(server)
-    val viewport =
-        with(density) {
-            Rect(
-                listBounds.left,
-                listBounds.top + (headerHeight + 8.dp).toPx(),
-                listBounds.right,
-                (listBounds.bottom - (composerHeight + 8.dp).toPx()).coerceAtLeast(
-                    listBounds.top + (headerHeight + 8.dp).toPx()
-                ),
-            )
-        }
+    val latestTimeline by rememberUpdatedState(timeline)
+    HistoryPrefetch(
+        listState,
+        draftKey,
+        ready =
+            (positionReady || server.messages.isEmpty()) &&
+                !server.loadingContext &&
+                !readingControls.seekingCatchUp,
+        canLoadOlder = server.canLoadOlder,
+        canLoadNewer = server.canLoadNewer,
+        loading = server.loadingOlder,
+        loadOlder = { model.loadHistory(server, newer = false) },
+        loadNewer = { model.loadHistory(server, newer = true) },
+    )
+    // Content scrolls beneath the translucent header and composer and stays visible there, so
+    // media must load for the whole list rather than only the gap between the two bars.
+    val viewport = listBounds
     val visibleRows by remember {
         derivedStateOf {
             val layout = listState.layoutInfo
@@ -261,7 +254,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         snapshotFlow {
             Triple(
                 listState.layoutInfo,
-                latestServer.messages.asReversed().map { it.id },
+                latestTimeline.reversedIds,
                 viewedMedia == null &&
                     attachmentOptions == null &&
                     !embedEditor &&
@@ -316,7 +309,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         draftKey,
         server.loadingContext,
         server.timeline,
-        server.messages.map { it.id },
+        timeline.orderedIds,
     ) {
         if (positionReady || server.messages.isEmpty() || server.loadingContext)
             return@LaunchedEffect
@@ -339,7 +332,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 return@LaunchedEffect
             }
             listState.scrollToItem(
-                server.messages.lastIndex - position + if (server.canLoadNewer) 1 else 0,
+                server.messages.lastIndex - position,
                 saved.second,
             )
         } else listState.scrollToItem(0)
@@ -353,13 +346,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             var wasAllowed = false
             snapshotFlow {
                 val current = latestServer
+                val currentReading = readingState.value
                 val layout = listState.layoutInfo
                 val height =
                     (layout.viewportSize.height -
                             layout.beforeContentPadding -
                             layout.afterContentPadding)
                         .coerceAtLeast(0)
-                val messages = current.messages.map { it.id }.toSet()
+                val messages = latestTimeline.ids
                 val exposed =
                     layout.visibleItemsInfo
                         .filter { row ->
@@ -378,11 +372,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         !returningLatest &&
                         !currentBlocked &&
                         !current.loadingContext &&
-                        !current.reading.seekingCatchUp &&
+                        !currentReading.seekingCatchUp &&
                         (current.navigationTarget.isBlank() ||
                             handledNavigation == current.navigationSerial) &&
                         (current.connection != "online" ||
-                            current.timeline == "fresh" && !current.reading.initializing)
+                            current.timeline == "fresh" && !currentReading.initializing)
                 val anchor =
                     if (!listState.isScrollInProgress)
                         layout.visibleItemsInfo
@@ -468,7 +462,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         followingLatest = true
         jumping = true
         model.command(Action.BreakReadSpan(channel.id), url = server.url)
-        if (server.browsingHistory || server.loadingContext || server.reading.seekingCatchUp) {
+        if (server.browsingHistory || server.loadingContext || readingControls.seekingCatchUp) {
             returningLatest = true
             model.command(Action.Latest(channel.id), url = server.url)
         } else
@@ -487,12 +481,12 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 nearBottom &&
                 !server.browsingHistory &&
                 latestPhase == LatestPhase.ClearCatchUp &&
-                server.reading.hourglassTarget.isNotBlank()
+                readingControls.hasCatchUp
         ) {
             model.command(Action.ClearCatchUp(channel.id, server.me), url = server.url)
             latestPhase = LatestPhase.FirstNew
         } else if (arrived.isNotEmpty() && latestPhase == LatestPhase.FirstNew) {
-            val target = server.reading.liveIds.firstOrNull { it in arrived } ?: arrived.first()
+            val target = readingControls.liveIds.firstOrNull { it in arrived } ?: arrived.first()
             latestPhase = LatestPhase.Latest
             jumpToMessage(target)
         } else jumpToLatest(armClear = true)
@@ -502,8 +496,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         server.navigationSerial,
         server.navigationTarget,
         server.loadingContext,
-        server.messages.map { it.id },
-        server.canLoadNewer,
+        timeline.orderedIds,
     ) {
         if (server.navigationTarget.isBlank()) {
             handledNavigation = server.navigationSerial
@@ -512,7 +505,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         if (server.navigationSerial == handledNavigation) return@LaunchedEffect
         val position = server.messages.indexOfFirst { it.id == server.navigationTarget }
         if (position < 0) return@LaunchedEffect
-        val index = server.messages.lastIndex - position + if (server.canLoadNewer) 1 else 0
+        val index = server.messages.lastIndex - position
         val layout = listState.layoutInfo
         val item = layout.visibleItemsInfo.firstOrNull { it.key == server.navigationTarget }
         val available =
@@ -549,13 +542,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         returningLatest,
         server.browsingHistory,
         server.loadingContext,
-        server.reading.seekingCatchUp,
+        readingControls.seekingCatchUp,
     ) {
         if (
             returningLatest &&
                 !server.browsingHistory &&
                 !server.loadingContext &&
-                !server.reading.seekingCatchUp
+                !readingControls.seekingCatchUp
         ) {
             withFrameNanos {}
             try {
@@ -678,6 +671,53 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
 
+    val presentation = rememberMessagePresentation(server)
+    val replyMessages = timeline.byId
+    val currentInteraction =
+        rememberUpdatedState<(TimelineInteraction) -> Unit>(
+            handler@{ action ->
+                val current = latestServer
+                fun message(id: String) = current.messages.firstOrNull { it.id == id }
+                fun emoji(reaction: Reaction) =
+                    EmojiChoice(
+                        reaction.emoji,
+                        reaction.custom,
+                        current.emojis.firstOrNull { it.id == reaction.emoji }?.name
+                            ?: reaction.emoji,
+                    )
+                when (action) {
+                    is TimelineInteraction.Reply -> beginReply(action.id, true)
+                    is TimelineInteraction.Mention -> {
+                        updateComposer(composer.mention(action.person))
+                        if (!recording) {
+                            composerFocus.requestFocus()
+                            keyboard?.show()
+                        }
+                    }
+                    is TimelineInteraction.Jump -> openOriginal(action.id)
+                    is TimelineInteraction.Player -> activeMedia = action.id
+                    is TimelineInteraction.Select -> {
+                        val target = message(action.id) ?: return@handler
+                        selectedEmbedIndex =
+                            action.embed?.let { id ->
+                                target.embeds
+                                    .filter { it.sourceType == "custom" }
+                                    .indexOfFirst { it.id == id }
+                                    .takeIf { it >= 0 }
+                            }
+                        selected = target
+                    }
+                    is TimelineInteraction.React ->
+                        message(action.id)?.let {
+                            model.react(current, it, emoji(action.reaction))
+                        }
+                    is TimelineInteraction.People ->
+                        reactionPeople = action.id to emoji(action.reaction)
+                }
+            }
+        )
+    val interactions = remember(draftKey) { TimelineInteractions(currentInteraction) }
+
     CompositionLocalProvider(
         LocalMediaViewer provides
             { media ->
@@ -712,122 +752,42 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             else ui(R.string.messages_will_appear_when_the_server_is_reachable),
                         )
                     }
-                if (server.canLoadNewer)
-                    item("newer") {
-                        TextButton(
-                            onClick = { model.command(Action.Newer(channel.id), url = server.url) },
-                            enabled = !server.loadingOlder,
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        ) {
-                            Text(ui(R.string.load_later_messages))
-                        }
-                    }
-                items(server.messages.asReversed(), key = { it.id }) { message ->
-                    CompositionLocalProvider(
-                        LocalMediaViewport provides viewport,
-                        LocalTimelineMediaVisible provides
-                            (message.id in visibleRows &&
+                items(timeline.reversedMessages, key = { it.id }) { message ->
+                    TimelineMessage(
+                        message,
+                        presentation,
+                        replyMessages[message.replyTo],
+                        model,
+                        grouped = message.id in groupedMessages,
+                        canReply =
+                            !recording &&
+                                !submitting &&
+                                !attachmentDraft.sending &&
+                                !overlayBlocking &&
+                                viewedMedia == null,
+                        highlighted = highlighted?.first == message.id,
+                        viewport = viewport,
+                        mediaVisible =
+                            message.id in visibleRows &&
                                 viewedMedia == null &&
                                 !embedEditor &&
                                 edit == null &&
                                 !pins &&
-                                !overlayBlocking),
-                        LocalMediaRowId provides message.id,
-                    ) {
-                        Column {
-                            if (
-                                appearance.catchUpHourglass && message.id == server.reading.gapStart
-                            )
-                                UnreadDivider(ui(R.string.unread_below), "unread-gap-start")
-                            else if (message.id == entryUnread)
-                                UnreadDivider(ui(R.string.new_messages), "unread-new")
-                            MessageRow(
-                                message,
-                                server,
-                                model,
-                                grouped = message.id in groupedMessages,
-                                canReply =
-                                    !recording &&
-                                        !submitting &&
-                                        !attachmentDraft.sending &&
-                                        !overlayBlocking &&
-                                        viewedMedia == null,
-                                onReply = { beginReply(message.id, true) },
-                                highlight = highlighted?.first == message.id,
-                                onMention = { person ->
-                                    updateComposer(composer.mention(person))
-                                    if (!recording) {
-                                        composerFocus.requestFocus()
-                                        keyboard?.show()
-                                    }
-                                },
-                                onJump = ::openOriginal,
-                                onActions = {
-                                    selectedEmbedIndex = null
-                                    selected = message
-                                },
-                                onReaction = { r ->
-                                    model.react(
-                                        server,
-                                        message,
-                                        EmojiChoice(
-                                            r.emoji,
-                                            r.custom,
-                                            server.emojis.firstOrNull { it.id == r.emoji }?.name
-                                                ?: r.emoji,
-                                        ),
-                                    )
-                                },
-                                onReactionPeople = { r ->
-                                    reactionPeople =
-                                        message.id to
-                                            EmojiChoice(
-                                                r.emoji,
-                                                r.custom,
-                                                server.emojis.firstOrNull { it.id == r.emoji }?.name
-                                                    ?: r.emoji,
-                                            )
-                                },
-                                media = {
-                                    MessageMedia(
-                                        message,
-                                        server,
-                                        model,
-                                        activeMedia,
-                                        { activeMedia = it },
-                                        {
-                                            selectedEmbedIndex = null
-                                            selected = message
-                                        },
-                                        onEmbedActions = { embed ->
-                                            selectedEmbedIndex =
-                                                message.embeds
-                                                    .filter { it.sourceType == "custom" }
-                                                    .indexOf(embed)
-                                                    .takeIf { it >= 0 }
-                                            selected = message
-                                        },
-                                    )
-                                },
-                            )
-                            if (appearance.catchUpHourglass && message.id == server.reading.gapEnd)
-                                UnreadDivider(ui(R.string.unread_above), "unread-gap-end")
-                        }
-                    }
+                                !overlayBlocking,
+                        activePlayer = activeMedia,
+                        interactions = interactions,
+                    )
                 }
-                if (server.canLoadOlder)
-                    item("history") {
-                        TextButton(
-                            onClick = { model.command(Action.Older) },
-                            enabled = !server.loadingOlder,
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        ) {
-                            if (server.loadingOlder)
-                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            else Text(ui(R.string.load_earlier_messages))
-                        }
-                    }
             }
+
+            ConversationReadMarkers(
+                listState,
+                readingState,
+                appearance.catchUpHourglass,
+                headerHeight + 8.dp,
+                composerHeight + 8.dp,
+                appearance.avatars,
+            )
 
             // Content can continue behind glass, while system status symbols keep
             // a quiet, legible background even when a message scrolls under them.
@@ -951,7 +911,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     .testTag("chat-composer")
                     .padding(dimensions.composerPadding)
             ) {
-                if (server.loadingContext || server.reading.seekingCatchUp)
+                if (server.loadingContext || readingControls.seekingCatchUp)
                     GlassPill(Modifier.fillMaxWidth().padding(bottom = 8.dp), radius = 24) {
                         Row(
                             Modifier.padding(start = 16.dp, end = 6.dp),
@@ -960,7 +920,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         ) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                             Text(
-                                if (server.reading.seekingCatchUp)
+                                if (readingControls.seekingCatchUp)
                                     ui(R.string.loading_earlier_unread_messages)
                                 else ui(R.string.opening_original_message),
                                 style = MaterialTheme.typography.bodySmall,
@@ -1206,31 +1166,31 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.End,
             ) {
-                if (server.reading.mentions.isNotEmpty())
+                if (readingControls.mentions.isNotEmpty())
                     BadgedBox(
                         badge = {
-                            if (server.reading.mentions.size > 1)
+                            if (readingControls.mentions.size > 1)
                                 Badge(Modifier.testTag("mention-count")) {
-                                    Text(shortcutCount(server.reading.mentions.size))
+                                    Text(shortcutCount(readingControls.mentions.size))
                                 }
                         }
                     ) {
                         GlassPill(radius = 18) {
                             IconButton(
-                                onClick = { openOriginal(server.reading.mentions.first()) },
+                                onClick = { openOriginal(readingControls.mentions.first()) },
                                 modifier = Modifier.size(48.dp).testTag("mention-shortcut"),
                             ) {
                                 Icon(
                                     Icons.Outlined.Notifications,
                                     uiQuantity(
                                         R.plurals.mention_count,
-                                        server.reading.mentions.size,
+                                        readingControls.mentions.size,
                                     ),
                                 )
                             }
                         }
                     }
-                if (appearance.catchUpHourglass && server.reading.hourglassTarget.isNotBlank())
+                if (appearance.catchUpHourglass && readingControls.hasCatchUp)
                     GlassPill(radius = 18) {
                         IconButton(
                             onClick = {
@@ -1256,8 +1216,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 if (
                     (!nearBottom ||
                         server.browsingHistory ||
-                        appearance.catchUpHourglass &&
-                            server.reading.hourglassTarget.isNotBlank()) &&
+                        appearance.catchUpHourglass && readingControls.hasCatchUp) &&
                         server.messages.isNotEmpty()
                 )
                     BadgedBox(
@@ -1279,7 +1238,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                         appearance.catchUpHourglass &&
                                             nearBottom &&
                                             latestPhase == LatestPhase.ClearCatchUp &&
-                                            server.reading.hourglassTarget.isNotBlank()
+                                            readingControls.hasCatchUp
                                     )
                                         ui(R.string.clear_catch_up_block)
                                     else if (
@@ -1627,29 +1586,6 @@ private data class ReadViewport(
     val anchor: Pair<String, Int>?,
     val arrivals: Set<String>,
 )
-
-@Composable
-private fun UnreadDivider(label: String, tag: String) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).testTag(tag),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        HorizontalDivider(
-            Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = .4f),
-        )
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        HorizontalDivider(
-            Modifier.weight(1f),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = .4f),
-        )
-    }
-}
 
 private fun shortcutCount(count: Int) = if (count > 99) "99+" else count.toString()
 
