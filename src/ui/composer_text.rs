@@ -1,7 +1,7 @@
 //! Inline sticker presentation. Drafts and network payloads keep shortcodes;
 //! the desktop editor sees one character per sticker, including undo/selection.
 
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
 use egui::{Color32, FontId, Rect, Vec2};
 
@@ -11,6 +11,13 @@ use crate::state::{CustomEmoji, Emoji, Store};
 pub struct StickerText {
     entries: Vec<(String, String)>,
     symbols: HashMap<(String, String), char>,
+    preview: RefCell<PreviewCache>,
+}
+
+#[derive(Default)]
+struct PreviewCache {
+    source: String,
+    styles: Vec<papo_core::markdown::composer::StyledRange>,
 }
 
 impl StickerText {
@@ -101,11 +108,42 @@ impl StickerText {
         color: Color32,
         width: f32,
     ) -> std::sync::Arc<egui::Galley> {
-        let mut job = egui::text::LayoutJob::default();
-        // Empty editors still need the same line metrics as typed text.
-        if shown.is_empty() {
+        self.layout_inner(ui, shown, font, color, width, None)
+    }
+
+    /// The display buffer is unchanged: editable syntax, sticker slots, copy,
+    /// selection and IME all keep the same character positions.
+    pub fn markdown_layout(
+        &self,
+        ui: &egui::Ui,
+        shown: &str,
+        font: FontId,
+        t: &super::theme::Tokens,
+        width: f32,
+    ) -> std::sync::Arc<egui::Galley> {
+        self.layout_inner(ui, shown, font, t.label, width, Some(t))
+    }
+
+    fn layout_inner(
+        &self,
+        ui: &egui::Ui,
+        shown: &str,
+        font: FontId,
+        color: Color32,
+        width: f32,
+        preview: Option<&super::theme::Tokens>,
+    ) -> std::sync::Arc<egui::Galley> {
+        let mut job = if let Some(t) = preview {
+            let mut cache = self.preview.borrow_mut();
+            if cache.source != shown {
+                cache.styles = papo_core::markdown::composer::styles(shown);
+                cache.source = shown.to_owned();
+            }
+            super::composer_format::layout_job(shown, &cache.styles, &font, color, t)
+        } else {
+            let mut job = egui::text::LayoutJob::default();
             job.append(
-                "",
+                shown,
                 0.0,
                 egui::TextFormat {
                     font_id: font.clone(),
@@ -113,32 +151,35 @@ impl StickerText {
                     ..Default::default()
                 },
             );
-        }
-        let size = font.size.max(18.0);
-        for ch in shown.chars() {
-            let format = if self.entry(ch).is_some() {
-                // Letter spacing is added between glyphs, not to a section's
-                // only glyph. Reserve the slot through its actual advance so
-                // wrapping, selection and the editor clip include the image.
-                let mut slot_font = FontId::proportional(size + 2.0);
-                let advance = ui.fonts_mut(|fonts| fonts.glyph_width(&slot_font, ch));
-                if advance > 0.0 {
-                    slot_font.size *= (size + 2.0) / advance;
-                }
-                egui::TextFormat {
-                    font_id: slot_font,
-                    color: Color32::TRANSPARENT,
-                    line_height: Some(size + 2.0),
-                    ..Default::default()
-                }
-            } else {
-                egui::TextFormat {
-                    font_id: font.clone(),
-                    color,
-                    ..Default::default()
-                }
-            };
-            job.append(&ch.to_string(), 0.0, format);
+            job
+        };
+        let source = std::mem::take(&mut job.text);
+        let sections = std::mem::take(&mut job.sections);
+        for section in sections {
+            if section.byte_range.is_empty() {
+                job.append("", 0.0, section.format.clone());
+            }
+            for ch in source[section.byte_range.start.0..section.byte_range.end.0].chars() {
+                let format = if self.entry(ch).is_some() {
+                    // Reserve the real sticker advance independently of text
+                    // styling, including stickers inside a heading/emphasis.
+                    let size = section.format.font_id.size.max(18.0);
+                    let mut slot_font = FontId::proportional(size + 2.0);
+                    let advance = ui.fonts_mut(|fonts| fonts.glyph_width(&slot_font, ch));
+                    if advance > 0.0 {
+                        slot_font.size *= (size + 2.0) / advance;
+                    }
+                    egui::TextFormat {
+                        font_id: slot_font,
+                        color: Color32::TRANSPARENT,
+                        line_height: Some(size + 2.0),
+                        ..Default::default()
+                    }
+                } else {
+                    section.format.clone()
+                };
+                job.append(&ch.to_string(), 0.0, format);
+            }
         }
         job.wrap.max_width = width;
         job.keep_trailing_whitespace = true;

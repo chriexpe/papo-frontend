@@ -45,6 +45,7 @@ cleanup during server forgetting also needs verification. The handoff's PR #127 
 | Profile administration | Ban/unban is gated by server-management permission; another user's password reset link is owner-only. | Compare ordinary, delegated manager and owner profile menus. |
 | Appearance | Account font size Small/Normal/Large maps to `small`/`medium`/`huge`; message spacing Compact/Normal/Comfortable maps to the shared wire values. System/device zoom remains separate. New controls are in Settings → Appearance. | Change each independently, switch accounts/servers, restart, and change the account setting from another client. |
 | Extra compact chat | Extra compact uses a timestamp gutter, repeats the colored sender beside every message, omits avatars, and keeps replies above the body. Text, Markdown and links share the sender line; emoji stay inline. The original Compact keeps avatars and grouped sender headings. Extra compact is saved locally and maps to Compact for account sync. The appearance preview follows the selected layout. | Select Extra compact and compare consecutive authors, replies, wrapping, links, formatted text and attachments. |
+| Composer Markdown preview | The desktop textbox styles headings, bold, italics, strike-through, code, quotes and safe links while keeping markup visible and subdued. Layout uses the real styled height; raw source, mention bindings and inline sticker editing are retained. | Type `# Test`, `**bold**`, mixed Unicode and multiline code; edit/copy/undo, add stickers, and confirm the sent Markdown matches. |
 | Chat typography | Messages use bundled Inter Regular with softer body color; names and Markdown emphasis use Inter Semibold. Reply text and metadata use smaller chat styles. System UI font and account text sizing remain available. | Compare names/body, Markdown emphasis, replies, links, light/dark appearance and account text sizes. |
 | Settings writes | Cached full-config replacement was replaced with fresh raw-config field patches. Unknown and unrelated fields survive. Owner checks and write revision acknowledgements protect account replacement and rapid reversal of a setting. The menu notification toggle also syncs. | Change theme/alerts here while changing typography elsewhere; rapidly toggle an option off/on; switch accounts before a response returns. |
 | History | Online paging starts HTTP immediately and previews connected cached rows concurrently, in both directions. Offline older paging retains its cache-only path. Exact cursors, tickets and mutation replay remain shared. | Scroll into cached history online/offline; prepend pages without losing the visible anchor; edit/delete a row while a page is loading. |
@@ -98,3 +99,14 @@ media exercised the real local media rendering/player paths.
 
 Demo Search has no simulated request results; search retrieval, real calls, server
 acknowledgements and long-running performance are not established by this pass.
+
+## PR follow-up validation
+
+- `cargo clippy --locked --workspace --all-targets -- -D warnings` passed locally.
+- `cargo test --locked --workspace` passed: 867 tests (273 egui, 76 Android adapter,
+  15 call engine, 503 core); the existing integration test remains ignored.
+- The running isolated demo showed styled multiline composer text and an inline
+  sticker with subdued editable delimiters. Saved Extra compact restored at startup.
+- CI's reported Rust failures shared three Clippy causes: item ordering after a
+  test module, identical empty branches, and an oversized render-helper signature.
+  Those were corrected without disabling lint checks.

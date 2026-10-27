@@ -6,6 +6,7 @@ pub mod auth;
 pub mod call;
 pub mod composer_attachments;
 pub mod composer_text;
+mod composer_format;
 pub mod crop;
 pub mod emoji;
 pub mod emoji_raster;

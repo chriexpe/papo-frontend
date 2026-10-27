@@ -3413,7 +3413,7 @@ fn conversation(
             return;
         }
 
-        let composer_height = composer_height(ui, store, state, full);
+        let composer_height = composer_height(ui, store, state, t, full);
         let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
         #[cfg(target_os = "android")]
@@ -10016,7 +10016,7 @@ fn composer_base_font() -> egui::FontId {
     }
 }
 
-fn composer_height(ui: &egui::Ui, store: &Store, state: &mut UiState, area: Rect) -> f32 {
+fn composer_height(ui: &egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, area: Rect) -> f32 {
     #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
     #[cfg(target_os = "android")]
@@ -10030,16 +10030,12 @@ fn composer_height(ui: &egui::Ui, store: &Store, state: &mut UiState, area: Rect
         .composer_stickers
         .encode(&state.composer, &store.emojis);
     let font = adaptive_font(ui, &composer_base_font(), &shown, text_width);
-    let rows = if shown.is_empty() {
-        1
-    } else {
-        state
-            .composer_stickers
-            .layout(ui, &shown, font.clone(), Color32::WHITE, text_width)
-            .rows
-            .len()
-            .max(1)
-    };
+    #[cfg(not(target_os = "android"))]
+    let galley = state.composer_stickers.markdown_layout(ui, &shown, font.clone(), t, text_width);
+    #[cfg(target_os = "android")]
+    let galley = state.composer_stickers.layout(ui, &shown, font.clone(), t.label, text_width);
+    #[cfg(target_os = "android")]
+    let rows = galley.rows.len().max(1);
 
     let row_h = ui.fonts_mut(|fonts| fonts.row_height(&font))
         + ui.spacing().extra_text_line_spacing;
@@ -10052,8 +10048,11 @@ fn composer_height(ui: &egui::Ui, store: &Store, state: &mut UiState, area: Rect
         }
         _ => (rows, row_h),
     };
-    let rows = rows.min(composer_max_rows(area, row_h));
-    let text_h = rows as f32 * row_h + space::SM * 2.0;
+    let max_rows = composer_max_rows(area, row_h);
+    #[cfg(target_os = "android")]
+    let text_h = rows.min(max_rows) as f32 * row_h + space::SM * 2.0;
+    #[cfg(not(target_os = "android"))]
+    let text_h = galley.size().y.min(max_rows as f32 * row_h) + space::SM * 2.0;
     let mut height = COMPOSER_LINE_H.max(text_h);
 
     if state.replying.is_some() {
@@ -11145,12 +11144,8 @@ fn composer(
                     .show(&mut viewport, |ui| {
                         ui.set_min_height(viewport_h);
                         let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, width| {
-                            state.composer_stickers.layout(
-                                ui,
-                                buffer.as_str(),
-                                composer_font.clone(),
-                                t.label,
-                                width,
+                            state.composer_stickers.markdown_layout(
+                                ui, buffer.as_str(), composer_font.clone(), t, width,
                             )
                         };
                         let output = egui::TextEdit::multiline(&mut shown)
