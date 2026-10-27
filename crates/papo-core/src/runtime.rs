@@ -49,7 +49,10 @@ pub enum CallRuntimeEffect {
 pub enum RuntimeEffect {
     ServerUnlocked,
     ServerLabelChanged(String),
+    UserSettingsPatched { owner: String, request: u64, success: bool },
+    OutgoingEnqueued { local_id: String, owner_user_id: String, channel_id: String },
     OutgoingRejected {
+        local_id: String,
         owner_user_id: String,
         channel_id: String,
         content: String,
@@ -546,7 +549,14 @@ impl ServerRuntime {
             Update::Server(Some(server)) if !server.name.is_empty() => {
                 effects.push(RuntimeEffect::ServerLabelChanged(server.name.clone()));
             }
+            Update::UserSettingsPatched { owner, request, result } => effects.push(RuntimeEffect::UserSettingsPatched {
+                owner: owner.clone(), request: *request, success: result.is_ok(),
+            }),
+            Update::Outgoing(item) => effects.push(RuntimeEffect::OutgoingEnqueued {
+                local_id: item.local_id.clone(), owner_user_id: item.owner_user_id.clone(), channel_id: item.channel_id.clone(),
+            }),
             Update::OutgoingRejected {
+                local_id,
                 owner_user_id,
                 channel_id,
                 content,
@@ -554,6 +564,7 @@ impl ServerRuntime {
                 notify_reply,
                 ..
             } => effects.push(RuntimeEffect::OutgoingRejected {
+                local_id: local_id.clone(),
                 owner_user_id: owner_user_id.clone(),
                 channel_id: channel_id.clone(),
                 content: content.clone(),
@@ -862,6 +873,7 @@ mod tests {
         assert!(matches!(
             effects.as_slice(),
             [RuntimeEffect::OutgoingRejected {
+                local_id: _,
                 owner_user_id,
                 channel_id,
                 content,

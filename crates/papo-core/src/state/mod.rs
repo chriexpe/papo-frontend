@@ -2,10 +2,13 @@
 //! WebSocket.
 
 pub mod call;
+pub mod webhooks;
 mod previews;
 mod authorization;
 #[cfg(test)]
 mod reading_tests;
+#[cfg(test)]
+mod inbox_tests;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -591,6 +594,9 @@ pub struct Store {
     pub read_states: HashMap<String, ChannelReadState>,
     /// Notificações já contadas, para não somar a mesma menção duas vezes.
     counted_notifications: HashSet<String>,
+    pub inbox: crate::inbox::Inbox,
+    pub webhooks: webhooks::Webhooks,
+    pub inbox_error: Option<String>,
     /// Notificações por canal ainda não confirmadas no servidor.
     open_notifications: HashMap<String, Vec<(String, Option<String>)>>,
     pub error: Option<String>,
@@ -682,6 +688,9 @@ impl Default for Store {
             read_marks: HashMap::new(),
             read_states: HashMap::new(),
             counted_notifications: HashSet::new(),
+            inbox: Default::default(),
+            webhooks: Default::default(),
+            inbox_error: None,
             open_notifications: HashMap::new(),
             error: None,
             busy: false,
@@ -3769,7 +3778,7 @@ impl Store {
     }
 
     pub fn can_open_server_admin(&self) -> bool {
-        self.can_manage_server() || self.can_manage_channels() || self.can_manage_roles()
+        self.can_manage_server() || self.can_manage_channels() || self.can_manage_roles() || self.can_manage_webhooks()
     }
 
     // -- Atualizações ------------------------------------------------------
@@ -3778,6 +3787,9 @@ impl Store {
     pub fn apply(&mut self, update: Update) {
         match update {
             Update::Session(Some(me)) => {
+                self.webhooks = Default::default();
+                if self.me != me.id { self.inbox.reset(); self.inbox_error = None; }
+                else { self.inbox.invalidate_requests(); }
                 self.me = me.id.clone();
                 self.my_name = me.display_name().to_owned();
                 self.my_username = me.username.clone();
@@ -3797,7 +3809,10 @@ impl Store {
                 });
             }
             Update::Session(None) => {
+                self.inbox.reset();
+                self.inbox_error = None;
                 let was = std::mem::take(self);
+                self.inbox = was.inbox;
                 self.screen = Screen::Auth;
                 self.error = was.error;
                 // Sessão inválida: estado reconstruível não atravessa a
@@ -4326,7 +4341,15 @@ impl Store {
                 );
                 self.mutation_journals.remove(&ticket.channel_id);
             }
+            Update::UserSettingsPatched { owner, result, .. } => {
+                if owner != self.me { return; }
+                match result {
+                    Ok(settings) => self.apply(Update::UserSettings(settings)),
+                    Err(message) => self.error = Some(message),
+                }
+            }
             Update::UserSettings(settings) => {
+                if self.me.is_empty() || settings.user_id != self.me { return; }
                 let mut settings = *settings;
                 settings.config = settings.config.normalised();
                 self.user_settings = Some(settings);
@@ -4671,6 +4694,7 @@ impl Store {
                 );
             }
             Update::Deleted(id) => {
+                self.inbox.remove_message(&id);
                 let channel_id = self.channel_for_message(&id);
                 self.apply_mutation(
                     MutationSource::Reconcile,
@@ -4879,7 +4903,26 @@ impl Store {
                     self.persist_read_state(&channel_id);
                 }
             }
+            Update::Webhooks { owner, epoch, request, result } => {
+                if owner == self.me && epoch == self.cache_restore_epoch && self.can_manage_webhooks() {
+                    self.webhooks.complete(request, result);
+                }
+            }
+            Update::NotificationInbox { owner, epoch, flight, result } => {
+                if owner != self.me || epoch != self.cache_restore_epoch || !self.inbox.current(&flight) { return; }
+                match result {
+                    Ok(page) => {
+                        let notices = page.notifications.clone();
+                        match self.inbox.complete(&flight, page) {
+                            Ok(()) => { self.inbox_error = None; self.apply(Update::Notifications(notices)); }
+                            Err(error) => { self.inbox_error = Some(format!("{error:?}")); }
+                        }
+                    }
+                    Err(error) => { self.inbox.cancel(&flight); self.inbox_error = Some(error); }
+                }
+            }
             Update::Notifications(notifications) => {
+                self.inbox.observe(&notifications);
                 for notification in notifications {
                     if notification.read {
                         self.confirm_notification_read(&notification);
@@ -5037,6 +5080,7 @@ impl Store {
                 );
             }
             Event::MessageDeleted { id, channel_id } => {
+                self.inbox.remove_message(&id);
                 self.apply_mutation(
                     MutationSource::Live,
                     StoreMutation::Timeline {
@@ -5525,6 +5569,7 @@ impl Store {
     }
 
     pub fn delete_message_local(&mut self, message_id: &str) {
+        self.inbox.remove_message(message_id);
         let channel_id = self.channel_for_message(message_id);
         self.apply_mutation(
             MutationSource::Local,

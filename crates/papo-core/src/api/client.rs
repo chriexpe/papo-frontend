@@ -22,7 +22,7 @@ use super::models::*;
 
 #[path = "user_display.rs"]
 mod user_display;
-pub use user_display::{DisplayChange, DisplayFontSize, MessageDensity};
+pub use user_display::{AccountSettingsPatch, DisplayChange, DisplayFontSize, MessageDensity};
 
 #[path = "user_list.rs"]
 mod user_list;

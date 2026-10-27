@@ -20,6 +20,48 @@ struct SurfaceState {
     resizing: bool,
     needs_reconfigure: bool,
     needs_recreate: bool,
+    prefer_mailbox: bool,
+}
+
+fn prefer_mailbox(window: &winit::window::Window) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+        let wayland = window
+            .window_handle()
+            .is_ok_and(|handle| matches!(handle.as_raw(), RawWindowHandle::Wayland(_)));
+        wayland
+            && std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| {
+                desktop
+                    .split(':')
+                    .any(|part| part.eq_ignore_ascii_case("KDE"))
+            })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+        false
+    }
+}
+
+fn compatible_present_mode(
+    requested: wgpu::PresentMode,
+    prefer_mailbox: bool,
+    supported: &[wgpu::PresentMode],
+) -> wgpu::PresentMode {
+    // KWin 6.8 can freeze a SurfaceItem while clearFifoBarrier applies an
+    // unmap, then dereference its cleared surface during framePainted. Mesa's
+    // FIFO presentation triggers that path. Mailbox remains tear-free but
+    // avoids those FIFO barriers. Preserve explicit settings and fall back
+    // to the portable default when Mailbox is unavailable.
+    if prefer_mailbox
+        && requested == wgpu::PresentMode::AutoVsync
+        && supported.contains(&wgpu::PresentMode::Mailbox)
+    {
+        wgpu::PresentMode::Mailbox
+    } else {
+        requested
+    }
 }
 
 /// Everything you need to paint egui with [`wgpu`] on [`winit`].
@@ -104,6 +146,21 @@ impl Painter {
             present_mode,
             desired_maximum_frame_latency,
         } = *config;
+        let present_mode = if surface_state.prefer_mailbox {
+            compatible_present_mode(
+                present_mode,
+                true,
+                &surface_state
+                    .surface
+                    .get_capabilities(&render_state.adapter)
+                    .present_modes,
+            )
+        } else {
+            present_mode
+        };
+        if present_mode != config.present_mode {
+            log::debug!("KWin Wayland presentation workaround: {present_mode:?}");
+        }
 
         // Transaction presentation can hold a drawable during AppKit live resize. Keep the
         // configured low-latency path normally, but use three Metal drawables while resizing.
@@ -161,6 +218,7 @@ impl Painter {
             old_state.width,
             old_state.height,
             old_state.resizing,
+            old_state.prefer_mailbox,
         );
         Ok(())
     }
@@ -196,8 +254,10 @@ impl Painter {
         if let Some(window) = window {
             let size = window.inner_size();
             if !self.surfaces.contains_key(&viewport_id) {
+                let prefer_mailbox = prefer_mailbox(&window);
                 let surface = self.instance.create_surface(window)?;
-                self.add_surface(surface, viewport_id, size).await?;
+                self.add_surface(surface, viewport_id, size, prefer_mailbox)
+                    .await?;
             }
         } else {
             log::warn!("No window - clearing all surfaces");
@@ -226,7 +286,8 @@ impl Painter {
                     self.instance
                         .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_window(&window)?)?
                 };
-                self.add_surface(surface, viewport_id, size).await?;
+                self.add_surface(surface, viewport_id, size, prefer_mailbox(window))
+                    .await?;
             }
         } else {
             log::warn!("No window - clearing all surfaces");
@@ -240,6 +301,7 @@ impl Painter {
         surface: wgpu::Surface<'static>,
         viewport_id: ViewportId,
         size: winit::dpi::PhysicalSize<u32>,
+        prefer_mailbox: bool,
     ) -> Result<(), crate::WgpuError> {
         if self.render_state.is_none() {
             let render_state =
@@ -247,7 +309,14 @@ impl Painter {
                     .await?;
             self.render_state = Some(render_state);
         }
-        self.install_surface(surface, viewport_id, size.width, size.height, false);
+        self.install_surface(
+            surface,
+            viewport_id,
+            size.width,
+            size.height,
+            false,
+            prefer_mailbox,
+        );
         Ok(())
     }
 
@@ -262,6 +331,7 @@ impl Painter {
         width: u32,
         height: u32,
         resizing: bool,
+        prefer_mailbox: bool,
     ) {
         let alpha_mode = {
             // Panic: We use the same failure mode as `resize_and_generate_depth_texture_view_and_msaa_view`
@@ -298,6 +368,7 @@ impl Painter {
                 resizing,
                 needs_reconfigure: false,
                 needs_recreate: false,
+                prefer_mailbox,
             },
         );
         let Some(width) = NonZeroU32::new(width) else {
@@ -833,5 +904,29 @@ impl Painter {
     #[expect(clippy::needless_pass_by_ref_mut, clippy::unused_self)]
     pub fn destroy(&mut self) {
         // TODO(emilk): something here?
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::compatible_present_mode;
+    use wgpu::PresentMode::{AutoVsync, Fifo, Immediate, Mailbox};
+
+    #[test]
+    fn kwin_workaround_requires_mailbox_support_and_preserves_explicit_choices() {
+        assert_eq!(
+            compatible_present_mode(AutoVsync, true, &[Fifo, Mailbox]),
+            Mailbox
+        );
+        assert_eq!(compatible_present_mode(AutoVsync, true, &[Fifo]), AutoVsync);
+        assert_eq!(
+            compatible_present_mode(AutoVsync, false, &[Fifo, Mailbox]),
+            AutoVsync
+        );
+        assert_eq!(compatible_present_mode(Fifo, true, &[Fifo, Mailbox]), Fifo);
+        assert_eq!(
+            compatible_present_mode(Immediate, true, &[Immediate, Mailbox]),
+            Immediate
+        );
     }
 }

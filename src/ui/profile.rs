@@ -1225,14 +1225,14 @@ fn banner_buttons(
         } else {
             (s.ban_user, true)
         };
-        if ui.button(label).clicked() {
+        if store.can_manage_server() && ui.button(label).clicked() {
             state.actions.push(ChatAction::BanUser {
                 user_id: member.id.clone(),
                 banned,
             });
             ui.close();
         }
-        if ui.button(s.reset_user).clicked() {
+        if store.is_server_owner() && ui.button(s.reset_user).clicked() {
             state.actions.push(ChatAction::ResetUser(member.id.clone()));
             ui.close();
         }

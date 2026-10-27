@@ -17,6 +17,55 @@ impl FileSecretStore {
         }
     }
 
+    /// Persist intent before stopping transport or touching local data. Retained markers also
+    /// suppress credentials and stale eframe server lists after a crash during cleanup.
+    pub fn mark_forgotten(&self, server: &str) -> StorageResult<()> {
+        self.ensure_root()?;
+        if let Some(path) = self.marker(server) {
+            let file = std::fs::File::create(path)?;
+            file.sync_all()?;
+            #[cfg(unix)]
+            if let Some(root) = &self.root { std::fs::File::open(root)?.sync_all()?; }
+        }
+        Ok(())
+    }
+
+    fn marker(&self, server: &str) -> Option<PathBuf> {
+        self.root.as_ref().map(|root| root.join(format!("{server}.forget")))
+    }
+
+    pub fn is_forgotten(&self, server: &str) -> bool {
+        self.marker(server).is_some_and(|path| path.try_exists().unwrap_or(true))
+    }
+
+    pub fn forgotten_servers(&self) -> StorageResult<Vec<String>> {
+        let Some(root) = &self.root else { return Ok(vec![]); };
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(error.into()),
+        };
+        let mut keys = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            if let Some(key) = entry.file_name().to_str().and_then(|s| s.strip_suffix(".forget"))
+                && !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                keys.push(key.to_owned());
+            }
+        }
+        Ok(keys)
+    }
+
+    /// Explicit re-add after cleanup, before creating a replacement authenticated runtime.
+    pub fn allow_server(&self, server: &str) -> StorageResult<()> {
+        let Some(path) = self.marker(server) else { return Ok(()); };
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn path(&self, server: &str, secret: Secret) -> Option<PathBuf> {
         let root = self.root.as_ref()?;
         Some(root.join(format!("{server}.{}", secret.key())))
@@ -38,6 +87,7 @@ impl Default for FileSecretStore {
 
 impl SecretStore for FileSecretStore {
     fn load(&self, server: &str, secret: Secret) -> StorageResult<Option<String>> {
+        if self.is_forgotten(server) { return Ok(None); }
         let Some(path) = self.path(server, secret) else {
             return Ok(None);
         };
@@ -52,6 +102,7 @@ impl SecretStore for FileSecretStore {
     }
 
     fn store(&self, server: &str, secret: Secret, value: &str) -> StorageResult<()> {
+        if self.is_forgotten(server) { return Err(papo_core::storage::StorageError::new("server_cleanup_pending")); }
         self.ensure_root()?;
         let Some(path) = self.path(server, secret) else {
             return Ok(());
@@ -102,5 +153,26 @@ mod tests {
             .path("servidor", Secret::ServerPassword)
             .unwrap()
             .ends_with("servidor.server"));
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    #[test]
+    fn parity_forget_journal_blocks_late_credentials_and_preserves_other_servers() {
+        let root = std::env::temp_dir().join(format!("papo-forget-{}", papo_core::cache::new_local_id()));
+        let store = FileSecretStore { root: Some(root.clone()) };
+        store.store("one", Secret::SessionToken, "first").unwrap();
+        store.store("two", Secret::SessionToken, "other").unwrap();
+        store.mark_forgotten("one").unwrap();
+        assert_eq!(store.forgotten_servers().unwrap(), vec!["one"]);
+        assert!(store.load("one", Secret::SessionToken).unwrap().is_none());
+        assert!(store.store("one", Secret::SessionToken, "late").is_err());
+        store.forget_server("one").unwrap();
+        store.allow_server("one").unwrap();
+        assert!(store.load("one", Secret::SessionToken).unwrap().is_none());
+        assert_eq!(store.load("two", Secret::SessionToken).unwrap().as_deref(), Some("other"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

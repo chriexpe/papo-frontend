@@ -35,6 +35,7 @@ pub struct Entry {
 pub enum RailAction {
     Select(usize),
     DirectMessages,
+    Notifications,
     Add,
     Remove(usize),
 }
@@ -68,6 +69,12 @@ pub fn draw(
                 if direct_tile(ui, direct_unread, direct_active, t, s) {
                     action = Some(RailAction::DirectMessages);
                 }
+                ui.add_space(GAP);
+                let (rect, response) = ui.allocate_exact_size(Vec2::splat(ICON), Sense::click());
+                ui.painter().rect_filled(rect, CornerRadius::same(radius::SHEET), if response.hovered() { t.fill_medium } else { t.fill_soft });
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon::BELL, text::icon(21.0), t.label_secondary);
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, s.notification_inbox));
+                if response.on_hover_text(s.notification_inbox).clicked() { action = Some(RailAction::Notifications); }
                 ui.add_space(GAP);
             }
 

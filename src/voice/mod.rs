@@ -1,6 +1,7 @@
 //! egui texture adapter for the shared `papo-call` engine.
 pub use papo_call::{Command, Frame, IceConfig, Kind, Shared, ice, slots};
 use papo_core::api::net::{EventCallback, NetSender};
+#[cfg(target_os = "android")]
 use papo_core::api::ws::Event;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -57,8 +58,9 @@ pub struct Call {
     pub channel_id: String,
     transport: papo_call::Call,
     shared: Arc<Shared>,
-    textures: HashMap<usize, (egui::TextureHandle, u64)>,
+    textures: HashMap<usize, (egui::TextureHandle, u64, String, Kind)>,
     preview: Option<(egui::TextureHandle, u64)>,
+    playback: HashMap<String, papo_call::Playback>,
 }
 
 impl Call {
@@ -79,6 +81,7 @@ impl Call {
             shared,
             textures: HashMap::new(),
             preview: None,
+            playback: HashMap::new(),
         })
     }
 
@@ -90,33 +93,12 @@ impl Call {
     /// chegam do socket entram na thread do GStreamer sem esperar a UI.
     pub fn event_callback(&self, me: String, names: HashMap<String, String>) -> EventCallback {
         let channel_id = self.channel_id.clone();
-        let commands = self.transport.commands();
+        let media_callback = self.transport.event_callback();
         #[cfg(not(target_os = "android"))]
-        let _ = (&me, &names);
-        Arc::new(move |event| match event {
-            Event::VoiceAnswer {
-                channel_id: event_channel,
-                sdp,
-            } if event_channel == &channel_id => {
-                let _ = commands.send(Command::Answer(sdp.clone()));
-            }
-            Event::VoiceOffer {
-                channel_id: event_channel,
-                sdp,
-            } if event_channel == &channel_id => {
-                let _ = commands.send(Command::Offer(sdp.clone()));
-            }
-            Event::VoiceCandidate {
-                channel_id: event_channel,
-                candidate,
-                sdp_mline_index,
-                ..
-            } if event_channel == &channel_id => {
-                let _ = commands.send(Command::Candidate {
-                    candidate: candidate.clone(),
-                    sdp_mline_index: sdp_mline_index.unwrap_or(0),
-                });
-            }
+        let _ = (&me, &names, &channel_id);
+        Arc::new(move |event| {
+            media_callback(event);
+            match event {
             #[cfg(target_os = "android")]
             Event::ActiveSpeakers {
                 channel_id: event_channel,
@@ -147,12 +129,23 @@ impl Call {
                 crate::platform::android_call::call_ended_from_network();
             }
             _ => {}
+            }
         })
     }
 
     #[cfg(target_os = "android")]
     pub(crate) fn command_sender(&self) -> mpsc::Sender<Command> {
         self.transport.commands()
+    }
+
+    pub fn playback(&self, user: &str) -> papo_call::Playback {
+        self.playback.get(user).copied().unwrap_or_default()
+    }
+
+    pub fn set_playback(&mut self, user_id: String, mut setting: papo_call::Playback) {
+        setting.volume_percent = setting.volume_percent.min(200);
+        self.playback.insert(user_id.clone(), setting);
+        self.send(Command::Playback { user_id, setting });
     }
 
     pub fn ready(&self) {
@@ -225,19 +218,16 @@ impl Call {
         publisher: &str,
         kind: Kind,
     ) -> Option<egui::TextureHandle> {
-        let mut tiles = self.shared.tiles.lock().ok()?;
-        let index = tiles.iter().position(|tile| {
-            tile.publisher.as_deref() == Some(publisher) && tile.kind == Some(kind)
-        })?;
-        let tile = &mut tiles[index];
-        let cached = self.textures.get(&index);
-        if let Some((texture, seq)) = cached
-            && *seq == tile.seq
-        {
+        let (index, frame, seq) = {
+            let tiles = self.shared.tiles.lock().ok()?;
+            let index = tiles.iter().position(|tile| tile.publisher.as_deref() == Some(publisher) && tile.kind == Some(kind))?;
+            let tile = &tiles[index];
+            (index, tile.frame.clone()?, tile.seq)
+        };
+        if let Some((texture, stored, owner, stored_kind)) = self.textures.get(&index)
+            && *stored == seq && owner == publisher && *stored_kind == kind {
             return Some(texture.clone());
         }
-        let frame = tile.frame.clone()?;
-        let seq = tile.seq;
         let image = egui::ColorImage {
             size: [frame.width, frame.height],
             pixels: frame
@@ -248,15 +238,15 @@ impl Call {
             source_size: egui::vec2(frame.width as f32, frame.height as f32),
         };
         let texture = match self.textures.get_mut(&index) {
-            Some((texture, stored)) => {
+            Some((texture, stored, owner, stored_kind)) => {
                 texture.set(image, egui::TextureOptions::LINEAR);
-                *stored = seq;
+                *stored = seq; *owner = publisher.into(); *stored_kind = kind;
                 texture.clone()
             }
             None => {
                 let texture =
                     ctx.load_texture(format!("call-{index}"), image, egui::TextureOptions::LINEAR);
-                self.textures.insert(index, (texture.clone(), seq));
+                self.textures.insert(index, (texture.clone(), seq, publisher.into(), kind));
                 texture
             }
         };

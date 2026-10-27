@@ -3,7 +3,8 @@ description: Cache the pinned GStreamer runtime used by both Android call ABIs
 runs:
   using: composite
   steps:
-    - uses: actions/cache@v4
+    - uses: actions/cache/restore@v4
+      id: sdk-cache
       with:
         path: |
           ~/Android/gst/arm64
@@ -11,3 +12,12 @@ runs:
         key: ${{ runner.os }}-papo-call-gstreamer-1.28.7
     - shell: bash
       run: bash scripts/setup-android-call-sdk.sh
+    # Save immediately after setup, rather than waiting for the APK build.
+    # PR-local copies cannot be shared with other PRs and exhaust the quota.
+    - uses: actions/cache/save@v4
+      if: github.ref == 'refs/heads/main' && steps.sdk-cache.outputs.cache-hit != 'true'
+      with:
+        path: |
+          ~/Android/gst/arm64
+          ~/Android/gst/x86_64
+        key: ${{ steps.sdk-cache.outputs.cache-primary-key }}

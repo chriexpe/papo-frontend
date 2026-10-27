@@ -5,7 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
+  # Keep shared dependency caches small; PRs only restore main's caches.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
   # O clippy ganha lints novos a cada versão do Rust. Com `stable` o portão
   # vira uma bomba-relógio: a cada seis semanas um repositório em que
   # ninguém mexeu fica vermelho. A versão que barra o merge é fixa e sobe
@@ -24,6 +31,8 @@ jobs:
         uses: ./.github/actions/install-linux-deps
       - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Test winit preparation
         run: python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
       - run: cargo test --locked --workspace
@@ -43,6 +52,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   # Avisa dos lints que a próxima versão do Rust vai cobrar. Falhar aqui não
@@ -62,6 +72,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: clippy-stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   # O `stable` do runner some por baixo dos pés: uma dependência que suba o
@@ -85,6 +96,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --locked --workspace
 
   # Os nomes de pacote em scripts/deps.sh são promessa feita a quem instala.
@@ -122,6 +134,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: macos-arm64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install native GStreamer SDK
         run: |
           # Homebrew's current gstreamer formula bundles the former gst-* plugins.
@@ -180,6 +193,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install GStreamer SDK
         shell: pwsh
         run: |

@@ -73,8 +73,17 @@ pub fn display_family() -> FontFamily {
 /// Escala aplicada a toda a rampa tipográfica. 1.0 = corpo de 13 pt.
 static FONT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1_000);
 
+static ACCOUNT_FONT_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1_000);
+
+pub fn set_account_font(size: crate::api::client::DisplayFontSize) {
+    use crate::api::client::DisplayFontSize::*;
+    ACCOUNT_FONT_SCALE.store(match size { Small => 875, Normal => 1000, Large => 1250 }, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn font_scale() -> f32 {
-    FONT_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0
+    let system = FONT_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
+    let account = ACCOUNT_FONT_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
+    system * account
 }
 
 /// Ajusta a rampa para o tamanho de fonte do sistema (corpo em pixels).
@@ -87,7 +96,7 @@ pub mod text {
     use super::{display_family, font_scale, FontFamily, FontId};
 
     fn sized(size: f32, family: FontFamily) -> FontId {
-        FontId::new((size * font_scale()).round(), family)
+        FontId::new((size * font_scale()).round().max(10.0), family)
     }
 
     pub fn title1() -> FontId {
@@ -109,7 +118,19 @@ pub mod text {
     }
     /// Corpo das mensagens — conteúdo lido por longos períodos, 1 pt maior.
     pub fn message() -> FontId {
-        sized(14.0, FontFamily::Proportional)
+        sized(14.0, FontFamily::Name("chat".into()))
+    }
+    pub fn message_author() -> FontId {
+        sized(14.0, FontFamily::Name("chat-semibold".into()))
+    }
+    pub fn message_time() -> FontId {
+        sized(10.0, FontFamily::Name("chat".into()))
+    }
+    pub fn message_reply() -> FontId {
+        sized(11.0, FontFamily::Name("chat".into()))
+    }
+    pub fn message_reply_author() -> FontId {
+        sized(11.0, FontFamily::Name("chat-semibold".into()))
     }
     pub fn callout() -> FontId {
         sized(12.0, FontFamily::Proportional)
@@ -268,6 +289,14 @@ impl Tokens {
         tokens
     }
 
+    /// Reading text stays softer than sender names in either appearance.
+    pub fn message_body(&self) -> Color32 {
+        match self.appearance {
+            Appearance::Dark => rgb(0xDB, 0xDE, 0xE1),
+            Appearance::Light => rgb(0x30, 0x32, 0x38),
+        }
+    }
+
     /// Tinta de uma pastilha que flutua sobre o conteúdo.
     pub fn pill_fill(&self, translucent: bool) -> Color32 {
         if translucent {
@@ -393,6 +422,18 @@ pub fn install_fonts(ctx: &egui::Context, system_font: Option<&crate::platform::
             .entry(family)
             .or_default()
             .push("noto-emoji".to_owned());
+    }
+
+    // Keep conversation weights consistent even when the system UI font has
+    // only one installed weight. Retain the existing multilingual fallbacks.
+    for (family, source, primary) in [
+        ("chat", FontFamily::Proportional, "inter"),
+        ("chat-semibold", FontFamily::Name("semibold".into()), "inter-semibold"),
+    ] {
+        let mut fallbacks = fonts.families.get(&source).cloned().unwrap_or_default();
+        fallbacks.retain(|name| !name.starts_with("system-") && name != primary);
+        fallbacks.insert(0, primary.into());
+        fonts.families.insert(FontFamily::Name(family.into()), fallbacks);
     }
 
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
