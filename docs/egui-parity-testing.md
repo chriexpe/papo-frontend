@@ -36,6 +36,7 @@ cleanup during server forgetting also needs verification. The handoff's PR #127 
 
 | Area | Exact change | Suggested check |
 | --- | --- | --- |
+| Linux lifecycle | KDE Wayland surfaces prefer supported Mailbox presentation to avoid the captured KWin FIFO/unmap crash path. Session-end monitoring uses the portal, optional logind and SIGTERM/SIGINT; termination sends a native Close even while hidden. | Close from the window overview, restore from the tray, then quit. On a later normal logout/reboot, confirm Papo does not hold the session open. |
 | Call entry | ICE discovery no longer joins automatically. Only a current account/attempt may send `voice_join`; SDP waits for `voice_joined`. | Start joining, cancel immediately, then join again. The cancelled attempt must never enter later. |
 | Call replacement | A shared leave-acknowledgement barrier serializes replacement calls, including same-room rejoin. Timeout keeps the barrier; disconnect cancels queued entry. A waiting replacement has Cancel. | Leave/rejoin quickly, switch rooms, cancel the waiting replacement, and disconnect during entry. |
 | Call roster | Local leave removes only self. Other occupants remain. Cold presence no longer claims a known microphone/camera state. | Leave a room containing another user, then inspect its roster and a newly loaded room. |
@@ -59,6 +60,18 @@ cleanup during server forgetting also needs verification. The handoff's PR #127 
 | Webhooks | Server settings gains a permission-gated Webhooks pane: list, create in text/voice channels, edit display name, revoke with confirmation, and copy/dismiss the one-time creation credential. The list, create form and inline display-name editor reuse channel settings components. Acknowledged results are account/request scoped; failures retain the loaded list. Credentials are not serialized and Debug output redacts them. | Compare a webhook delegate with an ordinary user; create, rename, copy/dismiss and revoke; switch accounts while loading. |
 
 ## Verification and limits
+
+- The reported desktop crash was captured as a KWin 6.8.0 SIGSEGV, followed
+  by Papo losing its Wayland connection. The rendering workaround compiled
+  and passed a focused presentation-mode fallback/explicit-setting check.
+  The existing 13-second visibility probe passed three hide/remap cycles
+  in an isolated virtual KWin session, preserving background logic. A demo
+  close and subsequent SIGTERM in that compositor completed cleanly with
+  the real desktop tray available; the settings file was written. SIGTERM
+  also exited the visible demo cleanly. The virtual compositor did not activate
+  the overview effect, so the exact physical-desktop overview gesture still
+  needs user verification. No actual logout/reboot was automated. See
+  `docs/rendering.md` for the diagnostic evidence and upstream source links.
 
 - The desktop binary was built with `cargo build -p papo --bin papo`.
 - All 18 focused `parity` regressions passed (11 egui + 7 core). They cover call cancellation/replacement/disconnect,

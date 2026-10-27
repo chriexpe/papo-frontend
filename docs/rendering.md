@@ -25,6 +25,41 @@ egui-wgpu / wgpu
 Android remains on the existing eframe/Glow path until its rendering/lifecycle
 work is intentionally migrated.
 
+## KWin Wayland close-to-tray compatibility
+
+Closing Papo from Plasma's window overview reproduced a compositor SIGSEGV on
+2026-10-27 with KWin 6.8.0 and Mesa RADV 26.2.4. The recorded stack was
+`SurfaceInterface::requestedTimingOfNextCommit` →
+`SurfaceItemWayland::handleFramePainted`. Papo subsequently exited because its
+Wayland connection broke; there was no GPU-reset message in the captured kernel
+log. The capture is local and contains no committed account logs.
+
+Inspection of KWin's `handleFramePainted` and `clearFifoBarrier` suggests that
+applying a queued unmap can freeze the item and clear its surface before the
+next dereference. Mesa uses that FIFO barrier path for Vulkan FIFO presentation.
+This is the working explanation, not proof that every compositor crash has the
+same cause.
+
+The vendored egui-wgpu painter therefore prefers supported **Mailbox**
+presentation for native Wayland windows in a KDE session when the requested mode
+is AutoVsync. Mailbox remains tear-free without Mesa's FIFO barriers. Other
+window backends, explicit presentation choices, and surfaces without Mailbox
+support keep their existing mode. The choice is retained when a surface is
+recreated. The debug log reports when the workaround is selected.
+
+Upstream sources used for the diagnosis:
+
+- [KWin surface painting](https://invent.kde.org/plasma/kwin/-/blob/Plasma/6.8/src/scene/surfaceitem_wayland.cpp)
+- [KWin FIFO barrier processing](https://invent.kde.org/plasma/kwin/-/blob/Plasma/6.8/src/wayland/surface.cpp)
+- [Mesa Wayland presentation](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/vulkan/wsi/wsi_common_wayland.c)
+
+Linux termination monitoring also uses the session portal, logind when
+accessible, and SIGTERM/SIGINT independently. Portal QueryEnd is acknowledged
+without inhibiting logout; Papo exits on Ending, allowing cancellation by other
+applications. Native close commands wake the event loop even while hidden so
+normal draft/settings persistence can run. Flatpak no longer depends solely on
+an inaccessible system bus for session-end notification.
+
 ## Why glass cannot be a normal WGPU PaintCallback
 
 The current glass renderer uses `egui_glow` to copy pixels that have already
