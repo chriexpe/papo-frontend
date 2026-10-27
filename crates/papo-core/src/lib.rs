@@ -23,6 +23,24 @@ pub mod storage;
 
 // PR7 feasibility probe. Test-only: it exercises the boring local-database
 // subset Turso must support, and is not part of the production runtime.
+/// Unique across room replacement and runtime recreation, including delayed platform controls.
+pub fn next_operation_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|time| time.as_nanos() as u64)
+        .unwrap_or(1);
+    let mut last = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(last.saturating_add(1));
+        match LAST.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(current) => last = current,
+        }
+    }
+}
+
 #[cfg(test)]
 mod turso_probe;
 
@@ -70,23 +88,5 @@ mod tests {
     fn chave_serve_de_nome_de_arquivo() {
         let key = server_key("https://papo.example:8080/base");
         assert!(key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-    }
-}
-
-/// Unique across room replacement and runtime recreation, including delayed platform controls.
-pub fn next_operation_id() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static LAST: AtomicU64 = AtomicU64::new(0);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|time| time.as_nanos() as u64)
-        .unwrap_or(1);
-    let mut last = LAST.load(Ordering::Relaxed);
-    loop {
-        let next = now.max(last.saturating_add(1));
-        match LAST.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => return next,
-            Err(current) => last = current,
-        }
     }
 }

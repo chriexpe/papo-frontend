@@ -1373,8 +1373,7 @@ impl UiState {
             self.gif_picker_anchor = None;
         } else if self.popup.is_some() {
             self.close_popup();
-        } else if self.call_participant.take().is_some() {
-        } else if self.profile.take().is_some() || self.server_card.take().is_some() {
+        } else if self.call_participant.take().is_some() || self.profile.take().is_some() || self.server_card.take().is_some() {
         } else if self.custom_embed_editor {
             self.custom_embed_editor = false;
         } else if self.panel.take().is_some() {
@@ -5433,18 +5432,9 @@ fn result_row_contents(
                 {
                     ui.add_space(space::XXS);
                     let tokens = emoji::tokenize(&shown_body, &store.emojis);
-                    rich_body(
-                        ui,
-                        t,
-                        s,
-                        store,
-                        state,
-                        &tokens,
-                        t.label,
-                        false,
-                        max_text_width,
-                        None,
-                    );
+                    rich_body(ui, state, &markdown_view::View {
+                        t, s, store, color: t.label, edited: false, network: true, tags: &[],
+                    }, &tokens, max_text_width, None);
                 }
                 panel_attachments(
                     ui,
@@ -6706,11 +6696,14 @@ fn message_body(
                 && !tagged
                 && !shown_content.contains("@mention(")
                 && (emoji::jumbo(&tokens) || markdown::is_plain(&shown_content));
+            let view = markdown_view::View {
+                t, s, store, color, edited: message.edited, network: allow_network, tags: &tags,
+            };
             if plain {
                 // URL hit-testing needs individual widgets even for otherwise
                 // plain text. Keeping a separate LayoutJob fast path made
                 // normal messages skip the hyperlink path entirely.
-                rich_body(ui, t, s, store, state, &tokens, color, message.edited, width, prefix.take());
+                rich_body(ui, state, &view, &tokens, width, prefix.take());
             } else {
                 let prepared = markdown::substitute_mentions(&shown_content, &bindings);
                 let key = prepared.key();
@@ -6724,15 +6717,6 @@ fn message_body(
                         state.markdown_cache.insert(key, blocks.clone());
                         blocks
                     }
-                };
-                let view = markdown_view::View {
-                    t,
-                    s,
-                    store,
-                    color,
-                    edited: message.edited,
-                    network: allow_network,
-                    tags: &tags,
                 };
                 markdown_view::draw(ui, state, &view, &blocks, width, prefix.take());
             }
@@ -6970,16 +6954,13 @@ pub(super) fn muted_link_color(ui: &egui::Ui, t: &Tokens) -> Color32 {
 
 fn rich_body(
     ui: &mut egui::Ui,
-    t: &Tokens,
-    s: &Strings,
-    store: &Store,
     state: &mut UiState,
+    view: &markdown_view::View<'_>,
     tokens: &[emoji::Token],
-    color: Color32,
-    edited: bool,
     width: f32,
     prefix: Option<&mut dyn FnMut(&mut egui::Ui)>,
 ) {
+    let (t, s, store, color, edited) = (view.t, view.s, view.store, view.color, view.edited);
     // Compact chat keeps emoji inline with the sender, like ordinary text.
     let size = if prefix.is_some() { text::message().size + 2.0 } else if emoji::jumbo(tokens) { 34.0 } else { 18.0 };
     let font = text::message();
