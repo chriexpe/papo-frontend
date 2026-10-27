@@ -67,6 +67,22 @@
   </content_rating>
 
   <releases>
+    <release version="0.9.0" date="2026-10-27">
+      <description>
+        <p>Novo aplicativo Android nativo e melhorias no cliente desktop.</p>
+        <p xml:lang="en">New native Android app and desktop client improvements.</p>
+        <ul>
+          <li>Interface Android em Compose com chamadas, mídia e histórico integrados ao núcleo compartilhado</li>
+          <li xml:lang="en">Compose Android interface with calls, media and history integrated with the shared core</li>
+          <li>Prévia de Markdown ao escrever, layout extra compacto e controles de aparência</li>
+          <li xml:lang="en">Live Markdown composition preview, extra compact layout and appearance controls</li>
+          <li>Controles individuais de áudio, gerenciamento de webhooks e melhorias nas notificações e permissões</li>
+          <li xml:lang="en">Participant audio controls, webhook management, and notification and permission improvements</li>
+          <li>Correções no ciclo de vida das chamadas, na persistência de mensagens e no encerramento no Linux</li>
+          <li xml:lang="en">Fixes for call lifecycle, message persistence and Linux shutdown</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.8.5" date="2026-10-18">
       <description>
         <p>Melhorias na composição de mensagens, mídia e navegação pelo histórico.</p>

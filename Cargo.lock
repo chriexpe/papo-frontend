@@ -4268,7 +4268,7 @@ dependencies = [
 
 [[package]]
 name = "papo"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -4329,7 +4329,7 @@ dependencies = [
 
 [[package]]
 name = "papo-android"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "android_logger",
  "base64",
@@ -4349,7 +4349,7 @@ dependencies = [
 
 [[package]]
 name = "papo-call"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "gstreamer",
  "gstreamer-app",
@@ -4364,7 +4364,7 @@ dependencies = [
 
 [[package]]
 name = "papo-core"
-version = "0.8.5"
+version = "0.9.0"
 dependencies = [
  "base64",
  "chrono",
