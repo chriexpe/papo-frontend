@@ -930,6 +930,9 @@
     <string name="ui_density">"Interface density"</string>
     <string name="ui_density_description">"Adjust spacing and control sizes on this device. Touch targets and Android text scaling are preserved."</string>
     <string name="density_compact">"Compact"</string>
+    <string name="density_extra_compact">"Extra compact"</string>
+    <string name="density_extra_compact_stacked">"Extra compact (stacked)"</string>
+    <string name="extra_compact_description">"Extra compact puts names and messages on one line; stacked puts the message below the name. Both hide avatars and are saved on this device for this account."</string>
     <string name="density_normal">"Normal"</string>
     <string name="density_comfortable">"Comfortable"</string>
     <string name="text_small">"Small"</string>

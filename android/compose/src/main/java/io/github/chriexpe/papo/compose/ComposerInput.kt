@@ -28,12 +28,14 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.*
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import io.github.chriexpe.papo.core.ComposerMarkdownSpan
 import io.github.chriexpe.papo.core.EmojiView
 import java.nio.ByteBuffer
 import kotlin.math.roundToInt
@@ -45,12 +47,23 @@ internal data class ComposerSticker(val range: IntRange, val id: String, val nam
 
 private val composerEveryone = Regex("(?i)(?<![\\p{L}\\p{N}_<])@everyone\\b")
 
-internal fun composerStickers(text: String, emojis: List<EmojiView>): List<ComposerSticker> {
+internal fun composerStickers(
+    text: String,
+    emojis: List<EmojiView>,
+    markdown: List<ComposerMarkdownSpan> = emptyList(),
+): List<ComposerSticker> {
     val byName = emojis.associateBy { it.name }
     return Regex(":([A-Za-z0-9_+\\-]+):")
         .findAll(text)
         .mapNotNull { m ->
             byName[m.groupValues[1]]?.let { ComposerSticker(m.range, it.id, it.name) }
+        }
+        .filter { sticker ->
+            markdown.none { span ->
+                (span.kind == "code" || span.kind == "code-block") &&
+                    span.start.toInt() <= sticker.range.first &&
+                    span.end.toInt() > sticker.range.last
+            }
         }
         .toList()
 }
@@ -63,6 +76,10 @@ internal class ComposerProjection(
     loaded: Set<String>,
     color: Color,
     highlightEveryone: Boolean = false,
+    markdown: List<ComposerMarkdownSpan> = composerMarkdownSpans(draft),
+    typography: Typography = Typography(),
+    codeBackground: Color = Color.Transparent,
+    quoteColor: Color = color,
 ) : VisualTransformation {
     private val forward = IntArray(draft.text.length + 1)
     private val reverse = mutableListOf(0)
@@ -93,6 +110,14 @@ internal class ComposerProjection(
         }
         annotated = buildAnnotatedString {
             append(plain.toString())
+            addComposerMarkdown(
+                markdown,
+                { forward[it.coerceIn(forward.indices)] },
+                typography,
+                color,
+                codeBackground,
+                quoteColor,
+            )
             positions.forEach { addStyle(SpanStyle(fontSize = 28.sp), it.offset, it.offset + 1) }
             if (highlightEveryone)
                 composerEveryone.findAll(draft.text).forEach {
@@ -151,13 +176,17 @@ internal fun ComposerInput(
     enabled: Boolean = true,
     channelId: String = server.selected,
     onSubmit: (() -> Unit)? = null,
+    markdown: List<ComposerMarkdownSpan>? = null,
 ) {
     val dimensions = LocalUiDimensions.current
     val formatting = remember(server.url, server.me, server.selected) { ComposerFormatting() }
     DisposableEffect(formatting) { onDispose { formatting.close() } }
     SideEffect { formatting.sync(draft) }
+    val preview = markdown ?: rememberComposerMarkdown(draft)
     val stickers =
-        remember(draft.text, server.emojis) { composerStickers(draft.text, server.emojis) }
+        remember(draft.text, server.emojis, preview) {
+            composerStickers(draft.text, server.emojis, preview)
+        }
     val ids = remember(stickers) { stickers.map { it.id }.toSet() }
     val owner = "${server.url}/${server.me}/${server.emojis.joinToString {it.revision}}"
     val pixels = with(LocalDensity.current) { 28.sp.toPx().roundToInt().coerceAtLeast(1) }
@@ -197,9 +226,33 @@ internal fun ComposerInput(
     val images = if (loaded.owner == owner && loaded.size == pixels) loaded.images else emptyMap()
     val color = MaterialTheme.colorScheme.primary
     val highlightEveryone = server.canSuggestEveryone(channelId)
+    val typography = MaterialTheme.typography
+    val codeBackground = MaterialTheme.colorScheme.surfaceContainerHighest
+    val quoteColor = MaterialTheme.colorScheme.onSurfaceVariant
     val projection =
-        remember(draft.text, draft.mentions, stickers, images.keys, color, highlightEveryone) {
-            ComposerProjection(draft, stickers, images.keys, color, highlightEveryone)
+        remember(
+            draft.text,
+            draft.mentions,
+            stickers,
+            images.keys,
+            color,
+            highlightEveryone,
+            preview,
+            typography,
+            codeBackground,
+            quoteColor,
+        ) {
+            ComposerProjection(
+                draft,
+                stickers,
+                images.keys,
+                color,
+                highlightEveryone,
+                preview,
+                typography,
+                codeBackground,
+                quoteColor,
+            )
         }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var frame by remember { mutableIntStateOf(0) }
@@ -366,6 +419,16 @@ internal fun ComposerInput(
                 MaterialTheme.typography.bodyLarge.copy(
                     color = MaterialTheme.colorScheme.onSurface,
                     lineHeight = if (projection.positions.isEmpty()) 24.sp else 32.sp,
+                    // Allow a larger heading font to grow its line without adding paragraph
+                    // boundaries or extra space to the draft's other lines.
+                    lineHeightStyle =
+                        if (preview.any { it.kind == "heading" })
+                            LineHeightStyle(
+                                LineHeightStyle.Alignment.Proportional,
+                                LineHeightStyle.Trim.None,
+                                LineHeightStyle.Mode.Minimum,
+                            )
+                        else MaterialTheme.typography.bodyLarge.lineHeightStyle,
                 ),
             cursorBrush = SolidColor(color),
             visualTransformation = projection,

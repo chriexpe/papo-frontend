@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
 
@@ -116,45 +117,100 @@ internal fun AppearanceSettings(server: ServerState, model: PapoViewModel) {
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.Top,
-                    ) {
-                        if (prefs.avatars) Avatar("Ana")
+                    if (messageAppearance.extraCompact)
                         Column(
-                            verticalArrangement = Arrangement.spacedBy(messageAppearance.headingGap)
+                            verticalArrangement =
+                                Arrangement.spacedBy(messageAppearance.continuationGap)
                         ) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text("Ana", fontWeight = FontWeight.SemiBold)
-                                if (prefs.timestamps)
-                                    Text(
-                                        "14:02",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                            }
+                            listOf(
+                                    ui(R.string.a_little_more_like_you),
+                                    ui(R.string.appearance_preview_second),
+                                    ui(R.string.appearance_preview_third),
+                                )
+                                .forEachIndexed { index, body ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        if (prefs.timestamps)
+                                            CompactMessageTime(
+                                                "14:02",
+                                                index == 0,
+                                                false,
+                                                "preview-$index",
+                                            )
+                                        if (messageAppearance.inlineAuthor)
+                                            Text(
+                                                androidx.compose.ui.text.buildAnnotatedString {
+                                                    withStyle(
+                                                        androidx.compose.ui.text.SpanStyle(
+                                                            fontWeight = FontWeight.SemiBold
+                                                        )
+                                                    ) {
+                                                        append("Ana  ")
+                                                    }
+                                                    append(body)
+                                                },
+                                                lineHeight = messageAppearance.lineHeight,
+                                            )
+                                        else
+                                            Column(
+                                                verticalArrangement =
+                                                    Arrangement.spacedBy(
+                                                        messageAppearance.headingGap
+                                                    )
+                                            ) {
+                                                Text(
+                                                    "Ana",
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    lineHeight = messageAppearance.lineHeight,
+                                                )
+                                                Text(
+                                                    body,
+                                                    lineHeight = messageAppearance.lineHeight,
+                                                )
+                                            }
+                                    }
+                                }
+                        }
+                    else
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            if (prefs.avatars) Avatar("Ana")
                             Column(
                                 verticalArrangement =
-                                    Arrangement.spacedBy(messageAppearance.continuationGap)
+                                    Arrangement.spacedBy(messageAppearance.headingGap)
                             ) {
-                                Text(
-                                    ui(R.string.a_little_more_like_you),
-                                    lineHeight = messageAppearance.lineHeight,
-                                )
-                                Text(
-                                    ui(R.string.appearance_preview_second),
-                                    lineHeight = messageAppearance.lineHeight,
-                                )
-                                Text(
-                                    ui(R.string.appearance_preview_third),
-                                    lineHeight = messageAppearance.lineHeight,
-                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text("Ana", fontWeight = FontWeight.SemiBold)
+                                    if (prefs.timestamps)
+                                        Text(
+                                            "14:02",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                }
+                                Column(
+                                    verticalArrangement =
+                                        Arrangement.spacedBy(messageAppearance.continuationGap)
+                                ) {
+                                    Text(
+                                        ui(R.string.a_little_more_like_you),
+                                        lineHeight = messageAppearance.lineHeight,
+                                    )
+                                    Text(
+                                        ui(R.string.appearance_preview_second),
+                                        lineHeight = messageAppearance.lineHeight,
+                                    )
+                                    Text(
+                                        ui(R.string.appearance_preview_third),
+                                        lineHeight = messageAppearance.lineHeight,
+                                    )
+                                }
                             }
                         }
-                    }
                     GlassPill {
                         Text(
                             ui(R.string.message_channel, "design-ui"),

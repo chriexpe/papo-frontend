@@ -930,6 +930,9 @@
     <string name="ui_density">"Densidade da interface"</string>
     <string name="ui_density_description">"Ajuste o espaçamento e o tamanho dos controles neste aparelho. As áreas de toque e o tamanho de texto do Android são preservados."</string>
     <string name="density_compact">"Compacta"</string>
+    <string name="density_extra_compact">"Extra compacta"</string>
+    <string name="density_extra_compact_stacked">"Extra compacta (em blocos)"</string>
+    <string name="extra_compact_description">"Extra compacta mostra nomes e mensagens na mesma linha; em blocos, a mensagem fica abaixo do nome. Ambas ocultam avatares e são salvas neste dispositivo para esta conta."</string>
     <string name="density_normal">"Normal"</string>
     <string name="density_comfortable">"Confortável"</string>
     <string name="text_small">"Pequeno"</string>

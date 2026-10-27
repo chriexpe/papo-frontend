@@ -48,10 +48,49 @@ internal fun ServerState.retainPresentation(previous: ServerState?): ServerState
 }
 
 /** Timeline-derived lookups are rebuilt only when messages change, never on pixel scrolls. */
-internal class MessageTimelineIndex(val messages: List<ChatMessage>) {
+internal class MessageTimelineIndex(
+    val messages: List<ChatMessage>,
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+) {
     val byId = messages.associateBy { it.id }
     val orderedIds = messages.map { it.id }
     val ids = orderedIds.toSet()
     val reversedMessages = messages.asReversed()
     val reversedIds = orderedIds.asReversed()
+    val timestampIds =
+        messages
+            .filterIndexed { index, message ->
+                index == 0 ||
+                    Math.floorDiv(messages[index - 1].at, 60_000) !=
+                        Math.floorDiv(message.at, 60_000)
+            }
+            .map { it.id }
+            .toSet()
+    val dateStarts =
+        messages
+            .filterIndexed { index, message ->
+                index == 0 ||
+                    java.time.Instant.ofEpochMilli(messages[index - 1].at)
+                        .atZone(zone)
+                        .toLocalDate() !=
+                        java.time.Instant.ofEpochMilli(message.at).atZone(zone).toLocalDate()
+            }
+            .associate { it.id to java.time.Instant.ofEpochMilli(it.at).atZone(zone).toLocalDate() }
+    // Reverse layout puts each date row AFTER its first message in list order, above it onscreen.
+    val rows = buildList {
+        reversedMessages.forEach { message ->
+            add(TimelineRow(message.id, message = message))
+            dateStarts[message.id]?.let { add(TimelineRow("date/${message.id}", date = it)) }
+        }
+    }
+    private val positions =
+        rows.mapIndexedNotNull { index, row -> row.message?.let { it.id to index } }.toMap()
+
+    fun position(id: String): Int? = positions[id]
 }
+
+internal data class TimelineRow(
+    val key: String,
+    val message: ChatMessage? = null,
+    val date: java.time.LocalDate? = null,
+)

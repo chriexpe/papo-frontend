@@ -50,9 +50,11 @@ internal fun MessageRow(
     onReactionPeople: (Reaction) -> Unit,
     media: @Composable () -> Unit,
     replyMessage: ChatMessage? = server.messages.firstOrNull { it.id == message.replyTo },
+    showCompactTime: Boolean = true,
 ) {
     val appearance = LocalClientPreferences.current
     val messageAppearance = LocalMessageAppearance.current
+    val extraCompact = messageAppearance.extraCompact
     val headingHeight =
         maxOf(
             24.dp,
@@ -118,17 +120,19 @@ internal fun MessageRow(
                     onLongClickLabel = ui(R.string.message_actions),
                 )
                 .padding(
-                    start = 12.dp,
-                    end = 12.dp,
+                    start = if (extraCompact) 0.dp else 12.dp,
+                    end = if (extraCompact) 0.dp else 12.dp,
                     // Put all separation before a message. Padding both sides made the first
                     // continuation inherit the author row's larger bottom padding.
                     top =
                         if (grouped) messageAppearance.continuationGap
                         else messageAppearance.authorGap,
                 ),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (extraCompact) 6.dp else 12.dp),
         ) {
-            if (appearance.avatars) {
+            if (extraCompact && appearance.timestamps)
+                CompactMessageTime(time, showCompactTime, message.replyTo.isNotBlank(), message.id)
+            if (appearance.avatars && !extraCompact) {
                 if (grouped) Spacer(Modifier.width(48.dp))
                 else if (external != null)
                     ExternalAvatar(
@@ -151,7 +155,7 @@ internal fun MessageRow(
                 Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(messageAppearance.headingGap),
             ) {
-                if (!grouped)
+                if (!extraCompact && !grouped)
                     MessageAuthorHeading(
                         message,
                         time,
@@ -161,7 +165,9 @@ internal fun MessageRow(
                         appearance.timestamps,
                         onActions,
                     )
-                if (message.replyTo.isNotBlank())
+                if (message.replyTo.isNotBlank() && extraCompact)
+                    CompactReplyPreview(message, replyMessage) { onJump(message.replyTo) }
+                if (message.replyTo.isNotBlank() && !extraCompact)
                     Row(
                         Modifier.testTag("reply-preview-${message.id}")
                             .clip(RoundedCornerShape(8.dp))
@@ -209,8 +215,18 @@ internal fun MessageRow(
                             color = MaterialTheme.colorScheme.primary,
                         )
                     }
-                MessageContent(message, server, model, onActions, media)
-                if (grouped && message.edited)
+                if (extraCompact && !messageAppearance.inlineAuthor)
+                    MarkdownPrefix(compactAuthorPrefix(message))
+                MessageContent(
+                    message,
+                    server,
+                    model,
+                    onActions,
+                    prefix =
+                        if (messageAppearance.inlineAuthor) compactAuthorPrefix(message) else null,
+                    media = media,
+                )
+                if ((grouped || extraCompact) && message.edited)
                     Text(
                         if (appearance.timestamps) "${ui(R.string.edited)} · $time"
                         else ui(R.string.edited),

@@ -33,6 +33,11 @@ import io.github.chriexpe.papo.core.MarkdownDocument
 import io.github.chriexpe.papo.core.MarkdownSpan
 import kotlinx.coroutines.launch
 
+internal data class MessageTextPrefix(
+    val text: AnnotatedString,
+    val inline: Map<String, InlineTextContent> = emptyMap(),
+)
+
 /**
  * The snapshot already contains the shared core parser's tree. No async parse or WebView: reading
  * boundaries see the final rich-text layout immediately.
@@ -43,13 +48,43 @@ internal fun MessageText(
     server: ServerState,
     model: PapoViewModel,
     onActions: () -> Unit = {},
+    prefix: MessageTextPrefix? = null,
 ) {
     val document = remember(message.markdown, message.content) { message.document() }
     val hidden =
         remember(message.content, message.embeds, document) {
             message.nativeLinks().map { it.url }.toSet()
         }
-    MarkdownBlocks(document, document.roots, server, model, hidden, onActions, message.embeds)
+    if (
+        prefix != null &&
+            document.nodes.getOrNull(document.roots.firstOrNull()?.toInt() ?: -1)?.kind !=
+                "paragraph"
+    )
+        MarkdownPrefix(prefix)
+    MarkdownBlocks(
+        document,
+        document.roots,
+        server,
+        model,
+        hidden,
+        onActions,
+        message.embeds,
+        prefix =
+            prefix.takeIf {
+                document.nodes.getOrNull(document.roots.firstOrNull()?.toInt() ?: -1)?.kind ==
+                    "paragraph"
+            },
+    )
+}
+
+@Composable
+internal fun MarkdownPrefix(prefix: MessageTextPrefix) {
+    Text(
+        prefix.text,
+        inlineContent = prefix.inline,
+        style = MaterialTheme.typography.bodyLarge,
+        lineHeight = LocalMessageAppearance.current.lineHeight,
+    )
 }
 
 @Composable
@@ -62,6 +97,7 @@ private fun MarkdownBlocks(
     onActions: () -> Unit,
     embeds: List<EmbedView>,
     depth: Int = 0,
+    prefix: MessageTextPrefix? = null,
 ) {
     if (depth > 64) return
     Column(verticalArrangement = Arrangement.spacedBy(LocalMessageAppearance.current.contentGap)) {
@@ -91,6 +127,7 @@ private fun MarkdownBlocks(
                         embeds,
                         style = style,
                         onActions = onActions,
+                        prefix = prefix.takeIf { index == indices.firstOrNull() },
                     )
                 }
                 "quote" -> {
@@ -261,12 +298,21 @@ private fun MarkdownParagraph(
     style: TextStyle = MaterialTheme.typography.bodyLarge,
     textAlign: TextAlign = TextAlign.Start,
     onActions: () -> Unit,
+    prefix: MessageTextPrefix? = null,
 ) {
     var start = 0
     spans.forEachIndexed { index, span ->
         if (span.kind == "image") {
-            if (index > start)
-                MarkdownInline(spans.subList(start, index), server, model, hidden, style, textAlign)
+            if (index > start || (start == 0 && prefix != null))
+                MarkdownInline(
+                    spans.subList(start, index),
+                    server,
+                    model,
+                    hidden,
+                    style,
+                    textAlign,
+                    prefix.takeIf { start == 0 },
+                )
             val url = markdownHref(server.url, span.link)?.takeIf(::isPublicLink)
             if (url != null) {
                 val embed = embeds.firstOrNull { it.url == url && it.hasImage }
@@ -294,8 +340,16 @@ private fun MarkdownParagraph(
             start = index + 1
         }
     }
-    if (start < spans.size)
-        MarkdownInline(spans.subList(start, spans.size), server, model, hidden, style, textAlign)
+    if (start < spans.size || (spans.isEmpty() && prefix != null))
+        MarkdownInline(
+            spans.subList(start, spans.size),
+            server,
+            model,
+            hidden,
+            style,
+            textAlign,
+            prefix.takeIf { start == 0 },
+        )
 }
 
 private data class MarkdownPart(
@@ -358,47 +412,54 @@ private fun MarkdownInline(
     hidden: Set<String>,
     style: TextStyle,
     textAlign: TextAlign,
+    prefix: MessageTextPrefix? = null,
 ) {
     var detail by remember(server.url, server.me) { mutableStateOf<String?>(null) }
     val openProfile by rememberUpdatedState(LocalOpenProfile.current)
     val color = MaterialTheme.colorScheme.primary
     val customs = remember(server.emojis) { server.emojis.associateBy { it.name } }
     val parts = remember(spans, customs, hidden) { markdownParts(spans, customs.keys, hidden) }
-    if (parts.all { it.text.isBlank() }) return
+    if (prefix == null && parts.all { it.text.isBlank() }) return
     val jumbo =
-        parts.count { it.sticker.isNotBlank() } in 1..3 &&
+        !LocalMessageAppearance.current.extraCompact &&
+            prefix == null &&
+            parts.count { it.sticker.isNotBlank() } in 1..3 &&
             parts.all { it.sticker.isNotBlank() || it.text.isBlank() }
     val size = if (jumbo) 72.sp else 24.sp
     val inline =
-        parts
-            .filter { it.sticker.isNotBlank() }
-            .associate { part ->
-                val emoji = customs.getValue(part.sticker)
-                emoji.id to
-                    InlineTextContent(
-                        Placeholder(size, size, PlaceholderVerticalAlign.TextCenter)
-                    ) {
-                        Box(
-                            Modifier.fillMaxSize().testTag("message-sticker-${emoji.id}").clickable(
-                                onClickLabel = ui(R.string.view_sticker_1_s, emoji.name)
-                            ) {
-                                detail = emoji.id
-                            },
-                            contentAlignment = Alignment.Center,
+        prefix?.inline.orEmpty() +
+            parts
+                .filter { it.sticker.isNotBlank() }
+                .associate { part ->
+                    val emoji = customs.getValue(part.sticker)
+                    emoji.id to
+                        InlineTextContent(
+                            Placeholder(size, size, PlaceholderVerticalAlign.TextCenter)
                         ) {
-                            EmojiGlyph(
-                                server,
-                                EmojiChoice(emoji.id, true, emoji.name),
-                                if (jumbo) 72 else 24,
-                                model,
-                            )
+                            Box(
+                                Modifier.fillMaxSize()
+                                    .testTag("message-sticker-${emoji.id}")
+                                    .clickable(
+                                        onClickLabel = ui(R.string.view_sticker_1_s, emoji.name)
+                                    ) {
+                                        detail = emoji.id
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                EmojiGlyph(
+                                    server,
+                                    EmojiChoice(emoji.id, true, emoji.name),
+                                    if (jumbo) 72 else 24,
+                                    model,
+                                )
+                            }
                         }
-                    }
-            }
+                }
     val codeColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val annotated =
-        remember(parts, color, codeColor, server.url) {
+        remember(parts, color, codeColor, server.url, prefix) {
             buildAnnotatedString {
+                prefix?.let { append(it.text) }
                 parts.forEach { part ->
                     val span = part.span
                     val spanStyle =

@@ -7,9 +7,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
+import io.github.chriexpe.papo.core.ComposerMarkdownSpan
 
 /**
  * Measure against the compact editor's width even after expansion, avoiding a wrap/unwrap loop. The
@@ -18,13 +20,29 @@ import androidx.compose.ui.unit.dp
 @Composable
 internal fun AdaptiveComposer(
     draft: ComposerDraft,
-    editor: @Composable (Modifier) -> Unit,
+    editor: @Composable (Modifier, List<ComposerMarkdownSpan>) -> Unit,
     actions: @Composable () -> Unit,
 ) {
     val dimensions = LocalUiDimensions.current
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer()
     val style = MaterialTheme.typography.bodyLarge
+    val markdown = rememberComposerMarkdown(draft)
+    val typography = MaterialTheme.typography
+    val measured =
+        remember(draft.text, markdown, typography) {
+            buildAnnotatedString {
+                append(draft.text)
+                addComposerMarkdown(
+                    markdown,
+                    { it },
+                    typography,
+                    androidx.compose.ui.graphics.Color.Unspecified,
+                    androidx.compose.ui.graphics.Color.Transparent,
+                    androidx.compose.ui.graphics.Color.Unspecified,
+                )
+            }
+        }
     BoxWithConstraints(Modifier.fillMaxWidth().padding(dimensions.surfaceInset)) {
         val actionWidth = dimensions.touchSize * 3
         val compactTextWidth =
@@ -35,7 +53,7 @@ internal fun AdaptiveComposer(
                 ('\n' in draft.text ||
                     measurer
                         .measure(
-                            draft.text,
+                            measured,
                             style,
                             maxLines = 2,
                             constraints = Constraints(maxWidth = compactTextWidth),
@@ -44,7 +62,7 @@ internal fun AdaptiveComposer(
         Layout(
             modifier = Modifier.fillMaxWidth().testTag("adaptive-composer"),
             content = {
-                editor(Modifier.testTag("composer-editor-region"))
+                editor(Modifier.testTag("composer-editor-region"), markdown)
                 Row(Modifier.width(actionWidth).testTag("composer-actions")) { actions() }
             },
         ) { children, constraints ->

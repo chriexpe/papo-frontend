@@ -20,7 +20,12 @@ internal enum class AccountFontSize(val value: String, val scale: Float, val lab
 internal enum class MessageDensity(val value: String, val labelId: Int) {
     Compact("compact", R.string.density_compact),
     Normal("normal", R.string.density_normal),
-    Comfortable("comfortable", R.string.density_comfortable);
+    Comfortable("comfortable", R.string.density_comfortable),
+    ExtraCompact("extra-compact", R.string.density_extra_compact),
+    ExtraCompactStacked("extra-compact-stacked", R.string.density_extra_compact_stacked);
+
+    val localPreview
+        get() = this == ExtraCompact || this == ExtraCompactStacked
 
     companion object {
         fun from(value: String?) = entries.firstOrNull { it.value == value } ?: Normal
@@ -35,22 +40,30 @@ internal data class MessageAppearance(
 ) {
     private fun <T> choose(compact: T, normal: T, comfortable: T) =
         when (density) {
-            MessageDensity.Compact -> compact
+            MessageDensity.Compact,
+            MessageDensity.ExtraCompact,
+            MessageDensity.ExtraCompactStacked -> compact
             MessageDensity.Normal -> normal
             MessageDensity.Comfortable -> comfortable
         }
 
     val lineHeight
-        get() = (choose(22f, 24f, 28f) * font.scale).sp
+        get() = ((if (extraCompact) 20f else choose(22f, 24f, 28f)) * font.scale).sp
+
+    val extraCompact
+        get() = density.localPreview
+
+    val inlineAuthor
+        get() = density == MessageDensity.ExtraCompact
 
     val continuationGap
         get() = choose(0.dp, 2.dp, 6.dp)
 
     val authorGap
-        get() = choose(4.dp, 8.dp, 16.dp)
+        get() = if (extraCompact) 6.dp else choose(4.dp, 8.dp, 16.dp)
 
     val headingGap
-        get() = choose(2.dp, 2.dp, 4.dp)
+        get() = if (inlineAuthor) 0.dp else choose(2.dp, 2.dp, 4.dp)
 
     val contentGap
         get() = choose(2.dp, 4.dp, 8.dp)

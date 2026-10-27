@@ -65,6 +65,7 @@ internal fun TimelineMessage(
     mediaVisible: Boolean,
     activePlayer: String?,
     interactions: TimelineInteractions,
+    showCompactTime: Boolean = true,
 ) {
     MessagePresentationScope(presentation, model) {
         CompositionLocalProvider(
@@ -101,6 +102,7 @@ internal fun TimelineMessage(
                     )
                 },
                 replyMessage = replyMessage,
+                showCompactTime = showCompactTime,
             )
         }
     }

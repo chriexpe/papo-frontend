@@ -127,6 +127,18 @@ the draft is preserved. Conversation Back returns to its Chats or Direct list. C
 to the destination it opened from; Servers and Direct return to Chats before
 the activity can exit.
 
+**Appearance → Message density → Extra compact** is a device-local preview for the
+current account. The inline variant repeats the author beside each message; **Extra compact
+(stacked)** places the body below the author. Both use a narrow timestamp gutter
+with one time per minute and omit avatars. Author changes have a small spacing gap,
+and external APP badges reserve their full measured label and padding. Rich text, provider
+media, replies, message actions and account text sizing use their existing renderers.
+The other density choices retain their account sync behavior.
+
+Conversation history has centered Today, Yesterday or localized date headers at
+local-calendar day boundaries, matching egui. Headers have separate lazy-list keys;
+message jumps, saved reading positions and viewport read receipts target messages.
+
 Form failures stay inline, connection state has a persistent indicator, delivery
 state stays on the message, and app-wide failures use one dismissible feedback
 pill. There are no per-screen Android Toast styles.
@@ -290,6 +302,14 @@ compositions and paste preserve native text and selections while tracking an
 existing closer. Programmatic inserts/reset do not infer formatting pairs.
 Android converts UTF-16 cursor positions to core's Unicode scalar offsets;
 formatting edits retain mention bindings and atomic sticker deletion.
+
+The native text box previews headings, bold, italic, strikethrough, code, links
+and quotes as you type using source ranges from that same CommonMark parser.
+Markdown markers stay visible and editable; cursor positions, selections, IME
+composition and the sent source remain unchanged. Heading sizes follow account
+typography and participate in composer wrapping. Bound mention labels cannot
+introduce Markdown, and sticker shortcodes inside code stay literal. Oversized
+or excessively nested drafts fall back to plain editing.
 
 The chat header has a pin button immediately left of People. Pins open an
 expandable sheet with full Markdown, playable attachments and supported provider
