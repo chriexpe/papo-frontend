@@ -244,6 +244,7 @@ impl Fixture {
         live.runtime.net.session.set_token(Some("fixture".into()));
         NativeClient {
             backend: Mutex::new(Some(Backend::Live(Box::new(live)))),
+            previews: Default::default(),
         }
     }
     fn expect(

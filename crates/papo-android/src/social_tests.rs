@@ -183,6 +183,7 @@ fn live_social_requests_are_acknowledged_and_use_the_canonical_core_contract() {
     live.runtime.net.session.set_token(Some("fixture".into()));
     let native = NativeClient {
         backend: Mutex::new(Some(Backend::Live(Box::new(live)))),
+        previews: Default::default(),
     };
     let dm = r#"{"id":"dm-ana","user":{"id":"ana","username":"ana","nickname":"Ana"},"created_at":"2026-10-23T12:00:00Z","unread_count":2}"#;
     script.lock().unwrap().extend([

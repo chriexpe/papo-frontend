@@ -55,6 +55,7 @@ impl SecretStore for ForeignSecrets {
 #[derive(uniffi::Object)]
 pub struct NativeClient {
     pub(super) backend: Mutex<Option<Backend>>,
+    pub(crate) previews: OnceLock<papo_core::preview::PreviewCoordinator>,
 }
 pub(super) enum Backend {
     Live(Box<Client>),
@@ -106,6 +107,7 @@ impl NativeClient {
         .map_err(CoreError::from)?;
         Ok(Arc::new(Self {
             backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+            previews: OnceLock::new(),
         }))
     }
 
@@ -113,6 +115,7 @@ impl NativeClient {
     pub fn demo() -> Arc<Self> {
         Arc::new(Self {
             backend: Mutex::new(Some(Backend::Demo(Box::default()))),
+            previews: OnceLock::new(),
         })
     }
 

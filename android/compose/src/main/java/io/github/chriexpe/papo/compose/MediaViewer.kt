@@ -38,6 +38,7 @@ import androidx.compose.ui.window.DialogProperties
 import coil3.request.ImageRequest
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
+import io.github.chriexpe.papo.core.EmbedDetailsView
 import io.github.chriexpe.papo.core.EmbedView
 import io.github.chriexpe.papo.core.MediaResource
 import java.io.File
@@ -59,6 +60,8 @@ internal data class ViewerMedia(
     val gif: GifChoice? = null,
     val url: String = "",
     val playback: PlaybackHandle? = null,
+    val details: EmbedDetailsView? = null,
+    val embedSource: String = "",
 )
 
 internal val LocalMediaViewer =
@@ -103,6 +106,13 @@ internal fun MediaViewer(
     var offset by remember(media.id) { mutableStateOf(Offset.Zero) }
     var download by rememberSaveable(media.id) { mutableStateOf("") }
     var saving by remember(media.id) { mutableStateOf(false) }
+    var controlsVisible by remember(media.id) { mutableStateOf(true) }
+    val resolvedDetails =
+        media.embed
+            ?.takeIf { media.kind == "video" && it.sourceType != "custom" }
+            ?.let {
+                rememberEmbedDetails(it, server, model, media.embedSource.ifBlank { it.url }, true)
+            } ?: media.details
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val haze = remember { HazeState() }
@@ -273,63 +283,78 @@ internal fun MediaViewer(
                                     handoff = media.playback,
                                     fullscreen = true,
                                     onFullscreen = { onClose() },
+                                    onControlsVisible = { controlsVisible = it },
                                 )
+                                if (media.kind == "video" && controlsVisible)
+                                    media.embed?.let {
+                                        EmbedVideoOverlay(it, server, model, resolvedDetails)
+                                    }
                             } else ViewerImage(server, model, media, onRatio = { ratio = it })
                         }
                     }
-                    GlassPill(
-                        Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp),
-                        radius = 28,
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (saving)
-                                CircularProgressIndicator(
-                                    Modifier.padding(16.dp).size(24.dp),
-                                    strokeWidth = 2.dp,
-                                )
-                            else
-                                IconButton(
-                                    enabled = !download.startsWith("Saved to "),
-                                    onClick = {
-                                        saving = true
-                                        download = ""
-                                        scope.launch {
-                                            try {
-                                                downloadViewerMedia(context, server, model, media)
-                                                download =
-                                                    ui(
-                                                        R.string.saved_to_1_s,
-                                                        downloadLocation(context),
+                    if (media.kind != "video" || controlsVisible)
+                        GlassPill(
+                            Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp),
+                            radius = 28,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (saving)
+                                    CircularProgressIndicator(
+                                        Modifier.padding(16.dp).size(24.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                else
+                                    IconButton(
+                                        enabled = !download.startsWith("Saved to "),
+                                        onClick = {
+                                            saving = true
+                                            download = ""
+                                            scope.launch {
+                                                try {
+                                                    downloadViewerMedia(
+                                                        context,
+                                                        server,
+                                                        model,
+                                                        media,
                                                     )
-                                            } catch (e: CancellationException) {
-                                                throw e
-                                            } catch (_: Exception) {
-                                                download =
-                                                    ui(R.string.couldn_t_save_this_media_try_again)
-                                            } finally {
-                                                saving = false
+                                                    download =
+                                                        ui(
+                                                            R.string.saved_to_1_s,
+                                                            downloadLocation(context),
+                                                        )
+                                                } catch (e: CancellationException) {
+                                                    throw e
+                                                } catch (_: Exception) {
+                                                    download =
+                                                        ui(
+                                                            R.string
+                                                                .couldn_t_save_this_media_try_again
+                                                        )
+                                                } finally {
+                                                    saving = false
+                                                }
                                             }
-                                        }
-                                    },
-                                ) {
+                                        },
+                                    ) {
+                                        Icon(
+                                            if (download.startsWith("Saved to "))
+                                                Icons.Outlined.Check
+                                            else Icons.Outlined.Download,
+                                            if (download.startsWith("Saved to ")) "Downloaded"
+                                            else ui(R.string.download_media),
+                                        )
+                                    }
+                                media.gif?.let { GifStar(server, model, it, light = true) }
+                                IconButton(onClick = onClose) {
                                     Icon(
-                                        if (download.startsWith("Saved to ")) Icons.Outlined.Check
-                                        else Icons.Outlined.Download,
-                                        if (download.startsWith("Saved to ")) "Downloaded"
-                                        else ui(R.string.download_media),
+                                        Icons.Outlined.Close,
+                                        if (media.kind in listOf("image", "gif"))
+                                            ui(R.string.close_image)
+                                        else ui(R.string.close_media),
                                     )
                                 }
-                            media.gif?.let { GifStar(server, model, it, light = true) }
-                            IconButton(onClick = onClose) {
-                                Icon(
-                                    Icons.Outlined.Close,
-                                    if (media.kind in listOf("image", "gif"))
-                                        ui(R.string.close_image)
-                                    else ui(R.string.close_media),
-                                )
                             }
                         }
-                    }
                     if (download.isNotBlank())
                         GlassPill(
                             Modifier.align(Alignment.BottomCenter)
@@ -342,7 +367,11 @@ internal fun MediaViewer(
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }
-                    if (download.isBlank())
+                    if (
+                        download.isBlank() &&
+                            (media.kind != "video" || controlsVisible) &&
+                            !(media.kind == "video" && media.embed != null)
+                    )
                         Text(
                             media.title,
                             Modifier.align(Alignment.BottomStart)

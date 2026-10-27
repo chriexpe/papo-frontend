@@ -130,6 +130,7 @@ impl Fixture {
         client.runtime.net.session.set_token(Some("fixture".into()));
         Arc::new(NativeClient {
             backend: Mutex::new(Some(Backend::Live(Box::new(client)))),
+            previews: Default::default(),
         })
     }
 }

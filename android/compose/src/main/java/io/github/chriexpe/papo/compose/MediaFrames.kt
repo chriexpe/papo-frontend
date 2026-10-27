@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 
@@ -53,6 +54,7 @@ internal fun ReservedMedia(
     fallback: Float = 16f / 9f,
     tag: String = "",
     background: Color = Color.Transparent,
+    heightLimit: Dp? = 360.dp,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val frame =
@@ -63,7 +65,7 @@ internal fun ReservedMedia(
         val ratio = frame.ratio ?: fallback
         val available = maxWidth.coerceAtMost(480.dp)
         // Fit both bounds together. A minimum height would letterbox very wide media.
-        val frameWidth = minOf(available, 360.dp * ratio)
+        val frameWidth = heightLimit?.let { minOf(available, it * ratio) } ?: available
         val frameHeight = frameWidth / ratio
         CompositionLocalProvider(LocalMediaFrame provides frame) {
             Box(

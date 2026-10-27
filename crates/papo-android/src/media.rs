@@ -1,3 +1,5 @@
+mod details;
+
 use super::*;
 use base64::Engine;
 use papo_core::api::{

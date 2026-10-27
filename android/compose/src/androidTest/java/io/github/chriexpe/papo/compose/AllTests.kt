@@ -26,6 +26,7 @@ import org.junit.runners.Suite
     MessageLinksTest::class,
     MediaLifecycleTest::class,
     ProviderPlayerTest::class,
+    EmbedPresentationTest::class,
     AccountAppearanceTest::class,
     PapoUiTest::class,
 )
