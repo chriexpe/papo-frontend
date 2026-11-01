@@ -64,7 +64,12 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 @Composable
-internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBack: () -> Unit) {
+internal fun ConversationScreen(
+    server: ServerState,
+    model: PapoViewModel,
+    onBack: () -> Unit,
+    onBackSwipe: (Boolean) -> Unit = {},
+) {
     val channel = server.conversation ?: return
     val draftKey = "${server.url}/${server.me}/${channel.id}"
     val readingState = remember(draftKey) { model.reading(server) }.collectAsStateWithLifecycle()
@@ -733,7 +738,18 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         LocalPlaybackBookmarks provides playbackBookmarks,
         LocalMediaVisibilityRegistry provides mediaVisibility,
     ) {
-        Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
+        Box(
+            Modifier.fillMaxSize()
+                .swipeToGoBack(
+                    enabled = !overlayBlocking && !recording,
+                    onBack = onBack,
+                    onSwiping = onBackSwipe,
+                )
+                // Opaque, so the list rendered underneath never shows through while swiping.
+                .background(MaterialTheme.colorScheme.background)
+                .imePadding()
+                .navigationBarsPadding()
+        ) {
             LazyColumn(
                 state = listState,
                 reverseLayout = true,

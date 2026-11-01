@@ -253,6 +253,7 @@ fun PapoApp(
                 var tab by rememberSaveable { mutableStateOf("Chats") }
                 var settingsOrigin by rememberSaveable { mutableStateOf("Chats") }
                 var inConversation by rememberSaveable { mutableStateOf(false) }
+                var backSwipe by remember { mutableStateOf(false) }
                 val server = state.active
                 val conversationStates = rememberSaveableStateHolder()
                 var conversationScope by rememberSaveable { mutableStateOf("") }
@@ -428,10 +429,11 @@ fun PapoApp(
                                 onRecovery = { model.offerRecovery("") },
                                 command = { model.command(it) },
                             )
-                        } else if (showingConversation && server.conversation != null) {
-                            ConversationScreen(server, model, onBack = leaveConversation)
                         } else {
-                            Box(Modifier.fillMaxSize()) {
+                            val conversationShown = showingConversation && server.conversation != null
+                            LaunchedEffect(conversationShown) { if (!conversationShown) backSwipe = false }
+                            // While a back swipe slides the conversation away, the list sits under it.
+                            if (!conversationShown || backSwipe) Box(Modifier.fillMaxSize()) {
                                 when (tab) {
                                     "Chats",
                                     "Direct" ->
@@ -559,6 +561,13 @@ fun PapoApp(
                                             .padding(16.dp),
                                     )
                             }
+                            if (conversationShown)
+                                ConversationScreen(
+                                    server,
+                                    model,
+                                    onBack = leaveConversation,
+                                    onBackSwipe = { backSwipe = it },
+                                )
                         }
                         if (callUi.screen != null) {
                             Surface(Modifier.fillMaxSize()) {
