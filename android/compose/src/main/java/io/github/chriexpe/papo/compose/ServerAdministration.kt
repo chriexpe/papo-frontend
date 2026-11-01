@@ -478,6 +478,7 @@ internal fun ServerSettingsSheet(
                                 route == "New channel" ->
                                     ChannelAdministrationEditor(
                                         server,
+                                        model,
                                         ui,
                                         null,
                                         false,
@@ -487,6 +488,7 @@ internal fun ServerSettingsSheet(
                                 route == "New category" ->
                                     ChannelAdministrationEditor(
                                         server,
+                                        model,
                                         ui,
                                         null,
                                         true,
@@ -496,6 +498,7 @@ internal fun ServerSettingsSheet(
                                 route.startsWith("Channel/") ->
                                     ChannelAdministrationEditor(
                                         server,
+                                        model,
                                         ui,
                                         route.substringAfter('/'),
                                         false,
