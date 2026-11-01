@@ -9,7 +9,11 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -104,13 +108,22 @@ internal fun MessageRow(
                 .background(spotlight, RoundedCornerShape(18.dp))
                 .drawBehind {
                     if (mentionHighlight) {
-                        val bar = 3.dp.toPx()
-                        drawRoundRect(
-                            mentionAccent,
-                            topLeft = androidx.compose.ui.geometry.Offset(0f, 8.dp.toPx()),
-                            size = Size(bar, size.height - 16.dp.toPx()),
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(bar / 2),
-                        )
+                        // Clip the bar to the tint's rounded shape so it hugs the curved corners.
+                        val shape =
+                            Path().apply {
+                                addRoundRect(
+                                    RoundRect(
+                                        0f,
+                                        0f,
+                                        size.width,
+                                        size.height,
+                                        CornerRadius(18.dp.toPx()),
+                                    )
+                                )
+                            }
+                        clipPath(shape) {
+                            drawRect(mentionAccent, size = Size(3.dp.toPx(), size.height))
+                        }
                     }
                 }
                 .semantics {
