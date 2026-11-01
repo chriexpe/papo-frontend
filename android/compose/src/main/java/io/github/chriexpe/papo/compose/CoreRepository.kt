@@ -377,7 +377,12 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                         val local = localChannelPolicy(url, snapshot.me, channel.id)
                         if (local != null && local != channel.notificationSettings)
                             runCatching {
-                                handle.notificationPolicy(snapshot.me, listOf(channel.id), local, false)
+                                handle.notificationPolicy(
+                                    snapshot.me,
+                                    listOf(channel.id),
+                                    local,
+                                    false,
+                                )
                             }
                     }
                 // A read from this app or another Papo client closes the system notifications,
@@ -385,7 +390,9 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 if (!snapshot.isDemo && snapshot.me.isNotBlank()) {
                     val before = previousSnapshot?.takeIf { it.me == snapshot.me }
                     val wasUnread =
-                        before?.channels.orEmpty().associate { it.id to (it.unread || it.mentions > 0) }
+                        before?.channels.orEmpty().associate {
+                            it.id to (it.unread || it.mentions > 0)
+                        }
                     snapshot.channels
                         .filter { !it.unread && it.mentions == 0 }
                         // First sight of a channel also sweeps reads made while the app was closed.
@@ -780,7 +787,10 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     internal fun setLocalChannelPolicy(server: ServerState, channel: String, policy: String?) {
         val key = localPolicyKey(server.url, server.me, channel)
-        preferences.edit().apply { if (policy == null) remove(key) else putString(key, policy) }.apply()
+        preferences
+            .edit()
+            .apply { if (policy == null) remove(key) else putString(key, policy) }
+            .apply()
     }
 
     /** Pull channel settings changed on another device; failures keep the last known values. */

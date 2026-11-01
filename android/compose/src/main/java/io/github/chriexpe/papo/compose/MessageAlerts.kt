@@ -62,7 +62,8 @@ internal object MessageAlerts {
             override fun show(alert: MessageAlert) {
                 if (
                     !available() ||
-                        preferences.getString("owner/${alert.serverUrl}", "") != alert.ownerUserId ||
+                        preferences.getString("owner/${alert.serverUrl}", "") !=
+                            alert.ownerUserId ||
                         isMuted(alert.serverUrl, alert.ownerUserId, alert.channelId)
                 )
                     return

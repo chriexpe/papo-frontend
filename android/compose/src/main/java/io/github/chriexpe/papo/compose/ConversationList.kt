@@ -37,11 +37,11 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.repeatOnLifecycle
 import dev.chrisbanes.haze.hazeSource
 import io.github.chriexpe.papo.core.Action
 import io.github.chriexpe.papo.core.SearchAnalysis
 import io.github.chriexpe.papo.core.SearchSuggestion
-import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
@@ -82,8 +82,7 @@ internal fun ConversationList(
         }
     }
     val muteRevision by MessageAlerts.muteChanges.collectAsState()
-    fun muted(id: String) =
-        muteRevision >= 0 && MessageAlerts.isMuted(server.url, server.me, id)
+    fun muted(id: String) = muteRevision >= 0 && MessageAlerts.isMuted(server.url, server.me, id)
     // Timed mutes end on their own: refresh the rows when the nearest one expires.
     LaunchedEffect(muteRevision, server.channels) {
         server.channels
@@ -397,15 +396,17 @@ internal fun ConversationList(
                     }
                 }
                 settingsChannel?.let { id ->
-                    server.channels.firstOrNull { it.id == id }?.let { channel ->
-                        ChannelSettingsSheet(
-                            server,
-                            model,
-                            channel,
-                            onOpenChat = onOpenChat,
-                            onDismiss = { settingsChannel = null },
-                        )
-                    } ?: run { settingsChannel = null }
+                    server.channels
+                        .firstOrNull { it.id == id }
+                        ?.let { channel ->
+                            ChannelSettingsSheet(
+                                server,
+                                model,
+                                channel,
+                                onOpenChat = onOpenChat,
+                                onDismiss = { settingsChannel = null },
+                            )
+                        } ?: run { settingsChannel = null }
                 }
                 selectedResult?.let { (channel, stale) ->
                     val current =

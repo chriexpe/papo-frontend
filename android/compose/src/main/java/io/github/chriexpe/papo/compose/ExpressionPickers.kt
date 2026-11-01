@@ -28,9 +28,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Decoded-source bytes of recently shown custom emoji, so scrolling never re-reads the disk. */
 private object EmojiBytesCache {
@@ -68,7 +68,10 @@ internal fun EmojiGlyph(
             ) {
                 if (value != null) return@produceState
                 try {
-                    value = model.emojiImage(server, emoji.value).also { EmojiBytesCache.put(memoryKey, it) }
+                    value =
+                        model.emojiImage(server, emoji.value).also {
+                            EmojiBytesCache.put(memoryKey, it)
+                        }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -234,7 +237,8 @@ internal fun EmojiPicker(
                         modifier = Modifier.padding(vertical = 12.dp),
                     )
                 }
-                items(unicode, key = { "u/${it.glyph}" }, contentType = { "unicode" }) { (glyph, _) ->
+                items(unicode, key = { "u/${it.glyph}" }, contentType = { "unicode" }) { (glyph, _)
+                    ->
                     Box(
                         Modifier.size(52.dp)
                             .clip(RoundedCornerShape(16.dp))

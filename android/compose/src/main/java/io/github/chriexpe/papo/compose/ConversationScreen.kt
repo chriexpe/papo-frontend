@@ -793,13 +793,16 @@ internal fun ConversationScreen(
                                     !overlayBlocking &&
                                     viewedMedia == null,
                             highlighted = highlighted?.first == message.id,
-                            // reverseLayout: the next list row is the older message, above onscreen.
+                            // reverseLayout: the next list row is the older message, above
+                            // onscreen.
                             joinPrevious =
                                 message.highlightMe &&
-                                    timeline.rows.getOrNull(index + 1)?.message?.highlightMe == true,
+                                    timeline.rows.getOrNull(index + 1)?.message?.highlightMe ==
+                                        true,
                             joinNext =
                                 message.highlightMe &&
-                                    timeline.rows.getOrNull(index - 1)?.message?.highlightMe == true,
+                                    timeline.rows.getOrNull(index - 1)?.message?.highlightMe ==
+                                        true,
                             viewport = viewport,
                             mediaVisible =
                                 message.id in visibleRows &&
@@ -1134,8 +1137,10 @@ internal fun ConversationScreen(
                                                     else null,
                                                 onFocusChange = {
                                                     composerFocused = it
-                                                    // Typing again swaps the inline picker for the keyboard.
-                                                    if (it && emojiTarget == null) emojiPicker = false
+                                                    // Typing again swaps the inline picker for the
+                                                    // keyboard.
+                                                    if (it && emojiTarget == null)
+                                                        emojiPicker = false
                                                 },
                                                 animationsAllowed =
                                                     appearance.animations &&

@@ -41,7 +41,9 @@ internal fun ChannelSettingsSheet(
     LaunchedEffect(server.url, server.me) { model.refreshChannelSettings(server) }
     // Synchronized by default; a stored local policy means this channel stays on this device.
     var sync by
-        remember(channel.id) { mutableStateOf(model.localChannelPolicy(server, channel.id) == null) }
+        remember(channel.id) {
+            mutableStateOf(model.localChannelPolicy(server, channel.id) == null)
+        }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             Modifier.fillMaxWidth()

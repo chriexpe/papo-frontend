@@ -53,11 +53,10 @@ internal fun Modifier.swipeToGoBack(
     val scope = rememberCoroutineScope()
     fun animateTo(target: Float, spec: AnimationSpec<Float>, then: suspend () -> Unit = {}) {
         running?.cancel()
-        running =
-            scope.launch {
-                animate(offset, target, animationSpec = spec) { value, _ -> offset = value }
-                then()
-            }
+        running = scope.launch {
+            animate(offset, target, animationSpec = spec) { value, _ -> offset = value }
+            then()
+        }
     }
     // The detector sits outside the translated layer, so the finger's coordinates never shift
     // with the content it is moving.

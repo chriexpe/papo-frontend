@@ -141,7 +141,7 @@ impl NativeClient {
             }
         }
         let request = self.scoped_api(&owner)?;
-        let channels = account::run(async { Ok(request.api.channels().await?) })?;
+        let channels = account::run(request.api.channels())?;
         self.finish_request(&request, vec![Update::Channels(channels)])
     }
 }
