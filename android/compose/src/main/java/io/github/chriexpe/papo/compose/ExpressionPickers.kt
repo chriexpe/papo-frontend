@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -112,6 +113,7 @@ internal fun EmojiPickerBody(
     showFavorites: Boolean,
     compact: Boolean,
     searchFocusRequested: Boolean = false,
+    onSearchFocusChange: (Boolean) -> Unit = {},
     onExpand: () -> Unit = {},
     onClose: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -159,14 +161,15 @@ internal fun EmojiPickerBody(
             searchFocus.requestFocus()
         }
     }
-    Column(modifier.imePadding().padding(horizontal = 16.dp).testTag("emoji-picker")) {
+    Column(modifier.padding(horizontal = 16.dp).testTag("emoji-picker")) {
         if (!compact)
             OutlinedTextField(
                 query,
                 onQueryChange,
                 label = { Text(ui(R.string.find_an_emoji_or_sticker)) },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
+                modifier = Modifier.fillMaxWidth().focusRequester(searchFocus)
+                    .onFocusChanged { onSearchFocusChange(it.isFocused) },
                 leadingIcon = { Icon(Icons.Outlined.Search, null) },
                 trailingIcon = {
                     IconButton(onClick = onClose) {
