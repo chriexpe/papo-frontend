@@ -155,14 +155,9 @@ internal fun FloatingEmojiPicker(
                     onPick = onPick,
                     onDetail = onDetail,
                     showFavorites = true,
-                    compact = !expanded && !searchFocusRequested,
+                    // Expansion only changes panel height. It never changes the header/grid UI.
+                    compact = true,
                     searchFocusRequested = searchFocusRequested,
-                    onSearchFocusChange = { focused ->
-                        if (focused) {
-                            expanded = true
-                            onSearchFocus()
-                        }
-                    },
                     onExpand = {
                         expanded = true
                         onSearchFocus()
