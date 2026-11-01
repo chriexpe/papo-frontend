@@ -85,12 +85,14 @@ internal fun EmojiPicker(
     val owner = model.expressions.owner(server)
     val library = allLibraries[owner] ?: model.expressions.state(owner)
     // The same usage ranking used by the quick-reaction row. No second history/counter.
-    val frequentlyUsed = remember(library.usage, server.emojis) {
-        val available = server.emojis.map { it.id }.toSet()
-        (library.usage.map { it.first }.filter { !it.custom || it.value in available } +
-            listOf("👍", "❤️", "😂", "🎉", "👀", "😭", "🔥", "💀", "🤔", "🙏", "🥹", "💜").map { EmojiChoice(it) })
-            .distinctBy { it.key }
-    }
+    val frequentlyUsed =
+        remember(library.usage, server.emojis) {
+            val available = server.emojis.map { it.id }.toSet()
+            (library.usage.map { it.first }.filter { !it.custom || it.value in available } +
+                    listOf("👍", "❤️", "😂", "🎉", "👀", "😭", "🔥", "💀", "🤔", "🙏", "🥹", "💜")
+                        .map { EmojiChoice(it) })
+                .distinctBy { it.key }
+        }
     val context = LocalContext.current
     val standard = remember { UnicodeEmojiCatalog.load(context) }
     val custom =
@@ -133,14 +135,20 @@ internal fun EmojiPicker(
                     item(span = { GridItemSpan(maxLineSpan) }, key = "frequent-row") {
                         BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
                             val slots = (maxWidth / 52.dp).toInt().coerceAtLeast(1)
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                            ) {
                                 frequentlyUsed.take(slots).forEach { choice ->
                                     Box(
-                                        Modifier.weight(1f).height(52.dp)
+                                        Modifier.weight(1f)
+                                            .height(52.dp)
                                             .clip(RoundedCornerShape(12.dp))
                                             .combinedClickable(
                                                 onClick = { onPick(choice) },
-                                                onLongClick = if (choice.custom) ({ detail = choice.value }) else null,
+                                                onLongClick =
+                                                    if (choice.custom) ({ detail = choice.value })
+                                                    else null,
                                             ),
                                         contentAlignment = Alignment.Center,
                                     ) {
@@ -164,7 +172,8 @@ internal fun EmojiPicker(
                 items(custom, key = { "c/${it.id}" }) { e ->
                     val choice = EmojiChoice(e.id, true, e.name)
                     Box(
-                        Modifier.fillMaxWidth().height(56.dp)
+                        Modifier.fillMaxWidth()
+                            .height(56.dp)
                             .clip(RoundedCornerShape(16.dp))
                             .combinedClickable(
                                 onClickLabel = ui(R.string.insert_sticker, e.name),

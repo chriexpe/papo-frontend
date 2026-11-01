@@ -375,9 +375,10 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 // acknowledged from another Papo client. Do not dismiss unrelated channels.
                 if (!snapshot.isDemo && snapshot.me.isNotBlank()) {
                     val previous = before?.takeIf { it.me == snapshot.me }
-                    val previouslyUnread = previous?.channels.orEmpty().associate {
-                        it.id to (it.unread || it.mentions > 0)
-                    }
+                    val previouslyUnread =
+                        previous?.channels.orEmpty().associate {
+                            it.id to (it.unread || it.mentions > 0)
+                        }
                     snapshot.channels
                         .filter { !it.unread && it.mentions == 0 }
                         .filter { previous == null || previouslyUnread[it.id] != false }

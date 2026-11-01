@@ -72,8 +72,11 @@ internal fun ConversationList(
     val muteRevision by MessageAlerts.muteChanges.collectAsState()
     fun muted(id: String) = muteRevision >= 0L && MessageAlerts.isMuted(server.url, server.me, id)
     LaunchedEffect(muteRevision, server.channels) {
-        val expiry = server.channels.map { MessageAlerts.muteUntil(server.url, server.me, it.id) }
-            .filter { it > 0L && it != MessageAlerts.MUTED_FOREVER }.minOrNull()
+        val expiry =
+            server.channels
+                .map { MessageAlerts.muteUntil(server.url, server.me, it.id) }
+                .filter { it > 0L && it != MessageAlerts.MUTED_FOREVER }
+                .minOrNull()
         if (expiry != null) {
             kotlinx.coroutines.delay((expiry - System.currentTimeMillis()).coerceAtLeast(0L) + 500L)
             MessageAlerts.muteChanges.value += 1
@@ -259,7 +262,12 @@ internal fun ConversationList(
                     if (searching) {
                         if (channels.isNotEmpty()) item { SearchHeading("Channels") }
                         items(channels, key = { "channel/${it.id}" }) {
-                            ChannelItem(it, onOpen, onSettings = { id -> channelActions = id }, muted = muted(it.id))
+                            ChannelItem(
+                                it,
+                                onOpen,
+                                onSettings = { id -> channelActions = id },
+                                muted = muted(it.id),
+                            )
                         }
                         if (people.isNotEmpty()) item { SearchHeading("People") }
                         items(people, key = { "person/${it.id}" }) { PersonItem(it, onProfile) }
@@ -358,15 +366,34 @@ internal fun ConversationList(
                                     onProfile = { onProfile(channel.userId) },
                                 )
                             else if (channel.kind == "voice")
-                                VoiceChannelItem(server, channel, onOpen, onSettings = { channelActions = it }, muted = muted(channel.id))
-                            else ChannelItem(channel, onOpen, onSettings = { channelActions = it }, muted = muted(channel.id))
+                                VoiceChannelItem(
+                                    server,
+                                    channel,
+                                    onOpen,
+                                    onSettings = { channelActions = it },
+                                    muted = muted(channel.id),
+                                )
+                            else
+                                ChannelItem(
+                                    channel,
+                                    onOpen,
+                                    onSettings = { channelActions = it },
+                                    muted = muted(channel.id),
+                                )
                         }
                     }
                 }
                 channelActions?.let { id ->
-                    server.channels.firstOrNull { it.id == id }?.let { channel ->
-                        ChannelActionsSheet(server, model, channel, onDismiss = { channelActions = null })
-                    } ?: run { channelActions = null }
+                    server.channels
+                        .firstOrNull { it.id == id }
+                        ?.let { channel ->
+                            ChannelActionsSheet(
+                                server,
+                                model,
+                                channel,
+                                onDismiss = { channelActions = null },
+                            )
+                        } ?: run { channelActions = null }
                 }
                 selectedResult?.let { (channel, stale) ->
                     val current =
@@ -432,7 +459,9 @@ internal fun ChannelItem(
         headlineContent = {
             Text(
                 channel.name,
-                fontWeight = if (!muted && (channel.unread || joined)) FontWeight.Bold else FontWeight.Medium,
+                fontWeight =
+                    if (!muted && (channel.unread || joined)) FontWeight.Bold
+                    else FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (muted) .55f else 1f),
             )
         },

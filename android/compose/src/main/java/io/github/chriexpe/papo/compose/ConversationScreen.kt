@@ -777,10 +777,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                     !overlayBlocking &&
                                     viewedMedia == null,
                             highlighted = highlighted?.first == message.id,
-                            joinPrevious = message.highlightKind.isNotBlank() &&
-                                timeline.rows.getOrNull(index + 1)?.message?.highlightKind == message.highlightKind,
-                            joinNext = message.highlightKind.isNotBlank() &&
-                                timeline.rows.getOrNull(index - 1)?.message?.highlightKind == message.highlightKind,
+                            joinPrevious =
+                                message.highlightKind.isNotBlank() &&
+                                    timeline.rows.getOrNull(index + 1)?.message?.highlightKind ==
+                                        message.highlightKind,
+                            joinNext =
+                                message.highlightKind.isNotBlank() &&
+                                    timeline.rows.getOrNull(index - 1)?.message?.highlightKind ==
+                                        message.highlightKind,
                             viewport = viewport,
                             mediaVisible =
                                 message.id in visibleRows &&

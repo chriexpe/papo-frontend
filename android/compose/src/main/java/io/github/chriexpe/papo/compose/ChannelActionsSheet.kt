@@ -2,8 +2,8 @@
 
 package io.github.chriexpe.papo.compose
 
-import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -28,14 +28,16 @@ internal fun ChannelActionsSheet(
     var policies by remember(channel.id) { mutableStateOf(false) }
     var mutes by remember(channel.id) { mutableStateOf(false) }
     val muteRevision by MessageAlerts.muteChanges.collectAsState()
-    val mutedUntil = remember(muteRevision, server.url, server.me, channel.id) {
-        MessageAlerts.muteUntil(server.url, server.me, channel.id)
-    }
-    val mode = when (actual.notificationSettings) {
-        "all" -> ui(R.string.all_messages)
-        "off" -> ui(R.string.notification_policy_nothing)
-        else -> ui(R.string.mentions_only)
-    }
+    val mutedUntil =
+        remember(muteRevision, server.url, server.me, channel.id) {
+            MessageAlerts.muteUntil(server.url, server.me, channel.id)
+        }
+    val mode =
+        when (actual.notificationSettings) {
+            "all" -> ui(R.string.all_messages)
+            "off" -> ui(R.string.notification_policy_nothing)
+            else -> ui(R.string.mentions_only)
+        }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -43,7 +45,7 @@ internal fun ChannelActionsSheet(
                 .navigationBarsPadding()
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 16.dp)
-                .testTag("channel-actions"),
+                .testTag("channel-actions")
         ) {
             Text(
                 if (channel.kind == "voice") channel.name else "#${channel.name}",
@@ -55,33 +57,40 @@ internal fun ChannelActionsSheet(
                 supportingContent = { Text(mode) },
                 leadingContent = { Icon(Icons.Outlined.Notifications, null) },
                 trailingContent = { Icon(Icons.Outlined.ChevronRight, null) },
-                modifier = Modifier.testTag("channel-policy-menu").clickable { policies = !policies },
+                modifier =
+                    Modifier.testTag("channel-policy-menu").clickable { policies = !policies },
             )
             if (policies)
                 listOf(
-                    "all" to R.string.all_messages,
-                    "only_mentions" to R.string.mentions_only,
-                    "off" to R.string.notification_policy_nothing,
-                ).forEach { (value, label) ->
-                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(
-                            selected = actual.notificationSettings == value,
-                            onClick = {
-                                preferences.apply(server, listOf(channel.id), value)
-                                policies = false
-                            },
-                            enabled = !preferences.busy,
-                        )
-                        TextButton(
-                            enabled = !preferences.busy,
-                            onClick = {
-                                preferences.apply(server, listOf(channel.id), value)
-                                policies = false
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) { Text(ui(label)) }
+                        "all" to R.string.all_messages,
+                        "only_mentions" to R.string.mentions_only,
+                        "off" to R.string.notification_policy_nothing,
+                    )
+                    .forEach { (value, label) ->
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = actual.notificationSettings == value,
+                                onClick = {
+                                    preferences.apply(server, listOf(channel.id), value)
+                                    policies = false
+                                },
+                                enabled = !preferences.busy,
+                            )
+                            TextButton(
+                                enabled = !preferences.busy,
+                                onClick = {
+                                    preferences.apply(server, listOf(channel.id), value)
+                                    policies = false
+                                },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(ui(label))
+                            }
+                        }
                     }
-                }
             if (preferences.error.isNotBlank())
                 Text(preferences.error, color = MaterialTheme.colorScheme.error)
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
@@ -95,27 +104,36 @@ internal fun ChannelActionsSheet(
             )
             if (mutes) {
                 if (mutedUntil > 0L)
-                    TextButton(onClick = { MessageAlerts.setMute(server.url, server.me, channel.id, 0L); mutes = false }) {
+                    TextButton(
+                        onClick = {
+                            MessageAlerts.setMute(server.url, server.me, channel.id, 0L)
+                            mutes = false
+                        }
+                    ) {
                         Text(ui(R.string.unmute_channel))
                     }
                 else
                     listOf(
-                        R.string.mute_15_minutes to 15L * 60_000,
-                        R.string.mute_1_hour to 60L * 60_000,
-                        R.string.mute_8_hours to 8L * 60 * 60_000,
-                        R.string.mute_24_hours to 24L * 60 * 60_000,
-                        R.string.mute_until_unmuted to MessageAlerts.MUTED_FOREVER,
-                    ).forEach { (label, duration) ->
-                        TextButton(
-                            onClick = {
-                                val until = if (duration == MessageAlerts.MUTED_FOREVER) duration
-                                    else System.currentTimeMillis() + duration
-                                MessageAlerts.setMute(server.url, server.me, channel.id, until)
-                                mutes = false
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text(ui(label)) }
-                    }
+                            R.string.mute_15_minutes to 15L * 60_000,
+                            R.string.mute_1_hour to 60L * 60_000,
+                            R.string.mute_8_hours to 8L * 60 * 60_000,
+                            R.string.mute_24_hours to 24L * 60 * 60_000,
+                            R.string.mute_until_unmuted to MessageAlerts.MUTED_FOREVER,
+                        )
+                        .forEach { (label, duration) ->
+                            TextButton(
+                                onClick = {
+                                    val until =
+                                        if (duration == MessageAlerts.MUTED_FOREVER) duration
+                                        else System.currentTimeMillis() + duration
+                                    MessageAlerts.setMute(server.url, server.me, channel.id, until)
+                                    mutes = false
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(ui(label))
+                            }
+                        }
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             TextButton(
@@ -124,7 +142,8 @@ internal fun ChannelActionsSheet(
                     MessageAlerts.clear(server.url, server.me, channel.id)
                     onDismiss()
                 },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("channel-mark-read"),
+                modifier =
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("channel-mark-read"),
             ) {
                 Icon(Icons.Outlined.DoneAll, null)
                 Spacer(Modifier.width(12.dp))

@@ -61,7 +61,8 @@ internal object MessageAlerts {
             override fun show(alert: MessageAlert) {
                 if (
                     !available() ||
-                        preferences.getString("owner/${alert.serverUrl}", "") != alert.ownerUserId ||
+                        preferences.getString("owner/${alert.serverUrl}", "") !=
+                            alert.ownerUserId ||
                         isMuted(alert.serverUrl, alert.ownerUserId, alert.channelId)
                 )
                     return
@@ -137,10 +138,13 @@ internal object MessageAlerts {
         application != null && muteUntil(server, owner, channel) > 0L
 
     fun setMute(server: String, owner: String, channel: String, until: Long) {
-        preferences.edit().apply {
-            if (until > 0L) putLong(muteKey(server, owner, channel), until)
-            else remove(muteKey(server, owner, channel))
-        }.apply()
+        preferences
+            .edit()
+            .apply {
+                if (until > 0L) putLong(muteKey(server, owner, channel), until)
+                else remove(muteKey(server, owner, channel))
+            }
+            .apply()
         if (until > 0L) clear(server, owner, channel)
         muteChanges.value += 1
     }

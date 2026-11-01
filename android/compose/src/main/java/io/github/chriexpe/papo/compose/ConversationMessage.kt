@@ -19,10 +19,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -89,24 +89,30 @@ internal fun MessageRow(
         remember(message.at, AppLanguage.locale) {
             SimpleDateFormat("HH:mm", AppLanguage.locale).format(Date(message.at))
         }
-    val highlightColor = when (message.highlightKind) {
-        "direct" -> appearance.highlightColor("highlight-direct", "#E7A147")
-        "role" -> if (appearance.boolean("highlight-use-role-color", true) &&
-                message.highlightRoleColor.isNotBlank())
-            runCatching { Color(android.graphics.Color.parseColor(message.highlightRoleColor)) }
-                .getOrElse { appearance.highlightColor("highlight-role", "#A78BFA") }
-            else appearance.highlightColor("highlight-role", "#A78BFA")
-        "reply" -> appearance.highlightColor("highlight-reply", "#65A8ED")
-        else -> Color.Transparent
-    }
+    val highlightColor =
+        when (message.highlightKind) {
+            "direct" -> appearance.highlightColor("highlight-direct", "#E7A147")
+            "role" ->
+                if (
+                    appearance.boolean("highlight-use-role-color", true) &&
+                        message.highlightRoleColor.isNotBlank()
+                )
+                    runCatching {
+                            Color(android.graphics.Color.parseColor(message.highlightRoleColor))
+                        }
+                        .getOrElse { appearance.highlightColor("highlight-role", "#A78BFA") }
+                else appearance.highlightColor("highlight-role", "#A78BFA")
+            "reply" -> appearance.highlightColor("highlight-reply", "#65A8ED")
+            else -> Color.Transparent
+        }
     val hasHighlight = message.highlightKind.isNotEmpty() && !message.mine
-    val spotlight by animateColorAsState(
-        if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = .14f)
-        else if (hasHighlight) highlightColor.copy(alpha = .18f)
-        else Color.Transparent,
-        animationSpec = tween(250),
-        label = ui(R.string.original_message_highlight),
-    )
+    val spotlight by
+        animateColorAsState(
+            if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = .14f)
+            else if (hasHighlight) highlightColor.copy(alpha = .18f) else Color.Transparent,
+            animationSpec = tween(250),
+            label = ui(R.string.original_message_highlight),
+        )
     val topRadius = if (hasHighlight && joinPrevious) 0.dp else 18.dp
     val bottomRadius = if (hasHighlight && joinNext) 0.dp else 18.dp
     SwipeToReply(message.id, canReply && !message.pending, onReply) {
@@ -117,8 +123,10 @@ internal fun MessageRow(
                 .background(
                     spotlight,
                     RoundedCornerShape(
-                        topStart = topRadius, topEnd = topRadius,
-                        bottomStart = bottomRadius, bottomEnd = bottomRadius,
+                        topStart = topRadius,
+                        topEnd = topRadius,
+                        bottomStart = bottomRadius,
+                        bottomEnd = bottomRadius,
                     ),
                 )
                 .drawBehind {
@@ -131,8 +139,7 @@ internal fun MessageRow(
                 }
                 .semantics {
                     if (highlight) stateDescription = ui(R.string.original_message)
-                    else if (hasHighlight)
-                        stateDescription = ui(R.string.message_mentions_you)
+                    else if (hasHighlight) stateDescription = ui(R.string.message_mentions_you)
                     else if (grouped)
                         stateDescription =
                             ui(R.string.continued_message_from_1_s_at_2_s, message.author, time)

@@ -38,7 +38,8 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
             androidx.compose.ui.graphics.Color(
                 android.graphics.Color.parseColor(string(key, fallback))
             )
-        }.getOrElse {
+        }
+        .getOrElse {
             androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(fallback))
         }
 

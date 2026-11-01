@@ -300,41 +300,54 @@ internal fun AppearanceSettings(server: ServerState, model: PapoViewModel) {
                     Modifier.fillMaxWidth().padding(16.dp).testTag("highlight-colors"),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text(ui(R.string.message_highlighting), style = MaterialTheme.typography.titleMedium)
-                    val palette = listOf(
-                        "#E7A147", "#65A8ED", "#A78BFA", "#6DB89C", "#E2778C", "#D7BF62",
+                    Text(
+                        ui(R.string.message_highlighting),
+                        style = MaterialTheme.typography.titleMedium,
                     )
+                    val palette =
+                        listOf(
+                            "#E7A147",
+                            "#65A8ED",
+                            "#A78BFA",
+                            "#6DB89C",
+                            "#E2778C",
+                            "#D7BF62",
+                        )
                     listOf(
-                        Triple("highlight-direct", R.string.highlight_direct, "#E7A147"),
-                        Triple("highlight-reply", R.string.highlight_reply, "#65A8ED"),
-                        Triple("highlight-role", R.string.highlight_role, "#A78BFA"),
-                    ).forEach { (key, label, fallback) ->
-                        Text(ui(label), style = MaterialTheme.typography.labelLarge)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            palette.forEach { hex ->
-                                FilterChip(
-                                    selected = prefs.string(key, fallback) == hex,
-                                    onClick = { prefs.set(key, hex) },
-                                    label = {
-                                        Text(
-                                            "●",
-                                            color = androidx.compose.ui.graphics.Color(
-                                                android.graphics.Color.parseColor(hex)
-                                            ),
-                                            style = MaterialTheme.typography.titleLarge,
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("$key-$hex"),
-                                )
+                            Triple("highlight-direct", R.string.highlight_direct, "#E7A147"),
+                            Triple("highlight-reply", R.string.highlight_reply, "#65A8ED"),
+                            Triple("highlight-role", R.string.highlight_role, "#A78BFA"),
+                        )
+                        .forEach { (key, label, fallback) ->
+                            Text(ui(label), style = MaterialTheme.typography.labelLarge)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                palette.forEach { hex ->
+                                    FilterChip(
+                                        selected = prefs.string(key, fallback) == hex,
+                                        onClick = { prefs.set(key, hex) },
+                                        label = {
+                                            Text(
+                                                "●",
+                                                color =
+                                                    androidx.compose.ui.graphics.Color(
+                                                        android.graphics.Color.parseColor(hex)
+                                                    ),
+                                                style = MaterialTheme.typography.titleLarge,
+                                            )
+                                        },
+                                        modifier = Modifier.testTag("$key-$hex"),
+                                    )
+                                }
                             }
                         }
-                    }
                     SettingsSwitch(
                         ui(R.string.highlight_use_role_color),
                         ui(R.string.highlight_use_role_color_description),
                         prefs.boolean("highlight-use-role-color", true),
                         "highlight-use-role-color",
-                    ) { prefs.set("highlight-use-role-color", it) }
+                    ) {
+                        prefs.set("highlight-use-role-color", it)
+                    }
                 }
             }
         }
