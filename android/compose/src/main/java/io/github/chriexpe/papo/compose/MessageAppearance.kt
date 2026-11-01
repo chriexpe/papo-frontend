@@ -21,21 +21,14 @@ internal enum class MessageDensity(val value: String, val labelId: Int) {
     Compact("compact", R.string.density_compact),
     Normal("normal", R.string.density_normal),
     Comfortable("comfortable", R.string.density_comfortable),
-    ExtraCompact("extra-compact", R.string.density_extra_compact),
-    ExtraCompactStacked("extra-compact-stacked", R.string.density_extra_compact_stacked),
-    ExtraCompactStackedGrouped(
-        "extra-compact-stacked-grouped",
-        R.string.density_extra_compact_stacked_grouped,
-    );
+    ExtraCompact("extra-compact", R.string.density_extra_compact);
 
-    val localPreview
-        get() =
-            this == ExtraCompact ||
-                this == ExtraCompactStacked ||
-                this == ExtraCompactStackedGrouped
+    val localPreview get() = this == ExtraCompact
 
     companion object {
-        fun from(value: String?) = entries.firstOrNull { it.value == value } ?: Normal
+        fun from(value: String?) =
+            entries.firstOrNull { it.value == value } ?:
+                if (value?.startsWith("extra-compact") == true) ExtraCompact else Normal
     }
 }
 
@@ -44,13 +37,13 @@ internal enum class MessageDensity(val value: String, val labelId: Int) {
 internal data class MessageAppearance(
     val font: AccountFontSize = AccountFontSize.Normal,
     val density: MessageDensity = MessageDensity.Normal,
+    val stacked: Boolean = true,
+    val grouped: Boolean = true,
 ) {
     private fun <T> choose(compact: T, normal: T, comfortable: T) =
         when (density) {
             MessageDensity.Compact,
-            MessageDensity.ExtraCompact,
-            MessageDensity.ExtraCompactStacked,
-            MessageDensity.ExtraCompactStackedGrouped -> compact
+            MessageDensity.ExtraCompact -> compact
             MessageDensity.Normal -> normal
             MessageDensity.Comfortable -> comfortable
         }
@@ -62,10 +55,10 @@ internal data class MessageAppearance(
         get() = density.localPreview
 
     val suppressRepeatedStackedAuthor
-        get() = density == MessageDensity.ExtraCompactStackedGrouped
+        get() = grouped
 
     val inlineAuthor
-        get() = density == MessageDensity.ExtraCompact
+        get() = extraCompact && !stacked
 
     val continuationGap
         get() = choose(0.dp, 2.dp, 6.dp)
