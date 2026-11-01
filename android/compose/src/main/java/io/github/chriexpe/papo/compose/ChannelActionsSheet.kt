@@ -26,7 +26,6 @@ internal fun ChannelActionsSheet(
     val preferences = remember(model, scope) { NotificationPolicyUi(model, scope) }
     val actual = server.channels.firstOrNull { it.id == channel.id } ?: channel
     var policies by remember(channel.id) { mutableStateOf(false) }
-    var mutes by remember(channel.id) { mutableStateOf(false) }
     val muteRevision by MessageAlerts.muteChanges.collectAsState()
     val mutedUntil =
         remember(muteRevision, server.url, server.me, channel.id) {
@@ -94,46 +93,60 @@ internal fun ChannelActionsSheet(
             if (preferences.error.isNotBlank())
                 Text(preferences.error, color = MaterialTheme.colorScheme.error)
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            ListItem(
-                headlineContent = { Text(ui(R.string.mute_channel)) },
-                supportingContent = {
-                    if (mutedUntil > 0L) Text(ui(R.string.channel_muted_state))
-                },
-                leadingContent = { Icon(Icons.Outlined.NotificationsOff, null) },
-                modifier = Modifier.testTag("channel-mute-menu").clickable { mutes = !mutes },
+            Text(
+                ui(R.string.mute_channel),
+                Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
             )
-            if (mutes) {
-                if (mutedUntil > 0L)
+            if (mutedUntil > 0L) {
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (mutedUntil == MessageAlerts.MUTED_FOREVER)
+                            ui(R.string.mute_until_unmuted)
+                        else
+                            java.text.DateFormat.getDateTimeInstance(
+                                java.text.DateFormat.SHORT,
+                                java.text.DateFormat.SHORT,
+                            ).format(java.util.Date(mutedUntil)),
+                        Modifier.weight(1f).padding(start = 16.dp),
+                    )
                     TextButton(
                         onClick = {
                             MessageAlerts.setMute(server.url, server.me, channel.id, 0L)
-                            mutes = false
-                        }
+                        },
+                        modifier = Modifier.testTag("channel-unmute"),
                     ) {
                         Text(ui(R.string.unmute_channel))
                     }
-                else
+                }
+            } else {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     listOf(
-                            R.string.mute_15_minutes to 15L * 60_000,
-                            R.string.mute_1_hour to 60L * 60_000,
-                            R.string.mute_8_hours to 8L * 60 * 60_000,
-                            R.string.mute_24_hours to 24L * 60 * 60_000,
-                            R.string.mute_until_unmuted to MessageAlerts.MUTED_FOREVER,
+                        R.string.mute_15_minutes to 15L * 60_000,
+                        R.string.mute_1_hour to 60L * 60_000,
+                        R.string.mute_8_hours to 8L * 60 * 60_000,
+                        R.string.mute_24_hours to 24L * 60 * 60_000,
+                        R.string.mute_until_unmuted to MessageAlerts.MUTED_FOREVER,
+                    ).forEach { (label, duration) ->
+                        AssistChip(
+                            onClick = {
+                                val until =
+                                    if (duration == MessageAlerts.MUTED_FOREVER) duration
+                                    else System.currentTimeMillis() + duration
+                                MessageAlerts.setMute(server.url, server.me, channel.id, until)
+                            },
+                            label = { Text(ui(label)) },
+                            modifier = Modifier.testTag("channel-mute-$duration"),
                         )
-                        .forEach { (label, duration) ->
-                            TextButton(
-                                onClick = {
-                                    val until =
-                                        if (duration == MessageAlerts.MUTED_FOREVER) duration
-                                        else System.currentTimeMillis() + duration
-                                    MessageAlerts.setMute(server.url, server.me, channel.id, until)
-                                    mutes = false
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(ui(label))
-                            }
-                        }
+                    }
+                }
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             TextButton(
