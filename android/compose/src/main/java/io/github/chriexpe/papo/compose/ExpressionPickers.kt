@@ -1,9 +1,13 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+)
 
 package io.github.chriexpe.papo.compose
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -76,6 +80,17 @@ internal fun EmojiPicker(
     onPick: (EmojiChoice) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
+    var detail by remember(server.url, server.me) { mutableStateOf<String?>(null) }
+    val allLibraries by model.expressions.states.collectAsState()
+    val owner = model.expressions.owner(server)
+    val library = allLibraries[owner] ?: model.expressions.state(owner)
+    // The same usage ranking used by the quick-reaction row. No second history/counter.
+    val frequentlyUsed = remember(library.usage, server.emojis) {
+        val available = server.emojis.map { it.id }.toSet()
+        (library.usage.map { it.first }.filter { !it.custom || it.value in available } +
+            listOf("👍", "❤️", "😂", "🎉", "👀").map(::EmojiChoice))
+            .distinctBy { it.key }
+    }
     val context = LocalContext.current
     val standard = remember { UnicodeEmojiCatalog.load(context) }
     val custom =
@@ -92,7 +107,7 @@ internal fun EmojiPicker(
                     .map { UnicodeEmoji(it.value, it.value) }
             (typed + matchingUnicodeEmoji(standard, query.trim())).distinctBy { it.glyph }
         }
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(onDismissRequest = { if (detail == null) onDismiss() }) {
         Column(
             Modifier.fillMaxWidth()
                 .fillMaxHeight(.74f)
@@ -100,11 +115,6 @@ internal fun EmojiPicker(
                 .padding(horizontal = 16.dp)
                 .testTag("emoji-picker")
         ) {
-            Text(
-                ui(R.string.emoji_stickers),
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(bottom = 12.dp),
-            )
             OutlinedTextField(
                 query,
                 { query = it },
@@ -118,14 +128,28 @@ internal fun EmojiPicker(
                 modifier = Modifier.weight(1f).padding(top = 12.dp),
                 contentPadding = PaddingValues(bottom = 24.dp),
             ) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    Text(
-                        server.name,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(vertical = 12.dp),
-                    )
-                }
+                // Only one frequently used row; the rest of the existing picker remains a grid.
+                if (query.isBlank() && frequentlyUsed.isNotEmpty())
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "frequent-row") {
+                        BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                            val slots = (maxWidth / 52.dp).toInt().coerceAtLeast(1)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                frequentlyUsed.take(slots).forEach { choice ->
+                                    Box(
+                                        Modifier.weight(1f).height(52.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .combinedClickable(
+                                                onClick = { onPick(choice) },
+                                                onLongClick = if (choice.custom) ({ detail = choice.value }) else null,
+                                            ),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        EmojiGlyph(server, choice, 36, model)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 if (custom.isEmpty())
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Text(
@@ -139,24 +163,21 @@ internal fun EmojiPicker(
                     }
                 items(custom, key = { "c/${it.id}" }) { e ->
                     val choice = EmojiChoice(e.id, true, e.name)
-                    Column(
-                        Modifier.clip(RoundedCornerShape(16.dp))
-                            .clickable(onClickLabel = ui(R.string.insert_sticker, e.name)) {
-                                onPick(choice)
-                            }
-                            .padding(vertical = 8.dp)
+                    Box(
+                        Modifier.fillMaxWidth().height(56.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .combinedClickable(
+                                onClickLabel = ui(R.string.insert_sticker, e.name),
+                                onLongClickLabel = ui(R.string.sticker_name_accessibility, e.name),
+                                onClick = { onPick(choice) },
+                                onLongClick = { detail = e.id },
+                            )
                             .semantics {
                                 contentDescription = ui(R.string.sticker_name_accessibility, e.name)
                             },
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                        contentAlignment = Alignment.Center,
                     ) {
-                        EmojiGlyph(server, choice, 40, model)
-                        Text(
-                            e.name,
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
+                        EmojiGlyph(server, choice, 48, model)
                     }
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) {
@@ -187,6 +208,12 @@ internal fun EmojiPicker(
                     }
             }
         }
+    }
+}
+
+    // A second sheet owns outside taps while open; the underlying emoji picker stays mounted.
+    detail?.let { id ->
+        StickerDetails(server, model, id, onDismiss = { detail = null })
     }
 }
 
