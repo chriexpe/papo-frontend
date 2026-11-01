@@ -3,7 +3,8 @@ package io.github.chriexpe.papo.compose
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -16,7 +17,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
@@ -51,7 +55,7 @@ internal fun SwipeToReply(
         Modifier.fillMaxWidth().clipToBounds().pointerInput(id, enabled, threshold, limit) {
             try {
                 if (enabled)
-                    detectHorizontalDragGestures(
+                    detectLeftwardDrag(
                         onDragStart = {
                             dragging = true
                             notified = false
@@ -105,5 +109,54 @@ internal fun SwipeToReply(
                 }
             }
         Box(Modifier.fillMaxWidth().graphicsLayer { translationX = position }) { content() }
+    }
+}
+
+/**
+ * Own leftward drags only. A rightward gesture belongs to the conversation back layer,
+ * whereas consumed gestures (media scrubbers / horizontal carousels) stay with their child.
+ * Keeping this direction check before consuming touch slop is crucial: #132's generic
+ * horizontal detector could win a right swipe and break reply.
+ */
+private suspend fun PointerInputScope.detectLeftwardDrag(
+    onDragStart: () -> Unit,
+    onDragCancel: () -> Unit,
+    onDragEnd: () -> Unit,
+    onHorizontalDrag: (PointerInputChange, Float) -> Unit,
+) = awaitEachGesture {
+    val down = awaitFirstDown(requireUnconsumed = false)
+    val slop = viewConfiguration.touchSlop
+    var dx = 0f
+    var dy = 0f
+    var dragging = false
+    while (true) {
+        val event = awaitPointerEvent()
+        val change = event.changes.firstOrNull { it.id == down.id }
+        if (change == null) {
+            if (dragging) onDragCancel()
+            return@awaitEachGesture
+        }
+        if (!change.pressed) {
+            if (dragging) onDragEnd()
+            return@awaitEachGesture
+        }
+        val delta = change.positionChange()
+        dx += delta.x
+        dy += delta.y
+        if (!dragging) {
+            if (change.isConsumed ||
+                (abs(dy) > slop && abs(dy) > abs(dx)) ||
+                dx >= slop
+            ) return@awaitEachGesture
+            if (dx <= -slop) {
+                dragging = true
+                onDragStart()
+                change.consume()
+                onHorizontalDrag(change, dx)
+            }
+        } else {
+            change.consume()
+            onHorizontalDrag(change, delta.x)
+        }
     }
 }
