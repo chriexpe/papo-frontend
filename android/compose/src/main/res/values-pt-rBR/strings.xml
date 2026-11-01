@@ -1030,4 +1030,18 @@
     <string name="call_audio_routing_unavailable">Este servidor não informa o roteamento de áudio dos participantes. Volume e silenciamento individuais indisponíveis.</string>
     <string name="call_status_unknown">Estado do microfone e da câmera indisponível</string>
     <string name="call_leave_timeout">A saída da chamada anterior ainda não foi confirmada. Aguarde o servidor ou reconecte antes de entrar novamente.</string>
+
+    <string name="channel_settings">Opções do canal</string>
+    <string name="mark_channel_as_read">Marcar canal como lido</string>
+    <string name="notification_policy_nothing">Nada</string>
+    <string name="change_notification_policy">Alterar notificações</string>
+    <string name="mute_channel">Silenciar canal</string>
+    <string name="change_mute">Alterar silenciamento</string>
+    <string name="mute_15_minutes">15 minutos</string>
+    <string name="mute_1_hour">1 hora</string>
+    <string name="mute_8_hours">8 horas</string>
+    <string name="mute_24_hours">24 horas</string>
+    <string name="mute_until_unmuted">Até reativar</string>
+    <string name="unmute_channel">Reativar notificações</string>
+    <string name="channel_muted_state">Silenciado</string>
 </resources>
