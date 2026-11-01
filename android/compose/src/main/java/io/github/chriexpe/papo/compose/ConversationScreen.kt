@@ -779,9 +779,8 @@ internal fun ConversationScreen(
                 if (emojiPicker && emojiTarget == null) BottomSheetDefaults.DragHandle()
             },
             sheetContent = {
-                val expanded =
-                    pickerSheet.currentValue == SheetValue.Expanded ||
-                        pickerSheet.targetValue == SheetValue.Expanded
+                // Do not replace the compact header while the user is dragging.
+                val expanded = pickerSheet.currentValue == SheetValue.Expanded
                 EmojiPickerBody(
                     server = server,
                     model = model,
@@ -793,8 +792,11 @@ internal fun ConversationScreen(
                     compact = !expanded && !pickerSearchRequested,
                     searchFocusRequested = pickerSearchRequested,
                     onExpand = {
-                        pickerSearchRequested = true
-                        scope.launch { pickerSheet.expand() }
+                        // Finish expansion before requesting search focus / displaying the IME.
+                        scope.launch {
+                            pickerSheet.expand()
+                            pickerSearchRequested = true
+                        }
                     },
                     onClose = {
                         emojiPicker = false
