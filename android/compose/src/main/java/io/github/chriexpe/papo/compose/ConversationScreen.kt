@@ -1062,9 +1062,6 @@ internal fun ConversationScreen(
                             }
                         }
                     }
-            }
-        }
-    }
     Column(
         Modifier.align(Alignment.BottomCenter)
             .fillMaxWidth()
@@ -1313,6 +1310,8 @@ internal fun ConversationScreen(
                         }
                 }
             }
+        }
+    }
             if (emojiPicker && emojiTarget == null) {
                 FloatingEmojiPicker(
                     server = server,
