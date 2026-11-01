@@ -771,634 +771,636 @@ internal fun ConversationScreen(
         LocalMediaVisibilityRegistry provides mediaVisibility,
     ) {
         Box(
-                Modifier.fillMaxSize()
-                    .conversationSwipeBack(
-                        enabled =
-                            !overlayBlocking &&
-                                !recording &&
-                                !emojiPicker &&
-                                !gifPicker &&
-                                viewedMedia == null &&
-                                selected == null &&
-                                edit == null &&
-                                !pins &&
-                                !members &&
-                                !embedEditor,
-                        onBack = onBack,
-                        onRevealing = onRevealingChannels,
+            Modifier.fillMaxSize()
+                .conversationSwipeBack(
+                    enabled =
+                        !overlayBlocking &&
+                            !recording &&
+                            !emojiPicker &&
+                            !gifPicker &&
+                            viewedMedia == null &&
+                            selected == null &&
+                            edit == null &&
+                            !pins &&
+                            !members &&
+                            !embedEditor,
+                    onBack = onBack,
+                    onRevealing = onRevealingChannels,
+                )
+                .background(MaterialTheme.colorScheme.background)
+                .imePadding()
+                .navigationBarsPadding()
+        ) {
+            BottomSheetScaffold(
+                scaffoldState = pickerScaffold,
+                // The scaffold ends above the actual composer, keeping it visible below the sheet.
+                sheetShape = RoundedCornerShape(24.dp),
+                sheetPeekHeight = if (emojiPicker && emojiTarget == null) 276.dp else 0.dp,
+                // Keep search expanded while the IME changes window height.
+                sheetSwipeEnabled = emojiPicker && emojiTarget == null && !pickerSearchRequested,
+                sheetDragHandle = {
+                    if (emojiPicker && emojiTarget == null) BottomSheetDefaults.DragHandle()
+                },
+                sheetContent = {
+                    // Do not replace the compact header while the user is dragging.
+                    val expanded = pickerSheet.currentValue == SheetValue.Expanded
+                    EmojiPickerBody(
+                        server = server,
+                        model = model,
+                        query = pickerSearch,
+                        onQueryChange = { pickerSearch = it },
+                        onPick = { emoji -> updateComposer(composer.insert(emoji.token)) },
+                        onDetail = { pickerDetail = it },
+                        showFavorites = true,
+                        compact = !expanded && !pickerSearchRequested,
+                        searchFocusRequested = pickerSearchRequested,
+                        onExpand = {
+                            // Finish expansion before requesting search focus / displaying the IME.
+                            scope.launch {
+                                pickerSheet.expand()
+                                pickerSearchRequested = true
+                            }
+                        },
+                        onClose = {
+                            emojiPicker = false
+                            pickerSearchRequested = false
+                            pickerSearch = ""
+                            focus.clearFocus()
+                            keyboard?.hide()
+                        },
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight(.80f),
                     )
-                    .background(MaterialTheme.colorScheme.background)
-                    .imePadding()
-                    .navigationBarsPadding()
-            ) {
-        BottomSheetScaffold(
-            scaffoldState = pickerScaffold,
-            // The scaffold ends above the actual composer, keeping it visible below the sheet.
-            sheetShape = RoundedCornerShape(24.dp),
-            sheetPeekHeight = if (emojiPicker && emojiTarget == null) 276.dp else 0.dp,
-            // Keep search expanded while the IME changes window height.
-            sheetSwipeEnabled = emojiPicker && emojiTarget == null && !pickerSearchRequested,
-            sheetDragHandle = {
-                if (emojiPicker && emojiTarget == null) BottomSheetDefaults.DragHandle()
-            },
-            sheetContent = {
-                // Do not replace the compact header while the user is dragging.
-                val expanded = pickerSheet.currentValue == SheetValue.Expanded
-                EmojiPickerBody(
-                    server = server,
-                    model = model,
-                    query = pickerSearch,
-                    onQueryChange = { pickerSearch = it },
-                    onPick = { emoji -> updateComposer(composer.insert(emoji.token)) },
-                    onDetail = { pickerDetail = it },
-                    showFavorites = true,
-                    compact = !expanded && !pickerSearchRequested,
-                    searchFocusRequested = pickerSearchRequested,
-                    onExpand = {
-                        // Finish expansion before requesting search focus / displaying the IME.
-                        scope.launch {
-                            pickerSheet.expand()
-                            pickerSearchRequested = true
+                },
+                modifier = Modifier.fillMaxSize().padding(bottom = composerHeight + 8.dp),
+            ) { _ ->
+                Box(Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        state = listState,
+                        reverseLayout = true,
+                        modifier =
+                            Modifier.fillMaxSize()
+                                .hazeSource(LocalHaze.current)
+                                .testTag("message-list")
+                                .onGloballyPositioned { listBounds = it.boundsInWindow() },
+                        contentPadding = PaddingValues(top = headerHeight + 8.dp, bottom = 8.dp),
+                    ) {
+                        if (server.messages.isEmpty())
+                            item("empty") {
+                                EmptyState(
+                                    if (server.connection == "online")
+                                        ui(R.string.the_start_of_something_good)
+                                    else ui(R.string.no_saved_messages_yet),
+                                    if (server.connection == "online")
+                                        ui(R.string.say_hello_in_1_s, channel.name)
+                                    else
+                                        ui(
+                                            R.string
+                                                .messages_will_appear_when_the_server_is_reachable
+                                        ),
+                                )
+                            }
+                        itemsIndexed(
+                            timeline.rows,
+                            key = { _, row -> row.key },
+                            contentType = { _, row -> if (row.date != null) "date" else "message" },
+                        ) { index, row ->
+                            if (row.date != null) ConversationDateHeader(row.date)
+                            val message = row.message
+                            if (message != null)
+                                TimelineMessage(
+                                    message,
+                                    presentation,
+                                    replyMessages[message.replyTo],
+                                    model,
+                                    grouped = message.id in groupedMessages,
+                                    canReply =
+                                        !recording &&
+                                            !submitting &&
+                                            !attachmentDraft.sending &&
+                                            !overlayBlocking &&
+                                            viewedMedia == null,
+                                    highlighted = highlighted?.first == message.id,
+                                    joinPrevious =
+                                        message.highlightKind.isNotBlank() &&
+                                            timeline.rows
+                                                .getOrNull(index + 1)
+                                                ?.message
+                                                ?.highlightKind == message.highlightKind,
+                                    joinNext =
+                                        message.highlightKind.isNotBlank() &&
+                                            timeline.rows
+                                                .getOrNull(index - 1)
+                                                ?.message
+                                                ?.highlightKind == message.highlightKind,
+                                    viewport = viewport,
+                                    mediaVisible =
+                                        message.id in visibleRows &&
+                                            viewedMedia == null &&
+                                            !embedEditor &&
+                                            edit == null &&
+                                            !pins &&
+                                            !overlayBlocking,
+                                    activePlayer = activeMedia,
+                                    interactions = interactions,
+                                    showCompactTime = message.id in timeline.timestampIds,
+                                )
                         }
-                    },
-                    onClose = {
-                        emojiPicker = false
-                        pickerSearchRequested = false
-                        pickerSearch = ""
-                        focus.clearFocus()
-                        keyboard?.hide()
-                    },
-                    modifier = Modifier.fillMaxWidth().fillMaxHeight(.80f),
-                )
-            },
-            modifier = Modifier.fillMaxSize().padding(bottom = composerHeight + 8.dp),
-        ) { _ ->
-            Box(Modifier.fillMaxSize()) {
-                LazyColumn(
-                    state = listState,
-                    reverseLayout = true,
-                    modifier =
-                        Modifier.fillMaxSize()
-                            .hazeSource(LocalHaze.current)
-                            .testTag("message-list")
-                            .onGloballyPositioned { listBounds = it.boundsInWindow() },
-                    contentPadding =
-                        PaddingValues(top = headerHeight + 8.dp, bottom = 8.dp),
-                ) {
-                    if (server.messages.isEmpty())
-                        item("empty") {
-                            EmptyState(
-                                if (server.connection == "online")
-                                    ui(R.string.the_start_of_something_good)
-                                else ui(R.string.no_saved_messages_yet),
-                                if (server.connection == "online")
-                                    ui(R.string.say_hello_in_1_s, channel.name)
-                                else ui(R.string.messages_will_appear_when_the_server_is_reachable),
-                            )
-                        }
-                    itemsIndexed(
-                        timeline.rows,
-                        key = { _, row -> row.key },
-                        contentType = { _, row -> if (row.date != null) "date" else "message" },
-                    ) { index, row ->
-                        if (row.date != null) ConversationDateHeader(row.date)
-                        val message = row.message
-                        if (message != null)
-                            TimelineMessage(
-                                message,
-                                presentation,
-                                replyMessages[message.replyTo],
-                                model,
-                                grouped = message.id in groupedMessages,
-                                canReply =
-                                    !recording &&
-                                        !submitting &&
-                                        !attachmentDraft.sending &&
-                                        !overlayBlocking &&
-                                        viewedMedia == null,
-                                highlighted = highlighted?.first == message.id,
-                                joinPrevious =
-                                    message.highlightKind.isNotBlank() &&
-                                        timeline.rows
-                                            .getOrNull(index + 1)
-                                            ?.message
-                                            ?.highlightKind == message.highlightKind,
-                                joinNext =
-                                    message.highlightKind.isNotBlank() &&
-                                        timeline.rows
-                                            .getOrNull(index - 1)
-                                            ?.message
-                                            ?.highlightKind == message.highlightKind,
-                                viewport = viewport,
-                                mediaVisible =
-                                    message.id in visibleRows &&
-                                        viewedMedia == null &&
-                                        !embedEditor &&
-                                        edit == null &&
-                                        !pins &&
-                                        !overlayBlocking,
-                                activePlayer = activeMedia,
-                                interactions = interactions,
-                                showCompactTime = message.id in timeline.timestampIds,
-                            )
                     }
-                }
 
-                ConversationReadMarkers(
-                    listState,
-                    readingState,
-                    appearance.catchUpHourglass,
-                    headerHeight + 8.dp,
-                    composerHeight + 8.dp,
-                    appearance.avatars && !LocalMessageAppearance.current.extraCompact,
-                )
+                    ConversationReadMarkers(
+                        listState,
+                        readingState,
+                        appearance.catchUpHourglass,
+                        headerHeight + 8.dp,
+                        composerHeight + 8.dp,
+                        appearance.avatars && !LocalMessageAppearance.current.extraCompact,
+                    )
 
-                // Content can continue behind glass, while system status symbols keep
-                // a quiet, legible background even when a message scrolls under them.
-                Box(
-                    Modifier.align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .height(
-                            WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 20.dp
-                        )
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    MaterialTheme.colorScheme.background,
-                                    MaterialTheme.colorScheme.background,
-                                    Color.Transparent,
+                    // Content can continue behind glass, while system status symbols keep
+                    // a quiet, legible background even when a message scrolls under them.
+                    Box(
+                        Modifier.align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .height(
+                                WindowInsets.statusBars.asPaddingValues().calculateTopPadding() +
+                                    20.dp
+                            )
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(
+                                        MaterialTheme.colorScheme.background,
+                                        MaterialTheme.colorScheme.background,
+                                        Color.Transparent,
+                                    )
                                 )
                             )
-                        )
-                )
-                Column(
-                    Modifier.align(Alignment.TopCenter)
-                        .statusBarsPadding()
-                        .padding(horizontal = dimensions.floatingPadding, vertical = 8.dp)
-                        .onSizeChanged {
-                            headerHeight =
-                                with(density) { it.height.toDp() } +
-                                    dimensions.floatingPadding * 2 +
-                                    8.dp
-                        }
-                ) {
-                    GlassPill(Modifier.fillMaxWidth()) {
-                        Column(
-                            Modifier.fillMaxWidth()
-                                .testTag("channel-header")
-                                .animateContentSize()
-                                .clickable(
-                                    role = Role.Button,
-                                    onClickLabel =
-                                        if (descriptionExpanded)
-                                            ui(R.string.hide_channel_description)
-                                        else ui(R.string.show_channel_description),
-                                ) {
-                                    descriptionTouched = true
-                                    descriptionExpanded = !descriptionExpanded
-                                }
-                                .semantics {
-                                    stateDescription =
-                                        if (descriptionExpanded) ui(R.string.expanded)
-                                        else ui(R.string.collapsed)
-                                }
-                        ) {
-                            Row(
-                                Modifier.fillMaxWidth().padding(dimensions.surfaceInset),
-                                verticalAlignment = Alignment.CenterVertically,
+                    )
+                    Column(
+                        Modifier.align(Alignment.TopCenter)
+                            .statusBarsPadding()
+                            .padding(horizontal = dimensions.floatingPadding, vertical = 8.dp)
+                            .onSizeChanged {
+                                headerHeight =
+                                    with(density) { it.height.toDp() } +
+                                        dimensions.floatingPadding * 2 +
+                                        8.dp
+                            }
+                    ) {
+                        GlassPill(Modifier.fillMaxWidth()) {
+                            Column(
+                                Modifier.fillMaxWidth()
+                                    .testTag("channel-header")
+                                    .animateContentSize()
+                                    .clickable(
+                                        role = Role.Button,
+                                        onClickLabel =
+                                            if (descriptionExpanded)
+                                                ui(R.string.hide_channel_description)
+                                            else ui(R.string.show_channel_description),
+                                    ) {
+                                        descriptionTouched = true
+                                        descriptionExpanded = !descriptionExpanded
+                                    }
+                                    .semantics {
+                                        stateDescription =
+                                            if (descriptionExpanded) ui(R.string.expanded)
+                                            else ui(R.string.collapsed)
+                                    }
                             ) {
-                                Box(Modifier.width(96.dp)) {
-                                    IconButton(onClick = onBack) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(dimensions.surfaceInset),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Box(Modifier.width(96.dp)) {
+                                        IconButton(onClick = onBack) {
+                                            Icon(
+                                                Icons.Outlined.ArrowBack,
+                                                ui(R.string.back_to_conversations),
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        channel.name,
+                                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+                                        textAlign = TextAlign.Center,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            keyboard?.hide()
+                                            focus.clearFocus()
+                                            pins = true
+                                        }
+                                    ) {
+                                        Icon(Icons.Outlined.PushPin, ui(R.string.pinned_messages))
+                                    }
+                                    IconButton(onClick = { members = true }) {
                                         Icon(
-                                            Icons.Outlined.ArrowBack,
-                                            ui(R.string.back_to_conversations),
+                                            Icons.Outlined.PeopleOutline,
+                                            ui(R.string.community_members),
                                         )
                                     }
                                 }
-                                Text(
-                                    channel.name,
-                                    modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
-                                    textAlign = TextAlign.Center,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                IconButton(
-                                    onClick = {
-                                        keyboard?.hide()
-                                        focus.clearFocus()
-                                        pins = true
-                                    }
-                                ) {
-                                    Icon(Icons.Outlined.PushPin, ui(R.string.pinned_messages))
+                                if (channel.kind == "voice") {
+                                    VoiceChannelTabs(
+                                        chat = true,
+                                        onChat = {},
+                                        onCall = { model.voiceCalls.open(server, channel.id) },
+                                        flushWithHeader = true,
+                                    )
                                 }
-                                IconButton(onClick = { members = true }) {
-                                    Icon(
-                                        Icons.Outlined.PeopleOutline,
-                                        ui(R.string.community_members),
+                                if (descriptionExpanded) {
+                                    Text(
+                                        channel.topic.ifBlank {
+                                            if (channel.kind == "direct")
+                                                ui(
+                                                    R.string.direct_conversation_with_1_s,
+                                                    channel.name,
+                                                )
+                                            else ui(R.string.no_channel_description_yet)
+                                        },
+                                        modifier =
+                                            Modifier.fillMaxWidth()
+                                                .padding(horizontal = 20.dp)
+                                                .padding(top = 2.dp, bottom = 18.dp)
+                                                .heightIn(max = 160.dp)
+                                                .verticalScroll(rememberScrollState()),
+                                        textAlign = TextAlign.Center,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
-                            if (channel.kind == "voice") {
-                                VoiceChannelTabs(
-                                    chat = true,
-                                    onChat = {},
-                                    onCall = { model.voiceCalls.open(server, channel.id) },
-                                    flushWithHeader = true,
-                                )
-                            }
-                            if (descriptionExpanded) {
-                                Text(
-                                    channel.topic.ifBlank {
-                                        if (channel.kind == "direct")
-                                            ui(R.string.direct_conversation_with_1_s, channel.name)
-                                        else ui(R.string.no_channel_description_yet)
-                                    },
-                                    modifier =
-                                        Modifier.fillMaxWidth()
-                                            .padding(horizontal = 20.dp)
-                                            .padding(top = 2.dp, bottom = 18.dp)
-                                            .heightIn(max = 160.dp)
-                                            .verticalScroll(rememberScrollState()),
-                                    textAlign = TextAlign.Center,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
                         }
+                        CallBrowsingHeader()
+                        if (server.connection != "online")
+                            GlassPill(Modifier.padding(top = 8.dp), radius = 24) {
+                                ConnectionBanner(server.connection) {
+                                    model.command(Action.Refresh)
+                                }
+                            }
                     }
-                    CallBrowsingHeader()
-                    if (server.connection != "online")
-                        GlassPill(Modifier.padding(top = 8.dp), radius = 24) {
-                            ConnectionBanner(server.connection) { model.command(Action.Refresh) }
-                        }
-                }
 
-                Column(
-                    Modifier.align(Alignment.BottomEnd)
-                        .padding(
-                            end = dimensions.composerPadding + dimensions.surfaceInset,
-                            bottom = 8.dp,
-                        ),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalAlignment = Alignment.End,
-                ) {
-                    if (readingControls.mentions.isNotEmpty())
-                        BadgedBox(
-                            badge = {
-                                if (readingControls.mentions.size > 1)
-                                    Badge(Modifier.testTag("mention-count")) {
-                                        Text(shortcutCount(readingControls.mentions.size))
+                    Column(
+                        Modifier.align(Alignment.BottomEnd)
+                            .padding(
+                                end = dimensions.composerPadding + dimensions.surfaceInset,
+                                bottom = 8.dp,
+                            ),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.End,
+                    ) {
+                        if (readingControls.mentions.isNotEmpty())
+                            BadgedBox(
+                                badge = {
+                                    if (readingControls.mentions.size > 1)
+                                        Badge(Modifier.testTag("mention-count")) {
+                                            Text(shortcutCount(readingControls.mentions.size))
+                                        }
+                                }
+                            ) {
+                                GlassPill(radius = 18) {
+                                    IconButton(
+                                        onClick = {
+                                            openOriginal(readingControls.mentions.first())
+                                        },
+                                        modifier = Modifier.size(48.dp).testTag("mention-shortcut"),
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.Notifications,
+                                            uiQuantity(
+                                                R.plurals.mention_count,
+                                                readingControls.mentions.size,
+                                            ),
+                                        )
                                     }
+                                }
                             }
-                        ) {
+                        if (appearance.catchUpHourglass && readingControls.hasCatchUp)
                             GlassPill(radius = 18) {
                                 IconButton(
-                                    onClick = { openOriginal(readingControls.mentions.first()) },
-                                    modifier = Modifier.size(48.dp).testTag("mention-shortcut"),
+                                    onClick = {
+                                        followingLatest = false
+                                        latestPhase = LatestPhase.FirstNew
+                                        jumping = true
+                                        focus.clearFocus()
+                                        keyboard?.hide()
+                                        model.command(
+                                            Action.CatchUp(channel.id, server.me),
+                                            url = server.url,
+                                            onFailure = { jumping = false },
+                                        )
+                                    },
+                                    modifier = Modifier.size(48.dp).testTag("hourglass-shortcut"),
                                 ) {
                                     Icon(
-                                        Icons.Outlined.Notifications,
-                                        uiQuantity(
-                                            R.plurals.mention_count,
-                                            readingControls.mentions.size,
-                                        ),
+                                        Icons.Outlined.HourglassEmpty,
+                                        ui(R.string.go_to_oldest_unread_message_in_catch_up_block),
                                     )
                                 }
                             }
-                        }
-                    if (appearance.catchUpHourglass && readingControls.hasCatchUp)
-                        GlassPill(radius = 18) {
-                            IconButton(
-                                onClick = {
-                                    followingLatest = false
-                                    latestPhase = LatestPhase.FirstNew
-                                    jumping = true
-                                    focus.clearFocus()
-                                    keyboard?.hide()
-                                    model.command(
-                                        Action.CatchUp(channel.id, server.me),
-                                        url = server.url,
-                                        onFailure = { jumping = false },
-                                    )
-                                },
-                                modifier = Modifier.size(48.dp).testTag("hourglass-shortcut"),
+                        if (
+                            (!nearBottom ||
+                                server.browsingHistory ||
+                                appearance.catchUpHourglass && readingControls.hasCatchUp) &&
+                                server.messages.isNotEmpty()
+                        )
+                            BadgedBox(
+                                badge = {
+                                    if (arrived.isNotEmpty())
+                                        Badge(Modifier.testTag("latest-count")) {
+                                            Text(shortcutCount(arrived.size))
+                                        }
+                                }
                             ) {
-                                Icon(
-                                    Icons.Outlined.HourglassEmpty,
-                                    ui(R.string.go_to_oldest_unread_message_in_catch_up_block),
-                                )
-                            }
-                        }
-                    if (
-                        (!nearBottom ||
-                            server.browsingHistory ||
-                            appearance.catchUpHourglass && readingControls.hasCatchUp) &&
-                            server.messages.isNotEmpty()
-                    )
-                        BadgedBox(
-                            badge = {
-                                if (arrived.isNotEmpty())
-                                    Badge(Modifier.testTag("latest-count")) {
-                                        Text(shortcutCount(arrived.size))
+                                GlassPill(Modifier.testTag("latest-messages"), radius = 18) {
+                                    IconButton(
+                                        onClick = ::latestMessages,
+                                        modifier = Modifier.size(48.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.ArrowDownward,
+                                            if (
+                                                appearance.catchUpHourglass &&
+                                                    nearBottom &&
+                                                    latestPhase == LatestPhase.ClearCatchUp &&
+                                                    readingControls.hasCatchUp
+                                            )
+                                                ui(R.string.clear_catch_up_block)
+                                            else if (
+                                                arrived.isNotEmpty() &&
+                                                    latestPhase == LatestPhase.FirstNew
+                                            )
+                                                ui(R.string.go_to_first_new_message)
+                                            else ui(R.string.latest_messages),
+                                        )
                                     }
-                            }
-                        ) {
-                            GlassPill(Modifier.testTag("latest-messages"), radius = 18) {
-                                IconButton(
-                                    onClick = ::latestMessages,
-                                    modifier = Modifier.size(48.dp),
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.ArrowDownward,
-                                        if (
-                                            appearance.catchUpHourglass &&
-                                                nearBottom &&
-                                                latestPhase == LatestPhase.ClearCatchUp &&
-                                                readingControls.hasCatchUp
-                                        )
-                                            ui(R.string.clear_catch_up_block)
-                                        else if (
-                                            arrived.isNotEmpty() &&
-                                                latestPhase == LatestPhase.FirstNew
-                                        )
-                                            ui(R.string.go_to_first_new_message)
-                                        else ui(R.string.latest_messages),
-                                    )
                                 }
                             }
-                        }
+                    }
                 }
             }
-        }
-                Column(
-                    Modifier.align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }
-                        .testTag("chat-composer")
-                        .padding(dimensions.composerPadding)
-                ) {
-                    if (server.loadingContext || readingControls.seekingCatchUp)
-                        GlassPill(Modifier.fillMaxWidth().padding(bottom = 8.dp), radius = 24) {
-                            Row(
-                                Modifier.padding(start = 16.dp, end = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                                Text(
-                                    if (readingControls.seekingCatchUp)
-                                        ui(R.string.loading_earlier_unread_messages)
-                                    else ui(R.string.opening_original_message),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                TextButton(onClick = { jumpToLatest() }) {
-                                    Text(ui(R.string.cancel))
-                                }
+            Column(
+                Modifier.align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }
+                    .testTag("chat-composer")
+                    .padding(dimensions.composerPadding)
+            ) {
+                if (server.loadingContext || readingControls.seekingCatchUp)
+                    GlassPill(Modifier.fillMaxWidth().padding(bottom = 8.dp), radius = 24) {
+                        Row(
+                            Modifier.padding(start = 16.dp, end = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Text(
+                                if (readingControls.seekingCatchUp)
+                                    ui(R.string.loading_earlier_unread_messages)
+                                else ui(R.string.opening_original_message),
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { jumpToLatest() }) {
+                                Text(ui(R.string.cancel))
                             }
                         }
-                    if (composerFocused && !recording && !emojiPicker && !gifPicker)
-                        ComposerSuggestions(composer, server, model) { updateComposer(it) }
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(dimensions.composerGap),
-                        verticalAlignment = Alignment.Bottom,
-                    ) {
-                        AttachmentActions(
-                            draftKey,
-                            model,
-                            enabled =
-                                !recording &&
-                                    !submitting &&
-                                    !attachmentDraft.sending &&
-                                    !attachmentDraft.preparing,
-                            onRecord = {
-                                focus.clearFocus()
-                                keyboard?.hide()
-                                recording = true
-                            },
-                            modifier = Modifier.zIndex(1f),
-                        )
-                        Column(Modifier.weight(1f)) {
-                            TypingIndicator(server.typing, server.typingPhrase)
-                            GlassPill(radius = 28) {
-                                if (recording)
-                                    RecordingComposer(
-                                        draftKey,
-                                        model,
-                                        onClose = { recording = false },
-                                        onSend = {
-                                            if (attachmentDraft.uncertain)
-                                                confirmAttachmentRetry = true
-                                            else submitMessage(true)
+                    }
+                if (composerFocused && !recording && !emojiPicker && !gifPicker)
+                    ComposerSuggestions(composer, server, model) { updateComposer(it) }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(dimensions.composerGap),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    AttachmentActions(
+                        draftKey,
+                        model,
+                        enabled =
+                            !recording &&
+                                !submitting &&
+                                !attachmentDraft.sending &&
+                                !attachmentDraft.preparing,
+                        onRecord = {
+                            focus.clearFocus()
+                            keyboard?.hide()
+                            recording = true
+                        },
+                        modifier = Modifier.zIndex(1f),
+                    )
+                    Column(Modifier.weight(1f)) {
+                        TypingIndicator(server.typing, server.typingPhrase)
+                        GlassPill(radius = 28) {
+                            if (recording)
+                                RecordingComposer(
+                                    draftKey,
+                                    model,
+                                    onClose = { recording = false },
+                                    onSend = {
+                                        if (attachmentDraft.uncertain) confirmAttachmentRetry = true
+                                        else submitMessage(true)
+                                    },
+                                )
+                            else
+                                Column {
+                                    PendingAttachments(
+                                        attachmentDraft,
+                                        edit = { file ->
+                                            focus.clearFocus()
+                                            keyboard?.hide()
+                                            attachmentOptions = file
                                         },
-                                    )
-                                else
-                                    Column {
-                                        PendingAttachments(
-                                            attachmentDraft,
-                                            edit = { file ->
+                                    ) {
+                                        model.attachments.remove(draftKey, it)
+                                    }
+                                    if (embedDrafts.isNotEmpty()) {
+                                        val valid =
+                                            remember(embedDrafts, attachmentDraft.files) {
+                                                validateEmbedDrafts(
+                                                        embedDrafts,
+                                                        attachmentDraft.files.map {
+                                                            it.wireName
+                                                        },
+                                                    )
+                                                    .isEmpty()
+                                            }
+                                        AssistChip(
+                                            onClick = {
                                                 focus.clearFocus()
                                                 keyboard?.hide()
-                                                attachmentOptions = file
+                                                embedEditor = true
                                             },
-                                        ) {
-                                            model.attachments.remove(draftKey, it)
-                                        }
-                                        if (embedDrafts.isNotEmpty()) {
-                                            val valid =
-                                                remember(embedDrafts, attachmentDraft.files) {
-                                                    validateEmbedDrafts(
-                                                            embedDrafts,
-                                                            attachmentDraft.files.map {
-                                                                it.wireName
-                                                            },
-                                                        )
-                                                        .isEmpty()
+                                            label = {
+                                                Text(
+                                                    uiQuantity(
+                                                        if (valid) R.plurals.embed_draft_count
+                                                        else R.plurals.embed_draft_needs_attention,
+                                                        embedDrafts.size,
+                                                    )
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    if (valid) Icons.Outlined.ViewAgenda
+                                                    else Icons.Outlined.WarningAmber,
+                                                    null,
+                                                )
+                                            },
+                                            modifier =
+                                                Modifier.padding(start = 14.dp)
+                                                    .testTag("composer-embeds"),
+                                        )
+                                    }
+                                    if (reply != null)
+                                        Row(
+                                            Modifier.testTag("composer-reply")
+                                                .clickable(
+                                                    role = Role.Button,
+                                                    onClickLabel =
+                                                        ui(R.string.open_original_message),
+                                                ) {
+                                                    reply?.let(::openOriginal)
                                                 }
-                                            AssistChip(
+                                                .padding(start = 18.dp, top = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.Reply,
+                                                null,
+                                                Modifier.size(18.dp),
+                                                tint = MaterialTheme.colorScheme.primary,
+                                            )
+                                            Text(
+                                                server.messages
+                                                    .find { it.id == reply }
+                                                    ?.let {
+                                                        ui(
+                                                            R.string.reply_to_1_s_2_s,
+                                                            it.author,
+                                                            it.previewText(),
+                                                        )
+                                                    } ?: ui(R.string.reply_to_message),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                modifier =
+                                                    Modifier.weight(1f).padding(start = 8.dp),
+                                            )
+                                            IconToggleButton(
+                                                checked = notifyReply,
+                                                onCheckedChange = { notifyReply = it },
+                                                modifier =
+                                                    Modifier.testTag("reply-notification-toggle"),
+                                            ) {
+                                                Icon(
+                                                    if (notifyReply) Icons.Outlined.AlternateEmail
+                                                    else Icons.Outlined.NotificationsOff,
+                                                    if (notifyReply) ui(R.string.reply_mention_on)
+                                                    else ui(R.string.reply_mention_off),
+                                                    Modifier.size(18.dp),
+                                                    tint =
+                                                        if (notifyReply)
+                                                            MaterialTheme.colorScheme.primary
+                                                        else
+                                                            MaterialTheme.colorScheme
+                                                                .onSurfaceVariant,
+                                                )
+                                            }
+                                            IconButton(onClick = { reply = null }) {
+                                                Icon(
+                                                    Icons.Outlined.Close,
+                                                    ui(R.string.cancel_reply),
+                                                    Modifier.size(18.dp),
+                                                )
+                                            }
+                                        }
+                                    AdaptiveComposer(
+                                        draft = composer,
+                                        editor = { inputModifier, markdown ->
+                                            ComposerInput(
+                                                composer,
+                                                server,
+                                                model,
+                                                ui(
+                                                    R.string.message_to,
+                                                    if (channel.kind == "direct") channel.name
+                                                    else "#${channel.name}",
+                                                ),
+                                                onChange = {
+                                                    updateComposer(it)
+                                                    model.typing(server)
+                                                },
+                                                modifier =
+                                                    inputModifier.focusRequester(composerFocus),
+                                                markdown = markdown,
+                                                onSubmit =
+                                                    if (appearance.enterToSend) requestComposerSend
+                                                    else null,
+                                                onFocusChange = { composerFocused = it },
+                                                animationsAllowed =
+                                                    appearance.animations &&
+                                                        viewedMedia == null &&
+                                                        !emojiPicker &&
+                                                        !gifPicker,
+                                            )
+                                        },
+                                        actions = {
+                                            IconButton(
                                                 onClick = {
+                                                    focus.clearFocus()
+                                                    keyboard?.hide()
+                                                    emojiTarget = null
+                                                    emojiPicker = true
+                                                },
+                                                enabled = !submitting && !attachmentDraft.sending,
+                                                modifier = Modifier.size(48.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.SentimentSatisfiedAlt,
+                                                    ui(R.string.emoji_and_stickers),
+                                                    Modifier.size(22.dp),
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    focus.clearFocus()
+                                                    keyboard?.hide()
+                                                    gifPicker = true
+                                                },
+                                                enabled =
+                                                    !submitting &&
+                                                        !attachmentDraft.sending &&
+                                                        !gifPreparing,
+                                                modifier = Modifier.size(48.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.GifBox,
+                                                    ui(R.string.gif_picker),
+                                                    Modifier.size(24.dp),
+                                                )
+                                            }
+                                            ComposerSendButton(
+                                                canSend = canSubmit,
+                                                enabled = submitEnabled,
+                                                busy = submitting || attachmentDraft.sending,
+                                                onEmbeds = {
                                                     focus.clearFocus()
                                                     keyboard?.hide()
                                                     embedEditor = true
                                                 },
-                                                label = {
-                                                    Text(
-                                                        uiQuantity(
-                                                            if (valid) R.plurals.embed_draft_count
-                                                            else
-                                                                R.plurals
-                                                                    .embed_draft_needs_attention,
-                                                            embedDrafts.size,
-                                                        )
-                                                    )
-                                                },
-                                                leadingIcon = {
-                                                    Icon(
-                                                        if (valid) Icons.Outlined.ViewAgenda
-                                                        else Icons.Outlined.WarningAmber,
-                                                        null,
-                                                    )
-                                                },
-                                                modifier =
-                                                    Modifier.padding(start = 14.dp)
-                                                        .testTag("composer-embeds"),
+                                                onSend = requestComposerSend,
                                             )
-                                        }
-                                        if (reply != null)
-                                            Row(
-                                                Modifier.testTag("composer-reply")
-                                                    .clickable(
-                                                        role = Role.Button,
-                                                        onClickLabel =
-                                                            ui(R.string.open_original_message),
-                                                    ) {
-                                                        reply?.let(::openOriginal)
-                                                    }
-                                                    .padding(start = 18.dp, top = 8.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                            ) {
-                                                Icon(
-                                                    Icons.Outlined.Reply,
-                                                    null,
-                                                    Modifier.size(18.dp),
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                )
-                                                Text(
-                                                    server.messages
-                                                        .find { it.id == reply }
-                                                        ?.let {
-                                                            ui(
-                                                                R.string.reply_to_1_s_2_s,
-                                                                it.author,
-                                                                it.previewText(),
-                                                            )
-                                                        } ?: ui(R.string.reply_to_message),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    style = MaterialTheme.typography.labelMedium,
-                                                    modifier =
-                                                        Modifier.weight(1f).padding(start = 8.dp),
-                                                )
-                                                IconToggleButton(
-                                                    checked = notifyReply,
-                                                    onCheckedChange = { notifyReply = it },
-                                                    modifier =
-                                                        Modifier.testTag(
-                                                            "reply-notification-toggle"
-                                                        ),
-                                                ) {
-                                                    Icon(
-                                                        if (notifyReply)
-                                                            Icons.Outlined.AlternateEmail
-                                                        else Icons.Outlined.NotificationsOff,
-                                                        if (notifyReply)
-                                                            ui(R.string.reply_mention_on)
-                                                        else ui(R.string.reply_mention_off),
-                                                        Modifier.size(18.dp),
-                                                        tint =
-                                                            if (notifyReply)
-                                                                MaterialTheme.colorScheme.primary
-                                                            else
-                                                                MaterialTheme.colorScheme
-                                                                    .onSurfaceVariant,
-                                                    )
-                                                }
-                                                IconButton(onClick = { reply = null }) {
-                                                    Icon(
-                                                        Icons.Outlined.Close,
-                                                        ui(R.string.cancel_reply),
-                                                        Modifier.size(18.dp),
-                                                    )
-                                                }
-                                            }
-                                        AdaptiveComposer(
-                                            draft = composer,
-                                            editor = { inputModifier, markdown ->
-                                                ComposerInput(
-                                                    composer,
-                                                    server,
-                                                    model,
-                                                    ui(
-                                                        R.string.message_to,
-                                                        if (channel.kind == "direct") channel.name
-                                                        else "#${channel.name}",
-                                                    ),
-                                                    onChange = {
-                                                        updateComposer(it)
-                                                        model.typing(server)
-                                                    },
-                                                    modifier =
-                                                        inputModifier.focusRequester(composerFocus),
-                                                    markdown = markdown,
-                                                    onSubmit =
-                                                        if (appearance.enterToSend)
-                                                            requestComposerSend
-                                                        else null,
-                                                    onFocusChange = { composerFocused = it },
-                                                    animationsAllowed =
-                                                        appearance.animations &&
-                                                            viewedMedia == null &&
-                                                            !emojiPicker &&
-                                                            !gifPicker,
-                                                )
-                                            },
-                                            actions = {
-                                                IconButton(
-                                                    onClick = {
-                                                        focus.clearFocus()
-                                                        keyboard?.hide()
-                                                        emojiTarget = null
-                                                        emojiPicker = true
-                                                    },
-                                                    enabled =
-                                                        !submitting && !attachmentDraft.sending,
-                                                    modifier = Modifier.size(48.dp),
-                                                ) {
-                                                    Icon(
-                                                        Icons.Outlined.SentimentSatisfiedAlt,
-                                                        ui(R.string.emoji_and_stickers),
-                                                        Modifier.size(22.dp),
-                                                    )
-                                                }
-                                                IconButton(
-                                                    onClick = {
-                                                        focus.clearFocus()
-                                                        keyboard?.hide()
-                                                        gifPicker = true
-                                                    },
-                                                    enabled =
-                                                        !submitting &&
-                                                            !attachmentDraft.sending &&
-                                                            !gifPreparing,
-                                                    modifier = Modifier.size(48.dp),
-                                                ) {
-                                                    Icon(
-                                                        Icons.Outlined.GifBox,
-                                                        ui(R.string.gif_picker),
-                                                        Modifier.size(24.dp),
-                                                    )
-                                                }
-                                                ComposerSendButton(
-                                                    canSend = canSubmit,
-                                                    enabled = submitEnabled,
-                                                    busy = submitting || attachmentDraft.sending,
-                                                    onEmbeds = {
-                                                        focus.clearFocus()
-                                                        keyboard?.hide()
-                                                        embedEditor = true
-                                                    },
-                                                    onSend = requestComposerSend,
-                                                )
-                                            },
-                                        )
-                                    }
-                            }
+                                        },
+                                    )
+                                }
                         }
                     }
                 }
+            }
         }
 
         if (pins)
