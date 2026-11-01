@@ -1057,4 +1057,5 @@
     <string name="highlight_example_direct">Hey, @you! Take a look at this message.</string>
     <string name="highlight_example_role">Heads up, @team! We have an update.</string>
     <string name="highlight_example_reply">Replying to your earlier message.</string>
+    <string name="density_extra_compact_stacked_grouped">Extra compact (stacked, grouped)</string>
 </resources>
