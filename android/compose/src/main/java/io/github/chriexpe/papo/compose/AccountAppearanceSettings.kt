@@ -7,6 +7,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -128,9 +129,10 @@ internal fun AccountAppearanceEditor(
         sheetState = sheet,
     ) {
         Column(
-            // Size the sheet content, not the ModalBottomSheet container.
-            // Material 3 then positions the expanded surface against the bottom edge.
-            Modifier.fillMaxWidth().fillMaxHeight(.80f)
+            // Wrap to the required content height, up to 80% of the screen.
+            // Only oversized content scrolls; Material 3 bottom-anchors the sheet.
+            Modifier.fillMaxWidth()
+                .heightIn(max = LocalConfiguration.current.screenHeightDp.dp * .80f)
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 12.dp)
