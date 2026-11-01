@@ -282,7 +282,6 @@ internal fun EmojiPickerBody(
                     }
             }
         }
-    }
 }
 
 @Composable
