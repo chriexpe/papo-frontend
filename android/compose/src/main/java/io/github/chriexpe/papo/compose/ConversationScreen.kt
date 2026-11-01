@@ -152,6 +152,20 @@ internal fun ConversationScreen(
     val mediaVisibility = remember(draftKey) { MediaVisibilityRegistry() }
     var listBounds by remember { mutableStateOf(Rect.Zero) }
     val scope = rememberCoroutineScope()
+    // One persistent sheet, not a modal/inline picker swap. Neither composer focus nor
+    // IME transitions own its visibility. The grid remains mounted across expansion.
+    val pickerSheet = rememberStandardBottomSheetState(
+        initialValue = SheetValue.Hidden,
+        skipHiddenState = false,
+    )
+    val pickerScaffold = rememberBottomSheetScaffoldState(bottomSheetState = pickerSheet)
+    var pickerSearch by remember(draftKey) { mutableStateOf("") }
+    var pickerDetail by remember(draftKey) { mutableStateOf<String?>(null) }
+    LaunchedEffect(emojiPicker, emojiTarget) {
+        if (emojiPicker && emojiTarget == null) pickerSheet.show()
+        else pickerSheet.hide()
+    }
+
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val mediaLifecycle by lifecycle.currentStateFlow.collectAsState()
     val overlayBlocking by rememberUpdatedState(LocalMediaOverlayBlocking.current)
@@ -738,6 +752,32 @@ internal fun ConversationScreen(
         LocalPlaybackBookmarks provides playbackBookmarks,
         LocalMediaVisibilityRegistry provides mediaVisibility,
     ) {
+        BottomSheetScaffold(
+            scaffoldState = pickerScaffold,
+            sheetPeekHeight = if (emojiPicker && emojiTarget == null) 276.dp else 0.dp,
+            sheetSwipeEnabled = emojiPicker && emojiTarget == null,
+            sheetDragHandle = {
+                if (emojiPicker && emojiTarget == null) BottomSheetDefaults.DragHandle()
+            },
+            sheetContent = {
+                val expanded =
+                    pickerSheet.currentValue == SheetValue.Expanded ||
+                        pickerSheet.targetValue == SheetValue.Expanded
+                EmojiPickerBody(
+                    server = server,
+                    model = model,
+                    query = pickerSearch,
+                    onQueryChange = { pickerSearch = it },
+                    onPick = { emoji -> updateComposer(composer.insert(emoji.token)) },
+                    onDetail = { pickerDetail = it },
+                    showFavorites = true,
+                    compact = !expanded,
+                    onExpand = { scope.launch { pickerSheet.expand() } },
+                    modifier = Modifier.fillMaxWidth().fillMaxHeight(.80f),
+                )
+            },
+            modifier = Modifier.fillMaxSize(),
+        ) { _ ->
         Box(
             Modifier.fillMaxSize()
                 .conversationSwipeBack(
@@ -1299,10 +1339,11 @@ internal fun ConversationScreen(
                     }
             }
         }
+        }
 
         if (pins)
             PinnedMessages(server, model, onDismiss = { pins = false }, onOpen = ::openOriginal)
-        if (emojiPicker)
+        if (emojiPicker && emojiTarget != null)
             EmojiPicker(
                 server,
                 model,
@@ -1319,6 +1360,9 @@ internal fun ConversationScreen(
                     } else updateComposer(composer.insert(emoji.token))
                 },
             )
+        pickerDetail?.let { id ->
+            StickerDetails(server, model, id, onDismiss = { pickerDetail = null })
+        }
         if (gifPicker)
             GifPicker(
                 server,
