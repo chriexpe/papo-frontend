@@ -49,8 +49,8 @@ internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
     val selectedEntry = entries.first { it.first == previewKey }
     val previewColor = prefs.highlightColor(selectedEntry.first, selectedEntry.third)
 
-    // The sheet itself is 80% of the window; skip the half-expanded anchor.
-    // A full-size child avoids applying the 80% constraint twice.
+    // The content occupies 80% of the available height, while Material 3
+    // keeps the expanded modal surface anchored to the bottom of the window.
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
