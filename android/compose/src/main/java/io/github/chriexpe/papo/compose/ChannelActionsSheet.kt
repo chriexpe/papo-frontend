@@ -3,6 +3,7 @@
 package io.github.chriexpe.papo.compose
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -54,13 +55,8 @@ internal fun ChannelActionsSheet(
                 supportingContent = { Text(mode) },
                 leadingContent = { Icon(Icons.Outlined.Notifications, null) },
                 trailingContent = { Icon(Icons.Outlined.ChevronRight, null) },
-                modifier = Modifier.testTag("channel-policy-menu"),
+                modifier = Modifier.testTag("channel-policy-menu").clickable { policies = !policies },
             )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = { policies = !policies }) {
-                    Text(if (policies) ui(R.string.close) else ui(R.string.change_notification_policy))
-                }
-            }
             if (policies)
                 listOf(
                     "all" to R.string.all_messages,
@@ -95,13 +91,8 @@ internal fun ChannelActionsSheet(
                     if (mutedUntil > 0L) Text(ui(R.string.channel_muted_state))
                 },
                 leadingContent = { Icon(Icons.Outlined.NotificationsOff, null) },
-                modifier = Modifier.testTag("channel-mute-menu"),
+                modifier = Modifier.testTag("channel-mute-menu").clickable { mutes = !mutes },
             )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = { mutes = !mutes }) {
-                    Text(if (mutes) ui(R.string.close) else ui(R.string.change_mute))
-                }
-            }
             if (mutes) {
                 if (mutedUntil > 0L)
                     TextButton(onClick = { MessageAlerts.setMute(server.url, server.me, channel.id, 0L); mutes = false }) {
