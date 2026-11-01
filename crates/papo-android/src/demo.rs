@@ -376,7 +376,7 @@ impl Demo {
                 }
                 self.store.mark_read(&channel_id);
                 for item in &mut self.notifications {
-                    if item.channel_id.as_deref() == Some(&channel_id) {
+                    if item.channel_id.as_deref() == Some(channel_id.as_str()) {
                         item.read = true;
                     }
                 }
