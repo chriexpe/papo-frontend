@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -755,11 +756,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             else ui(R.string.messages_will_appear_when_the_server_is_reachable),
                         )
                     }
-                items(
+                itemsIndexed(
                     timeline.rows,
-                    key = { it.key },
-                    contentType = { if (it.date != null) "date" else "message" },
-                ) { row ->
+                    key = { _, row -> row.key },
+                    contentType = { _, row -> if (row.date != null) "date" else "message" },
+                ) { index, row ->
                     if (row.date != null) ConversationDateHeader(row.date)
                     val message = row.message
                     if (message != null)
@@ -776,6 +777,10 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                     !overlayBlocking &&
                                     viewedMedia == null,
                             highlighted = highlighted?.first == message.id,
+                            joinPrevious = message.highlightKind.isNotBlank() &&
+                                timeline.rows.getOrNull(index + 1)?.message?.highlightKind == message.highlightKind,
+                            joinNext = message.highlightKind.isNotBlank() &&
+                                timeline.rows.getOrNull(index - 1)?.message?.highlightKind == message.highlightKind,
                             viewport = viewport,
                             mediaVisible =
                                 message.id in visibleRows &&
