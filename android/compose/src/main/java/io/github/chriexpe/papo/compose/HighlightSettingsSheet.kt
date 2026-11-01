@@ -49,10 +49,16 @@ internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
     val selectedEntry = entries.first { it.first == previewKey }
     val previewColor = prefs.highlightColor(selectedEntry.first, selectedEntry.third)
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // The sheet itself is 80% of the window; skip the half-expanded anchor.
+    // A full-size child avoids applying the 80% constraint twice.
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        modifier = Modifier.fillMaxHeight(.80f),
+    ) {
         Column(
-            Modifier.fillMaxWidth()
-                .fillMaxHeight(.80f)
+            Modifier.fillMaxSize()
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
                 .testTag("highlight-settings"),
