@@ -25,9 +25,9 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.min
 
 /**
- * A non-modal overlay attached to the TOP of the composer, not a Scaffold sheet.
- * Only compose this when the user opens the picker. The parent has already applied
- * IME insets; keyboard/composer movement automatically moves this overlay with it.
+ * A non-modal overlay attached to the TOP of the composer, not a Scaffold sheet. Only compose this
+ * when the user opens the picker. The parent has already applied IME insets; keyboard/composer
+ * movement automatically moves this overlay with it.
  */
 @Composable
 internal fun FloatingEmojiPicker(
@@ -66,42 +66,43 @@ internal fun FloatingEmojiPicker(
         // LazyVerticalGrid participates in nested scrolling. When the user swipes up
         // inside the compact grid, expand the panel before consuming sticker scroll.
         // When the expanded grid reaches its top, downward scrolling can collapse it.
-        val nestedScroll = remember(searchFocusRequested) {
-            object : NestedScrollConnection {
-                override fun onPreScroll(
-                    available: Offset,
-                    source: NestedScrollSource,
-                ): Offset {
-                    if (
-                        source == NestedScrollSource.UserInput &&
-                        !searchFocusRequested &&
-                        !expanded &&
-                        available.y < 0f
-                    ) {
-                        expanded = true
-                        return Offset(0f, available.y)
+        val nestedScroll =
+            remember(searchFocusRequested) {
+                object : NestedScrollConnection {
+                    override fun onPreScroll(
+                        available: Offset,
+                        source: NestedScrollSource,
+                    ): Offset {
+                        if (
+                            source == NestedScrollSource.UserInput &&
+                                !searchFocusRequested &&
+                                !expanded &&
+                                available.y < 0f
+                        ) {
+                            expanded = true
+                            return Offset(0f, available.y)
+                        }
+                        return Offset.Zero
                     }
-                    return Offset.Zero
-                }
 
-                override fun onPostScroll(
-                    consumed: Offset,
-                    available: Offset,
-                    source: NestedScrollSource,
-                ): Offset {
-                    if (
-                        source == NestedScrollSource.UserInput &&
-                        !searchFocusRequested &&
-                        expanded &&
-                        available.y > 0f
-                    ) {
-                        expanded = false
-                        return Offset(0f, available.y)
+                    override fun onPostScroll(
+                        consumed: Offset,
+                        available: Offset,
+                        source: NestedScrollSource,
+                    ): Offset {
+                        if (
+                            source == NestedScrollSource.UserInput &&
+                                !searchFocusRequested &&
+                                expanded &&
+                                available.y > 0f
+                        ) {
+                            expanded = false
+                            return Offset(0f, available.y)
+                        }
+                        return Offset.Zero
                     }
-                    return Offset.Zero
                 }
             }
-        }
 
         Surface(
             modifier =

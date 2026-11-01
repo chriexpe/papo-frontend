@@ -168,8 +168,10 @@ internal fun EmojiPickerBody(
                 onQueryChange,
                 label = { Text(ui(R.string.find_an_emoji_or_sticker)) },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth().focusRequester(searchFocus)
-                    .onFocusChanged { onSearchFocusChange(it.isFocused) },
+                modifier =
+                    Modifier.fillMaxWidth().focusRequester(searchFocus).onFocusChanged {
+                        onSearchFocusChange(it.isFocused)
+                    },
                 leadingIcon = { Icon(Icons.Outlined.Search, null) },
                 trailingIcon = {
                     IconButton(onClick = onClose) {
