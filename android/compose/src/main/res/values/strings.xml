@@ -932,8 +932,6 @@
     <string name="ui_density_description">"Adjust spacing and control sizes on this device. Touch targets and Android text scaling are preserved."</string>
     <string name="density_compact">"Compact"</string>
     <string name="density_extra_compact">"Extra compact"</string>
-    <string name="density_extra_compact_stacked">"Extra compact (stacked)"</string>
-    <string name="extra_compact_description">"Extra compact puts names and messages on one line; stacked puts the message below the name. Both hide avatars and are saved on this device for this account."</string>
     <string name="density_normal">"Normal"</string>
     <string name="density_comfortable">"Comfortable"</string>
     <string name="text_small">"Small"</string>
@@ -1057,5 +1055,8 @@
     <string name="highlight_example_direct">Hey, @you! Take a look at this message.</string>
     <string name="highlight_example_role">Heads up, @team! We have an update.</string>
     <string name="highlight_example_reply">Replying to your earlier message.</string>
-    <string name="density_extra_compact_stacked_grouped">Extra compact (stacked, grouped)</string>
+    <string name="message_grouping">Group consecutive messages</string>
+    <string name="message_grouping_description">Consecutive messages from the same person share an author header and avatar.</string>
+    <string name="extra_compact_stack">Stack messages</string>
+    <string name="extra_compact_stack_description">Show the message beneath its author in Extra compact.</string>
 </resources>
