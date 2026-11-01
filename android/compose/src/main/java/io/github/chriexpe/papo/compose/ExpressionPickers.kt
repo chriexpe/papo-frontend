@@ -209,7 +209,6 @@ internal fun EmojiPicker(
             }
         }
     }
-}
 
     // A second sheet owns outside taps while open; the underlying emoji picker stays mounted.
     detail?.let { id ->
