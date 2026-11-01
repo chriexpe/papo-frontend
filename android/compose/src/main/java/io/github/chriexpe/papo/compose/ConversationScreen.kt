@@ -152,33 +152,10 @@ internal fun ConversationScreen(
     val mediaVisibility = remember(draftKey) { MediaVisibilityRegistry() }
     var listBounds by remember { mutableStateOf(Rect.Zero) }
     val scope = rememberCoroutineScope()
-    // One persistent sheet, not a modal/inline picker swap. Neither composer focus nor
-    // IME transitions own its visibility. The grid remains mounted across expansion.
-    val pickerSheet =
-        rememberStandardBottomSheetState(
-            initialValue = SheetValue.Hidden,
-            skipHiddenState = false,
-        )
-    val pickerScaffold = rememberBottomSheetScaffoldState(bottomSheetState = pickerSheet)
+    // The composer picker is only composed when open; its visibility never follows focus.
     var pickerSearch by remember(draftKey) { mutableStateOf("") }
     var pickerSearchRequested by remember(draftKey) { mutableStateOf(false) }
     var pickerDetail by remember(draftKey) { mutableStateOf<String?>(null) }
-    LaunchedEffect(emojiPicker, emojiTarget) {
-        if (emojiPicker && emojiTarget == null) pickerSheet.show() else pickerSheet.hide()
-    }
-    LaunchedEffect(pickerSheet, draftKey) {
-        var shown = false
-        snapshotFlow { pickerSheet.currentValue }
-            .collect { value ->
-                if (value != SheetValue.Hidden) shown = true
-                else if (shown && emojiPicker && emojiTarget == null) {
-                    emojiPicker = false
-                    pickerSearchRequested = false
-                    pickerSearch = ""
-                    shown = false
-                }
-            }
-    }
 
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val mediaLifecycle by lifecycle.currentStateFlow.collectAsState()
@@ -791,49 +768,6 @@ internal fun ConversationScreen(
                 .imePadding()
                 .navigationBarsPadding()
         ) {
-            BottomSheetScaffold(
-                scaffoldState = pickerScaffold,
-                // The scaffold ends above the actual composer, keeping it visible below the sheet.
-                sheetShape = RoundedCornerShape(24.dp),
-                sheetPeekHeight = if (emojiPicker && emojiTarget == null) 276.dp else 0.dp,
-                // Keep search expanded while the IME changes window height.
-                sheetSwipeEnabled = emojiPicker && emojiTarget == null && !pickerSearchRequested,
-                sheetDragHandle = {
-                    if (emojiPicker && emojiTarget == null) BottomSheetDefaults.DragHandle()
-                },
-                sheetContent = {
-                    // Do not replace the compact header while the user is dragging.
-                    val expanded = pickerSheet.currentValue == SheetValue.Expanded
-                    EmojiPickerBody(
-                        server = server,
-                        model = model,
-                        query = pickerSearch,
-                        onQueryChange = { pickerSearch = it },
-                        onPick = { emoji -> updateComposer(composer.insert(emoji.token)) },
-                        onDetail = { pickerDetail = it },
-                        showFavorites = true,
-                        compact = !expanded && !pickerSearchRequested,
-                        searchFocusRequested = pickerSearchRequested,
-                        onExpand = {
-                            // Finish expansion before requesting search focus / displaying the IME.
-                            scope.launch {
-                                pickerSheet.expand()
-                                pickerSearchRequested = true
-                            }
-                        },
-                        onClose = {
-                            emojiPicker = false
-                            pickerSearchRequested = false
-                            pickerSearch = ""
-                            focus.clearFocus()
-                            keyboard?.hide()
-                        },
-                        modifier = Modifier.fillMaxWidth().fillMaxHeight(.80f),
-                    )
-                },
-                modifier = Modifier.fillMaxSize().padding(bottom = composerHeight + 8.dp),
-            ) { _ ->
-                Box(Modifier.fillMaxSize()) {
                     LazyColumn(
                         state = listState,
                         reverseLayout = true,
@@ -842,7 +776,7 @@ internal fun ConversationScreen(
                                 .hazeSource(LocalHaze.current)
                                 .testTag("message-list")
                                 .onGloballyPositioned { listBounds = it.boundsInWindow() },
-                        contentPadding = PaddingValues(top = headerHeight + 8.dp, bottom = 8.dp),
+                        contentPadding = PaddingValues(top = headerHeight + 8.dp, bottom = composerHeight + 8.dp),
                     ) {
                         if (server.messages.isEmpty())
                             item("empty") {
@@ -1048,7 +982,7 @@ internal fun ConversationScreen(
                         Modifier.align(Alignment.BottomEnd)
                             .padding(
                                 end = dimensions.composerPadding + dimensions.surfaceInset,
-                                bottom = 8.dp,
+                                bottom = composerHeight + 8.dp,
                             ),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         horizontalAlignment = Alignment.End,
@@ -1351,8 +1285,7 @@ internal fun ConversationScreen(
                                         actions = {
                                             IconButton(
                                                 onClick = {
-                                                    focus.clearFocus()
-                                                    keyboard?.hide()
+                                                    // Keep the composer focus and IME; popup floats above both.
                                                     emojiTarget = null
                                                     emojiPicker = true
                                                 },
@@ -1400,6 +1333,28 @@ internal fun ConversationScreen(
                         }
                     }
                 }
+            if (emojiPicker && emojiTarget == null) {
+                FloatingEmojiPicker(
+                    server = server,
+                    model = model,
+                    query = pickerSearch,
+                    onQueryChange = { pickerSearch = it },
+                    searchFocusRequested = pickerSearchRequested,
+                    onSearchFocus = { pickerSearchRequested = true },
+                    onClose = {
+                        emojiPicker = false
+                        pickerSearchRequested = false
+                        pickerSearch = ""
+                    },
+                    onPick = { emoji -> updateComposer(composer.insert(emoji.token)) },
+                    onDetail = { pickerDetail = it },
+                    modifier =
+                        Modifier.align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .fillMaxHeight()
+                            .padding(bottom = composerHeight + 8.dp)
+                            .zIndex(5f),
+                )
             }
         }
 
