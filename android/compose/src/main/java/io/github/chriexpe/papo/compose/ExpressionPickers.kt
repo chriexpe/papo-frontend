@@ -81,6 +81,32 @@ internal fun EmojiPicker(
 ) {
     var query by remember { mutableStateOf("") }
     var detail by remember(server.url, server.me) { mutableStateOf<String?>(null) }
+    ModalBottomSheet(onDismissRequest = { if (detail == null) onDismiss() }) {
+        EmojiPickerBody(
+            server, model, query, { query = it }, onPick,
+            onDetail = { detail = it },
+            showFavorites = false,
+            compact = false,
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(.74f),
+        )
+    }
+    detail?.let { id -> StickerDetails(server, model, id, onDismiss = { detail = null }) }
+}
+
+/** Shared content: changing sheet height never replaces this grid or its scroll position. */
+@Composable
+internal fun EmojiPickerBody(
+    server: ServerState,
+    model: PapoViewModel,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onPick: (EmojiChoice) -> Unit,
+    onDetail: (String) -> Unit,
+    showFavorites: Boolean,
+    compact: Boolean,
+    onExpand: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     val allLibraries by model.expressions.states.collectAsState()
     val owner = model.expressions.owner(server)
     val library = allLibraries[owner] ?: model.expressions.state(owner)
@@ -93,6 +119,11 @@ internal fun EmojiPicker(
                         .map { EmojiChoice(it) })
                 .distinctBy { it.key }
         }
+    val favorites = remember(library.favoriteStickers, server.emojis) {
+        library.favoriteStickers.mapNotNull { id ->
+            server.emojis.firstOrNull { it.id == id }?.let { EmojiChoice(it.id, true, it.name) }
+        }
+    }
     val context = LocalContext.current
     val standard = remember { UnicodeEmojiCatalog.load(context) }
     val custom =
@@ -109,28 +140,36 @@ internal fun EmojiPicker(
                     .map { UnicodeEmoji(it.value, it.value) }
             (typed + matchingUnicodeEmoji(standard, query.trim())).distinctBy { it.glyph }
         }
-    ModalBottomSheet(onDismissRequest = { if (detail == null) onDismiss() }) {
-        Column(
-            Modifier.fillMaxWidth()
-                .fillMaxHeight(.74f)
-                .imePadding()
-                .padding(horizontal = 16.dp)
-                .testTag("emoji-picker")
-        ) {
+
+    val gridState = rememberLazyGridState()
+    Column(modifier.imePadding().padding(horizontal = 16.dp).testTag("emoji-picker")) {
+        if (!compact)
             OutlinedTextField(
                 query,
-                { query = it },
+                onQueryChange,
                 label = { Text(ui(R.string.find_an_emoji_or_sticker)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 leadingIcon = { Icon(Icons.Outlined.Search, null) },
             )
+        else
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    ui(R.string.emoji),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                IconButton(onClick = onExpand) {
+                    Icon(Icons.Outlined.Search, ui(R.string.find_an_emoji_or_sticker))
+                }
+            }
             LazyVerticalGrid(
                 GridCells.Adaptive(56.dp),
+                state = gridState,
                 modifier = Modifier.weight(1f).padding(top = 12.dp),
                 contentPadding = PaddingValues(bottom = 24.dp),
             ) {
-                // Only one frequently used row; the rest of the existing picker remains a grid.
+                // Same first row in both compact and expanded picker states.
                 if (query.isBlank() && frequentlyUsed.isNotEmpty())
                     item(span = { GridItemSpan(maxLineSpan) }, key = "frequent-row") {
                         BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
@@ -147,12 +186,38 @@ internal fun EmojiPicker(
                                             .combinedClickable(
                                                 onClick = { onPick(choice) },
                                                 onLongClick =
-                                                    if (choice.custom) ({ detail = choice.value })
+                                                    if (choice.custom) ({ onDetail(choice.value) })
                                                     else null,
                                             ),
                                         contentAlignment = Alignment.Center,
                                     ) {
                                         EmojiGlyph(server, choice, 36, model)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                if (showFavorites && query.isBlank() && favorites.isNotEmpty())
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "favorite-row") {
+                        Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                            Text(
+                                ui(R.string.favorites),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                                val slots = (maxWidth / 52.dp).toInt().coerceAtLeast(1)
+                                Row(Modifier.fillMaxWidth()) {
+                                    favorites.take(slots).forEach { choice ->
+                                        Box(
+                                            Modifier.weight(1f).height(52.dp)
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .combinedClickable(
+                                                    onClick = { onPick(choice) },
+                                                    onLongClick = { onDetail(choice.value) },
+                                                ),
+                                            contentAlignment = Alignment.Center,
+                                        ) { EmojiGlyph(server, choice, 36, model) }
                                     }
                                 }
                             }
@@ -179,7 +244,7 @@ internal fun EmojiPicker(
                                 onClickLabel = ui(R.string.insert_sticker, e.name),
                                 onLongClickLabel = ui(R.string.sticker_name_accessibility, e.name),
                                 onClick = { onPick(choice) },
-                                onLongClick = { detail = e.id },
+                                onLongClick = { onDetail(e.id) },
                             )
                             .semantics {
                                 contentDescription = ui(R.string.sticker_name_accessibility, e.name)
@@ -217,11 +282,6 @@ internal fun EmojiPicker(
                     }
             }
         }
-    }
-
-    // A second sheet owns outside taps while open; the underlying emoji picker stays mounted.
-    detail?.let { id ->
-        StickerDetails(server, model, id, onDismiss = { detail = null })
     }
 }
 
