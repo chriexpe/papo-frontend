@@ -1341,7 +1341,12 @@ internal fun ConversationScreen(
                         Modifier.align(Alignment.BottomCenter)
                             .fillMaxWidth()
                             .fillMaxHeight()
-                            .padding(bottom = composerHeight + 8.dp)
+                            // Respect the same floating header clearance as the message list.
+                            // Available peek/expanded height is now bounded at both edges.
+                            .padding(
+                                top = headerHeight + 8.dp,
+                                bottom = composerHeight + 8.dp,
+                            )
                             .zIndex(5f),
                 )
             }
