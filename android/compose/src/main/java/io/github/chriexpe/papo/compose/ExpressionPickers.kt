@@ -88,7 +88,7 @@ internal fun EmojiPicker(
     val frequentlyUsed = remember(library.usage, server.emojis) {
         val available = server.emojis.map { it.id }.toSet()
         (library.usage.map { it.first }.filter { !it.custom || it.value in available } +
-            listOf("👍", "❤️", "😂", "🎉", "👀").map(::EmojiChoice))
+            listOf("👍", "❤️", "😂", "🎉", "👀", "😭", "🔥", "💀", "🤔", "🙏", "🥹", "💜").map { EmojiChoice(it) })
             .distinctBy { it.key }
     }
     val context = LocalContext.current
