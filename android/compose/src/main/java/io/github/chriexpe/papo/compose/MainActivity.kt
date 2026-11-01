@@ -253,6 +253,7 @@ fun PapoApp(
                 var tab by rememberSaveable { mutableStateOf("Chats") }
                 var settingsOrigin by rememberSaveable { mutableStateOf("Chats") }
                 var inConversation by rememberSaveable { mutableStateOf(false) }
+                var revealingChannels by remember { mutableStateOf(false) }
                 val server = state.active
                 val conversationStates = rememberSaveableStateHolder()
                 var conversationScope by rememberSaveable { mutableStateOf("") }
@@ -428,10 +429,16 @@ fun PapoApp(
                                 onRecovery = { model.offerRecovery("") },
                                 command = { model.command(it) },
                             )
-                        } else if (showingConversation && server.conversation != null) {
-                            ConversationScreen(server, model, onBack = leaveConversation)
                         } else {
+                            val conversationShown = showingConversation && server.conversation != null
+                            LaunchedEffect(conversationShown) {
+                                if (!conversationShown) revealingChannels = false
+                            }
                             Box(Modifier.fillMaxSize()) {
+                                // Keep the existing channel list and its saved scroll state below
+                                // the conversation, but only compose it when revealing or absent.
+                                if (!conversationShown || revealingChannels) {
+                                    Box(Modifier.fillMaxSize()) {
                                 when (tab) {
                                     "Chats",
                                     "Direct" ->
@@ -550,6 +557,16 @@ fun PapoApp(
                                             .navigationBarsPadding()
                                             .padding(16.dp),
                                     )
+                                    }
+                                }
+                                if (conversationShown) {
+                                    ConversationScreen(
+                                        server,
+                                        model,
+                                        onBack = leaveConversation,
+                                        onRevealingChannels = { revealingChannels = it },
+                                    )
+                                }
                             }
                         }
                         if (callUi.screen != null) {
