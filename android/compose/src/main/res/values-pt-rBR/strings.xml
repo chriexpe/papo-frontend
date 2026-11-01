@@ -932,8 +932,6 @@
     <string name="ui_density_description">"Ajuste o espaçamento e o tamanho dos controles neste aparelho. As áreas de toque e o tamanho de texto do Android são preservados."</string>
     <string name="density_compact">"Compacta"</string>
     <string name="density_extra_compact">"Extra compacta"</string>
-    <string name="density_extra_compact_stacked">"Extra compacta (em blocos)"</string>
-    <string name="extra_compact_description">"Extra compacta mostra nomes e mensagens na mesma linha; em blocos, a mensagem fica abaixo do nome. Ambas ocultam avatares e são salvas neste dispositivo para esta conta."</string>
     <string name="density_normal">"Normal"</string>
     <string name="density_comfortable">"Confortável"</string>
     <string name="text_small">"Pequeno"</string>
@@ -1057,5 +1055,8 @@
     <string name="highlight_example_direct">Olá, @você! Dá uma olhada nesta mensagem.</string>
     <string name="highlight_example_role">Atenção, @equipe! Temos novidades.</string>
     <string name="highlight_example_reply">Respondendo à sua mensagem anterior.</string>
-    <string name="density_extra_compact_stacked_grouped">Extra compacta (empilhada, sem repetir nomes)</string>
+    <string name="message_grouping">Agrupar mensagens consecutivas</string>
+    <string name="message_grouping_description">Mensagens seguidas da mesma pessoa compartilham o cabeçalho e o avatar.</string>
+    <string name="extra_compact_stack">Empilhar mensagens</string>
+    <string name="extra_compact_stack_description">Mostrar o texto abaixo do nome no modo extracompatado.</string>
 </resources>
