@@ -319,6 +319,5 @@ internal fun AppearanceSettings(server: ServerState, model: PapoViewModel) {
             }
         }
     }
-    if (highlightEditor)
-        HighlightSettingsSheet(onDismiss = { highlightEditor = false })
+    if (highlightEditor) HighlightSettingsSheet(onDismiss = { highlightEditor = false })
 }

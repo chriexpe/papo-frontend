@@ -8,10 +8,10 @@ package io.github.chriexpe.papo.compose
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.*
@@ -24,18 +24,27 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 
-/** Dedicated appearance editor: color tiles and a live sample share the same preferences as chat. */
+/**
+ * Dedicated appearance editor: color tiles and a live sample share the same preferences as chat.
+ */
 @Composable
 internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
     val prefs = LocalClientPreferences.current
-    val entries = listOf(
-        Triple("highlight-direct", R.string.highlight_direct, "#E7A147"),
-        Triple("highlight-reply", R.string.highlight_reply, "#65A8ED"),
-        Triple("highlight-role", R.string.highlight_role, "#A78BFA"),
-    )
-    val palette = listOf(
-        "#E7A147", "#65A8ED", "#A78BFA", "#6DB89C", "#E2778C", "#D7BF62",
-    )
+    val entries =
+        listOf(
+            Triple("highlight-direct", R.string.highlight_direct, "#E7A147"),
+            Triple("highlight-reply", R.string.highlight_reply, "#65A8ED"),
+            Triple("highlight-role", R.string.highlight_role, "#A78BFA"),
+        )
+    val palette =
+        listOf(
+            "#E7A147",
+            "#65A8ED",
+            "#A78BFA",
+            "#6DB89C",
+            "#E2778C",
+            "#D7BF62",
+        )
     var previewKey by remember { mutableStateOf("highlight-direct") }
     val selectedEntry = entries.first { it.first == previewKey }
     val previewColor = prefs.highlightColor(selectedEntry.first, selectedEntry.third)
@@ -74,7 +83,7 @@ internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
                 Modifier.fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .background(previewColor.copy(alpha = .18f))
-                    .testTag("highlight-preview"),
+                    .testTag("highlight-preview")
             ) {
                 Box(Modifier.width(4.dp).height(100.dp).background(previewColor))
                 Column(
@@ -132,7 +141,9 @@ internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
                                         Icon(
                                             Icons.Outlined.Check,
                                             contentDescription = ui(label),
-                                            tint = if (color.luminance() > .45f) Color.Black else Color.White,
+                                            tint =
+                                                if (color.luminance() > .45f) Color.Black
+                                                else Color.White,
                                         )
                                 }
                             }
