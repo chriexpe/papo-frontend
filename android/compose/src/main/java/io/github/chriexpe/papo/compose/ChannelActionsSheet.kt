@@ -25,6 +25,10 @@ internal fun ChannelActionsSheet(
     val scope = rememberCoroutineScope()
     val preferences = remember(model, scope) { NotificationPolicyUi(model, scope) }
     val actual = server.channels.firstOrNull { it.id == channel.id } ?: channel
+    // Read changes from other devices once per sheet opening, not every minute.
+    LaunchedEffect(server.url, server.me, channel.id) {
+        model.refreshChannelSettings(server)
+    }
     var policies by remember(channel.id) { mutableStateOf(false) }
     val muteRevision by MessageAlerts.muteChanges.collectAsState()
     val mutedUntil =
