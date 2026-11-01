@@ -1116,7 +1116,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                                 onSubmit =
                                                     if (appearance.enterToSend) requestComposerSend
                                                     else null,
-                                                onFocusChange = { composerFocused = it },
+                                                onFocusChange = {
+                                                    composerFocused = it
+                                                    // Typing again swaps the inline picker for the keyboard.
+                                                    if (it && emojiTarget == null) emojiPicker = false
+                                                },
                                                 animationsAllowed =
                                                     appearance.animations &&
                                                         viewedMedia == null &&
@@ -1127,10 +1131,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                         actions = {
                                             IconButton(
                                                 onClick = {
-                                                    focus.clearFocus()
-                                                    keyboard?.hide()
-                                                    emojiTarget = null
-                                                    emojiPicker = true
+                                                    if (emojiPicker && emojiTarget == null) {
+                                                        emojiPicker = false
+                                                    } else {
+                                                        focus.clearFocus()
+                                                        keyboard?.hide()
+                                                        emojiTarget = null
+                                                        emojiPicker = true
+                                                    }
                                                 },
                                                 enabled = !submitting && !attachmentDraft.sending,
                                                 modifier = Modifier.size(48.dp),
@@ -1175,6 +1183,16 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 }
                         }
                     }
+                }
+                if (emojiPicker && emojiTarget == null) {
+                    androidx.activity.compose.BackHandler { emojiPicker = false }
+                    EmojiPicker(
+                        server,
+                        model,
+                        onDismiss = { emojiPicker = false },
+                        onPick = { emoji -> updateComposer(composer.insert(emoji.token)) },
+                        inline = true,
+                    )
                 }
             }
             Column(
@@ -1275,7 +1293,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
 
         if (pins)
             PinnedMessages(server, model, onDismiss = { pins = false }, onOpen = ::openOriginal)
-        if (emojiPicker)
+        if (emojiPicker && emojiTarget != null)
             EmojiPicker(
                 server,
                 model,

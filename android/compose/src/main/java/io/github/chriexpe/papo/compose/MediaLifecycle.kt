@@ -237,6 +237,8 @@ internal fun ManagedAsyncImage(
     // Small static images (avatars) are cheap and are already limited by the lazy list; waiting
     // for placement inside the viewport makes them pop in after the row is on screen.
     eager: Boolean = false,
+    // Stable identity for byte-array models; skips hashing the bytes on the main thread.
+    cacheKey: String? = null,
 ) {
     val context = LocalContext.current
     val frame = LocalMediaFrame.current
@@ -245,11 +247,10 @@ internal fun ManagedAsyncImage(
             val data = (model as? ImageRequest)?.data ?: model
             if (data is ByteArray) {
                 val digest =
-                    java.security.MessageDigest.getInstance("SHA-256").digest(data).joinToString(
-                        ""
-                    ) {
-                        "%02x".format(it)
-                    }
+                    cacheKey
+                        ?: java.security.MessageDigest.getInstance("SHA-256")
+                            .digest(data)
+                            .joinToString("") { "%02x".format(it) }
                 val builder =
                     (model as? ImageRequest)?.newBuilder(context)
                         ?: ImageRequest.Builder(context).data(data)
