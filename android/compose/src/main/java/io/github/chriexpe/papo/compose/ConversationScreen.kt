@@ -744,7 +744,6 @@ internal fun ConversationScreen(
                     enabled =
                         !overlayBlocking &&
                             !recording &&
-                            !composerFocused &&
                             !emojiPicker &&
                             !gifPicker &&
                             viewedMedia == null &&
