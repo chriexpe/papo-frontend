@@ -126,10 +126,11 @@ internal fun AccountAppearanceEditor(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheet,
-        modifier = Modifier.fillMaxHeight(.80f),
     ) {
         Column(
-            Modifier.fillMaxSize()
+            // Size the sheet content, not the ModalBottomSheet container.
+            // Material 3 then positions the expanded surface against the bottom edge.
+            Modifier.fillMaxWidth().fillMaxHeight(.80f)
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 12.dp)
