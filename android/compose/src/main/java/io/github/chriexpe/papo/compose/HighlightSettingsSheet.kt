@@ -8,6 +8,8 @@ package io.github.chriexpe.papo.compose
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -56,7 +58,7 @@ internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
                 style = MaterialTheme.typography.titleSmall,
             )
             // Select which message category the single live sample demonstrates.
-            Row(
+            FlowRow(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
@@ -65,7 +67,6 @@ internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
                         selected = previewKey == key,
                         onClick = { previewKey = key },
                         label = { Text(ui(label), maxLines = 1) },
-                        modifier = Modifier.weight(1f),
                     )
                 }
             }
@@ -96,7 +97,7 @@ internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
                 }
             }
             Column(
-                Modifier.weight(1f).fillMaxWidth(),
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 entries.forEach { (key, label, fallback) ->
