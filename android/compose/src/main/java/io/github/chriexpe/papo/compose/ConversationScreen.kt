@@ -168,15 +168,16 @@ internal fun ConversationScreen(
     }
     LaunchedEffect(pickerSheet, draftKey) {
         var shown = false
-        snapshotFlow { pickerSheet.currentValue }.collect { value ->
-            if (value != SheetValue.Hidden) shown = true
-            else if (shown && emojiPicker && emojiTarget == null) {
-                emojiPicker = false
-                pickerSearchRequested = false
-                pickerSearch = ""
-                shown = false
+        snapshotFlow { pickerSheet.currentValue }
+            .collect { value ->
+                if (value != SheetValue.Hidden) shown = true
+                else if (shown && emojiPicker && emojiTarget == null) {
+                    emojiPicker = false
+                    pickerSearchRequested = false
+                    pickerSearch = ""
+                    shown = false
+                }
             }
-        }
     }
 
     val lifecycle = LocalLifecycleOwner.current.lifecycle
