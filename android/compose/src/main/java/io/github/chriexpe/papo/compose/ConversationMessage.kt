@@ -253,11 +253,7 @@ internal fun MessageRow(
                             color = MaterialTheme.colorScheme.primary,
                         )
                     }
-                if (
-                    extraCompact &&
-                        !messageAppearance.inlineAuthor &&
-                        (!grouped || !messageAppearance.suppressRepeatedStackedAuthor)
-                )
+                if (extraCompact && !messageAppearance.inlineAuthor && !grouped)
                     MarkdownPrefix(compactAuthorPrefix(message))
                 MessageContent(
                     message,
