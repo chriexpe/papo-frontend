@@ -237,11 +237,12 @@ internal fun AccountMessagePreview(
                             CompactMessageTime("14:02", index == 0, false, "appearance-$index")
                         if (appearance.inlineAuthor) {
                             Row {
-                                Text(
-                                    "Ana  ",
-                                    style = typography.bodyLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
+                                if (index == 0 || !appearance.grouped)
+                                    Text(
+                                        "Ana  ",
+                                        style = typography.bodyLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
                                 Text(
                                     body,
                                     style = typography.bodyLarge,
@@ -252,7 +253,7 @@ internal fun AccountMessagePreview(
                             Column(
                                 verticalArrangement = Arrangement.spacedBy(appearance.headingGap)
                             ) {
-                                if (index == 0 || !appearance.suppressRepeatedStackedAuthor)
+                                if (index == 0 || !appearance.grouped)
                                     Text(
                                         "Ana",
                                         style = typography.bodyLarge,
@@ -267,40 +268,72 @@ internal fun AccountMessagePreview(
                     }
                 }
             }
-        } else
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.Top,
+        } else {
+            // Use the same author/continuation rules as the real chat. With
+            // grouping off, every message starts a fresh author row and avatar.
+            Column(
+                verticalArrangement = Arrangement.spacedBy(appearance.contentGap),
             ) {
-                if (showAvatars) Avatar("Ana")
-                Column(verticalArrangement = Arrangement.spacedBy(appearance.headingGap)) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Ana",
-                            style = typography.bodyLarge,
-                            fontWeight = FontWeight.SemiBold,
+                if (appearance.grouped) {
+                    AppearancePreviewStandardRow(
+                        appearance,
+                        content,
+                        typography,
+                        showAvatars,
+                        showTimestamps,
+                    )
+                } else {
+                    content.forEach { body ->
+                        AppearancePreviewStandardRow(
+                            appearance,
+                            listOf(body),
+                            typography,
+                            showAvatars,
+                            showTimestamps,
                         )
-                        if (showTimestamps)
-                            Text(
-                                "14:02",
-                                style = typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                    }
-                    Column(verticalArrangement = Arrangement.spacedBy(appearance.continuationGap)) {
-                        content.forEach { message ->
-                            Text(
-                                message,
-                                style = typography.bodyLarge,
-                                lineHeight = appearance.lineHeight,
-                            )
-                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AppearancePreviewStandardRow(
+    appearance: MessageAppearance,
+    messages: List<String>,
+    typography: androidx.compose.material3.Typography,
+    showAvatars: Boolean,
+    showTimestamps: Boolean,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        if (showAvatars) Avatar("Ana")
+        Column(verticalArrangement = Arrangement.spacedBy(appearance.headingGap)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Ana", style = typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                if (showTimestamps)
+                    Text(
+                        "14:02",
+                        style = typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(appearance.continuationGap)) {
+                messages.forEach { body ->
+                    Text(
+                        body,
+                        style = typography.bodyLarge,
+                        lineHeight = appearance.lineHeight,
+                    )
+                }
+            }
+        }
     }
 }
 
