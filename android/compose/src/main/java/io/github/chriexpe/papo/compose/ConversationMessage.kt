@@ -8,6 +8,8 @@ package io.github.chriexpe.papo.compose
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -87,20 +89,33 @@ internal fun MessageRow(
     val spotlight by
         animateColorAsState(
             if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = .14f)
-            else if (message.mentionsMe) MaterialTheme.colorScheme.primary.copy(alpha = .08f)
+            else if (message.highlightMe) MaterialTheme.colorScheme.primary.copy(alpha = .18f)
             else Color.Transparent,
             animationSpec = tween(250),
             label = ui(R.string.original_message_highlight),
         )
+    val mentionAccent = MaterialTheme.colorScheme.primary
+    val mentionHighlight = message.highlightMe && !highlight
     SwipeToReply(message.id, canReply && !message.pending, onReply) {
         Row(
             Modifier.fillMaxWidth()
                 .padding(horizontal = 8.dp)
                 .testTag("message-${message.id}")
                 .background(spotlight, RoundedCornerShape(18.dp))
+                .drawBehind {
+                    if (mentionHighlight) {
+                        val bar = 3.dp.toPx()
+                        drawRoundRect(
+                            mentionAccent,
+                            topLeft = androidx.compose.ui.geometry.Offset(0f, 8.dp.toPx()),
+                            size = Size(bar, size.height - 16.dp.toPx()),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(bar / 2),
+                        )
+                    }
+                }
                 .semantics {
                     if (highlight) stateDescription = ui(R.string.original_message)
-                    else if (message.mentionsMe)
+                    else if (message.highlightMe)
                         stateDescription = ui(R.string.message_mentions_you)
                     else if (grouped)
                         stateDescription =

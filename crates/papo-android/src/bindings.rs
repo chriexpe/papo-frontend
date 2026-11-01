@@ -555,6 +555,9 @@ pub struct MessageView {
     pub mine: bool,
     #[serde(default)]
     pub mentions_me: bool,
+    /// Visual highlight only: mention of me or reply to one of my messages.
+    #[serde(default)]
+    pub highlight_me: bool,
     #[serde(default)]
     pub can_edit: bool,
     #[serde(default)]
