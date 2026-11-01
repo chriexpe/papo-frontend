@@ -82,7 +82,10 @@ internal fun AccountDensitySetting(
                         selected == choice,
                         {
                             onPreviewChanged(choice)
-                            preferences.setExtraCompact(server, choice == MessageDensity.ExtraCompact)
+                            preferences.setExtraCompact(
+                                server,
+                                choice == MessageDensity.ExtraCompact,
+                            )
                             if (choice != MessageDensity.ExtraCompact)
                                 model.accountAppearance.change(
                                     server,
@@ -140,8 +143,7 @@ internal fun AccountAppearanceEditor(
     var previewDensity by remember(server.url, server.me) { mutableStateOf(current.density) }
     var previewStacked by remember(server.url, server.me) { mutableStateOf(current.stacked) }
     var previewGrouped by remember(server.url, server.me) { mutableStateOf(current.grouped) }
-    val sample =
-        MessageAppearance(previewFont, previewDensity, previewStacked, previewGrouped)
+    val sample = MessageAppearance(previewFont, previewDensity, previewStacked, previewGrouped)
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(
@@ -271,9 +273,7 @@ internal fun AccountMessagePreview(
         } else {
             // Use the same author/continuation rules as the real chat. With
             // grouping off, every message starts a fresh author row and avatar.
-            Column(
-                verticalArrangement = Arrangement.spacedBy(appearance.contentGap),
-            ) {
+            Column(verticalArrangement = Arrangement.spacedBy(appearance.contentGap)) {
                 if (appearance.grouped) {
                     AppearancePreviewStandardRow(
                         appearance,

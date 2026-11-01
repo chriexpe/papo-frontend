@@ -93,8 +93,7 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
             density =
                 if (wasExtraCompact || density.startsWith("extra-compact"))
                     MessageDensity.ExtraCompact
-                else if (importCompact) MessageDensity.Compact
-                else MessageDensity.from(density),
+                else if (importCompact) MessageDensity.Compact else MessageDensity.from(density),
             stacked = stacked,
             grouped = grouped,
         )

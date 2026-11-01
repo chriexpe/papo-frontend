@@ -23,12 +23,13 @@ internal enum class MessageDensity(val value: String, val labelId: Int) {
     Comfortable("comfortable", R.string.density_comfortable),
     ExtraCompact("extra-compact", R.string.density_extra_compact);
 
-    val localPreview get() = this == ExtraCompact
+    val localPreview
+        get() = this == ExtraCompact
 
     companion object {
         fun from(value: String?) =
-            entries.firstOrNull { it.value == value } ?:
-                if (value?.startsWith("extra-compact") == true) ExtraCompact else Normal
+            entries.firstOrNull { it.value == value }
+                ?: if (value?.startsWith("extra-compact") == true) ExtraCompact else Normal
     }
 }
 
