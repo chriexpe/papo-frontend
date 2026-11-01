@@ -1044,4 +1044,11 @@
     <string name="mute_until_unmuted">Até reativar</string>
     <string name="unmute_channel">Reativar notificações</string>
     <string name="channel_muted_state">Silenciado</string>
+
+    <string name="message_highlighting">Destaque de mensagens</string>
+    <string name="highlight_direct">Menção direta</string>
+    <string name="highlight_reply">Resposta a uma mensagem sua</string>
+    <string name="highlight_role">Menção a cargo / todos</string>
+    <string name="highlight_use_role_color">Usar cor do cargo mencionado</string>
+    <string name="highlight_use_role_color_description">Se disponível, o destaque assume a cor configurada do cargo.</string>
 </resources>
