@@ -24,7 +24,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -114,7 +113,6 @@ internal fun EmojiPickerBody(
     showFavorites: Boolean,
     compact: Boolean,
     searchFocusRequested: Boolean = false,
-    onSearchFocusChange: (Boolean) -> Unit = {},
     onExpand: () -> Unit = {},
     onClose: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -169,10 +167,7 @@ internal fun EmojiPickerBody(
                 onQueryChange,
                 label = { Text(ui(R.string.find_an_emoji_or_sticker)) },
                 singleLine = true,
-                modifier =
-                    Modifier.fillMaxWidth().focusRequester(searchFocus).onFocusChanged {
-                        onSearchFocusChange(it.isFocused)
-                    },
+                modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
                 leadingIcon = { Icon(Icons.Outlined.Search, null) },
                 trailingIcon = {
                     IconButton(onClick = onClose) {
@@ -218,9 +213,12 @@ internal fun EmojiPickerBody(
                         Icon(Icons.Outlined.Search, ui(R.string.find_an_emoji_or_sticker))
                     }
                 else
-                    IconButton(onClick = { onQueryChange("") }) {
-                        Icon(Icons.Outlined.Search, ui(R.string.find_an_emoji_or_sticker))
-                    }
+                    Icon(
+                        Icons.Outlined.Search,
+                        null,
+                        modifier = Modifier.padding(horizontal = 14.dp).size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 IconButton(onClick = onClose) {
                     Icon(Icons.Outlined.Close, ui(R.string.close))
                 }
