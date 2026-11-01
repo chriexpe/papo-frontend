@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 
@@ -49,17 +50,18 @@ internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
     val selectedEntry = entries.first { it.first == previewKey }
     val previewColor = prefs.highlightColor(selectedEntry.first, selectedEntry.third)
 
-    // The content occupies 80% of the available height, while Material 3
-    // keeps the expanded modal surface anchored to the bottom of the window.
+    // Let the content wrap naturally, subject to an 80%-of-screen height cap.
+    // Material 3 anchors the expanded sheet to the bottom of the window.
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
         Column(
-            // Size the sheet content, not the ModalBottomSheet container.
-            // Material 3 then positions the expanded surface against the bottom edge.
-            Modifier.fillMaxWidth().fillMaxHeight(.80f)
+            // Height is content-driven, capped at 80%; overflow scrolls within the sheet.
+            Modifier.fillMaxWidth()
+                .heightIn(max = LocalConfiguration.current.screenHeightDp.dp * .80f)
+                .verticalScroll(rememberScrollState())
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp)
                 .testTag("highlight-settings"),
@@ -113,7 +115,7 @@ internal fun HighlightSettingsSheet(onDismiss: () -> Unit) {
                 }
             }
             Column(
-                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 entries.forEach { (key, label, fallback) ->
