@@ -59,7 +59,9 @@ internal fun AccountDensitySetting(server: ServerState, model: PapoViewModel, bu
                             preferences.setExtraCompact(
                                 server,
                                 choice.localPreview,
-                                stacked = choice == MessageDensity.ExtraCompactStacked,
+                                stacked = choice == MessageDensity.ExtraCompactStacked ||
+                                    choice == MessageDensity.ExtraCompactStackedGrouped,
+                                grouped = choice == MessageDensity.ExtraCompactStackedGrouped,
                             )
                             if (!choice.localPreview)
                                 model.accountAppearance.change(
