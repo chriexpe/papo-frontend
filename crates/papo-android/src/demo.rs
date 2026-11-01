@@ -370,6 +370,18 @@ impl Demo {
                     c.notification_settings = setting;
                 }
             }
+            Action::MarkChannelRead { channel_id, owner_user_id } => {
+                if owner_user_id != self.store.me {
+                    return Err("Account changed".into());
+                }
+                self.store.mark_read(&channel_id);
+                for item in &mut self.notifications {
+                    if item.channel_id.as_deref() == Some(&channel_id) {
+                        item.read = true;
+                    }
+                }
+                self.store.apply(Update::Notifications(self.notifications.clone()));
+            }
             Action::MarkServerRead => {
                 self.store.mark_all_read();
                 for item in &mut self.notifications {
