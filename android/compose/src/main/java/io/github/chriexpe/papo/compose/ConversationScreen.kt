@@ -895,6 +895,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 chat = true,
                                 onChat = {},
                                 onCall = { model.voiceCalls.open(server, channel.id) },
+                                flushWithHeader = true,
                             )
                         }
                         if (descriptionExpanded) {
