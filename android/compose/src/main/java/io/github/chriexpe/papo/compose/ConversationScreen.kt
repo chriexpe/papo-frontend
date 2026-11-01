@@ -208,7 +208,11 @@ internal fun ConversationScreen(
     var latestPhase by remember(draftKey) { mutableStateOf(LatestPhase.FirstNew) }
     var knownLive by remember(draftKey) { mutableStateOf(server.reading.liveIds) }
     var arrived by remember(draftKey) { mutableStateOf(setOf<String>()) }
-    val groupedMessages = remember(timeline) { messageContinuations(timeline.messages) }
+    val groupingEnabled = LocalMessageAppearance.current.grouped
+    val groupedMessages =
+        remember(timeline, groupingEnabled) {
+            if (groupingEnabled) messageContinuations(timeline.messages) else emptySet()
+        }
     val readingBlocked =
         attachmentOptions != null ||
             embedEditor ||
