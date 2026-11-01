@@ -112,6 +112,7 @@ internal fun EmojiPickerBody(
     compact: Boolean,
     searchFocusRequested: Boolean = false,
     onExpand: () -> Unit = {},
+    onClose: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val allLibraries by model.expressions.states.collectAsState()
@@ -166,6 +167,11 @@ internal fun EmojiPickerBody(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
                 leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                trailingIcon = {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Outlined.Close, ui(R.string.close))
+                    }
+                },
             )
         else
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -176,6 +182,9 @@ internal fun EmojiPickerBody(
                 )
                 IconButton(onClick = onExpand) {
                     Icon(Icons.Outlined.Search, ui(R.string.find_an_emoji_or_sticker))
+                }
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Outlined.Close, ui(R.string.close))
                 }
             }
         LazyVerticalGrid(
