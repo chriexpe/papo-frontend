@@ -1057,4 +1057,5 @@
     <string name="highlight_example_direct">Olá, @você! Dá uma olhada nesta mensagem.</string>
     <string name="highlight_example_role">Atenção, @equipe! Temos novidades.</string>
     <string name="highlight_example_reply">Respondendo à sua mensagem anterior.</string>
+    <string name="density_extra_compact_stacked_grouped">Extra compacta (empilhada, sem repetir nomes)</string>
 </resources>
