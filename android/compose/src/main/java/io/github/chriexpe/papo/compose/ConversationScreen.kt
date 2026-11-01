@@ -181,7 +181,10 @@ internal fun ConversationScreen(
             pickerSearch = ""
         } else onBack()
     }
+    // Message-list clearance includes additional room around the floating header.
+    // The emoji popup instead anchors to the *actual* bottom of the header pill.
     var headerHeight by remember { mutableStateOf(90.dp) }
+    var headerPillBottom by remember { mutableStateOf(82.dp) }
     var composerHeight by remember { mutableStateOf(90.dp) }
     var handledNavigation by
         rememberSaveable(
@@ -868,10 +871,11 @@ internal fun ConversationScreen(
                     .statusBarsPadding()
                     .padding(horizontal = dimensions.floatingPadding, vertical = 8.dp)
                     .onSizeChanged {
-                        headerHeight =
-                            with(density) { it.height.toDp() } +
-                                dimensions.floatingPadding * 2 +
-                                8.dp
+                        val measuredHeight = with(density) { it.height.toDp() }
+                        // Column has 8dp bottom padding after the visible header.
+                        // Do not include the extra scroll clearance in the picker anchor.
+                        headerPillBottom = measuredHeight - 8.dp
+                        headerHeight = measuredHeight + dimensions.floatingPadding * 2 + 8.dp
                     }
             ) {
                 GlassPill(Modifier.fillMaxWidth()) {
@@ -1345,10 +1349,10 @@ internal fun ConversationScreen(
                         Modifier.align(Alignment.BottomCenter)
                             .fillMaxWidth()
                             .fillMaxHeight()
-                            // Respect the same floating header clearance as the message list.
-                            // Available peek/expanded height is now bounded at both edges.
+                            // Equal 8dp gaps: below the actual header pill and above the
+                            // measured composer. Keep the message list's extra clearance separate.
                             .padding(
-                                top = headerHeight + 8.dp,
+                                top = headerPillBottom + 8.dp,
                                 bottom = composerHeight + 8.dp,
                             )
                             .zIndex(5f),
