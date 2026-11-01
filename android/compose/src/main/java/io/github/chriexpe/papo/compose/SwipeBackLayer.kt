@@ -19,12 +19,12 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 
 /**
- * A conversation is a foreground page. A rightward drag moves only this page
- * to reveal the actual channel list rendered underneath it by the app shell.
+ * A conversation is a foreground page. A rightward drag moves only this page to reveal the actual
+ * channel list rendered underneath it by the app shell.
  *
- * This direction-specific detector never consumes a left drag: SwipeToReply
- * remains the owner of leftward gestures. Vertically scrolling or horizontally
- * scrolling children win if they have already consumed the movement.
+ * This direction-specific detector never consumes a left drag: SwipeToReply remains the owner of
+ * leftward gestures. Vertically scrolling or horizontally scrolling children win if they have
+ * already consumed the movement.
  */
 @Composable
 internal fun Modifier.conversationSwipeBack(
@@ -38,8 +38,7 @@ internal fun Modifier.conversationSwipeBack(
     val navigate by rememberUpdatedState(onBack)
     val reveal by rememberUpdatedState(onRevealing)
 
-    return this
-        .pointerInput(enabled, threshold) {
+    return this.pointerInput(enabled, threshold) {
             if (!enabled) return@pointerInput
             val screenWidth = size.width.toFloat()
             awaitEachGesture {
@@ -52,8 +51,7 @@ internal fun Modifier.conversationSwipeBack(
                 try {
                     while (true) {
                         val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id }
-                            ?: break
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         if (!change.pressed) {
                             released = true
                             break
@@ -64,8 +62,11 @@ internal fun Modifier.conversationSwipeBack(
                         if (!claimed) {
                             // Never take a leftward reply, a vertical scroll, or
                             // a drag already claimed by a media control.
-                            if (change.isConsumed || totalX <= -slop ||
-                                (abs(totalY) > slop && abs(totalY) > abs(totalX)))
+                            if (
+                                change.isConsumed ||
+                                    totalX <= -slop ||
+                                    (abs(totalY) > slop && abs(totalY) > abs(totalX))
+                            )
                                 break
                             if (totalX >= slop) {
                                 claimed = true

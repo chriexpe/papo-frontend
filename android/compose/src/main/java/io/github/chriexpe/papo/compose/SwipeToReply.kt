@@ -113,10 +113,10 @@ internal fun SwipeToReply(
 }
 
 /**
- * Own leftward drags only. A rightward gesture belongs to the conversation back layer,
- * whereas consumed gestures (media scrubbers / horizontal carousels) stay with their child.
- * Keeping this direction check before consuming touch slop is crucial: #132's generic
- * horizontal detector could win a right swipe and break reply.
+ * Own leftward drags only. A rightward gesture belongs to the conversation back layer, whereas
+ * consumed gestures (media scrubbers / horizontal carousels) stay with their child. Keeping this
+ * direction check before consuming touch slop is crucial: #132's generic horizontal detector could
+ * win a right swipe and break reply.
  */
 private suspend fun PointerInputScope.detectLeftwardDrag(
     onDragStart: () -> Unit,
@@ -144,10 +144,8 @@ private suspend fun PointerInputScope.detectLeftwardDrag(
         dx += delta.x
         dy += delta.y
         if (!dragging) {
-            if (change.isConsumed ||
-                (abs(dy) > slop && abs(dy) > abs(dx)) ||
-                dx >= slop
-            ) return@awaitEachGesture
+            if (change.isConsumed || (abs(dy) > slop && abs(dy) > abs(dx)) || dx >= slop)
+                return@awaitEachGesture
             if (dx <= -slop) {
                 dragging = true
                 onDragStart()
