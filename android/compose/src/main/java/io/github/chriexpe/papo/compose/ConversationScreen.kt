@@ -1062,6 +1062,7 @@ internal fun ConversationScreen(
                             }
                         }
                     }
+                }
     Column(
         Modifier.align(Alignment.BottomCenter)
             .fillMaxWidth()
