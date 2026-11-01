@@ -1,0 +1,32 @@
+name: temporary-pr133-format
+on:
+  push:
+    branches: [feat/android-channel-ux-emoji-picker]
+permissions:
+  contents: write
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feat/android-channel-ux-emoji-picker
+          persist-credentials: true
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: true
+      - name: Reformat Compose sources
+        run: ./android/gradlew -p android :compose:formatCompose --no-daemon --console=plain
+      - name: Push only the highlight rendering formatting
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android/compose/src/main/java/io/github/chriexpe/papo/compose/ConversationMessage.kt
+          if ! git diff --cached --quiet; then
+            git commit -m "style(android): converge highlight rendering formatting"
+            git push origin HEAD:feat/android-channel-ux-emoji-picker
+          fi
