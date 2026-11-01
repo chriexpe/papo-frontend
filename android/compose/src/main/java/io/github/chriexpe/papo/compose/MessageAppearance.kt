@@ -24,11 +24,15 @@ internal enum class MessageDensity(val value: String, val labelId: Int) {
     ExtraCompact("extra-compact", R.string.density_extra_compact),
     ExtraCompactStacked("extra-compact-stacked", R.string.density_extra_compact_stacked),
     ExtraCompactStackedGrouped(
-        "extra-compact-stacked-grouped", R.string.density_extra_compact_stacked_grouped
+        "extra-compact-stacked-grouped",
+        R.string.density_extra_compact_stacked_grouped,
     );
 
     val localPreview
-        get() = this == ExtraCompact || this == ExtraCompactStacked || this == ExtraCompactStackedGrouped
+        get() =
+            this == ExtraCompact ||
+                this == ExtraCompactStacked ||
+                this == ExtraCompactStackedGrouped
 
     companion object {
         fun from(value: String?) = entries.firstOrNull { it.value == value } ?: Normal

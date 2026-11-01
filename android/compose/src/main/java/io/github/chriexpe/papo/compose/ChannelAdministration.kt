@@ -10,14 +10,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
 import io.github.chriexpe.papo.core.*
@@ -195,149 +193,156 @@ internal fun ChannelAdministrationEditor(
         }
     }
     Box(Modifier.fillMaxSize()) {
-    LazyColumn(
-        Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("admin-channel-editor"),
-        state = list,
-        contentPadding = PaddingValues(20.dp, 8.dp, 20.dp, 32.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
-            OutlinedTextField(
-                nameField,
-                { nameField = it },
-                Modifier.fillMaxWidth()
-                    .then(settingTarget("channel-name"))
-                    .onFocusChanged { if (it.isFocused) insertionTarget = "name" }
-                    .testTag("admin-channel-name"),
-                label = {
-                    Text(
-                        if (kind == "category") ui(R.string.category_name)
-                        else ui(R.string.channel_name)
-                    )
-                },
-                singleLine = true,
-                enabled = !ui.busy,
-                isError = name.codePointCount(0, name.length) > 32,
-                supportingText = { Text(ui(R.string.up_to_32_characters)) },
-            )
-        }
-        item {
-            SettingsLabel(ui(R.string.type))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                (if (category || existing?.kind == "category") listOf("category" to "Category")
-                    else listOf("text" to "Text", "voice" to "Voice"))
-                    .forEach { (value, label) ->
-                        FilterChip(
-                            kind == value,
-                            { kind = value },
-                            label = { Text(uiLabel(label)) },
-                            enabled = id == null && !ui.busy && !category,
-                        )
-                    }
-            }
-            if (id != null)
-                Text(
-                    ui(R.string.the_channel_type_is_fixed_after_creation),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-        }
-        if (kind != "category") {
+        LazyColumn(
+            Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("admin-channel-editor"),
+            state = list,
+            contentPadding = PaddingValues(20.dp, 8.dp, 20.dp, 32.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
             item {
                 OutlinedTextField(
-                    topicField,
-                    { topicField = it },
+                    nameField,
+                    { nameField = it },
                     Modifier.fillMaxWidth()
-                        .then(settingTarget("channel-topic"))
-                        .onFocusChanged { if (it.isFocused) insertionTarget = "topic" },
-                    label = { Text(ui(R.string.description)) },
-                    minLines = 3,
-                    maxLines = 8,
+                        .then(settingTarget("channel-name"))
+                        .onFocusChanged { if (it.isFocused) insertionTarget = "name" }
+                        .testTag("admin-channel-name"),
+                    label = {
+                        Text(
+                            if (kind == "category") ui(R.string.category_name)
+                            else ui(R.string.channel_name)
+                        )
+                    },
+                    singleLine = true,
                     enabled = !ui.busy,
-                    isError = topic.codePointCount(0, topic.length) > 512,
-                    supportingText = { Text("${topic.codePointCount(0,topic.length)} / 512") },
+                    isError = name.codePointCount(0, name.length) > 32,
+                    supportingText = { Text(ui(R.string.up_to_32_characters)) },
                 )
+            }
+            item {
+                SettingsLabel(ui(R.string.type))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (if (category || existing?.kind == "category") listOf("category" to "Category")
+                        else listOf("text" to "Text", "voice" to "Voice"))
+                        .forEach { (value, label) ->
+                            FilterChip(
+                                kind == value,
+                                { kind = value },
+                                label = { Text(uiLabel(label)) },
+                                enabled = id == null && !ui.busy && !category,
+                            )
+                        }
+                }
+                if (id != null)
+                    Text(
+                        ui(R.string.the_channel_type_is_fixed_after_creation),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+            }
+            if (kind != "category") {
+                item {
+                    OutlinedTextField(
+                        topicField,
+                        { topicField = it },
+                        Modifier.fillMaxWidth()
+                            .then(settingTarget("channel-topic"))
+                            .onFocusChanged { if (it.isFocused) insertionTarget = "topic" },
+                        label = { Text(ui(R.string.description)) },
+                        minLines = 3,
+                        maxLines = 8,
+                        enabled = !ui.busy,
+                        isError = topic.codePointCount(0, topic.length) > 512,
+                        supportingText = { Text("${topic.codePointCount(0,topic.length)} / 512") },
+                    )
+                }
+                if (id != null)
+                    item {
+                        SettingsCard {
+                            SettingsLink(
+                                ui(R.string.channel_access),
+                                ui(R.string.read_send_moderate_and_connect_by_role),
+                                Icons.Outlined.Lock,
+                                { open("Access/$id", "channel-access") },
+                                target = "channel-access",
+                            )
+                        }
+                    }
+            }
+            item {
+                Button(
+                    enabled = valid && !ui.busy && (id == null || changed),
+                    onClick = {
+                        val change =
+                            if (id == null)
+                                AdministrationChange.CreateChannel(
+                                    name,
+                                    kind,
+                                    topic,
+                                    null,
+                                    emptyList(),
+                                )
+                            else AdministrationChange.UpdateChannel(id, name, topic)
+                        ui.mutate(
+                            change,
+                            if (id == null)
+                                ui(
+                                    if (kind == "category") R.string.category_created
+                                    else R.string.channel_created
+                                )
+                            else ui(R.string.channel_saved),
+                        ) {
+                            onSaved()
+                        }
+                    },
+                    modifier =
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("save-channel"),
+                ) {
+                    Text(
+                        if (id == null)
+                            ui(
+                                if (kind == "category") R.string.create_category
+                                else R.string.create_channel
+                            )
+                        else ui(R.string.save_channel)
+                    )
+                }
             }
             if (id != null)
                 item {
-                    SettingsCard {
-                        SettingsLink(
-                            ui(R.string.channel_access),
-                            ui(R.string.read_send_moderate_and_connect_by_role),
-                            Icons.Outlined.Lock,
-                            { open("Access/$id", "channel-access") },
-                            target = "channel-access",
-                        )
-                    }
-                }
-        }
-        item {
-            Button(
-                enabled = valid && !ui.busy && (id == null || changed),
-                onClick = {
-                    val change =
-                        if (id == null)
-                            AdministrationChange.CreateChannel(name, kind, topic, null, emptyList())
-                        else AdministrationChange.UpdateChannel(id, name, topic)
-                    ui.mutate(
-                        change,
-                        if (id == null)
-                            ui(
-                                if (kind == "category") R.string.category_created
-                                else R.string.channel_created
-                            )
-                        else ui(R.string.channel_saved),
+                    OutlinedButton(
+                        enabled = !ui.busy,
+                        onClick = { delete = true },
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .then(settingTarget("channel-delete")),
                     ) {
-                        onSaved()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("save-channel"),
-            ) {
-                Text(
-                    if (id == null)
-                        ui(
-                            if (kind == "category") R.string.create_category
-                            else R.string.create_channel
+                        Icon(Icons.Outlined.DeleteOutline, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            ui(
+                                if (kind == "category") R.string.delete_category
+                                else R.string.delete_channel
+                            ),
+                            color = MaterialTheme.colorScheme.error,
                         )
-                    else ui(R.string.save_channel)
-                )
-            }
-        }
-        if (id != null)
-            item {
-                OutlinedButton(
-                    enabled = !ui.busy,
-                    onClick = { delete = true },
-                    modifier =
-                        Modifier.fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .then(settingTarget("channel-delete")),
-                ) {
-                    Icon(Icons.Outlined.DeleteOutline, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        ui(
-                            if (kind == "category") R.string.delete_category
-                            else R.string.delete_channel
-                        ),
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                    }
                 }
-            }
-    }
-    AdministrationEmojiPicker(
-        server = server,
-        model = model,
-        enabled = !ui.busy,
-        onPick = { choice ->
-            if (insertionTarget == "topic" && kind != "category") {
-                topicField = insertAdministrationEmoji(topicField, choice)
-            } else {
-                nameField = insertAdministrationEmoji(nameField, choice)
-            }
-        },
-        modifier = Modifier.fillMaxSize(),
-    )
+        }
+        AdministrationEmojiPicker(
+            server = server,
+            model = model,
+            enabled = !ui.busy,
+            onPick = { choice ->
+                if (insertionTarget == "topic" && kind != "category") {
+                    topicField = insertAdministrationEmoji(topicField, choice)
+                } else {
+                    nameField = insertAdministrationEmoji(nameField, choice)
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
     }
     if (delete && id != null)
         AdministrationDelete(

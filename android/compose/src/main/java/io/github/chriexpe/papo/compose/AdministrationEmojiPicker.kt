@@ -18,13 +18,16 @@ internal fun insertAdministrationEmoji(value: TextFieldValue, choice: EmojiChoic
     val start = value.selection.min.coerceIn(0, value.text.length)
     val end = value.selection.max.coerceIn(start, value.text.length)
     val token = choice.token
-    return TextFieldValue(value.text.replaceRange(start, end, token), TextRange(start + token.length))
+    return TextFieldValue(
+        value.text.replaceRange(start, end, token),
+        TextRange(start + token.length),
+    )
 }
 
 /**
- * Shared channel/server editor affordance. The editor root already applies IME insets,
- * so the floating picker sits directly above the keyboard, with no composer offset.
- * Neither opening the picker nor selecting a sticker clears the active field's focus.
+ * Shared channel/server editor affordance. The editor root already applies IME insets, so the
+ * floating picker sits directly above the keyboard, with no composer offset. Neither opening the
+ * picker nor selecting a sticker clears the active field's focus.
  */
 @Composable
 internal fun AdministrationEmojiPicker(

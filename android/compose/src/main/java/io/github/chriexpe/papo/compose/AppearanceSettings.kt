@@ -10,12 +10,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
 
@@ -237,12 +234,18 @@ internal fun AppearanceSettings(server: ServerState, model: PapoViewModel) {
     }
     if (fontEditor)
         AccountAppearanceEditor(
-            server, model, status.busy, density = false,
+            server,
+            model,
+            status.busy,
+            density = false,
             onDismiss = { fontEditor = false },
         )
     if (densityEditor)
         AccountAppearanceEditor(
-            server, model, status.busy, density = true,
+            server,
+            model,
+            status.busy,
+            density = true,
             onDismiss = { densityEditor = false },
         )
     if (highlightEditor) HighlightSettingsSheet(onDismiss = { highlightEditor = false })

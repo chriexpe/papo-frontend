@@ -7,10 +7,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import io.github.chriexpe.papo.core.AppearanceChange
 
 @Composable
@@ -78,8 +77,9 @@ internal fun AccountDensitySetting(
                             preferences.setExtraCompact(
                                 server,
                                 choice.localPreview,
-                                stacked = choice == MessageDensity.ExtraCompactStacked ||
-                                    choice == MessageDensity.ExtraCompactStackedGrouped,
+                                stacked =
+                                    choice == MessageDensity.ExtraCompactStacked ||
+                                        choice == MessageDensity.ExtraCompactStackedGrouped,
                                 grouped = choice == MessageDensity.ExtraCompactStackedGrouped,
                             )
                             if (!choice.localPreview)
@@ -104,8 +104,8 @@ internal fun AccountDensitySetting(
 }
 
 /**
- * Message text-size and density have independent editors and independent live samples.
- * Highlight colors remain in their existing editor unchanged.
+ * Message text-size and density have independent editors and independent live samples. Highlight
+ * colors remain in their existing editor unchanged.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -129,7 +129,8 @@ internal fun AccountAppearanceEditor(
         modifier = Modifier.fillMaxHeight(.80f),
     ) {
         Column(
-            Modifier.fillMaxSize().navigationBarsPadding()
+            Modifier.fillMaxSize()
+                .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 12.dp)
                 .testTag(if (density) "density-editor" else "font-editor"),
@@ -152,13 +153,17 @@ internal fun AccountAppearanceEditor(
             }
             if (density)
                 AccountDensitySetting(
-                    server, model, busy,
+                    server,
+                    model,
+                    busy,
                     previewSelection = previewDensity,
                     onPreviewChanged = { previewDensity = it },
                 )
             else
                 AccountFontSetting(
-                    server, model, busy,
+                    server,
+                    model,
+                    busy,
                     previewSelection = previewFont,
                     onPreviewChanged = { previewFont = it },
                 )
@@ -169,8 +174,8 @@ internal fun AccountAppearanceEditor(
 }
 
 /**
- * A chat-message sample, without a fake composer pill. Uses the same text sizing,
- * spacing and continuation-author rules as ConversationMessage.
+ * A chat-message sample, without a fake composer pill. Uses the same text sizing, spacing and
+ * continuation-author rules as ConversationMessage.
  */
 @Composable
 internal fun AccountMessagePreview(
@@ -179,11 +184,12 @@ internal fun AccountMessagePreview(
     showTimestamps: Boolean,
 ) {
     val typography = remember(appearance.font) { messageTypography(appearance.font) }
-    val content = listOf(
-        ui(R.string.a_little_more_like_you),
-        ui(R.string.appearance_preview_second),
-        ui(R.string.appearance_preview_third),
-    )
+    val content =
+        listOf(
+            ui(R.string.a_little_more_like_you),
+            ui(R.string.appearance_preview_second),
+            ui(R.string.appearance_preview_third),
+        )
     Column(
         Modifier.fillMaxWidth().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(appearance.contentGap),
@@ -217,8 +223,7 @@ internal fun AccountMessagePreview(
                             }
                         } else
                             Column(
-                                verticalArrangement =
-                                    Arrangement.spacedBy(appearance.headingGap),
+                                verticalArrangement = Arrangement.spacedBy(appearance.headingGap)
                             ) {
                                 if (index == 0 || !appearance.suppressRepeatedStackedAuthor)
                                     Text(
@@ -258,9 +263,7 @@ internal fun AccountMessagePreview(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                     }
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(appearance.continuationGap),
-                    ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(appearance.continuationGap)) {
                         content.forEach { message ->
                             Text(
                                 message,

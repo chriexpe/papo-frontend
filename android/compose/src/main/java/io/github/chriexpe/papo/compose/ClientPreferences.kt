@@ -89,8 +89,12 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
         )
     }
 
-    fun setExtraCompact(server: ServerState, enabled: Boolean, stacked: Boolean = false,
-        grouped: Boolean = false) {
+    fun setExtraCompact(
+        server: ServerState,
+        enabled: Boolean,
+        stacked: Boolean = false,
+        grouped: Boolean = false,
+    ) {
         val prefix = server.appearanceOwner().cachePrefix()
         set(prefix + "extra-compact-stacked", enabled && stacked)
         set(prefix + "extra-compact-stacked-grouped", enabled && grouped)
