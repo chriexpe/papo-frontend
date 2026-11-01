@@ -197,6 +197,10 @@ internal fun ConversationScreen(
         if (keyboardVisible || imeInsets.getBottom(density) > 0) {
             keyboard?.hide()
             focus.clearFocus()
+        } else if (emojiPicker) {
+            emojiPicker = false
+            pickerSearchRequested = false
+            pickerSearch = ""
         } else onBack()
     }
     var headerHeight by remember { mutableStateOf(90.dp) }
