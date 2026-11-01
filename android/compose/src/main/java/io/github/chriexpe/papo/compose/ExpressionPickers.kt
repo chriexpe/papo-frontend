@@ -93,6 +93,7 @@ internal fun EmojiPicker(
             onDetail = { detail = it },
             showFavorites = false,
             compact = false,
+            onClose = onDismiss,
             modifier = Modifier.fillMaxWidth().fillMaxHeight(.74f),
         )
     }
