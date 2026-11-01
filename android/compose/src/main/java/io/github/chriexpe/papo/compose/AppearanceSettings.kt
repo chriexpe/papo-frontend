@@ -72,9 +72,10 @@ internal val appearanceSwitches
 internal fun AppearanceSettings(server: ServerState, model: PapoViewModel) {
     val prefs = LocalClientPreferences.current
     var highlightEditor by remember { mutableStateOf(false) }
+    var densityEditor by remember { mutableStateOf(false) }
+    var fontEditor by remember { mutableStateOf(false) }
     val target = LocalSettingTarget.current
     val list = rememberLazyListState()
-    val messageAppearance = LocalMessageAppearance.current
     val status =
         model.accountAppearance.states[server.appearanceOwner()] ?: AccountAppearanceStatus()
     LaunchedEffect(server.url, server.me) { model.accountAppearance.refresh(server, force = true) }
@@ -111,117 +112,11 @@ internal fun AppearanceSettings(server: ServerState, model: PapoViewModel) {
     ) {
         item("preview") {
             SettingsCard {
-                Column(
-                    Modifier.padding(LocalUiDimensions.current.screenPadding),
-                    verticalArrangement = Arrangement.spacedBy(messageAppearance.contentGap),
-                ) {
-                    Text(
-                        "# design-ui",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (messageAppearance.extraCompact)
-                        Column(
-                            verticalArrangement =
-                                Arrangement.spacedBy(messageAppearance.continuationGap)
-                        ) {
-                            listOf(
-                                    ui(R.string.a_little_more_like_you),
-                                    ui(R.string.appearance_preview_second),
-                                    ui(R.string.appearance_preview_third),
-                                )
-                                .forEachIndexed { index, body ->
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        if (prefs.timestamps)
-                                            CompactMessageTime(
-                                                "14:02",
-                                                index == 0,
-                                                false,
-                                                "preview-$index",
-                                            )
-                                        if (messageAppearance.inlineAuthor)
-                                            Text(
-                                                androidx.compose.ui.text.buildAnnotatedString {
-                                                    withStyle(
-                                                        androidx.compose.ui.text.SpanStyle(
-                                                            fontWeight = FontWeight.SemiBold
-                                                        )
-                                                    ) {
-                                                        append("Ana  ")
-                                                    }
-                                                    append(body)
-                                                },
-                                                lineHeight = messageAppearance.lineHeight,
-                                            )
-                                        else
-                                            Column(
-                                                verticalArrangement =
-                                                    Arrangement.spacedBy(
-                                                        messageAppearance.headingGap
-                                                    )
-                                            ) {
-                                                Text(
-                                                    "Ana",
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    lineHeight = messageAppearance.lineHeight,
-                                                )
-                                                Text(
-                                                    body,
-                                                    lineHeight = messageAppearance.lineHeight,
-                                                )
-                                            }
-                                    }
-                                }
-                        }
-                    else
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.Top,
-                        ) {
-                            if (prefs.avatars) Avatar("Ana")
-                            Column(
-                                verticalArrangement =
-                                    Arrangement.spacedBy(messageAppearance.headingGap)
-                            ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text("Ana", fontWeight = FontWeight.SemiBold)
-                                    if (prefs.timestamps)
-                                        Text(
-                                            "14:02",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                }
-                                Column(
-                                    verticalArrangement =
-                                        Arrangement.spacedBy(messageAppearance.continuationGap)
-                                ) {
-                                    Text(
-                                        ui(R.string.a_little_more_like_you),
-                                        lineHeight = messageAppearance.lineHeight,
-                                    )
-                                    Text(
-                                        ui(R.string.appearance_preview_second),
-                                        lineHeight = messageAppearance.lineHeight,
-                                    )
-                                    Text(
-                                        ui(R.string.appearance_preview_third),
-                                        lineHeight = messageAppearance.lineHeight,
-                                    )
-                                }
-                            }
-                        }
-                    GlassPill {
-                        Text(
-                            ui(R.string.message_channel, "design-ui"),
-                            Modifier.padding(14.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+                AccountMessagePreview(
+                    prefs.messageAppearance(server),
+                    showAvatars = prefs.avatars,
+                    showTimestamps = prefs.timestamps,
+                )
             }
         }
         item("preview-note") {
@@ -292,8 +187,28 @@ internal fun AppearanceSettings(server: ServerState, model: PapoViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        item("text-size") { AccountFontSetting(server, model, status.busy) }
-        item("message-density") { AccountDensitySetting(server, model, status.busy) }
+        item("text-size") {
+            SettingsCard {
+                SettingsLink(
+                    ui(R.string.account_text_size),
+                    ui(R.string.account_text_size_description),
+                    Icons.Outlined.FormatSize,
+                    onClick = { fontEditor = true },
+                    target = "text-size",
+                )
+            }
+        }
+        item("message-density") {
+            SettingsCard {
+                SettingsLink(
+                    ui(R.string.message_density),
+                    ui(R.string.message_density_description),
+                    Icons.Outlined.FormatLineSpacing,
+                    onClick = { densityEditor = true },
+                    target = "message-density",
+                )
+            }
+        }
         item("appearance-sync") { AppearanceSyncStatus(server, model, status) }
         item("conversation-label") { SettingsLabel(ui(R.string.conversations)) }
         item("highlight-colors") {
@@ -320,5 +235,15 @@ internal fun AppearanceSettings(server: ServerState, model: PapoViewModel) {
             }
         }
     }
+    if (fontEditor)
+        AccountAppearanceEditor(
+            server, model, status.busy, density = false,
+            onDismiss = { fontEditor = false },
+        )
+    if (densityEditor)
+        AccountAppearanceEditor(
+            server, model, status.busy, density = true,
+            onDismiss = { densityEditor = false },
+        )
     if (highlightEditor) HighlightSettingsSheet(onDismiss = { highlightEditor = false })
 }
