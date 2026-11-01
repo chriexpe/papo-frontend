@@ -1,7 +1,7 @@
 package io.github.chriexpe.papo.compose
 
-import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -11,8 +11,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -62,7 +62,9 @@ internal fun Modifier.conversationSwipeBack(
                         start,
                         target,
                         animationSpec = spring(stiffness = Spring.StiffnessMedium),
-                    ) { value, _ -> offset = value }
+                    ) { value, _ ->
+                        offset = value
+                    }
                 }
             } finally {
                 offset = 0f
@@ -83,35 +85,35 @@ internal fun Modifier.conversationSwipeBack(
                 var claimed = false
                 var released = false
                 while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!change.pressed) {
-                            released = true
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) {
+                        released = true
+                        break
+                    }
+                    val delta = change.positionChange()
+                    totalX += delta.x
+                    totalY += delta.y
+                    if (!claimed) {
+                        // Never take a leftward reply, a vertical scroll, or
+                        // a drag already claimed by a media control.
+                        if (
+                            change.isConsumed ||
+                                totalX <= -slop ||
+                                (abs(totalY) > slop && abs(totalY) > abs(totalX))
+                        )
                             break
-                        }
-                        val delta = change.positionChange()
-                        totalX += delta.x
-                        totalY += delta.y
-                        if (!claimed) {
-                            // Never take a leftward reply, a vertical scroll, or
-                            // a drag already claimed by a media control.
-                            if (
-                                change.isConsumed ||
-                                    totalX <= -slop ||
-                                    (abs(totalY) > slop && abs(totalY) > abs(totalX))
-                            )
-                                break
-                            if (totalX >= slop) {
-                                claimed = true
-                                reveal(true)
-                                change.consume()
-                                offset = totalX.coerceIn(0f, screenWidth)
-                            }
-                        } else {
+                        if (totalX >= slop) {
+                            claimed = true
+                            reveal(true)
                             change.consume()
                             offset = totalX.coerceIn(0f, screenWidth)
                         }
+                    } else {
+                        change.consume()
+                        offset = totalX.coerceIn(0f, screenWidth)
                     }
+                }
                 if (claimed && released && totalX >= threshold) {
                     settle(screenWidth, committed = true)
                 } else if (claimed) {
