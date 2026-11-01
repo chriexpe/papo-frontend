@@ -79,7 +79,7 @@ pub(crate) fn project_message(store: &Store, url: &str, message: &Message) -> Va
     let mentioned_role = if own { None } else {
         store.roles.iter().find(|role| {
             my_roles.contains(&role.id) &&
-                !papo_core::notification::tag_spans(&message.content, &[role.name.clone()]).is_empty()
+                !papo_core::notification::tag_spans(&message.content, std::slice::from_ref(&role.name)).is_empty()
         })
     };
     let everyone = !own && store.can_mention_everyone(&message.author_id)
