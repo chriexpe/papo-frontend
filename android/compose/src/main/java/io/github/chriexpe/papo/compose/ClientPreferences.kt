@@ -77,28 +77,40 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
             !boolean(prefix + "migrated", false) &&
                 compact &&
                 (density.isBlank() || density == "normal")
+        // A one-time compatibility read preserves earlier Extra compact choices,
+        // while the new controls are independent of the selected density.
+        val wasExtraCompact = boolean(prefix + "extra-compact", false)
+        val stackedKey = prefix + "extra-compact-stack"
+        val legacyStackedKey = prefix + "extra-compact-stacked"
+        val stacked =
+            if (values.containsKey(stackedKey)) boolean(stackedKey)
+            else if (wasExtraCompact && values.containsKey(legacyStackedKey))
+                boolean(legacyStackedKey)
+            else true
+        val grouped = boolean(prefix + "message-grouped", true)
         return MessageAppearance(
-            AccountFontSize.from(font),
-            if (boolean(prefix + "extra-compact", false)) {
-                if (boolean(prefix + "extra-compact-stacked-grouped", false))
-                    MessageDensity.ExtraCompactStackedGrouped
-                else if (boolean(prefix + "extra-compact-stacked", false))
-                    MessageDensity.ExtraCompactStacked
-                else MessageDensity.ExtraCompact
-            } else if (importCompact) MessageDensity.Compact else MessageDensity.from(density),
+            font = AccountFontSize.from(font),
+            density =
+                if (wasExtraCompact || density.startsWith("extra-compact"))
+                    MessageDensity.ExtraCompact
+                else if (importCompact) MessageDensity.Compact
+                else MessageDensity.from(density),
+            stacked = stacked,
+            grouped = grouped,
         )
     }
 
-    fun setExtraCompact(
-        server: ServerState,
-        enabled: Boolean,
-        stacked: Boolean = false,
-        grouped: Boolean = false,
-    ) {
+    fun setExtraCompact(server: ServerState, enabled: Boolean) {
         val prefix = server.appearanceOwner().cachePrefix()
-        set(prefix + "extra-compact-stacked", enabled && stacked)
-        set(prefix + "extra-compact-stacked-grouped", enabled && grouped)
         set(prefix + "extra-compact", enabled)
+    }
+
+    fun setExtraCompactStacked(server: ServerState, enabled: Boolean) {
+        set(server.appearanceOwner().cachePrefix() + "extra-compact-stack", enabled)
+    }
+
+    fun setMessageGrouping(server: ServerState, enabled: Boolean) {
+        set(server.appearanceOwner().cachePrefix() + "message-grouped", enabled)
     }
 
     val replyNotifications
