@@ -32,9 +32,17 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
+/**
+ * Coil's shared decoded-image memory cache and MediaCache's on-disk encoded cache already
+ * have independent LRU budgets. Use their existing identity-based path instead of copying
+ * emoji bytes into an additional in-memory LRU or hashing those bytes on the UI thread.
+ * Lazy grid composition requests only nearby cells, so no full-server prefetch is needed.
+ */
 @Composable
 internal fun EmojiGlyph(
     server: ServerState,
@@ -46,32 +54,34 @@ internal fun EmojiGlyph(
     else {
         val entry = server.emojis.firstOrNull { it.id == emoji.value }
         val context = LocalContext.current
-        val bytes by
-            produceState<ByteArray?>(null, server.url, server.me, emoji.value, entry?.revision) {
-                try {
-                    value = model.emojiImage(server, emoji.value)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    value = null
+        val image =
+            remember(model, server.url, server.me, emoji.value, entry?.revision) {
+                CachedImage(
+                    "emoji/${server.url}/${server.me}/${emoji.value}/${entry?.revision.orEmpty()}"
+                ) {
+                    model.emojiImage(server, emoji.value)
                 }
             }
         val loader = remember(context) { MediaImages.loader(context) }
-        if (bytes != null)
+        var loaded by remember(image) { mutableStateOf(false) }
+        Box(Modifier.size(size.dp), contentAlignment = Alignment.Center) {
+            if (!loaded)
+                Text(
+                    ":${entry?.name ?: emoji.name}:",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                )
             ManagedAsyncImage(
-                bytes,
-                ":${entry?.name ?: emoji.name}:",
+                model = image,
+                description = ":${entry?.name ?: emoji.name}:",
                 imageLoader = loader,
-                modifier = Modifier.size(size.dp),
+                modifier = Modifier.matchParentSize(),
                 contentScale = ContentScale.Fit,
                 retentionKey = "emoji/${emoji.value}/${entry?.revision}/$size",
+                onSuccess = { loaded = true },
+                onError = { loaded = false },
             )
-        else
-            Text(
-                ":${entry?.name ?: emoji.name}:",
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-            )
+        }
     }
 }
 
@@ -136,7 +146,13 @@ internal fun EmojiPickerBody(
             }
         }
     val context = LocalContext.current
-    val standard = remember { UnicodeEmojiCatalog.load(context) }
+    // JSON parsing/search normalization is expensive on the first open. The catalog itself
+    // is shared and cached by UnicodeEmojiCatalog; load it off the Compose UI thread.
+    val standard by produceState(emptyList<UnicodeEmoji>(), context.applicationContext) {
+        value = withContext(Dispatchers.Default) {
+            UnicodeEmojiCatalog.load(context.applicationContext)
+        }
+    }
     val custom =
         remember(server.emojis, query) {
             server.emojis.filter { it.name.contains(query.trim(), true) }
@@ -335,7 +351,11 @@ internal fun EmojiPickerBody(
                     Text(glyph, fontSize = 28.sp)
                 }
             }
-            if (custom.isEmpty() && unicode.isEmpty())
+            if (standard.isEmpty())
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    CircularProgressIndicator(Modifier.padding(vertical = 16.dp))
+                }
+            else if (custom.isEmpty() && unicode.isEmpty())
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Text(
                         ui(R.string.no_emoji_found_try_another_name),
