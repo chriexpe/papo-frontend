@@ -33,6 +33,15 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
         values = values + (key to value)
     }
 
+    fun highlightColor(key: String, fallback: String): androidx.compose.ui.graphics.Color =
+        runCatching {
+            androidx.compose.ui.graphics.Color(
+                android.graphics.Color.parseColor(string(key, fallback))
+            )
+        }.getOrElse {
+            androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(fallback))
+        }
+
     val theme
         get() = string("theme", "System")
 
