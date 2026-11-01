@@ -367,9 +367,22 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         try {
             for ((url, handle) in handles) {
                 handle.notificationVisibility(url == visibleConversationUrl)
-                val snapshot = handle.poll().retainPresentation(snapshots[url])
+                val before = snapshots[url]
+                val snapshot = handle.poll().retainPresentation(before)
                 snapshots[url] = snapshot
                 if (!snapshot.isDemo) MessageAlerts.setOwner(url, snapshot.me)
+                // Clear only OS notifications whose channels are now read, including reads
+                // acknowledged from another Papo client. Do not dismiss unrelated channels.
+                if (!snapshot.isDemo && snapshot.me.isNotBlank()) {
+                    val previous = before?.takeIf { it.me == snapshot.me }
+                    val previouslyUnread = previous?.channels.orEmpty().associate {
+                        it.id to (it.unread || it.mentions > 0)
+                    }
+                    snapshot.channels
+                        .filter { !it.unread && it.mentions == 0 }
+                        .filter { previous == null || previouslyUnread[it.id] != false }
+                        .forEach { MessageAlerts.clear(url, snapshot.me, it.id) }
+                }
                 if (
                     snapshot.conversation?.unread == false &&
                         snapshot.reading.mentions.isEmpty() &&
