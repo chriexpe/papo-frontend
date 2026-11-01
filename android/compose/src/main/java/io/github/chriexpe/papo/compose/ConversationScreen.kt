@@ -160,6 +160,7 @@ internal fun ConversationScreen(
     )
     val pickerScaffold = rememberBottomSheetScaffoldState(bottomSheetState = pickerSheet)
     var pickerSearch by remember(draftKey) { mutableStateOf("") }
+    var pickerSearchRequested by remember(draftKey) { mutableStateOf(false) }
     var pickerDetail by remember(draftKey) { mutableStateOf<String?>(null) }
     LaunchedEffect(emojiPicker, emojiTarget) {
         if (emojiPicker && emojiTarget == null) pickerSheet.show()
@@ -771,8 +772,12 @@ internal fun ConversationScreen(
                     onPick = { emoji -> updateComposer(composer.insert(emoji.token)) },
                     onDetail = { pickerDetail = it },
                     showFavorites = true,
-                    compact = !expanded,
-                    onExpand = { scope.launch { pickerSheet.expand() } },
+                    compact = !expanded && !pickerSearchRequested,
+                    searchFocusRequested = pickerSearchRequested,
+                    onExpand = {
+                        pickerSearchRequested = true
+                        scope.launch { pickerSheet.expand() }
+                    },
                     modifier = Modifier.fillMaxWidth().fillMaxHeight(.80f),
                 )
             },
