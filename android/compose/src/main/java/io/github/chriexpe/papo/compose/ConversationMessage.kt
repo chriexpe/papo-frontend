@@ -98,8 +98,8 @@ internal fun MessageRow(
                         message.highlightRoleColor.isNotBlank()
                 )
                     runCatching {
-                            Color(android.graphics.Color.parseColor(message.highlightRoleColor))
-                        }
+                        Color(android.graphics.Color.parseColor(message.highlightRoleColor))
+                    }
                         .getOrElse { appearance.highlightColor("highlight-role", "#A78BFA") }
                 else appearance.highlightColor("highlight-role", "#A78BFA")
             "reply" -> appearance.highlightColor("highlight-reply", "#65A8ED")
