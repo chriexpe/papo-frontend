@@ -1332,7 +1332,6 @@ internal fun ConversationScreen(
                                 }
                         }
                     }
-                }
             if (emojiPicker && emojiTarget == null) {
                 FloatingEmojiPicker(
                     server = server,
