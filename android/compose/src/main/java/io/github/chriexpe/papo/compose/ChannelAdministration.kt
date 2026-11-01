@@ -10,6 +10,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -141,6 +145,7 @@ internal fun ChannelAdministrationList(
 @Composable
 internal fun ChannelAdministrationEditor(
     server: ServerState,
+    model: PapoViewModel,
     ui: AdministrationUi,
     id: String?,
     category: Boolean,
@@ -153,8 +158,18 @@ internal fun ChannelAdministrationEditor(
         if (!ui.loading) AdministrationEmpty(ui(R.string.this_channel_no_longer_exists))
         return
     }
-    var name by rememberSaveable(id) { mutableStateOf(existing?.name.orEmpty()) }
-    var topic by rememberSaveable(id) { mutableStateOf(existing?.topic.orEmpty()) }
+    var nameField by
+        rememberSaveable(id, stateSaver = TextFieldValue.Saver) {
+            mutableStateOf(TextFieldValue(existing?.name.orEmpty()))
+        }
+    var topicField by
+        rememberSaveable(id, stateSaver = TextFieldValue.Saver) {
+            mutableStateOf(TextFieldValue(existing?.topic.orEmpty()))
+        }
+    val name = nameField.text
+    val topic = topicField.text
+    // Focus may move to sticker search without changing the insertion target.
+    var insertionTarget by remember(id) { mutableStateOf("name") }
     var kind by
         rememberSaveable(id) {
             mutableStateOf(existing?.kind ?: if (category) "category" else "text")
@@ -179,6 +194,7 @@ internal fun ChannelAdministrationEditor(
             "channel-delete" -> list.scrollToItem(if (kind == "category") 3 else 5)
         }
     }
+    Box(Modifier.fillMaxSize()) {
     LazyColumn(
         Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("admin-channel-editor"),
         state = list,
@@ -187,10 +203,11 @@ internal fun ChannelAdministrationEditor(
     ) {
         item {
             OutlinedTextField(
-                name,
-                { name = it },
+                nameField,
+                { nameField = it },
                 Modifier.fillMaxWidth()
                     .then(settingTarget("channel-name"))
+                    .onFocusChanged { if (it.isFocused) insertionTarget = "name" }
                     .testTag("admin-channel-name"),
                 label = {
                     Text(
@@ -228,9 +245,11 @@ internal fun ChannelAdministrationEditor(
         if (kind != "category") {
             item {
                 OutlinedTextField(
-                    topic,
-                    { topic = it },
-                    Modifier.fillMaxWidth().then(settingTarget("channel-topic")),
+                    topicField,
+                    { topicField = it },
+                    Modifier.fillMaxWidth()
+                        .then(settingTarget("channel-topic"))
+                        .onFocusChanged { if (it.isFocused) insertionTarget = "topic" },
                     label = { Text(ui(R.string.description)) },
                     minLines = 3,
                     maxLines = 8,
@@ -305,6 +324,20 @@ internal fun ChannelAdministrationEditor(
                     )
                 }
             }
+    }
+    AdministrationEmojiPicker(
+        server = server,
+        model = model,
+        enabled = !ui.busy,
+        onPick = { choice ->
+            if (insertionTarget == "topic" && kind != "category") {
+                topicField = insertAdministrationEmoji(topicField, choice)
+            } else {
+                nameField = insertAdministrationEmoji(nameField, choice)
+            }
+        },
+        modifier = Modifier.fillMaxSize(),
+    )
     }
     if (delete && id != null)
         AdministrationDelete(
