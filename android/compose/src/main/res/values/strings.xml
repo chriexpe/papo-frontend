@@ -1051,4 +1051,10 @@
     <string name="highlight_role">Role / everyone mention</string>
     <string name="highlight_use_role_color">Use mentioned role color</string>
     <string name="highlight_use_role_color_description">Use the role's configured color when available.</string>
+    <string name="highlight_settings_description">Customize colors for mentions and replies</string>
+    <string name="highlight_preview">Message preview</string>
+    <string name="highlight_example_author">Example · 14:02</string>
+    <string name="highlight_example_direct">Hey, @you! Take a look at this message.</string>
+    <string name="highlight_example_role">Heads up, @team! We have an update.</string>
+    <string name="highlight_example_reply">Replying to your earlier message.</string>
 </resources>
