@@ -82,6 +82,7 @@ pub enum Action {
         setting: String,
     },
     MarkServerRead,
+    MarkChannelRead { channel_id: String, owner_user_id: String },
     SaveServer {
         name: String,
         public: bool,
@@ -772,6 +773,19 @@ impl Client {
                 self.flush_store();
                 return Ok(());
             }
+            Action::MarkChannelRead { channel_id, owner_user_id } => {
+                if owner_user_id != store.me {
+                    return Err("Account changed".into());
+                }
+                if !store.channels.iter().any(|channel| channel.id == channel_id) {
+                    return Err("Channel no longer exists".into());
+                }
+                store.mark_read(&channel_id);
+                let notification_ids = store.take_open_notifications(&channel_id);
+                store.queue_notification_reads(&channel_id, notification_ids);
+                self.flush_store();
+                return Ok(());
+            }
             Action::SaveServer {
                 name,
                 public,
@@ -862,7 +876,7 @@ impl Client {
                     .iter()
                     .find(|c| c.id == channel_id)
                     .ok_or("Channel no longer exists")?;
-                if !matches!(channel.kind, ChannelKind::Text | ChannelKind::Direct) {
+                if !matches!(channel.kind, ChannelKind::Text | ChannelKind::Direct | ChannelKind::Voice) {
                     return Err("Select a text conversation".into());
                 }
                 let previous = store.selected_channel.clone();
@@ -897,7 +911,7 @@ impl Client {
                 if local_id.is_empty()
                     || !store.channels.iter().any(|c| {
                         c.id == channel_id
-                            && matches!(c.kind, ChannelKind::Text | ChannelKind::Direct)
+                            && matches!(c.kind, ChannelKind::Text | ChannelKind::Direct | ChannelKind::Voice)
                     })
                 {
                     return Err("Select a text conversation".into());
@@ -931,7 +945,7 @@ impl Client {
                 if local_id.is_empty()
                     || !store.channels.iter().any(|c| {
                         c.id == channel_id
-                            && matches!(c.kind, ChannelKind::Text | ChannelKind::Direct)
+                            && matches!(c.kind, ChannelKind::Text | ChannelKind::Direct | ChannelKind::Voice)
                     })
                 {
                     return Err("Select a text conversation".into());
