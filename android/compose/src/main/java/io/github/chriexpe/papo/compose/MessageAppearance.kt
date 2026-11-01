@@ -54,9 +54,6 @@ internal data class MessageAppearance(
     val extraCompact
         get() = density.localPreview
 
-    val suppressRepeatedStackedAuthor
-        get() = grouped
-
     val inlineAuthor
         get() = extraCompact && !stacked
 
