@@ -8,6 +8,7 @@ package io.github.chriexpe.papo.compose
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -155,8 +156,8 @@ internal fun EmojiPickerBody(
 
     val gridState = rememberLazyGridState()
     val searchFocus = remember { FocusRequester() }
-    LaunchedEffect(searchFocusRequested, compact) {
-        if (searchFocusRequested && !compact) {
+    LaunchedEffect(searchFocusRequested) {
+        if (searchFocusRequested && compact) {
             withFrameNanos {}
             searchFocus.requestFocus()
         }
@@ -180,15 +181,46 @@ internal fun EmojiPickerBody(
                 },
             )
         else
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    ui(R.string.emoji),
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                IconButton(onClick = onExpand) {
-                    Icon(Icons.Outlined.Search, ui(R.string.find_an_emoji_or_sticker))
-                }
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (searchFocusRequested)
+                    BasicTextField(
+                        value = query,
+                        onValueChange = onQueryChange,
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).focusRequester(searchFocus),
+                        textStyle =
+                            MaterialTheme.typography.bodyLarge.copy(
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                        decorationBox = { inner ->
+                            Box {
+                                if (query.isEmpty())
+                                    Text(
+                                        ui(R.string.find_an_emoji_or_sticker),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                    )
+                                inner()
+                            }
+                        },
+                    )
+                else
+                    Text(
+                        ui(R.string.emoji),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                if (!searchFocusRequested)
+                    IconButton(onClick = onExpand) {
+                        Icon(Icons.Outlined.Search, ui(R.string.find_an_emoji_or_sticker))
+                    }
+                else
+                    IconButton(onClick = { onQueryChange("") }) {
+                        Icon(Icons.Outlined.Search, ui(R.string.find_an_emoji_or_sticker))
+                    }
                 IconButton(onClick = onClose) {
                     Icon(Icons.Outlined.Close, ui(R.string.close))
                 }
