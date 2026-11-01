@@ -82,6 +82,10 @@ pub enum Action {
         setting: String,
     },
     MarkServerRead,
+    MarkChannelRead {
+        channel_id: String,
+        owner_user_id: String,
+    },
     SaveServer {
         name: String,
         public: bool,
@@ -765,6 +769,17 @@ impl Client {
                     channel_id,
                     setting,
                 }
+            }
+            Action::MarkChannelRead {
+                channel_id,
+                owner_user_id,
+            } => {
+                if owner_user_id != store.me {
+                    return Err("Account changed".into());
+                }
+                store.mark_read(&channel_id);
+                self.flush_store();
+                return Ok(());
             }
             Action::MarkServerRead => {
                 store.mark_all_read();

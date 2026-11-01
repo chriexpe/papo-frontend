@@ -5,6 +5,7 @@ package io.github.chriexpe.papo.compose
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,6 +41,7 @@ import dev.chrisbanes.haze.hazeSource
 import io.github.chriexpe.papo.core.Action
 import io.github.chriexpe.papo.core.SearchAnalysis
 import io.github.chriexpe.papo.core.SearchSuggestion
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
@@ -64,9 +66,35 @@ internal fun ConversationList(
     direct: Boolean,
     onSettings: () -> Unit,
     onOpen: (String) -> Unit,
+    onOpenChat: (String) -> Unit,
     onProfile: (String) -> Unit,
     onMessage: (String, String) -> Unit,
 ) {
+    var settingsChannel by remember(server.url, server.me) { mutableStateOf<String?>(null) }
+    // Keep per-channel notification settings fresh while this list is on screen.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(server.url, server.me, lifecycle) {
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            while (true) {
+                model.refreshChannelSettings(server)
+                kotlinx.coroutines.delay(60_000L)
+            }
+        }
+    }
+    val muteRevision by MessageAlerts.muteChanges.collectAsState()
+    fun muted(id: String) =
+        muteRevision >= 0 && MessageAlerts.isMuted(server.url, server.me, id)
+    // Timed mutes end on their own: refresh the rows when the nearest one expires.
+    LaunchedEffect(muteRevision, server.channels) {
+        server.channels
+            .map { MessageAlerts.muteUntil(server.url, server.me, it.id) }
+            .filter { it > 0L && it != MessageAlerts.MUTED_FOREVER }
+            .minOrNull()
+            ?.let {
+                kotlinx.coroutines.delay((it - System.currentTimeMillis()).coerceAtLeast(0L) + 500L)
+                MessageAlerts.muteChanges.value = MessageAlerts.muteChanges.value + 1
+            }
+    }
     val dimensions = LocalUiDimensions.current
     val callActive = LocalVoiceCall.current?.active == true
     // A server owns its search; changing servers never leaks terms/results.
@@ -246,7 +274,14 @@ internal fun ConversationList(
                 ) {
                     if (searching) {
                         if (channels.isNotEmpty()) item { SearchHeading("Channels") }
-                        items(channels, key = { "channel/${it.id}" }) { ChannelItem(it, onOpen) }
+                        items(channels, key = { "channel/${it.id}" }) {
+                            ChannelItem(
+                                it,
+                                onOpen,
+                                onSettings = { id -> settingsChannel = id },
+                                muted = muted(it.id),
+                            )
+                        }
                         if (people.isNotEmpty()) item { SearchHeading("People") }
                         items(people, key = { "person/${it.id}" }) { PersonItem(it, onProfile) }
                         item { SearchHeading("Messages") }
@@ -344,10 +379,33 @@ internal fun ConversationList(
                                     onProfile = { onProfile(channel.userId) },
                                 )
                             else if (channel.kind == "voice")
-                                VoiceChannelItem(server, channel, onOpen)
-                            else ChannelItem(channel, onOpen)
+                                VoiceChannelItem(
+                                    server,
+                                    channel,
+                                    onOpen,
+                                    onSettings = { settingsChannel = it },
+                                    muted = muted(channel.id),
+                                )
+                            else
+                                ChannelItem(
+                                    channel,
+                                    onOpen,
+                                    onSettings = { settingsChannel = it },
+                                    muted = muted(channel.id),
+                                )
                         }
                     }
+                }
+                settingsChannel?.let { id ->
+                    server.channels.firstOrNull { it.id == id }?.let { channel ->
+                        ChannelSettingsSheet(
+                            server,
+                            model,
+                            channel,
+                            onOpenChat = onOpenChat,
+                            onDismiss = { settingsChannel = null },
+                        )
+                    } ?: run { settingsChannel = null }
                 }
                 selectedResult?.let { (channel, stale) ->
                     val current =
@@ -406,12 +464,19 @@ internal fun ChannelItem(
     onOpen: (String) -> Unit,
     voiceSummary: String? = null,
     joined: Boolean = false,
+    onSettings: ((String) -> Unit)? = null,
+    muted: Boolean = false,
 ) {
+    // Muted channels read quieter: dimmer text and no unread or mention badges.
+    val dim = if (muted) .55f else 1f
     DensityListItem(
         headlineContent = {
             Text(
                 channel.name,
-                fontWeight = if (channel.unread || joined) FontWeight.Bold else FontWeight.Medium,
+                fontWeight =
+                    if (!muted && (channel.unread || joined)) FontWeight.Bold
+                    else FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = dim),
             )
         },
         supportingContent =
@@ -443,7 +508,14 @@ internal fun ChannelItem(
             }
         },
         trailingContent = {
-            if (channel.mentions > 0) Badge { Text(channel.mentions.toString()) }
+            if (muted)
+                Icon(
+                    Icons.Outlined.NotificationsOff,
+                    ui(R.string.channel_muted_state),
+                    Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .7f),
+                )
+            else if (channel.mentions > 0) Badge { Text(channel.mentions.toString()) }
             else if (channel.unread)
                 Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
             else
@@ -459,7 +531,11 @@ internal fun ChannelItem(
                     if (joined) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .35f)
                     else androidx.compose.ui.graphics.Color.Transparent
                 )
-                .clickable { onOpen(channel.id) },
+                .combinedClickable(
+                    onLongClickLabel = ui(R.string.channel_settings),
+                    onLongClick = onSettings?.let { open -> { open(channel.id) } },
+                    onClick = { onOpen(channel.id) },
+                ),
     )
 }
 

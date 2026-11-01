@@ -21,7 +21,7 @@ import kotlinx.coroutines.launch
 internal fun notificationPolicyLabel(value: String) =
     when (value) {
         "all" -> ui(R.string.all_messages)
-        "off" -> uiLabel("Off")
+        "off" -> ui(R.string.notification_policy_nothing)
         else -> ui(R.string.mentions_only)
     }
 
@@ -44,7 +44,7 @@ internal class NotificationPolicyUi(
 
     var selected by mutableStateOf("only_mentions")
 
-    fun apply(server: ServerState, ids: List<String>, policy: String) {
+    fun apply(server: ServerState, ids: List<String>, policy: String, sync: Boolean = true) {
         if (busy || ids.isEmpty()) return
         busy = true
         error = ""
@@ -52,7 +52,7 @@ internal class NotificationPolicyUi(
         lastPolicy = policy
         scope.launch {
             try {
-                result = model.notificationPolicy(server, ids, policy)
+                result = model.notificationPolicy(server, ids, policy, sync)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

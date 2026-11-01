@@ -463,6 +463,14 @@ fun PapoApp(
                                                         }
                                                     }
                                                 },
+                                                onOpenChat = { id ->
+                                                    model.navigate(
+                                                        server,
+                                                        Action.SelectChannel(id),
+                                                    ) {
+                                                        enterConversation(server)
+                                                    }
+                                                },
                                                 onProfile = openProfile,
                                                 onMessage = { channelId, messageId ->
                                                     model.navigate(

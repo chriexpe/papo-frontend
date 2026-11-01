@@ -371,6 +371,15 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 val snapshot = handle.poll().retainPresentation(previousSnapshot)
                 snapshots[url] = snapshot
                 if (!snapshot.isDemo) MessageAlerts.setOwner(url, snapshot.me)
+                // A server refresh overwrites channel settings; keep local-only choices in force.
+                if (!snapshot.isDemo && snapshot.me.isNotBlank())
+                    snapshot.channels.forEach { channel ->
+                        val local = localChannelPolicy(url, snapshot.me, channel.id)
+                        if (local != null && local != channel.notificationSettings)
+                            runCatching {
+                                handle.notificationPolicy(snapshot.me, listOf(channel.id), local, false)
+                            }
+                    }
                 // A read from this app or another Papo client closes the system notifications,
                 // for every channel and not only the open one.
                 if (!snapshot.isDemo && snapshot.me.isNotBlank()) {
@@ -759,15 +768,47 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun localPolicyKey(url: String, owner: String, channel: String) =
+        "channel-policy-local/$url/$owner/$channel"
+
+    /** A channel with a local policy is not synchronized: its choice never reaches the account. */
+    internal fun localChannelPolicy(server: ServerState, channel: String): String? =
+        localChannelPolicy(server.url, server.me, channel)
+
+    private fun localChannelPolicy(url: String, owner: String, channel: String): String? =
+        preferences.getString(localPolicyKey(url, owner, channel), null)
+
+    internal fun setLocalChannelPolicy(server: ServerState, channel: String, policy: String?) {
+        val key = localPolicyKey(server.url, server.me, channel)
+        preferences.edit().apply { if (policy == null) remove(key) else putString(key, policy) }.apply()
+    }
+
+    /** Pull channel settings changed on another device; failures keep the last known values. */
+    internal suspend fun refreshChannelSettings(server: ServerState) {
+        if (server.isDemo || server.me.isBlank()) return
+        accountMutex.withLock {
+            val client = accountClient(server)
+            try {
+                withContext(kotlinx.coroutines.Dispatchers.IO) { client.refreshChannels(server.me) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return@withLock
+            }
+            withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+        }
+    }
+
     internal suspend fun notificationPolicy(
         server: ServerState,
         ids: List<String>,
         setting: String,
+        sync: Boolean = true,
     ): io.github.chriexpe.papo.core.NotificationPolicyResult = accountMutex.withLock {
         val client = accountClient(server)
         try {
             withContext(kotlinx.coroutines.Dispatchers.IO) {
-                client.notificationPolicy(server.me, ids, setting)
+                client.notificationPolicy(server.me, ids, setting, sync)
             }
         } finally {
             withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }

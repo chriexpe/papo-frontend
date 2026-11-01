@@ -1030,4 +1030,20 @@
     <string name="call_audio_routing_unavailable">This server does not provide participant audio routing. Individual volume and mute are unavailable.</string>
     <string name="call_status_unknown">Microphone and camera status unavailable</string>
     <string name="call_leave_timeout">The previous call has not finished leaving. Wait for the server or reconnect before joining again.</string>
+    <string name="channel_settings">"Channel settings"</string>
+    <string name="open_chat">"Open chat"</string>
+    <string name="mark_channel_as_read">"Mark as read"</string>
+    <string name="notification_policy_nothing">"Nothing"</string>
+    <string name="sync_notifications">"Sync"</string>
+    <string name="sync_notifications_description">"Sync this choice with your account and other devices. When off, it applies only to this device."</string>
+    <string name="mute_channel">"Mute channel"</string>
+    <string name="mute_15_minutes">"15 minutes"</string>
+    <string name="mute_1_hour">"1 hour"</string>
+    <string name="mute_8_hours">"8 hours"</string>
+    <string name="mute_24_hours">"24 hours"</string>
+    <string name="mute_until_unmuted">"Until I turn it back on"</string>
+    <string name="muted_until">"Muted until %1$s"</string>
+    <string name="muted_until_turned_on">"Muted until you turn it back on"</string>
+    <string name="unmute_channel">"Unmute"</string>
+    <string name="channel_muted_state">"Muted"</string>
 </resources>
