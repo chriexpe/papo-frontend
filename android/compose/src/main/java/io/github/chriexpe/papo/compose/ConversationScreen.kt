@@ -166,6 +166,18 @@ internal fun ConversationScreen(
     LaunchedEffect(emojiPicker, emojiTarget) {
         if (emojiPicker && emojiTarget == null) pickerSheet.show() else pickerSheet.hide()
     }
+    LaunchedEffect(pickerSheet, draftKey) {
+        var shown = false
+        snapshotFlow { pickerSheet.currentValue }.collect { value ->
+            if (value != SheetValue.Hidden) shown = true
+            else if (shown && emojiPicker && emojiTarget == null) {
+                emojiPicker = false
+                pickerSearchRequested = false
+                pickerSearch = ""
+                shown = false
+            }
+        }
+    }
 
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val mediaLifecycle by lifecycle.currentStateFlow.collectAsState()
@@ -756,7 +768,8 @@ internal fun ConversationScreen(
         BottomSheetScaffold(
             scaffoldState = pickerScaffold,
             sheetPeekHeight = if (emojiPicker && emojiTarget == null) 276.dp else 0.dp,
-            sheetSwipeEnabled = emojiPicker && emojiTarget == null,
+            // Keep search expanded while the IME changes window height.
+            sheetSwipeEnabled = emojiPicker && emojiTarget == null && !pickerSearchRequested,
             sheetDragHandle = {
                 if (emojiPicker && emojiTarget == null) BottomSheetDefaults.DragHandle()
             },
@@ -777,6 +790,13 @@ internal fun ConversationScreen(
                     onExpand = {
                         pickerSearchRequested = true
                         scope.launch { pickerSheet.expand() }
+                    },
+                    onClose = {
+                        emojiPicker = false
+                        pickerSearchRequested = false
+                        pickerSearch = ""
+                        focus.clearFocus()
+                        keyboard?.hide()
                     },
                     modifier = Modifier.fillMaxWidth().fillMaxHeight(.80f),
                 )
