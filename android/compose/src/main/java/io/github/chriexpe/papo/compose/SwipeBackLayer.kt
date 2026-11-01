@@ -65,7 +65,7 @@ internal fun Modifier.conversationSwipeBack(
                             // Never take a leftward reply, a vertical scroll, or
                             // a drag already claimed by a media control.
                             if (change.isConsumed || totalX <= -slop ||
-                                (abs(totalY) > slop && abs(totalY) > abs(totalX))
+                                (abs(totalY) > slop && abs(totalY) > abs(totalX)))
                                 break
                             if (totalX >= slop) {
                                 claimed = true
