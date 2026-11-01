@@ -26,6 +26,8 @@ internal fun VoiceChannelItem(
     server: ServerState,
     channel: Conversation,
     onOpen: (String) -> Unit,
+    onSettings: ((String) -> Unit)? = null,
+    muted: Boolean = false,
 ) {
     val calls = LocalVoiceCall.current
     val session =
@@ -46,6 +48,8 @@ internal fun VoiceChannelItem(
                 if (session != null && !session.connected) ui(R.string.call_connecting)
                 else if (session != null) ui(R.string.call_joined_room, count) else count,
             joined = session != null,
+            onSettings = onSettings,
+            muted = muted,
         )
         Column(Modifier.fillMaxWidth().padding(start = 64.dp, end = 20.dp, bottom = 8.dp)) {
             people.forEach { person ->
