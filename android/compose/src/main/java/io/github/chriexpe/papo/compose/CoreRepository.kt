@@ -367,9 +367,22 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         try {
             for ((url, handle) in handles) {
                 handle.notificationVisibility(url == visibleConversationUrl)
-                val snapshot = handle.poll().retainPresentation(snapshots[url])
+                val previousSnapshot = snapshots[url]
+                val snapshot = handle.poll().retainPresentation(previousSnapshot)
                 snapshots[url] = snapshot
                 if (!snapshot.isDemo) MessageAlerts.setOwner(url, snapshot.me)
+                // A read from this app or another Papo client closes the system notifications,
+                // for every channel and not only the open one.
+                if (!snapshot.isDemo && snapshot.me.isNotBlank()) {
+                    val before = previousSnapshot?.takeIf { it.me == snapshot.me }
+                    val wasUnread =
+                        before?.channels.orEmpty().associate { it.id to (it.unread || it.mentions > 0) }
+                    snapshot.channels
+                        .filter { !it.unread && it.mentions == 0 }
+                        // First sight of a channel also sweeps reads made while the app was closed.
+                        .filter { before == null || wasUnread[it.id] != false }
+                        .forEach { MessageAlerts.clear(url, snapshot.me, it.id) }
+                }
                 if (
                     snapshot.conversation?.unread == false &&
                         snapshot.reading.mentions.isEmpty() &&
