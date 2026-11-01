@@ -1062,257 +1062,266 @@ internal fun ConversationScreen(
                             }
                         }
                     }
-                }
-    Column(
-        Modifier.align(Alignment.BottomCenter)
-            .fillMaxWidth()
-            .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }
-            .testTag("chat-composer")
-            .padding(dimensions.composerPadding)
-    ) {
-        if (server.loadingContext || readingControls.seekingCatchUp)
-            GlassPill(Modifier.fillMaxWidth().padding(bottom = 8.dp), radius = 24) {
+            }
+            Column(
+                Modifier.align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }
+                    .testTag("chat-composer")
+                    .padding(dimensions.composerPadding)
+            ) {
+                if (server.loadingContext || readingControls.seekingCatchUp)
+                    GlassPill(Modifier.fillMaxWidth().padding(bottom = 8.dp), radius = 24) {
+                        Row(
+                            Modifier.padding(start = 16.dp, end = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Text(
+                                if (readingControls.seekingCatchUp)
+                                    ui(R.string.loading_earlier_unread_messages)
+                                else ui(R.string.opening_original_message),
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { jumpToLatest() }) {
+                                Text(ui(R.string.cancel))
+                            }
+                        }
+                    }
+                if (composerFocused && !recording && !emojiPicker && !gifPicker)
+                    ComposerSuggestions(composer, server, model) { updateComposer(it) }
                 Row(
-                    Modifier.padding(start = 16.dp, end = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(dimensions.composerGap),
+                    verticalAlignment = Alignment.Bottom,
                 ) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Text(
-                        if (readingControls.seekingCatchUp)
-                            ui(R.string.loading_earlier_unread_messages)
-                        else ui(R.string.opening_original_message),
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
+                    AttachmentActions(
+                        draftKey,
+                        model,
+                        enabled =
+                            !recording &&
+                                !submitting &&
+                                !attachmentDraft.sending &&
+                                !attachmentDraft.preparing,
+                        onRecord = {
+                            focus.clearFocus()
+                            keyboard?.hide()
+                            recording = true
+                        },
+                        modifier = Modifier.zIndex(1f),
                     )
-                    TextButton(onClick = { jumpToLatest() }) {
-                        Text(ui(R.string.cancel))
+                    Column(Modifier.weight(1f)) {
+                        TypingIndicator(server.typing, server.typingPhrase)
+                        GlassPill(radius = 28) {
+                            if (recording)
+                                RecordingComposer(
+                                    draftKey,
+                                    model,
+                                    onClose = { recording = false },
+                                    onSend = {
+                                        if (attachmentDraft.uncertain) confirmAttachmentRetry = true
+                                        else submitMessage(true)
+                                    },
+                                )
+                            else
+                                Column {
+                                    PendingAttachments(
+                                        attachmentDraft,
+                                        edit = { file ->
+                                            focus.clearFocus()
+                                            keyboard?.hide()
+                                            attachmentOptions = file
+                                        },
+                                    ) {
+                                        model.attachments.remove(draftKey, it)
+                                    }
+                                    if (embedDrafts.isNotEmpty()) {
+                                        val valid =
+                                            remember(embedDrafts, attachmentDraft.files) {
+                                                validateEmbedDrafts(
+                                                        embedDrafts,
+                                                        attachmentDraft.files.map {
+                                                            it.wireName
+                                                        },
+                                                    )
+                                                    .isEmpty()
+                                            }
+                                        AssistChip(
+                                            onClick = {
+                                                focus.clearFocus()
+                                                keyboard?.hide()
+                                                embedEditor = true
+                                            },
+                                            label = {
+                                                Text(
+                                                    uiQuantity(
+                                                        if (valid) R.plurals.embed_draft_count
+                                                        else R.plurals.embed_draft_needs_attention,
+                                                        embedDrafts.size,
+                                                    )
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    if (valid) Icons.Outlined.ViewAgenda
+                                                    else Icons.Outlined.WarningAmber,
+                                                    null,
+                                                )
+                                            },
+                                            modifier =
+                                                Modifier.padding(start = 14.dp)
+                                                    .testTag("composer-embeds"),
+                                        )
+                                    }
+                                    if (reply != null)
+                                        Row(
+                                            Modifier.testTag("composer-reply")
+                                                .clickable(
+                                                    role = Role.Button,
+                                                    onClickLabel =
+                                                        ui(R.string.open_original_message),
+                                                ) {
+                                                    reply?.let(::openOriginal)
+                                                }
+                                                .padding(start = 18.dp, top = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.Reply,
+                                                null,
+                                                Modifier.size(18.dp),
+                                                tint = MaterialTheme.colorScheme.primary,
+                                            )
+                                            Text(
+                                                server.messages
+                                                    .find { it.id == reply }
+                                                    ?.let {
+                                                        ui(
+                                                            R.string.reply_to_1_s_2_s,
+                                                            it.author,
+                                                            it.previewText(),
+                                                        )
+                                                    } ?: ui(R.string.reply_to_message),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                modifier =
+                                                    Modifier.weight(1f).padding(start = 8.dp),
+                                            )
+                                            IconToggleButton(
+                                                checked = notifyReply,
+                                                onCheckedChange = { notifyReply = it },
+                                                modifier =
+                                                    Modifier.testTag("reply-notification-toggle"),
+                                            ) {
+                                                Icon(
+                                                    if (notifyReply) Icons.Outlined.AlternateEmail
+                                                    else Icons.Outlined.NotificationsOff,
+                                                    if (notifyReply) ui(R.string.reply_mention_on)
+                                                    else ui(R.string.reply_mention_off),
+                                                    Modifier.size(18.dp),
+                                                    tint =
+                                                        if (notifyReply)
+                                                            MaterialTheme.colorScheme.primary
+                                                        else
+                                                            MaterialTheme.colorScheme
+                                                                .onSurfaceVariant,
+                                                )
+                                            }
+                                            IconButton(onClick = { reply = null }) {
+                                                Icon(
+                                                    Icons.Outlined.Close,
+                                                    ui(R.string.cancel_reply),
+                                                    Modifier.size(18.dp),
+                                                )
+                                            }
+                                        }
+                                    AdaptiveComposer(
+                                        draft = composer,
+                                        editor = { inputModifier, markdown ->
+                                            ComposerInput(
+                                                composer,
+                                                server,
+                                                model,
+                                                ui(
+                                                    R.string.message_to,
+                                                    if (channel.kind == "direct") channel.name
+                                                    else "#${channel.name}",
+                                                ),
+                                                onChange = {
+                                                    updateComposer(it)
+                                                    model.typing(server)
+                                                },
+                                                modifier =
+                                                    inputModifier.focusRequester(composerFocus),
+                                                markdown = markdown,
+                                                onSubmit =
+                                                    if (appearance.enterToSend) requestComposerSend
+                                                    else null,
+                                                onFocusChange = { composerFocused = it },
+                                                animationsAllowed =
+                                                    appearance.animations &&
+                                                        viewedMedia == null &&
+                                                        !emojiPicker &&
+                                                        !gifPicker,
+                                            )
+                                        },
+                                        actions = {
+                                            IconButton(
+                                                onClick = {
+                                                    // Keep the composer focus and IME; popup floats
+                                                    // above
+                                                    // both.
+                                                    emojiTarget = null
+                                                    emojiPicker = true
+                                                },
+                                                enabled = !submitting && !attachmentDraft.sending,
+                                                modifier = Modifier.size(48.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.SentimentSatisfiedAlt,
+                                                    ui(R.string.emoji_and_stickers),
+                                                    Modifier.size(22.dp),
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    focus.clearFocus()
+                                                    keyboard?.hide()
+                                                    gifPicker = true
+                                                },
+                                                enabled =
+                                                    !submitting &&
+                                                        !attachmentDraft.sending &&
+                                                        !gifPreparing,
+                                                modifier = Modifier.size(48.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.GifBox,
+                                                    ui(R.string.gif_picker),
+                                                    Modifier.size(24.dp),
+                                                )
+                                            }
+                                            ComposerSendButton(
+                                                canSend = canSubmit,
+                                                enabled = submitEnabled,
+                                                busy = submitting || attachmentDraft.sending,
+                                                onEmbeds = {
+                                                    focus.clearFocus()
+                                                    keyboard?.hide()
+                                                    embedEditor = true
+                                                },
+                                                onSend = requestComposerSend,
+                                            )
+                                        },
+                                    )
+                                }
+                        }
                     }
                 }
             }
-        if (composerFocused && !recording && !emojiPicker && !gifPicker)
-            ComposerSuggestions(composer, server, model) { updateComposer(it) }
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(dimensions.composerGap),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            AttachmentActions(
-                draftKey,
-                model,
-                enabled =
-                    !recording &&
-                        !submitting &&
-                        !attachmentDraft.sending &&
-                        !attachmentDraft.preparing,
-                onRecord = {
-                    focus.clearFocus()
-                    keyboard?.hide()
-                    recording = true
-                },
-                modifier = Modifier.zIndex(1f),
-            )
-            Column(Modifier.weight(1f)) {
-                TypingIndicator(server.typing, server.typingPhrase)
-                GlassPill(radius = 28) {
-                    if (recording)
-                        RecordingComposer(
-                            draftKey,
-                            model,
-                            onClose = { recording = false },
-                            onSend = {
-                                if (attachmentDraft.uncertain) confirmAttachmentRetry = true
-                                else submitMessage(true)
-                            },
-                        )
-                    else
-                        Column {
-                            PendingAttachments(
-                                attachmentDraft,
-                                edit = { file ->
-                                    focus.clearFocus()
-                                    keyboard?.hide()
-                                    attachmentOptions = file
-                                },
-                            ) {
-                                model.attachments.remove(draftKey, it)
-                            }
-                            if (embedDrafts.isNotEmpty()) {
-                                val valid =
-                                    remember(embedDrafts, attachmentDraft.files) {
-                                        validateEmbedDrafts(
-                                                embedDrafts,
-                                                attachmentDraft.files.map {
-                                                    it.wireName
-                                                },
-                                            )
-                                            .isEmpty()
-                                    }
-                                AssistChip(
-                                    onClick = {
-                                        focus.clearFocus()
-                                        keyboard?.hide()
-                                        embedEditor = true
-                                    },
-                                    label = {
-                                        Text(
-                                            uiQuantity(
-                                                if (valid) R.plurals.embed_draft_count
-                                                else R.plurals.embed_draft_needs_attention,
-                                                embedDrafts.size,
-                                            )
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            if (valid) Icons.Outlined.ViewAgenda
-                                            else Icons.Outlined.WarningAmber,
-                                            null,
-                                        )
-                                    },
-                                    modifier =
-                                        Modifier.padding(start = 14.dp).testTag("composer-embeds"),
-                                )
-                            }
-                            if (reply != null)
-                                Row(
-                                    Modifier.testTag("composer-reply")
-                                        .clickable(
-                                            role = Role.Button,
-                                            onClickLabel = ui(R.string.open_original_message),
-                                        ) {
-                                            reply?.let(::openOriginal)
-                                        }
-                                        .padding(start = 18.dp, top = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.Reply,
-                                        null,
-                                        Modifier.size(18.dp),
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                    Text(
-                                        server.messages
-                                            .find { it.id == reply }
-                                            ?.let {
-                                                ui(
-                                                    R.string.reply_to_1_s_2_s,
-                                                    it.author,
-                                                    it.previewText(),
-                                                )
-                                            } ?: ui(R.string.reply_to_message),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        modifier = Modifier.weight(1f).padding(start = 8.dp),
-                                    )
-                                    IconToggleButton(
-                                        checked = notifyReply,
-                                        onCheckedChange = { notifyReply = it },
-                                        modifier = Modifier.testTag("reply-notification-toggle"),
-                                    ) {
-                                        Icon(
-                                            if (notifyReply) Icons.Outlined.AlternateEmail
-                                            else Icons.Outlined.NotificationsOff,
-                                            if (notifyReply) ui(R.string.reply_mention_on)
-                                            else ui(R.string.reply_mention_off),
-                                            Modifier.size(18.dp),
-                                            tint =
-                                                if (notifyReply) MaterialTheme.colorScheme.primary
-                                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                    IconButton(onClick = { reply = null }) {
-                                        Icon(
-                                            Icons.Outlined.Close,
-                                            ui(R.string.cancel_reply),
-                                            Modifier.size(18.dp),
-                                        )
-                                    }
-                                }
-                            AdaptiveComposer(
-                                draft = composer,
-                                editor = { inputModifier, markdown ->
-                                    ComposerInput(
-                                        composer,
-                                        server,
-                                        model,
-                                        ui(
-                                            R.string.message_to,
-                                            if (channel.kind == "direct") channel.name
-                                            else "#${channel.name}",
-                                        ),
-                                        onChange = {
-                                            updateComposer(it)
-                                            model.typing(server)
-                                        },
-                                        modifier = inputModifier.focusRequester(composerFocus),
-                                        markdown = markdown,
-                                        onSubmit =
-                                            if (appearance.enterToSend) requestComposerSend
-                                            else null,
-                                        onFocusChange = { composerFocused = it },
-                                        animationsAllowed =
-                                            appearance.animations &&
-                                                viewedMedia == null &&
-                                                !emojiPicker &&
-                                                !gifPicker,
-                                    )
-                                },
-                                actions = {
-                                    IconButton(
-                                        onClick = {
-                                            // Keep the composer focus and IME; popup floats above
-                                            // both.
-                                            emojiTarget = null
-                                            emojiPicker = true
-                                        },
-                                        enabled = !submitting && !attachmentDraft.sending,
-                                        modifier = Modifier.size(48.dp),
-                                    ) {
-                                        Icon(
-                                            Icons.Outlined.SentimentSatisfiedAlt,
-                                            ui(R.string.emoji_and_stickers),
-                                            Modifier.size(22.dp),
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = {
-                                            focus.clearFocus()
-                                            keyboard?.hide()
-                                            gifPicker = true
-                                        },
-                                        enabled =
-                                            !submitting &&
-                                                !attachmentDraft.sending &&
-                                                !gifPreparing,
-                                        modifier = Modifier.size(48.dp),
-                                    ) {
-                                        Icon(
-                                            Icons.Outlined.GifBox,
-                                            ui(R.string.gif_picker),
-                                            Modifier.size(24.dp),
-                                        )
-                                    }
-                                    ComposerSendButton(
-                                        canSend = canSubmit,
-                                        enabled = submitEnabled,
-                                        busy = submitting || attachmentDraft.sending,
-                                        onEmbeds = {
-                                            focus.clearFocus()
-                                            keyboard?.hide()
-                                            embedEditor = true
-                                        },
-                                        onSend = requestComposerSend,
-                                    )
-                                },
-                            )
-                        }
-                }
-            }
-        }
-    }
             if (emojiPicker && emojiTarget == null) {
                 FloatingEmojiPicker(
                     server = server,
