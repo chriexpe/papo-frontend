@@ -760,6 +760,24 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Refresh account channel policies on demand when channel actions open.
+     * No periodic polling or separate device-local policy is involved.
+     */
+    internal suspend fun refreshChannelSettings(server: ServerState) {
+        if (server.isDemo || server.me.isBlank()) return
+        accountMutex.withLock {
+            try {
+                val client = accountClient(server)
+                withContext(kotlinx.coroutines.Dispatchers.IO) { client.refreshChannels(server.me) }
+                withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Keep the last known channel settings if offline or the account has changed.
+            }
+        }
+    }
+
     internal suspend fun notificationPolicy(
         server: ServerState,
         ids: List<String>,
