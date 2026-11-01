@@ -58,9 +58,16 @@ internal fun AccountDensitySetting(
     busy: Boolean,
     previewSelection: MessageDensity? = null,
     onPreviewChanged: (MessageDensity) -> Unit = {},
+    previewStacked: Boolean? = null,
+    onStackedChanged: (Boolean) -> Unit = {},
+    previewGrouped: Boolean? = null,
+    onGroupedChanged: (Boolean) -> Unit = {},
 ) {
     val preferences = LocalClientPreferences.current
-    val selected = previewSelection ?: preferences.messageAppearance(server).density
+    val appearance = preferences.messageAppearance(server)
+    val selected = previewSelection ?: appearance.density
+    val stacked = previewStacked ?: appearance.stacked
+    val grouped = previewGrouped ?: appearance.grouped
     SettingsCard {
         Column(Modifier.then(settingTarget("message-density")).padding(16.dp)) {
             Text(ui(R.string.message_density), style = MaterialTheme.typography.titleMedium)
@@ -75,15 +82,8 @@ internal fun AccountDensitySetting(
                         selected == choice,
                         {
                             onPreviewChanged(choice)
-                            preferences.setExtraCompact(
-                                server,
-                                choice.localPreview,
-                                stacked =
-                                    choice == MessageDensity.ExtraCompactStacked ||
-                                        choice == MessageDensity.ExtraCompactStackedGrouped,
-                                grouped = choice == MessageDensity.ExtraCompactStackedGrouped,
-                            )
-                            if (!choice.localPreview)
+                            preferences.setExtraCompact(server, choice == MessageDensity.ExtraCompact)
+                            if (choice != MessageDensity.ExtraCompact)
                                 model.accountAppearance.change(
                                     server,
                                     AppearanceChange.MessageDensity(choice.value),
@@ -95,11 +95,28 @@ internal fun AccountDensitySetting(
                     )
                 }
             }
-            Text(
-                ui(R.string.extra_compact_description),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // Grouping is independent of density and on by default for every preset.
+            SettingsSwitch(
+                ui(R.string.message_grouping),
+                ui(R.string.message_grouping_description),
+                grouped,
+                "message-grouped",
+            ) {
+                onGroupedChanged(it)
+                preferences.setMessageGrouping(server, it)
+            }
+            // Stacking is relevant only to extra compact, but its value survives
+            // switching density presets so it is restored when returning here.
+            if (selected == MessageDensity.ExtraCompact)
+                SettingsSwitch(
+                    ui(R.string.extra_compact_stack),
+                    ui(R.string.extra_compact_stack_description),
+                    stacked,
+                    "extra-compact-stack",
+                ) {
+                    onStackedChanged(it)
+                    preferences.setExtraCompactStacked(server, it)
+                }
         }
     }
 }
@@ -121,7 +138,10 @@ internal fun AccountAppearanceEditor(
     val current = prefs.messageAppearance(server)
     var previewFont by remember(server.url, server.me) { mutableStateOf(current.font) }
     var previewDensity by remember(server.url, server.me) { mutableStateOf(current.density) }
-    val sample = MessageAppearance(previewFont, previewDensity)
+    var previewStacked by remember(server.url, server.me) { mutableStateOf(current.stacked) }
+    var previewGrouped by remember(server.url, server.me) { mutableStateOf(current.grouped) }
+    val sample =
+        MessageAppearance(previewFont, previewDensity, previewStacked, previewGrouped)
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(
@@ -161,6 +181,10 @@ internal fun AccountAppearanceEditor(
                     busy,
                     previewSelection = previewDensity,
                     onPreviewChanged = { previewDensity = it },
+                    previewStacked = previewStacked,
+                    onStackedChanged = { previewStacked = it },
+                    previewGrouped = previewGrouped,
+                    onGroupedChanged = { previewGrouped = it },
                 )
             else
                 AccountFontSetting(
