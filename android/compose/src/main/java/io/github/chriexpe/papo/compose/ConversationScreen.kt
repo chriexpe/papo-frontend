@@ -770,8 +770,31 @@ internal fun ConversationScreen(
         LocalPlaybackBookmarks provides playbackBookmarks,
         LocalMediaVisibilityRegistry provides mediaVisibility,
     ) {
+        Box(
+                Modifier.fillMaxSize()
+                    .conversationSwipeBack(
+                        enabled =
+                            !overlayBlocking &&
+                                !recording &&
+                                !emojiPicker &&
+                                !gifPicker &&
+                                viewedMedia == null &&
+                                selected == null &&
+                                edit == null &&
+                                !pins &&
+                                !members &&
+                                !embedEditor,
+                        onBack = onBack,
+                        onRevealing = onRevealingChannels,
+                    )
+                    .background(MaterialTheme.colorScheme.background)
+                    .imePadding()
+                    .navigationBarsPadding()
+            ) {
         BottomSheetScaffold(
             scaffoldState = pickerScaffold,
+            // The scaffold ends above the actual composer, keeping it visible below the sheet.
+            sheetShape = RoundedCornerShape(24.dp),
             sheetPeekHeight = if (emojiPicker && emojiTarget == null) 276.dp else 0.dp,
             // Keep search expanded while the IME changes window height.
             sheetSwipeEnabled = emojiPicker && emojiTarget == null && !pickerSearchRequested,
@@ -808,29 +831,9 @@ internal fun ConversationScreen(
                     modifier = Modifier.fillMaxWidth().fillMaxHeight(.80f),
                 )
             },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().padding(bottom = composerHeight + 8.dp),
         ) { _ ->
-            Box(
-                Modifier.fillMaxSize()
-                    .conversationSwipeBack(
-                        enabled =
-                            !overlayBlocking &&
-                                !recording &&
-                                !emojiPicker &&
-                                !gifPicker &&
-                                viewedMedia == null &&
-                                selected == null &&
-                                edit == null &&
-                                !pins &&
-                                !members &&
-                                !embedEditor,
-                        onBack = onBack,
-                        onRevealing = onRevealingChannels,
-                    )
-                    .background(MaterialTheme.colorScheme.background)
-                    .imePadding()
-                    .navigationBarsPadding()
-            ) {
+            Box(Modifier.fillMaxSize()) {
                 LazyColumn(
                     state = listState,
                     reverseLayout = true,
@@ -840,7 +843,7 @@ internal fun ConversationScreen(
                             .testTag("message-list")
                             .onGloballyPositioned { listBounds = it.boundsInWindow() },
                     contentPadding =
-                        PaddingValues(top = headerHeight + 8.dp, bottom = composerHeight + 8.dp),
+                        PaddingValues(top = headerHeight + 8.dp, bottom = 8.dp),
                 ) {
                     if (server.messages.isEmpty())
                         item("empty") {
@@ -1032,6 +1035,103 @@ internal fun ConversationScreen(
                         }
                 }
 
+                Column(
+                    Modifier.align(Alignment.BottomEnd)
+                        .padding(
+                            end = dimensions.composerPadding + dimensions.surfaceInset,
+                            bottom = 8.dp,
+                        ),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    if (readingControls.mentions.isNotEmpty())
+                        BadgedBox(
+                            badge = {
+                                if (readingControls.mentions.size > 1)
+                                    Badge(Modifier.testTag("mention-count")) {
+                                        Text(shortcutCount(readingControls.mentions.size))
+                                    }
+                            }
+                        ) {
+                            GlassPill(radius = 18) {
+                                IconButton(
+                                    onClick = { openOriginal(readingControls.mentions.first()) },
+                                    modifier = Modifier.size(48.dp).testTag("mention-shortcut"),
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.Notifications,
+                                        uiQuantity(
+                                            R.plurals.mention_count,
+                                            readingControls.mentions.size,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    if (appearance.catchUpHourglass && readingControls.hasCatchUp)
+                        GlassPill(radius = 18) {
+                            IconButton(
+                                onClick = {
+                                    followingLatest = false
+                                    latestPhase = LatestPhase.FirstNew
+                                    jumping = true
+                                    focus.clearFocus()
+                                    keyboard?.hide()
+                                    model.command(
+                                        Action.CatchUp(channel.id, server.me),
+                                        url = server.url,
+                                        onFailure = { jumping = false },
+                                    )
+                                },
+                                modifier = Modifier.size(48.dp).testTag("hourglass-shortcut"),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.HourglassEmpty,
+                                    ui(R.string.go_to_oldest_unread_message_in_catch_up_block),
+                                )
+                            }
+                        }
+                    if (
+                        (!nearBottom ||
+                            server.browsingHistory ||
+                            appearance.catchUpHourglass && readingControls.hasCatchUp) &&
+                            server.messages.isNotEmpty()
+                    )
+                        BadgedBox(
+                            badge = {
+                                if (arrived.isNotEmpty())
+                                    Badge(Modifier.testTag("latest-count")) {
+                                        Text(shortcutCount(arrived.size))
+                                    }
+                            }
+                        ) {
+                            GlassPill(Modifier.testTag("latest-messages"), radius = 18) {
+                                IconButton(
+                                    onClick = ::latestMessages,
+                                    modifier = Modifier.size(48.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.ArrowDownward,
+                                        if (
+                                            appearance.catchUpHourglass &&
+                                                nearBottom &&
+                                                latestPhase == LatestPhase.ClearCatchUp &&
+                                                readingControls.hasCatchUp
+                                        )
+                                            ui(R.string.clear_catch_up_block)
+                                        else if (
+                                            arrived.isNotEmpty() &&
+                                                latestPhase == LatestPhase.FirstNew
+                                        )
+                                            ui(R.string.go_to_first_new_message)
+                                        else ui(R.string.latest_messages),
+                                    )
+                                }
+                            }
+                        }
+                }
+            }
+        }
                 Column(
                     Modifier.align(Alignment.BottomCenter)
                         .fillMaxWidth()
@@ -1299,102 +1399,6 @@ internal fun ConversationScreen(
                         }
                     }
                 }
-                Column(
-                    Modifier.align(Alignment.BottomEnd)
-                        .padding(
-                            end = dimensions.composerPadding + dimensions.surfaceInset,
-                            bottom = composerHeight + 8.dp,
-                        ),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalAlignment = Alignment.End,
-                ) {
-                    if (readingControls.mentions.isNotEmpty())
-                        BadgedBox(
-                            badge = {
-                                if (readingControls.mentions.size > 1)
-                                    Badge(Modifier.testTag("mention-count")) {
-                                        Text(shortcutCount(readingControls.mentions.size))
-                                    }
-                            }
-                        ) {
-                            GlassPill(radius = 18) {
-                                IconButton(
-                                    onClick = { openOriginal(readingControls.mentions.first()) },
-                                    modifier = Modifier.size(48.dp).testTag("mention-shortcut"),
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.Notifications,
-                                        uiQuantity(
-                                            R.plurals.mention_count,
-                                            readingControls.mentions.size,
-                                        ),
-                                    )
-                                }
-                            }
-                        }
-                    if (appearance.catchUpHourglass && readingControls.hasCatchUp)
-                        GlassPill(radius = 18) {
-                            IconButton(
-                                onClick = {
-                                    followingLatest = false
-                                    latestPhase = LatestPhase.FirstNew
-                                    jumping = true
-                                    focus.clearFocus()
-                                    keyboard?.hide()
-                                    model.command(
-                                        Action.CatchUp(channel.id, server.me),
-                                        url = server.url,
-                                        onFailure = { jumping = false },
-                                    )
-                                },
-                                modifier = Modifier.size(48.dp).testTag("hourglass-shortcut"),
-                            ) {
-                                Icon(
-                                    Icons.Outlined.HourglassEmpty,
-                                    ui(R.string.go_to_oldest_unread_message_in_catch_up_block),
-                                )
-                            }
-                        }
-                    if (
-                        (!nearBottom ||
-                            server.browsingHistory ||
-                            appearance.catchUpHourglass && readingControls.hasCatchUp) &&
-                            server.messages.isNotEmpty()
-                    )
-                        BadgedBox(
-                            badge = {
-                                if (arrived.isNotEmpty())
-                                    Badge(Modifier.testTag("latest-count")) {
-                                        Text(shortcutCount(arrived.size))
-                                    }
-                            }
-                        ) {
-                            GlassPill(Modifier.testTag("latest-messages"), radius = 18) {
-                                IconButton(
-                                    onClick = ::latestMessages,
-                                    modifier = Modifier.size(48.dp),
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.ArrowDownward,
-                                        if (
-                                            appearance.catchUpHourglass &&
-                                                nearBottom &&
-                                                latestPhase == LatestPhase.ClearCatchUp &&
-                                                readingControls.hasCatchUp
-                                        )
-                                            ui(R.string.clear_catch_up_block)
-                                        else if (
-                                            arrived.isNotEmpty() &&
-                                                latestPhase == LatestPhase.FirstNew
-                                        )
-                                            ui(R.string.go_to_first_new_message)
-                                        else ui(R.string.latest_messages),
-                                    )
-                                }
-                            }
-                        }
-                }
-            }
         }
 
         if (pins)
