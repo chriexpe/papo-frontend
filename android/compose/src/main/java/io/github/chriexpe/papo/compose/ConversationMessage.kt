@@ -265,7 +265,9 @@ internal fun MessageRow(
                     model,
                     onActions,
                     prefix =
-                        if (messageAppearance.inlineAuthor) compactAuthorPrefix(message) else null,
+                        if (messageAppearance.inlineAuthor && !grouped)
+                            compactAuthorPrefix(message)
+                        else null,
                     media = media,
                 )
                 if ((grouped || extraCompact) && message.edited)
