@@ -80,16 +80,20 @@ internal class ClientPreferences(private val storage: SharedPreferences? = null)
         return MessageAppearance(
             AccountFontSize.from(font),
             if (boolean(prefix + "extra-compact", false)) {
-                if (boolean(prefix + "extra-compact-stacked", false))
+                if (boolean(prefix + "extra-compact-stacked-grouped", false))
+                    MessageDensity.ExtraCompactStackedGrouped
+                else if (boolean(prefix + "extra-compact-stacked", false))
                     MessageDensity.ExtraCompactStacked
                 else MessageDensity.ExtraCompact
             } else if (importCompact) MessageDensity.Compact else MessageDensity.from(density),
         )
     }
 
-    fun setExtraCompact(server: ServerState, enabled: Boolean, stacked: Boolean = false) {
+    fun setExtraCompact(server: ServerState, enabled: Boolean, stacked: Boolean = false,
+        grouped: Boolean = false) {
         val prefix = server.appearanceOwner().cachePrefix()
         set(prefix + "extra-compact-stacked", enabled && stacked)
+        set(prefix + "extra-compact-stacked-grouped", enabled && grouped)
         set(prefix + "extra-compact", enabled)
     }
 
