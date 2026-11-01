@@ -49,6 +49,8 @@ internal fun MessageRow(
     canReply: Boolean,
     onReply: () -> Unit,
     highlight: Boolean,
+    joinPrevious: Boolean = false,
+    joinNext: Boolean = false,
     onMention: (Person) -> Unit,
     onJump: (String) -> Unit,
     onActions: () -> Unit,
@@ -100,12 +102,23 @@ internal fun MessageRow(
         )
     val mentionAccent = MaterialTheme.colorScheme.primary
     val mentionHighlight = message.highlightMe && !highlight
+    // Consecutive highlighted messages read as one block: square the corners where they touch.
+    val topRadius = if (mentionHighlight && joinPrevious) 0.dp else 18.dp
+    val bottomRadius = if (mentionHighlight && joinNext) 0.dp else 18.dp
     SwipeToReply(message.id, canReply && !message.pending, onReply) {
         Row(
             Modifier.fillMaxWidth()
                 .padding(horizontal = 8.dp)
                 .testTag("message-${message.id}")
-                .background(spotlight, RoundedCornerShape(18.dp))
+                .background(
+                    spotlight,
+                    RoundedCornerShape(
+                        topStart = topRadius,
+                        topEnd = topRadius,
+                        bottomStart = bottomRadius,
+                        bottomEnd = bottomRadius,
+                    ),
+                )
                 .drawBehind {
                     if (mentionHighlight) {
                         // Clip the bar to the tint's rounded shape so it hugs the curved corners.
@@ -117,7 +130,10 @@ internal fun MessageRow(
                                         0f,
                                         size.width,
                                         size.height,
-                                        CornerRadius(18.dp.toPx()),
+                                        CornerRadius(topRadius.toPx()),
+                                        CornerRadius(topRadius.toPx()),
+                                        CornerRadius(bottomRadius.toPx()),
+                                        CornerRadius(bottomRadius.toPx()),
                                     )
                                 )
                             }
