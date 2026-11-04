@@ -506,7 +506,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         timeline.orderedIds,
     ) {
         if (server.navigationTarget.isBlank()) {
-            if (navigationRequiresUnlock(
+            if (
+                navigationRequiresUnlock(
                     server.navigationOutcome,
                     server.navigationSerial,
                     handledNavigation,
