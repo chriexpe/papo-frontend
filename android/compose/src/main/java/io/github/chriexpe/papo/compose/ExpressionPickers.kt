@@ -38,10 +38,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Coil's shared decoded-image memory cache and MediaCache's on-disk encoded cache already
- * have independent LRU budgets. Use their existing identity-based path instead of copying
- * emoji bytes into an additional in-memory LRU or hashing those bytes on the UI thread.
- * Lazy grid composition requests only nearby cells, so no full-server prefetch is needed.
+ * Coil's shared decoded-image memory cache and MediaCache's on-disk encoded cache already have
+ * independent LRU budgets. Use their existing identity-based path instead of copying emoji bytes
+ * into an additional in-memory LRU or hashing those bytes on the UI thread. Lazy grid composition
+ * requests only nearby cells, so no full-server prefetch is needed.
  */
 @Composable
 internal fun EmojiGlyph(
@@ -54,7 +54,8 @@ internal fun EmojiGlyph(
     else {
         val entry = server.emojis.firstOrNull { it.id == emoji.value }
         val context = LocalContext.current
-        val identity = "emoji/${server.url}/${server.me}/${emoji.value}/${entry?.revision.orEmpty()}"
+        val identity =
+            "emoji/${server.url}/${server.me}/${emoji.value}/${entry?.revision.orEmpty()}"
         val image =
             remember(model, identity) {
                 CachedImage(identity) { model.emojiImage(server, emoji.value) }
