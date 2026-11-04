@@ -63,10 +63,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-/** Terminal results always release a pending viewport navigation lock. */
-internal fun navigationRequiresUnlock(outcome: String, serial: ULong, handled: ULong): Boolean =
-    serial != handled && outcome in arrayOf("unavailable", "failed", "cancelled")
-
 @Composable
 internal fun ConversationScreen(
     server: ServerState,
@@ -201,17 +197,23 @@ internal fun ConversationScreen(
         ) {
             mutableStateOf(0uL)
         }
+    var handledTarget by rememberSaveable(draftKey) { mutableStateOf("") }
     var highlighted by remember(draftKey) { mutableStateOf<Pair<String, ULong>?>(null) }
-    var returningLatest by remember(draftKey) { mutableStateOf(false) }
+    var viewportPhase by
+        remember(draftKey) {
+            mutableStateOf<ViewportPhase>(ViewportPhase.Restoring)
+        }
+    // Only predict a serial if the dispatched action must adopt it or fail
+    // synchronously (e.g. JumpToMessage). CatchUp can stop without adopting it.
+    fun dispatchViewport(event: ViewportEvent) {
+        viewportPhase = reduceViewport(viewportPhase, event)
+    }
+    val positionReady = viewportPhase !is ViewportPhase.Restoring
     val nearBottom by remember {
         derivedStateOf {
             listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
         }
     }
-    var positionReady by remember(draftKey) { mutableStateOf(false) }
-    var jumping by remember(draftKey) { mutableStateOf(false) }
-    var followingLatest by remember(draftKey) { mutableStateOf(true) }
-    var autoFollowing by remember(draftKey) { mutableStateOf(false) }
     var latestPhase by remember(draftKey) { mutableStateOf(LatestPhase.FirstNew) }
     var knownLive by remember(draftKey) { mutableStateOf(server.reading.liveIds) }
     var arrived by remember(draftKey) { mutableStateOf(setOf<String>()) }
@@ -314,19 +316,18 @@ internal fun ConversationScreen(
 
     LaunchedEffect(draftKey, server.messages.lastOrNull()?.id) {
         if (
-            positionReady &&
-                !jumping &&
-                followingLatest &&
+            viewportPhase is ViewportPhase.Free &&
+                (viewportPhase as ViewportPhase.Free).following &&
                 !server.loadingOlder &&
                 !server.browsingHistory &&
                 !server.loadingContext &&
                 (server.navigationTarget.isBlank() || handledNavigation == server.navigationSerial)
         ) {
-            autoFollowing = true
+            dispatchViewport(ViewportEvent.AutoScrollStarted)
             try {
                 listState.animateScrollToItem(0)
             } finally {
-                autoFollowing = false
+                dispatchViewport(ViewportEvent.AutoScrollFinished)
             }
         }
     }
@@ -344,20 +345,24 @@ internal fun ConversationScreen(
             return@LaunchedEffect
         if (server.connection == "online" && server.timeline != "fresh") return@LaunchedEffect
         if (server.navigationTarget.isNotBlank() && server.navigationSerial != handledNavigation) {
-            positionReady = true
+            dispatchViewport(
+                ViewportEvent.JumpRequested(server.navigationSerial, server.navigationTarget)
+            )
             return@LaunchedEffect
         }
         val saved = savedPosition
         if (saved != null) {
             val position = server.messages.indexOfFirst { it.id == saved.first }
             if (position < 0) {
-                jumping = true
+                val serial = server.navigationSerial + 1uL
+                dispatchViewport(ViewportEvent.JumpRequested(serial, saved.first))
                 model.command(
                     Action.JumpToMessage(channel.id, saved.first),
                     url = server.url,
-                    onFailure = { jumping = false },
+                    onFailure = {
+                        dispatchViewport(ViewportEvent.Terminal(serial, NavigationResult.Failed))
+                    },
                 )
-                positionReady = true
                 return@LaunchedEffect
             }
             listState.scrollToItem(
@@ -366,8 +371,7 @@ internal fun ConversationScreen(
             )
         } else listState.scrollToItem(0)
         withFrameNanos {}
-        followingLatest = nearBottom && !server.browsingHistory
-        positionReady = true
+        dispatchViewport(ViewportEvent.Restored(nearBottom && !server.browsingHistory))
     }
     LaunchedEffect(draftKey) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -396,9 +400,8 @@ internal fun ConversationScreen(
                         .mapNotNull { it.key as? String }
                         .filter { it in messages }
                 val allowed =
-                    positionReady &&
-                        !jumping &&
-                        !returningLatest &&
+                    viewportCanReport(viewportPhase) &&
+                        viewportPhase !is ViewportPhase.Restoring &&
                         !currentBlocked &&
                         !current.loadingContext &&
                         !currentReading.seekingCatchUp &&
@@ -435,7 +438,7 @@ internal fun ConversationScreen(
                         )
                         arrived = if (report.atLatest) emptySet() else arrived - report.ids.toSet()
                         if (report.atLatest) {
-                            followingLatest = true
+                            dispatchViewport(ViewportEvent.NearBottomChanged(true))
                             if (latestPhase == LatestPhase.Latest)
                                 latestPhase = LatestPhase.FirstNew
                         }
@@ -449,6 +452,7 @@ internal fun ConversationScreen(
 
     DisposableEffect(draftKey) {
         onDispose {
+            dispatchViewport(ViewportEvent.Disposed)
             model.command(Action.CancelCatchUp(channel.id), url = server.url)
             model.command(Action.BreakReadSpan(channel.id), url = server.url)
         }
@@ -456,14 +460,16 @@ internal fun ConversationScreen(
 
     fun jumpToMessage(id: String) {
         if (id.isNotBlank()) {
-            followingLatest = false
-            jumping = true
+            val serial = server.navigationSerial + 1uL
+            dispatchViewport(ViewportEvent.JumpRequested(serial, id))
             focus.clearFocus()
             keyboard?.hide()
             model.command(
                 Action.JumpToMessage(channel.id, id),
                 url = server.url,
-                onFailure = { jumping = false },
+                onFailure = {
+                    dispatchViewport(ViewportEvent.Terminal(serial, NavigationResult.Failed))
+                },
             )
         }
     }
@@ -488,21 +494,12 @@ internal fun ConversationScreen(
     fun jumpToLatest(armClear: Boolean = false) {
         highlighted = null
         latestPhase = if (armClear) LatestPhase.ClearCatchUp else LatestPhase.FirstNew
-        followingLatest = true
-        jumping = true
+        dispatchViewport(ViewportEvent.LatestRequested)
         model.command(Action.BreakReadSpan(channel.id), url = server.url)
         if (server.browsingHistory || server.loadingContext || readingControls.seekingCatchUp) {
-            returningLatest = true
             model.command(Action.Latest(channel.id), url = server.url)
-        } else
-            scope.launch {
-                try {
-                    listState.animateScrollToItem(0)
-                } finally {
-                    model.command(Action.BreakReadSpan(channel.id), url = server.url)
-                    jumping = false
-                }
-            }
+        }
+        // Both direct and history-backed returns finish in the single effect below.
     }
     fun latestMessages() {
         if (
@@ -524,42 +521,44 @@ internal fun ConversationScreen(
         draftKey,
         server.navigationSerial,
         server.navigationTarget,
+        server.navigationOutcome,
         server.loadingContext,
         timeline.orderedIds,
     ) {
-        if (server.navigationTarget.isBlank()) {
-            if (
-                navigationRequiresUnlock(
-                    server.navigationOutcome,
-                    server.navigationSerial,
-                    handledNavigation,
-                )
-            ) {
-                // A terminal native result must release the viewport lock even when
-                // the message could not be positioned or its request was superseded.
-                jumping = false
-                returningLatest = false
+        val serial = server.navigationSerial
+        val target = server.navigationTarget
+        if (target.isBlank()) {
+            navigationResult(server.navigationOutcome)?.let { result ->
+                dispatchViewport(ViewportEvent.Terminal(serial, result))
+                if (result != NavigationResult.Located && viewportPhase is ViewportPhase.Free) {
+                    highlighted = null
+                }
             }
-            handledNavigation = server.navigationSerial
+            handledNavigation = serial
+            handledTarget = ""
             return@LaunchedEffect
         }
-        if (server.navigationSerial == handledNavigation) return@LaunchedEffect
-        val position = server.messages.indexOfFirst { it.id == server.navigationTarget }
+        // The old navigation target can remain visible until Action.Latest is
+        // processed. It must not override the new return-to-latest operation.
+        if (viewportPhase is ViewportPhase.ReturningToLatest) return@LaunchedEffect
+        if (serial == handledNavigation && target == handledTarget) return@LaunchedEffect
+        val current = viewportPhase as? ViewportPhase.Navigating
+        if (current != null && serial < current.serial) return@LaunchedEffect
+        if (current == null || current.serial != serial || current.target != target) {
+            dispatchViewport(ViewportEvent.JumpRequested(serial, target))
+        }
+        val position = server.messages.indexOfFirst { it.id == target }
         if (position < 0) return@LaunchedEffect
-        val index = timeline.position(server.navigationTarget) ?: return@LaunchedEffect
+        val index = timeline.position(target) ?: return@LaunchedEffect
         val layout = listState.layoutInfo
-        val item = layout.visibleItemsInfo.firstOrNull { it.key == server.navigationTarget }
+        val item = layout.visibleItemsInfo.firstOrNull { it.key == target }
         val available =
             (layout.viewportSize.height - layout.beforeContentPadding - layout.afterContentPadding)
                 .coerceAtLeast(1)
         if (item == null) {
-            // A single animation preserves the direction of travel. Snapping to
-            // the row first and then centering it makes an older reply move down.
+            // One continuous animation avoids a visible snap before centering.
             listState.animateScrollToItem(index, -available / 3)
         } else if (item.size <= available) {
-            // Lazy-list offsets follow the list's scroll direction, including
-            // reverseLayout. Leave visible rows still; reveal clipped rows only
-            // as far as needed to clear the floating header or composer.
             val distance =
                 when {
                     item.offset < 0 -> item.offset
@@ -568,10 +567,14 @@ internal fun ConversationScreen(
                 }
             if (distance != 0) listState.animateScrollBy(distance.toFloat())
         }
-        handledNavigation = server.navigationSerial
-        model.command(Action.BreakReadSpan(channel.id), url = server.url)
-        jumping = false
-        highlighted = server.navigationTarget to server.navigationSerial
+        handledNavigation = serial
+        handledTarget = target
+        val stillNavigating = viewportPhase as? ViewportPhase.Navigating
+        if (stillNavigating?.serial == serial && stillNavigating.target == target) {
+            model.command(Action.BreakReadSpan(channel.id), url = server.url)
+            dispatchViewport(ViewportEvent.Positioned(serial))
+            highlighted = target to serial
+        }
     }
     LaunchedEffect(draftKey, highlighted) {
         val shown = highlighted ?: return@LaunchedEffect
@@ -580,13 +583,13 @@ internal fun ConversationScreen(
     }
     LaunchedEffect(
         draftKey,
-        returningLatest,
+        viewportPhase,
         server.browsingHistory,
         server.loadingContext,
         readingControls.seekingCatchUp,
     ) {
         if (
-            returningLatest &&
+            viewportPhase is ViewportPhase.ReturningToLatest &&
                 !server.browsingHistory &&
                 !server.loadingContext &&
                 !readingControls.seekingCatchUp
@@ -596,27 +599,23 @@ internal fun ConversationScreen(
                 listState.animateScrollToItem(0)
             } finally {
                 model.command(Action.BreakReadSpan(channel.id), url = server.url)
-                returningLatest = false
-                jumping = false
+                dispatchViewport(ViewportEvent.Settled)
             }
         }
     }
-
-    LaunchedEffect(
-        draftKey,
-        jumping,
-        server.navigationTarget,
-        server.loadingContext,
-        server.error,
-    ) {
-        if (jumping && !returningLatest && !server.loadingContext && server.error.isNotBlank())
-            jumping = false
-    }
     LaunchedEffect(draftKey, nearBottom, listState.isScrollInProgress) {
-        if (positionReady && !jumping && !returningLatest && !autoFollowing) {
-            followingLatest = nearBottom && !listState.isScrollInProgress
-            if (listState.isScrollInProgress && latestPhase == LatestPhase.ClearCatchUp)
+        val free = viewportPhase as? ViewportPhase.Free
+        if (free != null) {
+            dispatchViewport(
+                ViewportEvent.NearBottomChanged(nearBottom && !listState.isScrollInProgress)
+            )
+            if (
+                !free.autoScrolling &&
+                    listState.isScrollInProgress &&
+                    latestPhase == LatestPhase.ClearCatchUp
+            ) {
                 latestPhase = LatestPhase.FirstNew
+            }
         }
     }
 
@@ -1043,15 +1042,15 @@ internal fun ConversationScreen(
                     GlassPill(radius = 18) {
                         IconButton(
                             onClick = {
-                                followingLatest = false
                                 latestPhase = LatestPhase.FirstNew
-                                jumping = true
                                 focus.clearFocus()
                                 keyboard?.hide()
+                                // seekingCatchUp already gates reporting until core either
+                                // adopts a real navigation serial or abandons the attempt.
+                                // Never pre-lock: offline catch-up can fail without a serial.
                                 model.command(
                                     Action.CatchUp(channel.id, server.me),
                                     url = server.url,
-                                    onFailure = { jumping = false },
                                 )
                             },
                             modifier = Modifier.size(48.dp).testTag("hourglass-shortcut"),

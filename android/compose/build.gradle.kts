@@ -146,6 +146,7 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.11.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.11.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
     androidTestImplementation(platform("androidx.compose:compose-bom:2026.09.00"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test:runner:1.7.0")
