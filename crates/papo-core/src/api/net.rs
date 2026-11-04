@@ -1427,6 +1427,13 @@ fn socket_epoch_is_current(event_epoch: u64, session_epoch: u64) -> bool {
     event_epoch == session_epoch
 }
 
+fn account_is_current(
+    owner: &Arc<std::sync::Mutex<Option<String>>>,
+    expected: &str,
+) -> bool {
+    owner.lock().ok().and_then(|current| current.clone()).as_deref() == Some(expected)
+}
+
 fn reset_socket_channels(
     outbound_tx: &mut mpsc::UnboundedSender<String>,
     outbound_rx: &mut Option<mpsc::UnboundedReceiver<String>>,
@@ -2479,6 +2486,8 @@ async fn worker(
                     {
                         let api = api.clone();
                         let notification_hook = hooks.notification.clone();
+                        let expected_owner = user_id.clone();
+                        let owner = Arc::clone(&me);
                         let id = id.clone();
                         let scope = storage_key.clone();
                         let updates = updates.clone();
@@ -2486,6 +2495,7 @@ async fn worker(
                         tokio::spawn(async move {
                             match api.notifications(&user_id).await {
                                 Ok(notifications) => {
+                                    if !account_is_current(&owner, &expected_owner) { return; }
                                     if let Some(notification) =
                                         notifications.into_iter().find(|item| item.id == id)
                                     {
@@ -2513,9 +2523,14 @@ async fn worker(
                     let updates = updates.clone();
                     let wake = wake.clone();
                     let scope = storage_key.clone();
+                    let owner = Arc::clone(&me);
+                    let expected_owner = me.lock().ok().and_then(|current| current.clone());
                     tokio::spawn(async move {
                         match api.profile(&user_id).await {
                             Ok(profile) => {
+                                if !expected_owner.as_deref().is_some_and(|id| account_is_current(&owner, id)) {
+                                    return;
+                                }
                                 publish(
                                     &updates,
                                     &wake,
@@ -2542,9 +2557,16 @@ async fn worker(
                     let updates = updates.clone();
                     let wake = wake.clone();
                     let scope = storage_key.clone();
+                    let owner = Arc::clone(&me);
+                    let expected_owner = me.lock().ok().and_then(|current| current.clone());
                     tokio::spawn(async move {
                         match api.user_summaries(vec![user_id.clone()]).await {
-                            Ok(users) => publish(&updates, &wake, Update::UserSummaries(users)),
+                            Ok(users) => {
+                                if !expected_owner.as_deref().is_some_and(|id| account_is_current(&owner, id)) {
+                                    return;
+                                }
+                                publish(&updates, &wake, Update::UserSummaries(users));
+                            },
                             Err(error) => log::warn!(
                                 "runtime {scope}: resumo live {user_id} não convergiu: {error}"
                             ),
@@ -3102,6 +3124,17 @@ fn transient_backoff() -> std::time::Duration {
 mod retry_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn delayed_account_result_cannot_publish_into_another_owner() {
+        let current = Arc::new(std::sync::Mutex::new(Some("alice".to_owned())));
+        assert!(account_is_current(&current, "alice"));
+        *current.lock().unwrap() = Some("bob".to_owned());
+        assert!(!account_is_current(&current, "alice"));
+        assert!(account_is_current(&current, "bob"));
+        *current.lock().unwrap() = None;
+        assert!(!account_is_current(&current, "bob"));
+    }
 
     #[test]
     fn stale_socket_event_and_status_are_rejected_across_session_boundary() {
