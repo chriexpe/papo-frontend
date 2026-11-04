@@ -8272,13 +8272,13 @@ mod memory_optimization_tests {
             channel_count: 0,
             icon_blob: Some("icon-base64".into()),
         };
-        store.apply(Update::Server(Some(server())));
+        store.apply(Update::Server(Some(Box::new(server()))));
         assert_eq!(store.server.as_ref().and_then(|s| s.icon.as_deref()), Some("icon-base64"));
         assert!(store.take_cache_ops().iter().any(|op| matches!(
             op, CacheOp::SetServerIcon(Some(icon)) if icon == "icon-base64"
         )));
 
-        store.apply(Update::Server(Some(server())));
+        store.apply(Update::Server(Some(Box::new(server()))));
         assert!(!store.take_cache_ops().iter().any(|op| matches!(op, CacheOp::SetServerIcon(_))));
     }
 }

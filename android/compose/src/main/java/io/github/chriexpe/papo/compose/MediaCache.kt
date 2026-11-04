@@ -189,13 +189,13 @@ private constructor(
             checkAllowed(key)
             peek(key, limit)
                 ?: lockFor(key).withLock {
-                        peek(key, limit)
-                            ?: load().also {
-                                require(it.size <= limit) { ui(R.string.media_is_too_large) }
-                                currentCoroutineContext().ensureActive()
-                                store(key, it)
-                            }
-                    }
+                    peek(key, limit)
+                        ?: load().also {
+                            require(it.size <= limit) { ui(R.string.media_is_too_large) }
+                            currentCoroutineContext().ensureActive()
+                            store(key, it)
+                        }
+                }
         }
     }
 
@@ -204,9 +204,9 @@ private constructor(
         withContext(Dispatchers.IO) {
             val key = key(source)
             lockFor(key).withLock {
-                    checkAllowed(key)
-                    cache.removeResource(key)
-                }
+                checkAllowed(key)
+                cache.removeResource(key)
+            }
         }
 
     fun images(source: MediaRequest): Flow<ByteArray> = flow {
@@ -221,71 +221,71 @@ private constructor(
         val bytes =
             try {
                 lockFor(key).withLock {
-                        val latest = peek(key)
-                        val metadata = cache.getContentMetadata(key)
-                        if (
-                            latest != null &&
-                                (!mutable || now() - metadata.get(CHECKED, 0L) in 0 until freshFor)
-                        )
-                            latest
-                        else if (mutable) {
-                            val request =
-                                Request.Builder()
-                                    .url(source.url)
-                                    .apply {
-                                        metadata
-                                            .get(ETAG, "")
-                                            .orEmpty()
-                                            .takeIf { it.isNotBlank() }
-                                            ?.let { header("If-None-Match", it) }
-                                        metadata
-                                            .get(MODIFIED, "")
-                                            .orEmpty()
-                                            .takeIf { it.isNotBlank() }
-                                            ?.let { header("If-Modified-Since", it) }
-                                    }
-                                    .build()
-                            cancellableRequest(source, request) { response ->
-                                val data =
-                                    if (response.code == 304 && latest != null) latest
-                                    else {
-                                        if (!response.isSuccessful)
-                                            throw IOException(
-                                                ui(R.string.media_unavailable_1_s, response.code)
-                                            )
-                                        val body =
-                                            response.body
-                                                ?: throw IOException(ui(R.string.empty_media))
-                                        if (body.contentLength() > MAX_IMAGE)
-                                            throw IOException(ui(R.string.image_is_too_large))
-                                        body.byteStream().use { readBounded(it, MAX_IMAGE) }
-                                    }
-                                currentCoroutineContext().ensureActive()
-                                if (latest == null || !latest.contentEquals(data)) store(key, data)
-                                cache.applyContentMetadataMutations(
-                                    key,
-                                    ContentMetadataMutations()
-                                        .set(CHECKED, now())
-                                        .set(
-                                            ETAG,
-                                            response.header("ETag")
-                                                ?: metadata.get(ETAG, "").orEmpty(),
+                    val latest = peek(key)
+                    val metadata = cache.getContentMetadata(key)
+                    if (
+                        latest != null &&
+                            (!mutable || now() - metadata.get(CHECKED, 0L) in 0 until freshFor)
+                    )
+                        latest
+                    else if (mutable) {
+                        val request =
+                            Request.Builder()
+                                .url(source.url)
+                                .apply {
+                                    metadata
+                                        .get(ETAG, "")
+                                        .orEmpty()
+                                        .takeIf { it.isNotBlank() }
+                                        ?.let { header("If-None-Match", it) }
+                                    metadata
+                                        .get(MODIFIED, "")
+                                        .orEmpty()
+                                        .takeIf { it.isNotBlank() }
+                                        ?.let { header("If-Modified-Since", it) }
+                                }
+                                .build()
+                        cancellableRequest(source, request) { response ->
+                            val data =
+                                if (response.code == 304 && latest != null) latest
+                                else {
+                                    if (!response.isSuccessful)
+                                        throw IOException(
+                                            ui(R.string.media_unavailable_1_s, response.code)
                                         )
-                                        .set(
-                                            MODIFIED,
-                                            response.header("Last-Modified")
-                                                ?: metadata.get(MODIFIED, "").orEmpty(),
-                                        ),
-                                )
-                                data
-                            }
-                        } else
-                            DataSourceInputStream(
-                                    factory(source).createDataSource(),
-                                    spec(key, source.url),
-                                )
-                                .use { readBounded(it, MAX_IMAGE) }
-                    }
+                                    val body =
+                                        response.body
+                                            ?: throw IOException(ui(R.string.empty_media))
+                                    if (body.contentLength() > MAX_IMAGE)
+                                        throw IOException(ui(R.string.image_is_too_large))
+                                    body.byteStream().use { readBounded(it, MAX_IMAGE) }
+                                }
+                            currentCoroutineContext().ensureActive()
+                            if (latest == null || !latest.contentEquals(data)) store(key, data)
+                            cache.applyContentMetadataMutations(
+                                key,
+                                ContentMetadataMutations()
+                                    .set(CHECKED, now())
+                                    .set(
+                                        ETAG,
+                                        response.header("ETag")
+                                            ?: metadata.get(ETAG, "").orEmpty(),
+                                    )
+                                    .set(
+                                        MODIFIED,
+                                        response.header("Last-Modified")
+                                            ?: metadata.get(MODIFIED, "").orEmpty(),
+                                    ),
+                            )
+                            data
+                        }
+                    } else
+                        DataSourceInputStream(
+                                factory(source).createDataSource(),
+                                spec(key, source.url),
+                            )
+                            .use { readBounded(it, MAX_IMAGE) }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
