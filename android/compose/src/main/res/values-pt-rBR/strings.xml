@@ -932,8 +932,6 @@
     <string name="ui_density_description">"Ajuste o espaçamento e o tamanho dos controles neste aparelho. As áreas de toque e o tamanho de texto do Android são preservados."</string>
     <string name="density_compact">"Compacta"</string>
     <string name="density_extra_compact">"Extra compacta"</string>
-    <string name="density_extra_compact_stacked">"Extra compacta (em blocos)"</string>
-    <string name="extra_compact_description">"Extra compacta mostra nomes e mensagens na mesma linha; em blocos, a mensagem fica abaixo do nome. Ambas ocultam avatares e são salvas neste dispositivo para esta conta."</string>
     <string name="density_normal">"Normal"</string>
     <string name="density_comfortable">"Confortável"</string>
     <string name="text_small">"Pequeno"</string>
@@ -1030,6 +1028,37 @@
     <string name="call_audio_routing_unavailable">Este servidor não informa o roteamento de áudio dos participantes. Volume e silenciamento individuais indisponíveis.</string>
     <string name="call_status_unknown">Estado do microfone e da câmera indisponível</string>
     <string name="call_leave_timeout">A saída da chamada anterior ainda não foi confirmada. Aguarde o servidor ou reconecte antes de entrar novamente.</string>
+
+    <string name="channel_settings">Opções do canal</string>
+    <string name="mark_channel_as_read">Marcar canal como lido</string>
+    <string name="notification_policy_nothing">Nada</string>
+    <string name="change_notification_policy">Alterar notificações</string>
+    <string name="mute_channel">Silenciar canal</string>
+    <string name="change_mute">Alterar silenciamento</string>
+    <string name="mute_15_minutes">15 minutos</string>
+    <string name="mute_1_hour">1 hora</string>
+    <string name="mute_8_hours">8 horas</string>
+    <string name="mute_24_hours">24 horas</string>
+    <string name="mute_until_unmuted">Até reativar</string>
+    <string name="unmute_channel">Reativar notificações</string>
+    <string name="channel_muted_state">Silenciado</string>
+
+    <string name="message_highlighting">Destaque de mensagens</string>
+    <string name="highlight_direct">Menção direta</string>
+    <string name="highlight_reply">Resposta a uma mensagem sua</string>
+    <string name="highlight_role">Menção a cargo / todos</string>
+    <string name="highlight_use_role_color">Usar cor do cargo mencionado</string>
+    <string name="highlight_use_role_color_description">Se disponível, o destaque assume a cor configurada do cargo.</string>
+    <string name="highlight_settings_description">Personalize as cores de menções e respostas</string>
+    <string name="highlight_preview">Prévia da mensagem</string>
+    <string name="highlight_example_author">Exemplo · 14:02</string>
+    <string name="highlight_example_direct">Olá, @você! Dá uma olhada nesta mensagem.</string>
+    <string name="highlight_example_role">Atenção, @equipe! Temos novidades.</string>
+    <string name="highlight_example_reply">Respondendo à sua mensagem anterior.</string>
+    <string name="message_grouping">Agrupar mensagens consecutivas</string>
+    <string name="message_grouping_description">Mensagens seguidas da mesma pessoa compartilham o cabeçalho e o avatar.</string>
+    <string name="extra_compact_stack">Empilhar mensagens</string>
+    <string name="extra_compact_stack_description">Mostrar o texto abaixo do nome no modo extracompatado.</string>
     <string name="update_available">Atualização disponível</string>
     <string name="update_download">Baixar atualização</string>
     <string name="update_install">Instalar atualização</string>

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -67,7 +68,12 @@ internal fun navigationRequiresUnlock(outcome: String, serial: ULong, handled: U
     serial != handled && outcome in arrayOf("unavailable", "failed", "cancelled")
 
 @Composable
-internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBack: () -> Unit) {
+internal fun ConversationScreen(
+    server: ServerState,
+    model: PapoViewModel,
+    onBack: () -> Unit,
+    onRevealingChannels: (Boolean) -> Unit = {},
+) {
     val channel = server.conversation ?: return
     val draftKey = "${server.url}/${server.me}/${channel.id}"
     val readingState = remember(draftKey) { model.reading(server) }.collectAsStateWithLifecycle()
@@ -150,6 +156,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val mediaVisibility = remember(draftKey) { MediaVisibilityRegistry() }
     var listBounds by remember { mutableStateOf(Rect.Zero) }
     val scope = rememberCoroutineScope()
+    // The composer picker is only composed when open; its visibility never follows focus.
+    var pickerSearch by remember(draftKey) { mutableStateOf("") }
+    var pickerSearchRequested by remember(draftKey) { mutableStateOf(false) }
+    var pickerDetail by remember(draftKey) { mutableStateOf<String?>(null) }
+
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val mediaLifecycle by lifecycle.currentStateFlow.collectAsState()
     val overlayBlocking by rememberUpdatedState(LocalMediaOverlayBlocking.current)
@@ -168,9 +179,16 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         if (keyboardVisible || imeInsets.getBottom(density) > 0) {
             keyboard?.hide()
             focus.clearFocus()
+        } else if (emojiPicker) {
+            emojiPicker = false
+            pickerSearchRequested = false
+            pickerSearch = ""
         } else onBack()
     }
+    // Message-list clearance includes additional room around the floating header.
+    // The emoji popup instead anchors to the *actual* bottom of the header pill.
     var headerHeight by remember { mutableStateOf(90.dp) }
+    var headerPillBottom by remember { mutableStateOf(82.dp) }
     var composerHeight by remember { mutableStateOf(90.dp) }
     var handledNavigation by
         rememberSaveable(
@@ -197,7 +215,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var latestPhase by remember(draftKey) { mutableStateOf(LatestPhase.FirstNew) }
     var knownLive by remember(draftKey) { mutableStateOf(server.reading.liveIds) }
     var arrived by remember(draftKey) { mutableStateOf(setOf<String>()) }
-    val groupedMessages = remember(timeline) { messageContinuations(timeline.messages) }
+    val groupingEnabled = LocalMessageAppearance.current.grouped
+    val groupedMessages =
+        remember(timeline, groupingEnabled) {
+            if (groupingEnabled) messageContinuations(timeline.messages) else emptySet()
+        }
     val readingBlocked =
         attachmentOptions != null ||
             embedEditor ||
@@ -748,7 +770,27 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         LocalPlaybackBookmarks provides playbackBookmarks,
         LocalMediaVisibilityRegistry provides mediaVisibility,
     ) {
-        Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
+        Box(
+            Modifier.fillMaxSize()
+                .conversationSwipeBack(
+                    enabled =
+                        !overlayBlocking &&
+                            !recording &&
+                            !emojiPicker &&
+                            !gifPicker &&
+                            viewedMedia == null &&
+                            selected == null &&
+                            edit == null &&
+                            !pins &&
+                            !members &&
+                            !embedEditor,
+                    onBack = onBack,
+                    onRevealing = onRevealingChannels,
+                )
+                .background(MaterialTheme.colorScheme.background)
+                .imePadding()
+                .navigationBarsPadding()
+        ) {
             LazyColumn(
                 state = listState,
                 reverseLayout = true,
@@ -771,11 +813,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             else ui(R.string.messages_will_appear_when_the_server_is_reachable),
                         )
                     }
-                items(
+                itemsIndexed(
                     timeline.rows,
-                    key = { it.key },
-                    contentType = { if (it.date != null) "date" else "message" },
-                ) { row ->
+                    key = { _, row -> row.key },
+                    contentType = { _, row -> if (row.date != null) "date" else "message" },
+                ) { index, row ->
                     if (row.date != null) ConversationDateHeader(row.date)
                     val message = row.message
                     if (message != null)
@@ -785,6 +827,15 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             replyMessages[message.replyTo],
                             model,
                             grouped = message.id in groupedMessages,
+                            // Reverse layout: the preceding message is the next row.
+                            // Grouped text remains tightly packed, but media needs a
+                            // matching gap beneath it before the next text message.
+                            afterMedia =
+                                message.id in groupedMessages &&
+                                    timeline.rows.getOrNull(index + 1)?.message?.let { previous ->
+                                        previous.embeds.isNotEmpty() ||
+                                            previous.attachments.isNotEmpty()
+                                    } == true,
                             canReply =
                                 !recording &&
                                     !submitting &&
@@ -792,6 +843,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                     !overlayBlocking &&
                                     viewedMedia == null,
                             highlighted = highlighted?.first == message.id,
+                            joinPrevious =
+                                message.highlightKind.isNotBlank() &&
+                                    timeline.rows.getOrNull(index + 1)?.message?.highlightKind ==
+                                        message.highlightKind,
+                            joinNext =
+                                message.highlightKind.isNotBlank() &&
+                                    timeline.rows.getOrNull(index - 1)?.message?.highlightKind ==
+                                        message.highlightKind,
                             viewport = viewport,
                             mediaVisible =
                                 message.id in visibleRows &&
@@ -837,10 +896,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     .statusBarsPadding()
                     .padding(horizontal = dimensions.floatingPadding, vertical = 8.dp)
                     .onSizeChanged {
-                        headerHeight =
-                            with(density) { it.height.toDp() } +
-                                dimensions.floatingPadding * 2 +
-                                8.dp
+                        val measuredHeight = with(density) { it.height.toDp() }
+                        // Column has 8dp bottom padding after the visible header.
+                        // Do not include the extra scroll clearance in the picker anchor.
+                        headerPillBottom = measuredHeight - 8.dp
+                        headerHeight = measuredHeight + dimensions.floatingPadding * 2 + 8.dp
                     }
             ) {
                 GlassPill(Modifier.fillMaxWidth()) {
@@ -898,7 +958,10 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 Icon(Icons.Outlined.PushPin, ui(R.string.pinned_messages))
                             }
                             IconButton(onClick = { members = true }) {
-                                Icon(Icons.Outlined.PeopleOutline, ui(R.string.community_members))
+                                Icon(
+                                    Icons.Outlined.PeopleOutline,
+                                    ui(R.string.community_members),
+                                )
                             }
                         }
                         if (channel.kind == "voice") {
@@ -906,13 +969,17 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 chat = true,
                                 onChat = {},
                                 onCall = { model.voiceCalls.open(server, channel.id) },
+                                flushWithHeader = true,
                             )
                         }
                         if (descriptionExpanded) {
                             Text(
                                 channel.topic.ifBlank {
                                     if (channel.kind == "direct")
-                                        ui(R.string.direct_conversation_with_1_s, channel.name)
+                                        ui(
+                                            R.string.direct_conversation_with_1_s,
+                                            channel.name,
+                                        )
                                     else ui(R.string.no_channel_description_yet)
                                 },
                                 modifier =
@@ -931,10 +998,108 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 CallBrowsingHeader()
                 if (server.connection != "online")
                     GlassPill(Modifier.padding(top = 8.dp), radius = 24) {
-                        ConnectionBanner(server.connection) { model.command(Action.Refresh) }
+                        ConnectionBanner(server.connection) {
+                            model.command(Action.Refresh)
+                        }
                     }
             }
 
+            Column(
+                Modifier.align(Alignment.BottomEnd)
+                    .padding(
+                        end = dimensions.composerPadding + dimensions.surfaceInset,
+                        bottom = composerHeight + 8.dp,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                if (readingControls.mentions.isNotEmpty())
+                    BadgedBox(
+                        badge = {
+                            if (readingControls.mentions.size > 1)
+                                Badge(Modifier.testTag("mention-count")) {
+                                    Text(shortcutCount(readingControls.mentions.size))
+                                }
+                        }
+                    ) {
+                        GlassPill(radius = 18) {
+                            IconButton(
+                                onClick = {
+                                    openOriginal(readingControls.mentions.first())
+                                },
+                                modifier = Modifier.size(48.dp).testTag("mention-shortcut"),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Notifications,
+                                    uiQuantity(
+                                        R.plurals.mention_count,
+                                        readingControls.mentions.size,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                if (appearance.catchUpHourglass && readingControls.hasCatchUp)
+                    GlassPill(radius = 18) {
+                        IconButton(
+                            onClick = {
+                                followingLatest = false
+                                latestPhase = LatestPhase.FirstNew
+                                jumping = true
+                                focus.clearFocus()
+                                keyboard?.hide()
+                                model.command(
+                                    Action.CatchUp(channel.id, server.me),
+                                    url = server.url,
+                                    onFailure = { jumping = false },
+                                )
+                            },
+                            modifier = Modifier.size(48.dp).testTag("hourglass-shortcut"),
+                        ) {
+                            Icon(
+                                Icons.Outlined.HourglassEmpty,
+                                ui(R.string.go_to_oldest_unread_message_in_catch_up_block),
+                            )
+                        }
+                    }
+                if (
+                    (!nearBottom ||
+                        server.browsingHistory ||
+                        appearance.catchUpHourglass && readingControls.hasCatchUp) &&
+                        server.messages.isNotEmpty()
+                )
+                    BadgedBox(
+                        badge = {
+                            if (arrived.isNotEmpty())
+                                Badge(Modifier.testTag("latest-count")) {
+                                    Text(shortcutCount(arrived.size))
+                                }
+                        }
+                    ) {
+                        GlassPill(Modifier.testTag("latest-messages"), radius = 18) {
+                            IconButton(
+                                onClick = ::latestMessages,
+                                modifier = Modifier.size(48.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.ArrowDownward,
+                                    if (
+                                        appearance.catchUpHourglass &&
+                                            nearBottom &&
+                                            latestPhase == LatestPhase.ClearCatchUp &&
+                                            readingControls.hasCatchUp
+                                    )
+                                        ui(R.string.clear_catch_up_block)
+                                    else if (
+                                        arrived.isNotEmpty() && latestPhase == LatestPhase.FirstNew
+                                    )
+                                        ui(R.string.go_to_first_new_message)
+                                    else ui(R.string.latest_messages),
+                                )
+                            }
+                        }
+                    }
+            }
             Column(
                 Modifier.align(Alignment.BottomCenter)
                     .fillMaxWidth()
@@ -957,7 +1122,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.weight(1f),
                             )
-                            TextButton(onClick = { jumpToLatest() }) { Text(ui(R.string.cancel)) }
+                            TextButton(onClick = { jumpToLatest() }) {
+                                Text(ui(R.string.cancel))
+                            }
                         }
                     }
                 if (composerFocused && !recording && !emojiPicker && !gifPicker)
@@ -1012,7 +1179,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                             remember(embedDrafts, attachmentDraft.files) {
                                                 validateEmbedDrafts(
                                                         embedDrafts,
-                                                        attachmentDraft.files.map { it.wireName },
+                                                        attachmentDraft.files.map {
+                                                            it.wireName
+                                                        },
                                                     )
                                                     .isEmpty()
                                             }
@@ -1139,8 +1308,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                         actions = {
                                             IconButton(
                                                 onClick = {
-                                                    focus.clearFocus()
-                                                    keyboard?.hide()
+                                                    // Keep the composer focus and IME; popup floats
+                                                    // above
+                                                    // both.
                                                     emojiTarget = null
                                                     emojiPicker = true
                                                 },
@@ -1189,105 +1359,39 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     }
                 }
             }
-            Column(
-                Modifier.align(Alignment.BottomEnd)
-                    .padding(
-                        end = dimensions.composerPadding + dimensions.surfaceInset,
-                        bottom = composerHeight + 8.dp,
-                    ),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.End,
-            ) {
-                if (readingControls.mentions.isNotEmpty())
-                    BadgedBox(
-                        badge = {
-                            if (readingControls.mentions.size > 1)
-                                Badge(Modifier.testTag("mention-count")) {
-                                    Text(shortcutCount(readingControls.mentions.size))
-                                }
-                        }
-                    ) {
-                        GlassPill(radius = 18) {
-                            IconButton(
-                                onClick = { openOriginal(readingControls.mentions.first()) },
-                                modifier = Modifier.size(48.dp).testTag("mention-shortcut"),
-                            ) {
-                                Icon(
-                                    Icons.Outlined.Notifications,
-                                    uiQuantity(
-                                        R.plurals.mention_count,
-                                        readingControls.mentions.size,
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                if (appearance.catchUpHourglass && readingControls.hasCatchUp)
-                    GlassPill(radius = 18) {
-                        IconButton(
-                            onClick = {
-                                followingLatest = false
-                                latestPhase = LatestPhase.FirstNew
-                                jumping = true
-                                focus.clearFocus()
-                                keyboard?.hide()
-                                model.command(
-                                    Action.CatchUp(channel.id, server.me),
-                                    url = server.url,
-                                    onFailure = { jumping = false },
-                                )
-                            },
-                            modifier = Modifier.size(48.dp).testTag("hourglass-shortcut"),
-                        ) {
-                            Icon(
-                                Icons.Outlined.HourglassEmpty,
-                                ui(R.string.go_to_oldest_unread_message_in_catch_up_block),
+            if (emojiPicker && emojiTarget == null) {
+                FloatingEmojiPicker(
+                    server = server,
+                    model = model,
+                    query = pickerSearch,
+                    onQueryChange = { pickerSearch = it },
+                    searchFocusRequested = pickerSearchRequested,
+                    onSearchFocus = { pickerSearchRequested = true },
+                    onClose = {
+                        emojiPicker = false
+                        pickerSearchRequested = false
+                        pickerSearch = ""
+                    },
+                    onPick = { emoji -> updateComposer(composer.insert(emoji.token)) },
+                    onDetail = { pickerDetail = it },
+                    modifier =
+                        Modifier.align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .fillMaxHeight()
+                            // Equal 8dp gaps: below the actual header pill and above the
+                            // measured composer. Keep the message list's extra clearance separate.
+                            .padding(
+                                top = headerPillBottom + 8.dp,
+                                bottom = composerHeight + 8.dp,
                             )
-                        }
-                    }
-                if (
-                    (!nearBottom ||
-                        server.browsingHistory ||
-                        appearance.catchUpHourglass && readingControls.hasCatchUp) &&
-                        server.messages.isNotEmpty()
+                            .zIndex(5f),
                 )
-                    BadgedBox(
-                        badge = {
-                            if (arrived.isNotEmpty())
-                                Badge(Modifier.testTag("latest-count")) {
-                                    Text(shortcutCount(arrived.size))
-                                }
-                        }
-                    ) {
-                        GlassPill(Modifier.testTag("latest-messages"), radius = 18) {
-                            IconButton(
-                                onClick = ::latestMessages,
-                                modifier = Modifier.size(48.dp),
-                            ) {
-                                Icon(
-                                    Icons.Outlined.ArrowDownward,
-                                    if (
-                                        appearance.catchUpHourglass &&
-                                            nearBottom &&
-                                            latestPhase == LatestPhase.ClearCatchUp &&
-                                            readingControls.hasCatchUp
-                                    )
-                                        ui(R.string.clear_catch_up_block)
-                                    else if (
-                                        arrived.isNotEmpty() && latestPhase == LatestPhase.FirstNew
-                                    )
-                                        ui(R.string.go_to_first_new_message)
-                                    else ui(R.string.latest_messages),
-                                )
-                            }
-                        }
-                    }
             }
         }
 
         if (pins)
             PinnedMessages(server, model, onDismiss = { pins = false }, onOpen = ::openOriginal)
-        if (emojiPicker)
+        if (emojiPicker && emojiTarget != null)
             EmojiPicker(
                 server,
                 model,
@@ -1304,6 +1408,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     } else updateComposer(composer.insert(emoji.token))
                 },
             )
+        pickerDetail?.let { id ->
+            StickerDetails(server, model, id, onDismiss = { pickerDetail = null })
+        }
         if (gifPicker)
             GifPicker(
                 server,

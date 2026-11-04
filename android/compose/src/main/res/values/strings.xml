@@ -932,8 +932,6 @@
     <string name="ui_density_description">"Adjust spacing and control sizes on this device. Touch targets and Android text scaling are preserved."</string>
     <string name="density_compact">"Compact"</string>
     <string name="density_extra_compact">"Extra compact"</string>
-    <string name="density_extra_compact_stacked">"Extra compact (stacked)"</string>
-    <string name="extra_compact_description">"Extra compact puts names and messages on one line; stacked puts the message below the name. Both hide avatars and are saved on this device for this account."</string>
     <string name="density_normal">"Normal"</string>
     <string name="density_comfortable">"Comfortable"</string>
     <string name="text_small">"Small"</string>
@@ -1030,6 +1028,37 @@
     <string name="call_audio_routing_unavailable">This server does not provide participant audio routing. Individual volume and mute are unavailable.</string>
     <string name="call_status_unknown">Microphone and camera status unavailable</string>
     <string name="call_leave_timeout">The previous call has not finished leaving. Wait for the server or reconnect before joining again.</string>
+
+    <string name="channel_settings">Channel options</string>
+    <string name="mark_channel_as_read">Mark channel as read</string>
+    <string name="notification_policy_nothing">Nothing</string>
+    <string name="change_notification_policy">Change notification policy</string>
+    <string name="mute_channel">Mute channel</string>
+    <string name="change_mute">Change mute</string>
+    <string name="mute_15_minutes">15 minutes</string>
+    <string name="mute_1_hour">1 hour</string>
+    <string name="mute_8_hours">8 hours</string>
+    <string name="mute_24_hours">24 hours</string>
+    <string name="mute_until_unmuted">Until unmuted</string>
+    <string name="unmute_channel">Unmute channel</string>
+    <string name="channel_muted_state">Muted</string>
+
+    <string name="message_highlighting">Message highlighting</string>
+    <string name="highlight_direct">Direct mention</string>
+    <string name="highlight_reply">Reply to your message</string>
+    <string name="highlight_role">Role / everyone mention</string>
+    <string name="highlight_use_role_color">Use mentioned role color</string>
+    <string name="highlight_use_role_color_description">Use the role\'s configured color when available.</string>
+    <string name="highlight_settings_description">Customize colors for mentions and replies</string>
+    <string name="highlight_preview">Message preview</string>
+    <string name="highlight_example_author">Example · 14:02</string>
+    <string name="highlight_example_direct">Hey, @you! Take a look at this message.</string>
+    <string name="highlight_example_role">Heads up, @team! We have an update.</string>
+    <string name="highlight_example_reply">Replying to your earlier message.</string>
+    <string name="message_grouping">Group consecutive messages</string>
+    <string name="message_grouping_description">Consecutive messages from the same person share an author header and avatar.</string>
+    <string name="extra_compact_stack">Stack messages</string>
+    <string name="extra_compact_stack_description">Show the message beneath its author in Extra compact.</string>
     <string name="update_available">Update available</string>
     <string name="update_download">Download update</string>
     <string name="update_install">Install update</string>

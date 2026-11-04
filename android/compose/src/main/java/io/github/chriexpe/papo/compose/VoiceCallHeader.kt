@@ -265,10 +265,20 @@ internal fun CallIconButton(
 }
 
 @Composable
-internal fun VoiceChannelTabs(chat: Boolean, onChat: () -> Unit, onCall: () -> Unit) {
+internal fun VoiceChannelTabs(
+    chat: Boolean,
+    onChat: () -> Unit,
+    onCall: () -> Unit,
+    flushWithHeader: Boolean = false,
+) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).selectableGroup(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Modifier.fillMaxWidth()
+            .then(
+                if (flushWithHeader) Modifier
+                else Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+            .selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(if (flushWithHeader) 0.dp else 8.dp),
     ) {
         VoiceChannelTab(
             ui(R.string.call_chat_tab),
@@ -276,6 +286,7 @@ internal fun VoiceChannelTabs(chat: Boolean, onChat: () -> Unit, onCall: () -> U
             chat,
             onChat,
             Modifier.weight(1f),
+            flushWithHeader,
         )
         VoiceChannelTab(
             ui(R.string.call_tab),
@@ -283,6 +294,7 @@ internal fun VoiceChannelTabs(chat: Boolean, onChat: () -> Unit, onCall: () -> U
             !chat,
             onCall,
             Modifier.weight(1f),
+            flushWithHeader,
         )
     }
 }
@@ -294,23 +306,42 @@ private fun VoiceChannelTab(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier,
+    flushWithHeader: Boolean,
 ) {
-    // Text buttons retain 48dp hit regions while keeping the visible tab treatment quiet.
-    TextButton(
-        onClick = onClick,
-        modifier = modifier.heightIn(min = 48.dp).semantics { this.selected = selected },
-        colors =
-            ButtonDefaults.textButtonColors(
-                containerColor =
-                    if (selected) MaterialTheme.colorScheme.secondaryContainer
-                    else Color.Transparent,
-                contentColor =
-                    if (selected) MaterialTheme.colorScheme.onSecondaryContainer
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-            ),
-    ) {
-        Icon(icon, null, Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text(label)
+    val selectedColor = MaterialTheme.colorScheme.secondaryContainer
+    val contentColor =
+        if (selected) MaterialTheme.colorScheme.onSecondaryContainer
+        else MaterialTheme.colorScheme.onSurfaceVariant
+    if (flushWithHeader) {
+        // Parent GlassPill clips to the 32dp border. There must be no tab inset or
+        // individual pill radius: the selected half touches that same bottom border.
+        Row(
+            modifier
+                .heightIn(min = 56.dp)
+                .background(if (selected) selectedColor else Color.Transparent)
+                .clickable(onClick = onClick)
+                .semantics { this.selected = selected },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Icon(icon, null, Modifier.size(18.dp), tint = contentColor)
+            Spacer(Modifier.width(8.dp))
+            Text(label, color = contentColor)
+        }
+    } else {
+        // Keep the stand-alone call screen's existing inset pill treatment.
+        TextButton(
+            onClick = onClick,
+            modifier = modifier.heightIn(min = 48.dp).semantics { this.selected = selected },
+            colors =
+                ButtonDefaults.textButtonColors(
+                    containerColor = if (selected) selectedColor else Color.Transparent,
+                    contentColor = contentColor,
+                ),
+        ) {
+            Icon(icon, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(label)
+        }
     }
 }

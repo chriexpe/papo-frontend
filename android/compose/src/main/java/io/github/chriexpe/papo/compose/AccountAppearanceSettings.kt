@@ -1,16 +1,27 @@
 package io.github.chriexpe.papo.compose
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.chriexpe.papo.core.AppearanceChange
 
 @Composable
-internal fun AccountFontSetting(server: ServerState, model: PapoViewModel, busy: Boolean) {
-    val selected = LocalClientPreferences.current.messageAppearance(server).font
+internal fun AccountFontSetting(
+    server: ServerState,
+    model: PapoViewModel,
+    busy: Boolean,
+    previewSelection: AccountFontSize? = null,
+    onPreviewChanged: (AccountFontSize) -> Unit = {},
+) {
+    val selected = previewSelection ?: LocalClientPreferences.current.messageAppearance(server).font
     SettingsCard {
         Column(Modifier.then(settingTarget("text-size")).padding(16.dp)) {
             Text(ui(R.string.account_text_size), style = MaterialTheme.typography.titleMedium)
@@ -24,6 +35,7 @@ internal fun AccountFontSetting(server: ServerState, model: PapoViewModel, busy:
                     FilterChip(
                         selected == choice,
                         {
+                            onPreviewChanged(choice)
                             model.accountAppearance.change(
                                 server,
                                 AppearanceChange.FontSize(choice.value),
@@ -40,9 +52,22 @@ internal fun AccountFontSetting(server: ServerState, model: PapoViewModel, busy:
 }
 
 @Composable
-internal fun AccountDensitySetting(server: ServerState, model: PapoViewModel, busy: Boolean) {
+internal fun AccountDensitySetting(
+    server: ServerState,
+    model: PapoViewModel,
+    busy: Boolean,
+    previewSelection: MessageDensity? = null,
+    onPreviewChanged: (MessageDensity) -> Unit = {},
+    previewStacked: Boolean? = null,
+    onStackedChanged: (Boolean) -> Unit = {},
+    previewGrouped: Boolean? = null,
+    onGroupedChanged: (Boolean) -> Unit = {},
+) {
     val preferences = LocalClientPreferences.current
-    val selected = preferences.messageAppearance(server).density
+    val appearance = preferences.messageAppearance(server)
+    val selected = previewSelection ?: appearance.density
+    val stacked = previewStacked ?: appearance.stacked
+    val grouped = previewGrouped ?: appearance.grouped
     SettingsCard {
         Column(Modifier.then(settingTarget("message-density")).padding(16.dp)) {
             Text(ui(R.string.message_density), style = MaterialTheme.typography.titleMedium)
@@ -56,12 +81,12 @@ internal fun AccountDensitySetting(server: ServerState, model: PapoViewModel, bu
                     FilterChip(
                         selected == choice,
                         {
+                            onPreviewChanged(choice)
                             preferences.setExtraCompact(
                                 server,
-                                choice.localPreview,
-                                stacked = choice == MessageDensity.ExtraCompactStacked,
+                                choice == MessageDensity.ExtraCompact,
                             )
-                            if (!choice.localPreview)
+                            if (choice != MessageDensity.ExtraCompact)
                                 model.accountAppearance.change(
                                     server,
                                     AppearanceChange.MessageDensity(choice.value),
@@ -73,11 +98,241 @@ internal fun AccountDensitySetting(server: ServerState, model: PapoViewModel, bu
                     )
                 }
             }
+            // Grouping is independent of density and on by default for every preset.
+            SettingsSwitch(
+                ui(R.string.message_grouping),
+                ui(R.string.message_grouping_description),
+                grouped,
+                "message-grouped",
+            ) {
+                onGroupedChanged(it)
+                preferences.setMessageGrouping(server, it)
+            }
+            // Stacking is relevant only to extra compact, but its value survives
+            // switching density presets so it is restored when returning here.
+            if (selected == MessageDensity.ExtraCompact)
+                SettingsSwitch(
+                    ui(R.string.extra_compact_stack),
+                    ui(R.string.extra_compact_stack_description),
+                    stacked,
+                    "extra-compact-stack",
+                ) {
+                    onStackedChanged(it)
+                    preferences.setExtraCompactStacked(server, it)
+                }
+        }
+    }
+}
+
+/**
+ * Message text-size and density have independent editors and independent live samples. Highlight
+ * colors remain in their existing editor unchanged.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun AccountAppearanceEditor(
+    server: ServerState,
+    model: PapoViewModel,
+    busy: Boolean,
+    density: Boolean,
+    onDismiss: () -> Unit,
+) {
+    val prefs = LocalClientPreferences.current
+    val current = prefs.messageAppearance(server)
+    var previewFont by remember(server.url, server.me) { mutableStateOf(current.font) }
+    var previewDensity by remember(server.url, server.me) { mutableStateOf(current.density) }
+    var previewStacked by remember(server.url, server.me) { mutableStateOf(current.stacked) }
+    var previewGrouped by remember(server.url, server.me) { mutableStateOf(current.grouped) }
+    val sample = MessageAppearance(previewFont, previewDensity, previewStacked, previewGrouped)
+    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheet,
+    ) {
+        Column(
+            // Wrap to the required content height, up to 80% of the screen.
+            // Only oversized content scrolls; Material 3 bottom-anchors the sheet.
+            Modifier.fillMaxWidth()
+                .heightIn(max = LocalConfiguration.current.screenHeightDp.dp * .80f)
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .testTag(if (density) "density-editor" else "font-editor"),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
             Text(
-                ui(R.string.extra_compact_description),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                ui(if (density) R.string.message_density else R.string.account_text_size),
+                style = MaterialTheme.typography.titleLarge,
             )
+            Text(
+                ui(R.string.highlight_preview),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            SettingsCard {
+                AccountMessagePreview(
+                    sample,
+                    showAvatars = prefs.avatars,
+                    showTimestamps = prefs.timestamps,
+                )
+            }
+            if (density)
+                AccountDensitySetting(
+                    server,
+                    model,
+                    busy,
+                    previewSelection = previewDensity,
+                    onPreviewChanged = { previewDensity = it },
+                    previewStacked = previewStacked,
+                    onStackedChanged = { previewStacked = it },
+                    previewGrouped = previewGrouped,
+                    onGroupedChanged = { previewGrouped = it },
+                )
+            else
+                AccountFontSetting(
+                    server,
+                    model,
+                    busy,
+                    previewSelection = previewFont,
+                    onPreviewChanged = { previewFont = it },
+                )
+            val status = model.accountAppearance.states[server.appearanceOwner()]
+            if (status != null) AppearanceSyncStatus(server, model, status)
+        }
+    }
+}
+
+/**
+ * A chat-message sample, without a fake composer pill. Uses the same text sizing, spacing and
+ * continuation-author rules as ConversationMessage.
+ */
+@Composable
+internal fun AccountMessagePreview(
+    appearance: MessageAppearance,
+    showAvatars: Boolean,
+    showTimestamps: Boolean,
+) {
+    val typography = remember(appearance.font) { messageTypography(appearance.font) }
+    val content =
+        listOf(
+            ui(R.string.a_little_more_like_you),
+            ui(R.string.appearance_preview_second),
+            ui(R.string.appearance_preview_third),
+        )
+    Column(
+        Modifier.fillMaxWidth().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(appearance.contentGap),
+    ) {
+        Text(
+            "# design-ui",
+            style = typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (appearance.extraCompact) {
+            Column(verticalArrangement = Arrangement.spacedBy(appearance.continuationGap)) {
+                content.forEachIndexed { index, body ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        if (showTimestamps)
+                            CompactMessageTime("14:02", index == 0, false, "appearance-$index")
+                        if (appearance.inlineAuthor) {
+                            Row {
+                                if (index == 0 || !appearance.grouped)
+                                    Text(
+                                        "Ana  ",
+                                        style = typography.bodyLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                Text(
+                                    body,
+                                    style = typography.bodyLarge,
+                                    lineHeight = appearance.lineHeight,
+                                )
+                            }
+                        } else
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(appearance.headingGap)
+                            ) {
+                                if (index == 0 || !appearance.grouped)
+                                    Text(
+                                        "Ana",
+                                        style = typography.bodyLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                Text(
+                                    body,
+                                    style = typography.bodyLarge,
+                                    lineHeight = appearance.lineHeight,
+                                )
+                            }
+                    }
+                }
+            }
+        } else {
+            // Use the same author/continuation rules as the real chat. With
+            // grouping off, every message starts a fresh author row and avatar.
+            Column(verticalArrangement = Arrangement.spacedBy(appearance.contentGap)) {
+                if (appearance.grouped) {
+                    AppearancePreviewStandardRow(
+                        appearance,
+                        content,
+                        typography,
+                        showAvatars,
+                        showTimestamps,
+                    )
+                } else {
+                    content.forEach { body ->
+                        AppearancePreviewStandardRow(
+                            appearance,
+                            listOf(body),
+                            typography,
+                            showAvatars,
+                            showTimestamps,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppearancePreviewStandardRow(
+    appearance: MessageAppearance,
+    messages: List<String>,
+    typography: androidx.compose.material3.Typography,
+    showAvatars: Boolean,
+    showTimestamps: Boolean,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        if (showAvatars) Avatar("Ana")
+        Column(verticalArrangement = Arrangement.spacedBy(appearance.headingGap)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Ana", style = typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                if (showTimestamps)
+                    Text(
+                        "14:02",
+                        style = typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(appearance.continuationGap)) {
+                messages.forEach { body ->
+                    Text(
+                        body,
+                        style = typography.bodyLarge,
+                        lineHeight = appearance.lineHeight,
+                    )
+                }
+            }
         }
     }
 }

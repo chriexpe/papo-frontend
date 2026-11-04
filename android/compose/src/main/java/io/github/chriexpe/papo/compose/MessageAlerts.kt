@@ -31,6 +31,8 @@ internal object MessageAlerts {
     @Volatile private var application: Context? = null
     @Volatile var foreground = false
     val changes = MutableStateFlow(0L)
+    val muteChanges = MutableStateFlow(0L)
+    const val MUTED_FOREVER = Long.MAX_VALUE
     val pushHints = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 1)
     private val context
         get() = checkNotNull(application)
@@ -59,7 +61,9 @@ internal object MessageAlerts {
             override fun show(alert: MessageAlert) {
                 if (
                     !available() ||
-                        preferences.getString("owner/${alert.serverUrl}", "") != alert.ownerUserId
+                        preferences.getString("owner/${alert.serverUrl}", "") !=
+                            alert.ownerUserId ||
+                        isMuted(alert.serverUrl, alert.ownerUserId, alert.channelId)
                 )
                     return
                 MessageNotifications.show(
@@ -120,6 +124,29 @@ internal object MessageAlerts {
             preferences.edit().putString("push-token", value).apply()
             refresh()
         }
+    }
+
+    private fun muteKey(server: String, owner: String, channel: String) =
+        "mute/$server/$owner/$channel"
+
+    fun muteUntil(server: String, owner: String, channel: String): Long {
+        val expiry = preferences.getLong(muteKey(server, owner, channel), 0L)
+        return expiry.takeIf { it > System.currentTimeMillis() } ?: 0L
+    }
+
+    fun isMuted(server: String, owner: String, channel: String): Boolean =
+        application != null && muteUntil(server, owner, channel) > 0L
+
+    fun setMute(server: String, owner: String, channel: String, until: Long) {
+        preferences
+            .edit()
+            .apply {
+                if (until > 0L) putLong(muteKey(server, owner, channel), until)
+                else remove(muteKey(server, owner, channel))
+            }
+            .apply()
+        if (until > 0L) clear(server, owner, channel)
+        muteChanges.value += 1
     }
 
     fun owner(server: String) = preferences.getString("owner/$server", "").orEmpty()

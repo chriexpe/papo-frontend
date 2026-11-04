@@ -259,6 +259,7 @@ fun PapoApp(
                 var tab by rememberSaveable { mutableStateOf("Chats") }
                 var settingsOrigin by rememberSaveable { mutableStateOf("Chats") }
                 var inConversation by rememberSaveable { mutableStateOf(false) }
+                var revealingChannels by remember { mutableStateOf(false) }
                 val server = state.active
                 val conversationStates = rememberSaveableStateHolder()
                 var conversationScope by rememberSaveable { mutableStateOf("") }
@@ -434,128 +435,157 @@ fun PapoApp(
                                 onRecovery = { model.offerRecovery("") },
                                 command = { model.command(it) },
                             )
-                        } else if (showingConversation && server.conversation != null) {
-                            ConversationScreen(server, model, onBack = leaveConversation)
                         } else {
+                            val conversationShown =
+                                showingConversation && server.conversation != null
+                            LaunchedEffect(conversationShown) {
+                                if (!conversationShown) revealingChannels = false
+                            }
                             Box(Modifier.fillMaxSize()) {
-                                when (tab) {
-                                    "Chats",
-                                    "Direct" ->
-                                        conversationStates.SaveableStateProvider(
-                                            "${server.url}/${server.me}/$tab"
-                                        ) {
-                                            ConversationList(
-                                                server,
-                                                model,
-                                                appError = state.error,
-                                                direct = tab == "Direct",
-                                                onSettings = {
-                                                    settingsOrigin = tab
-                                                    tab = "Settings"
-                                                },
-                                                onOpen = { id ->
-                                                    if (
-                                                        server.channels.any {
-                                                            it.id == id && it.kind == "voice"
-                                                        }
-                                                    ) {
-                                                        model.voiceCalls.open(server, id)
-                                                    } else {
-                                                        model.navigate(
-                                                            server,
-                                                            Action.SelectChannel(id),
-                                                        ) {
-                                                            enterConversation(server)
-                                                        }
-                                                    }
-                                                },
-                                                onProfile = openProfile,
-                                                onMessage = { channelId, messageId ->
-                                                    model.navigate(
+                                // Keep the existing channel list and its saved scroll state below
+                                // the conversation, but only compose it when revealing or absent.
+                                if (!conversationShown || revealingChannels) {
+                                    Box(Modifier.fillMaxSize()) {
+                                        when (tab) {
+                                            "Chats",
+                                            "Direct" ->
+                                                conversationStates.SaveableStateProvider(
+                                                    "${server.url}/${server.me}/$tab"
+                                                ) {
+                                                    ConversationList(
                                                         server,
-                                                        Action.SelectChannel(channelId),
-                                                        messageId,
-                                                    ) {
-                                                        enterConversation(server)
-                                                    }
-                                                },
-                                            )
+                                                        model,
+                                                        appError = state.error,
+                                                        direct = tab == "Direct",
+                                                        onSettings = {
+                                                            settingsOrigin = tab
+                                                            tab = "Settings"
+                                                        },
+                                                        onOpen = { id ->
+                                                            if (
+                                                                server.channels.any {
+                                                                    it.id == id &&
+                                                                        it.kind == "voice"
+                                                                }
+                                                            ) {
+                                                                model.voiceCalls.open(server, id)
+                                                            } else {
+                                                                model.navigate(
+                                                                    server,
+                                                                    Action.SelectChannel(id),
+                                                                ) {
+                                                                    enterConversation(server)
+                                                                }
+                                                            }
+                                                        },
+                                                        onProfile = openProfile,
+                                                        onMessage = { channelId, messageId ->
+                                                            model.navigate(
+                                                                server,
+                                                                Action.SelectChannel(channelId),
+                                                                messageId,
+                                                            ) {
+                                                                enterConversation(server)
+                                                            }
+                                                        },
+                                                    )
+                                                }
+                                            "Servers" ->
+                                                ServerList(
+                                                    state,
+                                                    model,
+                                                    onAdd = { adding = true },
+                                                    onSelect = {
+                                                        inConversation = false
+                                                        model.activate(it)
+                                                        tab = "Chats"
+                                                    },
+                                                    onDirect = { tab = "GlobalDirect" },
+                                                    onNotifications = {
+                                                        tab = "GlobalNotifications"
+                                                    },
+                                                    onDemo = {
+                                                        inConversation = false
+                                                        tab = "Chats"
+                                                        model.exploreDemo()
+                                                    },
+                                                )
+                                            "GlobalDirect" ->
+                                                conversationStates.SaveableStateProvider(
+                                                    "global/direct"
+                                                ) {
+                                                    GlobalDirectMessages(
+                                                        state,
+                                                        model,
+                                                        onBack = { tab = "Servers" },
+                                                        onProfile = openScopedProfile,
+                                                        onOpen = { target, channel ->
+                                                            model.navigate(
+                                                                target,
+                                                                Action.SelectChannel(channel.id),
+                                                            ) {
+                                                                enterConversation(target)
+                                                            }
+                                                        },
+                                                    )
+                                                }
+                                            "GlobalNotifications" ->
+                                                conversationStates.SaveableStateProvider(
+                                                    "global/notifications"
+                                                ) {
+                                                    GlobalNotifications(
+                                                        state,
+                                                        model,
+                                                        onBack = { tab = "Servers" },
+                                                        onOpen = { target, item ->
+                                                            model.navigate(
+                                                                target,
+                                                                Action.SelectChannel(
+                                                                    item.channelId
+                                                                ),
+                                                                item.messageId.takeIf {
+                                                                    it.isNotBlank()
+                                                                },
+                                                            ) {
+                                                                enterConversation(target)
+                                                            }
+                                                        },
+                                                    )
+                                                }
+                                            else ->
+                                                ClientSettings(
+                                                    server,
+                                                    model,
+                                                    onBack = { tab = settingsOrigin },
+                                                    onLogout = {
+                                                        if (server.isDemo) model.leaveDemo()
+                                                        else model.command(Action.Logout)
+                                                    },
+                                                )
                                         }
-                                    "Servers" ->
-                                        ServerList(
-                                            state,
-                                            model,
-                                            onAdd = { adding = true },
-                                            onSelect = {
-                                                inConversation = false
-                                                model.activate(it)
-                                                tab = "Chats"
-                                            },
-                                            onDirect = { tab = "GlobalDirect" },
-                                            onNotifications = { tab = "GlobalNotifications" },
-                                            onDemo = {
-                                                inConversation = false
-                                                tab = "Chats"
-                                                model.exploreDemo()
-                                            },
-                                        )
-                                    "GlobalDirect" ->
-                                        conversationStates.SaveableStateProvider("global/direct") {
-                                            GlobalDirectMessages(
-                                                state,
-                                                model,
-                                                onBack = { tab = "Servers" },
-                                                onProfile = openScopedProfile,
-                                                onOpen = { target, channel ->
-                                                    model.navigate(
-                                                        target,
-                                                        Action.SelectChannel(channel.id),
-                                                    ) {
-                                                        enterConversation(target)
-                                                    }
-                                                },
+                                        if (tab != "Settings")
+                                            FloatingNavigation(
+                                                if (
+                                                    tab == "GlobalDirect" ||
+                                                        tab == "GlobalNotifications"
+                                                )
+                                                    "Servers"
+                                                else tab,
+                                                onSelect = { tab = it },
+                                                Modifier.align(Alignment.BottomCenter)
+                                                    .navigationBarsPadding()
+                                                    .padding(16.dp),
                                             )
-                                        }
-                                    "GlobalNotifications" ->
-                                        conversationStates.SaveableStateProvider(
-                                            "global/notifications"
-                                        ) {
-                                            GlobalNotifications(
-                                                state,
-                                                model,
-                                                onBack = { tab = "Servers" },
-                                                onOpen = { target, item ->
-                                                    model.navigate(
-                                                        target,
-                                                        Action.SelectChannel(item.channelId),
-                                                        item.messageId.takeIf { it.isNotBlank() },
-                                                    ) {
-                                                        enterConversation(target)
-                                                    }
-                                                },
-                                            )
-                                        }
-                                    else ->
-                                        ClientSettings(
-                                            server,
-                                            model,
-                                            onBack = { tab = settingsOrigin },
-                                            onLogout = {
-                                                if (server.isDemo) model.leaveDemo()
-                                                else model.command(Action.Logout)
-                                            },
-                                        )
+                                    }
                                 }
-                                if (tab != "Settings")
-                                    FloatingNavigation(
-                                        if (tab == "GlobalDirect" || tab == "GlobalNotifications")
-                                            "Servers"
-                                        else tab,
-                                        onSelect = { tab = it },
-                                        Modifier.align(Alignment.BottomCenter)
-                                            .navigationBarsPadding()
-                                            .padding(16.dp),
+                                if (conversationShown) {
+                                    ConversationScreen(
+                                        server,
+                                        model,
+                                        onBack = leaveConversation,
+                                        onRevealingChannels = { revealingChannels = it },
                                     )
+                                }
                             }
                         }
                         if (callUi.screen != null) {

@@ -110,4 +110,25 @@ impl NativeClient {
         }
         Ok(result)
     }
+
+    /// Fetch only channel metadata when its actions sheet opens, including notification policies
+    /// changed on another device. Reuse the existing account request/session pipeline.
+    pub fn refresh_channels(&self, owner: String) -> Result<(), CoreError> {
+        {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            match backend.as_ref().ok_or("Client is closed".to_owned())? {
+                Backend::Demo(_) => return Ok(()),
+                Backend::Live(c) if c.runtime.store.me != owner => {
+                    return Err("Account changed".to_owned().into());
+                }
+                Backend::Live(_) => {}
+            }
+        }
+        let request = self.scoped_api(&owner)?;
+        let channels = account::run(request.api.channels())?;
+        self.finish_request(&request, vec![Update::Channels(channels)])
+    }
 }

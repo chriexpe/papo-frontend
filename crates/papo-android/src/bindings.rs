@@ -558,6 +558,10 @@ pub struct MessageView {
     #[serde(default)]
     pub mentions_me: bool,
     #[serde(default)]
+    pub highlight_kind: String,
+    #[serde(default)]
+    pub highlight_role_color: String,
+    #[serde(default)]
     pub can_edit: bool,
     #[serde(default)]
     pub can_delete: bool,

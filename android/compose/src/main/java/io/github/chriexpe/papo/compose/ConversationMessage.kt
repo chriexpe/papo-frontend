@@ -19,6 +19,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
@@ -40,9 +43,12 @@ internal fun MessageRow(
     server: ServerState,
     model: PapoViewModel,
     grouped: Boolean,
+    afterMedia: Boolean = false,
     canReply: Boolean,
     onReply: () -> Unit,
     highlight: Boolean,
+    joinPrevious: Boolean = false,
+    joinNext: Boolean = false,
     onMention: (Person) -> Unit,
     onJump: (String) -> Unit,
     onActions: () -> Unit,
@@ -84,24 +90,57 @@ internal fun MessageRow(
         remember(message.at, AppLanguage.locale) {
             SimpleDateFormat("HH:mm", AppLanguage.locale).format(Date(message.at))
         }
+    val highlightColor =
+        when (message.highlightKind) {
+            "direct" -> appearance.highlightColor("highlight-direct", "#E7A147")
+            "role" ->
+                if (
+                    appearance.boolean("highlight-use-role-color", true) &&
+                        message.highlightRoleColor.isNotBlank()
+                )
+                    runCatching {
+                        Color(android.graphics.Color.parseColor(message.highlightRoleColor))
+                    }
+                        .getOrElse { appearance.highlightColor("highlight-role", "#A78BFA") }
+                else appearance.highlightColor("highlight-role", "#A78BFA")
+            "reply" -> appearance.highlightColor("highlight-reply", "#65A8ED")
+            else -> Color.Transparent
+        }
+    val hasHighlight = message.highlightKind.isNotEmpty() && !message.mine
     val spotlight by
         animateColorAsState(
             if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = .14f)
-            else if (message.mentionsMe) MaterialTheme.colorScheme.primary.copy(alpha = .08f)
-            else Color.Transparent,
+            else if (hasHighlight) highlightColor.copy(alpha = .18f) else Color.Transparent,
             animationSpec = tween(250),
             label = ui(R.string.original_message_highlight),
         )
+    val topRadius = if (hasHighlight && joinPrevious) 0.dp else 18.dp
+    val bottomRadius = if (hasHighlight && joinNext) 0.dp else 18.dp
     SwipeToReply(message.id, canReply && !message.pending, onReply) {
         Row(
             Modifier.fillMaxWidth()
                 .padding(horizontal = 8.dp)
                 .testTag("message-${message.id}")
-                .background(spotlight, RoundedCornerShape(18.dp))
+                .background(
+                    spotlight,
+                    RoundedCornerShape(
+                        topStart = topRadius,
+                        topEnd = topRadius,
+                        bottomStart = bottomRadius,
+                        bottomEnd = bottomRadius,
+                    ),
+                )
+                .drawBehind {
+                    if (hasHighlight && !highlight)
+                        drawRect(
+                            highlightColor,
+                            topLeft = Offset.Zero,
+                            size = Size(3.dp.toPx(), size.height),
+                        )
+                }
                 .semantics {
                     if (highlight) stateDescription = ui(R.string.original_message)
-                    else if (message.mentionsMe)
-                        stateDescription = ui(R.string.message_mentions_you)
+                    else if (hasHighlight) stateDescription = ui(R.string.message_mentions_you)
                     else if (grouped)
                         stateDescription =
                             ui(R.string.continued_message_from_1_s_at_2_s, message.author, time)
@@ -125,8 +164,13 @@ internal fun MessageRow(
                     // Put all separation before a message. Padding both sides made the first
                     // continuation inherit the author row's larger bottom padding.
                     top =
-                        if (grouped) messageAppearance.continuationGap
-                        else messageAppearance.authorGap,
+                        if (!grouped) messageAppearance.authorGap
+                        else if (afterMedia)
+                            maxOf(
+                                messageAppearance.continuationGap,
+                                messageAppearance.contentGap,
+                            )
+                        else messageAppearance.continuationGap,
                 ),
             horizontalArrangement = Arrangement.spacedBy(if (extraCompact) 6.dp else 12.dp),
         ) {
@@ -215,7 +259,7 @@ internal fun MessageRow(
                             color = MaterialTheme.colorScheme.primary,
                         )
                     }
-                if (extraCompact && !messageAppearance.inlineAuthor)
+                if (extraCompact && !messageAppearance.inlineAuthor && !grouped)
                     MarkdownPrefix(compactAuthorPrefix(message))
                 MessageContent(
                     message,
@@ -223,7 +267,8 @@ internal fun MessageRow(
                     model,
                     onActions,
                     prefix =
-                        if (messageAppearance.inlineAuthor) compactAuthorPrefix(message) else null,
+                        if (messageAppearance.inlineAuthor && !grouped) compactAuthorPrefix(message)
+                        else null,
                     media = media,
                 )
                 if ((grouped || extraCompact) && message.edited)
