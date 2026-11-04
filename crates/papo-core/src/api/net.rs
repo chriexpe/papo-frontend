@@ -3137,6 +3137,32 @@ mod retry_tests {
     }
 
     #[test]
+    fn queued_socket_message_cannot_apply_after_logout() {
+        use crate::state::Store;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel::<(u64, Event)>();
+        let old_message: Message = serde_json::from_value(serde_json::json!({
+            "id": "old-message",
+            "channel_id": "old-channel",
+            "author_id": "old-owner",
+            "content": "from the previous account",
+            "created_at": "2026-11-03T00:00:00Z",
+            "edited_at": null,
+            "reply_to": null
+        })).expect("valid message");
+        sender.send((3, Event::Message(Box::new(old_message)))).unwrap();
+
+        let mut store = Store::default();
+        store.apply(Update::Session(None));
+        let (epoch, event) = receiver.try_recv().expect("queued before logout");
+        if socket_epoch_is_current(epoch, 4) {
+            store.apply(Update::Event(Box::new(event)));
+        }
+        assert!(store.messages.is_empty(), "old account data must not be applied");
+        assert!(!socket_epoch_is_current(epoch, 4));
+    }
+
+    #[test]
     fn stale_socket_event_and_status_are_rejected_across_session_boundary() {
         let epoch_at_socket_start = 3;
         let current_epoch_after_logout = 4;
