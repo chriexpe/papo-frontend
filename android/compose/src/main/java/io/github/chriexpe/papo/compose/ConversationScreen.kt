@@ -62,6 +62,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
+/** Terminal results always release a pending viewport navigation lock. */
+internal fun navigationRequiresUnlock(outcome: String, serial: ULong, handled: ULong): Boolean =
+    serial != handled && outcome in arrayOf("unavailable", "failed", "cancelled")
+
 @Composable
 internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBack: () -> Unit) {
     val channel = server.conversation ?: return
@@ -502,6 +506,18 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         timeline.orderedIds,
     ) {
         if (server.navigationTarget.isBlank()) {
+            if (
+                navigationRequiresUnlock(
+                    server.navigationOutcome,
+                    server.navigationSerial,
+                    handledNavigation,
+                )
+            ) {
+                // A terminal native result must release the viewport lock even when
+                // the message could not be positioned or its request was superseded.
+                jumping = false
+                returningLatest = false
+            }
             handledNavigation = server.navigationSerial
             return@LaunchedEffect
         }
