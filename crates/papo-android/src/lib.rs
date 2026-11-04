@@ -1205,12 +1205,14 @@ impl Client {
                 }
                 store.reset_read_span(&channel_id);
                 store.end_message_context(&channel_id);
-                complete_navigation(
-                    &mut self.navigation_serial,
-                    &mut self.navigation_target,
-                    &mut self.navigation_outcome,
-                    NavigationOutcome::Cancelled,
-                );
+                if !self.navigation_target.is_empty() {
+                    complete_navigation(
+                        &mut self.navigation_serial,
+                        &mut self.navigation_target,
+                        &mut self.navigation_outcome,
+                        NavigationOutcome::Cancelled,
+                    );
+                }
                 Command::CancelMessageNavigation { channel_id }
             }
             Action::Newer { channel_id } => {
