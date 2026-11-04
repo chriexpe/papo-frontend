@@ -1456,12 +1456,8 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         if (server.me.isBlank() || server.selected.isBlank()) return
         val key = Triple(server.url, server.me, server.selected)
         viewModelScope.launch(dispatcher) {
-            if (
-                snapshots[server.url]?.let { it.me == server.me && it.selected == server.selected } !=
-                    true
-            ) {
-                return@launch
-            }
+            val current = snapshots[key.first] ?: return@launch
+            if (current.me != key.second || current.selected != key.third) return@launch
             val now = android.os.SystemClock.elapsedRealtime()
             if (shouldSendTyping(typingAt, key, now)) {
                 // Keep the origin server and channel, even if navigation changes.
