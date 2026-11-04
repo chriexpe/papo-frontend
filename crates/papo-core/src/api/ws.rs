@@ -266,8 +266,9 @@ pub async fn run(
     api: Api,
     session: Arc<Session>,
     scope: String,
-    events: mpsc::UnboundedSender<Event>,
-    status: mpsc::UnboundedSender<Connection>,
+    socket_epoch: u64,
+    events: mpsc::UnboundedSender<(u64, Event)>,
+    status: mpsc::UnboundedSender<(u64, Connection)>,
     mut outbound: mpsc::UnboundedReceiver<String>,
     mut probe: mpsc::UnboundedReceiver<()>,
 ) {
@@ -277,12 +278,13 @@ pub async fn run(
         if events.is_closed() {
             return;
         }
-        let _ = status.send(Connection::Connecting);
+        let _ = status.send((socket_epoch, Connection::Connecting));
 
         match connect(
             &api,
             &session,
             &scope,
+            socket_epoch,
             &events,
             &status,
             &mut outbound,
@@ -301,7 +303,7 @@ pub async fn run(
             }
         }
 
-        let _ = status.send(Connection::Offline);
+        let _ = status.send((socket_epoch, Connection::Offline));
         tokio::select! {
             _ = tokio::time::sleep(backoff) => {
                 backoff = (backoff * 2).min(BACKOFF_MAX);
@@ -324,8 +326,9 @@ async fn connect(
     api: &Api,
     session: &Session,
     scope: &str,
-    events: &mpsc::UnboundedSender<Event>,
-    status: &mpsc::UnboundedSender<Connection>,
+    socket_epoch: u64,
+    events: &mpsc::UnboundedSender<(u64, Event)>,
+    status: &mpsc::UnboundedSender<(u64, Connection)>,
     outbound: &mut mpsc::UnboundedReceiver<String>,
     probe: &mut mpsc::UnboundedReceiver<()>,
 ) -> Result<(), String> {
@@ -365,7 +368,7 @@ async fn connect(
         }
     };
     log::info!("runtime {scope}: websocket {}: conectado", api.websocket_url());
-    let _ = status.send(Connection::Online);
+    let _ = status.send((socket_epoch, Connection::Online));
     let (mut sink, mut source) = stream.split();
 
     let mut heartbeat = tokio::time::interval(HEARTBEAT);
@@ -427,7 +430,7 @@ async fn connect(
                             continue;
                         }
                         if let Some(event) = parse(&text)
-                            && events.send(event).is_err()
+                            && events.send((socket_epoch, event)).is_err()
                         {
                             return Ok(());
                         }
