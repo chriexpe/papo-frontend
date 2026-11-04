@@ -6,7 +6,6 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -80,11 +79,7 @@ internal class AppUpdates(private val app: Application) {
         !BuildConfig.DEBUG && run {
             try {
                 val installer =
-                    if (Build.VERSION.SDK_INT >= 30)
-                        app.packageManager.getInstallSourceInfo(app.packageName).installingPackageName
-                    else
-                        @Suppress("DEPRECATION")
-                        app.packageManager.getInstallerPackageName(app.packageName)
+                    app.packageManager.getInstallSourceInfo(app.packageName).installingPackageName
                 installer != "com.android.vending"
             } catch (_: Exception) {
                 false
@@ -292,9 +287,15 @@ internal class AppUpdates(private val app: Application) {
     private fun requestText(url: String, limit: Int = 512 * 1024): String =
         request(url) { connection ->
             connection.inputStream.use { stream ->
-                val bytes = stream.readNBytes(limit + 1)
-                check(bytes.size <= limit) { "Release response too large" }
-                bytes.toString(Charsets.UTF_8)
+                val buffer = ByteArray(8192)
+                val output = java.io.ByteArrayOutputStream()
+                while (true) {
+                    val size = stream.read(buffer)
+                    if (size < 0) break
+                    check(output.size() + size <= limit) { "Release response too large" }
+                    output.write(buffer, 0, size)
+                }
+                output.toString(Charsets.UTF_8.name())
             }
         }
 
