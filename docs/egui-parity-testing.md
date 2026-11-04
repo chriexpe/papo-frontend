@@ -1,5 +1,8 @@
 # egui parity batch — manual test checklist
 
+> **Historical reference:** this document describes the earlier egui/Compose parity workflow. The egui Android Gradle module has been removed; Compose is the supported Android client.
+
+
 Started from the Compose handoff checkout (`661e663`) on 2026-10-27; the PR is based on main (`a1903f5`, including merged #127). This batch
 keeps the desktop call layout, as requested. The running app is a development
 build, not a release performance benchmark.
