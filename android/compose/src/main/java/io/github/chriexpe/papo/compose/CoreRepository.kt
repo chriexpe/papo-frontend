@@ -760,7 +760,8 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Refresh account channel policies on demand when channel actions open.
+    /**
+     * Refresh account channel policies on demand when channel actions open.
      * No periodic polling or separate device-local policy is involved.
      */
     internal suspend fun refreshChannelSettings(server: ServerState) {
@@ -768,7 +769,9 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         accountMutex.withLock {
             try {
                 val client = accountClient(server)
-                withContext(kotlinx.coroutines.Dispatchers.IO) { client.refreshChannels(server.me) }
+                withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    client.refreshChannels(server.me)
+                }
                 withContext(kotlinx.coroutines.NonCancellable + dispatcher) { poll() }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
