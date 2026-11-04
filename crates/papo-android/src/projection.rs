@@ -65,6 +65,12 @@ pub(crate) fn project_message(store: &Store, url: &str, message: &Message) -> Va
         .and_then(|id| store.message(id))
         .map(|message| store.display_mentions(&message.content))
         .unwrap_or_default();
+    let replies_to_me = message
+        .reply_to
+        .as_ref()
+        .and_then(|id| store.message(id))
+        .is_some_and(|source| source.author_id == store.me);
+    let highlight_me = store.mentions_me(message) || replies_to_me;
     json!({
         "id": message.id,
         "authorId": message.author_id,
@@ -77,6 +83,7 @@ pub(crate) fn project_message(store: &Store, url: &str, message: &Message) -> Va
         "edited": message.edited,
         "mine": message.mine(&store.me),
         "mentionsMe": store.mentions_me(message),
+        "highlightMe": highlight_me,
         "canEdit": store.can_edit_message(message),
         "canDelete": store.can_delete_message(message),
         "replyTo": message.reply_to.as_deref().unwrap_or_default(),

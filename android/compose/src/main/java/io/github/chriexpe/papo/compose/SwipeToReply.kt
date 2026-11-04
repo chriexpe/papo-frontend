@@ -3,7 +3,8 @@ package io.github.chriexpe.papo.compose
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -16,7 +17,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
@@ -51,7 +55,7 @@ internal fun SwipeToReply(
         Modifier.fillMaxWidth().clipToBounds().pointerInput(id, enabled, threshold, limit) {
             try {
                 if (enabled)
-                    detectHorizontalDragGestures(
+                    detectLeftwardDrag(
                         onDragStart = {
                             dragging = true
                             notified = false
@@ -105,5 +109,47 @@ internal fun SwipeToReply(
                 }
             }
         Box(Modifier.fillMaxWidth().graphicsLayer { translationX = position }) { content() }
+    }
+}
+
+/**
+ * Like detectHorizontalDragGestures, but only a leftward drag is claimed. Rightward and vertical
+ * movement is left untouched so a parent (swipe back) and lists can still use it.
+ */
+private suspend fun PointerInputScope.detectLeftwardDrag(
+    onDragStart: () -> Unit,
+    onDragCancel: () -> Unit,
+    onDragEnd: () -> Unit,
+    onHorizontalDrag: (PointerInputChange, Float) -> Unit,
+) = awaitEachGesture {
+    val down = awaitFirstDown(requireUnconsumed = true)
+    val slop = viewConfiguration.touchSlop
+    var x = 0f
+    var y = 0f
+    var claimed = false
+    while (true) {
+        val event = awaitPointerEvent()
+        val change = event.changes.firstOrNull { it.id == down.id }
+        if (change == null) {
+            if (claimed) onDragCancel()
+            return@awaitEachGesture
+        }
+        if (!change.pressed) {
+            if (claimed) onDragEnd()
+            return@awaitEachGesture
+        }
+        val delta = change.positionChange()
+        x += delta.x
+        y += delta.y
+        if (!claimed) {
+            // Someone else owns it, or it is vertical/rightward: not a reply swipe.
+            if (change.isConsumed || abs(y) > slop && abs(y) > abs(x) || x >= slop)
+                return@awaitEachGesture
+            if (x <= -slop) {
+                claimed = true
+                onDragStart()
+                onHorizontalDrag(change, x)
+            }
+        } else onHorizontalDrag(change, delta.x)
     }
 }

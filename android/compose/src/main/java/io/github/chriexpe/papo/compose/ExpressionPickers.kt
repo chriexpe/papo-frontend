@@ -25,8 +25,26 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** Decoded-source bytes of recently shown custom emoji, so scrolling never re-reads the disk. */
+private object EmojiBytesCache {
+    private val lru =
+        object : android.util.LruCache<String, ByteArray>(8 * 1024 * 1024) {
+            override fun sizeOf(key: String, value: ByteArray) = value.size
+        }
+
+    fun get(key: String): ByteArray? = lru.get(key)
+
+    fun put(key: String, value: ByteArray) {
+        lru.put(key, value)
+    }
+}
 
 @Composable
 internal fun EmojiGlyph(
@@ -39,10 +57,21 @@ internal fun EmojiGlyph(
     else {
         val entry = server.emojis.firstOrNull { it.id == emoji.value }
         val context = LocalContext.current
+        val memoryKey = "${server.url}/${server.me}/${emoji.value}/${entry?.revision}"
         val bytes by
-            produceState<ByteArray?>(null, server.url, server.me, emoji.value, entry?.revision) {
+            produceState<ByteArray?>(
+                EmojiBytesCache.get(memoryKey),
+                server.url,
+                server.me,
+                emoji.value,
+                entry?.revision,
+            ) {
+                if (value != null) return@produceState
                 try {
-                    value = model.emojiImage(server, emoji.value)
+                    value =
+                        model.emojiImage(server, emoji.value).also {
+                            EmojiBytesCache.put(memoryKey, it)
+                        }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -58,6 +87,7 @@ internal fun EmojiGlyph(
                 modifier = Modifier.size(size.dp),
                 contentScale = ContentScale.Fit,
                 retentionKey = "emoji/${emoji.value}/${entry?.revision}/$size",
+                cacheKey = "emoji/$memoryKey",
             )
         else
             Text(
@@ -68,16 +98,54 @@ internal fun EmojiGlyph(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PickerContainer(
+    inline: Boolean,
+    onDismiss: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    if (inline)
+        Surface(
+            Modifier.fillMaxWidth().padding(top = 8.dp),
+            shape = RoundedCornerShape(24.dp),
+            tonalElevation = 3.dp,
+        ) {
+            content()
+        }
+    else ModalBottomSheet(onDismissRequest = onDismiss) { content() }
+}
+
 @Composable
 internal fun EmojiPicker(
     server: ServerState,
     model: PapoViewModel,
     onDismiss: () -> Unit,
     onPick: (EmojiChoice) -> Unit,
+    // Inline panels sit under the composer and push it up instead of covering it.
+    inline: Boolean = false,
 ) {
     var query by remember { mutableStateOf("") }
     val context = LocalContext.current
-    val standard = remember { UnicodeEmojiCatalog.load(context) }
+    val standard by
+        produceState(emptyList<UnicodeEmoji>()) {
+            value = withContext(Dispatchers.Default) { UnicodeEmojiCatalog.load(context) }
+        }
+    // Warm the custom emoji bytes in the background so scrolling only reads memory.
+    LaunchedEffect(server.url, server.me, server.emojis) {
+        server.emojis.chunked(4).forEach { chunk ->
+            chunk
+                .map { e ->
+                    async {
+                        val key = "${server.url}/${server.me}/${e.id}/${e.revision}"
+                        if (EmojiBytesCache.get(key) == null)
+                            runCatching { model.emojiImage(server, e.id) }
+                                .onSuccess { EmojiBytesCache.put(key, it) }
+                    }
+                }
+                .awaitAll()
+        }
+    }
     val custom =
         remember(server.emojis, query) {
             server.emojis.filter { it.name.contains(query.trim(), true) }
@@ -92,18 +160,20 @@ internal fun EmojiPicker(
                     .map { UnicodeEmoji(it.value, it.value) }
             (typed + matchingUnicodeEmoji(standard, query.trim())).distinctBy { it.glyph }
         }
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    PickerContainer(inline, onDismiss) {
         Column(
             Modifier.fillMaxWidth()
-                .fillMaxHeight(.74f)
-                .imePadding()
+                .then(
+                    if (inline) Modifier.height(320.dp)
+                    else Modifier.fillMaxHeight(.74f).imePadding()
+                )
                 .padding(horizontal = 16.dp)
                 .testTag("emoji-picker")
         ) {
             Text(
                 ui(R.string.emoji_stickers),
                 style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(bottom = 12.dp),
+                modifier = Modifier.padding(top = if (inline) 16.dp else 0.dp, bottom = 12.dp),
             )
             OutlinedTextField(
                 query,
@@ -137,7 +207,7 @@ internal fun EmojiPicker(
                             modifier = Modifier.padding(bottom = 12.dp),
                         )
                     }
-                items(custom, key = { "c/${it.id}" }) { e ->
+                items(custom, key = { "c/${it.id}" }, contentType = { "custom" }) { e ->
                     val choice = EmojiChoice(e.id, true, e.name)
                     Column(
                         Modifier.clip(RoundedCornerShape(16.dp))
@@ -167,7 +237,8 @@ internal fun EmojiPicker(
                         modifier = Modifier.padding(vertical = 12.dp),
                     )
                 }
-                items(unicode, key = { "u/${it.glyph}" }) { (glyph, _) ->
+                items(unicode, key = { "u/${it.glyph}" }, contentType = { "unicode" }) { (glyph, _)
+                    ->
                     Box(
                         Modifier.size(52.dp)
                             .clip(RoundedCornerShape(16.dp))

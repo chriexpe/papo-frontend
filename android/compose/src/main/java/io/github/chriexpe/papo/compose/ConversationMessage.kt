@@ -19,7 +19,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -43,6 +49,8 @@ internal fun MessageRow(
     canReply: Boolean,
     onReply: () -> Unit,
     highlight: Boolean,
+    joinPrevious: Boolean = false,
+    joinNext: Boolean = false,
     onMention: (Person) -> Unit,
     onJump: (String) -> Unit,
     onActions: () -> Unit,
@@ -87,20 +95,56 @@ internal fun MessageRow(
     val spotlight by
         animateColorAsState(
             if (highlight) MaterialTheme.colorScheme.primary.copy(alpha = .14f)
-            else if (message.mentionsMe) MaterialTheme.colorScheme.primary.copy(alpha = .08f)
+            else if (message.highlightMe) MaterialTheme.colorScheme.primary.copy(alpha = .18f)
             else Color.Transparent,
             animationSpec = tween(250),
             label = ui(R.string.original_message_highlight),
         )
+    val mentionAccent = MaterialTheme.colorScheme.primary
+    val mentionHighlight = message.highlightMe && !highlight
+    // Consecutive highlighted messages read as one block: square the corners where they touch.
+    val topRadius = if (mentionHighlight && joinPrevious) 0.dp else 18.dp
+    val bottomRadius = if (mentionHighlight && joinNext) 0.dp else 18.dp
     SwipeToReply(message.id, canReply && !message.pending, onReply) {
         Row(
             Modifier.fillMaxWidth()
                 .padding(horizontal = 8.dp)
                 .testTag("message-${message.id}")
-                .background(spotlight, RoundedCornerShape(18.dp))
+                .background(
+                    spotlight,
+                    RoundedCornerShape(
+                        topStart = topRadius,
+                        topEnd = topRadius,
+                        bottomStart = bottomRadius,
+                        bottomEnd = bottomRadius,
+                    ),
+                )
+                .drawBehind {
+                    if (mentionHighlight) {
+                        // Clip the bar to the tint's rounded shape so it hugs the curved corners.
+                        val shape =
+                            Path().apply {
+                                addRoundRect(
+                                    RoundRect(
+                                        0f,
+                                        0f,
+                                        size.width,
+                                        size.height,
+                                        CornerRadius(topRadius.toPx()),
+                                        CornerRadius(topRadius.toPx()),
+                                        CornerRadius(bottomRadius.toPx()),
+                                        CornerRadius(bottomRadius.toPx()),
+                                    )
+                                )
+                            }
+                        clipPath(shape) {
+                            drawRect(mentionAccent, size = Size(3.dp.toPx(), size.height))
+                        }
+                    }
+                }
                 .semantics {
                     if (highlight) stateDescription = ui(R.string.original_message)
-                    else if (message.mentionsMe)
+                    else if (message.highlightMe)
                         stateDescription = ui(R.string.message_mentions_you)
                     else if (grouped)
                         stateDescription =

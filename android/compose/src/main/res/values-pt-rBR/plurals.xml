@@ -39,12 +39,12 @@
         <item quantity="other">%d embeds precisam de revisão</item>
     </plurals>
     <plurals name="inbox_mark_loaded">
-        <item quantity="one">%d aviso carregado: marcar todos os carregados como lidos</item>
-        <item quantity="other">%d avisos carregados: marcar todos os carregados como lidos</item>
+        <item quantity="one">%d notificação carregada: marcar todas as carregadas como lidas</item>
+        <item quantity="other">%d notificações carregadas: marcar todas as carregadas como lidas</item>
     </plurals>
     <plurals name="inbox_marked_count">
-        <item quantity="one">%d aviso marcado como lido</item>
-        <item quantity="other">%d avisos marcados como lidos</item>
+        <item quantity="one">%d notificação marcada como lida</item>
+        <item quantity="other">%d notificações marcadas como lidas</item>
     </plurals>
     <plurals name="notification_policy_confirmed">
         <item quantity="one">%d canal confirmado</item>

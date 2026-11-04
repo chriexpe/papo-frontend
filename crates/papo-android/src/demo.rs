@@ -370,6 +370,14 @@ impl Demo {
                     c.notification_settings = setting;
                 }
             }
+            Action::MarkChannelRead {
+                channel_id,
+                owner_user_id,
+            } => {
+                if owner_user_id == self.store.me {
+                    self.store.mark_read(&channel_id)
+                }
+            }
             Action::MarkServerRead => {
                 self.store.mark_all_read();
                 for item in &mut self.notifications {

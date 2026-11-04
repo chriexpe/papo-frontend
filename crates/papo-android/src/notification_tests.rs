@@ -169,6 +169,7 @@ fn bulk_preferences_ack_each_channel_preserve_failures_and_retry_429_through_the
                 "general".into(),
             ],
             "all".into(),
+            true,
         )
         .unwrap();
     assert_eq!(result.applied, ["general", "dev"]);
@@ -208,17 +209,35 @@ fn bulk_preferences_ack_each_channel_preserve_failures_and_retry_429_through_the
             "me".into(),
             vec!["general".into(), "dev".into()],
             "all".into(),
+            true,
         )
         .unwrap();
     assert_eq!(repeated.applied.len(), 2);
+    // Without sync the choice stays on this device: no request is sent (the fixture would
+    // fail on an unscripted call) and the local setting changes.
+    let local = client
+        .notification_policy("me".into(), vec!["general".into()], "off".into(), false)
+        .unwrap();
+    assert_eq!(local.applied, ["general"]);
+    assert_eq!(
+        client
+            .poll()
+            .unwrap()
+            .channels
+            .iter()
+            .find(|c| c.id == "general")
+            .unwrap()
+            .notification_settings,
+        "off"
+    );
     assert!(
         client
-            .notification_policy("other".into(), vec!["general".into()], "off".into())
+            .notification_policy("other".into(), vec!["general".into()], "off".into(), true)
             .is_err()
     );
     assert!(
         client
-            .notification_policy("me".into(), vec!["general".into()], "invalid".into())
+            .notification_policy("me".into(), vec!["general".into()], "invalid".into(), true)
             .is_err()
     );
     assert!(fixture.replies.lock().unwrap().is_empty());

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -67,7 +68,12 @@ internal fun navigationRequiresUnlock(outcome: String, serial: ULong, handled: U
     serial != handled && outcome in arrayOf("unavailable", "failed", "cancelled")
 
 @Composable
-internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBack: () -> Unit) {
+internal fun ConversationScreen(
+    server: ServerState,
+    model: PapoViewModel,
+    onBack: () -> Unit,
+    onBackSwipe: (Boolean) -> Unit = {},
+) {
     val channel = server.conversation ?: return
     val draftKey = "${server.url}/${server.me}/${channel.id}"
     val readingState = remember(draftKey) { model.reading(server) }.collectAsStateWithLifecycle()
@@ -748,7 +754,18 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         LocalPlaybackBookmarks provides playbackBookmarks,
         LocalMediaVisibilityRegistry provides mediaVisibility,
     ) {
-        Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
+        Box(
+            Modifier.fillMaxSize()
+                .swipeToGoBack(
+                    enabled = !overlayBlocking && !recording,
+                    onBack = onBack,
+                    onSwiping = onBackSwipe,
+                )
+                // Opaque, so the list rendered underneath never shows through while swiping.
+                .background(MaterialTheme.colorScheme.background)
+                .imePadding()
+                .navigationBarsPadding()
+        ) {
             LazyColumn(
                 state = listState,
                 reverseLayout = true,
@@ -771,11 +788,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             else ui(R.string.messages_will_appear_when_the_server_is_reachable),
                         )
                     }
-                items(
+                itemsIndexed(
                     timeline.rows,
-                    key = { it.key },
-                    contentType = { if (it.date != null) "date" else "message" },
-                ) { row ->
+                    key = { _, row -> row.key },
+                    contentType = { _, row -> if (row.date != null) "date" else "message" },
+                ) { index, row ->
                     if (row.date != null) ConversationDateHeader(row.date)
                     val message = row.message
                     if (message != null)
@@ -792,6 +809,16 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                     !overlayBlocking &&
                                     viewedMedia == null,
                             highlighted = highlighted?.first == message.id,
+                            // reverseLayout: the next list row is the older message, above
+                            // onscreen.
+                            joinPrevious =
+                                message.highlightMe &&
+                                    timeline.rows.getOrNull(index + 1)?.message?.highlightMe ==
+                                        true,
+                            joinNext =
+                                message.highlightMe &&
+                                    timeline.rows.getOrNull(index - 1)?.message?.highlightMe ==
+                                        true,
                             viewport = viewport,
                             mediaVisible =
                                 message.id in visibleRows &&
@@ -1124,7 +1151,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                                 onSubmit =
                                                     if (appearance.enterToSend) requestComposerSend
                                                     else null,
-                                                onFocusChange = { composerFocused = it },
+                                                onFocusChange = {
+                                                    composerFocused = it
+                                                    // Typing again swaps the inline picker for the
+                                                    // keyboard.
+                                                    if (it && emojiTarget == null)
+                                                        emojiPicker = false
+                                                },
                                                 animationsAllowed =
                                                     appearance.animations &&
                                                         viewedMedia == null &&
@@ -1135,10 +1168,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                         actions = {
                                             IconButton(
                                                 onClick = {
-                                                    focus.clearFocus()
-                                                    keyboard?.hide()
-                                                    emojiTarget = null
-                                                    emojiPicker = true
+                                                    if (emojiPicker && emojiTarget == null) {
+                                                        emojiPicker = false
+                                                    } else {
+                                                        focus.clearFocus()
+                                                        keyboard?.hide()
+                                                        emojiTarget = null
+                                                        emojiPicker = true
+                                                    }
                                                 },
                                                 enabled = !submitting && !attachmentDraft.sending,
                                                 modifier = Modifier.size(48.dp),
@@ -1183,6 +1220,16 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 }
                         }
                     }
+                }
+                if (emojiPicker && emojiTarget == null) {
+                    androidx.activity.compose.BackHandler { emojiPicker = false }
+                    EmojiPicker(
+                        server,
+                        model,
+                        onDismiss = { emojiPicker = false },
+                        onPick = { emoji -> updateComposer(composer.insert(emoji.token)) },
+                        inline = true,
+                    )
                 }
             }
             Column(
@@ -1283,7 +1330,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
 
         if (pins)
             PinnedMessages(server, model, onDismiss = { pins = false }, onOpen = ::openOriginal)
-        if (emojiPicker)
+        if (emojiPicker && emojiTarget != null)
             EmojiPicker(
                 server,
                 model,

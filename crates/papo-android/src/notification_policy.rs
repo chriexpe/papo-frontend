@@ -27,6 +27,8 @@ impl NativeClient {
         owner: String,
         ids: Vec<String>,
         setting: String,
+        // false keeps the choice on this device: nothing is sent to the account endpoint.
+        sync: bool,
     ) -> Result<NotificationPolicyResult, CoreError> {
         if !matches!(setting.as_str(), "all" | "only_mentions" | "off") {
             return Err("Invalid notification policy".to_owned().into());
@@ -65,6 +67,17 @@ impl NativeClient {
                 }
             }
             let request = self.scoped_api(&owner)?;
+            if !sync {
+                self.finish_request(
+                    &request,
+                    vec![Update::ChannelNotificationSetting {
+                        channel_id: id.clone(),
+                        setting: setting.clone(),
+                    }],
+                )?;
+                result.applied.push(id);
+                continue;
+            }
             let response = account::run_api(async {
                 let first = request
                     .api
@@ -109,5 +122,26 @@ impl NativeClient {
             }
         }
         Ok(result)
+    }
+
+    /// Settings changed from another device reach this one only through the channel list.
+    /// Demo accounts have no server to ask.
+    pub fn refresh_channels(&self, owner: String) -> Result<(), CoreError> {
+        {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            match backend.as_ref().ok_or("Client is closed".to_owned())? {
+                Backend::Demo(_) => return Ok(()),
+                Backend::Live(c) if c.runtime.store.me != owner => {
+                    return Err("Account changed".to_owned().into());
+                }
+                Backend::Live(_) => {}
+            }
+        }
+        let request = self.scoped_api(&owner)?;
+        let channels = account::run(request.api.channels())?;
+        self.finish_request(&request, vec![Update::Channels(channels)])
     }
 }
