@@ -15,13 +15,20 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class StateMachineRegressionTest {
     @Test
-    fun navigationUnavailableOrCancelledReleasesJumpingButLocatedDoesNot() {
-        assertTrue(navigationRequiresUnlock("unavailable", 9uL, 8uL))
-        assertTrue(navigationRequiresUnlock("failed", 9uL, 8uL))
-        assertTrue(navigationRequiresUnlock("cancelled", 9uL, 8uL))
-        assertFalse(navigationRequiresUnlock("located", 9uL, 8uL))
-        assertFalse(navigationRequiresUnlock("unavailable", 9uL, 9uL))
-        assertFalse(navigationRequiresUnlock("", 9uL, 8uL))
+    fun navigationTerminalOnlyUnlocksTheMatchingActiveJump() {
+        var phase: ViewportPhase = ViewportPhase.Free(following = true)
+        phase = reduceViewport(phase, ViewportEvent.JumpRequested(9uL, "target"))
+        phase = reduceViewport(phase, ViewportEvent.Terminal(8uL, NavigationResult.Failed))
+        assertTrue(phase.locked)
+        phase = reduceViewport(phase, ViewportEvent.Terminal(9uL, NavigationResult.Located))
+        assertTrue(phase.locked)
+        phase = reduceViewport(phase, ViewportEvent.Terminal(9uL, NavigationResult.Unavailable))
+        assertEquals(ViewportPhase.Free(following = true), phase)
+        phase = reduceViewport(phase, ViewportEvent.LatestRequested)
+        phase = reduceViewport(phase, ViewportEvent.Terminal(10uL, NavigationResult.Cancelled))
+        assertEquals(ViewportPhase.ReturningToLatest, phase)
+        phase = reduceViewport(phase, ViewportEvent.Settled)
+        assertTrue(viewportCanReport(phase))
     }
 
     @Test

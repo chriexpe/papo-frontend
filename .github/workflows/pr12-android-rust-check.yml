@@ -99,7 +99,7 @@ jobs:
           PAPO_FIREBASE_SENDER_ID: ${{ secrets.PAPO_FIREBASE_SENDER_ID }}
           PAPO_COMPOSE_REQUIRE_FIREBASE: ${{ secrets.PAPO_COMPOSE_FIREBASE_APP_ID != '' && '1' || '0' }}
           PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
-        run: ./android/gradlew -p android :compose:assembleDebug :compose:lintDebug -PpapoAbis=arm64-v8a,x86_64 --console=plain
+        run: ./android/gradlew -p android :compose:assembleDebug :compose:lintDebug :compose:testDebugUnitTest -PpapoAbis=arm64-v8a,x86_64 --console=plain
       - uses: actions/upload-artifact@v4
         with:
           name: papo-compose-debug
