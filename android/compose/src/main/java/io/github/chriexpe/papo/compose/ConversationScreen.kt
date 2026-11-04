@@ -811,6 +811,15 @@ internal fun ConversationScreen(
                             replyMessages[message.replyTo],
                             model,
                             grouped = message.id in groupedMessages,
+                            // Reverse layout: the preceding message is the next row.
+                            // Grouped text remains tightly packed, but media needs a
+                            // matching gap beneath it before the next text message.
+                            afterMedia =
+                                message.id in groupedMessages &&
+                                    timeline.rows.getOrNull(index + 1)?.message?.let { previous ->
+                                        previous.embeds.isNotEmpty() ||
+                                            previous.attachments.isNotEmpty()
+                                    } == true,
                             canReply =
                                 !recording &&
                                     !submitting &&
