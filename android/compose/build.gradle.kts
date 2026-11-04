@@ -126,6 +126,7 @@ android {
 
 dependencies {
     implementation(libs.work.runtime)
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
