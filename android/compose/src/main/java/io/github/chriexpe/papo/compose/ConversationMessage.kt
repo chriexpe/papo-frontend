@@ -43,6 +43,7 @@ internal fun MessageRow(
     server: ServerState,
     model: PapoViewModel,
     grouped: Boolean,
+    afterMedia: Boolean = false,
     canReply: Boolean,
     onReply: () -> Unit,
     highlight: Boolean,
@@ -163,8 +164,13 @@ internal fun MessageRow(
                     // Put all separation before a message. Padding both sides made the first
                     // continuation inherit the author row's larger bottom padding.
                     top =
-                        if (grouped) messageAppearance.continuationGap
-                        else messageAppearance.authorGap,
+                        if (!grouped) messageAppearance.authorGap
+                        else if (afterMedia)
+                            maxOf(
+                                messageAppearance.continuationGap,
+                                messageAppearance.contentGap,
+                            )
+                        else messageAppearance.continuationGap,
                 ),
             horizontalArrangement = Arrangement.spacedBy(if (extraCompact) 6.dp else 12.dp),
         ) {
