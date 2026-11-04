@@ -246,7 +246,7 @@ internal class AppUpdates(private val app: Application) {
     }
 
     private fun latestRelease(): UpdateRelease? {
-        val json = JSONObject(requestText(RELEASE_API))
+        val json = JSONObject(UpdateFiles.requestText(RELEASE_API))
         val version = json.getString("tag_name").removePrefix("v")
         if (!newerStableRelease(version, BuildConfig.VERSION_NAME)) return null
         val filename = "Papo-$version-android-arm64.apk"
