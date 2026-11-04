@@ -54,13 +54,10 @@ internal fun EmojiGlyph(
     else {
         val entry = server.emojis.firstOrNull { it.id == emoji.value }
         val context = LocalContext.current
+        val identity = "emoji/${server.url}/${server.me}/${emoji.value}/${entry?.revision.orEmpty()}"
         val image =
-            remember(model, server.url, server.me, emoji.value, entry?.revision) {
-                CachedImage(
-                    "emoji/${server.url}/${server.me}/${emoji.value}/${entry?.revision.orEmpty()}"
-                ) {
-                    model.emojiImage(server, emoji.value)
-                }
+            remember(model, identity) {
+                CachedImage(identity) { model.emojiImage(server, emoji.value) }
             }
         val loader = remember(context) { MediaImages.loader(context) }
         var loaded by remember(image) { mutableStateOf(false) }
@@ -148,11 +145,13 @@ internal fun EmojiPickerBody(
     val context = LocalContext.current
     // JSON parsing/search normalization is expensive on the first open. The catalog itself
     // is shared and cached by UnicodeEmojiCatalog; load it off the Compose UI thread.
-    val standard by produceState(emptyList<UnicodeEmoji>(), context.applicationContext) {
-        value = withContext(Dispatchers.Default) {
-            UnicodeEmojiCatalog.load(context.applicationContext)
+    val standard by
+        produceState(emptyList<UnicodeEmoji>(), context.applicationContext) {
+            value =
+                withContext(Dispatchers.Default) {
+                    UnicodeEmojiCatalog.load(context.applicationContext)
+                }
         }
-    }
     val custom =
         remember(server.emojis, query) {
             server.emojis.filter { it.name.contains(query.trim(), true) }
