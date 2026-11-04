@@ -1422,6 +1422,11 @@ async fn drive_outgoing(
     }
 }
 
+/// A socket created for an earlier login may still have queued events after abort.
+fn socket_epoch_is_current(event_epoch: u64, session_epoch: u64) -> bool {
+    event_epoch == session_epoch
+}
+
 fn reset_socket_channels(
     outbound_tx: &mut mpsc::UnboundedSender<String>,
     outbound_rx: &mut Option<mpsc::UnboundedReceiver<String>>,
@@ -1753,6 +1758,7 @@ async fn worker(
                         &storage_key,
                         &events_tx,
                         &status_tx,
+                        session_epoch,
                         receiver,
                         probes,
                     ));
@@ -1824,7 +1830,7 @@ async fn worker(
                                 &mut probe_rx,
                             );
                             if retired || worker_connection == Connection::Online {
-                                let _ = status_tx.send(Connection::Offline);
+                                let _ = status_tx.send((session_epoch, Connection::Offline));
                             }
                             log::info!(
                                 "runtime {}: network unavailable; websocket parked",
@@ -1846,7 +1852,7 @@ async fn worker(
                                 &mut probe_rx,
                             );
                             if retired || worker_connection == Connection::Online {
-                                let _ = status_tx.send(Connection::Offline);
+                                let _ = status_tx.send((session_epoch, Connection::Offline));
                             }
                             log::info!(
                                 "runtime {}: network path changed; recycling websocket",
@@ -1896,6 +1902,19 @@ async fn worker(
                         &mut reconcile_aborts,
                     );
                     diagnostics_dirty = true;
+                    // Retire the old socket before the inline auth request awaits,
+                    // so queued events from its account cannot mutate the next store.
+                    let retired = retire_socket(
+                        &mut socket,
+                        &mut outbound_tx,
+                        &mut outbound_rx,
+                        &mut probe_tx,
+                        &mut probe_rx,
+                    );
+                    if retired || worker_connection != Connection::Offline {
+                        worker_connection = Connection::Offline;
+                        publish(&updates, &wake, Update::Connection(Connection::Offline));
+                    }
                 }
 
                 match command {
@@ -2390,7 +2409,8 @@ async fn worker(
                 }
             }
             event = events_rx.recv() => {
-                let Some(event) = event else { continue };
+                let Some((epoch, event)) = event else { continue };
+                if !socket_epoch_is_current(epoch, session_epoch) { continue; }
                 hooks.event.emit(&event);
 
                 if reconcile_scheduler.is_running_key(&ReconcileKey::ServerMetadata)
@@ -2536,7 +2556,8 @@ async fn worker(
                 publish(&updates, &wake, Update::Event(Box::new(event)));
             }
             status = status_rx.recv() => {
-                let Some(status) = status else { continue };
+                let Some((epoch, status)) = status else { continue };
+                if !socket_epoch_is_current(epoch, session_epoch) { continue; }
                 let previous_connection = worker_connection;
                 let previous_generation = runtime_generation;
                 if advance_generation_for_connection(
@@ -3083,6 +3104,15 @@ mod retry_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    fn stale_socket_event_and_status_are_rejected_across_session_boundary() {
+        let epoch_at_socket_start = 3;
+        let current_epoch_after_logout = 4;
+        assert!(socket_epoch_is_current(3, 3));
+        assert!(!socket_epoch_is_current(epoch_at_socket_start, current_epoch_after_logout));
+        assert!(!socket_epoch_is_current(2, 3));
+    }
+
+    #[test]
     fn cancelled_update_send_does_not_wait_for_hidden_consumer() {
         let (tx, _rx) = sync_mpsc::sync_channel(1);
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3388,8 +3418,9 @@ fn start_socket(
     api: &Api,
     session: &Arc<Session>,
     scope: &str,
-    events: &mpsc::UnboundedSender<Event>,
-    status: &mpsc::UnboundedSender<Connection>,
+    events: &mpsc::UnboundedSender<(u64, Event)>,
+    status: &mpsc::UnboundedSender<(u64, Connection)>,
+    socket_epoch: u64,
     outbound: mpsc::UnboundedReceiver<String>,
     probe: mpsc::UnboundedReceiver<()>,
 ) -> tokio::task::JoinHandle<()> {
@@ -3397,6 +3428,7 @@ fn start_socket(
         api.clone(),
         Arc::clone(session),
         scope.to_owned(),
+        socket_epoch,
         events.clone(),
         status.clone(),
         outbound,
