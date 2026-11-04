@@ -851,13 +851,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             Modifier.fillMaxWidth().padding(dimensions.surfaceInset),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Box(Modifier.width(96.dp)) {
+                            Row(Modifier.width(96.dp), verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = onBack) {
-                                    Icon(
-                                        Icons.Outlined.ArrowBack,
-                                        ui(R.string.back_to_conversations),
-                                    )
+                                    Icon(Icons.Outlined.ArrowBack, ui(R.string.back_to_conversations))
                                 }
+                                UpdateIndicator()
                             }
                             Text(
                                 channel.name,
