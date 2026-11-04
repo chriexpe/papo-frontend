@@ -127,6 +127,10 @@ internal object AndroidCallRuntime {
     fun canSwitchCamera() = runCatching { Camera.getNumberOfCameras() > 1 }.getOrDefault(false)
 
     fun prepare(route: CallRoute): Boolean {
+        if (pending == route && focus != null) return true
+        // Audio focus is a resource lease: release the previous request before
+        // replacing it, including when a permission callback restarts joining.
+        if (focus != null) releaseAudio()
         if (!initialized) {
             model.get()?.voiceCalls?.reportError("media-unavailable")
             return false
