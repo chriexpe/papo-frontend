@@ -4,12 +4,12 @@ package io.github.chriexpe.papo.compose
 
 import android.app.Activity
 import android.app.Application
-import androidx.activity.compose.LocalActivity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
