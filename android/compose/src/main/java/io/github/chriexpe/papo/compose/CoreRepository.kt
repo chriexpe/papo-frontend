@@ -761,8 +761,8 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Refresh account channel policies on demand when channel actions open.
-     * No periodic polling or separate device-local policy is involved.
+     * Refresh account channel policies on demand when channel actions open. No periodic polling or
+     * separate device-local policy is involved.
      */
     internal suspend fun refreshChannelSettings(server: ServerState) {
         if (server.isDemo || server.me.isBlank()) return
