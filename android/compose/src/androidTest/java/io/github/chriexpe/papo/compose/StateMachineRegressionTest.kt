@@ -56,7 +56,10 @@ class StateMachineRegressionTest {
                         success()
                     },
                     granted = { it != Manifest.permission.RECORD_AUDIO },
-                    prepare = { preparations++; true },
+                    prepare = {
+                        preparations++
+                        true
+                    },
                     routeAudio = { true },
                 )
             instrumentation.runOnMainSync {
