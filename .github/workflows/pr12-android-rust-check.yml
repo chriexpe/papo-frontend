@@ -29,13 +29,6 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           cache-read-only: true
-      # Temporary diagnostic: capture the exact ktfmt 0.64 changes, then remove this step.
-      - name: Inspect Compose formatter differences
-        run: |
-          ./android/gradlew -p android :compose:formatCompose --no-daemon --console=plain
-          echo '===BEGIN_FORMAT_DIFF==='
-          git diff -- android/compose/src/main/java/io/github/chriexpe/papo/compose/CoreRepository.kt android/compose/src/main/java/io/github/chriexpe/papo/compose/ExpressionPickers.kt
-          echo '===END_FORMAT_DIFF==='
       - name: Check Compose formatting
         run: ./android/gradlew -p android :compose:checkComposeFormatting --no-daemon --console=plain
 
