@@ -4,6 +4,7 @@ package io.github.chriexpe.papo.compose
 
 import android.app.Activity
 import android.app.Application
+import androidx.activity.compose.LocalActivity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -20,7 +21,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -321,7 +321,7 @@ internal fun UpdateSheet(updates: AppUpdates) {
     val status by updates.status.collectAsStateWithLifecycle()
     val release = status.release ?: return
     if (!updates.sheetOpen) return
-    val activity = LocalContext.current as? Activity
+    val activity = LocalActivity.current
     val height = LocalConfiguration.current.screenHeightDp.dp * 0.8f
     ModalBottomSheet(
         onDismissRequest = { updates.sheetOpen = false },
