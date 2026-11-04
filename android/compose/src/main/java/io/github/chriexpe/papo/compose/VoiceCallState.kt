@@ -135,10 +135,13 @@ internal class VoiceCallController(
         val active = state.value.session
         // A permission result or switch callback can re-enter join before the
         // native snapshot is visible. Do not issue another join for this route.
-        if (state.value.joining == route ||
-            (state.value.permission != null && permissionRoute == route) ||
-            active?.route == route
-        ) return
+        if (
+            state.value.joining == route ||
+                (state.value.permission != null && permissionRoute == route) ||
+                active?.route == route
+        ) {
+            return
+        }
         if (active != null && active.route != route) {
             mutableState.value = state.value.copy(switchingTo = route)
             return
