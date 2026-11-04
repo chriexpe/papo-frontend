@@ -197,7 +197,21 @@ jobs:
       - name: Install GStreamer SDK
         shell: pwsh
         run: |
-          choco install gstreamer gstreamer-devel --version=1.26.9 -y --no-progress
+          # Chocolatey's community feed intermittently returns 504. Retry only the
+          # dependency download, and fail explicitly if every attempt fails.
+          $installed = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install gstreamer gstreamer-devel --version=1.26.9 -y --no-progress
+            if ($LASTEXITCODE -eq 0) {
+              $installed = $true
+              break
+            }
+            if ($attempt -lt 3) {
+              Write-Warning "GStreamer installation failed (attempt $attempt/3); retrying."
+              Start-Sleep -Seconds (10 * $attempt)
+            }
+          }
+          if (-not $installed) { throw "GStreamer SDK installation failed after 3 attempts" }
           $candidates = @(
             'C:\Program Files\gstreamer\1.0\msvc_x86_64',
             'C:\gstreamer\1.0\msvc_x86_64'
