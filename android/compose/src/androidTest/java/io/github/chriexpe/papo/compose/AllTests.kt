@@ -12,6 +12,7 @@ import org.junit.runners.Suite
     NotificationTest::class,
     MessageGroupsTest::class,
     ConversationMarkersTest::class,
+    StateMachineRegressionTest::class,
     MessagePresentationTest::class,
     SearchEditorTest::class,
     MediaCacheTest::class,

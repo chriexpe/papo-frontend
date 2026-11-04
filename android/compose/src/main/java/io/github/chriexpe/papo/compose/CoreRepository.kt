@@ -183,7 +183,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private var activeUrl = preferences.getString("active-server", "").orEmpty()
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
     private var networkEpoch = 0L
-    private var lastTyping = 0L
+    private val typingAt = mutableMapOf<Triple<String, String, String>, Long>()
     private var readRetry: kotlinx.coroutines.Job? = null
     private val pushJobs = mutableMapOf<String, kotlinx.coroutines.Job>()
     private val pushApplied = mutableMapOf<String, Triple<String, String, Boolean>>()
@@ -582,6 +582,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                     .commit()
             )
             forgottenServers += server.url
+            typingAt.keys.removeAll { it.first == server.url }
             pushJobs.remove(server.url)?.cancel()
             pushApplied.remove(server.url)
             pushRetryAt.remove(server.url)
@@ -1487,10 +1488,16 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun typing(server: ServerState) {
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastTyping > 3000) {
-            lastTyping = now
-            command(Action.Typing(server.selected))
+        if (server.me.isBlank() || server.selected.isBlank()) return
+        val key = Triple(server.url, server.me, server.selected)
+        viewModelScope.launch(dispatcher) {
+            val current = snapshots[key.first] ?: return@launch
+            if (current.me != key.second || current.selected != key.third) return@launch
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (shouldSendTyping(typingAt, key, now)) {
+                // Keep the origin server and channel, even if navigation changes.
+                command(Action.Typing(key.third), key.first)
+            }
         }
     }
 
@@ -1693,4 +1700,16 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 private fun NativeClient.release() {
     shutdown()
     close()
+}
+
+/** A typing throttle belongs to the originating conversation, not the whole client. */
+internal fun shouldSendTyping(
+    timestamps: MutableMap<Triple<String, String, String>, Long>,
+    key: Triple<String, String, String>,
+    now: Long,
+): Boolean {
+    val last = timestamps[key]
+    if (last != null && now - last in 0..3000) return false
+    timestamps[key] = now
+    return true
 }

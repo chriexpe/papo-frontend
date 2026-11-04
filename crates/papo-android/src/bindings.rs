@@ -457,6 +457,8 @@ pub struct ClientSnapshot {
     pub can_load_newer: bool,
     pub navigation_serial: u64,
     pub navigation_target: String,
+    #[serde(default)]
+    pub navigation_outcome: String,
     pub timeline: String,
     #[serde(default)]
     pub reading: ReadingView,

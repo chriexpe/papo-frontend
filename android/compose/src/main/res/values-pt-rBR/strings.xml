@@ -1059,4 +1059,12 @@
     <string name="message_grouping_description">Mensagens seguidas da mesma pessoa compartilham o cabeçalho e o avatar.</string>
     <string name="extra_compact_stack">Empilhar mensagens</string>
     <string name="extra_compact_stack_description">Mostrar o texto abaixo do nome no modo extracompatado.</string>
+    <string name="update_available">Atualização disponível</string>
+    <string name="update_download">Baixar atualização</string>
+    <string name="update_install">Instalar atualização</string>
+    <string name="update_downloading">Baixando e verificando atualização…</string>
+    <string name="update_ready">Download verificado. Pronto para instalar.</string>
+    <string name="update_no_notes">Sem notas de versão.</string>
+    <string name="update_ignore_version">Ignorar esta versão</string>
+    <string name="update_permission">O Android pedirá permissão para instalar apps pelo Papo antes de continuar.</string>
 </resources>

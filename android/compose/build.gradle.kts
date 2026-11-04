@@ -42,7 +42,6 @@ val releaseKeystore = firebaseValue("PAPO_ANDROID_KEYSTORE")
 
 android {
     sourceSets["main"].java.srcDir(rootProject.file("shared/src/main/java"))
-    sourceSets["main"].java.srcDir(rootProject.file("app/src/main/java/org"))
     sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("gstreamer-assets").get().asFile)
     namespace = "io.github.chriexpe.papo.compose"
     compileSdk = 37
@@ -126,6 +125,7 @@ android {
 
 dependencies {
     implementation(libs.work.runtime)
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))

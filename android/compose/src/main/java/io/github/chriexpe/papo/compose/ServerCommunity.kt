@@ -95,7 +95,9 @@ internal fun ServerHeader(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.size(dimensions.touchSize), contentAlignment = Alignment.Center) {
-                ServerIcon(server, model, Modifier.size(dimensions.headerIcon))
+                UpdateIndicator {
+                    ServerIcon(server, model, Modifier.size(dimensions.headerIcon))
+                }
             }
             Text(
                 server.name,

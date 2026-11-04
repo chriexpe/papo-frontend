@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
         MessageAlerts.foreground = true
         MessageAlerts.refresh()
         model.resume()
+        (application as PapoApplication).updates.check()
     }
 
     override fun onStop() {
@@ -142,6 +143,10 @@ fun PapoApp(
     model: PapoViewModel = (LocalContext.current.applicationContext as PapoApplication).model
 ) {
     val context = LocalContext.current
+    val updates =
+        remember(context.applicationContext) {
+            (context.applicationContext as PapoApplication).updates
+        }
     val localeConfiguration = androidx.compose.ui.platform.LocalConfiguration.current
     LaunchedEffect(localeConfiguration) { AppLanguage.update(context) }
     val state by model.state.collectAsStateWithLifecycle()
@@ -235,6 +240,7 @@ fun PapoApp(
         val haze = remember { HazeState() }
         CompositionLocalProvider(
             LocalHaze provides haze,
+            LocalAppUpdates provides updates,
             LocalClientPreferences provides appearance,
             LocalUiDimensions provides UiDimensions(appearance.uiDensity),
             LocalMessageAppearance provides messageAppearance,
@@ -609,6 +615,7 @@ fun PapoApp(
                             )
                         }
                     }
+                    UpdateSheet(updates)
                     CallSwitchConfirmation(calls)
                     CallParticipantSheet(
                         calls,

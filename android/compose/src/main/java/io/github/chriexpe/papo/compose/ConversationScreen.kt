@@ -63,6 +63,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
+/** Terminal results always release a pending viewport navigation lock. */
+internal fun navigationRequiresUnlock(outcome: String, serial: ULong, handled: ULong): Boolean =
+    serial != handled && outcome in arrayOf("unavailable", "failed", "cancelled")
+
 @Composable
 internal fun ConversationScreen(
     server: ServerState,
@@ -524,6 +528,18 @@ internal fun ConversationScreen(
         timeline.orderedIds,
     ) {
         if (server.navigationTarget.isBlank()) {
+            if (
+                navigationRequiresUnlock(
+                    server.navigationOutcome,
+                    server.navigationSerial,
+                    handledNavigation,
+                )
+            ) {
+                // A terminal native result must release the viewport lock even when
+                // the message could not be positioned or its request was superseded.
+                jumping = false
+                returningLatest = false
+            }
             handledNavigation = server.navigationSerial
             return@LaunchedEffect
         }
@@ -911,13 +927,17 @@ internal fun ConversationScreen(
                             Modifier.fillMaxWidth().padding(dimensions.surfaceInset),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Box(Modifier.width(96.dp)) {
+                            Row(
+                                Modifier.width(96.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 IconButton(onClick = onBack) {
                                     Icon(
                                         Icons.Outlined.ArrowBack,
                                         ui(R.string.back_to_conversations),
                                     )
                                 }
+                                UpdateIndicator()
                             }
                             Text(
                                 channel.name,

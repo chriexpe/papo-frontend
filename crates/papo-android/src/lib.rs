@@ -285,6 +285,7 @@ pub struct Client {
     pending_reactions: HashMap<(String, Emoji), PendingReaction>,
     navigation_serial: u64,
     navigation_target: String,
+    navigation_outcome: Option<NavigationOutcome>,
     search_query: String,
     watched_pins: Option<(String, String)>,
     watched_pins_dirty: bool,
@@ -292,6 +293,38 @@ pub struct Client {
     read_in_flight: HashSet<String>,
     read_attempts: HashMap<String, (String, std::time::Instant)>,
     read_seeks: HashMap<String, (String, (chrono::DateTime<chrono::Utc>, String))>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavigationOutcome {
+    Located,
+    Unavailable,
+    Failed,
+    Cancelled,
+}
+
+impl NavigationOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Located => "located",
+            Self::Unavailable => "unavailable",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// A completed navigation is observable even when its target has been cleared.
+/// Incrementing the serial also wakes Compose after an unsuccessful lookup.
+fn complete_navigation(
+    serial: &mut u64,
+    target: &mut String,
+    outcome: &mut Option<NavigationOutcome>,
+    result: NavigationOutcome,
+) {
+    *serial = serial.saturating_add(1);
+    target.clear();
+    *outcome = Some(result);
 }
 
 struct PendingReaction {
@@ -365,6 +398,7 @@ impl Client {
             pending_reactions: HashMap::new(),
             navigation_serial: 0,
             navigation_target: String::new(),
+            navigation_outcome: None,
             search_query: String::new(),
             watched_pins: None,
             watched_pins_dirty: false,
@@ -405,6 +439,7 @@ impl Client {
         let previous_owner = self.runtime.store.me.clone();
         // A hard bound prevents a busy socket from monopolizing the actor.
         let mut events = Vec::new();
+        let mut navigation_failed = false;
         let mut count = 0;
         while count < DEFAULT_DRAIN_LIMIT {
             let Some(update) = self.runtime.net.try_recv() else {
@@ -558,27 +593,57 @@ impl Client {
                 } => events.push(json!({"type":"rejected", "localId": local_id, "error": message})),
                 _ => {}
             }
+            let context_response = match &update {
+                Update::MessageContext { ticket, .. }
+                | Update::MessageContextFailed { ticket, .. } => {
+                    ticket.channel_id == self.runtime.store.selected_channel
+                        && !self.navigation_target.is_empty()
+                }
+                _ => false,
+            };
             self.observe_inbox_update(&update);
             self.observe_pin_update(&update);
-            for effect in self.runtime.process_update(update) { self.calls.effect(&mut self.runtime, effect); }
+            for effect in self.runtime.process_update(update) {
+                self.calls.effect(&mut self.runtime, effect);
+            }
+            if context_response
+                && !self.runtime.store.loading_message_context(&self.runtime.store.selected_channel)
+                && self.runtime.store.error.is_some()
+            {
+                navigation_failed = true;
+            }
             self.sync_notification_context();
             count += 1;
         }
         self.calls.pump(&mut self.runtime);
-        if !self.navigation_target.is_empty()
-            && !self
-                .runtime
-                .store
-                .loading_message_context(&self.runtime.store.selected_channel)
-            && !self
-                .runtime
-                .store
-                .messages_in(&self.runtime.store.selected_channel)
-                .any(|m| m.id == self.navigation_target)
-        {
-            self.navigation_target.clear();
+        if !self.navigation_target.is_empty() {
+            let channel = &self.runtime.store.selected_channel;
+            let located = self.runtime.store.messages_in(channel)
+                .any(|message| message.id == self.navigation_target);
+            if located {
+                self.navigation_outcome = Some(NavigationOutcome::Located);
+            } else if !self.runtime.store.loading_message_context(channel) {
+                complete_navigation(
+                    &mut self.navigation_serial,
+                    &mut self.navigation_target,
+                    &mut self.navigation_outcome,
+                    if navigation_failed {
+                        NavigationOutcome::Failed
+                    } else {
+                        NavigationOutcome::Unavailable
+                    },
+                );
+            }
         }
         if self.runtime.store.me != previous_owner {
+            if !self.navigation_target.is_empty() {
+                complete_navigation(
+                    &mut self.navigation_serial,
+                    &mut self.navigation_target,
+                    &mut self.navigation_outcome,
+                    NavigationOutcome::Cancelled,
+                );
+            }
             self.search_query.clear();
             self.watched_pins = None;
             self.watched_pins_dirty = false;
@@ -654,6 +719,7 @@ impl Client {
             .or_else(|| store.newest_loaded(&channel))
             .unwrap_or_default();
         self.navigation_serial = self.navigation_serial.saturating_add(1);
+        self.navigation_outcome = None;
         store.reset_read_span(&channel);
         self.catching_up = None;
         false
@@ -885,7 +951,14 @@ impl Client {
                     self.runtime.net.send(Command::CancelMessageNavigation {
                         channel_id: previous,
                     });
-                    self.navigation_target.clear();
+                    if !self.navigation_target.is_empty() {
+                        complete_navigation(
+                            &mut self.navigation_serial,
+                            &mut self.navigation_target,
+                            &mut self.navigation_outcome,
+                            NavigationOutcome::Cancelled,
+                        );
+                    }
                 }
                 store.reset_read_span(&channel_id);
                 store.selected_channel = channel_id;
@@ -1120,6 +1193,7 @@ impl Client {
                 }
                 self.navigation_serial = self.navigation_serial.saturating_add(1);
                 self.navigation_target = message_id.clone();
+                self.navigation_outcome = None;
                 if visible {
                     return Ok(());
                 }
@@ -1145,8 +1219,14 @@ impl Client {
                 }
                 store.reset_read_span(&channel_id);
                 store.end_message_context(&channel_id);
-                self.navigation_target.clear();
-                self.navigation_serial = self.navigation_serial.saturating_add(1);
+                if !self.navigation_target.is_empty() {
+                    complete_navigation(
+                        &mut self.navigation_serial,
+                        &mut self.navigation_target,
+                        &mut self.navigation_outcome,
+                        NavigationOutcome::Cancelled,
+                    );
+                }
                 Command::CancelMessageNavigation { channel_id }
             }
             Action::Newer { channel_id } => {
@@ -1219,7 +1299,14 @@ impl Client {
                 store.error = None;
                 store.reset_read_span(&channel_id);
                 store.end_message_context(&channel_id);
-                self.navigation_target.clear();
+                if !self.navigation_target.is_empty() {
+                    complete_navigation(
+                        &mut self.navigation_serial,
+                        &mut self.navigation_target,
+                        &mut self.navigation_outcome,
+                        NavigationOutcome::Cancelled,
+                    );
+                }
                 self.catching_up = Some((owner_user_id, channel_id.clone()));
                 Command::CancelMessageNavigation { channel_id }
             }
@@ -1307,6 +1394,7 @@ impl Client {
         value["searchQuery"] = json!(self.search_query);
         value["navigationSerial"] = json!(self.navigation_serial);
         value["navigationTarget"] = json!(self.navigation_target);
+        value["navigationOutcome"] = json!(self.navigation_outcome.map(NavigationOutcome::as_str).unwrap_or(""));
         value["reading"]["seekingCatchUp"] = json!(self.catching_up.is_some());
         if self.catching_up.is_some() {
             value["reading"]["syncPending"] = json!(true);
@@ -1326,6 +1414,23 @@ impl Drop for Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_navigation_has_explicit_terminal_outcome_and_new_serial() {
+        let mut serial = 7;
+        let mut target = "deleted-message".to_owned();
+        let mut outcome = None;
+        complete_navigation(
+            &mut serial,
+            &mut target,
+            &mut outcome,
+            NavigationOutcome::Unavailable,
+        );
+        assert_eq!(serial, 8);
+        assert_eq!(target, "");
+        assert_eq!(outcome, Some(NavigationOutcome::Unavailable));
+        assert_eq!(outcome.unwrap().as_str(), "unavailable");
+    }
+
     #[test]
     fn typing_projection_preserves_custom_phrase_and_group_fallback() {
         use papo_core::api::ws::Event;

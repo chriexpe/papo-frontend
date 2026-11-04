@@ -1422,6 +1422,18 @@ async fn drive_outgoing(
     }
 }
 
+/// A socket created for an earlier login may still have queued events after abort.
+fn socket_epoch_is_current(event_epoch: u64, session_epoch: u64) -> bool {
+    event_epoch == session_epoch
+}
+
+fn account_is_current(
+    owner: &Arc<std::sync::Mutex<Option<String>>>,
+    expected: &str,
+) -> bool {
+    owner.lock().ok().and_then(|current| current.clone()).as_deref() == Some(expected)
+}
+
 fn reset_socket_channels(
     outbound_tx: &mut mpsc::UnboundedSender<String>,
     outbound_rx: &mut Option<mpsc::UnboundedReceiver<String>>,
@@ -1753,6 +1765,7 @@ async fn worker(
                         &storage_key,
                         &events_tx,
                         &status_tx,
+                        session_epoch,
                         receiver,
                         probes,
                     ));
@@ -1824,7 +1837,7 @@ async fn worker(
                                 &mut probe_rx,
                             );
                             if retired || worker_connection == Connection::Online {
-                                let _ = status_tx.send(Connection::Offline);
+                                let _ = status_tx.send((session_epoch, Connection::Offline));
                             }
                             log::info!(
                                 "runtime {}: network unavailable; websocket parked",
@@ -1846,7 +1859,7 @@ async fn worker(
                                 &mut probe_rx,
                             );
                             if retired || worker_connection == Connection::Online {
-                                let _ = status_tx.send(Connection::Offline);
+                                let _ = status_tx.send((session_epoch, Connection::Offline));
                             }
                             log::info!(
                                 "runtime {}: network path changed; recycling websocket",
@@ -1896,6 +1909,32 @@ async fn worker(
                         &mut reconcile_aborts,
                     );
                     diagnostics_dirty = true;
+                    metadata_live_events.clear();
+                    recent_message_channels.clear();
+                    refresh_after_connect = false;
+                    // Retire the old socket before the inline auth request awaits,
+                    // so queued events from its account cannot mutate the next store.
+                    let retired = retire_socket(
+                        &mut socket,
+                        &mut outbound_tx,
+                        &mut outbound_rx,
+                        &mut probe_tx,
+                        &mut probe_rx,
+                    );
+                    if retired || worker_connection != Connection::Offline {
+                        // Keep the transport and Store continuity generations aligned.
+                        // The old socket's Offline status carries the obsolete epoch and
+                        // will deliberately be discarded by the receive branch.
+                        advance_generation_for_connection(
+                            worker_connection,
+                            Connection::Offline,
+                            &mut runtime_generation,
+                        );
+                        worker_connection = Connection::Offline;
+                        metadata_live_events.clear();
+                        refresh_after_connect = false;
+                        publish(&updates, &wake, Update::Connection(Connection::Offline));
+                    }
                 }
 
                 match command {
@@ -2390,7 +2429,8 @@ async fn worker(
                 }
             }
             event = events_rx.recv() => {
-                let Some(event) = event else { continue };
+                let Some((epoch, event)) = event else { continue };
+                if !socket_epoch_is_current(epoch, session_epoch) { continue; }
                 hooks.event.emit(&event);
 
                 if reconcile_scheduler.is_running_key(&ReconcileKey::ServerMetadata)
@@ -2459,6 +2499,8 @@ async fn worker(
                     {
                         let api = api.clone();
                         let notification_hook = hooks.notification.clone();
+                        let expected_owner = user_id.clone();
+                        let owner = Arc::clone(&me);
                         let id = id.clone();
                         let scope = storage_key.clone();
                         let updates = updates.clone();
@@ -2466,6 +2508,7 @@ async fn worker(
                         tokio::spawn(async move {
                             match api.notifications(&user_id).await {
                                 Ok(notifications) => {
+                                    if !account_is_current(&owner, &expected_owner) { return; }
                                     if let Some(notification) =
                                         notifications.into_iter().find(|item| item.id == id)
                                     {
@@ -2493,9 +2536,14 @@ async fn worker(
                     let updates = updates.clone();
                     let wake = wake.clone();
                     let scope = storage_key.clone();
+                    let owner = Arc::clone(&me);
+                    let expected_owner = me.lock().ok().and_then(|current| current.clone());
                     tokio::spawn(async move {
                         match api.profile(&user_id).await {
                             Ok(profile) => {
+                                if !expected_owner.as_deref().is_some_and(|id| account_is_current(&owner, id)) {
+                                    return;
+                                }
                                 publish(
                                     &updates,
                                     &wake,
@@ -2522,9 +2570,16 @@ async fn worker(
                     let updates = updates.clone();
                     let wake = wake.clone();
                     let scope = storage_key.clone();
+                    let owner = Arc::clone(&me);
+                    let expected_owner = me.lock().ok().and_then(|current| current.clone());
                     tokio::spawn(async move {
                         match api.user_summaries(vec![user_id.clone()]).await {
-                            Ok(users) => publish(&updates, &wake, Update::UserSummaries(users)),
+                            Ok(users) => {
+                                if !expected_owner.as_deref().is_some_and(|id| account_is_current(&owner, id)) {
+                                    return;
+                                }
+                                publish(&updates, &wake, Update::UserSummaries(users));
+                            },
                             Err(error) => log::warn!(
                                 "runtime {scope}: resumo live {user_id} não convergiu: {error}"
                             ),
@@ -2536,7 +2591,8 @@ async fn worker(
                 publish(&updates, &wake, Update::Event(Box::new(event)));
             }
             status = status_rx.recv() => {
-                let Some(status) = status else { continue };
+                let Some((epoch, status)) = status else { continue };
+                if !socket_epoch_is_current(epoch, session_epoch) { continue; }
                 let previous_connection = worker_connection;
                 let previous_generation = runtime_generation;
                 if advance_generation_for_connection(
@@ -3083,6 +3139,52 @@ mod retry_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    fn delayed_account_result_cannot_publish_into_another_owner() {
+        let current = Arc::new(std::sync::Mutex::new(Some("alice".to_owned())));
+        assert!(account_is_current(&current, "alice"));
+        *current.lock().unwrap() = Some("bob".to_owned());
+        assert!(!account_is_current(&current, "alice"));
+        assert!(account_is_current(&current, "bob"));
+        *current.lock().unwrap() = None;
+        assert!(!account_is_current(&current, "bob"));
+    }
+
+    #[test]
+    fn queued_socket_message_cannot_apply_after_logout() {
+        use crate::state::Store;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel::<(u64, Event)>();
+        let old_message: Message = serde_json::from_value(serde_json::json!({
+            "id": "old-message",
+            "channel_id": "old-channel",
+            "author_id": "old-owner",
+            "content": "from the previous account",
+            "created_at": "2026-11-03T00:00:00Z",
+            "edited_at": null,
+            "reply_to": null
+        })).expect("valid message");
+        sender.send((3, Event::Message(Box::new(old_message)))).unwrap();
+
+        let mut store = Store::default();
+        store.apply(Update::Session(None));
+        let (epoch, event) = receiver.try_recv().expect("queued before logout");
+        if socket_epoch_is_current(epoch, 4) {
+            store.apply(Update::Event(Box::new(event)));
+        }
+        assert!(store.messages.is_empty(), "old account data must not be applied");
+        assert!(!socket_epoch_is_current(epoch, 4));
+    }
+
+    #[test]
+    fn stale_socket_event_and_status_are_rejected_across_session_boundary() {
+        let epoch_at_socket_start = 3;
+        let current_epoch_after_logout = 4;
+        assert!(socket_epoch_is_current(3, 3));
+        assert!(!socket_epoch_is_current(epoch_at_socket_start, current_epoch_after_logout));
+        assert!(!socket_epoch_is_current(2, 3));
+    }
+
+    #[test]
     fn cancelled_update_send_does_not_wait_for_hidden_consumer() {
         let (tx, _rx) = sync_mpsc::sync_channel(1);
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3388,8 +3490,9 @@ fn start_socket(
     api: &Api,
     session: &Arc<Session>,
     scope: &str,
-    events: &mpsc::UnboundedSender<Event>,
-    status: &mpsc::UnboundedSender<Connection>,
+    events: &mpsc::UnboundedSender<(u64, Event)>,
+    status: &mpsc::UnboundedSender<(u64, Connection)>,
+    socket_epoch: u64,
     outbound: mpsc::UnboundedReceiver<String>,
     probe: mpsc::UnboundedReceiver<()>,
 ) -> tokio::task::JoinHandle<()> {
@@ -3397,6 +3500,7 @@ fn start_socket(
         api.clone(),
         Arc::clone(session),
         scope.to_owned(),
+        socket_epoch,
         events.clone(),
         status.clone(),
         outbound,

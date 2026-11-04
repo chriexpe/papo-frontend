@@ -1059,4 +1059,12 @@
     <string name="message_grouping_description">Consecutive messages from the same person share an author header and avatar.</string>
     <string name="extra_compact_stack">Stack messages</string>
     <string name="extra_compact_stack_description">Show the message beneath its author in Extra compact.</string>
+    <string name="update_available">Update available</string>
+    <string name="update_download">Download update</string>
+    <string name="update_install">Install update</string>
+    <string name="update_downloading">Downloading and verifying update…</string>
+    <string name="update_ready">Downloaded and verified. Ready to install.</string>
+    <string name="update_no_notes">No release notes available.</string>
+    <string name="update_ignore_version">Ignore this version</string>
+    <string name="update_permission">Android will ask you to allow installs from Papo before continuing.</string>
 </resources>
