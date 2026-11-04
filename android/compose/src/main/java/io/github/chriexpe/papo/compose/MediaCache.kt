@@ -254,8 +254,7 @@ private constructor(
                                             ui(R.string.media_unavailable_1_s, response.code)
                                         )
                                     val body =
-                                        response.body
-                                            ?: throw IOException(ui(R.string.empty_media))
+                                        response.body ?: throw IOException(ui(R.string.empty_media))
                                     if (body.contentLength() > MAX_IMAGE)
                                         throw IOException(ui(R.string.image_is_too_large))
                                     body.byteStream().use { readBounded(it, MAX_IMAGE) }
@@ -268,8 +267,7 @@ private constructor(
                                     .set(CHECKED, now())
                                     .set(
                                         ETAG,
-                                        response.header("ETag")
-                                            ?: metadata.get(ETAG, "").orEmpty(),
+                                        response.header("ETag") ?: metadata.get(ETAG, "").orEmpty(),
                                     )
                                     .set(
                                         MODIFIED,
