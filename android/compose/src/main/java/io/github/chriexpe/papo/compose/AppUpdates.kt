@@ -4,8 +4,6 @@ package io.github.chriexpe.papo.compose
 
 import android.app.Activity
 import android.app.Application
-import androidx.work.*
-import kotlinx.coroutines.flow.collectLatest
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -28,24 +26,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.security.MessageDigest
+import androidx.work.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-private const val RELEASE_API = "https://api.github.com/repos/chriexpe/papo-frontend/releases/latest"
+private const val RELEASE_API =
+    "https://api.github.com/repos/chriexpe/papo-frontend/releases/latest"
 private const val CHECK_INTERVAL = 6 * 60 * 60 * 1000L
 private const val ERROR_RETRY_INTERVAL = 15 * 60 * 1000L
 
@@ -79,12 +75,12 @@ internal class AppUpdates(private val app: Application) {
 
     init {
         scope.launch {
-            work.getWorkInfosForUniqueWorkFlow(UpdateDownloadWorker.UNIQUE_NAME)
-                .collectLatest { items ->
-                    val info = items.lastOrNull()
-                    latestWork = info
-                    reconcileWork(info)
-                }
+            work.getWorkInfosForUniqueWorkFlow(UpdateDownloadWorker.UNIQUE_NAME).collectLatest {
+                items ->
+                val info = items.lastOrNull()
+                latestWork = info
+                reconcileWork(info)
+            }
         }
     }
 
@@ -92,26 +88,35 @@ internal class AppUpdates(private val app: Application) {
         val release = mutableStatus.value.release ?: return
         if (info?.tags?.contains("version/${release.version}") != true) return
         when (info.state) {
-            WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED, WorkInfo.State.RUNNING ->
+            WorkInfo.State.ENQUEUED,
+            WorkInfo.State.BLOCKED,
+            WorkInfo.State.RUNNING ->
                 mutableStatus.update {
                     it.copy(
                         downloading = true,
                         downloaded = info.progress.getLong(UpdateDownloadWorker.DOWNLOADED, 0),
-                        total = info.progress.getLong(UpdateDownloadWorker.TOTAL, -1)
-                            .takeIf { value -> value > 0 },
+                        total =
+                            info.progress.getLong(UpdateDownloadWorker.TOTAL, -1).takeIf { value ->
+                                value > 0
+                            },
                         error = null,
                     )
                 }
             WorkInfo.State.SUCCEEDED ->
                 scope.launch {
                     try {
-                        val valid = withContext(Dispatchers.IO) {
-                            UpdateFiles.cachedApkVerified(app, release)
-                        }
+                        val valid =
+                            withContext(Dispatchers.IO) {
+                                UpdateFiles.cachedApkVerified(app, release)
+                            }
                         if (mutableStatus.value.release?.version == release.version)
                             mutableStatus.update {
-                                it.copy(downloading = false, ready = valid,
-                                    error = if (valid) null else "Downloaded APK verification failed")
+                                it.copy(
+                                    downloading = false,
+                                    ready = valid,
+                                    error =
+                                        if (valid) null else "Downloaded APK verification failed",
+                                )
                             }
                     } catch (error: Exception) {
                         mutableStatus.update { it.copy(downloading = false, error = error.message) }
@@ -121,52 +126,54 @@ internal class AppUpdates(private val app: Application) {
                 mutableStatus.update {
                     it.copy(
                         downloading = false,
-                        error = info.outputData.getString(UpdateDownloadWorker.ERROR)
-                            ?: "Download failed",
+                        error =
+                            info.outputData.getString(UpdateDownloadWorker.ERROR)
+                                ?: "Download failed",
                     )
                 }
-            WorkInfo.State.CANCELLED ->
-                mutableStatus.update { it.copy(downloading = false) }
+            WorkInfo.State.CANCELLED -> mutableStatus.update { it.copy(downloading = false) }
         }
     }
 
     // Google Play is the update authority for Play installs. Development builds have
     // different application IDs/signatures and must never offer a production APK.
     val enabled: Boolean =
-        !BuildConfig.DEBUG && run {
-            try {
-                val installer =
-                    app.packageManager.getInstallSourceInfo(app.packageName).installingPackageName
-                installer != "com.android.vending"
-            } catch (_: Exception) {
-                false
+        !BuildConfig.DEBUG &&
+            run {
+                try {
+                    val installer =
+                        app.packageManager
+                            .getInstallSourceInfo(app.packageName)
+                            .installingPackageName
+                    installer != "com.android.vending"
+                } catch (_: Exception) {
+                    false
+                }
             }
-        }
 
     fun check() {
         if (!enabled || operation?.isActive == true || System.currentTimeMillis() < nextCheckAt)
             return
         nextCheckAt = System.currentTimeMillis() + ERROR_RETRY_INTERVAL
-        operation =
-            scope.launch {
-                try {
-                    val release = withContext(Dispatchers.IO) { latestRelease() }
-                    val ignored = preferences.getString("ignoredVersion", null)
-                    val ready =
-                        if (release != null && release.version != ignored)
-                            withContext(Dispatchers.IO) { UpdateFiles.cachedApkVerified(app, release) }
-                        else false
-                    mutableStatus.value =
-                        if (release == null || release.version == ignored) UpdateStatus()
-                        else UpdateStatus(release = release, ready = ready)
-                    reconcileWork(latestWork)
-                    nextCheckAt = System.currentTimeMillis() + CHECK_INTERVAL
-                } catch (cancel: CancellationException) {
-                    throw cancel
-                } catch (_: Exception) {
-                    // A failed background check must not erase an already discovered update.
-                }
+        operation = scope.launch {
+            try {
+                val release = withContext(Dispatchers.IO) { latestRelease() }
+                val ignored = preferences.getString("ignoredVersion", null)
+                val ready =
+                    if (release != null && release.version != ignored)
+                        withContext(Dispatchers.IO) { UpdateFiles.cachedApkVerified(app, release) }
+                    else false
+                mutableStatus.value =
+                    if (release == null || release.version == ignored) UpdateStatus()
+                    else UpdateStatus(release = release, ready = ready)
+                reconcileWork(latestWork)
+                nextCheckAt = System.currentTimeMillis() + CHECK_INTERVAL
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                // A failed background check must not erase an already discovered update.
             }
+        }
     }
 
     fun download() {
@@ -211,35 +218,35 @@ internal class AppUpdates(private val app: Application) {
             )
             return
         }
-        operation =
-            scope.launch {
-                try {
-                    // Verify again before the installer handoff, including after a permission trip.
-                    val verified = withContext(Dispatchers.IO) { UpdateFiles.cachedApkVerified(app, release) }
-                    if (!verified) {
-                        mutableStatus.update { it.copy(ready = false, error = "APK verification failed") }
-                        return@launch
+        operation = scope.launch {
+            try {
+                // Verify again before the installer handoff, including after a permission trip.
+                val verified =
+                    withContext(Dispatchers.IO) { UpdateFiles.cachedApkVerified(app, release) }
+                if (!verified) {
+                    mutableStatus.update {
+                        it.copy(ready = false, error = "APK verification failed")
                     }
-                    val apk = UpdateFiles.apk(app, release)
-                    val uri =
-                        FileProvider.getUriForFile(activity, "${activity.packageName}.files", apk)
-                    activity.startActivity(
-                        Intent(Intent.ACTION_VIEW)
-                            .setDataAndType(uri, "application/vnd.android.package-archive")
-                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    )
-                } catch (cancel: CancellationException) {
-                    throw cancel
-                } catch (error: Exception) {
-                    mutableStatus.update { it.copy(error = error.message ?: "Installer unavailable") }
+                    return@launch
                 }
+                val apk = UpdateFiles.apk(app, release)
+                val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.files", apk)
+                activity.startActivity(
+                    Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, "application/vnd.android.package-archive")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                )
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                mutableStatus.update { it.copy(error = error.message ?: "Installer unavailable") }
             }
+        }
     }
 
     fun ignoreVersion() {
         val release = status.value.release ?: return
-        if (status.value.downloading)
-            work.cancelUniqueWork(UpdateDownloadWorker.UNIQUE_NAME)
+        if (status.value.downloading) work.cancelUniqueWork(UpdateDownloadWorker.UNIQUE_NAME)
         preferences.edit().putString("ignoredVersion", release.version).apply()
         mutableStatus.value = UpdateStatus()
         sheetOpen = false
@@ -265,12 +272,11 @@ internal class AppUpdates(private val app: Application) {
         return UpdateRelease(version, json.optString("body"), apk, checksum)
             .also(UpdateFiles::validate)
     }
-
 }
+
 /** GitHub's latest release is stable; pre-release local builds are lower than a stable match. */
 internal fun newerStableRelease(latest: String, installed: String): Boolean {
-    val pattern =
-        Regex("""^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$""")
+    val pattern = Regex("""^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$""")
     val a = pattern.matchEntire(latest) ?: return false
     val b = pattern.matchEntire(installed) ?: return false
     for (part in 1..3) {
@@ -300,8 +306,7 @@ internal fun UpdateIndicator(modifier: Modifier = Modifier, fallback: @Composabl
         onClick = { updates.sheetOpen = true },
         modifier = modifier.testTag("available-update"),
     ) {
-        if (status.downloading)
-            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+        if (status.downloading) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
         else
             Icon(
                 if (status.ready) Icons.Outlined.SystemUpdateAlt else Icons.Outlined.Download,
@@ -355,7 +360,9 @@ internal fun UpdateSheet(updates: AppUpdates) {
                 Text(it, color = MaterialTheme.colorScheme.error)
             }
             Button(
-                onClick = { if (status.ready) activity?.let(updates::install) else updates.download() },
+                onClick = {
+                    if (status.ready) activity?.let(updates::install) else updates.download()
+                },
                 enabled = !status.downloading && activity != null,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("update-primary"),
             ) {
@@ -365,14 +372,14 @@ internal fun UpdateSheet(updates: AppUpdates) {
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    if (status.ready) ui(R.string.update_install)
-                    else ui(R.string.update_download)
+                    if (status.ready) ui(R.string.update_install) else ui(R.string.update_download)
                 )
             }
-            if (status.ready &&
-                activity != null &&
-                Build.VERSION.SDK_INT >= 26 &&
-                !activity.packageManager.canRequestPackageInstalls()
+            if (
+                status.ready &&
+                    activity != null &&
+                    Build.VERSION.SDK_INT >= 26 &&
+                    !activity.packageManager.canRequestPackageInstalls()
             ) {
                 Text(
                     ui(R.string.update_permission),

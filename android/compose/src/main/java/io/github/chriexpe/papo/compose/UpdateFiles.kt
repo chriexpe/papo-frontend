@@ -7,8 +7,8 @@ import java.net.URL
 import java.security.MessageDigest
 
 /**
- * Both the UI's cached-APK check and WorkManager's downloader use the same file and
- * checksum contract. No APK becomes installable until its SHA-256 has been verified.
+ * Both the UI's cached-APK check and WorkManager's downloader use the same file and checksum
+ * contract. No APK becomes installable until its SHA-256 has been verified.
  */
 internal object UpdateFiles {
     const val MAX_APK_BYTES = 512L * 1024 * 1024
@@ -47,7 +47,9 @@ internal object UpdateFiles {
                     "/chriexpe/papo-frontend/releases/download/v" +
                         name.removePrefix("Papo-").substringBefore("-android-arm64") +
                         "/$name"
-        ) { "Unexpected update asset URL" }
+        ) {
+            "Unexpected update asset URL"
+        }
     }
 
     fun checksum(file: File): String {

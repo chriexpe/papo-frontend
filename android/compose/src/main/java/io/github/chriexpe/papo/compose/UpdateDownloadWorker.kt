@@ -17,12 +17,12 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
- * A unique, persistent WorkManager job. The .part and .etag files survive process death.
- * Range requests resume only when the server confirms the exact byte offset and validator.
+ * A unique, persistent WorkManager job. The .part and .etag files survive process death. Range
+ * requests resume only when the server confirms the exact byte offset and validator.
  */
 internal class UpdateDownloadWorker(context: Context, params: WorkerParameters) :
     CoroutineWorker(context, params) {
@@ -42,13 +42,16 @@ internal class UpdateDownloadWorker(context: Context, params: WorkerParameters) 
         val release =
             try {
                 UpdateRelease(
-                    inputData.getString(VERSION).orEmpty(),
-                    "",
-                    inputData.getString(APK_URL).orEmpty(),
-                    inputData.getString(CHECKSUM_URL).orEmpty(),
-                ).also(UpdateFiles::validate)
+                        inputData.getString(VERSION).orEmpty(),
+                        "",
+                        inputData.getString(APK_URL).orEmpty(),
+                        inputData.getString(CHECKSUM_URL).orEmpty(),
+                    )
+                    .also(UpdateFiles::validate)
             } catch (_: Exception) {
-                return Result.failure(Data.Builder().putString(ERROR, "Invalid update metadata").build())
+                return Result.failure(
+                    Data.Builder().putString(ERROR, "Invalid update metadata").build()
+                )
             }
         return try {
             setForeground(foreground(0, null))
@@ -65,7 +68,10 @@ internal class UpdateDownloadWorker(context: Context, params: WorkerParameters) 
             throw cancel
         } catch (error: Exception) {
             if (runAttemptCount < 4 && error is IOException) Result.retry()
-            else Result.failure(Data.Builder().putString(ERROR, error.message ?: "Download failed").build())
+            else
+                Result.failure(
+                    Data.Builder().putString(ERROR, error.message ?: "Download failed").build()
+                )
         }
     }
 
@@ -104,7 +110,9 @@ internal class UpdateDownloadWorker(context: Context, params: WorkerParameters) 
                 connection = UpdateFiles.open(release.apkUrl)
                 code = connection.responseCode
             }
-            check(code == 200 || (code == 206 && existing > 0 && validRange(connection, existing))) {
+            check(
+                code == 200 || (code == 206 && existing > 0 && validRange(connection, existing))
+            ) {
                 "Unexpected update response (HTTP $code)"
             }
             val append = code == 206 && existing > 0
@@ -173,10 +181,7 @@ internal class UpdateDownloadWorker(context: Context, params: WorkerParameters) 
     }
 
     private fun progress(bytes: Long, total: Long?): Data =
-        Data.Builder()
-            .putLong(DOWNLOADED, bytes)
-            .putLong(TOTAL, total ?: -1)
-            .build()
+        Data.Builder().putLong(DOWNLOADED, bytes).putLong(TOTAL, total ?: -1).build()
 
     private fun foreground(bytes: Long, total: Long?): ForegroundInfo {
         val manager =
@@ -210,7 +215,11 @@ internal class UpdateDownloadWorker(context: Context, params: WorkerParameters) 
                 .setProgress(100, percent, total == null)
                 .build()
         return if (Build.VERSION.SDK_INT >= 29)
-            ForegroundInfo(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            ForegroundInfo(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
         else ForegroundInfo(NOTIFICATION_ID, notification)
     }
 }

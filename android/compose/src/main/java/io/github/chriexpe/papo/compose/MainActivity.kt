@@ -143,9 +143,10 @@ fun PapoApp(
     model: PapoViewModel = (LocalContext.current.applicationContext as PapoApplication).model
 ) {
     val context = LocalContext.current
-    val updates = remember(context.applicationContext) {
-        (context.applicationContext as PapoApplication).updates
-    }
+    val updates =
+        remember(context.applicationContext) {
+            (context.applicationContext as PapoApplication).updates
+        }
     val localeConfiguration = androidx.compose.ui.platform.LocalConfiguration.current
     LaunchedEffect(localeConfiguration) { AppLanguage.update(context) }
     val state by model.state.collectAsStateWithLifecycle()
