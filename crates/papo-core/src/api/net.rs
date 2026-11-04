@@ -1909,6 +1909,9 @@ async fn worker(
                         &mut reconcile_aborts,
                     );
                     diagnostics_dirty = true;
+                    metadata_live_events.clear();
+                    recent_message_channels.clear();
+                    refresh_after_connect = false;
                     // Retire the old socket before the inline auth request awaits,
                     // so queued events from its account cannot mutate the next store.
                     let retired = retire_socket(
