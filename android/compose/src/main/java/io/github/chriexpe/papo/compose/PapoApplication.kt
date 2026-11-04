@@ -8,7 +8,7 @@ import androidx.lifecycle.ViewModelStoreOwner
 /** The connection actor belongs to the process; an Activity disappearing must not end a call. */
 class PapoApplication : Application(), ViewModelStoreOwner {
     override val viewModelStore = ViewModelStore()
-    val updates: AppUpdates by lazy { AppUpdates(this) }
+    internal val updates: AppUpdates by lazy { AppUpdates(this) }
     val model: PapoViewModel
         get() =
             ViewModelProvider(this, ViewModelProvider.AndroidViewModelFactory.getInstance(this))[
