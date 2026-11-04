@@ -1919,7 +1919,17 @@ async fn worker(
                         &mut probe_rx,
                     );
                     if retired || worker_connection != Connection::Offline {
+                        // Keep the transport and Store continuity generations aligned.
+                        // The old socket's Offline status carries the obsolete epoch and
+                        // will deliberately be discarded by the receive branch.
+                        advance_generation_for_connection(
+                            worker_connection,
+                            Connection::Offline,
+                            &mut runtime_generation,
+                        );
                         worker_connection = Connection::Offline;
+                        metadata_live_events.clear();
+                        refresh_after_connect = false;
                         publish(&updates, &wake, Update::Connection(Connection::Offline));
                     }
                 }
