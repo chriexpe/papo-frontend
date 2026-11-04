@@ -502,6 +502,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         timeline.orderedIds,
     ) {
         if (server.navigationTarget.isBlank()) {
+            if (server.navigationOutcome in setOf("unavailable", "failed", "cancelled") &&
+                server.navigationSerial != handledNavigation
+            ) {
+                // A terminal native result must release the viewport lock even when
+                // the message could not be positioned or its request was superseded.
+                jumping = false
+                returningLatest = false
+            }
             handledNavigation = server.navigationSerial
             return@LaunchedEffect
         }
