@@ -295,8 +295,25 @@ fun registerComposeFormatter(name: String, verify: Boolean) =
         doFirst {
             args =
                 listOf("--kotlinlang-style") +
-                    (if (verify) listOf("--dry-run", "--set-exit-if-changed") else emptyList()) +
+                    emptyList<String>() +
                     composeKotlinSources.files.sortedBy { it.path }.map { it.absolutePath }
+        }
+        doLast {
+            if (verify) {
+                val workingTree = rootProject.projectDir.parentFile
+                val output =
+                    ProcessBuilder(
+                            "git", "diff", "--",
+                            "android/compose/src/main/java/io/github/chriexpe/papo/compose/MediaCache.kt",
+                        )
+                        .directory(workingTree)
+                        .redirectErrorStream(true)
+                        .start()
+                        .inputStream.bufferedReader().readText()
+                println("=== TEMPORARY FORMAT DIFF BEGIN ===")
+                println(output)
+                println("=== TEMPORARY FORMAT DIFF END ===")
+            }
         }
     }
 
