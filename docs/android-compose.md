@@ -1,7 +1,7 @@
 # Native Android client
 
-The official Android client lives in `android/compose`; the egui Android shell
-remains in `android/app` for reference. Signed Compose releases keep the existing
+The official Android client lives in `android/compose`. The obsolete egui Android
+Gradle app was removed; the desktop egui app remains. Signed Compose releases keep the existing
 `io.github.chriexpe.papo` package and release key. Debug builds use the
 `.compose` suffix, so existing Compose development installations keep their data
 and can run beside the official app.

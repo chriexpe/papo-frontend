@@ -22,7 +22,7 @@ O Papo foi feito para manter a mesma experiência entre desktop e Android sem El
 | macOS (experimental) | Apple Silicon (aarch64) | Self-contained ad-hoc signed CI `.app` |
 | Android | arm64-v8a | APK assinado |
 
-No Windows, o Papo usa WebView2 e distribui seu próprio runtime do GStreamer. No Android, a mesma aplicação Rust/egui é empacotada como app nativo. Linux usa WPE WebKit para conteúdo web incorporado.
+No Windows, o Papo usa WebView2 e distribui seu próprio runtime do GStreamer. No Android, o cliente oficial usa Kotlin/Jetpack Compose e compartilha o núcleo Rust via UniFFI. Linux usa WPE WebKit para conteúdo web incorporado.
 
 Windows e instalações Android via sideload têm atualização pelo próprio app usando GitHub Releases.
 
@@ -46,8 +46,8 @@ Para desenvolvimento no Android:
 
 ```bash
 rustup target add aarch64-linux-android
-cargo install cargo-ndk
-scripts/android.sh --run
+cargo install cargo-ndk --locked
+scripts/android-compose.sh --arm64 --run
 ```
 
 Notificações por push (FCM) precisam da configuração do app Android no projeto Firebase, os campos do `google-services.json`. Ela não fica no repositório: vem do ambiente ou de `~/.gradle/gradle.properties`.
@@ -76,11 +76,11 @@ cargo clippy --locked --all-targets -- -D warnings
 
 ## Arquitetura
 
-A lógica compartilhada de API, sessões, sincronização, cache e runtime de rede vive em `crates/papo-core`. A UI fica em Rust/egui; mídia, chamadas, WebEmbed e integrações do sistema têm backends específicos por plataforma.
+A lógica compartilhada de API, sessões, sincronização, cache e runtime de rede vive em `crates/papo-core`. A UI desktop fica em Rust/egui e a UI Android em Kotlin/Jetpack Compose; mídia, chamadas, WebEmbed e integrações do sistema têm backends específicos por plataforma.
 
-Um cliente Android nativo em Kotlin/Jetpack Compose está em `android/compose`,
-usando o mesmo `papo-core` via UniFFI, com bindings Kotlin gerados. Ele pode ser instalado ao lado do cliente
-egui e inclui um modo demonstração explícito. Veja
+O cliente Android oficial em Kotlin/Jetpack Compose está em `android/compose`,
+usando o mesmo `papo-core` via UniFFI, com bindings Kotlin gerados.
+O modo demonstração é explícito. Veja
 [desenvolvimento e escopo do cliente Compose](docs/android-compose.md).
 
 ## Em andamento

@@ -1,5 +1,8 @@
 # Compose lessons and egui compatibility handoff
 
+> **Historical reference:** this document describes the earlier egui/Compose parity workflow. The egui Android Gradle module has been removed; Compose is the supported Android client.
+
+
 As of 2026-10-27. Requested as preparation for a separate egui improvement session.
 This document records delivered features, architectural lessons, backend contracts,
 later fixes and concrete egui integration gaps. It does not implement those gaps.
