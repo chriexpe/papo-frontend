@@ -4,6 +4,8 @@ package io.github.chriexpe.papo.compose
 
 import android.app.Activity
 import android.app.Application
+import androidx.work.*
+import kotlinx.coroutines.flow.collectLatest
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -72,6 +74,61 @@ internal class AppUpdates(private val app: Application) {
     var sheetOpen by mutableStateOf(false)
     private var operation: Job? = null
     private var nextCheckAt = 0L
+    private val work = WorkManager.getInstance(app)
+    private var latestWork: WorkInfo? = null
+
+    init {
+        scope.launch {
+            work.getWorkInfosForUniqueWorkFlow(UpdateDownloadWorker.UNIQUE_NAME)
+                .collectLatest { items ->
+                    val info = items.lastOrNull()
+                    latestWork = info
+                    reconcileWork(info)
+                }
+        }
+    }
+
+    private fun reconcileWork(info: WorkInfo?) {
+        val release = mutableStatus.value.release ?: return
+        if (info?.tags?.contains("version/${release.version}") != true) return
+        when (info.state) {
+            WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED, WorkInfo.State.RUNNING ->
+                mutableStatus.update {
+                    it.copy(
+                        downloading = true,
+                        downloaded = info.progress.getLong(UpdateDownloadWorker.DOWNLOADED, 0),
+                        total = info.progress.getLong(UpdateDownloadWorker.TOTAL, -1)
+                            .takeIf { value -> value > 0 },
+                        error = null,
+                    )
+                }
+            WorkInfo.State.SUCCEEDED ->
+                scope.launch {
+                    try {
+                        val valid = withContext(Dispatchers.IO) {
+                            UpdateFiles.cachedApkVerified(app, release)
+                        }
+                        if (mutableStatus.value.release?.version == release.version)
+                            mutableStatus.update {
+                                it.copy(downloading = false, ready = valid,
+                                    error = if (valid) null else "Downloaded APK verification failed")
+                            }
+                    } catch (error: Exception) {
+                        mutableStatus.update { it.copy(downloading = false, error = error.message) }
+                    }
+                }
+            WorkInfo.State.FAILED ->
+                mutableStatus.update {
+                    it.copy(
+                        downloading = false,
+                        error = info.outputData.getString(UpdateDownloadWorker.ERROR)
+                            ?: "Download failed",
+                    )
+                }
+            WorkInfo.State.CANCELLED ->
+                mutableStatus.update { it.copy(downloading = false) }
+        }
+    }
 
     // Google Play is the update authority for Play installs. Development builds have
     // different application IDs/signatures and must never offer a production APK.
@@ -97,11 +154,12 @@ internal class AppUpdates(private val app: Application) {
                     val ignored = preferences.getString("ignoredVersion", null)
                     val ready =
                         if (release != null && release.version != ignored)
-                            withContext(Dispatchers.IO) { verifyCachedApk(release) }
+                            withContext(Dispatchers.IO) { UpdateFiles.cachedApkVerified(app, release) }
                         else false
                     mutableStatus.value =
                         if (release == null || release.version == ignored) UpdateStatus()
                         else UpdateStatus(release = release, ready = ready)
+                    reconcileWork(latestWork)
                     nextCheckAt = System.currentTimeMillis() + CHECK_INTERVAL
                 } catch (cancel: CancellationException) {
                     throw cancel
@@ -113,33 +171,32 @@ internal class AppUpdates(private val app: Application) {
 
     fun download() {
         val release = status.value.release ?: return
-        if (!enabled || operation?.isActive == true || status.value.ready) return
-        mutableStatus.update { it.copy(downloading = true, downloaded = 0, total = null, error = null) }
-        operation =
-            scope.launch {
-                try {
-                    withContext(Dispatchers.IO) {
-                        downloadApk(release) { bytes, total ->
-                            mutableStatus.update {
-                                if (it.release?.version == release.version)
-                                    it.copy(downloaded = bytes, total = total)
-                                else it
-                            }
-                        }
-                    }
-                    mutableStatus.update {
-                        if (it.release?.version == release.version)
-                            it.copy(downloading = false, ready = true, error = null)
-                        else it
-                    }
-                } catch (cancel: CancellationException) {
-                    throw cancel
-                } catch (error: Exception) {
-                    mutableStatus.update {
-                        it.copy(downloading = false, error = error.message ?: "Download failed")
-                    }
-                }
-            }
+        if (!enabled || status.value.downloading || status.value.ready) return
+        UpdateFiles.validate(release)
+        val request =
+            OneTimeWorkRequestBuilder<UpdateDownloadWorker>()
+                .setInputData(
+                    workDataOf(
+                        UpdateDownloadWorker.VERSION to release.version,
+                        UpdateDownloadWorker.APK_URL to release.apkUrl,
+                        UpdateDownloadWorker.CHECKSUM_URL to release.checksumUrl,
+                    )
+                )
+                .setConstraints(
+                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+                )
+                .setBackoffCriteria(
+                    BackoffPolicy.EXPONENTIAL,
+                    java.time.Duration.ofSeconds(30),
+                )
+                .addTag("version/${release.version}")
+                .build()
+        mutableStatus.update { it.copy(downloading = true, error = null) }
+        work.enqueueUniqueWork(
+            UpdateDownloadWorker.UNIQUE_NAME,
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
     }
 
     fun install(activity: Activity) {
@@ -158,12 +215,12 @@ internal class AppUpdates(private val app: Application) {
             scope.launch {
                 try {
                     // Verify again before the installer handoff, including after a permission trip.
-                    val verified = withContext(Dispatchers.IO) { verifyCachedApk(release) }
+                    val verified = withContext(Dispatchers.IO) { UpdateFiles.cachedApkVerified(app, release) }
                     if (!verified) {
                         mutableStatus.update { it.copy(ready = false, error = "APK verification failed") }
                         return@launch
                     }
-                    val apk = apkFile(release)
+                    val apk = UpdateFiles.apk(app, release)
                     val uri =
                         FileProvider.getUriForFile(activity, "${activity.packageName}.files", apk)
                     activity.startActivity(
@@ -181,14 +238,12 @@ internal class AppUpdates(private val app: Application) {
 
     fun ignoreVersion() {
         val release = status.value.release ?: return
-        if (status.value.downloading) return
+        if (status.value.downloading)
+            work.cancelUniqueWork(UpdateDownloadWorker.UNIQUE_NAME)
         preferences.edit().putString("ignoredVersion", release.version).apply()
         mutableStatus.value = UpdateStatus()
         sheetOpen = false
     }
-
-    private fun apkFile(release: UpdateRelease): File =
-        File(File(app.cacheDir, "updates"), "Papo-${release.version}-android-arm64.apk")
 
     private fun latestRelease(): UpdateRelease? {
         val json = JSONObject(requestText(RELEASE_API))
@@ -207,114 +262,11 @@ internal class AppUpdates(private val app: Application) {
         }
         // Never offer an APK without its matching release checksum.
         if (apk == null || checksum == null) return null
-        requireReleaseUrl(apk)
-        requireReleaseUrl(checksum)
         return UpdateRelease(version, json.optString("body"), apk, checksum)
+            .also(UpdateFiles::validate)
     }
 
-    private fun requireReleaseUrl(url: String) {
-        val parsed = URL(url)
-        require(
-            parsed.protocol == "https" &&
-                parsed.host == "github.com" &&
-                parsed.path.startsWith("/chriexpe/papo-frontend/releases/download/")
-        ) { "Unexpected release asset URL" }
-    }
-
-    private fun verifiedChecksum(release: UpdateRelease): String {
-        val text = requestText(release.checksumUrl, 8192)
-        val first = text.trim().split(Regex("\\s+")).firstOrNull().orEmpty().lowercase()
-        require(Regex("[0-9a-f]{64}").matches(first)) { "Invalid release checksum" }
-        return first
-    }
-
-    private fun verifyCachedApk(release: UpdateRelease): Boolean {
-        val file = apkFile(release)
-        if (!file.isFile) return false
-        val matches = checksum(file) == verifiedChecksum(release)
-        if (!matches) file.delete()
-        return matches
-    }
-
-    private fun downloadApk(release: UpdateRelease, progress: (Long, Long?) -> Unit) {
-        val dir = File(app.cacheDir, "updates")
-        check(dir.isDirectory || dir.mkdirs()) { "Cannot create update cache" }
-        val dest = apkFile(release)
-        val temporary = File(dir, "${dest.name}.part")
-        temporary.delete()
-        try {
-            request(release.apkUrl) { connection ->
-                val total = connection.contentLengthLong.takeIf { it > 0 }
-                var received = 0L
-                connection.inputStream.use { stream ->
-                    FileOutputStream(temporary).use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            if (Thread.currentThread().isInterrupted) error("Download interrupted")
-                            val length = stream.read(buffer)
-                            if (length < 0) break
-                            output.write(buffer, 0, length)
-                            received += length
-                            progress(received, total)
-                        }
-                        output.fd.sync()
-                    }
-                }
-            }
-            check(checksum(temporary) == verifiedChecksum(release)) {
-                "Downloaded APK failed SHA-256 verification"
-            }
-            if (dest.exists()) check(dest.delete()) { "Cannot replace cached APK" }
-            check(temporary.renameTo(dest)) { "Cannot save verified APK" }
-        } finally {
-            temporary.delete()
-        }
-    }
-
-    private fun checksum(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().buffered().use { input ->
-            val bytes = ByteArray(64 * 1024)
-            while (true) {
-                val size = input.read(bytes)
-                if (size < 0) break
-                digest.update(bytes, 0, size)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    private fun requestText(url: String, limit: Int = 512 * 1024): String =
-        request(url) { connection ->
-            connection.inputStream.use { stream ->
-                val buffer = ByteArray(8192)
-                val output = java.io.ByteArrayOutputStream()
-                while (true) {
-                    val size = stream.read(buffer)
-                    if (size < 0) break
-                    check(output.size() + size <= limit) { "Release response too large" }
-                    output.write(buffer, 0, size)
-                }
-                output.toString(Charsets.UTF_8.name())
-            }
-        }
-
-    private inline fun <T> request(url: String, block: (HttpURLConnection) -> T): T {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 30_000
-        connection.setRequestProperty("User-Agent", "Papo/${BuildConfig.VERSION_NAME}")
-        try {
-            check(connection.responseCode in 200..299) {
-                "Update request failed (HTTP ${connection.responseCode})"
-            }
-            return block(connection)
-        } finally {
-            connection.disconnect()
-        }
-    }
 }
-
 /** GitHub's latest release is stable; pre-release local builds are lower than a stable match. */
 internal fun newerStableRelease(latest: String, installed: String): Boolean {
     val pattern =
