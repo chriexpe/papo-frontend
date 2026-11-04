@@ -1030,4 +1030,12 @@
     <string name="call_audio_routing_unavailable">Este servidor não informa o roteamento de áudio dos participantes. Volume e silenciamento individuais indisponíveis.</string>
     <string name="call_status_unknown">Estado do microfone e da câmera indisponível</string>
     <string name="call_leave_timeout">A saída da chamada anterior ainda não foi confirmada. Aguarde o servidor ou reconecte antes de entrar novamente.</string>
+    <string name="update_available">Atualização disponível</string>
+    <string name="update_download">Baixar atualização</string>
+    <string name="update_install">Instalar atualização</string>
+    <string name="update_downloading">Baixando e verificando atualização…</string>
+    <string name="update_ready">Download verificado. Pronto para instalar.</string>
+    <string name="update_no_notes">Sem notas de versão.</string>
+    <string name="update_ignore_version">Ignorar esta versão</string>
+    <string name="update_permission">O Android pedirá permissão para instalar apps pelo Papo antes de continuar.</string>
 </resources>
