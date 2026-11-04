@@ -62,11 +62,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-@Composable
 /** Terminal results always release a pending viewport navigation lock. */
 internal fun navigationRequiresUnlock(outcome: String, serial: ULong, handled: ULong): Boolean =
     serial != handled && outcome in arrayOf("unavailable", "failed", "cancelled")
 
+@Composable
 internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBack: () -> Unit) {
     val channel = server.conversation ?: return
     val draftKey = "${server.url}/${server.me}/${channel.id}"
