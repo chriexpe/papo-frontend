@@ -1634,6 +1634,13 @@ class PapoUiTest {
             .performClick()
         input.assertTextEquals("@everyone ")
         input.performTextInput(":thumbs_up")
+        // The shared catalog is loaded off Main; completion must refresh this same query.
+        compose.waitUntil(5_000) {
+            compose
+                .onAllNodes(hasText("👍") and hasAnyAncestor(hasTestTag("composer-suggestions")))
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
         compose
             .onNode(hasText("👍") and hasAnyAncestor(hasTestTag("composer-suggestions")))
             .performClick()
@@ -2715,7 +2722,7 @@ class PapoUiTest {
     @Test
     fun extraCompactBadgePaddingAuthorGapsAndStackedVariantSurviveLargeText() {
         chat()
-        val layout = androidx.compose.runtime.mutableStateOf(MessageDensity.ExtraCompact)
+        val stacked = androidx.compose.runtime.mutableStateOf(false)
         activity.onActivity { host ->
             val model = (host.application as PapoApplication).model
             val server = checkNotNull(model.state.value.active)
@@ -2750,7 +2757,11 @@ class PapoUiTest {
                 val baseDensity = androidx.compose.ui.platform.LocalDensity.current
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalMessageAppearance provides
-                        MessageAppearance(AccountFontSize.Large, layout.value),
+                        MessageAppearance(
+                            AccountFontSize.Large,
+                            MessageDensity.ExtraCompact,
+                            stacked = stacked.value,
+                        ),
                     androidx.compose.ui.platform.LocalDensity provides
                         androidx.compose.ui.unit.Density(baseDensity.density, 1.6f),
                 ) {
@@ -2788,8 +2799,9 @@ class PapoUiTest {
         }
         fun assertBadgesFit() {
             val badges = compose.onAllNodesWithText("APP", useUnmergedTree = true)
-            badges.assertCountEquals(3)
-            repeat(3) { index ->
+            // The middle message is explicitly grouped: only Bread and Sone get author badges.
+            badges.assertCountEquals(2)
+            repeat(2) { index ->
                 val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
                 badges[index].performSemanticsAction(
                     androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult
@@ -2828,7 +2840,7 @@ class PapoUiTest {
             bitmap.recycle()
         }
         screenshot("extra-compact-badges-verified.png")
-        compose.runOnIdle { layout.value = MessageDensity.ExtraCompactStacked }
+        compose.runOnIdle { stacked.value = true }
         assertBadgesFit()
         val author =
             compose

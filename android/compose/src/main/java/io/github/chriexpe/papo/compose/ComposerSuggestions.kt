@@ -8,7 +8,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -91,11 +90,12 @@ internal fun ComposerSuggestions(
     onPick: (ComposerDraft) -> Unit,
 ) {
     val trigger = draft.trigger() ?: return
-    val context = LocalContext.current
-    val standard = remember { UnicodeEmojiCatalog.load(context) }
+    // People suggestions never need the emoji asset, even on the first cold trigger.
+    val standard by rememberUnicodeEmojiCatalog(enabled = !trigger.people)
     val suggestions =
         remember(
             trigger,
+            standard,
             server.members,
             server.emojis,
             server.capabilities,

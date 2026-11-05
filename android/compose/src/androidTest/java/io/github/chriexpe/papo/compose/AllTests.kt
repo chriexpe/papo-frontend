@@ -23,6 +23,8 @@ import org.junit.runners.Suite
     ComposerDraftTest::class,
     ComposerMarkdownTest::class,
     ComposerSuggestionsTest::class,
+    UnicodeEmojiCatalogStateTest::class,
+    PickerHeightTest::class,
     MarkdownTest::class,
     MessageLinksTest::class,
     MediaLifecycleTest::class,

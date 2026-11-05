@@ -32,10 +32,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Coil's shared decoded-image memory cache and MediaCache's on-disk encoded cache already have
@@ -143,16 +141,7 @@ internal fun EmojiPickerBody(
                 server.emojis.firstOrNull { it.id == id }?.let { EmojiChoice(it.id, true, it.name) }
             }
         }
-    val context = LocalContext.current
-    // JSON parsing/search normalization is expensive on the first open. The catalog itself
-    // is shared and cached by UnicodeEmojiCatalog; load it off the Compose UI thread.
-    val standard by
-        produceState(emptyList<UnicodeEmoji>(), context.applicationContext) {
-            value =
-                withContext(Dispatchers.Default) {
-                    UnicodeEmojiCatalog.load(context.applicationContext)
-                }
-        }
+    val standard by rememberUnicodeEmojiCatalog()
     val custom =
         remember(server.emojis, query) {
             server.emojis.filter { it.name.contains(query.trim(), true) }

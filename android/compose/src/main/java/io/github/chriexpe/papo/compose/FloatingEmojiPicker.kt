@@ -19,10 +19,21 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.dp
 import kotlin.math.min
+import kotlin.math.roundToInt
+
+/** Resize in measurement: drag/spring pixels do not invalidate the surrounding composition. */
+internal fun Modifier.emojiPickerHeight(heightPx: () -> Float): Modifier =
+    layout { measurable, constraints ->
+        val height = constraints.constrainHeight(heightPx().roundToInt())
+        val child = measurable.measure(constraints.copy(minHeight = height, maxHeight = height))
+        layout(child.width, child.height) { child.placeRelative(0, 0) }
+    }
 
 /**
  * A non-modal overlay attached to the TOP of the composer, not a Scaffold sheet. Only compose this
@@ -57,9 +68,6 @@ internal fun FloatingEmojiPicker(
                 animationSpec = spring(),
                 label = "emoji-picker-height",
             )
-        val displayedHeight =
-            if (dragging) draggedHeight.coerceIn(peekPx, expandedPx) else animatedHeight
-
         val dragState = rememberDraggableState { delta ->
             draggedHeight = (draggedHeight - delta).coerceIn(peekPx, expandedPx)
         }
@@ -108,7 +116,9 @@ internal fun FloatingEmojiPicker(
             modifier =
                 Modifier.fillMaxWidth()
                     .padding(horizontal = 8.dp)
-                    .height(with(density) { displayedHeight.toDp() })
+                    .emojiPickerHeight {
+                        if (dragging) draggedHeight.coerceIn(peekPx, expandedPx) else animatedHeight
+                    }
                     .nestedScroll(nestedScroll)
                     .testTag("floating-emoji-picker"),
             shape = RoundedCornerShape(24.dp),
@@ -125,7 +135,12 @@ internal fun FloatingEmojiPicker(
                             orientation = Orientation.Vertical,
                             enabled = !searchFocusRequested,
                             onDragStarted = {
-                                draggedHeight = displayedHeight
+                                // Read the current value when the drag starts, not in composition.
+                                draggedHeight =
+                                    (if (dragging) draggedHeight else animatedHeight).coerceIn(
+                                        peekPx,
+                                        expandedPx,
+                                    )
                                 dragging = true
                             },
                             onDragStopped = { velocity ->
