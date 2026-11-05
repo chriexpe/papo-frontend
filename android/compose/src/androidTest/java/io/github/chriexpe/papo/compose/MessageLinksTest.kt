@@ -138,7 +138,7 @@ class MessageLinksTest {
         val preferences = context.getSharedPreferences("compose-appearance", 0)
         val tree =
             android.provider.DocumentsContract.buildTreeDocumentUri(
-                "io.github.chriexpe.papo.compose.test.documents",
+                InstrumentationRegistry.getInstrumentation().context.packageName + ".documents",
                 "root",
             )
         val file =

@@ -1,8 +1,14 @@
 package io.github.chriexpe.papo.compose
 
 import android.content.Context
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.platform.LocalContext
 import java.text.Normalizer
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
 internal data class UnicodeEmoji(val glyph: String, val keywords: String) {
@@ -14,6 +20,22 @@ internal fun matchingUnicodeEmoji(catalog: List<UnicodeEmoji>, query: String): L
     return catalog
         .filter { it.glyph == query || it.searchable.contains(search) }
         .distinctBy { it.glyph }
+}
+
+/**
+ * Cold asset reading, JSON parsing and search normalization never run in composition. Keep the
+ * loader independent of the query so typing does not cancel/restart an in-flight catalog load.
+ * Disabling cancels publication, while the process-wide catalog may still finish warming its cache.
+ */
+@Composable
+internal fun rememberUnicodeEmojiCatalog(
+    enabled: Boolean = true,
+    load: (Context) -> List<UnicodeEmoji> = UnicodeEmojiCatalog::load,
+): State<List<UnicodeEmoji>> {
+    val application = LocalContext.current.applicationContext
+    return produceState(emptyList(), application, enabled, load) {
+        if (enabled) value = withContext(Dispatchers.Default) { load(application) }
+    }
 }
 
 /** Picker and autocomplete share one immutable catalog, including its bilingual search aliases. */

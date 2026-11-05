@@ -37,9 +37,12 @@ class AccountAppearanceTest {
             preferences.messageAppearance(comfortable.copy(url = "https://other.test")).density,
         )
         assertEquals("comfortable", comfortable.appearance?.messageDensity)
-        preferences.setExtraCompact(comfortable, true, stacked = true)
+        preferences.setExtraCompactStacked(comfortable, false)
+        assertFalse(preferences.messageAppearance(comfortable).stacked)
+        preferences.setExtraCompactStacked(comfortable, true)
+        assertTrue(preferences.messageAppearance(comfortable).stacked)
         assertEquals(
-            MessageDensity.ExtraCompactStacked,
+            MessageDensity.ExtraCompact,
             preferences.messageAppearance(comfortable).density,
         )
         assertEquals("comfortable", comfortable.appearance?.messageDensity)
