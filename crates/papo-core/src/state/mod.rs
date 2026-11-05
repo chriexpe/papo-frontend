@@ -3839,28 +3839,27 @@ impl Store {
             }
             Update::ConnectionViolation => self.notice = Some(Notice::ConnectionViolation),
             Update::Server(server) => {
+                // Move the API-owned base64 icon into the Store. Only persistence
+                // needs a second owned copy, and only when the icon has changed.
                 let new_icon = server.as_ref().and_then(|server|
-                    server.icon_blob.clone().filter(|blob| !blob.is_empty())
+                    server.icon_blob.as_ref().filter(|blob| !blob.is_empty())
                 );
                 self.server_icon_fresh = true;
-                let changed = self.server.as_ref().and_then(|s| s.icon.as_ref()) != new_icon.as_ref();
-                if changed {
-                    self.pending_cache.push(CacheOp::SetServerIcon(new_icon));
-                }
-                self.screen = match &server {
-                    Some(_) => Screen::Chat,
-                    None => Screen::NeedsServer,
-                };
-                self.server = server.map(|server| Server {
-                    name: server.name.clone(),
-                    description: server
-                        .owner_username
-                        .clone()
-                        .map(|owner| format!("de {owner}")),
+                let changed = self.server.as_ref().and_then(|s| s.icon.as_ref()) != new_icon;
+                self.screen = if server.is_some() { Screen::Chat } else { Screen::NeedsServer };
+                let updated = server.map(|server| Server {
+                    name: server.name,
+                    description: server.owner_username.map(|owner| format!("de {owner}")),
                     public: server.public,
-                    owner_id: server.owner_id.clone(),
-                    icon: server.icon_blob.clone().filter(|blob| !blob.is_empty()),
+                    owner_id: server.owner_id,
+                    icon: server.icon_blob.filter(|blob| !blob.is_empty()),
                 });
+                if changed {
+                    self.pending_cache.push(CacheOp::SetServerIcon(
+                        updated.as_ref().and_then(|server| server.icon.clone()),
+                    ));
+                }
+                self.server = updated;
                 self.busy = false;
                 if let Some(server) = &self.server {
                     self.pending_cache
@@ -4031,21 +4030,23 @@ impl Store {
             // caminho de convergência para user_join/avatar_update/role_*.
             Update::Profiles(profiles) => {
                 let mut members_changed = false;
-                for profile in profiles {
+                for mut profile in profiles {
                     let id = profile.id.clone();
-                    let avatar = profile.avatar_blob.clone().filter(|blob| !blob.is_empty());
+                    // Reuse the API-owned buffer. A no-op refresh should not
+                    // replace the Store allocation or enqueue a cache copy.
+                    let avatar = profile.avatar_blob.take().filter(|blob| !blob.is_empty());
                     self.avatars_fresh.insert(id.clone());
                     if self.avatars.get(&id) != avatar.as_ref() {
                         self.pending_cache.push(CacheOp::SetAvatar {
                             user_id: id.clone(), blob: avatar.clone(),
                         });
-                    }
-                    match avatar {
-                        Some(blob) => {
-                            self.avatars.insert(id.clone(), blob);
-                        }
-                        None => {
-                            self.avatars.remove(&id);
+                        match avatar {
+                            Some(blob) => {
+                                self.avatars.insert(id.clone(), blob);
+                            }
+                            None => {
+                                self.avatars.remove(&id);
+                            }
                         }
                     }
 
@@ -8212,6 +8213,73 @@ mod notification_badge_tests {
         assert_eq!(store.pending_notification_count(), 1);
         store.clear_cached_state();
         assert_eq!(store.pending_notification_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod memory_optimization_tests {
+    use super::*;
+
+    fn profile(avatar: Option<&str>) -> models::UserProfile {
+        models::UserProfile {
+            id: "avatar-user".into(),
+            username: "avatar-user".into(),
+            nickname: None,
+            avatar_blob: avatar.map(str::to_owned),
+            avatar_format: None,
+            banner_media: None,
+            description: None,
+            status: None,
+            status_message: None,
+            typing: None,
+            created_at: None,
+            roles: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unchanged_profile_avatar_keeps_allocation_and_skips_cache_write() {
+        let mut store = Store::default();
+        store.apply(Update::Profiles(vec![profile(Some("large-base64-image"))]));
+        assert!(store.take_cache_ops().iter().any(|op| matches!(
+            op, CacheOp::SetAvatar { user_id, blob }
+                if user_id == "avatar-user" && blob.as_deref() == Some("large-base64-image")
+        )));
+        let first = store.avatars["avatar-user"].as_ptr();
+
+        store.apply(Update::Profiles(vec![profile(Some("large-base64-image"))]));
+        assert_eq!(store.avatars["avatar-user"].as_ptr(), first);
+        assert!(!store.take_cache_ops().iter().any(|op| matches!(op, CacheOp::SetAvatar { .. })));
+
+        store.apply(Update::Profiles(vec![profile(None)]));
+        assert!(!store.avatars.contains_key("avatar-user"));
+        assert!(store.take_cache_ops().iter().any(|op| matches!(
+            op, CacheOp::SetAvatar { user_id, blob }
+                if user_id == "avatar-user" && blob.is_none()
+        )));
+    }
+
+    #[test]
+    fn server_icon_still_persists_only_on_change() {
+        let mut store = Store::default();
+        let server = || models::Server {
+            id: "server".into(),
+            name: "Test".into(),
+            owner_id: None,
+            owner_username: None,
+            public: true,
+            member_count: 0,
+            channel_count: 0,
+            icon_blob: Some("icon-base64".into()),
+        };
+        store.apply(Update::Server(Some(Box::new(server()))));
+        assert_eq!(store.server.as_ref().and_then(|s| s.icon.as_deref()), Some("icon-base64"));
+        assert!(store.take_cache_ops().iter().any(|op| matches!(
+            op, CacheOp::SetServerIcon(Some(icon)) if icon == "icon-base64"
+        )));
+
+        store.apply(Update::Server(Some(Box::new(server()))));
+        assert!(!store.take_cache_ops().iter().any(|op| matches!(op, CacheOp::SetServerIcon(_))));
     }
 }
 

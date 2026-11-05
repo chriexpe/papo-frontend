@@ -23,6 +23,7 @@ import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import io.github.chriexpe.papo.core.MediaRequest
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
@@ -58,7 +59,11 @@ private constructor(
             LeastRecentlyUsedCacheEvictor(budget),
             StandaloneDatabaseProvider(context),
         )
-    private val locks = ConcurrentHashMap<String, Mutex>()
+    // Fixed stripes bound synchronization metadata as media keys accumulate.
+    // Collisions only serialize unrelated loads; same-key writes remain safe.
+    private val locks = Array(256) { Mutex() }
+
+    private fun lockFor(key: String): Mutex = locks[key.hashCode() and (locks.size - 1)]
 
     private fun hash(key: String) =
         MessageDigest.getInstance("SHA-256").digest(key.toByteArray()).joinToString("") {
@@ -127,7 +132,7 @@ private constructor(
                 .toList()
                 .filter { it.startsWith("papo:$scope:") }
                 .forEach { key ->
-                    locks.getOrPut(key) { Mutex() }.withLock { cache.removeResource(key) }
+                    lockFor(key).withLock { cache.removeResource(key) }
                 }
             // v1 hashes had no owner. Discard the old disposable cache rather than
             // retain untraceable media after promising a complete server removal.
@@ -144,8 +149,17 @@ private constructor(
         val length = ContentMetadata.getContentLength(cache.getContentMetadata(key))
         if (length !in 1..limit.toLong() || !cache.isCached(key, 0, length)) return null
         return runCatching {
-            DataSourceInputStream(readOnly().createDataSource(), spec(key)).use {
-                readBounded(it, limit)
+            DataSourceInputStream(readOnly().createDataSource(), spec(key)).use { input ->
+                // Cached length is exact: avoid a growing buffer and full-size copy.
+                ByteArray(length.toInt()).also { bytes ->
+                    var offset = 0
+                    while (offset < bytes.size) {
+                        val count = input.read(bytes, offset, bytes.size - offset)
+                        if (count < 0) throw EOFException("Truncated cached media")
+                        if (count == 0) throw IOException("Cached media made no progress")
+                        offset += count
+                    }
+                }
             }
         }
             .getOrNull()
@@ -174,16 +188,14 @@ private constructor(
         return withContext(Dispatchers.IO) {
             checkAllowed(key)
             peek(key, limit)
-                ?: locks
-                    .getOrPut(key) { Mutex() }
-                    .withLock {
-                        peek(key, limit)
-                            ?: load().also {
-                                require(it.size <= limit) { ui(R.string.media_is_too_large) }
-                                currentCoroutineContext().ensureActive()
-                                store(key, it)
-                            }
-                    }
+                ?: lockFor(key).withLock {
+                    peek(key, limit)
+                        ?: load().also {
+                            require(it.size <= limit) { ui(R.string.media_is_too_large) }
+                            currentCoroutineContext().ensureActive()
+                            store(key, it)
+                        }
+                }
         }
     }
 
@@ -191,12 +203,10 @@ private constructor(
     internal suspend fun invalidate(source: MediaRequest) =
         withContext(Dispatchers.IO) {
             val key = key(source)
-            locks
-                .getOrPut(key) { Mutex() }
-                .withLock {
-                    checkAllowed(key)
-                    cache.removeResource(key)
-                }
+            lockFor(key).withLock {
+                checkAllowed(key)
+                cache.removeResource(key)
+            }
         }
 
     fun images(source: MediaRequest): Flow<ByteArray> = flow {
@@ -210,74 +220,70 @@ private constructor(
         if (cached != null && (!mutable || now() - checked in 0 until freshFor)) return@flow
         val bytes =
             try {
-                locks
-                    .getOrPut(key) { Mutex() }
-                    .withLock {
-                        val latest = peek(key)
-                        val metadata = cache.getContentMetadata(key)
-                        if (
-                            latest != null &&
-                                (!mutable || now() - metadata.get(CHECKED, 0L) in 0 until freshFor)
-                        )
-                            latest
-                        else if (mutable) {
-                            val request =
-                                Request.Builder()
-                                    .url(source.url)
-                                    .apply {
-                                        metadata
-                                            .get(ETAG, "")
-                                            .orEmpty()
-                                            .takeIf { it.isNotBlank() }
-                                            ?.let { header("If-None-Match", it) }
-                                        metadata
-                                            .get(MODIFIED, "")
-                                            .orEmpty()
-                                            .takeIf { it.isNotBlank() }
-                                            ?.let { header("If-Modified-Since", it) }
-                                    }
-                                    .build()
-                            cancellableRequest(source, request) { response ->
-                                val data =
-                                    if (response.code == 304 && latest != null) latest
-                                    else {
-                                        if (!response.isSuccessful)
-                                            throw IOException(
-                                                ui(R.string.media_unavailable_1_s, response.code)
-                                            )
-                                        val body =
-                                            response.body
-                                                ?: throw IOException(ui(R.string.empty_media))
-                                        if (body.contentLength() > MAX_IMAGE)
-                                            throw IOException(ui(R.string.image_is_too_large))
-                                        body.byteStream().use { readBounded(it, MAX_IMAGE) }
-                                    }
-                                currentCoroutineContext().ensureActive()
-                                if (latest == null || !latest.contentEquals(data)) store(key, data)
-                                cache.applyContentMetadataMutations(
-                                    key,
-                                    ContentMetadataMutations()
-                                        .set(CHECKED, now())
-                                        .set(
-                                            ETAG,
-                                            response.header("ETag")
-                                                ?: metadata.get(ETAG, "").orEmpty(),
+                lockFor(key).withLock {
+                    val latest = peek(key)
+                    val metadata = cache.getContentMetadata(key)
+                    if (
+                        latest != null &&
+                            (!mutable || now() - metadata.get(CHECKED, 0L) in 0 until freshFor)
+                    )
+                        latest
+                    else if (mutable) {
+                        val request =
+                            Request.Builder()
+                                .url(source.url)
+                                .apply {
+                                    metadata
+                                        .get(ETAG, "")
+                                        .orEmpty()
+                                        .takeIf { it.isNotBlank() }
+                                        ?.let { header("If-None-Match", it) }
+                                    metadata
+                                        .get(MODIFIED, "")
+                                        .orEmpty()
+                                        .takeIf { it.isNotBlank() }
+                                        ?.let { header("If-Modified-Since", it) }
+                                }
+                                .build()
+                        cancellableRequest(source, request) { response ->
+                            val data =
+                                if (response.code == 304 && latest != null) latest
+                                else {
+                                    if (!response.isSuccessful)
+                                        throw IOException(
+                                            ui(R.string.media_unavailable_1_s, response.code)
                                         )
-                                        .set(
-                                            MODIFIED,
-                                            response.header("Last-Modified")
-                                                ?: metadata.get(MODIFIED, "").orEmpty(),
-                                        ),
-                                )
-                                data
-                            }
-                        } else
-                            DataSourceInputStream(
-                                    factory(source).createDataSource(),
-                                    spec(key, source.url),
-                                )
-                                .use { readBounded(it, MAX_IMAGE) }
-                    }
+                                    val body =
+                                        response.body ?: throw IOException(ui(R.string.empty_media))
+                                    if (body.contentLength() > MAX_IMAGE)
+                                        throw IOException(ui(R.string.image_is_too_large))
+                                    body.byteStream().use { readBounded(it, MAX_IMAGE) }
+                                }
+                            currentCoroutineContext().ensureActive()
+                            if (latest == null || !latest.contentEquals(data)) store(key, data)
+                            cache.applyContentMetadataMutations(
+                                key,
+                                ContentMetadataMutations()
+                                    .set(CHECKED, now())
+                                    .set(
+                                        ETAG,
+                                        response.header("ETag") ?: metadata.get(ETAG, "").orEmpty(),
+                                    )
+                                    .set(
+                                        MODIFIED,
+                                        response.header("Last-Modified")
+                                            ?: metadata.get(MODIFIED, "").orEmpty(),
+                                    ),
+                            )
+                            data
+                        }
+                    } else
+                        DataSourceInputStream(
+                                factory(source).createDataSource(),
+                                spec(key, source.url),
+                            )
+                            .use { readBounded(it, MAX_IMAGE) }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -463,7 +469,7 @@ private constructor(
         withContext(Dispatchers.IO) {
             // Active readers retain their open span; removal is safe in SimpleCache.
             cache.keys.toList().forEach { key ->
-                locks.getOrPut(key) { Mutex() }.withLock { cache.removeResource(key) }
+                lockFor(key).withLock { cache.removeResource(key) }
             }
         }
 

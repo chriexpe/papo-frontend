@@ -10,7 +10,8 @@ import coil3.gif.AnimatedImageDecoder
 import coil3.key.Keyer
 import coil3.memory.MemoryCache
 import coil3.request.Options
-import okio.Buffer
+import okio.buffer
+import okio.source
 
 /**
  * Stable resource identities let the shared decoder find an existing bitmap before doing
@@ -31,7 +32,8 @@ private class CachedImageFetcher : Fetcher.Factory<CachedImage> {
         object : Fetcher {
             override suspend fun fetch() =
                 SourceFetchResult(
-                    ImageSource(Buffer().write(data.load()), options.fileSystem),
+                    // Keep the encoded byte array without duplicating it into an Okio Buffer.
+                    ImageSource(data.load().inputStream().source().buffer(), options.fileSystem),
                     null,
                     DataSource.DISK,
                 )
