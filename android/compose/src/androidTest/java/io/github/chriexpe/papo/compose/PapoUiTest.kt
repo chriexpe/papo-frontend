@@ -322,6 +322,55 @@ class PapoUiTest {
     }
 
     @Test
+    fun floatingPickerCollapseReleaseDoesNotRewindToExpandedHeight() {
+        chat()
+        compose.onNodeWithContentDescription("Emoji and stickers").performClick()
+        val panel = compose.onNodeWithTag("floating-emoji-picker")
+        val compact = panel.fetchSemanticsNode().boundsInRoot
+        val density =
+            InstrumentationRegistry.getInstrumentation()
+                .targetContext
+                .resources
+                .displayMetrics
+                .density
+        val handleY = 12f * density
+        panel.performTouchInput {
+            swipe(
+                androidx.compose.ui.geometry.Offset(width / 2f, handleY),
+                androidx.compose.ui.geometry.Offset(width / 2f, handleY - compact.height * 1.2f),
+                600,
+            )
+        }
+        compose.waitForIdle()
+        val expanded = panel.fetchSemanticsNode().boundsInRoot
+        assertTrue(expanded.height > compact.height * 1.5f)
+        compose.mainClock.autoAdvance = false
+        try {
+            panel.performTouchInput {
+                down(androidx.compose.ui.geometry.Offset(width / 2f, handleY))
+                moveBy(androidx.compose.ui.geometry.Offset(0f, 24f * density))
+            }
+            compose.mainClock.advanceTimeByFrame()
+            panel.performTouchInput {
+                moveBy(androidx.compose.ui.geometry.Offset(0f, expanded.height - compact.height))
+            }
+            compose.mainClock.advanceTimeByFrame()
+            val beforeRelease = panel.fetchSemanticsNode().boundsInRoot.height
+            panel.performTouchInput { up() }
+            compose.mainClock.advanceTimeByFrame()
+            val afterRelease = panel.fetchSemanticsNode().boundsInRoot.height
+            assertTrue(
+                "Release must not restore the old expanded endpoint",
+                afterRelease < beforeRelease + 24f * density,
+            )
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        compose.waitForIdle()
+        assertEquals(compact.height, panel.fetchSemanticsNode().boundsInRoot.height, 1f)
+    }
+
+    @Test
     fun systemBackClosesProfilesAndPickersBeforeLeavingChat() {
         chat()
         compose.onNodeWithTag("author-general-9", useUnmergedTree = true).performClick()

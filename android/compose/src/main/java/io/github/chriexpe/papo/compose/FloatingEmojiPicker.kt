@@ -2,8 +2,6 @@
 
 package io.github.chriexpe.papo.compose
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
@@ -60,16 +58,13 @@ internal fun FloatingEmojiPicker(
         val expandedPx = (availablePx * .88f).coerceAtLeast(1f)
         val peekPx = min(with(density) { 276.dp.toPx() }, expandedPx)
         var expanded by remember { mutableStateOf(false) }
-        var dragging by remember { mutableStateOf(false) }
-        var draggedHeight by remember { mutableFloatStateOf(peekPx) }
-        val animatedHeight by
-            animateFloatAsState(
-                targetValue = if (expanded || searchFocusRequested) expandedPx else peekPx,
-                animationSpec = spring(),
-                label = "emoji-picker-height",
-            )
+        // Initial height seeds one controller per open picker; bound changes must
+        // update its target, not recreate/reset it during IME or window resizing.
+        val height = remember { PickerHeightState(peekPx) }
+        val targetHeight = if (expanded || searchFocusRequested) expandedPx else peekPx
+        LaunchedEffect(height, targetHeight, height.dragging) { height.animateTo(targetHeight) }
         val dragState = rememberDraggableState { delta ->
-            draggedHeight = (draggedHeight - delta).coerceIn(peekPx, expandedPx)
+            height.dragBy(delta, peekPx, expandedPx)
         }
         // LazyVerticalGrid participates in nested scrolling. When the user swipes up
         // inside the compact grid, expand the panel before consuming sticker scroll.
@@ -117,7 +112,8 @@ internal fun FloatingEmojiPicker(
                 Modifier.fillMaxWidth()
                     .padding(horizontal = 8.dp)
                     .emojiPickerHeight {
-                        if (dragging) draggedHeight.coerceIn(peekPx, expandedPx) else animatedHeight
+                        val pixels = height.value
+                        if (height.dragging) pixels.coerceIn(peekPx, expandedPx) else pixels
                     }
                     .nestedScroll(nestedScroll)
                     .testTag("floating-emoji-picker"),
@@ -134,21 +130,13 @@ internal fun FloatingEmojiPicker(
                             state = dragState,
                             orientation = Orientation.Vertical,
                             enabled = !searchFocusRequested,
-                            onDragStarted = {
-                                // Read the current value when the drag starts, not in composition.
-                                draggedHeight =
-                                    (if (dragging) draggedHeight else animatedHeight).coerceIn(
-                                        peekPx,
-                                        expandedPx,
-                                    )
-                                dragging = true
-                            },
+                            onDragStarted = { height.startDrag(peekPx, expandedPx) },
                             onDragStopped = { velocity ->
+                                val releasedHeight = height.stopDrag(peekPx, expandedPx)
                                 expanded =
                                     velocity < -250f ||
                                         (velocity < 250f &&
-                                            draggedHeight > (peekPx + expandedPx) / 2f)
-                                dragging = false
+                                            releasedHeight > (peekPx + expandedPx) / 2f)
                             },
                         ),
                     contentAlignment = Alignment.Center,

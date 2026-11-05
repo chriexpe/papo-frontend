@@ -25,6 +25,7 @@ import org.junit.runners.Suite
     ComposerSuggestionsTest::class,
     UnicodeEmojiCatalogStateTest::class,
     PickerHeightTest::class,
+    PickerHeightStateTest::class,
     MarkdownTest::class,
     MessageLinksTest::class,
     MediaLifecycleTest::class,
