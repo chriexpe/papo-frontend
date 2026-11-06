@@ -5,6 +5,7 @@
 //! Channels establish ordering; assertions do not depend on sleeps or a clock.
 
 mod burst;
+mod replacements;
 mod windows;
 
 use std::sync::{Arc, mpsc};
@@ -136,10 +137,14 @@ fn replaced_account_drops_its_async_result_from_ownership_handoff_section_3(
 #[test]
 fn stopping_without_consuming_projection_joins_runtime_and_transport() {
     let (finished, received) = mpsc::channel();
+    let (entered, opened) = mpsc::channel();
     let owner = SessionThread::start(identity("server-1", "account-1"), move |wake| {
-        open(wake, finished)
+        let runtime = open(wake, finished);
+        entered.send(()).unwrap();
+        runtime
     })
     .unwrap();
+    opened.recv().unwrap();
     owner.stop();
     owner.join().unwrap();
     // Net keeps its own Arc to the storage until its papo-net thread exits.
@@ -192,9 +197,12 @@ fn shutdown_rejects_new_sessions_before_invoking_their_factory(cx: &mut TestAppC
 
 #[test]
 fn an_owner_panic_is_reported_at_join_instead_of_unwinding_the_foreground() {
-    let owner = SessionThread::start(identity("server-1", "account-1"), |_| {
+    let (entered, opened) = mpsc::channel();
+    let owner = SessionThread::start(identity("server-1", "account-1"), move |_| {
+        entered.send(()).unwrap();
         panic!("synthetic owner failure")
     })
     .unwrap();
+    opened.recv().unwrap();
     assert!(matches!(owner.join(), Err(super::SessionError::Panicked)));
 }

@@ -37,6 +37,9 @@ pub(crate) enum SessionError {
     /// Shutdown has begun; no new session may outlive the last window.
     #[error("the application is stopping")]
     Stopping,
+    /// The server thread has stopped or failed and cannot accept replacement.
+    #[error("the session owner is not running")]
+    OwnerStopped,
 }
 
 /// The identity captured when asynchronous work begins, including replacement.
@@ -85,11 +88,13 @@ impl Global for ApplicationSessions {}
 
 impl Sessions {
     /// Replaces a server/account incarnation before any new result can be accepted.
-    /// Opening and all cache work are performed by the new owner thread.
+    /// The existing server thread coalesces unopened replacements; the old
+    /// runtime stops before the latest requested factory opens on that thread.
     ///
     /// # Errors
-    /// Returns `SessionError::Spawn` if the OS refuses to create its thread,
-    /// or `SessionError::Stopping` after application shutdown has begun.
+    /// Returns `SessionError::Spawn` if the initial thread cannot be created,
+    /// `SessionError::OwnerStopped` if it failed, or `SessionError::Stopping`
+    /// after application shutdown has begun.
     pub(crate) fn replace(
         &mut self,
         identity: SessionIdentity,
@@ -99,18 +104,14 @@ impl Sessions {
         if self.stopping {
             return Err(SessionError::Stopping);
         }
-        let previous = self.servers.remove(&identity.server).map(|session| {
-            session.owner.stop();
-            session.owner
-        });
-        let owner = SessionThread::start(identity.clone(), move |wake| {
-            // The replacement cannot open a second runtime for this server
-            // until its predecessor has joined and flushed.
-            if let Some(previous) = previous {
-                join(previous);
-            }
-            open(wake)
-        })?;
+        if let Some(session) = self.servers.get_mut(&identity.server) {
+            session.owner.replace(identity.clone(), open)?;
+            session.identity = identity;
+            session.projection = Projection::default();
+            cx.notify();
+            return Ok(());
+        }
+        let owner = SessionThread::start(identity.clone(), open)?;
         let publications = owner.publications();
         let foreground = cx.spawn(async move |this, cx| {
             while let Ok(publication) = publications.recv().await {

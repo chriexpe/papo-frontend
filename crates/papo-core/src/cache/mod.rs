@@ -74,6 +74,9 @@ impl CacheStats {
     }
 }
 
+/// A short, non-blocking completion on the cache worker; no frontend types.
+type PageCallback = Box<dyn FnOnce(Result<CachedMessagePage, String>) + Send>;
+
 enum WorkerMsg {
     Write {
         server_key: String,
@@ -101,7 +104,7 @@ enum WorkerMsg {
         before: Option<(i64, u32, String)>,
         forward: bool,
         require_anchor: bool,
-        reply: std::sync::mpsc::Sender<Result<CachedMessagePage, String>>,
+        reply: PageCallback,
     },
     EnqueueOutgoing {
         server_key: String,
@@ -581,6 +584,31 @@ impl ClientDb {
         self.load_channel_page_direction_async(server_key, channel_id, before, false, false)
     }
 
+    /// Queues one history page and calls `completed` on the existing cache worker.
+    /// The callback must only hand off its result; it must not block or re-enter
+    /// the cache. This lets event-driven frontends wake without a waiter thread.
+    /// Returns false if unavailable; the callback is then dropped, not invoked.
+    /// Accepted reads complete with a page or error unless the worker shuts down.
+    pub fn load_channel_page_with_callback(
+        &self,
+        server_key: &str,
+        channel_id: &str,
+        before: Option<(i64, u32, String)>,
+        completed: impl FnOnce(Result<CachedMessagePage, String>) + Send + 'static,
+    ) -> bool {
+        self.enqueue(
+            WorkerMsg::LoadChannelPage {
+                server_key: server_key.to_owned(),
+                channel_id: channel_id.to_owned(),
+                before,
+                forward: false,
+                require_anchor: false,
+                reply: Box::new(completed),
+            },
+            false,
+        )
+    }
+
     pub fn load_newer_channel_page_async(
         &self,
         server_key: &str,
@@ -615,7 +643,7 @@ impl ClientDb {
                 before,
                 forward,
                 require_anchor,
-                reply: reply_tx,
+                reply: Box::new(move |result| { let _ = reply_tx.send(result); }),
             },
             false,
         ) {
@@ -841,7 +869,7 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
                 )
                 .await
                 .map_err(|error| error.to_string());
-            let _ = reply.send(result);
+            reply(result);
         }
         WorkerMsg::EnqueueOutgoing {
             server_key,

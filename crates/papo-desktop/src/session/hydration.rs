@@ -1,18 +1,18 @@
-//! Bounded startup cache hydration on the session owner, never on GPUI.
+//! Event-driven startup cache hydration on the session owner, never on GPUI.
 //!
-//! Core chooses the channel and page size. Cache receipts have no network
-//! Wake, so the actor waits explicitly for one page, with the same ten-second
-//! bound as core's synchronous metadata loads. Results are checked against
-//! account, selection and restore epoch; shutdown never publishes the page.
-//! Paging and freshness policy remain in Store.
+//! Core chooses the page size and completes reads on its existing cache worker.
+//! One in-flight read and one completion slot bound each server's work. A slow
+//! read never parks the actor; replacement and shutdown need not await it.
+//! Core owns paging/freshness. Session/account/channel/epoch reject stale pages.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
+use super::SessionIdentity;
+use async_channel::{Receiver, Sender};
 use papo_core::{cache::CachedMessagePage, runtime::ServerRuntime, state::Store};
 
-/// Matches `papo-core/src/cache/mod.rs`, `LOAD_TIMEOUT`, in seconds.
-const CACHE_LOAD_TIMEOUT: Duration = Duration::from_secs(10);
+/// One cache read may be outstanding per server, including across replacement.
+const COMPLETION_CAPACITY: usize = 1;
+type PageResult = Result<CachedMessagePage, String>;
+type CompletePage = Box<dyn FnOnce(PageResult) + Send>;
 
 /// Inputs captured before a cache read; core invalidates the epoch on reset.
 struct CacheRequest {
@@ -35,30 +35,118 @@ impl CacheRequest {
     }
 }
 
-/// Restores at most one selected-channel page before the actor publishes it.
-/// A failed read clears the loading state and logs no external input.
-pub(super) fn hydrate_selected(runtime: &mut ServerRuntime, stopped: &AtomicBool) {
-    let Some(channel) = runtime.store.channel_needing_cache() else {
-        return;
-    };
-    let request = CacheRequest {
-        account: runtime.store.me.clone(),
-        channel,
-        epoch: runtime.store.cache_restore_epoch(),
-    };
-    runtime.store.mark_cache_loading(&request.channel);
-    let receipt =
-        runtime
-            .cache
-            .load_channel_page_async(&runtime.server_key, &request.channel, None);
-    let page = receipt
-        .and_then(|receipt| receipt.recv_timeout(CACHE_LOAD_TIMEOUT).ok())
-        .and_then(Result::ok);
-    if let Some(page) = page {
-        request.apply(&mut runtime.store, page, stopped.load(Ordering::Acquire));
-    } else {
-        runtime.store.cached_page_failed(&request.channel, false);
-        log::warn!("session: startup cache page could not be loaded");
+struct Completion {
+    identity: SessionIdentity,
+    request: CacheRequest,
+    result: PageResult,
+}
+
+/// One asynchronous read and its bounded mailbox; no waiter thread or timer.
+pub(super) struct Hydration {
+    pending: bool,
+    completed: Receiver<Completion>,
+    reply: Sender<Completion>,
+}
+
+impl Default for Hydration {
+    fn default() -> Self {
+        let (reply, completed) = async_channel::bounded(COMPLETION_CAPACITY);
+        Self {
+            pending: false,
+            completed,
+            reply,
+        }
+    }
+}
+
+impl Hydration {
+    /// Applies any completed page, then requests at most one eligible cache page.
+    /// Neither operation waits for disk, a receipt, or the foreground.
+    pub(super) fn step(
+        &mut self,
+        runtime: &mut ServerRuntime,
+        identity: &SessionIdentity,
+        wake: &Sender<()>,
+    ) {
+        self.receive(&mut runtime.store, identity);
+        self.request(&mut runtime.store, identity, wake, |channel, completed| {
+            runtime.cache.load_channel_page_with_callback(
+                &runtime.server_key,
+                channel,
+                None,
+                completed,
+            )
+        });
+    }
+
+    fn receive(&mut self, store: &mut Store, identity: &SessionIdentity) {
+        let Ok(completion) = self.completed.try_recv() else {
+            return;
+        };
+        self.pending = false;
+        if !completion.identity.matches(identity) {
+            return;
+        }
+        if !completion.request.matches(store) {
+            if completion.request.account == store.me
+                && completion.request.epoch == store.cache_restore_epoch()
+            {
+                store.cancel_cached_page(&completion.request.channel);
+            }
+            return;
+        }
+        match completion.result {
+            Ok(page) if page.channel_id == completion.request.channel => {
+                completion.request.apply(store, page, false);
+            }
+            _ => {
+                store.cached_page_failed(&completion.request.channel, false);
+                log::warn!("session: startup cache page could not be loaded");
+            }
+        }
+    }
+
+    /// Captures a ticket and submits I/O. Injection keeps the delayed-read test clock-free.
+    fn request(
+        &mut self,
+        store: &mut Store,
+        identity: &SessionIdentity,
+        wake: &Sender<()>,
+        enqueue: impl FnOnce(&str, CompletePage) -> bool,
+    ) {
+        if self.pending {
+            return;
+        }
+        let Some(channel) = store.channel_needing_cache() else {
+            return;
+        };
+        let request = CacheRequest {
+            account: store.me.clone(),
+            channel: channel.clone(),
+            epoch: store.cache_restore_epoch(),
+        };
+        store.mark_cache_loading(&channel);
+        self.pending = true;
+        let identity = identity.clone();
+        let reply = self.reply.clone();
+        let wake = wake.clone();
+        if !enqueue(
+            &channel,
+            Box::new(move |result| {
+                // Only one read is outstanding, so this mailbox cannot overflow.
+                // A closed receiver means the actor stopped; discard without waiting.
+                let _ = reply.try_send(Completion {
+                    identity,
+                    request,
+                    result,
+                });
+                let _ = wake.try_send(());
+            }),
+        ) {
+            self.pending = false;
+            store.cached_page_failed(&channel, false);
+            log::warn!("session: startup cache page could not be queued");
+        }
     }
 }
 
@@ -148,7 +236,7 @@ mod tests {
             api::net::Wake, cache::ClientDb, notification::NotificationCoordinator,
             runtime::ServerRuntime, storage::MemorySecretStore,
         };
-        use std::sync::{Arc, atomic::AtomicBool};
+        use std::sync::Arc;
         let cache = Arc::new(ClientDb::open(None));
         let notification = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         let mut store = Store::default();
@@ -165,8 +253,110 @@ mod tests {
             cache,
             notification,
         );
-        super::hydrate_selected(&mut runtime, &AtomicBool::new(false));
+        let (wake, _) = async_channel::bounded(1);
+        let identity = super::SessionIdentity::new("server-1".into(), None);
+        super::Hydration::default().step(&mut runtime, &identity, &wake);
         assert!(runtime.store.channel_needing_cache().is_none());
         runtime.net.shutdown();
+    }
+    #[test]
+    fn stalled_page_returns_to_the_actor_and_keeps_only_one_read_in_flight() {
+        let mut store = Store::default();
+        store.restore_cached_metadata(CachedServerMetadata {
+            cached_channels: ["channel-1".into()].into(),
+            ..Default::default()
+        });
+        store.selected_channel = "channel-1".into();
+        let identity = super::SessionIdentity::new("server-1".into(), None);
+        let (wake, _) = async_channel::bounded(1);
+        let mut hydration = super::Hydration::default();
+        let mut held = None;
+        hydration.request(&mut store, &identity, &wake, |_, completed| {
+            held = Some(completed);
+            true
+        });
+        assert!(hydration.pending);
+        assert_eq!(hydration.completed.capacity(), Some(1));
+        // This is the actor's submission path: it returns while the disk read
+        // is deliberately unfinished, so normal core transitions can continue.
+        store.apply(papo_core::api::net::Update::Connection(
+            papo_core::api::ws::Connection::Online,
+        ));
+        assert_eq!(store.connection, papo_core::api::ws::Connection::Online);
+        hydration.request(&mut store, &identity, &wake, |_, _| {
+            panic!("second read while the first is pending")
+        });
+        assert!(hydration.completed.is_empty());
+        // Teardown has no receipt deadline and no waiter to join. A later
+        // completion observes the closed mailbox and drops its page.
+        drop(hydration);
+        held.unwrap()(Ok(CachedMessagePage {
+            channel_id: "channel-1".into(),
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn completed_page_from_a_replaced_same_account_incarnation_is_dropped() {
+        let mut store = Store::default();
+        store.restore_cached_metadata(CachedServerMetadata {
+            cached_channels: ["channel-1".into()].into(),
+            ..Default::default()
+        });
+        store.selected_channel = "channel-1".into();
+        let old = super::SessionIdentity::new("server-1".into(), None);
+        let new = super::SessionIdentity::new("server-1".into(), None);
+        let (wake, _) = async_channel::bounded(1);
+        let mut hydration = super::Hydration::default();
+        let mut held = None;
+        hydration.request(&mut store, &old, &wake, |_, completed| {
+            held = Some(completed);
+            true
+        });
+        held.unwrap()(Ok(CachedMessagePage {
+            channel_id: "channel-1".into(),
+            ..Default::default()
+        }));
+        let mut replacement = Store::default();
+        replacement.restore_cached_metadata(CachedServerMetadata {
+            cached_channels: ["channel-1".into()].into(),
+            ..Default::default()
+        });
+        replacement.selected_channel = "channel-1".into();
+        assert_eq!(
+            store.cache_restore_epoch(),
+            replacement.cache_restore_epoch()
+        );
+        hydration.receive(&mut replacement, &new);
+        assert!(!hydration.pending);
+        assert_eq!(
+            replacement.channel_needing_cache().as_deref(),
+            Some("channel-1")
+        );
+    }
+    #[test]
+    fn switching_channels_discards_the_page_but_releases_its_loading_mark() {
+        let mut store = Store::default();
+        store.restore_cached_metadata(CachedServerMetadata {
+            cached_channels: ["channel-1".into()].into(),
+            ..Default::default()
+        });
+        store.selected_channel = "channel-1".into();
+        let identity = super::SessionIdentity::new("server-1".into(), None);
+        let (wake, _) = async_channel::bounded(1);
+        let mut hydration = super::Hydration::default();
+        let mut held = None;
+        hydration.request(&mut store, &identity, &wake, |_, completed| {
+            held = Some(completed);
+            true
+        });
+        store.selected_channel = "channel-2".into();
+        held.unwrap()(Ok(CachedMessagePage {
+            channel_id: "channel-1".into(),
+            ..Default::default()
+        }));
+        hydration.receive(&mut store, &identity);
+        store.selected_channel = "channel-1".into();
+        assert_eq!(store.channel_needing_cache().as_deref(), Some("channel-1"));
     }
 }

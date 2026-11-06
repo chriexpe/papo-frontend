@@ -33,18 +33,27 @@ async fn closing_the_last_window_stops_every_runtime_and_joins_its_net_thread(
         .0;
     let sessions = cx.update(|cx| cx.global::<ApplicationSessions>().0.clone());
     let (finished, received) = mpsc::channel();
+    let (entered, opened) = mpsc::channel();
     sessions.update(cx, |sessions, cx| {
         for server in ["server-1", "server-2"] {
             let finished = finished.clone();
+            let entered = entered.clone();
             sessions
                 .replace(
                     identity(server, "account-1"),
-                    move |wake| open(wake, finished),
+                    move |wake| {
+                        let runtime = open(wake, finished);
+                        entered.send(()).unwrap();
+                        runtime
+                    },
                     cx,
                 )
                 .unwrap();
         }
     });
+    for _ in 0..2 {
+        opened.recv().unwrap();
+    }
     cx.update_window(first, |_, window, _| window.remove_window())
         .unwrap();
     sessions.read_with(cx, |sessions, _| assert!(!sessions.stopping));

@@ -518,6 +518,11 @@ observed scheduling gaps; it is experiment instrumentation, not production
 polling. The frame-independent actor bridge and immutable row retention have
 separate tests.
 
+The table records the original implementation (`65483892`), before review
+changed cache pages to callback events and replacements to a persistent-thread
+mailbox. These timings were not rerun after that correction; they establish
+placement, not latency guarantees for the corrected cache/replacement paths.
+
 All values below are milliseconds. **Ready** is the median elapsed time of
 three trials. **Foreground** is the largest timed drain+projection turn
 (or runtime-open/hydration block for main-thread cache startup); actor values
@@ -562,14 +567,32 @@ those samples appear in the table.
 
 #### Retained actor contract
 
-The thread opens and owns the runtime, bounds each network drain at 256,
-hydrates a selected cached page off-main and builds only changed diagnostic
-ID/text rows. Unchanged row `Arc`s and unchanged order are retained; comparison
+One persistent thread per server opens and owns the runtime and bounds each
+network drain at 256. Replacements coalesce in one latest-only mailbox rather
+than starting successor threads. The current runtime stops before the newest
+pending factory opens on that same thread.
+
+Selected-channel cache pages use core's `load_channel_page_with_callback` on
+the existing cache worker. One read remains in flight and its one-slot
+completion queue wakes the actor. No page receipt wait, deadline, timer poll,
+or waiter thread runs in the actor loop. A callback arriving after replacement
+must also match its session incarnation; after shutdown its receiver is closed.
+Core's synchronous runtime-opening metadata/outbox reads and final cache flush
+remain startup/teardown boundaries, not steady-state receipt waits.
+
+The actor builds only changed diagnostic ID/text rows. Unchanged row `Arc`s and unchanged order are retained; comparison
 still scans borrowed rows because core exposes no general content revision.
 This is not the eventual complete message renderer. Delta delivery is FIFO
 and lossless; closing its receiver interrupts a producer blocked by a hidden
 or closed foreground. A server/account/incarnation guard rejects stale work,
 and cache reads also validate selection and restore epoch.
+
+**Before authenticated interactions:** `RuntimeDrain::effects` are not yet
+forwarded in this screen-free slice. Add reliable, ordered effect delivery and
+identity validation before enabling outgoing-message acknowledgements/rejections,
+account operations or calls. Projection coalescing must not drop those effects.
+The O(n) borrowed comparison also needs re-evaluation before the full timeline;
+Arc retention alone is not incremental change detection.
 
 Window close and Quit stop all owners before joining them off-main. Explicit
 GPUI quit mode prevents framework auto-exit from bypassing those joins. A
