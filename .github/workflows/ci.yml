@@ -102,16 +102,14 @@ jobs:
   # The GPUI desktop client (crates/papo-desktop) has its own job, so a GPUI
   # break or a slow GPUI build never holds up the egui and Android checks.
   # The Linux leg was verified on Ubuntu 24.04 with scripts/deps.sh before
-  # this job existed (2026-11-05). macOS and Windows have not built GPUI here
-  # yet, so their legs report without blocking; drop `continue-on-error`
-  # once they are green (docs/papo-desktop.md, phase 0).
+  # this job existed (2026-11-05). All three OS legs subsequently passed
+  # on PR #142, so each leg now blocks on failures.
   papo-desktop:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os != 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
