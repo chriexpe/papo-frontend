@@ -295,7 +295,60 @@ depth:
 Depth 0 removes the shadow, and the pill outline (`line.pill`) remains. OLED's
 pills are solid, with no blur (§3.3).
 
-### 3.5 Open
+### 3.5 Message density
+
+The desktop has the same message spacing settings as the Android client
+(`docs/android-compose.md`, Appearance and "Author grouping"), with the same
+meaning:
+
+| Setting | Values | Stored | Applies to |
+| --- | --- | --- | --- |
+| Message spacing | Compact, Normal, Comfortable, Extra compact | Compact, Normal and Comfortable sync with the account through `papo-core` (`api::user_display::MessageDensity`). Extra compact is not in the core or the backend, so it is a device setting per account, as on Android. | Every message |
+| Group consecutive messages | on (default) / off | Device, per account | Every density |
+| Stack messages | on (default) / off | Device, per account | Extra compact only |
+
+Extra compact shows only the author's name, with no avatar. The time sits in a
+narrow gutter on the left, shown once per minute. A change of author adds a
+small gap. An external APP badge keeps its full width beside the name. The four
+combinations:
+
+```text
+Inline, grouped                     Inline, not grouped
+14:02  Ana  A little more like you. 14:02  Ana  A little more like you.
+            Messages stay together.        Ana  Messages stay together.
+14:03  Bia  oi                      14:03  Bia  oi
+
+Stacked, grouped                    Stacked, not grouped
+14:02  Ana                          14:02  Ana
+       A little more like you.             A little more like you.
+       Messages stay together.             Ana
+14:03  Bia                                 Messages stay together.
+       oi                           14:03  Bia
+                                           oi
+```
+
+- **Grouping (every density).** Messages share one author header, and on the
+  other densities one avatar, when all of these hold:
+  - the author is the same real author (external authors match on their
+    source and external ID, never on the bridge account or the display
+    name);
+  - the messages are within five minutes of each other;
+  - they fall on the same local day.
+
+  An unread boundary always splits a group.
+- **Rows keep their identity.** Every message keeps its own row identity,
+  highlight, reactions, reply action and context menu. A continued row that
+  hides its header still shows its author and time in the context menu.
+- **Rich content is unchanged.** Markdown, media, replies and reactions use the
+  same renderers at every density. Only the header, gutter and spacing change.
+- **Live preview.** The settings page opens with a message preview, as on
+  Android, and the preview follows every density and both switches.
+- **Moving the settings down.** Extra compact, grouping and stacking are client
+  settings today. If the backend gains them, they move into `papo-core`'s
+  display settings for every client together (decision 4). The desktop does
+  not add them to the core alone.
+
+### 3.6 Open
 
 None. Every question the first screens need is answered. New design
 questions follow the rule at the top of §3.
@@ -483,7 +536,8 @@ A virtualized timeline with stable message IDs and variable row heights. It
 keeps the anchor on prepend and reflow, and it follows the bottom only when it
 should. Paging at both ends uses the core's history API. Read reporting comes
 from the rows actually visible. Also: unread and hourglass navigation, date
-headers, author grouping, Markdown from `papo-core::markdown`, and text sends
+headers, author grouping and every message density with its two switches
+(§3.5), Markdown from `papo-core::markdown`, and text sends
 through the durable outbox (the draft stays until the core acknowledges it).
 The Kit's `MessageScroller` does not implement Papo's read or unread semantics.
 Use it only if it can carry them.
