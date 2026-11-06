@@ -1,7 +1,6 @@
 # Papo desktop on GPUI
 
-Status: **phase 1, slices 1–2 (session ownership and OS credential adapter)
-implemented**; first screens are not started. Written 2026-11-05, on `main` after
+Status: **phase 0 (bootstrap) in progress**. Written 2026-11-05, on `main` after
 #141. This is the plan for `crates/papo-desktop`, the desktop client that will
 replace the egui client in the root crate. Read it before working there. The
 working rules for agents are in `crates/papo-desktop/AGENTS.md`. That file is
@@ -454,154 +453,22 @@ What is known (measured 2026-11-05 in a throwaway build on Linux):
   `drain_until_idle(DEFAULT_DRAIN_LIMIT)` and notifies the view. This worked
   against an unreachable server (the store reported `Offline`).
 
-**Decision, 2026-11-06: keep (b), the session actor.** One session thread
-per server owns its `ServerRuntime`; GPUI receives immutable incremental
-projection deltas. The main-thread alternative was not clearly better in
-every scenario and exposed 80–90 ms reducer turns to the foreground. It and
-all temporary experiment entry points were deleted, not feature-gated.
-No screen, OS credential storage or application data-folder policy is added
-by this slice. The synchronous-to-async `SecretStore` bridge remains the next
-separate PR (§4.5).
+What is not decided, and is the first job of phase 1:
 
-#### Placement measurements (phase 1, slice 1)
-
-Machine: AMD Ryzen 9 7900X (12 cores/24 threads), 61.9 GiB RAM, CachyOS
-x86_64, Linux 7.3.1-1-cachyos, KDE Wayland session. Rust 1.98.1;
-GPUI Kit 0.9.0 / GPUI Fast 0.1.13. Build: workspace **release**, default
-optimization level 3, thin LTO, one codegen unit, stripped. Three independent
-processes per placement/scenario/backend (36 successful samples), alternating
-placement order on the second trial. The blank window warmed for 200 ms
-before timing. This measures foreground scheduling and core/projection work,
-**not** message layout, drawing performance, or a cold disk startup.
-
-The sandbox could not initialize a hardware Vulkan adapter. Actual renderer
-on **both** native Wayland and X11 through XWayland: software llvmpipe
-(LLVM 23.1.4, 256 bits), OpenGL 4.6 Core, Mesa 26.2.6-arch3.1; empty driver
-name. The real-window experiment logged:
-
-```text
-experiment: backend=Wayland, GPU=Some(GpuSpecs { is_software_emulated: true, device_name: "llvmpipe (LLVM 23.1.4, 256 bits)", driver_name: "", driver_info: "4.6 (Core Profile) Mesa 26.2.6-arch3.1" })
-experiment: backend=X11, GPU=Some(GpuSpecs { is_software_emulated: true, device_name: "llvmpipe (LLVM 23.1.4, 256 bits)", driver_name: "", driver_info: "4.6 (Core Profile) Mesa 26.2.6-arch3.1" })
-```
-
-Matched workloads used the committed loopback fixture in
-`crates/papo-desktop/tests/support/fixture_backend.rs`, synthetic credentials
-in `MemorySecretStore`, and isolated temporary production `ClientDb` files.
-No server people use, application data folder or real credential was touched.
-
-- **10k channel:** authenticate and settle metadata outside timing, then seed
-  10,000 fixture messages through core's current `RefreshTicket` and
-  `Update::Messages`, outside timing. This isolates placement from 100
-  rate-limited REST page requests; it is not a 10k REST-download measurement.
-  Time initial projection plus 2,000 real WebSocket message upserts against
-  those 10k rows. Stable IDs and timestamps remain fixed; synthetic replay
-  text changes so the final foreground row proves that the burst was applied.
-- **Reconnect:** same prepared 10k timeline and initial 2,000-event burst,
-  forcibly close the loopback socket, wait for its real reconnect and
-  current-generation history request, then replay another 2,000 upserts.
-  Completion requires the second subscription's final marker in the GPUI
-  projection and 10k retained rows, not just the backend's socket-write count.
-  Reported elapsed time includes the first burst, reconnect backoff and REST
-  admission; it does not isolate CPU time spent reconnecting.
-- **Cache startup:** after preparing a 10k channel, stop its runtime and confirm
-  that production retention kept **500** chronological cached messages. Time
-  a new `ServerRuntime`'s metadata/outbox restore and first **100-row** page
-  through the cache worker, merge and GPUI publication. The existing cache
-  worker and OS file cache are warm. Do not call this 10k-row hydration or a
-  cache-file-open/cold-filesystem benchmark.
-
-Both implementations used the same narrow ID/text projection builder and
-core drain limit (256); the main-thread variant yielded through a 1 ms
-scheduled continuation whenever it hit the limit. The actor used a bounded
-one-slot wake and a lossless one-slot delta queue. A 1 ms foreground heartbeat
-observed scheduling gaps; it is experiment instrumentation, not production
-polling. The frame-independent actor bridge and immutable row retention have
-separate tests.
-
-The table records the original implementation (`65483892`), before review
-changed cache pages to callback events and replacements to a persistent-thread
-mailbox. These timings were not rerun after that correction; they establish
-placement, not latency guarantees for the corrected cache/replacement paths.
-
-All values below are milliseconds. **Ready** is the median elapsed time of
-three trials. **Foreground** is the largest timed drain+projection turn
-(or runtime-open/hydration block for main-thread cache startup); actor values
-are foreground delta application only. **Heartbeat** is the largest actual
-interval between 1 ms heartbeat callbacks across the three trials, not
-additional delay or a frame-time percentile.
-
-| Display backend | Workload | Placement | Ready median | Foreground maximum | Heartbeat maximum |
-| --- | --- | --- | ---: | ---: | ---: |
-| Wayland | 10k + 2k upserts | Main thread | 628.437 | 83.665 | 84.712 |
-| Wayland | 10k + 2k upserts | Actor | 612.687 | 1.394 | 4.236 |
-| Wayland | Reconnect + replay | Main thread | 2518.906 | 89.923 | 90.978 |
-| Wayland | Reconnect + replay | Actor | 2493.563 | 1.308 | 2.213 |
-| Wayland | Cache startup | Main thread | 3.181 | 2.189 | 3.252 |
-| Wayland | Cache startup | Actor | 2.277 | 0.020 | 3.111 |
-| X11 / XWayland | 10k + 2k upserts | Main thread | 625.943 | 84.085 | 85.150 |
-| X11 / XWayland | 10k + 2k upserts | Actor | 608.284 | 0.623 | 1.417 |
-| X11 / XWayland | Reconnect + replay | Main thread | 2497.267 | 86.719 | 88.279 |
-| X11 / XWayland | Reconnect + replay | Actor | 2486.310 | 0.737 | 3.876 |
-| X11 / XWayland | Cache startup | Main thread | 3.240 | 2.120 | 3.191 |
-| X11 / XWayland | Cache startup | Actor | 2.297 | 0.017 | 1.148 |
-
-The same heavy work still exists on the actor: maximum actor drain/build
-turns were 79.518 / 84.043 / 0.960 ms (Wayland: channel / reconnect / cache),
-and 80.105 / 83.998 / 1.165 ms (X11). Moving it does not optimize the reducer;
-it keeps it off the foreground. Every measured network drain stayed at or
-below 256 updates. These three-trial numbers justify placement on this
-machine, not cross-platform latency guarantees or performance percentiles.
-
-Experiment command before removal:
-`cargo build --locked -p papo-desktop --release --example runtime_placement`,
-then `runtime_placement {main|actor} {10k|reconnect|cache}`; force X11 with
-`WAYLAND_DISPLAY=`. Final temporary harness SHA-256:
-`e0943e32f93dc5bd4856263f32c30fadf6ff01255c93e6c7e8ccbd55905148e8`.
-It is deliberately not a retained alternative. The actor's behavioral
-regressions and loopback backend remain as tests.
-
-Initial smoke samples were discarded: one had no fresh history (core
-correctly ignored live upserts), and another used an ineffective zero-duration
-yield and included first-frame software-renderer initialization. None of
-those samples appear in the table.
-
-#### Retained actor contract
-
-One persistent thread per server opens and owns the runtime and bounds each
-network drain at 256. Replacements coalesce in one latest-only mailbox rather
-than starting successor threads. The current runtime stops before the newest
-pending factory opens on that same thread.
-
-Selected-channel cache pages use core's `load_channel_page_with_callback` on
-the existing cache worker. One read remains in flight and its one-slot
-completion queue wakes the actor. No page receipt wait, deadline, timer poll,
-or waiter thread runs in the actor loop. A callback arriving after replacement
-must also match its session incarnation; after shutdown its receiver is closed.
-Core's synchronous runtime-opening metadata/outbox reads and final cache flush
-remain startup/teardown boundaries, not steady-state receipt waits.
-
-The actor builds only changed diagnostic ID/text rows. Unchanged row `Arc`s and unchanged order are retained; comparison
-still scans borrowed rows because core exposes no general content revision.
-This is not the eventual complete message renderer. Delta delivery is FIFO
-and lossless; closing its receiver interrupts a producer blocked by a hidden
-or closed foreground. A server/account/incarnation guard rejects stale work,
-and cache reads also validate selection and restore epoch.
-
-**Before authenticated interactions:** `RuntimeDrain::effects` are not yet
-forwarded in this screen-free slice. Add reliable, ordered effect delivery and
-identity validation before enabling outgoing-message acknowledgements/rejections,
-account operations or calls. Projection coalescing must not drop those effects.
-The O(n) borrowed comparison also needs re-evaluation before the full timeline;
-Arc retention alone is not incremental change detection.
-
-Window close and Quit stop all owners before joining them off-main. Explicit
-GPUI quit mode prevents framework auto-exit from bypassing those joins. A
-native termination callback fences the same completion before returning,
-including if explicit shutdown already began; GPUI's 200 ms quit-future grace
-alone is insufficient. Each owner explicitly joins `Net` and calls the core
-cache flush barrier before finishing. Core's `flush()` returns no success
-result, so that call is not proof of disk durability. Related shared-core
-investigations are recorded separately in `docs/papo-desktop-core-watch.md`.
+- **Where `ServerRuntime` lives.** The default is **(b), a session actor**:
+  one session thread per server owns the `ServerRuntime`, as Android's actor
+  does, and publishes immutable `Arc` projections to GPUI. Store updates,
+  cache hydration and network events then never cost frame time, and the
+  responsibilities are split the same way on both clients. The alternative,
+  (a), keeps `ServerRuntime` in a GPUI entity and drains it on the main
+  thread, as egui does every frame.
+  Measure both before you build on either, and record the numbers here.
+  Measure a 10k-message channel, and also a burst: a reconnect that replays
+  many events, and cache hydration at startup. Choose (a) only if it is
+  clearly better in every scenario. A small gain in one benchmark does not
+  outweigh frame time under bursty updates.
+- **How `SecretStore` (synchronous, `papo-net` thread) reaches an async OS
+  credential store** (Q2, §4.5).
 
 Rules that hold either way:
 
@@ -652,100 +519,6 @@ This applies whatever Q2 decides.
   cutover. Signing out and forgetting a server delete the credential from
   every place it is stored, and the user learns of any delete that fails.
 - Every one of these rules has a test.
-
-#### Phase 1, slice 2: OS credential adapter
-
-`credentials::CredentialService` is one desktop adapter shared unchanged by
-Linux, macOS and Windows. It uses the pinned GPUI credential APIs, not a new
-keyring dependency. Core's `SecretStore` and `MemorySecretStore` remain shared;
-no GPUI type or platform policy is added to core.
-
-Keep the service alive across account replacements. Core workers make
-synchronous calls through a serialized, one-slot bridge; a retained foreground
-task creates and awaits GPUI's asynchronous native operations. Calling the
-synchronous adapter on GPUI's own thread is rejected before taking a waiting
-lock. Credential keys use the desktop namespace, an injective encoding of
-core's server key and the secret kind. A fixed username avoids duplicate
-Secret Service items when an account's token is replaced.
-
-Successful reads (including absence) are cached for this run. Writes update
-core's memory store first; only confirmed native completion returns success.
-Failed writes retain the new memory value. Deletes clear memory and establish
-a run-local tombstone before native I/O, even when deletion fails. Forgetting
-a server attempts both secret kinds and reports each native failure rather
-than stopping after the first failure. Read failures remain retryable.
-
-`replace_store(server)` begins a fresh credential incarnation for that core
-server key and permanently revokes its previous handle, including all clones.
-Call it at each account/session replacement, even for the same account; retain
-and clone the returned `Arc<dyn SecretStore>` within that incarnation. The
-handle rejects other server keys and stale operations. `invalidate(server)`
-revokes it on logout/removal without deleting credentials or waiting for native
-I/O. Coordinate deletion before revocation or through a fresh cleanup
-incarnation. Other servers and run-local memory/tombstones remain unchanged.
-
-The service owner is foreground-only (`!Send`/`!Sync`), enforced by its type;
-only store handles and failure records cross threads. This keeps replacement
-and check-then-dispatch/callback execution on the same foreground thread.
-Each native request and typed failure retains its original generation. The
-foreground skips stale queued dispatches and suppresses stale failure callbacks.
-A short-held generation guard makes memory access atomic with revocation; it
-never covers native waits or callbacks. Late successful reads cannot populate
-the overlay or return a value after revocation, and stale native mutations do
-not return success. Revocation does not undo an already admitted memory change
-or dispatched OS mutation. Global serialization is unchanged.
-
-The typed callback reports the original server key, secret kind, operation and
-sanitized error, never the credential or raw backend error. The worker reply
-is completed before invoking the callback, so the worker can release its
-operation lock independently of notification handling. Completed native errors
-remain intact even if the callback initiates shutdown. Callbacks must not block
-GPUI or synchronously wait for account or worker operations. If presentation
-is deferred, recheck `CredentialFailure::is_current()` on the foreground
-immediately before showing it, after any await or queue boundary. Replacement,
-invalidation, service drop and every bridge shutdown path expire retained
-failures; new handles cannot revive a stopped service.
-
-**Before real authentication is enabled**, connect translated user feedback
-whose presentation Christian chooses. The callback is not itself a user notice;
-diagnostic logging in the probe is not production feedback. Ordered runtime-
-effect delivery (§4.3) is still a separate pre-authentication gate. No auth
-commands or screens are enabled by this adapter.
-
-**Performance watch (phase 1 follow-up):** the operation lock and native
-dispatcher serialize requests across servers. One locked OS-store prompt can
-therefore delay every server's credential access, although GPUI remains
-responsive. Preserve serialization in this PR; change it only with measurements
-or an observed responsiveness problem. Plan operation-level cancellation and
-recovery so a stalled request can be recovered without quitting the application.
-A dispatched OS mutation may already have taken effect, so cancellation must
-not imply rollback.
-
-The existing session shutdown entry point closes credential replies before
-joining Net. Pending workers are released synchronously, without polling GPUI
-or holding the store's operation lock. Dropping the service does the same;
-queued canceled requests are skipped. An already-dispatched native write or
-delete may have reached the OS: cancellation is not confirmation or rollback.
-
-Runnable native probe (synthetic, process-scoped keys only):
-
-```sh
-cargo run --locked -p papo-desktop --example credential_probe
-WAYLAND_DISPLAY= cargo run --locked -p papo-desktop --example credential_probe
-```
-
-On 2026-11-06, both **Wayland** and **X11 through XWayland** on CachyOS passed
-persisted CRUD, fresh-adapter reads, server/secret isolation, account overwrite
-and cleanup through the real Secret Service. No window or GPU is used by the
-probe. Native macOS Keychain, Windows Credential Manager, locked/denied-store
-prompts and GNOME runs have not been verified locally. Headless tests cover
-failure callbacks and quit cancellation but do not prove native OS behavior.
-Linux's GPUI/oo7 portal-backed encrypted store is OS-managed storage, not the
-forbidden plaintext fallback.
-
-Normal startup still opens no credential store or data folder. Data-folder
-selection, egui import, opt-in plaintext storage and migration are later slices;
-this adapter does not claim to complete all of §4.5. No egui files are touched.
 
 ## 5. Behavioural references
 
@@ -930,9 +703,6 @@ with every Kit release, so check them again after a version bump.
 Agents add items here instead of growing a PR beyond its task. Each item names
 its phase.
 
-- (phase 1, separate shared-core PRs) Investigate the API, performance and
-  lifecycle findings in [the core watch list](papo-desktop-core-watch.md).
-  These are not all confirmed bugs; preserve its evidence and classifications.
 - (phase 0) Run the bootstrap on GNOME (Zorin, Ubuntu 24.04), on Wayland and
   X11, and record the backend log line here.
 - (release) `packaging/cargo-sources.json` must be regenerated for the next
