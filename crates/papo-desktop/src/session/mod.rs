@@ -4,7 +4,8 @@
 //! GPUI; every delta must still match its server, account and incarnation.
 //! Replacing a session invalidates its outstanding work immediately. Windows
 //! never own runtimes. The application stops all threads before quitting.
-//! Credentials and data-folder selection are deliberately left to later slices.
+//! Credential waits are canceled before shutdown joins. Credential policy lives
+//! in the credential adapter; data-folder selection belongs to a later slice.
 
 mod actor;
 mod hydration;
@@ -221,6 +222,7 @@ pub(crate) fn install(cx: &mut App) {
 
 /// Stops owners once and returns the same completion for native and explicit quit.
 fn begin_shutdown(cx: &mut App) -> async_channel::Receiver<()> {
+    crate::credentials::stop_before_session_join(cx);
     let sessions = cx.global::<ApplicationSessions>().0.clone();
     sessions.update(cx, |sessions, _| {
         let owners = sessions.stop();

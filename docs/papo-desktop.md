@@ -1,7 +1,7 @@
 # Papo desktop on GPUI
 
-Status: **phase 1, slice 1 (session ownership) implemented**; first screens
-are not started. Written 2026-11-05, on `main` after
+Status: **phase 1, slices 1–2 (session ownership and OS credential adapter)
+implemented**; first screens are not started. Written 2026-11-05, on `main` after
 #141. This is the plan for `crates/papo-desktop`, the desktop client that will
 replace the egui client in the root crate. Read it before working there. The
 working rules for agents are in `crates/papo-desktop/AGENTS.md`. That file is
@@ -652,6 +652,62 @@ This applies whatever Q2 decides.
   cutover. Signing out and forgetting a server delete the credential from
   every place it is stored, and the user learns of any delete that fails.
 - Every one of these rules has a test.
+
+#### Phase 1, slice 2: OS credential adapter
+
+`credentials::CredentialService` is one desktop adapter shared unchanged by
+Linux, macOS and Windows. It uses the pinned GPUI credential APIs, not a new
+keyring dependency. Core's `SecretStore` and `MemorySecretStore` remain shared;
+no GPUI type or platform policy is added to core.
+
+Keep the service alive across account replacements. Core workers make
+synchronous calls through a serialized, one-slot bridge; a retained foreground
+task creates and awaits GPUI's asynchronous native operations. Calling the
+synchronous adapter on GPUI's own thread is rejected before taking a waiting
+lock. Credential keys use the desktop namespace, an injective encoding of
+core's server key and the secret kind. A fixed username avoids duplicate
+Secret Service items when an account's token is replaced.
+
+Successful reads (including absence) are cached for this run. Writes update
+core's memory store first; only confirmed native completion returns success.
+Failed writes retain the new memory value. Deletes clear memory and establish
+a run-local tombstone before native I/O, even when deletion fails. Forgetting
+a server attempts both secret kinds and reports each native failure rather
+than stopping after the first failure. Read failures remain retryable.
+
+A typed foreground callback reports the original server key, secret kind,
+operation and sanitized error, never the credential or raw backend error.
+**Before real authentication is enabled**, connect it to translated user
+feedback whose presentation Christian chooses. The callback is not itself a
+user notice; diagnostic logging in the probe is not production feedback.
+Ordered runtime-effect delivery (§4.3) is still a separate pre-authentication
+gate. No auth commands or screens are enabled by this adapter.
+
+The existing session shutdown entry point closes credential replies before
+joining Net. Pending workers are released synchronously, without polling GPUI
+or holding the store's operation lock. Dropping the service does the same;
+queued canceled requests are skipped. An already-dispatched native write or
+delete may have reached the OS: cancellation is not confirmation or rollback.
+
+Runnable native probe (synthetic, process-scoped keys only):
+
+```sh
+cargo run --locked -p papo-desktop --example credential_probe
+WAYLAND_DISPLAY= cargo run --locked -p papo-desktop --example credential_probe
+```
+
+On 2026-11-06, both **Wayland** and **X11 through XWayland** on CachyOS passed
+persisted CRUD, fresh-adapter reads, server/secret isolation, account overwrite
+and cleanup through the real Secret Service. No window or GPU is used by the
+probe. Native macOS Keychain, Windows Credential Manager, locked/denied-store
+prompts and GNOME runs have not been verified locally. Headless tests cover
+failure callbacks and quit cancellation but do not prove native OS behavior.
+Linux's GPUI/oo7 portal-backed encrypted store is OS-managed storage, not the
+forbidden plaintext fallback.
+
+Normal startup still opens no credential store or data folder. Data-folder
+selection, egui import, opt-in plaintext storage and migration are later slices;
+this adapter does not claim to complete all of §4.5. No egui files are touched.
 
 ## 5. Behavioural references
 
