@@ -75,7 +75,7 @@ change is recorded here first.
 
 ## 3. Product decisions
 
-Christian answered Q1, Q2 and Q4–Q7 on 2026-11-05, and Q3's colours on 2026-11-06. Radii, spacing and type are still open (§3.4). An
+Christian answered Q1, Q2 and Q4–Q7 on 2026-11-05, and Q3 (colours, then shape and type) on 2026-11-06. An
 agent that reaches a new design question asks first. For a visual question,
 it shows each option as a small ASCII mock-up. It ships the recommended
 default only when the work cannot wait, and says so.
@@ -232,11 +232,73 @@ and the mention-row marker amber (82°, mixed at 12–13 % into
 These replace the Kit's theme. They are restated in one `design` module, and
 the Kit's theme tokens are set from it, so the Kit's components match.
 
-### 3.4 Open
+### 3.4 Shape and type tokens (Q3, shape)
 
-| # | Question | Needed by | Status |
+Christian accepted the **Balanced** direction on 2026-11-06. These are Papo's
+defaults. The user's text-scale setting multiplies every text size on top of
+them. The base values come from the token lab's mock-up, not from egui.
+
+| Setting | Default | Range in the lab |
+| --- | --- | --- |
+| Text size (`type.body`) | 14 px | 12–16 px |
+| Roundness (multiplies every radius) | ×1.00 | ×0–×1.6 |
+| Spacing (multiplies every space) | ×1.00 | ×0.8–×1.25 |
+| Glass blur | 16 px | 0–32 px |
+| Shadow depth | ×1.00 | ×0–×1.5 |
+
+The lab offered two other directions, kept here for reference: Compact (13 px,
+radii ×0.75, spacing ×0.88, blur 12 px, shadow ×0.80) and Airy (15 px, ×1.30,
+×1.15, 22 px, ×1.15).
+
+**Type.** Every size is a ratio of `type.body`, so one setting scales them all.
+Body text uses a line height of 1.45.
+
+| Token | Ratio | At 14 px | Used for |
 | --- | --- | --- | --- |
-| Q3b | Radii, spacing, type scale, glass blur and shadows | Phase 1, before any screen | Next design round. The lab used egui's radii (6, 8, 10, 12 and 14 for pills) and Inter at 13 px only as placeholders. |
+| `type.caption` | 11/13 | 11.8 px | Timestamps, group labels, sub-lines |
+| `type.small` | 12/13 | 12.9 px | Replies, embed text, typing indicator |
+| `type.body` | 1 | 14 px | Message text, channel names |
+| `type.title` | 14/13 | 15.1 px | Server card, rail letters |
+| `type.display` | 18/13 | 19.4 px | Large glyphs |
+
+Weights: 400 for running text, 500 for selected and secondary emphasis, 600 for
+names, titles and unread channels.
+
+**Radii** (at ×1):
+
+| Token | Value | Used for |
+| --- | --- | --- |
+| `radius.indicator` | 3 px | Selection bar on the rail |
+| `radius.control` | 8 px | Channel rows, hover, reactions, code blocks |
+| `radius.card` | 10 px | Embeds, cards |
+| `radius.avatar` | 11 px | Message avatars (rounded squares) |
+| `radius.icon` | 12 px | Rail icons, window corner |
+| `radius.pill` | 14 px | Header pills, server and account cards |
+| `radius.composer` | 16 px | Message field |
+
+Presence dots and the colour-picker dots stay circles at any roundness.
+
+**Spacing** (at ×1): `space.xs` 2 px, `space.sm` 4 px, `space.md` 8 px,
+`space.lg` 12 px, `space.xl` 16 px, `space.xxl` 20 px. Pill heights scale with
+spacing: header pills 36 px, composer 44 px, Send 30 px. Pane widths do not:
+rail 60 px, channel list 232 px, members 214 px.
+
+**Glass and shadow.** Pills blur what is behind them by 16 px and saturate it by
+1.5. Their shadow is one soft lift and one tight contact shadow, both scaled by
+depth:
+
+- dark themes: `0 7px 24px` at 40 % black (60 % on OLED), plus `0 1px 3px` at
+  30 %;
+- light themes: the same offsets in a blue-grey ink (`rgb(25,30,45)`), at 10 %
+  and 8 %.
+
+Depth 0 removes the shadow, and the pill outline (`line.pill`) remains. OLED's
+pills are solid, with no blur (§3.3).
+
+### 3.5 Open
+
+None. Every question the first screens need is answered. New design
+questions follow the rule at the top of §3.
 
 ## 4. Architecture
 
@@ -406,7 +468,7 @@ Remaining for phase 0:
 ### Phase 1: session and first screens
 
 First, before any authenticated screen: choose where `ServerRuntime` lives
-(§4.3), with measurements, and get Christian's radii, spacing and type (§3.4). §3 fixes the data,
+(§4.3), with measurements. §3 fixes the data,
 credentials, threads, tokens, chrome and shell layout that every screen
 stands on. Then build: add a server, sign in, register and unlock; several
 servers; the server and channel lists with live updates; offline and
