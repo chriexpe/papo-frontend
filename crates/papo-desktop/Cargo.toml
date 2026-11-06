@@ -1,0 +1,47 @@
+[package]
+name = "papo-desktop"
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Papo desktop client on GPUI Kit, built from scratch on papo-core"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "papo_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "papo-desktop"
+path = "src/main.rs"
+
+[dependencies]
+# GPUI Kit pins its own GPUI snapshot (gpui-pre =0.3.11) and, with
+# `gpui-fast`, swaps every layer to the GPUI Fast fork. It is the only GPUI
+# dependency: never add `gpui`, `gpui-pre` or `gpui-fast` directly. The exact
+# pin is deliberate: the Kit releases weekly and its API still moves.
+gpui-kit = { version = "=0.9.0", features = ["gpui-fast"] }
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+gpui-kit = { version = "=0.9.0", features = ["gpui-fast", "test-support"] }
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "deny"
+unused_qualifications = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
