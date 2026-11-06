@@ -36,6 +36,7 @@ pub(crate) fn run() {
         .run(|cx| {
             gpui_kit::init(cx);
             install(cx);
+            crate::persistence::install(cx);
             if let Err(error) = window::open_main(cx) {
                 log::error!("app: the main window did not open: {error:#}");
                 cx.quit();

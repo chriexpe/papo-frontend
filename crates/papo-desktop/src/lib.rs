@@ -2,8 +2,9 @@
 //!
 //! This crate owns the desktop presentation: windows, views, input, platform
 //! integration and the mapping from `papo-core` state to what a view draws.
-//! It owns no protocol, no canonical state and no persistence format: those
-//! belong to `papo-core`, and calls to `papo-call`. Nothing here is
+//! Protocol, canonical account/message state and their persistence belong to
+//! `papo-core`, and calls to `papo-call`. This client owns its non-secret desktop
+//! server registry, separate from those core stores. Nothing here is
 //! translated from the egui client in the root crate; that client is a
 //! behavioural reference only (`crates/papo-desktop/AGENTS.md`,
 //! `docs/papo-desktop.md`).
@@ -17,6 +18,7 @@ extern crate gpui_kit as gpui;
 
 mod app;
 pub mod credentials;
+pub mod persistence;
 mod projection;
 mod session;
 mod shell;

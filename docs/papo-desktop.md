@@ -1,7 +1,7 @@
 # Papo desktop on GPUI
 
-Status: **phase 1, slices 1–2 (session ownership and OS credential adapter)
-implemented**; first screens are not started. Written 2026-11-05, on `main` after
+Status: **phase 1, slices 1–3 (session ownership, OS credential adapter and
+non-secret desktop persistence) implemented**; first screens are not started. Written 2026-11-05, on `main` after
 #141. This is the plan for `crates/papo-desktop`, the desktop client that will
 replace the egui client in the root crate. Read it before working there. The
 working rules for agents are in `crates/papo-desktop/AGENTS.md`. That file is
@@ -625,9 +625,12 @@ Rules that hold either way:
 ### 4.4 Identity and data
 
 - Window identity: `io.github.chriexpe.Papo.Desktop` (decision 7).
-- Data folder, sessions and import: Q1 and Q2 are decided in §3.1.
-  The Phase 0 bootstrap opens no data folder; Phase 1 implements those
-  decisions before persisting data or importing credentials.
+- The desktop's data root is `ProjectDirs("", "", "papo-desktop")`, as Q1
+  specifies. Slice 3 implements only this client's non-secret server registry.
+  There is no import, migration or access to an egui profile. The earlier Q1
+  import offer is not authorized by this slice; reconfirm it with Christian
+  before doing any import work. Integration with a running egui process is
+  explicitly rejected (2026-11-06). Sessions still follow Q2 and §4.5.
 - The egui client's layout, for reference only: `ProjectDirs("", "", "papo")`.
   Sessions are in `<data>/sessions/<server-key>.token` and `.server`, the
   cache in `<data>/papo-cache.db`, and the server list in eframe's `app.ron`.
@@ -743,9 +746,86 @@ failure callbacks and quit cancellation but do not prove native OS behavior.
 Linux's GPUI/oo7 portal-backed encrypted store is OS-managed storage, not the
 forbidden plaintext fallback.
 
-Normal startup still opens no credential store or data folder. Data-folder
-selection, egui import, opt-in plaintext storage and migration are later slices;
+Normal startup opens this client's non-secret profile (§4.6), but no credential
+store. Import, opt-in plaintext storage and migration are not implemented;
 this adapter does not claim to complete all of §4.5. No egui files are touched.
+
+### 4.6 Phase 1, slice 3: desktop data persistence
+
+The desktop owns `servers.json` under the Q1 data root. Version 1 contains only
+`version`, ordered `servers` (canonical base addresses) and `selected_server`
+(an optional core server key). There are no credential, account, display-name,
+message, draft, outbox or appearance fields. Backend metadata and message/cache
+persistence remain core's responsibility. No database is opened by this slice.
+No setting is invented before its actual feature needs it.
+
+`persistence::Profile` is a synchronous worker-only repository. Address policy
+is core's `recovery::server_address`; identity is core's unchanged `server_key`.
+Add validates and rejects duplicate core identities, including path-case key
+collisions, without lowercasing the transport URL. Add does not select a server.
+Selection is explicit. Reorder is an exact key permutation; removing the selected
+server clears selection without picking a replacement. Removing a registry row
+alone does not log out, clear cache or delete credentials. The eventual server
+removal flow must coordinate those operations and their failures.
+
+Only a missing document is a fresh profile. Malformed JSON, missing/unknown
+fields, unsafe addresses, duplicate identities and dangling selections reject
+the whole document. Unknown integer versions are rejected before interpreting
+version-one fields. Nothing repairs or resets such a document. Defensive local
+limits are 1,024 servers, 8,192 UTF-8 bytes per raw/canonical address, and one MiB
+per file. These are metadata admission limits, not backend or cache limits.
+Errors retain no file contents, addresses, readable keys or data paths.
+
+A stable `.profile.lock` file is exclusively locked for the owner's lifetime;
+it is never unlinked. Another cooperating process receives a typed locked error
+rather than becoming a competing writer. The default root never falls back to
+`papo`, the current directory or another client's data. Explicit roots must be
+trusted absolute desktop-owned paths. Symlink roots and non-regular registry/
+lock entries are refused; ancestors are trusted. This is not a sandbox against
+hostile code running as the same user. Unix roots are `0700`, new files `0600`;
+Windows uses inherited user-profile permissions. No plaintext-secret fallback
+is added.
+
+Each update serializes and bounds the replacement before creating a unique,
+exclusive same-directory temporary file, writing it fully, syncing it and
+atomically replacing the destination. Unix also syncs newly created directory
+entries and the registry's parent directory after replacement. Failures before
+replacement retain the old document and snapshot, and ordinary failed attempts
+clean up their temporary file. A killed process may leave an unreferenced temp;
+it is never treated as registry data. A directory sync failure after replacement
+returns `DurabilityUnknown` and advances the snapshot to the visible new file;
+it must not claim rollback. Windows has file sync and replacement, but no safe
+standard-library directory-sync equivalent here; sudden-power-loss directory
+durability is not claimed there. A failed root-creation sync can leave newly
+created directories behind; a later open does not retry the earlier ancestry
+sync. Filesystem and hardware durability limits still apply on every OS.
+
+Normal startup resolves, opens and loads the profile on a named background
+worker. A process-owned GPUI entity retains its initial snapshot or typed error
+independently of windows. One bounded queue serializes commands against the last
+committed list: full means busy with nothing accepted, closed means stopping.
+Accepted writes finish even if their waiter disappears. Quit closes admission,
+drains accepted work and joins the profile worker on the existing session reaper.
+The native termination fence waits for that same completion; late startup results
+cannot reactivate a stopped profile. No work polls per frame.
+
+The shell is still screen-free: it has no server-list controls, auth commands,
+translated persistence-error presentation or recovery/reset choice. Those require
+Christian's UI decisions. Logs and typed stored errors are not user notices.
+Before enabling server editing or authentication, expose the typed load/write
+errors and explicitly coordinate server removal, credential generations and
+ordered runtime effects (§4.3). This slice does not add general settings,
+window geometry persistence, imports or migration.
+
+Runnable probe, using only a temporary profile and synthetic addresses:
+
+```sh
+cargo run --locked -p papo-desktop --example persistence_probe
+```
+
+The probe covers restart, server order, selection, removal, exclusive ownership
+and cleanup. It uses no display, GPU, credential store, network or real profile.
+Native OS and automated verification for this slice are recorded with the PR.
 
 ## 5. Behavioural references
 

@@ -5,7 +5,8 @@
 //! Replacing a session invalidates its outstanding work immediately. Windows
 //! never own runtimes. The application stops all threads before quitting.
 //! Credential waits are canceled before shutdown joins. Credential policy lives
-//! in the credential adapter; data-folder selection belongs to a later slice.
+//! in the credential adapter. The separate profile worker joins on the same
+//! shutdown reaper; data-folder and server-registry policy belong to persistence.
 
 mod actor;
 mod hydration;
@@ -223,12 +224,16 @@ pub(crate) fn install(cx: &mut App) {
 /// Stops owners once and returns the same completion for native and explicit quit.
 fn begin_shutdown(cx: &mut App) -> async_channel::Receiver<()> {
     crate::credentials::stop_before_session_join(cx);
+    let profile = crate::persistence::stop_before_session_join(cx);
     let sessions = cx.global::<ApplicationSessions>().0.clone();
     sessions.update(cx, |sessions, _| {
         let owners = sessions.stop();
         sessions.shutdown.begin(move || {
             for owner in owners {
                 join(owner);
+            }
+            if let Some(profile) = profile {
+                profile.join();
             }
         })
     })

@@ -7376,12 +7376,15 @@ name = "papo-desktop"
 version = "0.9.0"
 dependencies = [
  "async-channel",
+ "directories",
  "env_logger",
  "futures-util",
  "gpui-kit",
  "log",
  "papo-core",
+ "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
