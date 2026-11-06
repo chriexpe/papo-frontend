@@ -247,6 +247,40 @@ async fn failures_reach_the_foreground_with_original_request_identity(
     }
 }
 
+#[gpui_kit::test]
+async fn failure_callback_can_stop_service_without_replacing_completed_worker_error(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let (notified, notice) = async_channel::bounded(1);
+    let service = cx.update(|cx| {
+        super::CredentialService::with_native(
+            cx,
+            move |failure, cx| {
+                assert_eq!(failure.error(), CredentialError::Unavailable);
+                // A nonblocking notification handler may initiate shutdown. Its
+                // cancellation must not replace an already completed OS result.
+                super::stop_before_session_join(cx);
+                notified.try_send(()).unwrap();
+            },
+            unavailable_native,
+        )
+    });
+    let store = service.store();
+    let (reply, received) = async_channel::bounded(1);
+    let worker = std::thread::spawn(move || {
+        let result = store.store("synthetic-a", Secret::SessionToken, "synthetic");
+        reply.send_blocking(result).unwrap();
+    });
+    let result = received.recv().await.unwrap();
+    notice.recv().await.unwrap();
+    worker.join().unwrap();
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        CredentialError::Unavailable.to_string()
+    );
+}
+
 struct NativeEntered(async_channel::Sender<()>);
 impl gpui::Global for NativeEntered {}
 

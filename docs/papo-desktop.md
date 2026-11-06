@@ -677,11 +677,26 @@ than stopping after the first failure. Read failures remain retryable.
 
 A typed foreground callback reports the original server key, secret kind,
 operation and sanitized error, never the credential or raw backend error.
-**Before real authentication is enabled**, connect it to translated user
-feedback whose presentation Christian chooses. The callback is not itself a
-user notice; diagnostic logging in the probe is not production feedback.
-Ordered runtime-effect delivery (§4.3) is still a separate pre-authentication
-gate. No auth commands or screens are enabled by this adapter.
+The worker reply is completed before invoking the callback, so the worker can
+release its operation lock independently of notification handling. Callbacks
+must not block GPUI or synchronously wait for account or worker operations.
+**Before real authentication is enabled**, add session-incarnation or operation-
+generation validation: the current server key alone cannot distinguish a
+late failure from account A after that server has switched to account B.
+Then connect translated user feedback whose presentation Christian chooses.
+The callback is not itself a user notice; diagnostic logging in the probe is
+not production feedback. Ordered runtime-effect delivery (§4.3) is still a
+separate pre-authentication gate. No auth commands or screens are enabled by
+this adapter.
+
+**Performance watch (phase 1 follow-up):** the operation lock and native
+dispatcher serialize requests across servers. One locked OS-store prompt can
+therefore delay every server's credential access, although GPUI remains
+responsive. Preserve serialization in this PR; change it only with measurements
+or an observed responsiveness problem. Plan operation-level cancellation and
+recovery so a stalled request can be recovered without quitting the application.
+A dispatched OS mutation may already have taken effect, so cancellation must
+not imply rollback.
 
 The existing session shutdown entry point closes credential replies before
 joining Net. Pending workers are released synchronously, without polling GPUI

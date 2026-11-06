@@ -49,9 +49,11 @@ pub enum CredentialError {
 
 /// Foreground failure notification, scoped to the original storage request.
 ///
-/// The server is core's stable key, not a display label. Resolve it against the
-/// current session before presenting UI. This type intentionally has no Debug
-/// implementation: server keys can contain a readable address fragment.
+/// The server is core's stable key, not a display label or session incarnation.
+/// Before connecting real notices, add an operation-generation guard: matching
+/// only this key cannot reject a delayed failure from a replaced account.
+/// This type intentionally has no Debug implementation: server keys can contain
+/// a readable address fragment.
 pub struct CredentialFailure {
     server: String,
     secret: Secret,
@@ -101,9 +103,12 @@ type NativeRequest = fn(&Request, &App) -> Task<Result<Option<String>, Credentia
 impl CredentialService {
     /// Creates the application-owned adapter on GPUI's foreground thread.
     ///
-    /// `on_failure` runs on the foreground with the original request identity.
-    /// It must provide user feedback before enabling real authenticated flows;
-    /// logging alone does not fulfill the desktop credential policy (§4.5).
+    /// `on_failure` runs on the foreground after the core reply is completed.
+    /// It must not block GPUI or synchronously wait for account or worker work.
+    /// Before enabling real notices, add session-incarnation/generation validation
+    /// and translated user feedback; the server key alone cannot reject stale
+    /// account failures. Logging alone does not fulfill the credential policy
+    /// (§4.5).
     pub fn new(
         cx: &mut App,
         on_failure: impl FnMut(CredentialFailure, &mut App) + 'static,
@@ -140,16 +145,18 @@ impl CredentialService {
                 if request.is_canceled() {
                     continue;
                 }
-                if let Err(error) = &result {
-                    let failure = CredentialFailure {
-                        server: request.server.clone(),
-                        secret: request.secret,
-                        operation: request.operation.kind(),
-                        error: *error,
-                    };
+                let failure = result.as_ref().err().map(|error| CredentialFailure {
+                    server: request.server.clone(),
+                    secret: request.secret,
+                    operation: request.operation.kind(),
+                    error: *error,
+                });
+                // Release the worker reply before a callback can initiate account
+                // work or shutdown. The worker can then release its operation lock.
+                request.complete(result);
+                if let Some(failure) = failure {
                     cx.update(|cx| on_failure(failure, cx));
                 }
-                request.complete(result);
             }
         });
         Self {
