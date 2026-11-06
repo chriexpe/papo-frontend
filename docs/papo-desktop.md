@@ -1,6 +1,7 @@
 # Papo desktop on GPUI
 
-Status: **phase 0 (bootstrap) in progress**. Written 2026-11-05, on `main` after
+Status: **phase 1, slice 1 (session ownership) implemented**; first screens
+are not started. Written 2026-11-05, on `main` after
 #141. This is the plan for `crates/papo-desktop`, the desktop client that will
 replace the egui client in the root crate. Read it before working there. The
 working rules for agents are in `crates/papo-desktop/AGENTS.md`. That file is
@@ -453,22 +454,154 @@ What is known (measured 2026-11-05 in a throwaway build on Linux):
   `drain_until_idle(DEFAULT_DRAIN_LIMIT)` and notifies the view. This worked
   against an unreachable server (the store reported `Offline`).
 
-What is not decided, and is the first job of phase 1:
+**Decision, 2026-11-06: keep (b), the session actor.** One session thread
+per server owns its `ServerRuntime`; GPUI receives immutable incremental
+projection deltas. The main-thread alternative was not clearly better in
+every scenario and exposed 80–90 ms reducer turns to the foreground. It and
+all temporary experiment entry points were deleted, not feature-gated.
+No screen, OS credential storage or application data-folder policy is added
+by this slice. The synchronous-to-async `SecretStore` bridge remains the next
+separate PR (§4.5).
 
-- **Where `ServerRuntime` lives.** The default is **(b), a session actor**:
-  one session thread per server owns the `ServerRuntime`, as Android's actor
-  does, and publishes immutable `Arc` projections to GPUI. Store updates,
-  cache hydration and network events then never cost frame time, and the
-  responsibilities are split the same way on both clients. The alternative,
-  (a), keeps `ServerRuntime` in a GPUI entity and drains it on the main
-  thread, as egui does every frame.
-  Measure both before you build on either, and record the numbers here.
-  Measure a 10k-message channel, and also a burst: a reconnect that replays
-  many events, and cache hydration at startup. Choose (a) only if it is
-  clearly better in every scenario. A small gain in one benchmark does not
-  outweigh frame time under bursty updates.
-- **How `SecretStore` (synchronous, `papo-net` thread) reaches an async OS
-  credential store** (Q2, §4.5).
+#### Placement measurements (phase 1, slice 1)
+
+Machine: AMD Ryzen 9 7900X (12 cores/24 threads), 61.9 GiB RAM, CachyOS
+x86_64, Linux 7.3.1-1-cachyos, KDE Wayland session. Rust 1.98.1;
+GPUI Kit 0.9.0 / GPUI Fast 0.1.13. Build: workspace **release**, default
+optimization level 3, thin LTO, one codegen unit, stripped. Three independent
+processes per placement/scenario/backend (36 successful samples), alternating
+placement order on the second trial. The blank window warmed for 200 ms
+before timing. This measures foreground scheduling and core/projection work,
+**not** message layout, drawing performance, or a cold disk startup.
+
+The sandbox could not initialize a hardware Vulkan adapter. Actual renderer
+on **both** native Wayland and X11 through XWayland: software llvmpipe
+(LLVM 23.1.4, 256 bits), OpenGL 4.6 Core, Mesa 26.2.6-arch3.1; empty driver
+name. The real-window experiment logged:
+
+```text
+experiment: backend=Wayland, GPU=Some(GpuSpecs { is_software_emulated: true, device_name: "llvmpipe (LLVM 23.1.4, 256 bits)", driver_name: "", driver_info: "4.6 (Core Profile) Mesa 26.2.6-arch3.1" })
+experiment: backend=X11, GPU=Some(GpuSpecs { is_software_emulated: true, device_name: "llvmpipe (LLVM 23.1.4, 256 bits)", driver_name: "", driver_info: "4.6 (Core Profile) Mesa 26.2.6-arch3.1" })
+```
+
+Matched workloads used the committed loopback fixture in
+`crates/papo-desktop/tests/support/fixture_backend.rs`, synthetic credentials
+in `MemorySecretStore`, and isolated temporary production `ClientDb` files.
+No server people use, application data folder or real credential was touched.
+
+- **10k channel:** authenticate and settle metadata outside timing, then seed
+  10,000 fixture messages through core's current `RefreshTicket` and
+  `Update::Messages`, outside timing. This isolates placement from 100
+  rate-limited REST page requests; it is not a 10k REST-download measurement.
+  Time initial projection plus 2,000 real WebSocket message upserts against
+  those 10k rows. Stable IDs and timestamps remain fixed; synthetic replay
+  text changes so the final foreground row proves that the burst was applied.
+- **Reconnect:** same prepared 10k timeline and initial 2,000-event burst,
+  forcibly close the loopback socket, wait for its real reconnect and
+  current-generation history request, then replay another 2,000 upserts.
+  Completion requires the second subscription's final marker in the GPUI
+  projection and 10k retained rows, not just the backend's socket-write count.
+  Reported elapsed time includes the first burst, reconnect backoff and REST
+  admission; it does not isolate CPU time spent reconnecting.
+- **Cache startup:** after preparing a 10k channel, stop its runtime and confirm
+  that production retention kept **500** chronological cached messages. Time
+  a new `ServerRuntime`'s metadata/outbox restore and first **100-row** page
+  through the cache worker, merge and GPUI publication. The existing cache
+  worker and OS file cache are warm. Do not call this 10k-row hydration or a
+  cache-file-open/cold-filesystem benchmark.
+
+Both implementations used the same narrow ID/text projection builder and
+core drain limit (256); the main-thread variant yielded through a 1 ms
+scheduled continuation whenever it hit the limit. The actor used a bounded
+one-slot wake and a lossless one-slot delta queue. A 1 ms foreground heartbeat
+observed scheduling gaps; it is experiment instrumentation, not production
+polling. The frame-independent actor bridge and immutable row retention have
+separate tests.
+
+The table records the original implementation (`65483892`), before review
+changed cache pages to callback events and replacements to a persistent-thread
+mailbox. These timings were not rerun after that correction; they establish
+placement, not latency guarantees for the corrected cache/replacement paths.
+
+All values below are milliseconds. **Ready** is the median elapsed time of
+three trials. **Foreground** is the largest timed drain+projection turn
+(or runtime-open/hydration block for main-thread cache startup); actor values
+are foreground delta application only. **Heartbeat** is the largest actual
+interval between 1 ms heartbeat callbacks across the three trials, not
+additional delay or a frame-time percentile.
+
+| Display backend | Workload | Placement | Ready median | Foreground maximum | Heartbeat maximum |
+| --- | --- | --- | ---: | ---: | ---: |
+| Wayland | 10k + 2k upserts | Main thread | 628.437 | 83.665 | 84.712 |
+| Wayland | 10k + 2k upserts | Actor | 612.687 | 1.394 | 4.236 |
+| Wayland | Reconnect + replay | Main thread | 2518.906 | 89.923 | 90.978 |
+| Wayland | Reconnect + replay | Actor | 2493.563 | 1.308 | 2.213 |
+| Wayland | Cache startup | Main thread | 3.181 | 2.189 | 3.252 |
+| Wayland | Cache startup | Actor | 2.277 | 0.020 | 3.111 |
+| X11 / XWayland | 10k + 2k upserts | Main thread | 625.943 | 84.085 | 85.150 |
+| X11 / XWayland | 10k + 2k upserts | Actor | 608.284 | 0.623 | 1.417 |
+| X11 / XWayland | Reconnect + replay | Main thread | 2497.267 | 86.719 | 88.279 |
+| X11 / XWayland | Reconnect + replay | Actor | 2486.310 | 0.737 | 3.876 |
+| X11 / XWayland | Cache startup | Main thread | 3.240 | 2.120 | 3.191 |
+| X11 / XWayland | Cache startup | Actor | 2.297 | 0.017 | 1.148 |
+
+The same heavy work still exists on the actor: maximum actor drain/build
+turns were 79.518 / 84.043 / 0.960 ms (Wayland: channel / reconnect / cache),
+and 80.105 / 83.998 / 1.165 ms (X11). Moving it does not optimize the reducer;
+it keeps it off the foreground. Every measured network drain stayed at or
+below 256 updates. These three-trial numbers justify placement on this
+machine, not cross-platform latency guarantees or performance percentiles.
+
+Experiment command before removal:
+`cargo build --locked -p papo-desktop --release --example runtime_placement`,
+then `runtime_placement {main|actor} {10k|reconnect|cache}`; force X11 with
+`WAYLAND_DISPLAY=`. Final temporary harness SHA-256:
+`e0943e32f93dc5bd4856263f32c30fadf6ff01255c93e6c7e8ccbd55905148e8`.
+It is deliberately not a retained alternative. The actor's behavioral
+regressions and loopback backend remain as tests.
+
+Initial smoke samples were discarded: one had no fresh history (core
+correctly ignored live upserts), and another used an ineffective zero-duration
+yield and included first-frame software-renderer initialization. None of
+those samples appear in the table.
+
+#### Retained actor contract
+
+One persistent thread per server opens and owns the runtime and bounds each
+network drain at 256. Replacements coalesce in one latest-only mailbox rather
+than starting successor threads. The current runtime stops before the newest
+pending factory opens on that same thread.
+
+Selected-channel cache pages use core's `load_channel_page_with_callback` on
+the existing cache worker. One read remains in flight and its one-slot
+completion queue wakes the actor. No page receipt wait, deadline, timer poll,
+or waiter thread runs in the actor loop. A callback arriving after replacement
+must also match its session incarnation; after shutdown its receiver is closed.
+Core's synchronous runtime-opening metadata/outbox reads and final cache flush
+remain startup/teardown boundaries, not steady-state receipt waits.
+
+The actor builds only changed diagnostic ID/text rows. Unchanged row `Arc`s and unchanged order are retained; comparison
+still scans borrowed rows because core exposes no general content revision.
+This is not the eventual complete message renderer. Delta delivery is FIFO
+and lossless; closing its receiver interrupts a producer blocked by a hidden
+or closed foreground. A server/account/incarnation guard rejects stale work,
+and cache reads also validate selection and restore epoch.
+
+**Before authenticated interactions:** `RuntimeDrain::effects` are not yet
+forwarded in this screen-free slice. Add reliable, ordered effect delivery and
+identity validation before enabling outgoing-message acknowledgements/rejections,
+account operations or calls. Projection coalescing must not drop those effects.
+The O(n) borrowed comparison also needs re-evaluation before the full timeline;
+Arc retention alone is not incremental change detection.
+
+Window close and Quit stop all owners before joining them off-main. Explicit
+GPUI quit mode prevents framework auto-exit from bypassing those joins. A
+native termination callback fences the same completion before returning,
+including if explicit shutdown already began; GPUI's 200 ms quit-future grace
+alone is insufficient. Each owner explicitly joins `Net` and calls the core
+cache flush barrier before finishing. Core's `flush()` returns no success
+result, so that call is not proof of disk durability. Related shared-core
+investigations are recorded separately in `docs/papo-desktop-core-watch.md`.
 
 Rules that hold either way:
 
@@ -703,6 +836,9 @@ with every Kit release, so check them again after a version bump.
 Agents add items here instead of growing a PR beyond its task. Each item names
 its phase.
 
+- (phase 1, separate shared-core PRs) Investigate the API, performance and
+  lifecycle findings in [the core watch list](papo-desktop-core-watch.md).
+  These are not all confirmed bugs; preserve its evidence and classifications.
 - (phase 0) Run the bootstrap on GNOME (Zorin, Ubuntu 24.04), on Wayland and
   X11, and record the backend log line here.
 - (release) `packaging/cargo-sources.json` must be regenerated for the next
