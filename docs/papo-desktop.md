@@ -283,6 +283,36 @@ Presence dots and the colour-picker dots stay circles at any roundness.
 spacing: header pills 36 px, composer 44 px, Send 30 px. Pane widths do not:
 rail 60 px, channel list 232 px, members 214 px.
 
+**Spacing model.** Distances must be equal by construction, never by
+correction. On Android, an embed's own padding added to the gap around it in
+Extra compact, so the distance from one block to the next depended on which
+blocks met.
+
+- **The parent's gap is the only distance between siblings.** No element sets
+  an outer margin. An element's padding is inside its own border or
+  background, so a visible edge always measures the same distance from its
+  neighbours. (`margin: auto` used to push an item to the end of a row is
+  alignment, not a distance, and is allowed.)
+- **One content column per message.** A message is a lead column (the avatar,
+  or the time gutter in Extra compact) plus one content column. The reply
+  line, header, text, embeds, code, media and reactions all start on that
+  column's left edge, at every density. In inline Extra compact, a continued
+  row reserves the hidden name's width, so its text stays on that column.
+- **Groups are containers.** Consecutive messages sit in a group container.
+  The timeline's gap separates groups, and the group's gap separates its
+  messages. Every row has the same padding, so a highlighted or hovered row
+  (mention, jump target) does not change any distance.
+- **Densities change only these numbers** (px at spacing ×1):
+
+  | Density | Between groups | Inside a group | Row padding | Lead column | Lead gap |
+  | --- | --- | --- | --- | --- | --- |
+  | Compact | 8 | 0 | 1 | 28 px avatar | 10 |
+  | Normal | 14 | 2 | 2 | 34 px avatar | 10 |
+  | Comfortable | 20 | 4 | 3 | 40 px avatar | 12 |
+  | Extra compact | 6 | 0 | 1 | time gutter, 3.2 × text size | 8 |
+
+  Inside a message, its blocks are 4 px apart (`space.sm`) at every density.
+
 **Glass and shadow.** Pills blur what is behind them by 16 px and saturate it by
 1.5. Their shadow is one soft lift and one tight contact shadow, both scaled by
 depth:
