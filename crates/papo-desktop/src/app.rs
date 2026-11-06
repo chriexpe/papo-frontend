@@ -7,8 +7,7 @@
 //! Rules:
 //! - `gpui_kit::init` runs before anything else touches the Kit.
 //! - The process quits when its last window closes. Close-to-tray will
-//!   change this rule (`docs/papo-desktop.md`, phase 6); until then nothing
-//!   runs without a window.
+//!   change this rule; until then nothing runs without a window.
 //! - A failure to open the main window is logged and ends the process. It
 //!   never panics.
 

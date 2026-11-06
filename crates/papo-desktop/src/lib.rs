@@ -5,8 +5,7 @@
 //! It owns no protocol, no canonical state and no persistence format: those
 //! belong to `papo-core`, and calls to `papo-call`. Nothing here is
 //! translated from the egui client in the root crate; that client is a
-//! behavioural reference only (`crates/papo-desktop/AGENTS.md`,
-//! `docs/papo-desktop.md`).
+//! behavioural reference only.
 //!
 //! The binary (`src/main.rs`) only calls [`run`].
 

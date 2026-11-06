@@ -8,7 +8,7 @@
 //! - The window identity is [`APP_ID`]. It is not the egui client's
 //!   `io.github.chriexpe.Papo` until cutover: two clients with one app id are
 //!   grouped as one application by the compositor, the taskbar and the
-//!   `.desktop` file (`docs/papo-desktop.md`, "Identity and data").
+//!   `.desktop` file.
 //! - Window chrome (client or server decorations, a custom title bar) is a
 //!   design decision that is not made yet, so the platform default applies.
 

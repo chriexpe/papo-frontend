@@ -24,3 +24,6 @@
 
 # Instruções locais de agentes: ficam fora do repositório, como no papo-backend.
 AGENTS.md
+
+# Local working files: plans, design and reference notes.
+/docs/
