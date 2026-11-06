@@ -75,7 +75,7 @@ change is recorded here first.
 
 ## 3. Product decisions
 
-Christian answered Q1, Q2 and Q4–Q7 on 2026-11-05. Q3 is still open. An
+Christian answered Q1, Q2 and Q4–Q7 on 2026-11-05, and Q3's colours on 2026-11-06. Radii, spacing and type are still open (§3.4). An
 agent that reaches a new design question asks first. For a visual question,
 it shows each option as a small ASCII mock-up. It ships the recommended
 default only when the work cannot wait, and says so.
@@ -146,11 +146,97 @@ default only when the work cannot wait, and says so.
   - The thresholds (1000, 700 and 520 px) are from the mock-up. Check them
     against the real panes once those exist.
 
-### 3.3 Open
+### 3.3 Colour tokens (Q3, colours)
+
+Christian chose this colour system on 2026-11-06, after iterating on it in a
+token lab. egui's light theme was the problem to solve: users reported it as
+"grey on white", with greys stacked on greys and grey text. The fix is fewer
+surface steps, each with a job, and text whose contrast is measured. All values
+are OKLCH lightness (L, 0–1). The `design` module computes the sRGB colours from
+them; no hex value is written by hand.
+
+**Themes.** The theme is its own setting: OLED, Graphite, Light or Soft light.
+
+| Token | OLED | Graphite | Light | Soft light | Used for |
+| --- | --- | --- | --- | --- | --- |
+| `surface.rail` | 0.000 | 0.205 | 0.952 | 0.925 | Server rail, title bar |
+| `surface.sidebar` | 0.000 | 0.228 | 0.972 | 0.950 | Channel list, members, embeds |
+| `surface.content` | 0.000 | 0.252 | 1.000 | 0.975 | Message list |
+| `surface.pill` | 0.175 | 0.305 | 1.000 | 1.000 | Floating pills |
+| `surface.hover` | 0.195 | 0.295 | 0.940 | 0.918 | Row under the pointer |
+| `surface.code` | 0.135 | 0.222 | 0.968 | 0.945 | Code blocks |
+| `line.subtle` | 0.225 | 0.310 | 0.918 | 0.900 | Pane edges, dividers |
+| `line.strong` | 0.320 | 0.390 | 0.840 | 0.820 | Dashed and emphasised edges |
+| `line.pill` | 0.255 | 0.360 | 0.905 | 0.890 | Pill outline |
+| `text.primary` | 0.965 | 0.955 | 0.215 | 0.215 | Message text, names, unread channels |
+| `text.secondary` | 0.800 | 0.800 | 0.400 | 0.395 | Read channels, reactions |
+| `text.muted` | 0.645 | 0.665 | 0.530 | 0.505 | Timestamps, labels, offline members |
+
+- OLED is true black on every large surface. Its panes are separated by
+  lines, and its pills are solid, because glass over black shows nothing.
+- Light keeps the message list pure white, and its white pills carry a soft
+  shadow and an outline. Soft light sets every surface a step below white, so
+  the white pills stand out more.
+- `surface.selected` mixes the accent into `surface.sidebar`: 22 % on dark
+  themes, 13 % on light themes. `accent.soft` mixes it into
+  `surface.content`: 20 % and 12 %.
+
+**Contrast floors** (WCAG ratio, on the surface where the text sits). A token
+change that breaks one of these is a bug, and a unit test checks them for every
+theme at every setting:
+`text.primary` at least 13:1, `text.secondary` at least 7:1, `text.muted` at
+least 4.5:1, links at least 4.5:1. The values above were measured over every
+theme, every 5° of hue, strengths and vividness from 0 to 1, and all six
+accents (2026-11-06). The lowest ratios were 13.70:1, 8.08:1, 4.82:1 and
+4.65:1.
+
+**Accent.** One accent hue: Blue 256° (the default), Indigo 278°, Teal 196°,
+Green 152°, Pink 352° or Orange 52°. Its chroma is 0.18, and its lightness is
+0.70 on dark themes and 0.555 on light themes. A link uses the same hue at
+chroma 0.15, with lightness 0.76 on dark themes and 0.50 on light themes. Teal
+and green look brighter than other hues at one lightness, and at 0.52 a Teal
+link on a fully tinted Soft light fell to 4.29:1.
+Text drawn on the accent (`accent.on`) is black or white, whichever contrasts
+more.
+
+**Background colour.** These are separate settings, all user-chosen:
+
+- **Background colour:** up to three colours, each a hue (0–360°) and a
+  vividness (0–1), picked on a 2-D field. The angle sets the hue, and the
+  distance from the centre sets the vividness. There are presets, and a
+  harmony action that places the extra colours (opposite hue, three evenly
+  spaced hues, neighbours). The default is one colour: 255°, vividness 0.45.
+- **Colour strength** (0–1, default 0.40): how much of the background colour
+  reaches the surfaces. Its slider track fades from neutral grey to the
+  colour, and the handle shows the result.
+- **Grain** (0–1, default 0): a fine noise over the surfaces. Its slider track
+  runs from clean to coarse, and the handle shows the grain. Grain lifts
+  OLED's true black, and the setting says so.
+
+How the background colour reaches the tokens:
+
+- Every neutral token takes the first colour's hue, with chroma
+  `strength × vividness × 0.075 × (0.3 + 0.7 × (1 − |2L − 1|))`. The tint
+  is strongest in the mid-tones and weaker towards black and white.
+- The chroma fades to zero over the last 0.03 of L at both ends, so pure
+  black and pure white stay untinted.
+- Text tokens take half that chroma.
+- A second or third colour becomes a gradient (165°) across the chrome only:
+  rail, sidebar, members and title bar. The message list keeps the first
+  colour, so text contrast does not change while you scroll.
+
+**Semantic colours** keep fixed hues: mention red (25°), online green (150°),
+and the mention-row marker amber (82°, mixed at 12–13 % into
+`surface.content` for the row background).
+
+These replace the Kit's theme. They are restated in one `design` module, and
+the Kit's theme tokens are set from it, so the Kit's components match.
+
+### 3.4 Open
 
 | # | Question | Needed by | Status |
 | --- | --- | --- | --- |
-| Q3 | Papo's design tokens on GPUI: colours, radii, spacing, type scale, glass with its opaque fallback | Phase 1, before any screen | Christian asked for a **fresh token set**, not egui's values. Next step: a token sheet with two or three directions for him to choose from. The egui values in `src/ui/theme.rs` are a reference only. Until he chooses, screens use the Kit's theme through one `design` module, so a change of tokens touches that module alone. |
+| Q3b | Radii, spacing, type scale, glass blur and shadows | Phase 1, before any screen | Next design round. The lab used egui's radii (6, 8, 10, 12 and 14 for pills) and Inter at 13 px only as placeholders. |
 
 ## 4. Architecture
 
@@ -320,7 +406,7 @@ Remaining for phase 0:
 ### Phase 1: session and first screens
 
 First, before any authenticated screen: choose where `ServerRuntime` lives
-(§4.3), with measurements, and get Christian's choice of tokens (Q3). §3 fixes the data,
+(§4.3), with measurements, and get Christian's radii, spacing and type (§3.4). §3 fixes the data,
 credentials, threads, tokens, chrome and shell layout that every screen
 stands on. Then build: add a server, sign in, register and unlock; several
 servers; the server and channel lists with live updates; offline and
