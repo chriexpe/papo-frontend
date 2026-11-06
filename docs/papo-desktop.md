@@ -298,9 +298,16 @@ blocks met.
   line, header, text, embeds, code, media and reactions all start on that
   column's left edge, at every density. In inline Extra compact, a continued
   row reserves the hidden name's width, so its text stays on that column.
-- **Groups are containers.** Consecutive messages sit in a group container.
-  The timeline's gap separates groups, and the group's gap separates its
-  messages. Every row has the same padding, so a highlighted or hovered row
+- **Grouping is presentation only, not a data or virtualization container.**
+  Each message remains an independently identified, independently virtualized
+  row, even when consecutive messages from the same author are displayed as a
+  group. The grouping flag and message neighbours only decide whether a row
+  shows its author header/avatar and whether the preceding gap uses the
+  between-group or within-group spacing. **Do not combine grouped messages
+  into one virtual-list row, nested virtual list, shared message state or
+  indivisible render/layout unit.** A long run from one author must remain
+  independently virtualizable, measurable and addressable per message. Each
+  row has consistent internal padding, so a highlighted or hovered message
   (mention, jump target) does not change any distance.
 - **Densities change only these numbers** (px at spacing ×1):
 
@@ -365,8 +372,10 @@ Stacked, grouped                    Stacked, not grouped
                                            oi
 ```
 
-- **Grouping (every density).** Messages share one author header, and on the
-  other densities one avatar, when all of these hold:
+- **Grouping (every density) is visual.** Consecutive messages suppress
+  repeated author headers (and avatars outside Extra compact), but every
+  message remains a separate row with its own identity, actions and viewport
+  visibility. Apply the visual grouping when all of these hold:
   - the author is the same real author (external authors match on their
     source and external ID, never on the bridge account or the display
     name);
@@ -374,9 +383,10 @@ Stacked, grouped                    Stacked, not grouped
   - they fall on the same local day.
 
   An unread boundary always splits a group.
-- **Rows keep their identity.** Every message keeps its own row identity,
-  highlight, reactions, reply action and context menu. A continued row that
-  hides its header still shows its author and time in the context menu.
+- **Rows keep their identity.** Every message keeps its own virtualization
+  row, stable ID, highlight, reactions, reply action, context menu, read
+  visibility and scroll anchor. A continued row that hides its header still
+  shows its author and time in the context menu.
 - **Rich content is unchanged.** Markdown, media, replies and reactions use the
   same renderers at every density. Only the header, gutter and spacing change.
 - **Live preview.** The settings page opens with a message preview, as on
@@ -482,8 +492,9 @@ Rules that hold either way:
 ### 4.4 Identity and data
 
 - Window identity: `io.github.chriexpe.Papo.Desktop` (decision 7).
-- Data folder, sessions and import: Q1 and Q2. Until they are decided, the
-  crate opens no data folder.
+- Data folder, sessions and import: Q1 and Q2 are decided in §3.1.
+  The Phase 0 bootstrap opens no data folder; Phase 1 implements those
+  decisions before persisting data or importing credentials.
 - The egui client's layout, for reference only: `ProjectDirs("", "", "papo")`.
   Sessions are in `<data>/sessions/<server-key>.token` and `.server`, the
   cache in `<data>/papo-cache.db`, and the server list in eframe's `app.ron`.
@@ -531,9 +542,10 @@ references disagree, ask.
 
 ## 6. Phases
 
-Each phase ends with something a person can run against a real server. Each PR
-is one vertical slice that builds and is tested. A PR is never only
-scaffolding.
+After the Phase 0 exception (a standalone GPUI bootstrap window), each phase
+ends with something a person can run against a real server. Each implementation
+PR is one vertical slice that builds and is tested; later phases do not add
+scaffolding without a working feature.
 
 ### Phase 0: bootstrap (this commit)
 
@@ -553,8 +565,11 @@ Verified on 2026-11-05: Arch (CachyOS) on native Wayland and on XWayland
 
 Remaining for phase 0:
 
-- the macOS and Windows legs of the CI job are green, and then they block;
 - a manual run on GNOME (Zorin, Ubuntu 24.04) on Wayland and X11.
+
+The GPUI desktop CI jobs have passed on Ubuntu, macOS and Windows in PR #142;
+all three are now blocking. This validates compilation and headless tests,
+not GUI operation on macOS or Windows.
 
 ### Phase 1: session and first screens
 
@@ -688,8 +703,6 @@ with every Kit release, so check them again after a version bump.
 Agents add items here instead of growing a PR beyond its task. Each item names
 its phase.
 
-- (phase 0) Make the macOS and Windows legs of the `papo-desktop` CI job block
-  once they are green.
 - (phase 0) Run the bootstrap on GNOME (Zorin, Ubuntu 24.04), on Wayland and
   X11, and record the backend log line here.
 - (release) `packaging/cargo-sources.json` must be regenerated for the next
