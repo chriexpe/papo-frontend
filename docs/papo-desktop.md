@@ -87,7 +87,7 @@ default only when the work cannot wait, and says so.
 | Q1 | Data folder before cutover | Its own folder, `ProjectDirs("", "", "papo-desktop")`. On first launch the client offers a one-time import of egui's server list (`app.ron`) and sessions. It only reads egui's files and never changes them. The cache is not imported; it refills from the server. |
 | Q2 | Sessions and server passwords | The OS credential store (GPUI's `write_credentials` / `read_credentials`: Keychain, Credential Manager, Secret Service). The file fallback is opt-in and follows §4.5. |
 | — | App identity before cutover | `io.github.chriexpe.Papo.Desktop` (decision 7). |
-| Q4 | Font | Inter everywhere, bundled from `assets/fonts/` through `text_system().add_fonts`. A glyph Inter does not have (CJK, emoji, other scripts) comes from the OS's own font fallback; Papo keeps no per-OS font list. A setting, "Use the system font", switches every text style to the OS's default UI font. Every script must render: egui shows Japanese names as boxes on macOS, and that must not happen here. The Linux packages depend on a CJK font (`fonts-noto-cjk` on apt, `google-noto-sans-cjk-fonts` on dnf, `noto-fonts-cjk` on pacman), added to `scripts/deps.sh` and packaging when the font work lands. |
+| Q4 | Font | Inter everywhere, bundled from `assets/fonts/` through `text_system().add_fonts`. A glyph Inter does not have (CJK, emoji, other scripts) comes from the OS's own font fallback; Papo keeps no per-OS font list. A setting, "Use the system font", switches every text style to the OS's default UI font. Papo adds no font packages or checks of its own: what the system font cannot draw is the system's to provide. |
 | Q5 | Window chrome | The system title bar: server-side decorations where the desktop offers them (KDE, Windows, macOS), and GPUI's client-side fallback where it does not (GNOME). No custom title bar. |
 | Q6 | Shell layout | The rail and three panes, as in egui (§3.2). |
 | Q7 | Translations | `rust-i18n` (the Kit's mechanism), with pt-BR and en-US files. A test fails when a key exists in one locale and not in the other, so a missing translation is caught before release. The core returns semantic values, and the shell translates them (`docs/egui-compose-handoff.md` §3). |
@@ -146,14 +146,7 @@ default only when the work cannot wait, and says so.
   - The thresholds (1000, 700 and 520 px) are from the mock-up. Check them
     against the real panes once those exist.
 
-### 3.3 Checking fonts (Q4)
-
-The check is one run on a real desktop per OS, recorded in the PR: a Japanese
-username, an emoji and a Latin name render in the timeline and the member
-list, with Inter and with "Use the system font". GPUI's headless test platform
-has no real fonts, so a unit test cannot show it.
-
-### 3.4 Open
+### 3.3 Open
 
 | # | Question | Needed by | Status |
 | --- | --- | --- | --- |
