@@ -1,0 +1,12 @@
+# papo-desktop's own Clippy settings. Clippy reads the nearest clippy.toml and
+# does not merge it with the workspace one, so the root threshold for drawing
+# functions does not apply here: new code passes state as typed values instead.
+
+# Tests may unwrap: a failed unwrap is a failed test. Shipped code may not.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# Proper names that `doc_markdown` would otherwise want in backticks. ".."
+# keeps Clippy's default list.
+doc-valid-idents = ["GPUI", "WebSocket", "WebView", "WebView2", "WebKitGTK", "WKWebView", "GStreamer", "WebRTC", "UniFFI", "XWayland", ".."]

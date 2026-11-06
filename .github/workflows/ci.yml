@@ -35,7 +35,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Test winit preparation
         run: python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
-      - run: cargo test --locked --workspace
+      - run: cargo test --locked --workspace --exclude papo-desktop
 
   clippy:
     runs-on: ubuntu-24.04
@@ -53,7 +53,7 @@ jobs:
         with:
           key: clippy
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --exclude papo-desktop --all-targets -- -D warnings
 
   # Avisa dos lints que a próxima versão do Rust vai cobrar. Falhar aqui não
   # barra nada: serve para o aviso chegar antes de virar problema.
@@ -73,7 +73,7 @@ jobs:
         with:
           key: clippy-stable
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --exclude papo-desktop --all-targets -- -D warnings
 
   # O `stable` do runner some por baixo dos pés: uma dependência que suba o
   # mínimo dela passaria batido e só quebraria na máquina de quem instala.
@@ -97,7 +97,41 @@ jobs:
         with:
           key: msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo build --locked --workspace
+      - run: cargo build --locked --workspace --exclude papo-desktop
+
+  # The GPUI desktop client (crates/papo-desktop) has its own job, so a GPUI
+  # break or a slow GPUI build never holds up the egui and Android checks.
+  # The Linux leg was verified on Ubuntu 24.04 with scripts/deps.sh before
+  # this job existed (2026-11-05). macOS and Windows have not built GPUI here
+  # yet, so their legs report without blocking; drop `continue-on-error`
+  # once they are green (docs/papo-desktop.md, phase 0).
+  papo-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os != 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
+          components: clippy, rustfmt
+      - name: Dependências de sistema
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        uses: ./.github/actions/install-linux-deps
+      # The check script prepares the winit patch itself; this sets up the
+      # Python it needs, as the other jobs do.
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: papo-desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Check papo-desktop
+        shell: bash
+        run: bash scripts/papo-desktop-check.sh
 
   # Os nomes de pacote em scripts/deps.sh são promessa feita a quem instala.
   # Este job prova que os do apt existem de verdade, sem baixar nada.
@@ -113,6 +147,7 @@ jobs:
         run: |
           bash -n scripts/deps.sh
           bash -n scripts/ci-install-linux-deps.sh
+          bash -n scripts/papo-desktop-check.sh
           bash -n scripts/wpe-runtime.sh
           bash -n packaging/macos/build-app.sh
           python3 -m py_compile packaging/macos/bundle-gstreamer.py
@@ -143,7 +178,7 @@ jobs:
           gst-inspect-1.0 webrtcbin
           gst-inspect-1.0 nicesrc
       - name: Check macOS code and tests for warnings
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --exclude papo-desktop --all-targets -- -D warnings
       - name: Compile macOS desktop application and native WebKit bridge
         run: cargo build --locked --bin papo
       - name: Test WKWebView geometry contract
@@ -228,7 +263,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup -y --no-progress
       - name: Check native Windows build
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --exclude papo-desktop --all-targets -- -D warnings
       - uses: actions/cache@v4
         with:
           path: rsrpc-build

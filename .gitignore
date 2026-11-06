@@ -21,3 +21,6 @@
 /android/app/src/main/assets/ssl/
 /android/gstreamer/build/
 /android/tmp/
+
+# Instruções locais de agentes: ficam fora do repositório, como no papo-backend.
+AGENTS.md
