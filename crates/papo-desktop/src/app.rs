@@ -12,9 +12,9 @@
 //! - A failure to open the main window is logged and ends the process. It
 //!   never panics.
 
-use gpui::{App, KeyBinding, actions};
+use gpui::{App, KeyBinding, QuitMode, actions};
 
-use crate::window;
+use crate::{session, window};
 
 actions!(
     papo,
@@ -44,15 +44,19 @@ pub(crate) fn run() {
 }
 
 /// Registers the app-wide actions, their key bindings and the exit rule.
-fn install(cx: &mut App) {
+pub(crate) fn install(cx: &mut App) {
+    // Otherwise GPUI auto-quits after our last-window observer starts the
+    // asynchronous shutdown (gpui-fast 0.1.13, App::update_window).
+    cx.set_quit_mode(QuitMode::Explicit);
+    session::install(cx);
     match KeyBinding::load(QUIT_KEYSTROKE, Box::new(Quit), None, false, None, cx) {
         Ok(binding) => cx.bind_keys([binding]),
         Err(error) => log::error!("app: the key binding {QUIT_KEYSTROKE} is invalid: {error}"),
     }
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Quit, cx| session::quit_after_shutdown(cx));
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
-            cx.quit();
+            session::quit_after_shutdown(cx);
         }
     })
     .detach();

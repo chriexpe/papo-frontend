@@ -16,6 +16,8 @@
 extern crate gpui_kit as gpui;
 
 mod app;
+mod projection;
+mod session;
 mod shell;
 mod window;
 
