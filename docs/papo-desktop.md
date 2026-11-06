@@ -817,6 +817,22 @@ errors and explicitly coordinate server removal, credential generations and
 ordered runtime effects (§4.3). This slice does not add general settings,
 window geometry persistence, imports or migration.
 
+**Before connecting server-list controls (review, 2026-11-06):**
+
+- The foreground currently receives only the initial snapshot. Later write
+  results go to individual request replies; completing an accepted write does
+  not update `ProfileState`. Add committed-snapshot notifications or a centrally
+  owned refresh that survives cancellation of an individual waiter. Keep updates
+  ordered or revision-checked, and include `DurabilityUnknown`: the visible file
+  and worker snapshot already changed despite that returned error. Regressions
+  must prove foreground convergence after a canceled waiter and after an
+  uncertain-durability commit. The screen-free slice does not claim this wiring.
+- A full queue returns `Busy` without accepting the command. Server-list controls
+  need a deliberate pending/error policy chosen with Christian: serialize edits,
+  or safely coalesce superseded selections/reorders. Never silently drop rapid
+  user intent or treat `Busy` as persistence success. Test queue saturation and
+  rapid selection/reorder sequences through that eventual UI integration.
+
 Runnable probe, using only a temporary profile and synthetic addresses:
 
 ```sh
@@ -1010,6 +1026,9 @@ with every Kit release, so check them again after a version bump.
 Agents add items here instead of growing a PR beyond its task. Each item names
 its phase.
 
+- (phase 1, before server-list controls) Complete cancellation-independent
+  committed-snapshot updates and the explicit queue-backpressure UI policy in
+  §4.6, including uncertain-durability commits and their integration regressions.
 - (phase 1, separate shared-core PRs) Investigate the API, performance and
   lifecycle findings in [the core watch list](papo-desktop-core-watch.md).
   These are not all confirmed bugs; preserve its evidence and classifications.
