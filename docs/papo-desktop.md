@@ -278,6 +278,14 @@ names, titles and unread channels.
 
 Presence dots and the colour-picker dots stay circles at any roundness.
 
+**These tokens are the source of truth for sizes.** The Android client
+hardcodes many sizes (dp values inside its composables). They are not a
+reference for the desktop: take Android's behaviour, never its numbers. Every
+size here comes from a token above, or from a value derived from one.
+Christian plans to bring this token system to Android later, so keep it free of
+anything only GPUI can express. Radii, spacing, type ratios, glass and shadow
+are plain numbers that a Compose theme can read as well.
+
 **Spacing** (at ×1): `space.xs` 2 px, `space.sm` 4 px, `space.md` 8 px,
 `space.lg` 12 px, `space.xl` 16 px, `space.xxl` 20 px. Pill heights scale with
 spacing: header pills 36 px, composer 44 px, Send 30 px. Pane widths do not:
@@ -490,6 +498,9 @@ writing it. These describe behaviour; they are not code to copy.
 
 When a reference and the core disagree, the core's tests decide. When two
 references disagree, ask.
+
+The references describe **behaviour only**. Sizes, spacing, radii, colours and
+type come from §3.3–§3.4, never from a number in Compose or egui code.
 
 ## 6. Phases
 
