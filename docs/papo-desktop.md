@@ -73,21 +73,91 @@ change is recorded here first.
 9. **Not a web app.** No Electron, Tauri or web shell, and no GPUI on Android.
    WebViews only embed provider players (phase 5).
 
-## 3. Open decisions
+## 3. Product decisions
 
-Each one is Christian's. An agent that reaches one asks first. For a visual
-question, it shows each option as a small ASCII mock-up. It ships the
-recommended default only when the work cannot wait, and says so.
+Christian answered Q1, Q2 and Q4–Q7 on 2026-11-05. Q3 is still open. An
+agent that reaches a new design question asks first. For a visual question,
+it shows each option as a small ASCII mock-up. It ships the recommended
+default only when the work cannot wait, and says so.
 
-| # | Question | Needed by | Recommendation |
+### 3.1 Decided
+
+| # | Question | Decision |
+| --- | --- | --- |
+| Q1 | Data folder before cutover | Its own folder, `ProjectDirs("", "", "papo-desktop")`. On first launch the client offers a one-time import of egui's server list (`app.ron`) and sessions. It only reads egui's files and never changes them. The cache is not imported; it refills from the server. |
+| Q2 | Sessions and server passwords | The OS credential store (GPUI's `write_credentials` / `read_credentials`: Keychain, Credential Manager, Secret Service). The file fallback is opt-in and follows §4.5. |
+| — | App identity before cutover | `io.github.chriexpe.Papo.Desktop` (decision 7). |
+| Q4 | Font | Inter everywhere, bundled from `assets/fonts/` through `text_system().add_fonts`. A glyph Inter does not have (CJK, emoji, other scripts) comes from the OS's own font fallback; Papo keeps no per-OS font list. A setting, "Use the system font", switches every text style to the OS's default UI font. Every script must render: egui shows Japanese names as boxes on macOS, and that must not happen here. The Linux packages depend on a CJK font (`fonts-noto-cjk` on apt, `google-noto-sans-cjk-fonts` on dnf, `noto-fonts-cjk` on pacman), added to `scripts/deps.sh` and packaging when the font work lands. |
+| Q5 | Window chrome | The system title bar: server-side decorations where the desktop offers them (KDE, Windows, macOS), and GPUI's client-side fallback where it does not (GNOME). No custom title bar. |
+| Q6 | Shell layout | The rail and three panes, as in egui (§3.2). |
+| Q7 | Translations | `rust-i18n` (the Kit's mechanism), with pt-BR and en-US files. A test fails when a key exists in one locale and not in the other, so a missing translation is caught before release. The core returns semantic values, and the shell translates them (`docs/egui-compose-handoff.md` §3). |
+
+### 3.2 Shell layout (Q6)
+
+```text
+≥ 1000 px: rail | channels | conversation | members
+┌────┬──────────────┬─────────────────────────────────────┬───────────┐
+│ 💬 │(◉ Server   ⚙)│( # channel )            ( 🔍 📌 👥 )│ Online — 3│
+│ 🔔 │ # geral      │                                     │ ● ana     │
+│ ── │ # mídia      │  ana   olá!                         │ ● bia     │
+│ ◉  │ 🔊 voz       │  さくら 日本語も表示される          │ ○ caio    │
+│ ○  │              │                                     │           │
+│ +  │(◐ me       ⚙)│(📎)(🎙)( Message #geral   😊 ▣ GIF ➤)│           │
+└────┴──────────────┴─────────────────────────────────────┴───────────┘
+(…) = floating pill
+```
+
+- **Rail:** Direct (💬) and Notifications (🔔) at the top, then the servers,
+  then add (+). Direct opens the cross-server DM list in the channel pane,
+  with the server's name under each person. Notifications opens the
+  cross-server inbox there too, like Compose's global Direct and
+  Notifications.
+- **Channel pane:** a server card pill with ⚙ at the top, the channels, and
+  the account pill at the bottom.
+- **Header, split in two ends:** the title pill is anchored left, and the
+  actions pill (🔍 search, 📌 pins, 👥 members) is anchored right. Search
+  and Pins grow out of the actions pill.
+- **Members pane:** 👥 shows or hides it. The choice is remembered per window,
+  and the pane starts shown when the window is wide enough.
+- **Composer:** attach and voice note are separate squircles beside the text
+  pill. Emoji, stickers, GIF and Send are inside the text pill.
+- **Narrow windows (variant C):**
+
+  ```text
+  ≥ 1000 px    rail | channels | conversation | members
+  700–999 px   rail | channels | conversation        (👥 grows a sheet from its pill)
+  < 700 px     conversation; rail and channels fold together
+               ( ◉ Server )( # channel… )    ( 🔍 📌 👥 )
+  < 520 px     ( ◉ )( # channel… )            ( 🔍 📌 👥 )
+  ```
+
+  - The rail and the channel list fold together, as one sidebar.
+  - Folded, the server pill sits at the left end of the header, before the
+    title. Clicking it grows the whole sidebar out of the pill, over the
+    dimmed conversation.
+  - Picking a channel, clicking the dimmed area or pressing Escape folds it
+    back. Picking a server keeps it open.
+  - Below 520 px the pill shows only the server icon. The window's 360 px
+    minimum always leaves room for it, so no second control is needed.
+  - On a wide window the user can also fold the sidebar by choice, with
+    `secondary-\` only. The server pill then appears, and `secondary-\`
+    again docks the sidebar back. There is no fold or dock button: Christian
+    rejected one as ugly and unnecessary (2026-11-05).
+  - The thresholds (1000, 700 and 520 px) are from the mock-up. Check them
+    against the real panes once those exist.
+
+### 3.3 Checking fonts (Q4)
+
+The check is one run on a real desktop per OS, recorded in the PR: a Japanese
+username, an emoji and a Latin name render in the timeline and the member
+list, with Inter and with "Use the system font". GPUI's headless test platform
+has no real fonts, so a unit test cannot show it.
+
+### 3.4 Open
+
+| # | Question | Needed by | Status |
 | --- | --- | --- | --- |
-| Q1 | Data folder before cutover: its own folder (`ProjectDirs("", "", "papo-desktop")`) with an explicit import of egui's server list and sessions, or egui's folder? | Phase 1 | Its own folder. Two processes must never write one `papo-cache.db`. The cache can be rebuilt, so do not import it. |
-| Q2 | Where sessions and server passwords live: the files egui uses (`<data>/sessions/*.token`), or the OS credential store (GPUI's `write_credentials`/`read_credentials`: Keychain, Credential Manager, Secret Service)? | Phase 1 | The OS store. A file fallback (for Linux without a Secret Service) follows §4.5. `SecretStore` is synchronous and is called from the `papo-net` thread, so the adapter needs a design (§4.3). |
-| Q3 | Papo's design tokens on GPUI: colours, radii, spacing, type scale, glass with its opaque fallback. Which egui values (`src/ui/theme.rs`) carry over? | Phase 1 | Restate the tokens once, in one `design` module over the Kit theme. The egui values are a reference only. |
-| Q4 | Fonts: bundle Inter (as egui does from `assets/fonts/`) through `text_system().add_fonts`, or use the system UI font? | Phase 1 | Bundle Inter. GPUI's default `.SystemUIFont` does not resolve on Linux (a warning on every run, 2026-11-05). |
-| Q5 | Window chrome: server-side decorations, client-side decorations, or Papo's own title bar? It must work on GNOME and on KDE (`PAPO_CHROME=own|system` in egui). | Phase 1 | A decision with mock-ups, made before the shell layout. |
-| Q6 | The shell layout on desktop: rails, panes, the floating pills, and how overlays grow from their pill. | Phase 1 | Mock-ups first. Phase 1's server and channel lists fix the shell's layout, so Q6 is answered before they are built. Overlays opened from a pill grow out of that pill (same width and anchoring edge). |
-| Q7 | Translations: GPUI Kit uses `rust-i18n`; egui has `src/i18n.rs`. Which mechanism holds pt-BR and en-US here? | Phase 1 | One `strings` module. Whatever mechanism is chosen, the core returns semantic values and the shell translates them (`docs/egui-compose-handoff.md` §3). |
+| Q3 | Papo's design tokens on GPUI: colours, radii, spacing, type scale, glass with its opaque fallback | Phase 1, before any screen | Christian asked for a **fresh token set**, not egui's values. Next step: a token sheet with two or three directions for him to choose from. The egui values in `src/ui/theme.rs` are a reference only. Until he chooses, screens use the Kit's theme through one `design` module, so a change of tokens touches that module alone. |
 
 ## 4. Architecture
 
@@ -257,7 +327,7 @@ Remaining for phase 0:
 ### Phase 1: session and first screens
 
 First, before any authenticated screen: choose where `ServerRuntime` lives
-(§4.3), with measurements, and get answers to Q1–Q7. These fix the data,
+(§4.3), with measurements, and get Christian's choice of tokens (Q3). §3 fixes the data,
 credentials, threads, tokens, chrome and shell layout that every screen
 stands on. Then build: add a server, sign in, register and unlock; several
 servers; the server and channel lists with live updates; offline and
