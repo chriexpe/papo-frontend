@@ -312,6 +312,14 @@ blocks met.
   | Extra compact | 6 | 0 | 1 | time gutter, 3.2 × text size | 8 |
 
   Inside a message, its blocks are 4 px apart (`space.sm`) at every density.
+- **Two UI integration tests keep the model true** (`#[gpui_kit::test]`, phase 2).
+  Both run at every density, and at the smallest and largest text size and
+  spacing:
+  - every block's left edge equals its message's content column, and the
+    distances between groups, messages and blocks equal the table above,
+    measured from element bounds;
+  - after a change of text size, spacing or density, the message being read
+    keeps its place on screen (anchor preservation).
 
 **Glass and shadow.** Pills blur what is behind them by 16 px and saturate it by
 1.5. Their shadow is one soft lift and one tight contact shadow, both scaled by
