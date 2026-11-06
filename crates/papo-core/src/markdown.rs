@@ -122,80 +122,84 @@ impl Prepared {
     }
 }
 
-fn sentinel(index: usize) -> String {
-    format!("{SENTINEL_OPEN}{index}{SENTINEL_CLOSE}")
+fn push_sentinel(out: &mut String, index: usize) {
+    use std::fmt::Write;
+    write!(out, "{SENTINEL_OPEN}{index}{SENTINEL_CLOSE}").expect("writing to String");
 }
 
 /// Troca cada `@Nome` das ligações (e cada `@mention(<@id>)` que sobrou, de
 /// quem o cliente ainda não conhece) por um sentinela, antes de interpretar.
 pub fn substitute_mentions(display: &str, bindings: &[MentionBinding]) -> Prepared {
-    // Caracteres do uso privado que já vinham no texto não podem se passar
-    // por sentinela. As posições das ligações valem para o texto original,
-    // então só dá para aplicá-las quando nada foi removido.
+    // Strip untrusted sentinel characters before using original scalar offsets.
     let is_private = |c: char| matches!(c, SENTINEL_OPEN | SENTINEL_CLOSE | '\u{E002}');
-    let chars: Vec<char> = display.chars().filter(|c| !is_private(*c)).collect();
-    let untouched = chars.len() == display.chars().count();
-
-    let mut spans: Vec<(usize, usize, Mention)> = Vec::new();
-    if untouched {
+    // All three private delimiters start with UTF-8 byte EE. The byte scan
+    // avoids decoding ordinary prose merely to prove it contains no delimiter.
+    let untouched = !display.as_bytes().contains(&0xEE)
+        || !display.contains([SENTINEL_OPEN, SENTINEL_CLOSE, '\u{E002}']);
+    let source: Cow<'_, str> = if untouched { Cow::Borrowed(display) }
+        else { Cow::Owned(display.chars().filter(|c| !is_private(*c)).collect()) };
+    const WIRE: &str = "@mention(<@";
+    if bindings.is_empty() && !source.contains(WIRE) {
+        return Prepared { source: source.into_owned(), mentions: Vec::new() };
+    }
+    // Convert scalar positions once, only when bindings actually require them.
+    let mut spans = Vec::new();
+    if untouched && !bindings.is_empty() {
+        let offsets: Vec<_> = display.char_indices().map(|(at, _)| at)
+            .chain(std::iter::once(display.len())).collect();
         for binding in bindings {
             let len = 1 + binding.label.chars().count();
-            if binding.start + len <= chars.len() && chars[binding.start] == '@' {
-                spans.push((
-                    binding.start,
-                    len,
-                    Mention {
-                        user_id: binding.user_id.clone(),
-                        label: binding.label.clone(),
-                    },
-                ));
+            if let Some(end) = binding.start.checked_add(len)
+                && end < offsets.len()
+                && display.as_bytes()[offsets[binding.start]] == b'@'
+            {
+                spans.push((offsets[binding.start], offsets[end], binding));
             }
         }
     }
-    spans.sort_by_key(|(start, _, _)| *start);
+    spans.sort_by_key(|&(start, _, _)| start);
     let mut spans = spans.into_iter().peekable();
-
-    let wire: Vec<char> = "@mention(<@".chars().collect();
-    let mut out = String::with_capacity(display.len());
-    let mut mentions: Vec<Mention> = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        // Ligação sobreposta a outra já consumida: ignora.
-        while spans.peek().is_some_and(|(start, _, _)| *start < i) {
-            spans.next();
+    let mut out = String::with_capacity(source.len());
+    let mut mentions = Vec::new();
+    let mut from = 0;
+    let mut wire_at = source.find(WIRE);
+    while from < source.len() {
+        while spans.peek().is_some_and(|&(start, _, _)| start < from) { spans.next(); }
+        // Bindings can precede or consume a wire token. Cache lookahead so a
+        // long bound-only draft does not rescan its remaining suffix per binding.
+        if wire_at.is_some_and(|at| at < from) {
+            wire_at = source[from..].find(WIRE).map(|at| from + at);
         }
-        if spans.peek().is_some_and(|(start, _, _)| *start == i) {
-            let (_, len, mention) = spans.next().expect("peeked");
-            out.push_str(&sentinel(mentions.len()));
-            mentions.push(mention);
-            i += len;
+        let bound_at = spans.peek().map(|&(at, _, _)| at);
+        let next = match (wire_at, bound_at) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => break,
+        };
+        out.push_str(&source[from..next]);
+        if bound_at == Some(next) {
+            let (_, end, binding) = spans.next().expect("peeked");
+            push_sentinel(&mut out, mentions.len());
+            mentions.push(Mention { user_id: binding.user_id.clone(), label: binding.label.clone() });
+            from = end;
             continue;
         }
-        if chars[i..].starts_with(&wire) {
-            let id_start = i + wire.len();
-            let mut end = id_start;
-            while end + 1 < chars.len() && !(chars[end] == '>' && chars[end + 1] == ')') {
-                end += 1;
-            }
-            let id: String = chars[id_start..end].iter().collect();
-            let closed = end + 1 < chars.len();
-            if closed && id.len() >= 16 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-                out.push_str(&sentinel(mentions.len()));
-                mentions.push(Mention {
-                    user_id: id,
-                    label: "usuário".to_owned(),
-                });
-                i = end + 2;
+        let id_start = next + WIRE.len();
+        if let Some(close) = source[id_start..].find(">)") {
+            let id = &source[id_start..id_start + close];
+            if id.len() >= 16 && id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') {
+                push_sentinel(&mut out, mentions.len());
+                mentions.push(Mention { user_id: id.to_owned(), label: "usuário".to_owned() });
+                from = id_start + close + 2;
                 continue;
             }
         }
-        out.push(chars[i]);
-        i += 1;
+        // An invalid wire token stays literal; bindings inside it still apply.
+        out.push('@');
+        from = next + 1;
     }
-    Prepared {
-        source: out,
-        mentions,
-    }
+    out.push_str(&source[from..]);
+    Prepared { source: out, mentions }
 }
 
 // ---------------------------------------------------------------------------
@@ -205,16 +209,47 @@ pub fn substitute_mentions(display: &str, bindings: &[MentionBinding]) -> Prepar
 /// Três crases sempre abrem um bloco de código, mesmo coladas no conteúdo
 /// (```` ```{"ok":true}``` ````). Crase simples continua código em linha.
 pub fn normalize_fenced_code_blocks(content: &str) -> String {
+    normalize_fences(content).into_owned()
+}
+
+fn normalize_newlines(content: &str) -> Cow<'_, str> {
+    let Some(first) = content.find('\r') else { return Cow::Borrowed(content) };
+    let mut out = String::with_capacity(content.len());
+    out.push_str(&content[..first]);
+    let mut rest = &content[first..];
+    while let Some(at) = rest.find('\r') {
+        out.push_str(&rest[..at]);
+        out.push('\n');
+        rest = &rest[at + 1..];
+        if let Some(after) = rest.strip_prefix('\n') { rest = after; }
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
+}
+
+// Searching for one ASCII byte uses the standard library's fast byte search;
+// checking the remaining two bytes avoids substring-search setup per short segment.
+fn find_fence(content: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(relative) = content[from..].find('`') {
+        let at = from + relative;
+        if content[at..].starts_with("```") { return Some(at); }
+        from = at + 1;
+    }
+    None
+}
+
+fn normalize_fences(content: &str) -> Cow<'_, str> {
+    let Some(first) = find_fence(content) else { return Cow::Borrowed(content) };
+    if find_fence(&content[first + 3..]).is_none() { return Cow::Borrowed(content); }
     let mut out = String::with_capacity(content.len() + 16);
     let mut rest_start = 0;
-    while let Some(open) = content[rest_start..].find("```").map(|i| i + rest_start) {
+    while let Some(open) = find_fence(&content[rest_start..]).map(|i| i + rest_start) {
         let inner_start = open + 3;
-        let Some(close) = content[inner_start..].find("```").map(|i| i + inner_start) else {
+        let Some(close) = find_fence(&content[inner_start..]).map(|i| i + inner_start) else {
             break;
         };
-        let inner = content[inner_start..close]
-            .replace("\r\n", "\n")
-            .replace('\r', "\n");
+        let inner = normalize_newlines(&content[inner_start..close]);
         let mut info = "";
         let mut body: &str = &inner;
 
@@ -249,7 +284,7 @@ pub fn normalize_fenced_code_blocks(content: &str) -> String {
         rest_start = after;
     }
     out.push_str(&content[rest_start..]);
-    out
+    Cow::Owned(out)
 }
 
 fn is_info_string(s: &str) -> bool {
@@ -261,11 +296,16 @@ fn is_info_string(s: &str) -> bool {
 /// Cada linha em branco além da primeira vira um parágrafo-espaçador. Não
 /// mexe dentro de blocos de código.
 pub fn preserve_blank_lines(content: &str) -> String {
+    preserve_blanks(content).into_owned()
+}
+
+fn preserve_blanks(content: &str) -> Cow<'_, str> {
+    if !content.contains("\n\n") { return Cow::Borrowed(content); }
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
     let mut in_fence = false;
     loop {
-        let Some(at) = rest.find("```") else {
+        let Some(at) = find_fence(rest) else {
             push_segment(&mut out, rest, in_fence);
             break;
         };
@@ -279,7 +319,7 @@ pub fn preserve_blank_lines(content: &str) -> String {
         in_fence = !in_fence;
         rest = &rest[at + 3..];
     }
-    out
+    Cow::Owned(out)
 }
 
 fn push_segment(out: &mut String, segment: &str, in_fence: bool) {
@@ -287,30 +327,24 @@ fn push_segment(out: &mut String, segment: &str, in_fence: bool) {
         out.push_str(segment);
         return;
     }
-    let mut chars = segment.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\n' {
-            out.push(c);
-            continue;
-        }
-        let mut run = 1;
-        while chars.peek() == Some(&'\n') {
-            chars.next();
-            run += 1;
-        }
-        if run < 2 {
-            out.push('\n');
-            continue;
-        }
+    let mut copied = 0;
+    let mut scanned = 0;
+    while let Some(relative) = segment[scanned..].find('\n') {
+        let at = scanned + relative;
+        scanned = at + 1;
+        if segment.as_bytes().get(scanned) != Some(&b'\n') { continue; }
+        out.push_str(&segment[copied..at]);
+        let run = segment.as_bytes()[at..].iter().take_while(|&&b| b == b'\n').count();
         out.push_str("\n\n");
         for index in 0..run - 1 {
-            if index > 0 {
-                out.push_str("\n\n");
-            }
+            if index > 0 { out.push_str("\n\n"); }
             out.push_str(BLANK_LINE_MARKER);
         }
         out.push_str("\n\n");
+        scanned = at + run;
+        copied = scanned;
     }
+    out.push_str(&segment[copied..]);
 }
 
 /// Só `http`, `https` e `mailto` (e âncoras/caminhos) viram link; `javascript:`,
@@ -326,14 +360,10 @@ pub fn is_safe_href(href: &str) -> bool {
         return false;
     };
     let scheme = &href[..colon];
-    let mut chars = scheme.chars();
-    let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
-    valid
-        && matches!(
-            scheme.to_ascii_lowercase().as_str(),
-            "http" | "https" | "mailto"
-        )
+    // An exact allowed-scheme match also proves the scheme grammar is valid.
+    scheme.eq_ignore_ascii_case("http")
+        || scheme.eq_ignore_ascii_case("https")
+        || scheme.eq_ignore_ascii_case("mailto")
 }
 
 /// Texto sem nenhuma sintaxe de markdown: quem chama pode seguir o caminho
@@ -391,9 +421,9 @@ fn escape_plus_list_markers(source: &str, options: Options) -> Cow<'_, str> {
 // ---------------------------------------------------------------------------
 
 pub fn parse(prepared: &Prepared) -> Vec<Block> {
-    let content = prepared.source.replace("\r\n", "\n").replace('\r', "\n");
-    let normalized = normalize_fenced_code_blocks(&content);
-    let source = preserve_blank_lines(&normalized);
+    let content = normalize_newlines(&prepared.source);
+    let normalized = normalize_fences(&content);
+    let source = preserve_blanks(&normalized);
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -412,28 +442,48 @@ pub fn parse(prepared: &Prepared) -> Vec<Block> {
     // recursive. Untrusted messages must not exhaust an Android thread's
     // stack with thousands of nested quotes/lists. Preserve their literal
     // content instead of dropping the deeply nested part.
-    let events: Vec<_> = Parser::new_ext(&source, options).collect();
-    let mut depth: usize = 0;
-    for event in &events {
-        match event {
-            Event::Start(_) => {
-                depth += 1;
-                if depth > 64 {
-                    return vec![Block::Paragraph(finish(vec![Inline::Text {
-                        text: prepared.source.clone(), style: Style::default(), link: None,
-                    }], &prepared.mentions))];
-                }
-            }
-            Event::End(_) => depth = depth.saturating_sub(1),
-            _ => {}
-        }
+    let mut events = CheckedEvents {
+        inner: Parser::new_ext(&source, options), depth: 0, exceeded: false,
+    };
+    let blocks = builder.blocks(&mut events);
+    if events.exceeded {
+        // The iterator never yielded the over-limit Start, so the partial
+        // tree and builder stack are bounded too. Discard the entire result.
+        return vec![Block::Paragraph(finish(vec![Inline::Text {
+            text: prepared.source.clone(), style: Style::default(), link: None,
+        }], &prepared.mentions))];
     }
-    builder.blocks(&mut events.into_iter())
+    blocks
 }
 
 /// Atalho: o que `message_body` precisa, já em `Arc` para o cache.
 pub fn parse_shared(prepared: &Prepared) -> Arc<Vec<Block>> {
     Arc::new(parse(prepared))
+}
+
+// Check every tag, including ones the presentation builder discards. Once
+// tripped, remain exhausted while all recursive builder frames unwind.
+struct CheckedEvents<I> {
+    inner: I,
+    depth: usize,
+    exceeded: bool,
+}
+
+impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CheckedEvents<I> {
+    type Item = Event<'a>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.exceeded { return None; }
+        let event = self.inner.next()?;
+        match &event {
+            Event::Start(_) => {
+                if self.depth == 64 { self.exceeded = true; return None; }
+                self.depth += 1;
+            }
+            Event::End(_) => self.depth = self.depth.saturating_sub(1),
+            _ => {}
+        }
+        Some(event)
+    }
 }
 
 struct Builder<'a> {
@@ -470,7 +520,22 @@ impl Builder<'_> {
                 Event::End(end) if !is_inline_end(&end) => break,
                 Event::Start(Tag::Paragraph) => {
                     flush(&mut pending, &mut blocks, self.mentions);
-                    let inlines = self.inlines(events);
+                    // Generated blank-line paragraphs need neither a temporary
+                    // owned marker String nor a temporary inline Vec.
+                    let first = events.next();
+                    let second = if self.image_text.is_empty()
+                        && matches!(&first, Some(Event::Text(text)) if text.as_ref() == BLANK_LINE_MARKER)
+                    {
+                        let second = events.next();
+                        if matches!(&second, Some(Event::End(TagEnd::Paragraph))) {
+                            blocks.push(Block::Spacer);
+                            continue;
+                        }
+                        second
+                    } else { None };
+                    // Replay only this paragraph's consumed prefix, without
+                    // imposing a peek/buffer branch on every parser event.
+                    let inlines = self.inlines(&mut first.into_iter().chain(second).chain(events.by_ref()));
                     blocks.push(paragraph_or_spacer(inlines, self.mentions));
                 }
                 Event::Start(Tag::Heading { level, .. }) => {
@@ -505,7 +570,7 @@ impl Builder<'_> {
                     }
                     blocks.push(Block::Code {
                         lang,
-                        text: restore_mentions(&text, self.mentions),
+                        text: restore_owned_mentions(text, self.mentions),
                     });
                 }
                 Event::Start(Tag::List(start)) => {
@@ -555,8 +620,8 @@ impl Builder<'_> {
                 }
                 // Item "apertado": o texto vem sem parágrafo em volta.
                 other => {
-                    if let Some(inline) = self.inline_event(other, events) {
-                        pending.extend(inline);
+                    if let Some(inline) = self.inline_event(other) {
+                        pending.push(inline);
                     }
                 }
             }
@@ -592,30 +657,26 @@ impl Builder<'_> {
     /// Lê eventos de linha até o `End` do parágrafo/título/célula.
     fn inlines<'e>(&mut self, events: &mut impl Iterator<Item = Event<'e>>) -> Vec<Inline> {
         let mut out = Vec::new();
-        while let Some(event) = events.next() {
+        for event in events.by_ref() {
             if matches!(&event, Event::End(end) if !is_inline_end(end)) {
                 break;
             }
-            if let Some(inline) = self.inline_event(event, events) {
-                out.extend(inline);
+            if let Some(inline) = self.inline_event(event) {
+                out.push(inline);
             }
         }
         out
     }
 
-    fn inline_event<'e>(
-        &mut self,
-        event: Event<'e>,
-        _events: &mut impl Iterator<Item = Event<'e>>,
-    ) -> Option<Vec<Inline>> {
-        let mut out = Vec::new();
+    fn inline_event(&mut self, event: Event<'_>) -> Option<Inline> {
+        let mut out = None;
         match event {
             Event::Text(text) => {
                 // Dentro de `![alt](url)` o texto é o alternativo, não conteúdo.
                 if let Some((_, alt)) = self.image_text.last_mut() {
                     alt.push_str(&text);
                 } else {
-                    out.push(Inline::Text {
+                    out = Some(Inline::Text {
                         text: text.into_string(),
                         style: self.style(),
                         link: self.link(),
@@ -626,14 +687,14 @@ impl Builder<'_> {
                 if let Some((_, alt)) = self.image_text.last_mut() {
                     alt.push_str(&code);
                 } else {
-                    out.push(Inline::Code(code.into_string()));
+                    out = Some(Inline::Code(code.into_string()));
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
                 if let Some((_, alt)) = self.image_text.last_mut() {
                     alt.push(' ');
                 } else {
-                    out.push(Inline::Break);
+                    out = Some(Inline::Break);
                 }
             }
             // HTML cru some: tags em linha e blocos inteiros.
@@ -661,10 +722,10 @@ impl Builder<'_> {
                 if let Some((src, alt)) = self.image_text.pop() {
                     let lower = src.to_ascii_lowercase();
                     if lower.starts_with("https://") || lower.starts_with("http://") {
-                        out.push(Inline::Image { src, alt });
+                        out = Some(Inline::Image { src, alt });
                     } else {
                         let shown = if alt.is_empty() { src.clone() } else { alt };
-                        out.push(Inline::Text {
+                        out = Some(Inline::Text {
                             text: shown,
                             style: self.style(),
                             link: is_safe_href(&src).then_some(src),
@@ -675,7 +736,7 @@ impl Builder<'_> {
             // Outros contêineres (notas, definições) não existem aqui.
             _ => return None,
         }
-        Some(out)
+        out
     }
 }
 
@@ -707,33 +768,61 @@ fn paragraph_or_spacer(inlines: Vec<Inline>, mentions: &[Mention]) -> Block {
 }
 
 /// Junta texto vizinho de mesmo estilo e troca os sentinelas por menções.
-fn finish(inlines: Vec<Inline>, mentions: &[Mention]) -> Vec<Inline> {
-    let mut merged: Vec<Inline> = Vec::with_capacity(inlines.len());
-    for inline in inlines {
-        match (merged.last_mut(), inline) {
-            (
-                Some(Inline::Text { text, style, link }),
-                Inline::Text {
-                    text: more,
-                    style: more_style,
-                    link: more_link,
-                },
-            ) if *style == more_style && *link == more_link => text.push_str(&more),
-            (_, other) => merged.push(other),
+fn finish(mut inlines: Vec<Inline>, mentions: &[Mention]) -> Vec<Inline> {
+    // Most paragraphs/table cells contain one node. No merging or expansion
+    // buffer is needed unless that node actually contains a sentinel.
+    if inlines.len() <= 1 {
+        match inlines.first_mut() {
+            Some(Inline::Text { text, .. }) if text.is_empty() => { inlines.clear(); return inlines; }
+            Some(Inline::Text { text, .. }) if text.contains(SENTINEL_OPEN) => {}
+            Some(Inline::Code(code)) => {
+                if code.contains(SENTINEL_OPEN) { *code = restore_mentions(code, mentions); }
+                return inlines;
+            }
+            _ => return inlines,
         }
     }
-
-    let mut out = Vec::with_capacity(merged.len());
-    for inline in merged {
+    // Compact in place, merging before interpreting sentinels (which can span
+    // adjacent parser Text events). Break is only a temporary vacated-slot value.
+    let mut written = 0;
+    for read in 0..inlines.len() {
+        let inline = std::mem::replace(&mut inlines[read], Inline::Break);
+        match (inlines[..written].last_mut(), inline) {
+            (Some(Inline::Text { text, style, link }),
+             Inline::Text { text: more, style: more_style, link: more_link })
+                if *style == more_style && *link == more_link => text.push_str(&more),
+            (_, other) => { inlines[written] = other; written += 1; }
+        }
+    }
+    inlines.truncate(written);
+    let needs_split = inlines.iter().any(|i| matches!(i, Inline::Text { text, .. } if text.contains(SENTINEL_OPEN)));
+    if !needs_split {
+        inlines.retain_mut(|inline| match inline {
+            Inline::Text { text, .. } => !text.is_empty(),
+            Inline::Code(code) => {
+                if code.contains(SENTINEL_OPEN) { *code = restore_mentions(code, mentions); }
+                true
+            }
+            _ => true,
+        });
+        return inlines;
+    }
+    let mut out = Vec::with_capacity(inlines.len());
+    for inline in inlines {
         match inline {
-            Inline::Text { text, style, link } => {
+            Inline::Text { text, style, link } if text.contains(SENTINEL_OPEN) => {
                 split_mentions(&text, style, link, mentions, &mut out)
             }
-            Inline::Code(code) => out.push(Inline::Code(restore_mentions(&code, mentions))),
+            Inline::Text { ref text, .. } if text.is_empty() => {}
+            Inline::Code(code) => out.push(Inline::Code(restore_owned_mentions(code, mentions))),
             other => out.push(other),
         }
     }
     out
+}
+
+fn restore_owned_mentions(text: String, mentions: &[Mention]) -> String {
+    if text.contains(SENTINEL_OPEN) { restore_mentions(&text, mentions) } else { text }
 }
 
 fn split_mentions(

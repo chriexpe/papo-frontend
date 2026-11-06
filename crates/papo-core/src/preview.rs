@@ -2500,12 +2500,18 @@ pub fn safe_remote_url(raw: &str) -> bool {
     let Ok(url) = Url::parse(raw) else {
         return false;
     };
+    safe_parsed_remote_url(&url)
+}
+
+// Reuse the parsed URL in canonicalization; keep the same lexical SSRF policy.
+fn safe_parsed_remote_url(url: &Url) -> bool {
     if url.scheme() != "https" || url.username() != "" || url.password().is_some() {
         return false;
     }
     match url.host() {
         Some(Host::Domain(host)) => {
-            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            // HTTPS domain names are already ASCII-case-normalized by url.
+            let host = host.trim_end_matches('.');
             host != "localhost" && !host.ends_with(".localhost") && !host.ends_with(".local")
         }
         // Mantemos a política histórica mais estrita: mesmo um IP literal
@@ -2586,13 +2592,13 @@ pub fn extract_https_urls(text: &str) -> Vec<String> {
 
 pub fn canonical_url(raw: &str) -> Option<String> {
     let mut url = Url::parse(raw).ok()?;
-    if !safe_remote_url(url.as_str()) {
+    if !safe_parsed_remote_url(&url) {
         return None;
     }
     if url.port() == Some(443) {
         let _ = url.set_port(None);
     }
-    Some(url.to_string())
+    Some(url.into())
 }
 
 /// Download limitado para a apresentação de imagens remotas. Redirecionamentos
