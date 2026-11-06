@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::{CredentialError, CredentialOperation};
+use super::{CredentialError, CredentialOperation, generation::Generation};
 use papo_core::storage::Secret;
 
 type Reply = Result<Option<String>, CredentialError>;
@@ -31,6 +31,7 @@ pub(super) struct Request {
     pub(super) server: String,
     pub(super) secret: Secret,
     pub(super) operation: Operation,
+    pub(super) generation: Arc<Generation>,
     reply: async_channel::Sender<Reply>,
 }
 
@@ -86,7 +87,13 @@ impl Bridge {
     }
 
     /// Called only under the store's operation lock, never on GPUI's thread.
-    pub(super) fn request(&self, server: &str, secret: Secret, operation: Operation) -> Reply {
+    pub(super) fn request(
+        &self,
+        generation: &Arc<Generation>,
+        server: &str,
+        secret: Secret,
+        operation: Operation,
+    ) -> Reply {
         let (reply, receiver) = async_channel::bounded(1);
         {
             let mut pending = self.pending.lock().map_err(|_| CredentialError::Internal)?;
@@ -99,6 +106,7 @@ impl Bridge {
                 server: server.to_owned(),
                 secret,
                 operation,
+                generation: Arc::clone(generation),
                 reply,
             };
             if self.requests.try_send(request).is_err() {
@@ -114,6 +122,10 @@ impl Bridge {
             .map_err(|_| CredentialError::Internal)?
             .reply = None;
         result
+    }
+
+    pub(super) fn is_running(&self) -> bool {
+        !self.requests.is_closed()
     }
 
     pub(super) fn stop(&self) {

@@ -675,19 +675,42 @@ a run-local tombstone before native I/O, even when deletion fails. Forgetting
 a server attempts both secret kinds and reports each native failure rather
 than stopping after the first failure. Read failures remain retryable.
 
-A typed foreground callback reports the original server key, secret kind,
-operation and sanitized error, never the credential or raw backend error.
-The worker reply is completed before invoking the callback, so the worker can
-release its operation lock independently of notification handling. Callbacks
-must not block GPUI or synchronously wait for account or worker operations.
-**Before real authentication is enabled**, add session-incarnation or operation-
-generation validation: the current server key alone cannot distinguish a
-late failure from account A after that server has switched to account B.
-Then connect translated user feedback whose presentation Christian chooses.
-The callback is not itself a user notice; diagnostic logging in the probe is
-not production feedback. Ordered runtime-effect delivery (§4.3) is still a
-separate pre-authentication gate. No auth commands or screens are enabled by
-this adapter.
+`replace_store(server)` begins a fresh credential incarnation for that core
+server key and permanently revokes its previous handle, including all clones.
+Call it at each account/session replacement, even for the same account; retain
+and clone the returned `Arc<dyn SecretStore>` within that incarnation. The
+handle rejects other server keys and stale operations. `invalidate(server)`
+revokes it on logout/removal without deleting credentials or waiting for native
+I/O. Coordinate deletion before revocation or through a fresh cleanup
+incarnation. Other servers and run-local memory/tombstones remain unchanged.
+
+The service owner is foreground-only (`!Send`/`!Sync`), enforced by its type;
+only store handles and failure records cross threads. This keeps replacement
+and check-then-dispatch/callback execution on the same foreground thread.
+Each native request and typed failure retains its original generation. The
+foreground skips stale queued dispatches and suppresses stale failure callbacks.
+A short-held generation guard makes memory access atomic with revocation; it
+never covers native waits or callbacks. Late successful reads cannot populate
+the overlay or return a value after revocation, and stale native mutations do
+not return success. Revocation does not undo an already admitted memory change
+or dispatched OS mutation. Global serialization is unchanged.
+
+The typed callback reports the original server key, secret kind, operation and
+sanitized error, never the credential or raw backend error. The worker reply
+is completed before invoking the callback, so the worker can release its
+operation lock independently of notification handling. Completed native errors
+remain intact even if the callback initiates shutdown. Callbacks must not block
+GPUI or synchronously wait for account or worker operations. If presentation
+is deferred, recheck `CredentialFailure::is_current()` on the foreground
+immediately before showing it, after any await or queue boundary. Replacement,
+invalidation, service drop and every bridge shutdown path expire retained
+failures; new handles cannot revive a stopped service.
+
+**Before real authentication is enabled**, connect translated user feedback
+whose presentation Christian chooses. The callback is not itself a user notice;
+diagnostic logging in the probe is not production feedback. Ordered runtime-
+effect delivery (§4.3) is still a separate pre-authentication gate. No auth
+commands or screens are enabled by this adapter.
 
 **Performance watch (phase 1 follow-up):** the operation lock and native
 dispatcher serialize requests across servers. One locked OS-store prompt can

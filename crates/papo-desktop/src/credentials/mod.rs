@@ -6,15 +6,24 @@
 //! The caller owns translated user feedback; this module owns no auth screen.
 
 mod bridge;
+mod generation;
+#[cfg(test)]
+mod generation_tests;
 mod store;
 #[cfg(test)]
 mod tests;
 
 use bridge::{Bridge, Operation, Request};
+use generation::Generation;
 use gpui::{App, AppContext as _, Global, Task};
 use papo_core::storage::{Secret, SecretStore};
-use std::sync::{Arc, Weak};
-use store::OsSecretStore;
+use std::{
+    collections::HashMap,
+    marker::PhantomData,
+    rc::Rc,
+    sync::{Arc, Weak},
+};
+use store::{OsSecretStore, Overlay};
 
 /// The attempted OS operation. It contains no credential or server address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +51,12 @@ pub enum CredentialError {
     /// The service is stopping or its foreground owner was dropped.
     #[error("credential service is stopped")]
     Stopped,
+    /// The handle belongs to a replaced or invalidated server incarnation.
+    #[error("credential session is stale")]
+    Stale,
+    /// A scoped handle was used for a different server.
+    #[error("credential handle belongs to another server")]
+    WrongServer,
     /// An internal synchronization invariant failed.
     #[error("credential service synchronization failed")]
     Internal,
@@ -49,9 +64,9 @@ pub enum CredentialError {
 
 /// Foreground failure notification, scoped to the original storage request.
 ///
-/// The server is core's stable key, not a display label or session incarnation.
-/// Before connecting real notices, add an operation-generation guard: matching
-/// only this key cannot reject a delayed failure from a replaced account.
+/// The original handle's generation is retained, even if presentation is deferred.
+/// Call `is_current` on the foreground immediately before showing a notice; a
+/// failure delivered earlier can become stale after replacement or logout.
 /// This type intentionally has no Debug implementation: server keys can contain
 /// a readable address fragment.
 pub struct CredentialFailure {
@@ -59,9 +74,20 @@ pub struct CredentialFailure {
     secret: Secret,
     operation: CredentialOperation,
     error: CredentialError,
+    generation: Arc<Generation>,
 }
 
 impl CredentialFailure {
+    /// Whether this request still belongs to the server's current incarnation.
+    ///
+    /// This is a snapshot, not a lease. Recheck on the foreground immediately
+    /// before presentation, after any await or queue boundary. Replacement,
+    /// invalidation, service drop and shutdown make it false permanently.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        self.generation.is_current()
+    }
+
     /// The core server key captured by the operation.
     #[must_use]
     pub fn server(&self) -> &str {
@@ -89,9 +115,21 @@ impl CredentialFailure {
 /// Dropping or stopping it releases pending callers without waiting for GPUI.
 /// A canceled native write/delete may already have reached the OS; cancellation
 /// is not a persistence acknowledgement. Keep this owner across session changes.
+/// The service is foreground-only; only its stores and failures cross threads.
+///
+/// ```compile_fail
+/// use papo_desktop::credentials::CredentialService;
+/// fn move_to_worker(service: CredentialService) {
+///     std::thread::spawn(move || drop(service));
+/// }
+/// ```
 pub struct CredentialService {
-    store: Arc<OsSecretStore>,
+    bridge: Arc<Bridge>,
+    overlay: Arc<Overlay>,
+    generations: HashMap<String, Arc<Generation>>,
     _foreground: Task<()>,
+    // Invalidation and dispatch/callback checks must share the foreground thread.
+    _foreground_only: PhantomData<Rc<()>>,
 }
 
 #[derive(Default)]
@@ -105,10 +143,10 @@ impl CredentialService {
     ///
     /// `on_failure` runs on the foreground after the core reply is completed.
     /// It must not block GPUI or synchronously wait for account or worker work.
-    /// Before enabling real notices, add session-incarnation/generation validation
-    /// and translated user feedback; the server key alone cannot reject stale
-    /// account failures. Logging alone does not fulfill the credential policy
-    /// (§4.5).
+    /// Only current generations reach the callback. Deferred presentation must
+    /// recheck `CredentialFailure::is_current` immediately before showing it.
+    /// The caller still owns translated user feedback; logging alone does not
+    /// fulfill the credential policy (§4.5).
     pub fn new(
         cx: &mut App,
         on_failure: impl FnMut(CredentialFailure, &mut App) + 'static,
@@ -141,7 +179,9 @@ impl CredentialService {
                 if request.is_canceled() {
                     continue;
                 }
-                let result = cx.update(|cx| dispatch(&request, cx)).await;
+                let result = cx
+                    .update(|cx| dispatch_current(&request, cx, dispatch))
+                    .await;
                 if request.is_canceled() {
                     continue;
                 }
@@ -150,31 +190,64 @@ impl CredentialService {
                     secret: request.secret,
                     operation: request.operation.kind(),
                     error: *error,
+                    generation: Arc::clone(&request.generation),
                 });
                 // Release the worker reply before a callback can initiate account
                 // work or shutdown. The worker can then release its operation lock.
                 request.complete(result);
                 if let Some(failure) = failure {
-                    cx.update(|cx| on_failure(failure, cx));
+                    cx.update(|cx| {
+                        if failure.is_current() {
+                            on_failure(failure, cx);
+                        }
+                    });
                 }
             }
         });
         Self {
-            store: Arc::new(OsSecretStore::new(bridge)),
+            bridge,
+            overlay: Arc::default(),
+            generations: HashMap::new(),
             _foreground: foreground,
+            _foreground_only: PhantomData,
         }
     }
 
-    /// A shared core adapter. Call its synchronous methods only from workers.
+    /// Begins a new credential incarnation for one core server key.
+    ///
+    /// Call on the foreground at each session replacement, including a repeat login of
+    /// the same account. This is not a getter: it revokes the previous handle
+    /// for this server. Retain and clone the returned Arc within that session.
+    /// Other servers and this run's memory overlay/tombstones are unchanged.
+    /// Synchronous methods are worker-only and reject other server keys.
     #[must_use]
-    pub fn store(&self) -> Arc<dyn SecretStore> {
-        self.store.clone()
+    pub fn replace_store(&mut self, server: &str) -> Arc<dyn SecretStore> {
+        self.invalidate(server);
+        let generation = Arc::new(Generation::new(server, &self.bridge));
+        self.generations
+            .insert(server.to_owned(), Arc::clone(&generation));
+        Arc::new(OsSecretStore::new(
+            Arc::clone(&self.bridge),
+            generation,
+            Arc::clone(&self.overlay),
+        ))
+    }
+
+    /// Revokes a server's handle and notices, without waiting for native I/O.
+    ///
+    /// Invoke on the foreground at logout/removal, or use `replace_store` for
+    /// replacement. This does not delete credentials or roll back OS mutations. Coordinate
+    /// deletion before revocation or through a fresh cleanup incarnation.
+    pub fn invalidate(&mut self, server: &str) {
+        if let Some(generation) = self.generations.remove(server) {
+            generation.invalidate();
+        }
     }
 
     /// Rejects new native requests and releases outstanding callers immediately.
-    /// Idempotent; invoke before any blocking shutdown join.
+    /// Idempotent; invoke on the foreground before any blocking shutdown join.
     pub fn stop(&self) {
-        self.store.bridge.stop();
+        self.bridge.stop();
     }
 }
 
@@ -190,6 +263,19 @@ pub(crate) fn stop_before_session_join(cx: &App) {
         for bridge in services.0.iter().filter_map(Weak::upgrade) {
             bridge.stop();
         }
+    }
+}
+
+/// Checks on the foreground without an await between validation and dispatch.
+fn dispatch_current(
+    request: &Request,
+    cx: &App,
+    dispatch: NativeRequest,
+) -> Task<Result<Option<String>, CredentialError>> {
+    if request.generation.is_current() {
+        dispatch(request, cx)
+    } else {
+        Task::ready(Err(CredentialError::Stale))
     }
 }
 

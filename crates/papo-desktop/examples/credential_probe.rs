@@ -69,7 +69,7 @@ async fn run_phase(
     second: &str,
     phase: Phase,
 ) -> StorageResult<()> {
-    let service = cx.update(|cx| {
+    let mut service = cx.update(|cx| {
         CredentialService::new(cx, |failure, _| {
             log::warn!(
                 "credential_probe: {:?} failed: {}",
@@ -78,14 +78,21 @@ async fn run_phase(
             );
         })
     });
-    let store = service.store();
+    let store = service.replace_store(first);
+    let other = service.replace_store(second);
     let first = first.to_owned();
     let second = second.to_owned();
     let (reply, received) = async_channel::bounded(1);
     let worker = std::thread::Builder::new()
         .name("credential-probe".into())
         .spawn(move || {
-            let _ = reply.try_send(exercise(store.as_ref(), &first, &second, phase));
+            let _ = reply.try_send(exercise(
+                store.as_ref(),
+                other.as_ref(),
+                &first,
+                &second,
+                phase,
+            ));
         })
         .map_err(|_| StorageError::new("probe worker could not start"))?;
     let outcome = received
@@ -99,17 +106,23 @@ async fn run_phase(
     outcome?
 }
 
-fn exercise(store: &dyn SecretStore, first: &str, second: &str, phase: Phase) -> StorageResult<()> {
+fn exercise(
+    store: &dyn SecretStore,
+    other: &dyn SecretStore,
+    first: &str,
+    second: &str,
+    phase: Phase,
+) -> StorageResult<()> {
     match phase {
         Phase::Reset => {
             let first = store.forget_server(first);
-            let second = store.forget_server(second);
+            let second = other.forget_server(second);
             first.and(second)
         }
         Phase::Seed => {
             store.store(first, Secret::SessionToken, "synthetic-old")?;
             store.store(first, Secret::ServerPassword, "synthetic-password")?;
-            store.store(second, Secret::SessionToken, "synthetic-other")
+            other.store(second, Secret::SessionToken, "synthetic-other")
         }
         Phase::Replace => {
             check(
@@ -121,7 +134,7 @@ fn exercise(store: &dyn SecretStore, first: &str, second: &str, phase: Phase) ->
                 Some("synthetic-password"),
             )?;
             check(
-                store.load(second, Secret::SessionToken)?.as_deref(),
+                other.load(second, Secret::SessionToken)?.as_deref(),
                 Some("synthetic-other"),
             )?;
             store.store(first, Secret::SessionToken, "synthetic-new")
@@ -137,12 +150,12 @@ fn exercise(store: &dyn SecretStore, first: &str, second: &str, phase: Phase) ->
             check(store.load(first, Secret::SessionToken)?.as_deref(), None)?;
             check(store.load(first, Secret::ServerPassword)?.as_deref(), None)?;
             check(
-                store.load(second, Secret::SessionToken)?.as_deref(),
+                other.load(second, Secret::SessionToken)?.as_deref(),
                 Some("synthetic-other"),
             )
         }
         Phase::CheckEmpty => {
-            for server in [first, second] {
+            for (store, server) in [(store, first), (other, second)] {
                 for secret in [Secret::SessionToken, Secret::ServerPassword] {
                     check(store.load(server, secret)?.as_deref(), None)?;
                 }

@@ -13,7 +13,11 @@ fn fixture() -> (
     async_channel::Receiver<super::bridge::Request>,
 ) {
     let (bridge, requests) = Bridge::new();
-    (Arc::new(OsSecretStore::new(bridge)), requests)
+    let generation = Arc::new(super::Generation::new("synthetic-a", &bridge));
+    (
+        Arc::new(OsSecretStore::new(bridge, generation, Arc::default())),
+        requests,
+    )
 }
 
 #[test]
@@ -77,12 +81,28 @@ fn forget_attempts_both_secret_kinds_even_when_first_delete_fails() {
 
 #[test]
 fn native_reads_are_isolated_by_server_and_secret_kind() {
-    let (store, requests) = fixture();
+    let (bridge, requests) = Bridge::new();
+    let overlay = Arc::default();
+    let first = Arc::new(OsSecretStore::new(
+        Arc::clone(&bridge),
+        Arc::new(super::Generation::new("synthetic-a", &bridge)),
+        Arc::clone(&overlay),
+    ));
+    let second = Arc::new(OsSecretStore::new(
+        Arc::clone(&bridge),
+        Arc::new(super::Generation::new("synthetic-b", &bridge)),
+        overlay,
+    ));
     let worker = std::thread::spawn(move || {
-        for (server, secret, value) in [
-            ("synthetic-a", Secret::SessionToken, "synthetic-1"),
-            ("synthetic-a", Secret::ServerPassword, "synthetic-2"),
-            ("synthetic-b", Secret::SessionToken, "synthetic-3"),
+        for (store, server, secret, value) in [
+            (
+                Arc::clone(&first),
+                "synthetic-a",
+                Secret::SessionToken,
+                "synthetic-1",
+            ),
+            (first, "synthetic-a", Secret::ServerPassword, "synthetic-2"),
+            (second, "synthetic-b", Secret::SessionToken, "synthetic-3"),
         ] {
             assert_eq!(store.load(server, secret).unwrap().as_deref(), Some(value));
             assert_eq!(store.load(server, secret).unwrap().as_deref(), Some(value));
@@ -199,7 +219,7 @@ async fn failures_reach_the_foreground_with_original_request_identity(
     cx.executor().allow_parking();
     let foreground = std::thread::current().id();
     let (notices, received) = async_channel::bounded(3);
-    let service = cx.update(|cx| {
+    let mut service = cx.update(|cx| {
         super::CredentialService::with_native(
             cx,
             move |failure, _| {
@@ -216,7 +236,7 @@ async fn failures_reach_the_foreground_with_original_request_identity(
             unavailable_native,
         )
     });
-    let store = service.store();
+    let store = service.replace_store("synthetic-a");
     let (done, finished) = async_channel::bounded(1);
     let worker = std::thread::spawn(move || {
         assert!(store.load("synthetic-a", Secret::SessionToken).is_err());
@@ -253,7 +273,7 @@ async fn failure_callback_can_stop_service_without_replacing_completed_worker_er
 ) {
     cx.executor().allow_parking();
     let (notified, notice) = async_channel::bounded(1);
-    let service = cx.update(|cx| {
+    let mut service = cx.update(|cx| {
         super::CredentialService::with_native(
             cx,
             move |failure, cx| {
@@ -266,7 +286,7 @@ async fn failure_callback_can_stop_service_without_replacing_completed_worker_er
             unavailable_native,
         )
     });
-    let store = service.store();
+    let store = service.replace_store("synthetic-a");
     let (reply, received) = async_channel::bounded(1);
     let worker = std::thread::spawn(move || {
         let result = store.store("synthetic-a", Secret::SessionToken, "synthetic");
@@ -300,7 +320,7 @@ async fn production_quit_releases_worker_before_native_task_completes(
     cx.executor().allow_parking();
     cx.update(crate::session::install);
     let (entered, started) = async_channel::bounded(1);
-    let service = cx.update(|cx| {
+    let mut service = cx.update(|cx| {
         cx.set_global(NativeEntered(entered));
         super::CredentialService::with_native(
             cx,
@@ -308,7 +328,7 @@ async fn production_quit_releases_worker_before_native_task_completes(
             held_native,
         )
     });
-    let store = service.store();
+    let store = service.replace_store("synthetic-a");
     let worker = std::thread::spawn(move || {
         assert!(store.load("synthetic-a", Secret::SessionToken).is_err());
     });
@@ -322,10 +342,10 @@ async fn production_quit_releases_worker_before_native_task_completes(
 #[gpui_kit::test]
 async fn headless_gpui_dispatch_serves_core_without_a_window(cx: &mut gpui::TestAppContext) {
     cx.executor().allow_parking();
-    let service = cx.update(|cx| {
+    let mut service = cx.update(|cx| {
         super::CredentialService::new(cx, |_, _| panic!("test platform should succeed"))
     });
-    let store = service.store();
+    let store = service.replace_store("synthetic-a");
     let (done, finished) = async_channel::bounded(1);
     let worker = std::thread::spawn(move || {
         assert_eq!(
