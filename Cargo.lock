@@ -7375,17 +7375,9 @@ dependencies = [
 name = "papo-desktop"
 version = "0.9.0"
 dependencies = [
- "async-channel",
  "env_logger",
- "futures-util",
  "gpui-kit",
  "log",
- "papo-core",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tokio-tungstenite",
- "url",
 ]
 
 [[package]]

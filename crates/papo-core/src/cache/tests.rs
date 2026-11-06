@@ -3,9 +3,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
 
-#[path = "callback_tests.rs"]
-mod callback_tests;
-
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 struct TempDb {

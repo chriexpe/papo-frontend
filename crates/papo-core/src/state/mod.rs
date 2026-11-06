@@ -1786,12 +1786,6 @@ impl Store {
         }
     }
 
-    /// Releases a canceled read without claiming hydration or suppressing a retry.
-    /// The caller must validate the account and cache restore epoch first.
-    pub fn cancel_cached_page(&mut self, channel_id: &str) {
-        self.cache_loading.remove(channel_id);
-    }
-
     /// Falha de leitura local não pode virar retry por frame.
     pub fn cached_page_failed(&mut self, channel_id: &str, older: bool) {
         self.cache_loading.remove(channel_id);
@@ -6060,22 +6054,6 @@ mod tests {
         store.apply(Update::Connection(Connection::Offline));
         store.apply(Update::Connection(Connection::Online));
         assert_eq!(store.channel_needing_messages(), Some("voice".into()));
-    }
-
-    #[test]
-    fn canceling_a_cache_read_allows_retry_without_claiming_hydration() {
-        let mut store = Store {
-            selected_channel: "cached".into(),
-            ..Store::default()
-        };
-        store.cached_channels.insert("cached".into());
-        let status = store.timeline_status("cached");
-        store.mark_cache_loading("cached");
-        assert_eq!(store.channel_needing_cache(), None);
-        store.cancel_cached_page("cached");
-        store.cancel_cached_page("cached");
-        assert_eq!(store.channel_needing_cache().as_deref(), Some("cached"));
-        assert_eq!(store.timeline_status("cached"), status);
     }
 
     fn store_com_canal_carregado(channel_id: &str) -> Store {
