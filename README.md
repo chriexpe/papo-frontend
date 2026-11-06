@@ -26,7 +26,7 @@ No Windows, o Papo usa WebView2 e distribui seu próprio runtime do GStreamer. N
 
 Windows e instalações Android via sideload têm atualização pelo próprio app usando GitHub Releases.
 
-macOS tem um `.app` experimental (assinatura ad-hoc, sem notarização) no CI para Apple Silicon, com GStreamer incluído no pacote e sem integrações completas de sistema; veja [docs/macos.md](docs/macos.md). A versão web também não é suportada.
+macOS tem um `.app` experimental (assinatura ad-hoc, sem notarização) no CI para Apple Silicon, com GStreamer incluído no pacote e sem integrações completas de sistema. A versão web também não é suportada.
 
 ## Instalação
 
@@ -66,8 +66,7 @@ O projeto requer **Rust 1.98+**.
 A correção de visibilidade da janela no Wayland fica em um arquivo `.patch`.
 O preparo usa **Python 3.11+**, **Git** e a checksum-pinned crate archive; repita
 `python3 scripts/prepare-winit.py` após alterar o patch.
-No Windows, use `python` no lugar de `python3`. O procedimento para atualizar
-ou remover a correção está em [docs/winit-patch.md](docs/winit-patch.md).
+No Windows, use `python` no lugar de `python3`.
 
 ```bash
 cargo test --locked --workspace
@@ -80,8 +79,7 @@ A lógica compartilhada de API, sessões, sincronização, cache e runtime de re
 
 O cliente Android oficial em Kotlin/Jetpack Compose está em `android/compose`,
 usando o mesmo `papo-core` via UniFFI, com bindings Kotlin gerados.
-O modo demonstração é explícito. Veja
-[desenvolvimento e escopo do cliente Compose](docs/android-compose.md).
+O modo demonstração é explícito.
 
 ## Em andamento
 

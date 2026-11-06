@@ -8,10 +8,9 @@
 //! Rules:
 //! - The shell holds layout state only. Account, server and channel state
 //!   comes from `papo-core` through the projection layer; the shell never
-//!   copies it (`docs/papo-desktop.md`, "State and threads").
+//!   copies it.
 //! - Colours come from the theme (`cx.theme()`), never from literals here.
-//!   Papo's own tokens replace the Kit's defaults once their design is
-//!   agreed (`docs/papo-desktop.md`, phase 1).
+//!   Papo's own tokens will replace the Kit's defaults.
 
 use gpui::{Context, InteractiveElement as _, IntoElement, Render, Styled as _, Window, div};
 use gpui_kit::TestSupportExt as _;
