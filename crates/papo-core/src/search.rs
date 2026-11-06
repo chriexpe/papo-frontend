@@ -1,5 +1,6 @@
 //! Shared search grammar, filter autocomplete and stable-identity resolution.
-use crate::state::{ChannelKind, Store};
+use crate::state::{ChannelKind, Member, Store};
+use std::borrow::Cow;
 
 /// Busca dentro da pastilha: campo em cima, resultados embaixo.
 #[derive(Clone, Debug)]
@@ -90,6 +91,52 @@ fn search_filter_usage(query: &str) -> SearchFilterUsage {
     usage
 }
 
+fn search_lowercase(value: &str) -> Cow<'_, str> {
+    if value.is_ascii() && !value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        Cow::Borrowed(value)
+    } else {
+        // Lowercase the entire string to retain Unicode's contextual mappings.
+        Cow::Owned(value.to_lowercase())
+    }
+}
+
+// Callers include the original index in the key to preserve stable-sort ties.
+fn search_top_six<K: Ord, T>(candidates: impl Iterator<Item = (K, T)>) -> Vec<(K, T)> {
+    let mut best: Vec<(K, T)> = Vec::with_capacity(6);
+    for (key, item) in candidates {
+        if best.len() == 6 && key >= best[5].0 {
+            continue;
+        }
+        let position = best.partition_point(|(existing, _)| existing <= &key);
+        if best.len() == 6 {
+            best.pop();
+        }
+        best.insert(position, (key, item));
+    }
+    best
+}
+
+fn search_members<'a>(store: &'a Store, needle: &str) -> Vec<&'a Member> {
+    search_top_six(store.members.iter().enumerate().filter_map(|(index, member)| {
+        let name = search_lowercase(&member.name);
+        let username = if needle.is_empty() {
+            Cow::Borrowed("")
+        } else {
+            search_lowercase(&member.username)
+        };
+        if !needle.is_empty() && !name.contains(needle) && !username.contains(needle) {
+            return None;
+        }
+        Some((
+            (!name.starts_with(needle), !username.starts_with(needle), name, index),
+            member,
+        ))
+    }))
+    .into_iter()
+    .map(|(_, member)| member)
+    .collect()
+}
+
 pub fn search_shortcuts(
     store: &Store,
     query: &str,
@@ -131,25 +178,7 @@ pub fn search_shortcuts(
 
     match prefix_lower.as_str() {
         "de" | "from" | "author" if !usage.author => {
-            let mut members: Vec<_> = store
-                .members
-                .iter()
-                .filter(|member| {
-                    needle.is_empty()
-                        || member.name.to_lowercase().contains(&needle)
-                        || member.username.to_lowercase().contains(&needle)
-                })
-                .collect();
-            members.sort_by_key(|member| {
-                let name = member.name.to_lowercase();
-                let username = member.username.to_lowercase();
-                (
-                    !name.starts_with(&needle),
-                    !username.starts_with(&needle),
-                    name,
-                )
-            });
-            for member in members.into_iter().take(6) {
+            for member in search_members(store, &needle) {
                 out.push(SearchShortcut {
                     label: format!("de: @{}  {}", member.username, member.name),
                     replacement: format!("de:@{}", member.username),
@@ -157,19 +186,19 @@ pub fn search_shortcuts(
             }
         }
         "em" | "in" | "channel" if !usage.channel => {
-            let mut channels: Vec<_> = store
-                .channels
-                .iter()
-                .filter(|channel| {
-                    channel.kind != ChannelKind::Direct
-                        && (needle.is_empty() || channel.name.to_lowercase().contains(&needle))
-                })
-                .collect();
-            channels.sort_by_key(|channel| {
-                let name = channel.name.to_lowercase();
-                (!name.starts_with(&needle), name)
-            });
-            for channel in channels.into_iter().take(6) {
+            let channels = search_top_six(store.channels.iter().enumerate().filter_map(
+                |(index, channel)| {
+                    if channel.kind == ChannelKind::Direct {
+                        return None;
+                    }
+                    let name = search_lowercase(&channel.name);
+                    if !needle.is_empty() && !name.contains(&needle) {
+                        return None;
+                    }
+                    Some(((!name.starts_with(&needle), name, index), channel))
+                },
+            ));
+            for (_, channel) in channels {
                 out.push(SearchShortcut {
                     label: format!("em: #{}", channel.name),
                     replacement: format!(
@@ -180,25 +209,7 @@ pub fn search_shortcuts(
             }
         }
         "mentions" | "menciona" | "mention" if !usage.mentions => {
-            let mut members: Vec<_> = store
-                .members
-                .iter()
-                .filter(|member| {
-                    needle.is_empty()
-                        || member.name.to_lowercase().contains(&needle)
-                        || member.username.to_lowercase().contains(&needle)
-                })
-                .collect();
-            members.sort_by_key(|member| {
-                let name = member.name.to_lowercase();
-                let username = member.username.to_lowercase();
-                (
-                    !name.starts_with(&needle),
-                    !username.starts_with(&needle),
-                    name,
-                )
-            });
-            for member in members.into_iter().take(6) {
+            for member in search_members(store, &needle) {
                 out.push(SearchShortcut {
                     label: format!("mentions: @{}  {}", member.username, member.name),
                     replacement: format!("mentions:@{}", member.username),

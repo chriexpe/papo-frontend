@@ -947,41 +947,43 @@ impl Store {
             .collect();
         order.sort_by_key(|&index| self.channels[index].position);
         let explicit = self.channels.iter().any(|channel| channel.parent_id.is_some());
-        let is_category = |id: &str| self.channel(id).is_some_and(|c| c.kind == ChannelKind::Category);
-
-        // A categoria de cada canal.
-        let mut current: Option<String> = None;
-        let parents: Vec<(usize, Option<String>)> = order
-            .iter()
-            .map(|&index| {
-                let channel = &self.channels[index];
-                if channel.kind == ChannelKind::Category {
-                    current = Some(channel.id.clone());
-                    return (index, None);
-                }
-                let parent = if explicit {
-                    channel.parent_id.clone().filter(|parent| is_category(parent))
-                } else {
-                    current.clone()
-                };
-                (index, parent)
-            })
-            .collect();
-
-        // Raízes pela posição; cada categoria seguida dos filhos.
-        let mut layout = Vec::with_capacity(parents.len());
-        for (index, parent) in &parents {
-            if parent.is_some() {
-                continue;
+        // Borrow parent IDs until the final output: no temporary String clones.
+        let mut categories = HashMap::new();
+        if explicit {
+            for channel in &self.channels {
+                // self.channel(id) historically used the first duplicate ID.
+                categories.entry(channel.id.as_str())
+                    .or_insert(channel.kind == ChannelKind::Category);
             }
-            layout.push((*index, None));
-            let channel = &self.channels[*index];
+        }
+        let is_category = |id: &str| categories.get(id).copied().unwrap_or(false);
+        let mut current = None;
+        let parents: Vec<(usize, Option<&str>)> = order.iter().map(|&index| {
+            let channel = &self.channels[index];
             if channel.kind == ChannelKind::Category {
-                for (child, child_parent) in &parents {
-                    if child_parent.as_deref() == Some(channel.id.as_str()) {
-                        layout.push((*child, child_parent.clone()));
-                    }
-                }
+                current = Some(channel.id.as_str());
+                return (index, None);
+            }
+            let parent = if explicit {
+                channel.parent_id.as_deref().filter(|parent| is_category(parent))
+            } else { current };
+            (index, parent)
+        }).collect();
+        let mut children: HashMap<&str, Vec<usize>> = HashMap::new();
+        for &(index, parent) in &parents {
+            if let Some(parent) = parent {
+                children.entry(parent).or_default().push(index);
+            }
+        }
+        let mut layout = Vec::with_capacity(parents.len());
+        for &(index, parent) in &parents {
+            if parent.is_some() { continue; }
+            layout.push((index, None));
+            let channel = &self.channels[index];
+            if channel.kind == ChannelKind::Category
+                && let Some(children) = children.get(channel.id.as_str())
+            {
+                layout.extend(children.iter().map(|&child| (child, Some(channel.id.clone()))));
             }
         }
         layout
@@ -1036,90 +1038,68 @@ impl Store {
     /// resolvido quando aquele nickname/display name identifica uma única
     /// pessoa no servidor.
     pub fn encode_mentions(&self, text: &str, bindings: &[MentionBinding]) -> String {
-        let chars: Vec<char> = text.chars().collect();
-        let mut bindings_by_start: HashMap<usize, &MentionBinding> =
-            bindings.iter().map(|binding| (binding.start, binding)).collect();
-
+        // Collecting preserves the original last-binding-wins precedence.
+        let bindings_by_start: HashMap<usize, &MentionBinding> = bindings.iter()
+            .map(|binding| (binding.start, binding)).collect();
         let mut out = String::with_capacity(text.len());
-        let mut i = 0;
-        while i < chars.len() {
-            if chars[i] != '@' {
-                out.push(chars[i]);
-                i += 1;
+        let mut from = 0;
+        let mut char_offset = 0;
+        while let Some(relative) = text[from..].find('@') {
+            let at = from + relative;
+            out.push_str(&text[from..at]);
+            char_offset += text[from..at].chars().count();
+            let rest = &text[at + 1..];
+            if let Some(binding) = bindings_by_start.get(&char_offset)
+                && rest.starts_with(&binding.label)
+            {
+                out.push_str("@mention(<@");
+                out.push_str(&binding.user_id);
+                out.push_str(">)");
+                from = at + 1 + binding.label.len();
+                char_offset += 1 + binding.label.chars().count();
                 continue;
             }
 
-            if let Some(binding) = bindings_by_start.remove(&i) {
-                let label: Vec<char> = binding.label.chars().collect();
-                let end = i + 1 + label.len();
-                if end <= chars.len()
-                    && chars[i + 1..end]
-                        .iter()
-                        .copied()
-                        .eq(label.iter().copied())
+            let boundary = text[..at].chars().next_back()
+                .is_none_or(|ch| mention_boundary(ch) && ch != '<');
+            let global = boundary && ["everyone", "todos"].iter().any(|word| {
+                rest.get(..word.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(word))
+                    && rest[word.len()..].chars().next().is_none_or(mention_boundary)
+            });
+            if boundary && !global {
+                // Find the longest label and its ambiguity count in one pass.
+                // Equal-length matches retain the first member, as the stable sort did.
+                let mut best: Option<&Member> = None;
+                let mut duplicates = 0;
+                for member in &self.members {
+                    if !rest.get(..member.name.len()).is_some_and(|s| s.eq_ignore_ascii_case(&member.name)) {
+                        continue;
+                    }
+                    match best {
+                        Some(old) if old.name.len() > member.name.len() => {}
+                        Some(old) if old.name.len() == member.name.len() => {
+                            if old.name.eq_ignore_ascii_case(&member.name) { duplicates += 1; }
+                        }
+                        _ => { best = Some(member); duplicates = 1; }
+                    }
+                }
+                if let Some(member) = best
+                    && duplicates == 1
+                    && rest[member.name.len()..].chars().next().is_none_or(mention_boundary)
                 {
                     out.push_str("@mention(<@");
-                    out.push_str(&binding.user_id);
+                    out.push_str(&member.id);
                     out.push_str(">)");
-                    i = end;
+                    from = at + 1 + member.name.len();
+                    char_offset += 1 + member.name.chars().count();
                     continue;
                 }
             }
-
-            // Não interpretar e-mail nem o @ interno de um token já canônico.
-            if i > 0 && (!mention_boundary(chars[i - 1]) || chars[i - 1] == '<') {
-                out.push('@');
-                i += 1;
-                continue;
-            }
-
-            // Entrada manual: chamados globais continuam especiais.
-            let rest: String = chars[i + 1..].iter().collect();
-            let global = ["everyone", "todos"].iter().any(|word| {
-                rest.get(..word.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(word))
-                    && rest[word.len()..]
-                        .chars()
-                        .next()
-                        .is_none_or(mention_boundary)
-            });
-            if global {
-                out.push('@');
-                i += 1;
-                continue;
-            }
-
-            // Maior nome visível primeiro. Se duas pessoas compartilham
-            // exatamente o mesmo nickname, não adivinhamos.
-            let mut candidates: Vec<&Member> = self
-                .members
-                .iter()
-                .filter(|member| {
-                    rest.len() >= member.name.len()
-                        && rest.is_char_boundary(member.name.len())
-                        && rest[..member.name.len()].eq_ignore_ascii_case(&member.name)
-                })
-                .collect();
-            candidates.sort_by_key(|member| std::cmp::Reverse(member.name.len()));
-
-            if let Some(first) = candidates.first().copied() {
-                let same_label = candidates
-                    .iter()
-                    .filter(|member| member.name.eq_ignore_ascii_case(&first.name))
-                    .count();
-                let end = i + 1 + first.name.chars().count();
-                let boundary_ok = end >= chars.len() || mention_boundary(chars[end]);
-                if same_label == 1 && boundary_ok {
-                    out.push_str("@mention(<@");
-                    out.push_str(&first.id);
-                    out.push_str(">)");
-                    i = end;
-                    continue;
-                }
-            }
-
             out.push('@');
-            i += 1;
+            from = at + 1;
+            char_offset += 1;
         }
+        out.push_str(&text[from..]);
         out
     }
 
@@ -1131,43 +1111,39 @@ impl Store {
     /// Versão usada pelo editor: além do texto humano, devolve a ligação de
     /// cada nickname ao user_id original para preservar duplicatas.
     pub fn display_mentions_with_bindings(&self, text: &str) -> (String, Vec<MentionBinding>) {
-        let chars: Vec<char> = text.chars().collect();
+        const PREFIX: &str = "@mention(<@";
+        if !text.contains(PREFIX) {
+            return (text.to_owned(), Vec::new());
+        }
         let mut out = String::with_capacity(text.len());
         let mut bindings = Vec::new();
-        let mut i = 0;
-        while i < chars.len() {
-            let prefix: Vec<char> = "@mention(<@".chars().collect();
-            if i + prefix.len() < chars.len()
-                && chars[i..i + prefix.len()]
-                    .iter()
-                    .copied()
-                    .eq(prefix.iter().copied())
-            {
-                let id_start = i + prefix.len();
-                let mut end = id_start;
-                while end + 1 < chars.len() && !(chars[end] == '>' && chars[end + 1] == ')') {
-                    end += 1;
-                }
-                if end + 1 < chars.len() {
-                    let id: String = chars[id_start..end].iter().collect();
-                    if !id.is_empty() {
-                        let label = self.member(&id).map_or(id.as_str(), |member| member.name.as_str());
-                        let start = out.chars().count();
-                        out.push('@');
-                        out.push_str(label);
-                        bindings.push(MentionBinding {
-                            start,
-                            label: label.to_owned(),
-                            user_id: id,
-                        });
-                        i = end + 2;
-                        continue;
-                    }
-                }
+        let mut rest = text;
+        let mut output_chars = 0;
+        while let Some(start) = rest.find(PREFIX) {
+            let id_start = start + PREFIX.len();
+            let Some(end) = rest[id_start..].find(">)") else { break };
+            let id = &rest[id_start..id_start + end];
+            if id.is_empty() {
+                // Keep malformed tokens literal, and continue looking after the prefix.
+                out.push_str(&rest[..id_start]);
+                output_chars += rest[..id_start].chars().count();
+                rest = &rest[id_start..];
+                continue;
             }
-            out.push(chars[i]);
-            i += 1;
+            let label = self.member(id).map_or(id, |member| member.name.as_str());
+            out.push_str(&rest[..start]);
+            output_chars += rest[..start].chars().count();
+            bindings.push(MentionBinding {
+                start: output_chars,
+                label: label.to_owned(),
+                user_id: id.to_owned(),
+            });
+            out.push('@');
+            out.push_str(label);
+            output_chars += 1 + label.chars().count();
+            rest = &rest[id_start + end + 2..];
         }
+        out.push_str(rest);
         (out, bindings)
     }
 
