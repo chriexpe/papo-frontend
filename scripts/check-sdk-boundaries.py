@@ -162,7 +162,7 @@ def main():
         else:
             output = subprocess.run(
                 ["cargo", "metadata", "--format-version=1", "--all-features", "--locked"],
-                cwd=root, check=True, text=True, capture_output=True,
+                cwd=root, check=True, encoding="utf-8", capture_output=True,
             )
             metadata = json.loads(output.stdout)
         violations = dependency_violations(metadata)

@@ -1,8 +1,13 @@
 """Regression tests for SDK dependency and source architecture gates."""
 
+import contextlib
 import importlib.util
+import io
+import json
 from pathlib import Path
+import sys
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check-sdk-boundaries.py"
 SPEC = importlib.util.spec_from_file_location("sdk_boundaries", SCRIPT)
@@ -22,6 +27,21 @@ def metadata(edges):
             ]} for name in names
         ]},
     }
+
+
+class MetadataTests(unittest.TestCase):
+    def test_cargo_utf8_metadata_is_independent_of_windows_code_page(self):
+        payload = json.dumps({**metadata({}), "description": "Unicode: é" + chr(0x81)}, ensure_ascii=False).encode("utf-8")
+        run = CHECK.subprocess.run
+
+        def cargo_output(_command, **kwargs):
+            return run([sys.executable, "-c", f"import sys; sys.stdout.buffer.write({payload!r})"], **kwargs)
+
+        with (mock.patch.object(CHECK.subprocess, "run", side_effect=cargo_output),
+              mock.patch.object(CHECK.subprocess, "_text_encoding", return_value="cp1252"),
+              mock.patch.object(CHECK.sys, "argv", ["check-sdk-boundaries.py"]),
+              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO())):
+            self.assertEqual(CHECK.main(), 0)
 
 
 class DependencyTests(unittest.TestCase):
