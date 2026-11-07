@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AppContext as _, Context, IntoElement, ListAlignment, ListOffset, ListState, Render, Window,
-    div, list, px, Styled as _,
+    AppContext as _, Context, IntoElement, ListAlignment, ListOffset, ListState, Render,
+    Styled as _, Window, div, list, px,
 };
 use papo_sdk_ui::integration_proof::{ProofRow, VectorDiff, batches};
 
@@ -44,9 +44,9 @@ impl ProofList {
                     let anchor_id = self.items.get(previous.item_ix).map(|row| row.id.clone());
                     self.items = values.into_iter().map(Arc::new).collect();
                     self.state.reset(self.items.len());
-                    if let Some(index) = anchor_id.and_then(|id| {
-                        self.items.iter().position(|row| row.id == id)
-                    }) {
+                    if let Some(index) =
+                        anchor_id.and_then(|id| self.items.iter().position(|row| row.id == id))
+                    {
                         self.state.scroll_to(ListOffset {
                             item_ix: index,
                             offset_in_item: previous.offset_in_item,
@@ -72,9 +72,7 @@ impl Render for ProofList {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{
-        AppContext as _, Bounds, Point, TestAppContext, WindowBounds, WindowOptions, size,
-    };
+    use gpui::{AppContext as _, Bounds, Point, TestAppContext, WindowBounds, WindowOptions, size};
 
     use super::*;
 
@@ -98,21 +96,29 @@ mod tests {
             .unwrap();
 
         let fixture = batches();
-        cx.update(|cx| view.update(cx, |list, cx| {
-            list.apply(fixture[0].clone());
-            cx.notify();
-        }));
-        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
-        cx.update(|cx| view.update(cx, |list, _| {
-            list.state.scroll_to(ListOffset { item_ix: 1, offset_in_item: px(8.) });
-            let original = Arc::clone(&list.items[1]);
-            list.apply(fixture[1].clone());
-            assert_eq!(list.state.item_count(), 4);
-            assert_eq!(list.state.logical_scroll_top().item_ix, 2);
-            assert_eq!(list.state.logical_scroll_top().offset_in_item, px(8.));
-            assert!(Arc::ptr_eq(&original, &list.items[2]));
-            assert_eq!(list.items[0].title, "Alpha edited");
-        }));
+        cx.update(|cx| {
+            view.update(cx, |list, cx| {
+                list.apply(fixture[0].clone());
+                cx.notify();
+            })
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.update(|cx| {
+            view.update(cx, |list, _| {
+                list.state.scroll_to(ListOffset {
+                    item_ix: 1,
+                    offset_in_item: px(8.),
+                });
+                let original = Arc::clone(&list.items[1]);
+                list.apply(fixture[1].clone());
+                assert_eq!(list.state.item_count(), 4);
+                assert_eq!(list.state.logical_scroll_top().item_ix, 2);
+                assert_eq!(list.state.logical_scroll_top().offset_in_item, px(8.));
+                assert!(Arc::ptr_eq(&original, &list.items[2]));
+                assert_eq!(list.items[0].title, "Alpha edited");
+            })
+        });
     }
 
     #[gpui_kit::test]
@@ -120,22 +126,33 @@ mod tests {
         cx.update(gpui_kit::init);
         let list = cx.update(|cx| cx.new(|_| ProofList::new()));
         let fixture = batches();
-        cx.update(|cx| list.update(cx, |list, _| {
-            list.apply(fixture[0].clone());
-            list.state.scroll_to(ListOffset { item_ix: 1, offset_in_item: px(6.) });
-            list.apply(vec![VectorDiff::Reset {
-                values: vec![
-                    ProofRow { id: "x".into(), title: "Extra".into() },
-                    ProofRow { id: "c".into(), title: "Charlie".into() },
-                ],
-            }]);
-            assert_eq!(list.state.item_count(), 2);
-            assert_eq!(list.state.logical_scroll_top().item_ix, 1);
-            assert_eq!(list.state.logical_scroll_top().offset_in_item, px(6.));
-            list.apply(fixture[2].clone());
-            assert_eq!(list.state.item_count(), 1);
-            assert_eq!(list.state.logical_scroll_top().item_ix, 0);
-            assert_eq!(list.items[0].id, "z");
-        }));
+        cx.update(|cx| {
+            list.update(cx, |list, _| {
+                list.apply(fixture[0].clone());
+                list.state.scroll_to(ListOffset {
+                    item_ix: 1,
+                    offset_in_item: px(6.),
+                });
+                list.apply(vec![VectorDiff::Reset {
+                    values: vec![
+                        ProofRow {
+                            id: "x".into(),
+                            title: "Extra".into(),
+                        },
+                        ProofRow {
+                            id: "c".into(),
+                            title: "Charlie".into(),
+                        },
+                    ],
+                }]);
+                assert_eq!(list.state.item_count(), 2);
+                assert_eq!(list.state.logical_scroll_top().item_ix, 1);
+                assert_eq!(list.state.logical_scroll_top().offset_in_item, px(6.));
+                list.apply(fixture[2].clone());
+                assert_eq!(list.state.item_count(), 1);
+                assert_eq!(list.state.logical_scroll_top().item_ix, 0);
+                assert_eq!(list.items[0].id, "z");
+            })
+        });
     }
 }
