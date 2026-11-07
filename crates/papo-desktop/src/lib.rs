@@ -1,9 +1,9 @@
 //! Papo's desktop client, built from scratch on GPUI Kit.
 //!
 //! This crate owns the desktop presentation: windows, views, input, platform
-//! integration and the mapping from `papo-core` state to what a view draws.
+//! integration and the mapping from `papo-sdk-ui` diffs to what a view draws.
 //! It owns no protocol, no canonical state and no persistence format: those
-//! belong to `papo-core`, and calls to `papo-call`. Nothing here is
+//! belong to the SDK, and calls to `papo-call`. Nothing here is
 //! translated from the egui client in the root crate; that client is a
 //! behavioural reference only.
 //!
@@ -15,6 +15,8 @@
 extern crate gpui_kit as gpui;
 
 mod app;
+#[cfg(test)]
+mod list_proof;
 mod shell;
 mod window;
 
@@ -31,7 +33,7 @@ pub fn run() {
 /// everything else at `warn`. At `info`, zbus and the accessibility bridge
 /// log every D-Bus handshake (measured on Linux, 2026-11-05), which hides
 /// the lines a bug report needs.
-const DEFAULT_LOG_FILTER: &str = "warn,papo_desktop=info,papo_core=info,papo_call=info";
+const DEFAULT_LOG_FILTER: &str = "warn,papo_desktop=info,papo_sdk=info,papo_call=info";
 
 fn init_logging() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(DEFAULT_LOG_FILTER))

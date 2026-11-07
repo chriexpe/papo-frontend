@@ -9,8 +9,18 @@ publish = false
 [lib]
 crate-type = ["lib", "cdylib"]
 
+[[bin]]
+name = "papo-sdk-bindgen"
+path = "src/bin/bindgen.rs"
+required-features = ["bindgen"]
+
 [dependencies]
 papo-sdk-ui = { path = "../ui" }
+uniffi = "=0.32.2"
+
+[features]
+bindgen = ["uniffi/cli"]
+integration-proof = ["papo-sdk-ui/integration-proof"]
 
 [lints]
 workspace = true

@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Papo"
-include(":compose")
+include(":compose", ":sdk-proof")

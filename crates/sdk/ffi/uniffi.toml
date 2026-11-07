@@ -1,0 +1,4 @@
+[bindings.kotlin]
+package_name = "io.github.chriexpe.papo.sdk.proof"
+cdylib_name = "papo_ffi"
+android = true
