@@ -1,0 +1,69 @@
+name: papo-sdk
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  sdk:
+    name: SDK (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+          components: clippy, rustfmt
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sdk
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Check SDK boundaries, format, Clippy, docs, tests and build
+        shell: bash
+        run: bash scripts/papo-sdk-check.sh
+
+  android:
+    name: SDK (Android arm64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+          targets: aarch64-linux-android
+          components: clippy
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sdk-android-arm64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install cargo-ndk and project NDK
+        run: |
+          cargo install cargo-ndk --locked
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.16248370"
+      - name: Build all SDK crates and arm64 binding library
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370"
+          cargo ndk -t arm64-v8a --platform 31 build --locked \
+            -p papo-api -p papo-sdk -p papo-sdk-ui -p papo-ffi -p papo-test-server
+          cargo ndk -t arm64-v8a --platform 31 clippy --locked \
+            -p papo-api -p papo-sdk -p papo-sdk-ui -p papo-ffi -p papo-test-server --lib -- -D warnings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papo-sdk-android-arm64
+          path: target/aarch64-linux-android/debug/libpapo_ffi.so
+          if-no-files-found: error
