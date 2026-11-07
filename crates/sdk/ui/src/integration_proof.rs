@@ -14,13 +14,29 @@ pub struct ProofRow {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VectorDiff {
     /// Insert one item at an index.
-    Insert { index: usize, value: ProofRow },
+    Insert {
+        /// Zero-based insertion index.
+        index: usize,
+        /// Inserted item.
+        value: ProofRow,
+    },
     /// Replace one existing item without shifting neighboring items.
-    Set { index: usize, value: ProofRow },
+    Set {
+        /// Zero-based index of the replaced item.
+        index: usize,
+        /// Replacement item with the same identity.
+        value: ProofRow,
+    },
     /// Append one item.
-    PushBack { value: ProofRow },
+    PushBack {
+        /// Item appended at the end.
+        value: ProofRow,
+    },
     /// Replace the complete window, including its version boundary.
-    Reset { values: Vec<ProofRow> },
+    Reset {
+        /// Complete replacement snapshot.
+        values: Vec<ProofRow>,
+    },
 }
 
 fn row(id: &str, title: &str) -> ProofRow {
