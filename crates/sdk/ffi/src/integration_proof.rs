@@ -18,13 +18,29 @@ pub struct ProofItem {
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum ProofChange {
     /// Insert a row at `index`.
-    Insert { index: u32, value: ProofItem },
+    Insert {
+        /// Zero-based insertion index.
+        index: u32,
+        /// Inserted item.
+        value: ProofItem,
+    },
     /// Replace an existing row at `index`.
-    Set { index: u32, value: ProofItem },
+    Set {
+        /// Zero-based index of the replaced item.
+        index: u32,
+        /// Replacement item with the same identity.
+        value: ProofItem,
+    },
     /// Add a row to the end.
-    PushBack { value: ProofItem },
+    PushBack {
+        /// Item appended at the end.
+        value: ProofItem,
+    },
     /// Replace the entire list.
-    Reset { values: Vec<ProofItem> },
+    Reset {
+        /// Complete replacement snapshot.
+        values: Vec<ProofItem>,
+    },
 }
 
 impl From<ProofRow> for ProofItem {
