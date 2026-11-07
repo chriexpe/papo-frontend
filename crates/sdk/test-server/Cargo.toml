@@ -1,0 +1,26 @@
+[package]
+name = "papo-test-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+license = "AGPL-3.0-or-later"
+description = "Deterministic loopback Papo REST and WebSocket test backend"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = "1"
+futures-util = { version = "0.3", features = ["sink"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }

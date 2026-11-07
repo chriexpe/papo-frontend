@@ -1,0 +1,13 @@
+[package]
+name = "papo-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+uuid = "1.26.1"
+
+[lints]
+workspace = true

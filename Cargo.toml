@@ -7,8 +7,29 @@ description = "Cliente nativo do Papo — chat self-hosted"
 license = "AGPL-3.0-or-later"
 
 [workspace]
-members = ["crates/papo-core", "crates/papo-android", "crates/papo-call", "crates/papo-desktop"]
+members = [
+    "crates/papo-core",
+    "crates/papo-android",
+    "crates/papo-call",
+    "crates/papo-desktop",
+    "crates/sdk/api",
+    "crates/sdk/core",
+    "crates/sdk/ui",
+    "crates/sdk/ffi",
+    "crates/sdk/test-server",
+]
 resolver = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
 
 # O Android carrega uma biblioteca, não executa um binário: o sistema abre a
 # Activity e ela faz `dlopen` no `.so`, que precisa exportar `android_main`.
