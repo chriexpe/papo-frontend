@@ -7392,6 +7392,7 @@ dependencies = [
  "env_logger",
  "gpui-kit",
  "log",
+ "papo-sdk-ui",
 ]
 
 [[package]]
@@ -7399,6 +7400,7 @@ name = "papo-ffi"
 version = "0.1.0"
 dependencies = [
  "papo-sdk-ui",
+ "uniffi",
 ]
 
 [[package]]
