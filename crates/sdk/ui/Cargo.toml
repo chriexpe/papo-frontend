@@ -9,5 +9,9 @@ publish = false
 [dependencies]
 papo-sdk = { path = "../core" }
 
+[features]
+# Native integration fixtures live outside production SDK builds.
+integration-proof = []
+
 [lints]
 workspace = true

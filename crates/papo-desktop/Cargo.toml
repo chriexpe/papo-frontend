@@ -3,7 +3,7 @@ name = "papo-desktop"
 version = "0.9.0"
 edition = "2024"
 rust-version = "1.98"
-description = "Papo desktop client on GPUI Kit, built from scratch on papo-core"
+description = "Papo desktop client on GPUI Kit, built on the new Papo SDK"
 license = "AGPL-3.0-or-later"
 publish = false
 
@@ -16,16 +16,14 @@ name = "papo-desktop"
 path = "src/main.rs"
 
 [dependencies]
-# GPUI Kit pins its own GPUI snapshot (gpui-pre =0.3.11) and, with
-# `gpui-fast`, swaps every layer to the GPUI Fast fork. It is the only GPUI
-# dependency: never add `gpui`, `gpui-pre` or `gpui-fast` directly. The exact
-# pin is deliberate: the Kit releases weekly and its API still moves.
+# GPUI Kit pins the GPUI Fast fork; never add a direct GPUI dependency.
 gpui-kit = { version = "=0.9.0", features = ["gpui-fast"] }
 log = "0.4"
 env_logger = "0.11"
 
 [dev-dependencies]
 gpui-kit = { version = "=0.9.0", features = ["gpui-fast", "test-support"] }
+papo-sdk-ui = { path = "../sdk/ui", features = ["integration-proof"] }
 
 [lints.rust]
 unsafe_code = "deny"

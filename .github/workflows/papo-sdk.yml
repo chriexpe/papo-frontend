@@ -67,3 +67,33 @@ jobs:
           name: papo-sdk-android-arm64
           path: target/aarch64-linux-android/debug/libpapo_ffi.so
           if-no-files-found: error
+
+  android-integration-proof:
+    name: SDK UniFFI callback proof (Android emulator)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+          targets: x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: ./.github/actions/prepare-winit
+      - name: Install cargo-ndk and SDK NDK
+        run: |
+          cargo install cargo-ndk --locked
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.16248370"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
+      - name: Enable emulator hardware acceleration
+        run: sudo chmod 666 /dev/kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          emulator-boot-timeout: 600
+          script: ./android/gradlew -p android :sdk-proof:connectedDebugAndroidTest --no-daemon
