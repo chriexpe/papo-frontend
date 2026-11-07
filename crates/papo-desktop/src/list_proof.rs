@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AppContext as _, Context, IntoElement, ListAlignment, ListOffset, ListState, Render,
-    Styled as _, Window, div, list, px,
+    AppContext as _, Context, IntoElement, ListAlignment, ListOffset, ListState, ParentElement as _,
+    Render, Styled as _, Window, div, list, px,
 };
 use papo_sdk_ui::integration_proof::{ProofRow, VectorDiff, batches};
 
