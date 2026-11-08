@@ -8,18 +8,18 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 API = ROOT / 'crates/sdk/api'
-manifest = json.loads((API / 'protocol/gateway.json').read_text())
+manifest = json.loads((API / 'protocol/gateway.json').read_text(encoding='utf-8'))
 if '--backend' in sys.argv:
     backend = pathlib.Path(sys.argv[sys.argv.index('--backend') + 1]) / 'backend/internal'
     structs = {}
     for filename in ['websocket/events.go', 'websocket/presence.go', 'webrtc/events.go', 'models/voice.go']:
-        source = (backend / filename).read_text()
+        source = (backend / filename).read_text(encoding='utf-8')
         for name, body in re.findall(r'type (\w+) struct \{(.*?)\n\}', source, re.S):
             structs[name] = [[field, typ, opts] for typ, field, opts in re.findall(
                 r'\w+\s+(\[\][\w.]+|\*[\w.]+|[\w.]+)\s+`json:"(\w+)([^"`]*)"', body) if field != 'type']
     names = {}
     for filename in ['websocket/events.go', 'webrtc/events.go']:
-        for name, kind in re.findall(r'EventType(\w+)\s+(?:EventType\s+)?=\s+"([^"]+)"', (backend / filename).read_text()):
+        for name, kind in re.findall(r'EventType(\w+)\s+(?:EventType\s+)?=\s+"([^"]+)"', (backend / filename).read_text(encoding='utf-8')):
             names[name] = kind
     actual = {}
     for name, fields in structs.items():
@@ -106,8 +106,8 @@ for path, text in files.items():
                           text=True, capture_output=True, check=True).stdout
     if '--write' in sys.argv:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-    elif not path.exists() or path.read_text() != text:
+        path.write_text(text, encoding='utf-8')
+    elif not path.exists() or path.read_text(encoding='utf-8') != text:
         print('Gateway drift:', path.relative_to(ROOT))
         failed = True
 if failed:

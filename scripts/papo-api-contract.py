@@ -26,7 +26,7 @@ def snake(name):
 
 
 def generate():
-    spec = yaml.safe_load((API / 'protocol/openapi.yml').read_text())
+    spec = yaml.safe_load((API / 'protocol/openapi.yml').read_text(encoding='utf-8'))
     schemas = spec['components']['schemas']
     pending = {'DirectConversation', 'Embed', 'Error'}
     referenced = {}
@@ -119,8 +119,8 @@ def main():
                                      text=True, capture_output=True, check=True).stdout
         if args.write:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
-        elif not path.exists() or path.read_text() != content:
+            path.write_text(content, encoding='utf-8')
+        elif not path.exists() or path.read_text(encoding='utf-8') != content:
             print(f'Protocol drift: {path.relative_to(ROOT)}')
             failed = True
     if failed:

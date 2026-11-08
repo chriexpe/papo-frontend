@@ -17,7 +17,7 @@ class ProtocolDrift(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             api = pathlib.Path(directory)
             (api / 'protocol').mkdir()
-            original = yaml.safe_load((original_api / 'protocol/openapi.yml').read_text())
+            original = yaml.safe_load((original_api / 'protocol/openapi.yml').read_text(encoding='utf-8'))
             (api / 'protocol/openapi.yml').write_text(yaml.safe_dump(original))
             contract.API = api
             try:
