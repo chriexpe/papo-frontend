@@ -32,6 +32,11 @@ jobs:
         with:
           key: sdk
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install protocol-check YAML parser
+        run: python -m pip install PyYAML==6.0.3
       - name: Check SDK boundaries, format, Clippy, docs, tests and build
         shell: bash
         run: bash scripts/papo-sdk-check.sh
@@ -118,3 +123,56 @@ jobs:
           name: papo-sdk-android-arm64
           path: target/aarch64-linux-android/debug/libpapo_ffi.so
           if-no-files-found: error
+
+  postgres-protocol:
+    name: SDK (PostgreSQL protocol)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: papo_protocol
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read reviewed backend revision
+        id: backend-pin
+        shell: bash
+        run: echo "commit=$(cat crates/sdk/api/protocol/backend-commit)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          repository: chriexpe/papo-backend
+          ref: ${{ steps.backend-pin.outputs.commit }}
+          path: .papo/backend-protocol
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: .papo/backend-protocol/backend/go.mod
+          cache-dependency-path: .papo/backend-protocol/backend/go.sum
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sdk-postgres-protocol
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Generate an ephemeral proof password
+        shell: bash
+        run: |
+          password="A!$(openssl rand -hex 16)"
+          echo "::add-mask::$password"
+          echo "PAPO_PROOF_PASSWORD=$password" >> "$GITHUB_ENV"
+      - name: Verify ordering, bidirectional cursors and live example
+        env:
+          DATABASE_URL: postgres://postgres@127.0.0.1:5432/papo_protocol?sslmode=disable
+        run: python3 scripts/papo-backend-proof.py --backend .papo/backend-protocol

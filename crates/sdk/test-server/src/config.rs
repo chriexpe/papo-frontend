@@ -29,6 +29,8 @@ pub struct Config {
     pub rest: Vec<RestStep>,
     /// Steps replayed independently after each authenticated gateway connection.
     pub gateway: Vec<GatewayStep>,
+    /// Suppress application heartbeat acknowledgements for timeout verification.
+    pub ignore_heartbeats: bool,
 }
 
 impl Default for Config {
@@ -44,6 +46,7 @@ impl Default for Config {
             allowed_origins: Vec::new(),
             rest: Vec::new(),
             gateway: Vec::new(),
+            ignore_heartbeats: false,
         }
     }
 }
@@ -87,6 +90,18 @@ pub enum GatewayStep {
     Event {
         /// Runtime-supplied event payload; never logged or included in fixtures.
         event: Value,
+    },
+    /// Send a protocol ping and wait for its pong before continuing the script.
+    Ping,
+    /// Send raw binary bytes to exercise malformed JSON and binary decoding.
+    Raw {
+        /// Bytes supplied only by the runtime scenario, never logged.
+        data: Vec<u8>,
+    },
+    /// Send a close frame with an explicit status, discarding server-controlled text.
+    Close {
+        /// RFC 6455 close status code.
+        code: u16,
     },
     /// Close normally after all preceding steps.
     Disconnect,

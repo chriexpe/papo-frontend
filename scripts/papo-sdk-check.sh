@@ -12,6 +12,9 @@ fi
 "$python_bin" -B scripts/prepare-winit.py
 "$python_bin" -B -m unittest discover -s tests -p 'test_sdk_boundaries.py'
 "$python_bin" -B scripts/check-sdk-boundaries.py
+"$python_bin" -B scripts/papo-api-contract.py
+"$python_bin" -B scripts/papo-api-events.py
+"$python_bin" -B -m unittest discover -s tests -p 'test_papo_api_contract.py'
 cargo fmt "${packages[@]}" -- --check
 cargo clippy --locked "${packages[@]}" --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings" cargo doc --locked "${packages[@]}" \
