@@ -57,6 +57,7 @@ pub(crate) async fn serve<S>(
     presence: Value,
     mut updates: tokio::sync::broadcast::Receiver<Value>,
     script: &[GatewayStep],
+    ignore_heartbeats: bool,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -71,10 +72,11 @@ pub(crate) async fn serve<S>(
     }
     let mut steps = script.iter();
     let mut delay = None;
+    let mut waiting_pong = false;
     let mut next_ping = tokio::time::Instant::now() + Duration::from_secs(54);
     let mut pong_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
-        if delay.is_none() {
+        if delay.is_none() && !waiting_pong {
             match steps.next() {
                 Some(GatewayStep::Delay { delay_ms }) => {
                     delay = Some(tokio::time::Instant::now() + Duration::from_millis(*delay_ms));
@@ -84,6 +86,30 @@ pub(crate) async fn serve<S>(
                         return;
                     }
                     continue;
+                }
+                Some(GatewayStep::Ping) => {
+                    if socket.send(Message::Ping(Bytes::new())).await.is_err() {
+                        return;
+                    }
+                    waiting_pong = true;
+                }
+                Some(GatewayStep::Raw { data }) => {
+                    if socket
+                        .send(Message::Binary(data.clone().into()))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    continue;
+                }
+                Some(GatewayStep::Close { code }) => {
+                    let frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                        code: (*code).into(),
+                        reason: "".into(),
+                    };
+                    let _ = socket.close(Some(frame)).await;
+                    return;
                 }
                 Some(GatewayStep::Disconnect) => {
                     let _ = socket.close(None).await;
@@ -113,14 +139,17 @@ pub(crate) async fn serve<S>(
             message = socket.next() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(reply) = inbound(text.as_bytes())
+                        if let Some(reply) = reply(text.as_bytes(), ignore_heartbeats)
                             && socket.send(Message::text(reply.to_string())).await.is_err() { return; }
                     }
                     Some(Ok(Message::Binary(bytes))) => {
-                        if let Some(reply) = inbound(&bytes)
+                        if let Some(reply) = reply(&bytes, ignore_heartbeats)
                             && socket.send(Message::text(reply.to_string())).await.is_err() { return; }
                     }
-                    Some(Ok(Message::Pong(_))) => pong_deadline = tokio::time::Instant::now() + Duration::from_secs(60),
+                    Some(Ok(Message::Pong(_))) => {
+                        waiting_pong = false;
+                        pong_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+                    },
                     Some(Ok(Message::Ping(_))) => { if socket.flush().await.is_err() { return; } }
                     Some(Ok(Message::Close(_))) => { let _ = socket.flush().await; return; }
                     Some(Ok(Message::Frame(_))) => {}
@@ -128,6 +157,15 @@ pub(crate) async fn serve<S>(
                 }
             }
         }
+    }
+}
+
+fn reply(raw: &[u8], ignore_heartbeats: bool) -> Option<Value> {
+    let reply = inbound(raw)?;
+    if ignore_heartbeats && reply["type"] == "heartbeat_ack" {
+        None
+    } else {
+        Some(reply)
     }
 }
 

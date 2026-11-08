@@ -195,7 +195,14 @@ async fn connection(stream: TcpStream, config: Arc<Config>, state: Arc<Mutex<Sta
         && let Ok(upgraded) = pending.await
     {
         let (snapshot, updates) = gateway_state.lock().await.presence.join(&user_id);
-        gateway::serve(TokioIo::new(upgraded), snapshot, updates, &config.gateway).await;
+        gateway::serve(
+            TokioIo::new(upgraded),
+            snapshot,
+            updates,
+            &config.gateway,
+            config.ignore_heartbeats,
+        )
+        .await;
         gateway_state.lock().await.presence.leave(&user_id);
     }
 }

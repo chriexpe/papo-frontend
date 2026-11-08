@@ -1,0 +1,621 @@
+{
+  "message": {
+    "name": "MessageEvent",
+    "fields": [
+      [
+        "id",
+        "string",
+        ""
+      ],
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "author_id",
+        "string",
+        ""
+      ],
+      [
+        "webhook_id",
+        "*string",
+        ",omitempty"
+      ],
+      [
+        "external_author",
+        "*models.ExternalAuthor",
+        ",omitempty"
+      ],
+      [
+        "content",
+        "string",
+        ""
+      ],
+      [
+        "created_at",
+        "time.Time",
+        ""
+      ],
+      [
+        "reply_to",
+        "*string",
+        ""
+      ],
+      [
+        "attachments",
+        "[]models.MessageAttachment",
+        ",omitempty"
+      ]
+    ]
+  },
+  "message_edit": {
+    "name": "MessageEditEvent",
+    "fields": [
+      [
+        "id",
+        "string",
+        ""
+      ],
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "content",
+        "string",
+        ""
+      ],
+      [
+        "edited_at",
+        "time.Time",
+        ""
+      ]
+    ]
+  },
+  "message_delete": {
+    "name": "MessageDeleteEvent",
+    "fields": [
+      [
+        "id",
+        "string",
+        ""
+      ],
+      [
+        "channel_id",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "attachment_moderation_update": {
+    "name": "AttachmentModerationUpdateEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "message_id",
+        "string",
+        ""
+      ],
+      [
+        "attachment_id",
+        "string",
+        ""
+      ],
+      [
+        "status",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "message_embeds_update": {
+    "name": "MessageEmbedsUpdateEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "message_id",
+        "string",
+        ""
+      ],
+      [
+        "embeds",
+        "[]models.Embed",
+        ""
+      ]
+    ]
+  },
+  "react_update": {
+    "name": "ReactUpdateEvent",
+    "fields": [
+      [
+        "message_id",
+        "string",
+        ""
+      ],
+      [
+        "emoji_id",
+        "*string",
+        ""
+      ],
+      [
+        "unicode",
+        "*string",
+        ""
+      ],
+      [
+        "count",
+        "int",
+        ""
+      ]
+    ]
+  },
+  "message_pin": {
+    "name": "MessagePinEvent",
+    "fields": [
+      [
+        "message_id",
+        "string",
+        ""
+      ],
+      [
+        "is_pinned",
+        "bool",
+        ""
+      ]
+    ]
+  },
+  "channel_create": {
+    "name": "ChannelCreateEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "name",
+        "string",
+        ""
+      ],
+      [
+        "channel_type",
+        "string",
+        ""
+      ],
+      [
+        "position",
+        "int",
+        ""
+      ],
+      [
+        "topic",
+        "*string",
+        ""
+      ]
+    ]
+  },
+  "channel_update": {
+    "name": "ChannelUpdateEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "name",
+        "string",
+        ""
+      ],
+      [
+        "position",
+        "int",
+        ""
+      ],
+      [
+        "topic",
+        "*string",
+        ""
+      ]
+    ]
+  },
+  "channel_delete": {
+    "name": "ChannelDeleteEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "typing": {
+    "name": "TypingEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "user_id",
+        "string",
+        ""
+      ],
+      [
+        "is_typing",
+        "bool",
+        ""
+      ]
+    ]
+  },
+  "avatar_update": {
+    "name": "AvatarUpdateEvent",
+    "fields": [
+      [
+        "user_id",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "presence_update": {
+    "name": "PresenceUpdateEvent",
+    "fields": [
+      [
+        "user_id",
+        "string",
+        ""
+      ],
+      [
+        "status",
+        "string",
+        ""
+      ],
+      [
+        "status_message",
+        "*string",
+        ",omitempty"
+      ],
+      [
+        "typing",
+        "*string",
+        ",omitempty"
+      ],
+      [
+        "nickname",
+        "*string",
+        ",omitempty"
+      ]
+    ]
+  },
+  "user_join": {
+    "name": "UserJoinEvent",
+    "fields": [
+      [
+        "user_id",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "role_add": {
+    "name": "RoleAddEvent",
+    "fields": [
+      [
+        "user_id",
+        "string",
+        ""
+      ],
+      [
+        "role_id",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "role_remove": {
+    "name": "RoleRemoveEvent",
+    "fields": [
+      [
+        "user_id",
+        "string",
+        ""
+      ],
+      [
+        "role_id",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "dm_update": {
+    "name": "DMUpdateEvent",
+    "fields": [
+      [
+        "dm",
+        "models.DirectConversation",
+        ""
+      ]
+    ]
+  },
+  "presence_sync": {
+    "name": "PresenceSyncEvent",
+    "fields": [
+      [
+        "members",
+        "[]PresenceMember",
+        ""
+      ]
+    ]
+  },
+  "heartbeat_ack": {
+    "name": "HeartbeatAckEvent",
+    "fields": []
+  },
+  "error": {
+    "name": "ErrorEvent",
+    "fields": [
+      [
+        "message",
+        "string",
+        ""
+      ],
+      [
+        "code",
+        "*string",
+        ",omitempty"
+      ]
+    ]
+  },
+  "new_notification": {
+    "name": "NewNotificationEvent",
+    "fields": [
+      [
+        "id",
+        "string",
+        ""
+      ],
+      [
+        "user_id",
+        "string",
+        ""
+      ],
+      [
+        "message_id",
+        "string",
+        ""
+      ],
+      [
+        "message_content",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "voice_joined": {
+    "name": "VoiceJoinedEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "members",
+        "[]models.VoiceState",
+        ""
+      ],
+      [
+        "active_speakers",
+        "[]string",
+        ""
+      ]
+    ]
+  },
+  "voice_answer": {
+    "name": "VoiceAnswerEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "sdp",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "voice_offer": {
+    "name": "VoiceOfferEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "sdp",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "voice_ice_candidate": {
+    "name": "VoiceICECandidateEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "candidate",
+        "string",
+        ""
+      ],
+      [
+        "sdp_mid",
+        "*string",
+        ",omitempty"
+      ],
+      [
+        "sdp_mline_index",
+        "*int",
+        ",omitempty"
+      ]
+    ]
+  },
+  "voice_state_update": {
+    "name": "VoiceStateUpdateEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "user_id",
+        "string",
+        ""
+      ],
+      [
+        "muted",
+        "bool",
+        ""
+      ],
+      [
+        "camera_on",
+        "bool",
+        ""
+      ],
+      [
+        "screen_sharing",
+        "bool",
+        ""
+      ]
+    ]
+  },
+  "voice_leave": {
+    "name": "VoiceLeaveEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "user_id",
+        "string",
+        ""
+      ]
+    ]
+  },
+  "active_speaker_update": {
+    "name": "ActiveSpeakerUpdateEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "user_ids",
+        "[]string",
+        ""
+      ]
+    ]
+  },
+  "voice_audio_routes": {
+    "name": "VoiceAudioRoutesEvent",
+    "fields": [
+      [
+        "channel_id",
+        "string",
+        ""
+      ],
+      [
+        "routes",
+        "[]VoiceAudioRoute",
+        ""
+      ]
+    ]
+  },
+  "_PresenceMember": {
+    "name": "PresenceMember",
+    "fields": [
+      [
+        "user_id",
+        "string",
+        ""
+      ],
+      [
+        "status",
+        "string",
+        ""
+      ],
+      [
+        "status_message",
+        "*string",
+        ",omitempty"
+      ],
+      [
+        "user_voice",
+        "[]string",
+        ""
+      ]
+    ]
+  },
+  "_VoiceState": {
+    "name": "VoiceState",
+    "fields": [
+      [
+        "user_id",
+        "string",
+        ""
+      ],
+      [
+        "muted",
+        "bool",
+        ""
+      ],
+      [
+        "camera_on",
+        "bool",
+        ""
+      ],
+      [
+        "screen_sharing",
+        "bool",
+        ""
+      ]
+    ]
+  },
+  "_VoiceAudioRoute": {
+    "name": "VoiceAudioRoute",
+    "fields": [
+      [
+        "track_id",
+        "string",
+        ""
+      ],
+      [
+        "user_id",
+        "string",
+        ""
+      ]
+    ]
+  }
+}
