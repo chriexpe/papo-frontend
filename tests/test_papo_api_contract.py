@@ -18,12 +18,12 @@ class ProtocolDrift(unittest.TestCase):
             api = pathlib.Path(directory)
             (api / 'protocol').mkdir()
             original = yaml.safe_load((original_api / 'protocol/openapi.yml').read_text(encoding='utf-8'))
-            (api / 'protocol/openapi.yml').write_text(yaml.safe_dump(original))
+            (api / 'protocol/openapi.yml').write_text(yaml.safe_dump(original), encoding='utf-8')
             contract.API = api
             try:
                 before = contract.generate()
                 mutate(original)
-                (api / 'protocol/openapi.yml').write_text(yaml.safe_dump(original))
+                (api / 'protocol/openapi.yml').write_text(yaml.safe_dump(original), encoding='utf-8')
                 after = contract.generate()
                 return before, after
             finally:
