@@ -123,10 +123,13 @@ jobs:
       # The check script prepares the winit patch itself; this sets up the
       # Python it needs, as the other jobs do.
       - uses: ./.github/actions/prepare-winit
+      # The desktop is paused until its UI framework is chosen. Its three caches
+      # (~3.4 GB) pushed the repository past the 10 GB Actions quota, which
+      # evicted the GStreamer SDK cache Android builds and releases depend on.
       - uses: Swatinem/rust-cache@v2
         with:
           key: papo-desktop
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: false
       - name: Check papo-desktop
         shell: bash
         run: bash scripts/papo-desktop-check.sh
