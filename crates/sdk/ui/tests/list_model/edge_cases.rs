@@ -82,7 +82,7 @@ fn clear_empty_pops_and_oversized_truncation_match_vector_diff_semantics() {
     ])
     .unwrap();
 
-    assert!(list.items.is_empty());
+    assert_eq!(list.ids(), Vec::<u64>::new());
     assert_eq!(anchor.resolve(&list), Err(MissingAnchor(anchor)));
 }
 
