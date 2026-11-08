@@ -9,5 +9,8 @@ publish = false
 [dependencies]
 papo-sdk = { path = "../core" }
 
+[dev-dependencies]
+eyeball-im = "=0.9.1"
+
 [lints]
 workspace = true
