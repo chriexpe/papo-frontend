@@ -1,19 +1,18 @@
 //! Owns direct conversations, blocking and user settings; policy belongs to the SDK.
 
 use crate::{
-    Error, RestClient, Uuid,
+    Error, RestClient, Uuid, routes,
     wire::{
         BlockListResponse, DirectConversation, DirectConversationList, OpenDirectMessageRequest,
         UpdateUserSettingsRequest, UserSettings,
     },
 };
-use reqwest::Method;
 impl RestClient {
     /// Lists visible direct conversations.
     /// # Errors
     /// Returns transport, backend or decoding errors.
     pub async fn direct_conversations(&self) -> Result<DirectConversationList, Error> {
-        self.json(self.request(Method::GET, "dms")?).await
+        self.json(self.route_request(&routes::GET_DMS, &[])?).await
     }
 
     /// Opens or reopens a direct conversation.
@@ -23,14 +22,14 @@ impl RestClient {
         &self,
         request: &OpenDirectMessageRequest,
     ) -> Result<DirectConversation, Error> {
-        self.post("dms", request).await
+        self.post(&routes::POST_DMS, &[], request).await
     }
 
     /// Retrieves one direct conversation.
     /// # Errors
     /// Returns transport, backend or decoding errors.
     pub async fn direct_conversation(&self, id: Uuid) -> Result<DirectConversation, Error> {
-        self.json(self.request(Method::GET, &format!("dms/{id}"))?)
+        self.json(self.route_request(&routes::GET_DMS_DM_ID, &[id.to_string()])?)
             .await
     }
 
@@ -38,7 +37,7 @@ impl RestClient {
     /// # Errors
     /// Returns transport or backend errors.
     pub async fn close_direct_conversation(&self, id: Uuid) -> Result<(), Error> {
-        self.response(self.request(Method::DELETE, &format!("dms/{id}"))?)
+        self.response(self.route_request(&routes::DELETE_DMS_DM_ID, &[id.to_string()])?)
             .await
             .map(|_| ())
     }
@@ -47,14 +46,15 @@ impl RestClient {
     /// # Errors
     /// Returns transport, backend or decoding errors.
     pub async fn blocked_users(&self) -> Result<BlockListResponse, Error> {
-        self.json(self.request(Method::GET, "users/blocks")?).await
+        self.json(self.route_request(&routes::GET_USERS_BLOCKS, &[])?)
+            .await
     }
 
     /// Blocks direct messages with another user.
     /// # Errors
     /// Returns transport or backend errors.
     pub async fn block_user(&self, user: Uuid) -> Result<(), Error> {
-        self.response(self.request(Method::POST, &format!("users/{user}/block"))?)
+        self.response(self.route_request(&routes::POST_USERS_USER_ID_BLOCK, &[user.to_string()])?)
             .await
             .map(|_| ())
     }
@@ -63,7 +63,7 @@ impl RestClient {
     /// # Errors
     /// Returns transport or backend errors.
     pub async fn unblock_user(&self, user: Uuid) -> Result<(), Error> {
-        self.response(self.request(Method::DELETE, &format!("users/{user}/block"))?)
+        self.response(self.route_request(&routes::DELETE_USERS_USER_ID_BLOCK, &[user.to_string()])?)
             .await
             .map(|_| ())
     }
@@ -75,8 +75,11 @@ impl RestClient {
         &self,
         request: &UpdateUserSettingsRequest,
     ) -> Result<UserSettings, Error> {
-        self.json(self.request(Method::PUT, "users/settings")?.json(request))
-            .await
+        self.json(
+            self.route_request(&routes::PUT_USERS_SETTINGS, &[])?
+                .json(request),
+        )
+        .await
     }
 }
 

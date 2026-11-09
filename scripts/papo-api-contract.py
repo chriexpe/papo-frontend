@@ -160,8 +160,106 @@ def generate(spec):
         output[API / 'src/wire' / (snake(name) + '.rs')] = (
             '//! Generated wire record; transport and policy belong to other modules.\n\n' + body)
     modules = '\n'.join(f'mod {snake(name)};\npub use {snake(name)}::*;' for name in sorted(generated))
-    output[API / 'src/wire/mod.rs'] = '//! Generated protocol records; owns serialization, never client state.\n\n' + modules + '\n'
+    output[API / 'src/wire/mod.rs'] = ('//! Generated protocol records; owns serialization, never client state.\n\n'
+                                      'pub(crate) mod routes;\n' + modules + '\n')
+    output[API / 'src/wire/routes.rs'] = route_table(spec)
     return output
+
+
+def route_parameters(spec, operation):
+    names = []
+    for parameter in operation.get('parameters', []):
+        if '$ref' in parameter:
+            parameter = spec['components']['parameters'][parameter['$ref'].split('/')[-1]]
+        if parameter.get('in') == 'query':
+            names.append(parameter['name'])
+    return names
+
+
+def route_table(spec):
+    query_names = sorted({name for path in ROUTES for method in ROUTES[path]
+                          for name in route_parameters(spec, spec['paths'][path][method])})
+    lines = ['//! Generated REST operation table; transport and policy belong to other modules.',
+             '',
+             '#![allow(dead_code, reason = "generated operation metadata is checked by drift tests")]',
+             '']
+    for name in query_names:
+        lines += [f'/// Backend query parameter `{name}`.', f'pub(crate) const {name.upper()}: &str = "{name}";', '']
+    lines += ['/// One pinned backend operation and its transport shape.',
+              'pub(crate) struct Route {',
+              '    /// HTTP method.',
+              '    pub(crate) method: reqwest::Method,',
+              '    /// Path template; `{name}` placeholders are filled by [`Route::url`].',
+              '    pub(crate) path: &\'static str,',
+              '    /// Accepted query parameter names.',
+              '    pub(crate) query: &\'static [&\'static str],',
+              '    /// Request body content type, when the operation accepts a body.',
+              '    pub(crate) request_body: Option<&\'static str>,',
+              '    /// Successful HTTP statuses.',
+              '    pub(crate) success: &\'static [u16],',
+              '}',
+              '',
+              'impl Route {',
+              '    /// Expands path placeholders in their template order. Missing values are left empty.',
+              '    pub(crate) fn url(&self, values: &[String]) -> String {',
+              '        let mut url = String::new();',
+              '        let mut rest = self.path;',
+              '        let mut values = values.iter();',
+              '        while let Some(start) = rest.find(\'{\') {',
+              '            url.push_str(&rest[..start]);',
+              '            let Some(end) = rest[start..].find(\'}\') else { break };',
+              '            let end = start + end;',
+              '            if let Some(value) = values.next() { url.push_str(value); }',
+              '            rest = &rest[end + 1..];',
+              '        }',
+              '        url.push_str(rest);',
+              '        url',
+              '    }',
+              '}',
+              '']
+    for path, methods in ROUTES.items():
+        for method in methods:
+            operation = spec['paths'][path][method]
+            name = method.upper() + '_' + '_'.join(re.findall(r'[A-Za-z0-9]+', path)).upper()
+            query = ', '.join(name.upper() for name in route_parameters(spec, operation))
+            body = operation.get('requestBody', {}).get('content', {})
+            if len(body) > 1:
+                raise ValueError(f'Multiple request content types for {method.upper()} {path}')
+            request_body = next(iter(body), None)
+            success = ', '.join(str(status) for status in sorted(
+                int(code) for code in operation.get('responses', {})
+                if code.isdigit() and 200 <= int(code) < 300))
+            lines += [f'/// `{method.upper()} {path}`.',
+                      f'pub(crate) const {name}: Route = Route {{',
+                      f'    method: reqwest::Method::{method.upper()},',
+                      f'    path: "{path}",',
+                      f'    query: &[{query}],',
+                      f'    request_body: {f"Some(\"{request_body}\")" if request_body else "None"},',
+                      f'    success: &[{success}],',
+                      '};',
+                      '']
+    lines += ['#[cfg(test)]',
+              'mod tests {',
+              '    //! Verifies path-template expansion without network access.',
+              '',
+              '    use super::*;',
+              '',
+              '    #[test]',
+              '    fn path_templates_expand_in_order() {',
+              '        assert_eq!(GET_USERS.url(&[]), "/users");',
+              '        assert_eq!(',
+              '            PUT_CHANNELS_CHANNEL_ID.url(&["channel".to_owned()]),',
+              '            "/channels/channel"',
+              '        );',
+              '        assert_eq!(',
+              '            DELETE_USERS_USER_ID_ROLES_ROLE_ID',
+              '                .url(&["user".to_owned(), "role".to_owned()]),',
+              '            "/users/user/roles/role"',
+              '        );',
+              '    }',
+              '}',
+              '']
+    return '\n'.join(lines)
 
 
 def backend_spec(backend):

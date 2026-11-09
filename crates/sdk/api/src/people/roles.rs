@@ -1,26 +1,25 @@
 //! Owns role and membership REST calls; authorization remains on the backend.
 
 use crate::{
-    Error, RestClient, Uuid,
+    Error, RestClient, Uuid, routes,
     wire::{
         AssignRoleRequest, CreateRoleRequest, Role, RoleListResponse, UpdateRoleRequest, UserRole,
     },
 };
-use reqwest::Method;
-
 impl RestClient {
     /// Lists server roles.
     /// # Errors
     /// Returns transport, backend or decoding failures.
     pub async fn roles(&self) -> Result<RoleListResponse, Error> {
-        self.json(self.request(Method::GET, "roles")?).await
+        self.json(self.route_request(&routes::GET_ROLES, &[])?)
+            .await
     }
 
     /// Creates a server role.
     /// # Errors
     /// Returns transport, backend or decoding failures.
     pub async fn create_role(&self, request: &CreateRoleRequest) -> Result<Role, Error> {
-        self.post("roles", request).await
+        self.post(&routes::POST_ROLES, &[], request).await
     }
 
     /// Replaces a server role's name, color and permissions.
@@ -32,7 +31,7 @@ impl RestClient {
         request: &UpdateRoleRequest,
     ) -> Result<Role, Error> {
         self.json(
-            self.request(Method::PUT, &format!("roles/{role}"))?
+            self.route_request(&routes::PUT_ROLES_ROLE_ID, &[role.to_string()])?
                 .json(request),
         )
         .await
@@ -42,7 +41,7 @@ impl RestClient {
     /// # Errors
     /// Returns transport or backend failures.
     pub async fn delete_role(&self, role: Uuid) -> Result<(), Error> {
-        self.response(self.request(Method::DELETE, &format!("roles/{role}"))?)
+        self.response(self.route_request(&routes::DELETE_ROLES_ROLE_ID, &[role.to_string()])?)
             .await
             .map(|_| ())
     }
@@ -55,16 +54,24 @@ impl RestClient {
         user: Uuid,
         request: &AssignRoleRequest,
     ) -> Result<UserRole, Error> {
-        self.post(&format!("users/{user}/roles"), request).await
+        self.post(
+            &routes::POST_USERS_USER_ID_ROLES,
+            &[user.to_string()],
+            request,
+        )
+        .await
     }
 
     /// Removes a member's role assignment.
     /// # Errors
     /// Returns transport or backend failures.
     pub async fn remove_role(&self, user: Uuid, role: Uuid) -> Result<(), Error> {
-        self.response(self.request(Method::DELETE, &format!("users/{user}/roles/{role}"))?)
-            .await
-            .map(|_| ())
+        self.response(self.route_request(
+            &routes::DELETE_USERS_USER_ID_ROLES_ROLE_ID,
+            &[user.to_string(), role.to_string()],
+        )?)
+        .await
+        .map(|_| ())
     }
 }
 

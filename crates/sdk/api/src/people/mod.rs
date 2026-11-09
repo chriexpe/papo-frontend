@@ -3,5 +3,3 @@
 mod members;
 mod overwrites;
 mod roles;
-
-pub use members::MemberQuery;

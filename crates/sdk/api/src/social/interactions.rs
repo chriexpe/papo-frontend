@@ -1,31 +1,31 @@
 //! Owns pin, reaction and search REST calls; caching and user-facing search belong to the SDK.
 
-use super::{Cursor, Page};
 use crate::{
-    Error, RestClient, Uuid,
+    Cursor, Error, RestClient, Uuid, routes,
     wire::{
         MessageReaction, MessageReactionList, PinnedMessage, PinnedMessageList, ReactionRequest,
         SearchRequest, SearchResponse,
     },
 };
-use reqwest::Method;
-
 impl RestClient {
     /// Lists pinned messages in pin order.
     /// # Errors
     /// Returns transport, backend or decoding errors.
     pub async fn pinned_messages(&self, channel: Uuid) -> Result<PinnedMessageList, Error> {
-        self.json(self.request(Method::GET, &format!("channels/{channel}/pinned"))?)
-            .await
+        self.json(self.route_request(
+            &routes::GET_CHANNELS_CHANNEL_ID_PINNED,
+            &[channel.to_string()],
+        )?)
+        .await
     }
 
     /// Pins a message; an already-pinned message is returned as well.
     /// # Errors
     /// Returns transport, backend or decoding errors.
     pub async fn pin_message(&self, channel: Uuid, message: Uuid) -> Result<PinnedMessage, Error> {
-        self.json(self.request(
-            Method::POST,
-            &format!("channels/{channel}/messages/{message}/pin"),
+        self.json(self.route_request(
+            &routes::POST_CHANNELS_CHANNEL_ID_MESSAGES_MESSAGE_ID_PIN,
+            &[channel.to_string(), message.to_string()],
         )?)
         .await
     }
@@ -34,9 +34,9 @@ impl RestClient {
     /// # Errors
     /// Returns transport or backend errors.
     pub async fn unpin_message(&self, channel: Uuid, message: Uuid) -> Result<(), Error> {
-        self.response(self.request(
-            Method::DELETE,
-            &format!("channels/{channel}/messages/{message}/pin"),
+        self.response(self.route_request(
+            &routes::DELETE_CHANNELS_CHANNEL_ID_MESSAGES_MESSAGE_ID_PIN,
+            &[channel.to_string(), message.to_string()],
         )?)
         .await
         .map(|_| ())
@@ -49,14 +49,15 @@ impl RestClient {
         &self,
         channel: Uuid,
         message: Uuid,
-        page: &Page<'_>,
+        cursor: Option<&Cursor<'_>>,
     ) -> Result<MessageReactionList, Error> {
+        let parameters = cursor.map_or_else(Vec::new, Cursor::parameters);
         self.json(
-            self.request(
-                Method::GET,
-                &format!("channels/{channel}/messages/{message}/reactions"),
+            self.route_request(
+                &routes::GET_CHANNELS_CHANNEL_ID_MESSAGES_MESSAGE_ID_REACTIONS,
+                &[channel.to_string(), message.to_string()],
             )?
-            .query(&page.parameters()),
+            .query(&parameters),
         )
         .await
     }
@@ -71,7 +72,8 @@ impl RestClient {
         request: &ReactionRequest,
     ) -> Result<MessageReaction, Error> {
         self.post(
-            &format!("channels/{channel}/messages/{message}/reactions"),
+            &routes::POST_CHANNELS_CHANNEL_ID_MESSAGES_MESSAGE_ID_REACTIONS,
+            &[channel.to_string(), message.to_string()],
             request,
         )
         .await
@@ -87,9 +89,9 @@ impl RestClient {
         request: &ReactionRequest,
     ) -> Result<(), Error> {
         self.response(
-            self.request(
-                Method::DELETE,
-                &format!("channels/{channel}/messages/{message}/reactions"),
+            self.route_request(
+                &routes::DELETE_CHANNELS_CHANNEL_ID_MESSAGES_MESSAGE_ID_REACTIONS,
+                &[channel.to_string(), message.to_string()],
             )?
             .json(request),
         )
@@ -105,9 +107,9 @@ impl RestClient {
         request: &SearchRequest,
         cursor: Option<&Cursor<'_>>,
     ) -> Result<SearchResponse, Error> {
-        let mut builder = self.request(Method::POST, "search")?.json(request);
+        let mut builder = self.route_request(&routes::POST_SEARCH, &[])?.json(request);
         if let Some(cursor) = cursor {
-            builder = builder.query(cursor);
+            builder = builder.query(&cursor.parameters());
         }
         self.json(builder).await
     }

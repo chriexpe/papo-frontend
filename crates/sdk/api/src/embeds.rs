@@ -1,11 +1,6 @@
 //! Owns authorized embed retrieval; media storage and presentation belong to callers.
 
-use crate::{Error, RestClient, Uuid, wire::EmbedWithImage};
-use reqwest::Method;
-
-fn embed_path(id: Uuid) -> String {
-    format!("embeds/{id}")
-}
+use crate::{Error, RestClient, Uuid, routes, wire::EmbedWithImage};
 
 impl RestClient {
     /// Fetches an embed and its optional base64 images using channel read authorization.
@@ -13,22 +8,17 @@ impl RestClient {
     /// # Errors
     /// Returns transport, backend rejection or response decoding failures.
     pub async fn embed(&self, id: Uuid) -> Result<EmbedWithImage, Error> {
-        self.json(self.request(Method::GET, &embed_path(id))?).await
+        self.json(self.route_request(&routes::GET_EMBEDS_EMBED_ID, &[id.to_string()])?)
+            .await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    //! Verifies the embed route and generated wire shape without network access.
+    //! Verifies the generated embed wire shape without network access.
 
-    use super::*;
+    use super::EmbedWithImage;
     use serde_json::json;
-
-    #[test]
-    fn embed_path_preserves_uuid() {
-        let id = Uuid::nil();
-        assert_eq!(embed_path(id), format!("embeds/{id}"));
-    }
 
     #[test]
     fn embed_response_retains_base_and_image_fields() {

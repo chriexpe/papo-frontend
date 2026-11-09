@@ -33,8 +33,13 @@ def document():
         schema = {'type': 'object', 'properties': {'value': {'type': 'string'}}}
         body = {'content': {'application/json': {'schema': schema}}}
         paths[path][method][section] = {'200': body} if section == 'responses' else body
+    paths['/users']['get']['parameters'] = [
+        {'name': 'since', 'in': 'query'}, {'name': 'order', 'in': 'query'},
+    ]
     paths['/auth/login']['post']['requestBody'] = {
         'content': {'application/json': {'schema': {'$ref': '#/components/schemas/LoginRequest'}}}}
+    paths['/auth/login']['post']['responses'] = {
+        '200': {'content': {'application/json': {'schema': {'$ref': '#/components/schemas/LoginRequest'}}}}}
     paths['/messages']['post']['responses'] = {
         '200': {'content': {'application/json': {'schema': {'$ref': '#/components/schemas/Composite'}}}}}
     return {'paths': paths, 'components': {'schemas': {
@@ -128,6 +133,41 @@ class ProtocolDrift(unittest.TestCase):
         self.assertIn('Option<String>', after[self.api / 'src/wire/login_request.rs'])
         self.assertIn('Option<i64>', after[self.api / 'src/wire/composite.rs'])
         self.assertIn('i64', after[self.api / 'src/wire/read_channel_request.rs'])
+
+    def test_route_table_records_operation_shape(self):
+        routes = contract.generate(document())
+
+        text = routes[self.api / 'src/wire/routes.rs']
+        self.assertIn('pub(crate) const POST_AUTH_LOGIN: Route', text)
+        self.assertIn('method: reqwest::Method::POST', text)
+        self.assertIn('path: "/auth/login"', text)
+        self.assertIn('request_body: Some("application/json")', text)
+        self.assertIn('success: &[200]', text)
+        self.assertIn('pub(crate) const GET_USERS: Route', text)
+        self.assertIn('query: &[SINCE, ORDER]', text)
+
+    def fail_after_mutating(self, mutate):
+        self.run_checker('--backend', str(self.backend), '--write')
+        changed = document()
+        mutate(changed)
+        (self.backend / 'openapi.yml').write_text(yaml.safe_dump(changed), encoding='utf-8')
+        with self.assertRaises(SystemExit):
+            self.run_checker('--backend', str(self.backend))
+
+    def test_renamed_query_parameter_fails_check(self):
+        self.fail_after_mutating(
+            lambda doc: doc['paths']['/users']['get']['parameters'][0].update(name='from'))
+
+    def test_changed_success_status_fails_check(self):
+        def mutate(doc):
+            responses = doc['paths']['/auth/login']['post']['responses']
+            responses['201'] = responses.pop('200')
+        self.fail_after_mutating(mutate)
+
+    def test_moved_request_body_fails_check(self):
+        self.fail_after_mutating(
+            lambda doc: doc['paths']['/auth/logout']['post'].update(
+                requestBody=doc['paths']['/auth/login']['post'].pop('requestBody')))
 
     def test_backend_openapi_is_read_directly(self):
         self.run_checker('--backend', str(self.backend), '--write')

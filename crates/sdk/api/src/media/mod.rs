@@ -1,7 +1,7 @@
 //! Owns byte-only media downloads and range metadata; decoding and storage belong to callers.
 
-use crate::{Error, RestClient, Uuid};
-use reqwest::{Method, header};
+use crate::{Error, RestClient, Uuid, routes};
+use reqwest::header;
 
 /// A single inclusive HTTP byte range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,8 +77,14 @@ impl RestClient {
         media_id: &str,
         range: Option<ByteRange>,
     ) -> Result<MediaResponse, MediaError> {
-        let path = media_path(media_id)?;
-        self.download_bytes(&path, range, false).await
+        validate_media_id(media_id)?;
+        self.download_bytes(
+            &routes::GET_MEDIA_SHA_HASH,
+            &[media_id.to_owned()],
+            range,
+            false,
+        )
+        .await
     }
 
     /// Fetches an attachment after backend channel authorization.
@@ -90,8 +96,13 @@ impl RestClient {
         id: Uuid,
         range: Option<ByteRange>,
     ) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(&format!("attachments/{id}"), range, false)
-            .await
+        self.download_bytes(
+            &routes::GET_ATTACHMENTS_FILE_ID,
+            &[id.to_string()],
+            range,
+            false,
+        )
+        .await
     }
 
     /// Fetches an attachment thumbnail. The pinned backend ignores range requests here.
@@ -99,8 +110,13 @@ impl RestClient {
     /// # Errors
     /// Returns transport failure or backend rejection.
     pub async fn attachment_thumbnail_bytes(&self, id: Uuid) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(&format!("attachments/{id}/thumbnail"), None, false)
-            .await
+        self.download_bytes(
+            &routes::GET_ATTACHMENTS_FILE_ID_THUMBNAIL,
+            &[id.to_string()],
+            None,
+            false,
+        )
+        .await
     }
 
     /// Fetches video relayed by the backend for an accessible embed.
@@ -112,8 +128,13 @@ impl RestClient {
         id: Uuid,
         range: Option<ByteRange>,
     ) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(&format!("embeds/{id}/video"), range, false)
-            .await
+        self.download_bytes(
+            &routes::GET_EMBEDS_EMBED_ID_VIDEO,
+            &[id.to_string()],
+            range,
+            false,
+        )
+        .await
     }
 
     /// Fetches a public user avatar without sending session cookies.
@@ -121,8 +142,13 @@ impl RestClient {
     /// # Errors
     /// Returns transport failure or backend rejection.
     pub async fn public_user_avatar_bytes(&self, id: Uuid) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(&format!("users/{id}/avatar"), None, true)
-            .await
+        self.download_bytes(
+            &routes::GET_USERS_USER_ID_AVATAR,
+            &[id.to_string()],
+            None,
+            true,
+        )
+        .await
     }
 
     /// Fetches a public webhook avatar without sending session cookies.
@@ -130,21 +156,27 @@ impl RestClient {
     /// # Errors
     /// Returns transport failure or backend rejection.
     pub async fn public_webhook_avatar_bytes(&self, id: Uuid) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(&format!("webhooks/{id}/avatar"), None, true)
-            .await
+        self.download_bytes(
+            &routes::GET_WEBHOOKS_WEBHOOK_ID_AVATAR,
+            &[id.to_string()],
+            None,
+            true,
+        )
+        .await
     }
 
     async fn download_bytes(
         &self,
-        path: &str,
+        route: &routes::Route,
+        values: &[String],
         range: Option<ByteRange>,
         anonymous: bool,
     ) -> Result<MediaResponse, MediaError> {
         let range = range.map(ByteRange::header_value).transpose()?;
         let mut request = if anonymous {
-            self.anonymous_request(Method::GET, path)?
+            self.anonymous_route_request(route, values)?
         } else {
-            self.request(Method::GET, path)?
+            self.route_request(route, values)?
         };
         if let Some(range) = range {
             request = request.header(header::RANGE, range);
@@ -169,11 +201,11 @@ impl RestClient {
     }
 }
 
-fn media_path(media_id: &str) -> Result<String, MediaError> {
+fn validate_media_id(media_id: &str) -> Result<(), MediaError> {
     if media_id.len() != 64 || !media_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(MediaError::InvalidMediaId);
     }
-    Ok(format!("media/{media_id}"))
+    Ok(())
 }
 
 fn representation_headers(source: &header::HeaderMap) -> header::HeaderMap {
@@ -241,7 +273,7 @@ mod tests {
 
     #[test]
     fn media_ids_cannot_escape_the_fixed_route() {
-        assert!(media_path(&"a".repeat(64)).is_ok());
+        assert!(validate_media_id(&"a".repeat(64)).is_ok());
         for id in [
             "../attachments/x",
             "https://example.invalid",
@@ -249,7 +281,10 @@ mod tests {
             "",
             &"/".repeat(64),
         ] {
-            assert!(matches!(media_path(id), Err(MediaError::InvalidMediaId)));
+            assert!(matches!(
+                validate_media_id(id),
+                Err(MediaError::InvalidMediaId)
+            ));
         }
     }
 

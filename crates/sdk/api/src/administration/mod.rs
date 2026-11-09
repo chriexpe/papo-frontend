@@ -7,6 +7,5 @@ mod server;
 mod webhooks;
 
 pub use audit::AuditLogQuery;
-pub use emojis::EmojiQuery;
 pub use moderation::PasswordResetResult;
 pub use webhooks::{CreatedWebhook, WebhookAttachment, WebhookMessageRequest};

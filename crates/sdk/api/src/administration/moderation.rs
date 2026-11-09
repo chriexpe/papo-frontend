@@ -1,11 +1,9 @@
 //! Owns moderation and administrative password-reset calls; the backend decides authorization.
 
 use crate::{
-    Error, RestClient, Uuid,
+    Error, RestClient, Uuid, routes,
     wire::{BanUserRequest, GenericResponse, PasswordResetLinkResponse},
 };
-use reqwest::Method;
-
 /// The self-reset acknowledgment or the owner-generated reset link.
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
@@ -26,7 +24,7 @@ impl RestClient {
         request: &BanUserRequest,
     ) -> Result<GenericResponse, Error> {
         self.json(
-            self.request(Method::PUT, &format!("users/{user}/ban"))?
+            self.route_request(&routes::PUT_USERS_USER_ID_BAN, &[user.to_string()])?
                 .json(request),
         )
         .await
@@ -36,7 +34,7 @@ impl RestClient {
     /// # Errors
     /// Returns transport, backend or decoding failures.
     pub async fn reset_user_password(&self, user: Uuid) -> Result<PasswordResetResult, Error> {
-        self.json(self.request(Method::POST, &format!("users/{user}/reset"))?)
+        self.json(self.route_request(&routes::POST_USERS_USER_ID_RESET, &[user.to_string()])?)
             .await
     }
 }

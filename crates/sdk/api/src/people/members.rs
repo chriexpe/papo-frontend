@@ -1,50 +1,22 @@
 //! Owns member listing and profile wire calls; media downloads belong to the media transport.
 
 use crate::{
-    Error, RestClient, Uuid,
+    Cursor, Error, RestClient, Uuid, routes,
     wire::{
         GenericResponse, MemberListResponse, ProfileBatchRequest, ProfileBatchResponse,
         UpdateAvatarRequest, UpdateBannerRequest, UpdateStatusRequest, UpdateUserRequest,
         UserProfile, UserSummary, UserSummaryBatchRequest,
     },
 };
-use reqwest::Method;
-
-/// Member pagination; `since` is the exact backend timestamp string.
-#[derive(Default)]
-pub struct MemberQuery<'a> {
-    /// Timestamp of the cursor, if any.
-    pub since: Option<&'a str>,
-    /// ID paired with `since` for an exact cursor.
-    pub last_id: Option<Uuid>,
-    /// Backend ordering direction (`asc` or `desc`).
-    pub order: Option<&'a str>,
-}
-
-impl MemberQuery<'_> {
-    fn parameters(&self) -> Vec<(&'static str, String)> {
-        let mut parameters = Vec::new();
-        if let Some(since) = self.since {
-            parameters.push(("since", since.to_owned()));
-        }
-        if let Some(last_id) = self.last_id {
-            parameters.push(("last_id", last_id.to_string()));
-        }
-        if let Some(order) = self.order {
-            parameters.push(("order", order.to_owned()));
-        }
-        parameters
-    }
-}
-
 impl RestClient {
     /// Lists a page of members without fetching full profiles.
     /// # Errors
     /// Returns transport, backend or decoding failures.
-    pub async fn members(&self, query: &MemberQuery<'_>) -> Result<MemberListResponse, Error> {
+    pub async fn members(&self, cursor: Option<&Cursor<'_>>) -> Result<MemberListResponse, Error> {
+        let parameters = cursor.map_or_else(Vec::new, Cursor::parameters);
         self.json(
-            self.request(Method::GET, "users")?
-                .query(&query.parameters()),
+            self.route_request(&routes::GET_USERS, &[])?
+                .query(&parameters),
         )
         .await
     }
@@ -53,7 +25,7 @@ impl RestClient {
     /// # Errors
     /// Returns transport, backend or decoding failures.
     pub async fn profile(&self, user: Uuid) -> Result<UserProfile, Error> {
-        self.json(self.request(Method::GET, &format!("users/{user}/profile"))?)
+        self.json(self.route_request(&routes::GET_USERS_USER_ID_PROFILE, &[user.to_string()])?)
             .await
     }
 
@@ -64,7 +36,8 @@ impl RestClient {
         &self,
         request: &ProfileBatchRequest,
     ) -> Result<ProfileBatchResponse, Error> {
-        self.post("users/profile_batch", request).await
+        self.post(&routes::POST_USERS_PROFILE_BATCH, &[], request)
+            .await
     }
 
     /// Fetches up to 1000 lightweight summaries; the backend validates the request.
@@ -74,7 +47,8 @@ impl RestClient {
         &self,
         request: &UserSummaryBatchRequest,
     ) -> Result<Vec<UserSummary>, Error> {
-        self.post("users/user_summary_batch", request).await
+        self.post(&routes::POST_USERS_USER_SUMMARY_BATCH, &[], request)
+            .await
     }
 
     /// Updates the authenticated user's profile.
@@ -86,7 +60,7 @@ impl RestClient {
         request: &UpdateUserRequest,
     ) -> Result<GenericResponse, Error> {
         self.json(
-            self.request(Method::PUT, &format!("users/{user}"))?
+            self.route_request(&routes::PUT_USERS_USER_ID, &[user.to_string()])?
                 .json(request),
         )
         .await
@@ -101,7 +75,7 @@ impl RestClient {
         request: &UpdateStatusRequest,
     ) -> Result<GenericResponse, Error> {
         self.json(
-            self.request(Method::PUT, &format!("users/{user}/status"))?
+            self.route_request(&routes::PUT_USERS_USER_ID_STATUS, &[user.to_string()])?
                 .json(request),
         )
         .await
@@ -116,7 +90,7 @@ impl RestClient {
         request: &UpdateAvatarRequest,
     ) -> Result<GenericResponse, Error> {
         self.json(
-            self.request(Method::PUT, &format!("users/{user}/avatar"))?
+            self.route_request(&routes::PUT_USERS_USER_ID_AVATAR, &[user.to_string()])?
                 .json(request),
         )
         .await
@@ -131,7 +105,7 @@ impl RestClient {
         request: &UpdateBannerRequest,
     ) -> Result<GenericResponse, Error> {
         self.json(
-            self.request(Method::PUT, &format!("users/{user}/banner"))?
+            self.route_request(&routes::PUT_USERS_USER_ID_BANNER, &[user.to_string()])?
                 .json(request),
         )
         .await
@@ -140,37 +114,9 @@ impl RestClient {
 
 #[cfg(test)]
 mod tests {
-    //! Verifies member cursors and profile response decoding.
+    //! Verifies profile response decoding.
 
     use super::*;
-
-    #[test]
-    fn member_cursor_keeps_timestamp_precision() {
-        let query = MemberQuery {
-            since: Some("2024-01-02T03:04:05.123456Z"),
-            order: Some("desc"),
-            ..MemberQuery::default()
-        };
-        let client = RestClient::new("https://example.invalid/base").unwrap();
-        let request = client
-            .request(Method::GET, "users")
-            .unwrap()
-            .query(&query.parameters())
-            .build()
-            .unwrap();
-        let pairs: Vec<_> = request.url().query_pairs().collect();
-        assert!(
-            pairs
-                .iter()
-                .any(|(key, value)| key == "since" && value == "2024-01-02T03:04:05.123456Z")
-        );
-        assert!(
-            pairs
-                .iter()
-                .any(|(key, value)| key == "order" && value == "desc")
-        );
-        assert!(!pairs.iter().any(|(key, _)| key == "last_id"));
-    }
 
     #[test]
     fn profile_accepts_backend_null_avatar_and_roles() {

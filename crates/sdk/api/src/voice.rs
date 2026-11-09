@@ -1,9 +1,6 @@
 //! Owns ICE server configuration retrieval; voice signaling belongs to the gateway.
 
-use crate::{Error, RestClient, wire::ICEServersResponse};
-use reqwest::Method;
-
-const ICE_SERVERS_PATH: &str = "voice/ice-servers";
+use crate::{Error, RestClient, routes, wire::ICEServersResponse};
 
 impl RestClient {
     /// Fetches the authenticated account's ICE server configuration.
@@ -12,22 +9,17 @@ impl RestClient {
     /// # Errors
     /// Returns transport, backend rejection or response decoding failures.
     pub async fn ice_servers(&self) -> Result<ICEServersResponse, Error> {
-        self.json(self.request(Method::GET, ICE_SERVERS_PATH)?)
+        self.json(self.route_request(&routes::GET_VOICE_ICE_SERVERS, &[])?)
             .await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    //! Verifies the voice route and generated wire shape without network or secrets.
+    //! Verifies the generated ICE wire shape without network or secrets.
 
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn ice_servers_path_matches_backend_spelling() {
-        assert_eq!(ICE_SERVERS_PATH, "voice/ice-servers");
-    }
 
     #[test]
     fn ice_servers_decode_the_backend_wrapper() {

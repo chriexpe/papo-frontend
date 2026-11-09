@@ -1,60 +1,85 @@
-//! Owns audit-log pagination; filtering and authorization remain backend decisions.
+//! Owns audit-log filtering and pagination; authorization remains a backend decision.
 
-use crate::{Error, RestClient, wire::AuditLogList};
-use reqwest::Method;
+use crate::{Cursor, Error, RestClient, routes};
 
-/// Audit filters and the raw backend cursor. Timestamps are sent unchanged.
-#[derive(Clone, Default, serde::Serialize)]
+/// Audit filters; the cursor carries `since`, `last_id` and order separately.
+#[derive(Clone, Default)]
 pub struct AuditLogQuery<'a> {
     /// Exact backend action.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<&'a str>,
     /// Actor UUID.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub actor_id: Option<&'a str>,
     /// Backend entity type.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_type: Option<&'a str>,
-    /// Inclusive RFC 3339 lower timestamp bound.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub since: Option<&'a str>,
     /// Inclusive RFC 3339 upper timestamp bound.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub until: Option<&'a str>,
-    /// Last raw log UUID, including when client-side filtering hides it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_id: Option<&'a str>,
-    /// Backend ordering, `asc` or `desc`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub order: Option<&'a str>,
+}
+
+impl AuditLogQuery<'_> {
+    fn parameters(&self) -> Vec<(&'static str, String)> {
+        [
+            (routes::ACTION, self.action),
+            (routes::ACTOR_ID, self.actor_id),
+            (routes::ENTITY_TYPE, self.entity_type),
+            (routes::UNTIL, self.until),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name, value.to_owned())))
+        .collect()
+    }
 }
 
 impl RestClient {
-    /// Fetches an audit page without changing its cursor or applying local filters.
+    /// Fetches an audit page without applying local filters or changing the cursor.
     /// # Errors
     /// Returns transport, backend or decoding failures.
-    pub async fn audit_logs(&self, query: &AuditLogQuery<'_>) -> Result<AuditLogList, Error> {
-        self.json(self.request(Method::GET, "admin/audit-logs")?.query(query))
-            .await
+    pub async fn audit_logs(
+        &self,
+        query: &AuditLogQuery<'_>,
+        cursor: Option<&Cursor<'_>>,
+    ) -> Result<crate::wire::AuditLogList, Error> {
+        let mut parameters = query.parameters();
+        if let Some(cursor) = cursor {
+            parameters.extend(cursor.parameters());
+        }
+        self.json(
+            self.route_request(&routes::GET_ADMIN_AUDIT_LOGS, &[])?
+                .query(&parameters),
+        )
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    //! Tests audit cursor serialization without exercising transport.
+    //! Verifies filter and cursor query assembly without network access.
 
-    use super::AuditLogQuery;
+    use super::*;
+    use crate::HistoryOrder;
 
     #[test]
-    fn audit_cursor_is_preserved_as_sent() {
-        let query = AuditLogQuery {
-            since: Some("2030-01-01T00:00:00.123456Z"),
-            last_id: Some("cursor"),
-            ..Default::default()
+    fn filters_and_cursor_share_generated_query_names() {
+        let filters = AuditLogQuery {
+            action: Some("delete"),
+            until: Some("2030-01-01T00:00:00Z"),
+            ..AuditLogQuery::default()
         };
-        let value = serde_json::to_value(query).unwrap();
-        assert_eq!(value["since"], "2030-01-01T00:00:00.123456Z");
-        assert_eq!(value["last_id"], "cursor");
-        assert!(value.get("until").is_none());
+        let cursor = Cursor {
+            since: "2026-01-01T01:02:03.123456+03:00",
+            last_id: Some("cursor"),
+            order: Some(HistoryOrder::Desc),
+        };
+        let mut parameters = filters.parameters();
+        parameters.extend(cursor.parameters());
+        assert_eq!(
+            parameters,
+            vec![
+                ("action", "delete".to_owned()),
+                ("until", "2030-01-01T00:00:00Z".to_owned()),
+                ("order", "desc".to_owned()),
+                ("since", "2026-01-01T01:02:03.123456+03:00".to_owned()),
+                ("last_id", "cursor".to_owned()),
+            ]
+        );
     }
 }

@@ -1,14 +1,12 @@
 //! Owns webhook management and bearer-scoped message calls; token storage belongs to callers.
 
 use crate::{
-    Error, RestClient, Uuid,
+    Error, RestClient, Uuid, routes,
     wire::{
         CreateWebhookRequest, Message, UpdateMessageRequest, UpdateWebhookIdentityRequest, Webhook,
         WebhookListResponse,
     },
 };
-use reqwest::Method;
-
 /// One-time creation response. The token is not returned by listing or updating.
 #[derive(Clone, serde::Deserialize)]
 pub struct CreatedWebhook {
@@ -53,14 +51,15 @@ impl RestClient {
         &self,
         request: &CreateWebhookRequest,
     ) -> Result<CreatedWebhook, Error> {
-        self.post("webhooks", request).await
+        self.post(&routes::POST_WEBHOOKS, &[], request).await
     }
 
     /// Lists active webhooks.
     /// # Errors
     /// Returns transport, backend or decoding failures.
     pub async fn webhooks(&self) -> Result<WebhookListResponse, Error> {
-        self.json(self.request(Method::GET, "webhooks")?).await
+        self.json(self.route_request(&routes::GET_WEBHOOKS, &[])?)
+            .await
     }
 
     /// Updates the persistent identity of a webhook.
@@ -72,7 +71,7 @@ impl RestClient {
         request: &UpdateWebhookIdentityRequest,
     ) -> Result<Webhook, Error> {
         self.json(
-            self.request(Method::PATCH, &format!("webhooks/{webhook}"))?
+            self.route_request(&routes::PATCH_WEBHOOKS_WEBHOOK_ID, &[webhook.to_string()])?
                 .json(request),
         )
         .await
@@ -82,9 +81,11 @@ impl RestClient {
     /// # Errors
     /// Returns transport or backend rejection.
     pub async fn delete_webhook(&self, webhook: Uuid) -> Result<(), Error> {
-        self.response(self.request(Method::DELETE, &format!("webhooks/{webhook}"))?)
-            .await
-            .map(|_| ())
+        self.response(
+            self.route_request(&routes::DELETE_WEBHOOKS_WEBHOOK_ID, &[webhook.to_string()])?,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Sends a webhook message with only its scoped bearer credential. No retry is performed.
@@ -116,9 +117,12 @@ impl RestClient {
             );
         }
         self.anonymous_json(
-            self.anonymous_request(Method::POST, &format!("webhooks/{webhook}/messages"))?
-                .bearer_auth(token)
-                .multipart(form),
+            self.anonymous_route_request(
+                &routes::POST_WEBHOOKS_WEBHOOK_ID_MESSAGES,
+                &[webhook.to_string()],
+            )?
+            .bearer_auth(token)
+            .multipart(form),
         )
         .await
     }
@@ -134,9 +138,9 @@ impl RestClient {
         request: &UpdateMessageRequest,
     ) -> Result<Message, Error> {
         self.anonymous_json(
-            self.anonymous_request(
-                Method::PUT,
-                &format!("webhooks/{webhook}/messages/{message}"),
+            self.anonymous_route_request(
+                &routes::PUT_WEBHOOKS_WEBHOOK_ID_MESSAGES_MESSAGE_ID,
+                &[webhook.to_string(), message.to_string()],
             )?
             .bearer_auth(token)
             .json(request),
@@ -154,9 +158,9 @@ impl RestClient {
         token: &str,
     ) -> Result<(), Error> {
         self.anonymous_response(
-            self.anonymous_request(
-                Method::DELETE,
-                &format!("webhooks/{webhook}/messages/{message}"),
+            self.anonymous_route_request(
+                &routes::DELETE_WEBHOOKS_WEBHOOK_ID_MESSAGES_MESSAGE_ID,
+                &[webhook.to_string(), message.to_string()],
             )?
             .bearer_auth(token),
         )

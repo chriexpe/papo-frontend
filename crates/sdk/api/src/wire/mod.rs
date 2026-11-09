@@ -1,6 +1,7 @@
 //! Generated protocol records; owns serialization, never client state.
 
 mod assign_role_request;
+pub(crate) mod routes;
 pub use assign_role_request::*;
 mod attachment;
 pub use attachment::*;

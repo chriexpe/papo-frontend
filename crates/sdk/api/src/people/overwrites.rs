@@ -1,14 +1,12 @@
 //! Owns channel role-overwrite REST calls; permission evaluation belongs to the SDK.
 
 use crate::{
-    Error, RestClient, Uuid,
+    Error, RestClient, Uuid, routes,
     wire::{
         ChannelPermissionsResponse, UpdateChannelPermissionsRequest,
         UpdateChannelPermissionsResponse,
     },
 };
-use reqwest::Method;
-
 impl RestClient {
     /// Lists a channel's role-specific permission overwrites.
     /// # Errors
@@ -17,8 +15,11 @@ impl RestClient {
         &self,
         channel: Uuid,
     ) -> Result<ChannelPermissionsResponse, Error> {
-        self.json(self.request(Method::GET, &format!("channels/{channel}/permissions"))?)
-            .await
+        self.json(self.route_request(
+            &routes::GET_CHANNELS_CHANNEL_ID_PERMISSIONS,
+            &[channel.to_string()],
+        )?)
+        .await
     }
 
     /// Replaces a role's permissions for a channel.
@@ -31,9 +32,9 @@ impl RestClient {
         request: &UpdateChannelPermissionsRequest,
     ) -> Result<UpdateChannelPermissionsResponse, Error> {
         self.json(
-            self.request(
-                Method::PUT,
-                &format!("channels/{channel}/permissions/{role}"),
+            self.route_request(
+                &routes::PUT_CHANNELS_CHANNEL_ID_PERMISSIONS_ROLE_ID,
+                &[channel.to_string(), role.to_string()],
             )?
             .json(request),
         )
@@ -44,9 +45,12 @@ impl RestClient {
     /// # Errors
     /// Returns transport or backend failures.
     pub async fn delete_channel_role(&self, channel: Uuid, role: Uuid) -> Result<(), Error> {
-        self.response(self.request(Method::DELETE, &format!("channels/{channel}/role/{role}"))?)
-            .await
-            .map(|_| ())
+        self.response(self.route_request(
+            &routes::DELETE_CHANNELS_CHANNEL_ID_ROLE_ROLE_ID,
+            &[channel.to_string(), role.to_string()],
+        )?)
+        .await
+        .map(|_| ())
     }
 }
 
