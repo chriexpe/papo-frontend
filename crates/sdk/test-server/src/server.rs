@@ -2,15 +2,12 @@
 
 use std::{
     collections::VecDeque,
-    convert::Infallible,
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
-    time::Duration,
 };
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full, Limited};
-use hyper::{Request, Response, body::Incoming, header, server::conn::http1, service::service_fn};
+use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -19,24 +16,22 @@ use tokio::{
 };
 
 use crate::{
-    Config, Error, RestStep,
-    auth::{Auth, cookie_value},
-    gateway,
-    presence::Presence,
-    response::{Reply, problem},
+    Config, Error, RestStep, auth::Auth, gateway, presence::Presence, request,
+    resources::Resources, rest_hold::PendingHold,
 };
 
-const MAX_BODY_BYTES: usize = 128 * 1024;
+pub(crate) const MAX_BODY_BYTES: usize = 128 * 1024;
 const MAX_CONNECTIONS: usize = 64;
-
-type HttpResponse = Response<Full<Bytes>>;
 
 pub(crate) struct State {
     pub(crate) auth: Auth,
-    presence: Presence,
+    pub(crate) presence: Presence,
+    pub(crate) resources: Resources,
+    pub(crate) holds: Vec<PendingHold>,
+    pub(crate) gateway_accepting: bool,
     rest: VecDeque<RestStep>,
-    base_url: String,
-    message_body: Option<Bytes>,
+    pub(crate) base_url: String,
+    pub(crate) message_body: Option<Bytes>,
 }
 
 /// A running in-memory backend bound exclusively to IPv4 loopback.
@@ -48,7 +43,7 @@ pub struct TestServer {
     disconnects: broadcast::Sender<()>,
     stop: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), Error>>>,
-    state: Arc<Mutex<State>>,
+    pub(crate) state: Arc<Mutex<State>>,
 }
 
 impl TestServer {
@@ -73,6 +68,9 @@ impl TestServer {
         let state = Arc::new(Mutex::new(State {
             auth: Auth::new(),
             presence: Presence::new(),
+            resources: Resources::default(),
+            holds: Vec::new(),
+            gateway_accepting: true,
             rest: config.rest.clone().into(),
             base_url: format!("http://{address}"),
             message_body: None,
@@ -111,6 +109,15 @@ impl TestServer {
     #[must_use]
     pub fn gateway_url(&self) -> String {
         format!("ws://{}/ws", self.address)
+    }
+
+    /// Enables or disables new gateway handshakes; admission starts enabled.
+    ///
+    /// While disabled, `GET /ws` returns HTTP 503 without upgrading. Existing sockets
+    /// and REST remain available. Disable admission before [`Self::disconnect_gateways`]
+    /// to make a deterministic disconnected mutation window, then re-enable to reconnect.
+    pub async fn set_gateway_accepting(&self, accepting: bool) {
+        self.state.lock().await.gateway_accepting = accepting;
     }
 
     /// Drops currently accepted gateway connections without stopping REST or future reconnects.
@@ -218,7 +225,7 @@ async fn connection(
     let service_config = Arc::clone(&config);
     let gateway_state = Arc::clone(&state);
     let service = service_fn(move |request| {
-        handle(
+        request::handle(
             request,
             Arc::clone(&service_config),
             Arc::clone(&state),
@@ -245,86 +252,14 @@ async fn connection(
             &config.gateway,
             config.ignore_heartbeats,
             disconnects,
+            &user_id,
         )
         .await;
         gateway_state.lock().await.presence.leave(&user_id);
     }
 }
 
-async fn handle(
-    mut request: Request<Incoming>,
-    config: Arc<Config>,
-    state: Arc<Mutex<State>>,
-    upgrades: mpsc::Sender<(hyper::upgrade::OnUpgrade, String)>,
-) -> Result<HttpResponse, Infallible> {
-    let method = request.method().as_str().to_owned();
-    let path = request.uri().path().to_owned();
-    let cookie = cookie_value(request.headers()).map(str::to_owned);
-    let (step, base_url) = {
-        let mut state = state.lock().await;
-        (
-            take_step(&mut state, &method, &path),
-            state.base_url.clone(),
-        )
-    };
-    let encode = |reply| encode(reply, &base_url);
-    if let Some(step) = step {
-        tokio::time::sleep(Duration::from_millis(step.delay_ms)).await;
-        if let Some(failure) = step.failure {
-            return Ok(encode(problem(failure.status, &failure.slug, &path)));
-        }
-    }
-    if method == "GET" && path == "/ws" {
-        let user_id = state
-            .lock()
-            .await
-            .auth
-            .user_id(cookie.as_deref())
-            .map(str::to_owned);
-        let Some(user_id) = user_id else {
-            return Ok(encode(problem(401, "unauthorized", &path)));
-        };
-        if !gateway::origin_allowed(request.headers(), &config.allowed_origins) {
-            return Ok(encode(problem(403, "ws-upgrade", &path)));
-        }
-        let response = gateway::upgrade_response(&request);
-        let Ok(response) = response else {
-            return Ok(encode(problem(400, "ws-upgrade", &path)));
-        };
-        let pending = hyper::upgrade::on(&mut request);
-        if upgrades.try_send((pending, user_id)).is_err() {
-            return Ok(encode(problem(500, "internal", &path)));
-        }
-        return Ok(response);
-    }
-    let body = Limited::new(request.into_body(), MAX_BODY_BYTES)
-        .collect()
-        .await;
-    let Ok(body) = body else {
-        return Ok(encode(problem(413, "invalid-param", &path)));
-    };
-    let mut state = state.lock().await;
-    let body = body.to_bytes();
-    if method == "POST" && path == "/messages" {
-        if state.auth.user_id(cookie.as_deref()).is_none() {
-            return Ok(encode(problem(401, "unauthorized", &path)));
-        }
-        state.message_body = Some(body);
-        return Ok(encode(Reply::json(201, serde_json::json!({}))));
-    }
-    let reply = state
-        .auth
-        .handle(&config, &method, &path, cookie.as_deref(), &body);
-    if path == "/auth/register"
-        && reply.status == 201
-        && let Some(user_id) = reply.body.as_ref().and_then(|body| body["id"].as_str())
-    {
-        state.presence.user_registered(user_id);
-    }
-    Ok(encode(reply))
-}
-
-fn take_step(state: &mut State, method: &str, path: &str) -> Option<RestStep> {
+pub(crate) fn take_step(state: &mut State, method: &str, path: &str) -> Option<RestStep> {
     if state
         .rest
         .front()
@@ -334,39 +269,6 @@ fn take_step(state: &mut State, method: &str, path: &str) -> Option<RestStep> {
     } else {
         None
     }
-}
-
-fn encode(mut reply: Reply, base_url: &str) -> HttpResponse {
-    if reply.problem
-        && let Some(body) = reply.body.as_mut()
-        && let Some(slug) = body["type"].as_str()
-    {
-        body["type"] = format!("{base_url}{slug}").into();
-    }
-    let has_body = reply.body.is_some();
-    let body = reply
-        .body
-        .map_or_else(Vec::new, |value| value.to_string().into_bytes());
-    let mut response = Response::new(Full::new(Bytes::from(body)));
-    *response.status_mut() = hyper::StatusCode::from_u16(reply.status)
-        .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
-    if has_body {
-        response.headers_mut().insert(
-            header::CONTENT_TYPE,
-            header::HeaderValue::from_static(if reply.problem {
-                "application/problem+json"
-            } else {
-                "application/json"
-            }),
-        );
-    }
-    if let Some(cookie) = reply
-        .cookie
-        .and_then(|value| header::HeaderValue::from_str(&value).ok())
-    {
-        response.headers_mut().insert(header::SET_COOKIE, cookie);
-    }
-    response
 }
 
 #[cfg(test)]

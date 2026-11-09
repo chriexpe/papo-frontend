@@ -61,6 +61,22 @@ pub struct CommitInfo {
     pub durable: bool,
 }
 
+pub(super) enum QueuedJob {
+    Write(Box<dyn Job>),
+    Checkpoint(oneshot::Sender<Result<(), WorkerError>>),
+}
+
+impl QueuedJob {
+    pub fn respond(self, result: Result<CommitInfo, WorkerError>) {
+        match self {
+            Self::Write(job) => job.respond(result),
+            Self::Checkpoint(sender) => {
+                let _ = sender.send(result.map(|_| ()));
+            }
+        }
+    }
+}
+
 pub(super) trait Job: Send {
     fn execute(&mut self, transaction: &Transaction<'_>) -> Result<(), WorkerError>;
     fn respond(self: Box<Self>, result: Result<CommitInfo, WorkerError>);
@@ -150,10 +166,20 @@ fn database_error(error: &(dyn std::error::Error + 'static)) -> Option<WorkerErr
 /// be forcibly preempted; the scheduler suppresses acknowledgements after shutdown.
 pub(super) fn run(
     connection: &mut Connection,
-    job: &mut dyn Job,
+    job: &mut QueuedJob,
     budget: Duration,
     durable: bool,
 ) -> Result<CommitInfo, WorkerError> {
+    let job = match job {
+        QueuedJob::Write(job) => job.as_mut(),
+        QueuedJob::Checkpoint(_) => {
+            super::connection::checkpoint(connection)?;
+            return Ok(CommitInfo {
+                affected_rows: 0,
+                durable: false,
+            });
+        }
+    };
     let start = Instant::now();
     let internal = Arc::new(AtomicBool::new(true));
     let gate = Arc::clone(&internal);

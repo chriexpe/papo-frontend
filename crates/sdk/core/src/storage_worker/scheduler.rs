@@ -10,9 +10,10 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{
-    DatabaseWriter, Initializer, WorkerConfig, WorkerError,
+    Initializer, WorkerConfig, WorkerError,
     connection::{self, OpenConnection},
-    execution::Job,
+    execution::QueuedJob,
+    lifecycle::{self, DatabaseLifecycle},
     shutdown::{DatabaseFailure, UnpersistedWrite, WriteDisposition},
 };
 
@@ -25,7 +26,7 @@ pub(super) struct Specification {
 
 pub(super) struct Command {
     pub id: u64,
-    pub job: Box<dyn Job>,
+    pub job: QueuedJob,
     pub permit: OwnedSemaphorePermit,
 }
 
@@ -34,6 +35,7 @@ pub(super) struct DatabaseQueue {
     pub capacity: Arc<Semaphore>,
     pub commands: VecDeque<Command>,
     pub failure: Option<WorkerError>,
+    pub lifecycle: DatabaseLifecycle,
 }
 
 pub(super) struct State {
@@ -63,51 +65,10 @@ impl Shared {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub fn register(
-        self: &Arc<Self>,
-        path: PathBuf,
-        initializer: Initializer,
-        durable: bool,
-    ) -> Result<DatabaseWriter, WorkerError> {
-        let mut state = self.lock();
-        if !state.accepting {
-            return Err(WorkerError::AdmissionClosed);
-        }
-        if durable != self.durable || (durable && !state.databases.is_empty()) {
-            return Err(WorkerError::InvalidConfiguration);
-        }
-        if state
-            .databases
-            .iter()
-            .any(|database| database.specification.path == path)
-        {
-            return Err(WorkerError::AlreadyRegistered);
-        }
-        let database_id =
-            u64::try_from(state.databases.len()).map_err(|_| WorkerError::InvalidConfiguration)?;
-        let capacity = Arc::new(Semaphore::new(self.config.queue_capacity));
-        state.databases.push(DatabaseQueue {
-            specification: Specification {
-                path,
-                initializer,
-                durable,
-            },
-            capacity: Arc::clone(&capacity),
-            commands: VecDeque::new(),
-            failure: None,
-        });
-        Ok(DatabaseWriter {
-            shared: Arc::clone(self),
-            database_id,
-            capacity,
-            state: durable,
-        })
-    }
-
     pub fn enqueue(
         &self,
         database_id: u64,
-        job: Box<dyn Job>,
+        job: QueuedJob,
         permit: OwnedSemaphorePermit,
     ) -> Result<u64, WorkerError> {
         let mut state = self.lock();
@@ -118,7 +79,7 @@ impl Shared {
         if state
             .databases
             .get(index)
-            .is_none_or(|database| database.failure.is_some())
+            .is_none_or(|database| database.failure.is_some() || database.lifecycle.closing)
         {
             return Err(WorkerError::DatabaseClosed);
         }
@@ -138,7 +99,7 @@ impl Shared {
         } else if usize::try_from(database_id)
             .ok()
             .and_then(|index| state.databases.get(index))
-            .is_some_and(|database| database.failure.is_some())
+            .is_some_and(|database| database.failure.is_some() || database.lifecycle.closing)
         {
             WorkerError::DatabaseClosed
         } else {
@@ -184,6 +145,10 @@ pub(super) fn run(shared: &Shared, open: &mut HashMap<u64, OpenConnection>) {
             Turn::Work(database_id, specification, command) => {
                 (database_id, specification, command)
             }
+            Turn::Close(database_id) => {
+                lifecycle::close_database(shared, open, database_id);
+                continue;
+            }
             Turn::Maintenance => continue,
             Turn::Stop => break,
         };
@@ -198,7 +163,7 @@ pub(super) fn run(shared: &Shared, open: &mut HashMap<u64, OpenConnection>) {
             connection.last_used = Instant::now();
             let result = super::execution::run(
                 &mut connection.connection,
-                command.job.as_mut(),
+                &mut command.job,
                 shared.config.turn_budget,
                 shared.durable,
             );
@@ -217,6 +182,7 @@ pub(super) fn run(shared: &Shared, open: &mut HashMap<u64, OpenConnection>) {
         };
         state.inflight = None;
         let mut failed_connection = None;
+        let failed = matches!(&result, Err(error) if *error != WorkerError::TransactionRejected);
         if let Err(error) = &result
             && *error != WorkerError::TransactionRejected
         {
@@ -235,17 +201,17 @@ pub(super) fn run(shared: &Shared, open: &mut HashMap<u64, OpenConnection>) {
         drop(state);
         command.job.respond(result);
         drop(failed_connection);
+        if failed {
+            lifecycle::complete(shared, database_id, Ok(()));
+        }
         shared.wake.notify_all();
     }
-    for (database_id, connection) in open.drain() {
-        if let Err(error) = connection::close(connection) {
-            fail(&mut shared.lock(), database_id, error);
-        }
-    }
+    lifecycle::close_remaining(shared, open);
 }
 
 enum Turn {
     Work(u64, Specification, Command),
+    Close(u64),
     Maintenance,
     Stop,
 }
@@ -287,6 +253,10 @@ fn next(shared: &Shared) -> Turn {
                     command,
                 );
             }
+            if state.databases[index].lifecycle.pending() {
+                state.cursor = (index + 1) % count;
+                return Turn::Close(index as u64);
+            }
         }
         if !state.accepting {
             return Turn::Stop;
@@ -302,7 +272,7 @@ fn next(shared: &Shared) -> Turn {
     }
 }
 
-fn fail(state: &mut State, database_id: u64, error: WorkerError) {
+pub(super) fn fail(state: &mut State, database_id: u64, error: WorkerError) {
     let Some(database) = usize::try_from(database_id)
         .ok()
         .and_then(|index| state.databases.get_mut(index))
@@ -341,6 +311,7 @@ pub(super) fn close_idle(shared: &Shared, open: &mut HashMap<u64, OpenConnection
             && let Err(error) = connection::close(connection)
         {
             fail(&mut shared.lock(), database_id, error);
+            lifecycle::complete(shared, database_id, Ok(()));
         }
     }
 }

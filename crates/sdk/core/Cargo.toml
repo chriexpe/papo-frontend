@@ -13,15 +13,13 @@ test-support = []
 [dependencies]
 papo-api = { path = "../api" }
 rusqlite = { version = "0.41.1", features = ["bundled", "hooks"] }
+serde = "1"
+serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 sha2 = "0.10.9"
 thiserror = "2"
 url = "2.5"
-
-[[example]]
-name = "sdk_session"
-required-features = ["test-support"]
 
 [dev-dependencies]
 papo-test-server = { path = "../test-server" }

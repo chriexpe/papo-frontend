@@ -158,6 +158,27 @@ impl Storage {
         })?)
     }
 
+    /// Return a lazy account-cache factory sharing the existing NORMAL writer and read pool.
+    /// Construct this once per Client and clone it; no account database is opened here.
+    #[must_use]
+    pub fn account_caches(&self) -> crate::account_cache::AccountCaches {
+        let register = self.shared.registrar();
+        let lease = Arc::clone(&self.registry.lease);
+        let registrar = Arc::new(
+            move |path, initializer: crate::storage_worker::Initializer| {
+                let lease = Arc::clone(&lease);
+                register(
+                    path,
+                    Arc::new(move |connection| {
+                        let _lease = &lease;
+                        initializer(connection)
+                    }),
+                )
+            },
+        );
+        crate::account_cache::AccountCaches::new(self.root.clone(), registrar, self.readers())
+    }
+
     /// Read pool shared across account databases; each batch releases its transaction.
     #[must_use]
     pub fn readers(&self) -> Arc<ReadPool> {

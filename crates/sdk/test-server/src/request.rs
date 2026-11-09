@@ -1,0 +1,147 @@
+//! Owns bounded REST/gateway-upgrade dispatch and response encoding; leaves fixture state and socket lifetime outside.
+
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full, Limited};
+use hyper::{Request, Response, body::Incoming, header};
+use tokio::sync::{Mutex, mpsc};
+
+use crate::{
+    Config,
+    auth::cookie_value,
+    gateway,
+    response::{Reply, problem},
+    server::{MAX_BODY_BYTES, State, take_step},
+};
+
+type HttpResponse = Response<Full<Bytes>>;
+
+pub(crate) async fn handle(
+    mut request: Request<Incoming>,
+    config: Arc<Config>,
+    state: Arc<Mutex<State>>,
+    upgrades: mpsc::Sender<(hyper::upgrade::OnUpgrade, String)>,
+) -> Result<HttpResponse, Infallible> {
+    let method = request.method().as_str().to_owned();
+    let path = request.uri().path().to_owned();
+    let query = request.uri().query().unwrap_or_default().to_owned();
+    let cookie = cookie_value(request.headers()).map(str::to_owned);
+    let (step, base_url) = {
+        let mut state = state.lock().await;
+        (
+            take_step(&mut state, &method, &path),
+            state.base_url.clone(),
+        )
+    };
+    let encode = |reply| encode(reply, &base_url);
+    if let Some(step) = step {
+        tokio::time::sleep(Duration::from_millis(step.delay_ms)).await;
+        if let Some(failure) = step.failure {
+            return Ok(encode(problem(failure.status, &failure.slug, &path)));
+        }
+    }
+    if method == "GET" && path == "/ws" {
+        let state = state.lock().await;
+        if !state.gateway_accepting {
+            return Ok(encode(problem(503, "unavailable", &path)));
+        }
+        let user_id = state.auth.user_id(cookie.as_deref()).map(str::to_owned);
+        let Some(user_id) = user_id else {
+            return Ok(encode(problem(401, "unauthorized", &path)));
+        };
+        if !gateway::origin_allowed(request.headers(), &config.allowed_origins) {
+            return Ok(encode(problem(403, "ws-upgrade", &path)));
+        }
+        let Ok(response) = gateway::upgrade_response(&request) else {
+            return Ok(encode(problem(400, "ws-upgrade", &path)));
+        };
+        let pending = hyper::upgrade::on(&mut request);
+        if upgrades.try_send((pending, user_id)).is_err() {
+            return Ok(encode(problem(500, "internal", &path)));
+        }
+        return Ok(response);
+    }
+    let Ok(body) = Limited::new(request.into_body(), MAX_BODY_BYTES)
+        .collect()
+        .await
+    else {
+        return Ok(encode(problem(413, "invalid-param", &path)));
+    };
+    let body = body.to_bytes();
+    let (reply, hold) = {
+        let mut state = state.lock().await;
+        let user_id = state.auth.user_id(cookie.as_deref()).map(str::to_owned);
+        let reply = if method == "POST" && path == "/messages" {
+            if user_id.is_none() {
+                problem(401, "unauthorized", &path)
+            } else {
+                state.message_body = Some(body);
+                Reply::json(201, serde_json::json!({}))
+            }
+        } else if let Some(reply) =
+            state
+                .resources
+                .handle(&config, &method, &path, &query, user_id.as_deref(), &body)
+        {
+            reply
+        } else {
+            let reply = state
+                .auth
+                .handle(&config, &method, &path, cookie.as_deref(), &body);
+            if path == "/auth/register"
+                && reply.status == 201
+                && let Some(value) = reply.body.as_ref()
+                && let (Some(id), Some(username)) =
+                    (value["id"].as_str(), value["username"].as_str())
+            {
+                state.resources.register(id, username);
+                state.presence.user_registered(id);
+            }
+            reply
+        };
+        let hold = state
+            .holds
+            .iter()
+            .position(|hold| hold.method == method && hold.path == path)
+            .map(|index| state.holds.remove(index));
+        (reply, hold)
+    };
+    if let Some(hold) = hold {
+        hold.wait().await;
+    }
+    Ok(encode(reply))
+}
+
+fn encode(mut reply: Reply, base_url: &str) -> HttpResponse {
+    if reply.problem
+        && let Some(body) = reply.body.as_mut()
+        && let Some(slug) = body["type"].as_str()
+    {
+        body["type"] = format!("{base_url}{slug}").into();
+    }
+    let has_body = reply.body.is_some();
+    let body = reply
+        .body
+        .map_or_else(Vec::new, |value| value.to_string().into_bytes());
+    let mut response = Response::new(Full::new(Bytes::from(body)));
+    *response.status_mut() = hyper::StatusCode::from_u16(reply.status)
+        .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
+    if has_body {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static(if reply.problem {
+                "application/problem+json"
+            } else {
+                "application/json"
+            }),
+        );
+    }
+    if let Some(cookie) = reply
+        .cookie
+        .and_then(|value| header::HeaderValue::from_str(&value).ok())
+    {
+        response.headers_mut().insert(header::SET_COOKIE, cookie);
+    }
+    response
+}
