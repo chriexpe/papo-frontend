@@ -1,6 +1,8 @@
 //! Owns a single gateway connection, heartbeat and decoding; leaves reconnect and generations to the SDK.
 
+mod command;
 mod known;
+pub use command::{Command, TrackKind};
 use futures_util::{SinkExt, StreamExt};
 pub use known::*;
 use std::time::Duration;
@@ -92,6 +94,12 @@ pub enum Error {
     /// An application heartbeat was not acknowledged before the next deadline.
     #[error("gateway heartbeat timed out")]
     HeartbeatTimeout,
+    /// A required command field is empty.
+    #[error("invalid gateway command")]
+    InvalidCommand,
+    /// A command could not be encoded as JSON.
+    #[error("gateway command encoding failed")]
+    Encode,
 }
 
 impl Event {
@@ -200,6 +208,24 @@ impl Gateway {
             awaiting_ack: false,
             ended: false,
         })
+    }
+
+    /// Writes a command on this connection without waiting for server acceptance.
+    ///
+    /// Callers must continue polling `next` to receive errors and service heartbeats.
+    /// An explicit heartbeat may produce an acknowledgement indistinguishable from
+    /// the gateway's scheduled heartbeat acknowledgement.
+    /// # Errors
+    /// Returns an invalid-command, encoding or sanitized transport failure.
+    pub async fn send(&mut self, command: &Command) -> Result<(), Error> {
+        let text = command.encode()?;
+        if self.ended {
+            return Err(Error::Transport);
+        }
+        self.socket
+            .send(Message::text(text))
+            .await
+            .map_err(|_| Error::Transport)
     }
 
     /// Reads the next event while sending application heartbeats and responding to protocol pings.

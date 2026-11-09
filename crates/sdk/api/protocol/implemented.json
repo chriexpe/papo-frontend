@@ -1,4 +1,23 @@
 {
+  "/health": {
+    "get": {
+      "tags": [
+        "Health"
+      ],
+      "summary": "Health check",
+      "security": [],
+      "responses": {
+        "200": {
+          "description": "Servidor no ar",
+          "content": {
+            "text/plain": {
+              "example": "OK"
+            }
+          }
+        }
+      }
+    }
+  },
   "/auth/register": {
     "post": {
       "tags": [
@@ -372,6 +391,1272 @@
       }
     }
   },
+  "/users": {
+    "get": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Lista usuários (Limite de 100 por requisição, use cursor com since + last_id para paginar)",
+      "parameters": [
+        {
+          "name": "since",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": "Timestamp ISO 8601 (polling de novos usuários)"
+        },
+        {
+          "name": "last_id",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "ID do último usuário da página anterior (cursor exato usado com since)"
+        },
+        {
+          "name": "order",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "default": "asc"
+          },
+          "description": "Direção da paginação e ordenação; has_more se refere a esta direção"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Lista de usuários",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "users": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/UserSummary"
+                    }
+                  },
+                  "has_more": {
+                    "type": "boolean",
+                    "description": "Indica se há mais itens na direção solicitada por order"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/profile": {
+    "get": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Perfil do usuário (com avatar); qualquer usuário autenticado pode consultar",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Perfil do usuário",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserProfile"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/profile_batch": {
+    "post": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Perfis em lote (mesma forma do profile; máx. 50 ids; ids inexistentes são pulados)",
+      "description": "Retorna os perfis dos usuários solicitados, na ordem da requisição,\npulando ids que não existem. Ids duplicados são considerados uma única\nvez. Máximo de 50 ids por requisição.\n",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProfileBatchRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Perfis dos usuários encontrados (na ordem da requisição)",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "profiles": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/UserProfile"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido (ids ausente/vazio, id vazio ou mais de 50 ids)",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/user_summary_batch": {
+    "post": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "UserSummary em lote (máx. 1000 ids)",
+      "description": "Retorna um array de UserSummary na ordem dos ids informados.\nIds inexistentes são pulados e ids duplicados aparecem apenas na\nprimeira ocorrência.\n",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UserSummaryBatchRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Resumos dos usuários encontrados",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/UserSummary"
+                }
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "ids vazio, com item vazio ou acima de 1000 itens",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/blocks": {
+    "get": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Lista usuários bloqueados pelo usuário autenticado",
+      "responses": {
+        "200": {
+          "description": "Usuários bloqueados",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "users"
+                ],
+                "properties": {
+                  "users": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/UserSummary"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/block": {
+    "post": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Bloqueia um usuário para mensagens diretas",
+      "description": "Idempotente. O bloqueio vale nas duas direções para DM e não afeta mensagens em canais públicos.",
+      "responses": {
+        "204": {
+          "description": "Usuário bloqueado"
+        },
+        "400": {
+          "description": "Não é permitido bloquear a si mesmo",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "delete": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Desbloqueia um usuário",
+      "description": "Idempotente. Desbloquear não reabre automaticamente uma DM fechada.",
+      "responses": {
+        "204": {
+          "description": "Usuário desbloqueado"
+        },
+        "400": {
+          "description": "user_id inválido ou igual ao usuário autenticado",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/settings": {
+    "put": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Atualiza as configurações do usuário autenticado",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/UserConfig"
+                }
+              }
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Configurações atualizadas",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserSettings"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}": {
+    "put": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Atualiza nickname, status, description e typing (somente o próprio usuário)",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UpdateUserRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Perfil atualizado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenericResponse"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/avatar": {
+    "get": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Serve a imagem do avatar do usuário (público, sem autenticação; consumido pelo bot bridge)",
+      "security": [],
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Bytes do avatar (Content-Type do MIME registrado; Cache-Control public, max-age=3600)",
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/gif": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        }
+      }
+    },
+    "put": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Atualiza o avatar (base64, GIF/JPEG/JPG/PNG/WEBP, máx. 2MB, 512px)",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UpdateAvatarRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Avatar atualizado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenericResponse"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Avatar inválido (base64 de GIF/JPEG/JPG/PNG/WEBP até 2MB)",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/banner": {
+    "put": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Atualiza o banner (base64, GIF/JPEG/JPG/PNG/WEBP, máx. 2MB, 512px); corpo vazio remove o banner",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UpdateBannerRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Banner atualizado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenericResponse"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Banner inválido (base64 de GIF/JPEG/JPG/PNG/WEBP até 2MB)",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/status": {
+    "put": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Atualiza o status persistido (away/busy; null remove)",
+      "description": "O status vale enquanto o usuário estiver online (disponibilizado via presence_update/presence_sync); offline, o status persistido vale na próxima conexão.\n",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UpdateStatusRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Status atualizado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenericResponse"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Status inválido (deve ser away, busy ou null)",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/password": {
+    "put": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Altera a própria senha e reinicia a flag de reset de senha",
+      "description": "Senha precisa ter no mínimo 8 caracteres, 1 letra maíscula + 1 caractere especial",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ChangePasswordRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Senha atualizada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenericResponse"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/ban": {
+    "put": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Bane ou desbane um usuário (banimento global)",
+      "description": "Permission Check: dono de um servidor ou `manage_server`.\nAo banir (`ban_state: true`), todas as sessões do usuário são\nrevogadas imediatamente e suas conexões WebSocket são encerradas.\nCookies de sessão remanescentes são rejeitados e expirados na próxima\nrequisição autenticada. O usuário banido não pode realizar novo login.\nDesbanir não reativa sessões antigas; é necessário autenticar novamente.\n",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BanUserRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Estado de banimento alterado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenericResponse"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/reset": {
+    "post": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Prepara troca de senha ou gera link administrativo",
+      "description": "Para o próprio usuário, marca `reset_password=true` para permitir a\ntroca autenticada em `PUT /users/{user_id}/password`.\nPara outro usuário, exige dono do servidor (role `manage_server`\nnão autoriza) e gera um token aleatório de uso único; somente o\nSHA-256 é persistido.\nUm novo link administrativo invalida links anteriores do usuário.\n",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Flag de reset preparada (self) ou link administrativo gerado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/GenericResponse"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PasswordResetLinkResponse"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/me/push-device": {
+    "put": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Registra ou atualiza o dispositivo de push do usuário autenticado",
+      "description": "Upsert do dispositivo de push do usuário autenticado (cookie `Auth`).\nO `user_id` nunca vem do cliente. `platform` deve ser `android` ou\n`ios`; `provider` é opcional (padrão `fcm`).\n",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PushDeviceRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "204": {
+          "$ref": "#/components/responses/NoContent"
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "delete": {
+      "tags": [
+        "Users"
+      ],
+      "summary": "Remove o dispositivo de push do usuário autenticado por token",
+      "description": "Remove o dispositivo de push do usuário autenticado (cookie `Auth`)\nidentificado pelo `token` no corpo da requisição.\n",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PushDeviceRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "204": {
+          "$ref": "#/components/responses/NoContent"
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/roles": {
+    "post": {
+      "tags": [
+        "UserRoles"
+      ],
+      "summary": "Atribui role a um usuário",
+      "description": "Permission Check: `manage_roles`",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AssignRoleRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "201": {
+          "description": "Role atribuída",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserRole"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/roles/{role_id}": {
+    "delete": {
+      "tags": [
+        "UserRoles"
+      ],
+      "summary": "Remove role de um usuário",
+      "description": "Permission Check: `manage_roles`",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        },
+        {
+          "$ref": "#/components/parameters/RoleId"
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": "Role removida"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/notifications": {
+    "get": {
+      "tags": [
+        "Notifications"
+      ],
+      "summary": "Lista as notificações do usuário (Limite de 100; paginação por since + last_id; order asc/desc)",
+      "description": "Permission Check: somente o próprio usuário (user_id autenticado)",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        },
+        {
+          "name": "since",
+          "in": "query",
+          "required": false,
+          "description": "Timestamp ISO 8601 para polling de novas notificações",
+          "schema": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        {
+          "name": "last_id",
+          "in": "query",
+          "required": false,
+          "description": "Id da última notificação da página anterior; usado com since como cursor exato (created_at, id)",
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "order",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "default": "desc"
+          },
+          "description": "Direção da paginação e ordenação; has_more se refere a esta direção"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Notificações do usuário",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationList"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/users/{user_id}/read_notification": {
+    "put": {
+      "tags": [
+        "Notifications"
+      ],
+      "summary": "Marca notificações do usuário como lidas (1 a 1000 ids)",
+      "description": "Permission Check: somente o próprio usuário (user_id autenticado)",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MarkNotificationsReadRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Notificações marcadas como lidas",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkNotificationsReadResponse"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/dms": {
+    "get": {
+      "tags": [
+        "DirectMessages"
+      ],
+      "summary": "Lista DMs visíveis do usuário autenticado",
+      "description": "DMs fechadas na rail e DMs com bloqueio ativo não são retornadas.",
+      "responses": {
+        "200": {
+          "description": "Lista de mensagens diretas",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectConversationList"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "post": {
+      "tags": [
+        "DirectMessages"
+      ],
+      "summary": "Abre ou cria uma DM com outro usuário",
+      "description": "Idempotente por par de usuários. Reabre a DM para o solicitante quando ela já existe.",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/OpenDirectMessageRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "DM existente reaberta",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectConversation"
+              }
+            }
+          }
+        },
+        "201": {
+          "description": "DM criada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectConversation"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "user_id inválido ou igual ao usuário autenticado",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "403": {
+          "description": "Existe bloqueio entre os usuários (type dm-blocked)",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/dms/{dm_id}": {
+    "get": {
+      "tags": [
+        "DirectMessages"
+      ],
+      "summary": "Obtém uma DM do usuário autenticado",
+      "responses": {
+        "200": {
+          "description": "Mensagem direta",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectConversation"
+              }
+            }
+          }
+        },
+        "403": {
+          "description": "Existe bloqueio entre os participantes (type dm-blocked)",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "delete": {
+      "tags": [
+        "DirectMessages"
+      ],
+      "summary": "Fecha uma DM na rail do usuário",
+      "description": "Não apaga histórico. Uma nova mensagem válida faz a conversa reaparecer.",
+      "responses": {
+        "204": {
+          "description": "DM fechada"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
   "/server": {
     "get": {
       "tags": [
@@ -447,6 +1732,297 @@
               }
             }
           }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "put": {
+      "tags": [
+        "Servers"
+      ],
+      "summary": "Substitui os campos mutáveis do servidor",
+      "description": "Permission Check: dono do servidor ou `manage_server`. Todos os campos mutáveis são obrigatórios.",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ReplaceServerRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Servidor atualizado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Server"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "patch": {
+      "tags": [
+        "Servers"
+      ],
+      "summary": "Atualiza parcialmente o servidor",
+      "description": "Permission Check: dono do servidor ou `manage_server`. Campos ausentes preservam os valores atuais.",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PatchServerRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Servidor atualizado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Server"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/roles": {
+    "get": {
+      "tags": [
+        "Roles"
+      ],
+      "summary": "Lista roles",
+      "responses": {
+        "200": {
+          "description": "Lista de roles",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "roles": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Role"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "post": {
+      "tags": [
+        "Roles"
+      ],
+      "summary": "Cria role",
+      "description": "Permission Check: `manage_roles`",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CreateRoleRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "201": {
+          "description": "Role criada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Role"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "409": {
+          "description": "Nome de role já existe",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/roles/{role_id}": {
+    "put": {
+      "tags": [
+        "Roles"
+      ],
+      "summary": "Atualiza role",
+      "description": "Permission Check: `manage_roles`",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RoleId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UpdateRoleRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Role atualizada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Role"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "409": {
+          "description": "Nome de role já existe",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "delete": {
+      "tags": [
+        "Roles"
+      ],
+      "summary": "Exclui role",
+      "description": "Permission Check: `manage_roles`",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RoleId"
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": "Role excluída"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
         },
         "500": {
           "$ref": "#/components/responses/InternalError"
@@ -635,6 +2211,375 @@
         },
         "404": {
           "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/channels/{channel_id}/change_position": {
+    "put": {
+      "tags": [
+        "Channels"
+      ],
+      "summary": "Altera a posição do canal",
+      "description": "Permission Check: `manage_channels`",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ChangeChannelPositionRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Posição atualizada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Channel"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "409": {
+          "description": "Posição do canal desatualizada",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/channels/{channel_id}/permissions": {
+    "get": {
+      "tags": [
+        "Channels"
+      ],
+      "summary": "Lê permissões do canal por role",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Permissões do canal",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelPermissionsResponse"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/channels/{channel_id}/permissions/{role_id}": {
+    "put": {
+      "tags": [
+        "Channels"
+      ],
+      "summary": "Altera permissões de uma role no canal",
+      "description": "Permission Check: `manage_channels`",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        },
+        {
+          "$ref": "#/components/parameters/RoleId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UpdateChannelPermissionsRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Permissões atualizadas",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "channel_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "role_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "permissions": {
+                    "$ref": "#/components/schemas/ChannelPermissions"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/channels/{channel_id}/role/{role_id}": {
+    "delete": {
+      "tags": [
+        "Channels"
+      ],
+      "summary": "Remove o vínculo de permissões de uma role com o canal",
+      "description": "Permission Check: `manage_channels`. Não remove a role; remove apenas sua entrada em channel.permissions.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        },
+        {
+          "$ref": "#/components/parameters/RoleId"
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": "Vínculo removido; também é idempotente se a role já não estiver vinculada"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "description": "Canal ou role inexistente",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/channels/{channel_id}/user/{user_id}/settings": {
+    "post": {
+      "tags": [
+        "Notifications"
+      ],
+      "summary": "Define a configuração de notificação do usuário no canal",
+      "description": "Permission Check: somente o próprio usuário (user_id autenticado)",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        },
+        {
+          "$ref": "#/components/parameters/UserId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UpdateChannelUserSettingRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Configuração atualizada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelUserSetting"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/channels/{channel_id}/read": {
+    "put": {
+      "tags": [
+        "Notifications"
+      ],
+      "summary": "Registra a leitura do canal pelo usuário até uma mensagem",
+      "description": "Permission Check: usuário com permissão de leitura no canal (read_channel; canal aberto ou role com a permissão; dono do servidor bypassa). Avança o last_read do usuário somente para frente e marca como lidas as notificações do usuário nesse canal até a mensagem informada. Listar mensagens NÃO avança o last_read; este endpoint é o ponto de registro do read (chamado quando o usuário alcança a mensagem mais nova do canal).\n",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "message_id"
+              ],
+              "properties": {
+                "message_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Mensagem até a qual o canal foi lido (deve pertencer ao canal)"
+                }
+              }
+            }
+          }
+        }
+      },
+      "responses": {
+        "204": {
+          "description": "Leitura registrada"
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/voice/ice-servers": {
+    "get": {
+      "tags": [
+        "Voice"
+      ],
+      "summary": "Servidores ICE (STUN/TURN) do usuário",
+      "description": "Retorna a lista de servidores ICE do usuário autenticado, no mesmo shape de RTCIceServer do browser (passar direto para new RTCPeerConnection({ iceServers })). Quando TURN REST está configurado, as credenciais são efêmeras e compatíveis com coturn (username com expiração + Base64 HMAC-SHA1).\n",
+      "responses": {
+        "200": {
+          "description": "Servidores ICE",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ICEServersResponse"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
         },
         "500": {
           "$ref": "#/components/responses/InternalError"
@@ -875,6 +2820,1453 @@
       }
     }
   },
+  "/channels/{channel_id}/messages/{message_id}/pin": {
+    "post": {
+      "tags": [
+        "Messages"
+      ],
+      "summary": "Fixa mensagem no canal",
+      "description": "Permission Check: `pin_message` (dono do servidor ou role com a permissão). Idempotente: fixar uma mensagem já pinada retorna 200. Limite de 100 mensagens pinadas por canal.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        },
+        {
+          "$ref": "#/components/parameters/MessageId"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Mensagem já estava pinada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinnedMessage"
+              }
+            }
+          }
+        },
+        "201": {
+          "description": "Mensagem fixada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinnedMessage"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Parâmetro ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "409": {
+          "description": "Limite de 100 mensagens pinadas atingido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "delete": {
+      "tags": [
+        "Messages"
+      ],
+      "summary": "Remove a fixação da mensagem no canal",
+      "description": "Permission Check: `read_channel` do canal e `pin_message` (dono do servidor ou role com a permissão). Não é idempotente: mensagem não pinada retorna 404.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        },
+        {
+          "$ref": "#/components/parameters/MessageId"
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": "Fixação removida"
+        },
+        "400": {
+          "description": "Parâmetro ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/channels/{channel_id}/pinned": {
+    "get": {
+      "tags": [
+        "Messages"
+      ],
+      "summary": "Lista as mensagens pinadas do canal",
+      "description": "Permission Check: `read_channel` do canal. Retorna as mensagens pinadas com attachments, embeds, thumbnails e reações, na ordem em que foram fixadas (pinned_at crescente).",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Mensagens pinadas",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinnedMessageList"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Parâmetro ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/channels/{channel_id}/messages/{message_id}/reactions": {
+    "get": {
+      "tags": [
+        "Messages"
+      ],
+      "summary": "Lista reações da mensagem com os usuários que reagiram (Limite de 100; order asc/desc)",
+      "description": "Permission Check: `read_channel` do canal. Resposta agrupada por tipo de emoji e ordenada por (created_at, id) conforme order. O cursor da próxima página é o par (created_at, id) da última reação da página. `count` é o número de usuários do grupo na página retornada.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        },
+        {
+          "$ref": "#/components/parameters/MessageId"
+        },
+        {
+          "name": "since",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": "Timestamp ISO 8601 (criado após)"
+        },
+        {
+          "name": "last_id",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "ID da última reação da página anterior (cursor exato usado com since)"
+        },
+        {
+          "name": "order",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "default": "desc"
+          },
+          "description": "Direção da paginação e ordenação; has_more se refere a esta direção"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Reações da mensagem",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageReactionList"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "description": "Mensagem não pertence ao canal ou canal não existe",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "post": {
+      "tags": [
+        "Messages"
+      ],
+      "summary": "Adiciona reação do usuário autenticado à mensagem",
+      "description": "Permission Check: `send_messages` do canal. Corpo: exatamente um de `emoji_id` (emoji custom do banco) ou `unicode` (emoji unicode, máx 16 caracteres). Idempotente: reagir de novo com o mesmo emoji retorna 200. Limite de 20 tipos de reação por mensagem.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        },
+        {
+          "$ref": "#/components/parameters/MessageId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ReactionRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Usuário já havia reagido com este emoji",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageReaction"
+              }
+            }
+          }
+        },
+        "201": {
+          "description": "Reação adicionada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageReaction"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Ambos ou nenhum de emoji_id/unicode informados, ou unicode inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "description": "Mensagem não pertence ao canal, canal não existe ou emoji não existe",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "409": {
+          "description": "Limite de 20 tipos de reação por mensagem atingido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "delete": {
+      "tags": [
+        "Messages"
+      ],
+      "summary": "Remove a própria reação do usuário autenticado da mensagem",
+      "description": "Permission Check: `read_channel` do canal. Corpo: exatamente um de `emoji_id` ou `unicode`.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ChannelId"
+        },
+        {
+          "$ref": "#/components/parameters/MessageId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ReactionRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "204": {
+          "description": "Reação removida"
+        },
+        "400": {
+          "description": "Ambos ou nenhum de emoji_id/unicode informados, ou unicode inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "description": "Mensagem não pertence ao canal, canal não existe, emoji não existe ou usuário não reagiu com este emoji",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/emojis": {
+    "get": {
+      "tags": [
+        "Emojis"
+      ],
+      "summary": "Lista emojis (Limite de 25 por requisição, use cursor com since + last_id para paginar)",
+      "parameters": [
+        {
+          "name": "since",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": "Timestamp ISO 8601 (paginação por created_at)"
+        },
+        {
+          "name": "last_id",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "ID do último emoji da página anterior (cursor exato usado com since)"
+        },
+        {
+          "name": "order",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "default": "asc"
+          },
+          "description": "Direção da paginação e ordenação; has_more se refere a esta direção"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Lista de emojis",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "emojis": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Emoji"
+                    }
+                  },
+                  "has_more": {
+                    "type": "boolean",
+                    "description": "Indica se há mais itens na direção solicitada por order"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "post": {
+      "tags": [
+        "Emojis"
+      ],
+      "summary": "Cria emoji (GIF/JPEG/JPG/PNG/WEBP, máx. 256kb, 512px)",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CreateEmojiRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "201": {
+          "description": "Emoji criado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Emoji"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Campo ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "409": {
+          "description": "Nome de emoji já existe ou limite de emojis atingido (500)",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/emojis/{emoji_id}": {
+    "delete": {
+      "tags": [
+        "Emojis"
+      ],
+      "summary": "Remove emoji",
+      "description": "Permission Check: Author ou `manage_server`",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/EmojiId"
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": "Emoji removido"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/attachments/{file_id}": {
+    "get": {
+      "tags": [
+        "Attachments"
+      ],
+      "summary": "Download de arquivo",
+      "description": "Permission Check: `read_channel` do canal da mensagem que possui o attachment",
+      "parameters": [
+        {
+          "name": "file_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Arquivo binário (Content-Type = mime type do arquivo)",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "206": {
+          "description": "Parte do arquivo (Range request; Content-Range indica o intervalo atendido)",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "416": {
+          "description": "Intervalo fora do alcance do arquivo (Range não satisfatível)"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/attachments/{file_id}/thumbnail": {
+    "get": {
+      "tags": [
+        "Attachments"
+      ],
+      "summary": "Download da thumbnail do arquivo",
+      "description": "Thumbnail gerada no upload (WebP para imagens estáticas, GIF para GIFs animados). Permission Check: `read_channel` do canal da mensagem que possui o attachment (mesmo check do download original).\n",
+      "parameters": [
+        {
+          "name": "file_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Thumbnail binária (Content-Type = image/webp ou image/gif, Content-Disposition: inline)",
+          "content": {
+            "image/webp": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/media/{sha_hash}": {
+    "get": {
+      "tags": [
+        "Media"
+      ],
+      "summary": "Download de mídia content-addressable (banner, avatar, ícone, ...)",
+      "description": "O sha_hash é unguessable (sha256 do conteúdo); autenticação suficiente, sem check de permissão",
+      "parameters": [
+        {
+          "name": "sha_hash",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "description": "sha256 (hex) da mídia"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Arquivo binário (Content-Type = mime type da mídia, Content-Disposition: inline)",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "206": {
+          "description": "Parte do arquivo (Range request; Content-Range indica o intervalo atendido)",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "416": {
+          "description": "Intervalo fora do alcance do arquivo (Range não satisfatível)"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/embeds/{embed_id}": {
+    "get": {
+      "tags": [
+        "Embeds"
+      ],
+      "summary": "Embed (dados + imagem em base64)",
+      "description": "Dados do embed com a imagem da thumbnail embutida em base64 (image_data). Embed de link (source_type='link') é o preview automático obtido por OpenGraph/oEmbed e reutilizado pelo cache por URL; embed customizado (source_type='custom') pertence à mensagem que o enviou.\nPermission Check: `read_channel` do canal da mensagem à qual o embed está vinculado (embed sem vínculo acessível → 404). Embed sem imagem é acessível (image_data nulo).\n",
+      "parameters": [
+        {
+          "name": "embed_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Embed em JSON com image_data (base64) quando existe",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedWithImage"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/embeds/{embed_id}/video": {
+    "get": {
+      "tags": [
+        "Embeds"
+      ],
+      "summary": "Relay autenticado do vídeo do embed",
+      "description": "Serve o vídeo direto do embed (video.url) por relay do backend, em vez de expor a URL original ao cliente (sem hotlink no CDN de origem). Suporta `Range` (seek/playback). Somente vídeo HTTPS com MIME de vídeo permitido é servido; embed sem vídeo, com tipo não permitido ou com redirect que termine fora de HTTPS → 404 (não vaza existência).\nO relay serve apenas arquivos de vídeo: um embed cujo `video.url` é a página de iframe allowlistada do provedor (YouTube, sem mime_type) não é servido aqui (404) — o cliente renderiza o iframe dessa URL.\nPermission Check: `read_channel` do canal da mensagem à qual o embed está vinculado.\n",
+      "parameters": [
+        {
+          "name": "embed_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Vídeo binário (Content-Type = mime type do vídeo)",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "206": {
+          "description": "Parte do vídeo (Range request; Content-Range indica o intervalo atendido)",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "502": {
+          "description": "Mídia indisponível (falha ao buscar o vídeo na origem)",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/search": {
+    "post": {
+      "tags": [
+        "Search"
+      ],
+      "summary": "Busca com diversos parâmetros (Limite de 100 por requisição, use cursor com since + last_id para paginar)",
+      "description": "Os resultados são limitados a canais legíveis pelo usuário autenticado\n(dono do servidor, canais abertos sem permissões definidas ou canais\nem que uma das suas roles tem read_channel).\n",
+      "parameters": [
+        {
+          "name": "since",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": "Timestamp ISO 8601 (paginação por created_at)"
+        },
+        {
+          "name": "last_id",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "ID do último resultado da página anterior (cursor exato usado com since)"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SearchRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Resultados da busca",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchResponse"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Termo de busca ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/admin/audit-logs": {
+    "get": {
+      "tags": [
+        "Admin"
+      ],
+      "summary": "Lista os logs de auditoria (Limite de 100 por requisição, use cursor com since + last_id para paginar)",
+      "description": "Retorna os eventos auditáveis na direção definida por order. Requer a permissão `manage_server` (dono do servidor ou role\ncom a permissão). Os filtros opcionais podem ser combinados.\n",
+      "parameters": [
+        {
+          "name": "action",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string"
+          },
+          "description": "Filtra por ação (ex.: user.ban, message.delete, role.create)"
+        },
+        {
+          "name": "actor_id",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Filtra por quem executou a ação"
+        },
+        {
+          "name": "entity_type",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string"
+          },
+          "description": "Filtra por tipo de entidade (user, server, channel, message, attachment, role, user_role, emoji)"
+        },
+        {
+          "name": "since",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": "Timestamp ISO 8601 (created_at >= since)"
+        },
+        {
+          "name": "until",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": "Timestamp ISO 8601 (created_at <= until)"
+        },
+        {
+          "name": "last_id",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "ID do último log da página anterior (cursor exato usado com since)"
+        },
+        {
+          "name": "order",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "default": "desc"
+          },
+          "description": "Direção da paginação e ordenação; has_more se refere a esta direção"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Logs de auditoria",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditLogList"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Parâmetro inválido (since/until fora do formato ISO 8601)",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/webhooks": {
+    "get": {
+      "tags": [
+        "Webhooks"
+      ],
+      "summary": "Lista webhooks ativos",
+      "description": "Permission Check: `manage_webhooks`",
+      "responses": {
+        "200": {
+          "description": "Webhooks não revogados de todos os canais",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "webhooks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Webhook"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "post": {
+      "tags": [
+        "Webhooks"
+      ],
+      "summary": "Cria webhook",
+      "description": "Permission Check: `manage_webhooks`",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CreateWebhookRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "201": {
+          "description": "Webhook criado. O campo `token` é retornado somente aqui (única vez em que existe em texto puro; a tabela guarda apenas o hash).\n",
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Webhook"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "token": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Nome ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/webhooks/{webhook_id}": {
+    "patch": {
+      "tags": [
+        "Webhooks"
+      ],
+      "summary": "Atualiza identidade persistente do webhook (nickname/avatar)",
+      "description": "Permission Check: `manage_webhooks`. Campos ausentes preservam o valor atual; `avatar` vazio remove o avatar; `display_name` vazio remove o nickname (volta a usar o name).",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WebhookId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UpdateWebhookIdentityRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Webhook atualizado",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Webhook"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Nickname ou avatar inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "delete": {
+      "tags": [
+        "Webhooks"
+      ],
+      "summary": "Revoga webhook (soft delete)",
+      "description": "Permission Check: `manage_webhooks`. O token deixa de autenticar; mensagens já enviadas mantêm a atribuição.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WebhookId"
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": "Webhook revogado"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/webhooks/{webhook_id}/avatar": {
+    "get": {
+      "tags": [
+        "Webhooks"
+      ],
+      "summary": "Avatar persistente do webhook",
+      "security": [],
+      "description": "Público (sem cookie): serve a imagem do avatar do webhook, como GET /users/{user_id}/avatar. 404 quando o webhook não tem avatar.\n",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WebhookId"
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Imagem do avatar",
+          "content": {
+            "image/png": {},
+            "image/jpeg": {},
+            "image/gif": {},
+            "image/webp": {}
+          }
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/webhooks/{webhook_id}/messages": {
+    "post": {
+      "tags": [
+        "Webhooks"
+      ],
+      "summary": "Envia mensagem via webhook",
+      "security": [],
+      "description": "Autenticação: header `Authorization: Bearer <token>` do webhook (nunca\ncookie de sessão). Mesma validação/attachments/embeds de POST /messages.\n`external_message_id` é a chave de idempotência opcional: retry com a\nmesma chave devolve 200 com a mensagem existente (sem duplicar).\n`external_author` (JSON) sobrescreve a identidade persistente do\nwebhook somente nesta mensagem.\n",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WebhookId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "multipart/form-data": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "external_message_id": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "external_author": {
+                  "type": "string",
+                  "description": "JSON de ExternalAuthor (autoria temporária)"
+                },
+                "reply_to": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "embeds": {
+                  "type": "string",
+                  "description": "JSON array de embeds customizados"
+                },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "responses": {
+        "201": {
+          "description": "Mensagem criada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Message"
+              }
+            }
+          }
+        },
+        "200": {
+          "description": "Retry idempotente (mensagem existente, mesmo shape da criação)",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Message"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Corpo não-multipart, external_author/embeds inválidos ou limite excedido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "description": "Token de webhook ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/webhooks/{webhook_id}/messages/{message_id}": {
+    "put": {
+      "tags": [
+        "Webhooks"
+      ],
+      "summary": "Edita mensagem enviada pelo webhook",
+      "security": [],
+      "description": "Autenticação: `Authorization: Bearer <token>`. Somente o webhook autor da mensagem pode editá-la.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WebhookId"
+        },
+        {
+          "$ref": "#/components/parameters/MessageId"
+        }
+      ],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UpdateMessageRequest"
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Mensagem editada",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Message"
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Corpo inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "401": {
+          "description": "Token de webhook ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    },
+    "delete": {
+      "tags": [
+        "Webhooks"
+      ],
+      "summary": "Remove mensagem enviada pelo webhook",
+      "security": [],
+      "description": "Autenticação: `Authorization: Bearer <token>`. Somente o webhook autor da mensagem pode excluí-la.",
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WebhookId"
+        },
+        {
+          "$ref": "#/components/parameters/MessageId"
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": "Mensagem removida"
+        },
+        "401": {
+          "description": "Token de webhook ausente ou inválido",
+          "content": {
+            "application/problem+json": {
+              "schema": {
+                "$ref": "#/components/schemas/Error"
+              }
+            }
+          }
+        },
+        "403": {
+          "$ref": "#/components/responses/Forbidden"
+        },
+        "404": {
+          "$ref": "#/components/responses/NotFound"
+        },
+        "500": {
+          "$ref": "#/components/responses/InternalError"
+        }
+      }
+    }
+  },
+  "/ws": {
+    "get": {
+      "tags": [
+        "WebSocket"
+      ],
+      "summary": "WebSocket (handshake com o mesmo cookie Auth)",
+      "description": "Endpoint WebSocket: `ws://localhost:8080/ws`. O JWT do cookie `Auth`\né validado no handshake. Eventos (conforme `websocket/events.go` e `webrtc/events.go`):\n\n\nSemântica de conexão dos eventos de voz:\n`voice_join` vincula o Peer WebRTC à conexão WebSocket que enviou o evento.\nOs eventos de sinalização e controle dessa call devem ser enviados pela mesma conexão WebSocket.\n`voice_answer`, `voice_offer` outbound, `voice_ice_candidate` outbound e erros de sinalização são enviados somente para a conexão dona da call, não para todas as abas/dispositivos do mesmo usuário.\nSe a conexão WebSocket dona da call fechar, o Peer é removido mesmo que o mesmo usuário possua outra conexão WebSocket aberta.\n\n| Event            | Direction | Payload                                                                           |\n| ---------        | --------- | ---------------------------------------------------------------------             |\n| `message`        | outbound  | `{ type: \"message\", id, channel_id, author_id, webhook_id?, external_author?, content, reply_to?, attachments?, created_at }` (reply_to: null quando não é resposta; sem reactions/embeds/user_reactions; webhook_id/external_author presentes somente em mensagens de webhook) |\n| `message_edit`   | outbound  | `{ type: \"message_edit\", id, channel_id, content, edited_at }`                          |\n| `message_delete` | outbound  | `{ type: \"message_delete\", id, channel_id }`                                            |\n| `attachment_moderation_update` | outbound  | `{ type: \"attachment_moderation_update\", channel_id, message_id, attachment_id, status }` (status: sensitive; o blocked exclui a mensagem e chega como `message_delete`) |\n| `message_pin`    | outbound  | `{ type: \"message_pin\", message_id, is_pinned }` (is_pinned: true quando a mensagem foi pinada, false quando a fixação foi removida) |\n| `react_update`   | outbound  | `{ type: \"react_update\", message_id, emoji_id, unicode, count }` (emoji_id/unicode: um é null; count = usuários que reagiram com aquele emoji, 0 quando a última foi removida) |\n| `message_embeds_update` | outbound | `{ type: \"message_embeds_update\", channel_id, message_id, embeds }` (embeds: lista ATUAL de embeds da mensagem, mesma forma do campo `embeds` de `GET /channels/{channel_id}/messages`; metadados apenas, sem `image_data` — a mídia é buscada sob demanda por `GET /embeds/{embed_id}` e `GET /embeds/{embed_id}/video`. Um evento por mensagem, distribuído aos leitores do canal após o crawl em background (criação/edição), após a substituição de embeds na edição (lista vazia quando todos foram removidos) ou quando um embed compartilhado é refetchado por expiração de cache) |\n| `new_notification` | unicast  | `{ type: \"new_notification\", id, user_id, message_id, message_content }` (id: row de notificação ou UUID efêmero quando a configuração all gera evento sem row; user_id: autor da mensagem; message_content: truncado a 512 caracteres) |\n| `channel_create` | outbound  | `{ type: \"channel_create\", channel_id, name, channel_type, position, topic? }` (topic: null para canais category) |\n| `channel_update` | outbound  | `{ type: \"channel_update\", channel_id, name, position, topic? }`                               |\n| `channel_delete` | outbound  | `{ type: \"channel_delete\", channel_id }`                                               |\n| `typing`         | inbound   | `{ type: \"typing\", channel_id }`                                                        |\n| `typing`         | outbound  | `{ type: \"typing\", channel_id, user_id, is_typing }`                                    |\n| `avatar_update`  | outbound  | `{ type: \"avatar_update\", user_id }`                                                    |\n| `user_join`      | outbound  | `{ type: \"user_join\", user_id }`                                                        |\n| `role_add`       | outbound  | `{ type: \"role_add\", user_id, role_id }` (role atribuída ao usuário)                     |\n| `role_remove`    | outbound  | `{ type: \"role_remove\", user_id, role_id }` (role removida do usuário)                   |\n| `dm_update`      | unicast   | `{ type: \"dm_update\", dm: DirectConversation }` (estado por usuário; usado para inserir/atualizar a DM na rail) |\n| `presence_update`| outbound  | `{ type: \"presence_update\", user_id, status, status_message, typing, nickname }` (status: online/offline/away/busy) |\n| `presence_sync`  | unicast   | `{ type: \"presence_sync\", members: (user_id, status, status_message, user_voice: channel_id[])[] }` (status: online/offline/away/busy; user_voice lista os canais de voz atuais; enviado na conexão; sem nickname) |\n| `presence_activity` | inbound | `{ type: \"presence_activity\" }` (atividade real do usuário; alimenta o away automático efêmero e não persiste estado) |\n| `heartbeat`      | inbound   | `{ type: \"heartbeat\" }`                                                                 |\n| `heartbeat_ack`  | outbound  | `{ type: \"heartbeat_ack\" }`                                                             |\n| `error`          | outbound  | `{ type: \"error\", message, code? }`                                                     |\n| `voice_join`     | inbound   | `{ type: \"voice_join\", channel_id }`                                                    |\n| `voice_leave` | outbound | `{ type: \"voice_leave\", channel_id, user_id }` (saída explícita, conexão WebSocket dona da call caiu, sessão revogada ou sala destruída) |\n| `voice_offer`    | inbound   | `{ type: \"voice_offer\", channel_id, sdp }` (client-offers-first; renegociações do servidor chegam como `voice_offer` outbound) |\n| `voice_answer`   | inbound   | `{ type: \"voice_answer\", channel_id, sdp }`                                             |\n| `voice_ice_candidate` | inbound | `{ type: \"voice_ice_candidate\", channel_id, candidate, sdp_mid?, sdp_mline_index? }`    |\n| `track_subscribe`   | inbound | `{ type: \"track_subscribe\", channel_id, publisher_id, kind }` (kind: video/screen; vídeo só é forwardado com subscribe explícito) |\n| `track_unsubscribe` | inbound | `{ type: \"track_unsubscribe\", channel_id, publisher_id, kind }` (kind: video/screen) |\n| `voice_mute` | inbound | `{ type: \"voice_mute\", channel_id, muted }` (mute autoritativo do servidor: usuário mutado não entra no active-speaker e seu áudio não é forwardado pelo SFU) |\n| `voice_camera` | inbound | `{ type: \"voice_camera\", channel_id, on }` (deve ser enviado antes do `voice_offer` correspondente; o backend usa esse estado para identificar/validar a publicação de câmera) |\n| `screen_share_start` | inbound | `{ type: \"screen_share_start\", channel_id }` (deve ser enviado antes do `voice_offer` que adiciona/publica a track de screen) |\n| `screen_share_stop` | inbound | `{ type: \"screen_share_stop\", channel_id }` (deve ser enviado antes do `voice_offer` que remove/inativa a publicação de screen) |\n| `voice_joined`   | unicast   | `{ type: \"voice_joined\", channel_id, members: (user_id, muted, camera_on, screen_sharing)[], active_speakers: user_id[] }` (estado inicial do late joiner, o peer novo começa com muted=true camera_on=false screen_sharing=false) |\n| `voice_answer`   | unicast   | `{ type: \"voice_answer\", channel_id, sdp }` (resposta ao `voice_offer` do cliente)      |\n| `voice_offer`    | unicast   | `{ type: \"voice_offer\", channel_id, sdp }` (renegociação iniciada pelo servidor)        |\n| `voice_ice_candidate` | unicast | `{ type: \"voice_ice_candidate\", channel_id, candidate, sdp_mid?, sdp_mline_index? }`    |\n| `voice_state_update` | outbound | `{ type: \"voice_state_update\", channel_id, user_id, muted, camera_on, screen_sharing }` |\n| `voice_leave`    | outbound  | `{ type: \"voice_leave\", channel_id, user_id }` (explícita, WS caiu, sessão revogada ou sala destruída) |\n| `active_speaker_update` | outbound | `{ type: \"active_speaker_update\", channel_id, user_ids: user_id[] }` (top-K active speakers) |\n| `voice_audio_routes` | unicast | `{ type: \"voice_audio_routes\", channel_id, routes: { track_id, user_id }[] }` (snapshot específico do subscriber; `track_id` é o ID da track SFU `papo-audio-N`; substitui integralmente o snapshot anterior e permite volume/mute local por usuário) |\n",
+      "responses": {
+        "101": {
+          "description": "WebSocket upgrade"
+        },
+        "401": {
+          "$ref": "#/components/responses/Unauthorized"
+        }
+      }
+    }
+  },
   "references": {
     "#/components/responses/Banned": {
       "description": "IP/usuário banido",
@@ -916,6 +4308,15 @@
         }
       }
     },
+    "#/components/parameters/UserId": {
+      "name": "user_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
     "#/components/responses/Forbidden": {
       "description": "Autenticado, mas sem permissão",
       "content": {
@@ -924,6 +4325,18 @@
             "$ref": "#/components/schemas/Error"
           }
         }
+      }
+    },
+    "#/components/responses/NoContent": {
+      "description": "Sucesso sem corpo (204 No Content)"
+    },
+    "#/components/parameters/RoleId": {
+      "name": "role_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+        "type": "string",
+        "format": "uuid"
       }
     },
     "#/components/parameters/ChannelId": {
@@ -937,6 +4350,24 @@
     },
     "#/components/parameters/MessageId": {
       "name": "message_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "#/components/parameters/EmojiId": {
+      "name": "emoji_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "#/components/parameters/WebhookId": {
+      "name": "webhook_id",
       "in": "path",
       "required": true,
       "schema": {
@@ -959,6 +4390,18 @@
     }
   },
   "schemas": {
+    "AssignRoleRequest": {
+      "type": "object",
+      "required": [
+        "role_id"
+      ],
+      "properties": {
+        "role_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
     "Attachment": {
       "type": "object",
       "description": "Informação mínima do attachment exposta nas respostas de mensagens (listagem, criação e edição).\n",
@@ -990,6 +4433,101 @@
         "moderation_status": {
           "type": "string",
           "description": "Estado da moderação assíncrona de imagens (nudez/gore): pending/processing/clean/sensitive/blocked/failed (pending quando a moderação está desativada).\n"
+        }
+      }
+    },
+    "AuditLogEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "actor_username": {
+          "type": "string",
+          "description": "Snapshot do username do ator no momento da operação"
+        },
+        "action": {
+          "type": "string",
+          "description": "Ação auditável (ex.: user.ban, message.delete, role.create)"
+        },
+        "entity_type": {
+          "type": "string",
+          "description": "Tipo da entidade afetada (user, server, channel, message, attachment, role, user_role, emoji)"
+        },
+        "target_user_id": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true,
+          "description": "Usuário alvo da ação, quando difere do ator"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Dados específicos da ação"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "AuditLogList": {
+      "type": "object",
+      "properties": {
+        "logs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/AuditLogEntry"
+          }
+        },
+        "has_more": {
+          "type": "boolean",
+          "description": "Indica se existe próxima página (cursor since + last_id)"
+        }
+      }
+    },
+    "BanUserRequest": {
+      "type": "object",
+      "required": [
+        "ban_state"
+      ],
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID do usuário (o id da URL é o autoritativo)"
+        },
+        "ban_state": {
+          "type": "boolean",
+          "description": "true para banir, false para desbanir"
+        }
+      }
+    },
+    "ChangeChannelPositionRequest": {
+      "type": "object",
+      "required": [
+        "old_position",
+        "new_position"
+      ],
+      "properties": {
+        "old_position": {
+          "type": "integer"
+        },
+        "new_position": {
+          "type": "integer"
+        }
+      }
+    },
+    "ChangePasswordRequest": {
+      "type": "object",
+      "required": [
+        "password"
+      ],
+      "properties": {
+        "password": {
+          "type": "string",
+          "description": "Nova senha do usuário, precisa ter no mínimo 8 caracteres, 1 letra maíscula + 1 caractere especial"
         }
       }
     },
@@ -1111,6 +4649,41 @@
         }
       }
     },
+    "ChannelPermissionsResponse": {
+      "type": "object",
+      "properties": {
+        "channel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/ChannelPermissionEntry"
+          }
+        }
+      }
+    },
+    "ChannelUserSetting": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "channel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "notification_settings": {
+          "$ref": "#/components/schemas/NotificationSettings"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "ConnectedDevicesResponse": {
       "type": "object",
       "properties": {
@@ -1164,6 +4737,34 @@
         }
       }
     },
+    "CreateEmojiRequest": {
+      "type": "object",
+      "required": [
+        "name",
+        "image_blob",
+        "format"
+      ],
+      "description": "Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB, 2048px); vazio remove o banner",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "image_blob": {
+          "type": "string",
+          "format": "byte"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "GIF",
+            "JPEG",
+            "JPG",
+            "PNG",
+            "WEBP"
+          ]
+        }
+      }
+    },
     "CreateMessageRequest": {
       "type": "object",
       "description": "Mensagens só podem ser enviadas para canais type text ou voice.",
@@ -1194,6 +4795,23 @@
         "embeds": {
           "type": "string",
           "description": "Opcional. Array JSON serializado (string dentro do multipart) com os embeds customizados da mensagem; ver EmbedInput. Os embeds automáticos de link são extraídos do content pelo backend e não podem ser enviados aqui.\n"
+        }
+      }
+    },
+    "CreateRoleRequest": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string"
+        },
+        "permissions": {
+          "$ref": "#/components/schemas/RolePermissions"
         }
       }
     },
@@ -1261,6 +4879,23 @@
         }
       }
     },
+    "CreateWebhookRequest": {
+      "type": "object",
+      "required": [
+        "channel_id",
+        "name"
+      ],
+      "properties": {
+        "channel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 80
+        }
+      }
+    },
     "DirectConversation": {
       "type": "object",
       "required": [
@@ -1303,6 +4938,20 @@
         "unread_count": {
           "type": "integer",
           "minimum": 0
+        }
+      }
+    },
+    "DirectConversationList": {
+      "type": "object",
+      "required": [
+        "dms"
+      ],
+      "properties": {
+        "dms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/DirectConversation"
+          }
         }
       }
     },
@@ -1674,6 +5323,65 @@
         }
       }
     },
+    "EmbedWithImage": {
+      "description": "Embed + imagem da thumbnail embutida em base64 (image_data) e ícone do autor em base64 (author_image_data) — resposta de GET /embeds/{embed_id}.\n",
+      "allOf": [
+        {
+          "$ref": "#/components/schemas/Embed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "image_data": {
+              "type": "string",
+              "format": "byte",
+              "nullable": true,
+              "description": "Imagem do embed em base64 (null quando não há imagem)"
+            },
+            "author_image_data": {
+              "type": "string",
+              "format": "byte",
+              "nullable": true,
+              "description": "Ícone do autor em base64 (null quando o embed não tem author_media)\n"
+            }
+          }
+        }
+      ]
+    },
+    "Emoji": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "GIF",
+            "JPEG",
+            "JPG",
+            "PNG",
+            "WEBP"
+          ]
+        },
+        "image_blob": {
+          "type": "string",
+          "format": "byte"
+        },
+        "created_by": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "Error": {
       "type": "object",
       "description": "Erro RFC 7807 (application/problem+json)",
@@ -1742,6 +5450,36 @@
         }
       }
     },
+    "ICEServer": {
+      "type": "object",
+      "properties": {
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "username": {
+          "type": "string",
+          "nullable": true
+        },
+        "credential": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "ICEServersResponse": {
+      "type": "object",
+      "properties": {
+        "ice_servers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/ICEServer"
+          }
+        }
+      }
+    },
     "LoginRequest": {
       "type": "object",
       "required": [
@@ -1787,6 +5525,32 @@
       "properties": {
         "server_password": {
           "type": "string"
+        }
+      }
+    },
+    "MarkNotificationsReadRequest": {
+      "type": "object",
+      "required": [
+        "notification_ids"
+      ],
+      "properties": {
+        "notification_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    "MarkNotificationsReadResponse": {
+      "type": "object",
+      "properties": {
+        "updated": {
+          "type": "integer",
+          "description": "Número de notificações marcadas como lidas"
         }
       }
     },
@@ -1889,6 +5653,81 @@
         }
       }
     },
+    "MessageReaction": {
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "emoji_id": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true,
+          "description": "Emoji custom do banco (null para emoji unicode)"
+        },
+        "unicode": {
+          "type": "string",
+          "nullable": true,
+          "description": "Emoji unicode (null para emoji custom)"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "MessageReactionGroup": {
+      "type": "object",
+      "properties": {
+        "emoji_id": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true,
+          "description": "Emoji custom do banco (null para emoji unicode)"
+        },
+        "unicode": {
+          "type": "string",
+          "nullable": true,
+          "description": "Emoji unicode (null para emoji custom)"
+        },
+        "count": {
+          "type": "integer",
+          "description": "Número de usuários que reagiram com este emoji NA PÁGINA RETORNADA (o total do emoji está em `reactions` do corpo da mensagem).\n"
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/MessageReactionUser"
+          },
+          "description": "Usuários que reagiram com este emoji na página, em ordem decrescente de criação.\n"
+        }
+      }
+    },
+    "MessageReactionList": {
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/MessageReactionGroup"
+          },
+          "description": "Agrupadas por tipo de emoji; um grupo pode continuar na página seguinte (o cliente deve mesclar grupos com o mesmo emoji_id/unicode).\n"
+        },
+        "has_more": {
+          "type": "boolean",
+          "description": "Indica se há mais itens na direção solicitada por order"
+        }
+      }
+    },
     "MessageReactionSummary": {
       "type": "object",
       "properties": {
@@ -1906,6 +5745,25 @@
         "count": {
           "type": "integer",
           "description": "Número de usuários que reagiram com este emoji"
+        }
+      }
+    },
+    "MessageReactionUser": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Id da reação (cursor de paginação: use com created_at como since + last_id).\n"
+        },
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Criado da reação (metade do cursor de paginação)"
         }
       }
     },
@@ -1927,6 +5785,55 @@
           "type": "string",
           "nullable": true,
           "description": "Emoji unicode (null para emoji custom)"
+        }
+      }
+    },
+    "Notification": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "channel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "author_id": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true,
+          "description": "Autor da mensagem notificada (null quando o autor foi removido)"
+        },
+        "message_content": {
+          "type": "string",
+          "description": "Conteúdo da mensagem notificada, truncado a 512 caracteres"
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "NotificationList": {
+      "type": "object",
+      "properties": {
+        "notifications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Notification"
+          }
+        },
+        "has_more": {
+          "type": "boolean",
+          "description": "Indica se há mais itens na direção solicitada por order"
         }
       }
     },
@@ -1960,6 +5867,18 @@
         }
       }
     },
+    "OpenDirectMessageRequest": {
+      "type": "object",
+      "required": [
+        "user_id"
+      ],
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
     "PasswordResetConsumeRequest": {
       "type": "object",
       "required": [
@@ -1974,6 +5893,160 @@
         "password": {
           "type": "string",
           "description": "Nova senha; mesma política do cadastro"
+        }
+      }
+    },
+    "PasswordResetLinkResponse": {
+      "type": "object",
+      "required": [
+        "reset_url",
+        "expires_at"
+      ],
+      "properties": {
+        "reset_url": {
+          "type": "string",
+          "format": "uri",
+          "example": "https://papo.cyberasilo.online/passwordchange/abc123"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "PatchServerRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "description": "Ausente mantém o nome atual"
+        },
+        "icon_blob": {
+          "type": "string",
+          "format": "byte",
+          "description": "Ausente mantém o ícone atual; vazio remove o ícone"
+        },
+        "icon_format": {
+          "type": "string",
+          "enum": [
+            "",
+            "GIF",
+            "JPEG",
+            "JPG",
+            "PNG",
+            "WEBP"
+          ],
+          "description": "Obrigatório quando icon_blob contém uma nova imagem; pode ser omitido ou vazio quando icon_blob remove o ícone"
+        },
+        "password": {
+          "type": "string",
+          "description": "Ausente mantém a senha atual de um servidor já privado; obrigatório ao tornar um servidor público em privado"
+        },
+        "public": {
+          "type": "boolean",
+          "description": "Ausente mantém a visibilidade atual"
+        }
+      }
+    },
+    "PinnedMessage": {
+      "type": "object",
+      "properties": {
+        "channel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "pinned_by": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true,
+          "description": "Usuário que fixou a mensagem. Null quando o usuário foi excluído.\n"
+        },
+        "pinned_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "PinnedMessageList": {
+      "type": "object",
+      "properties": {
+        "channel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "pinned": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Message"
+          },
+          "description": "Mensagens pinadas do canal, na ordem em que foram fixadas (pinned_at crescente). Vazio quando o canal não tem mensagens pinadas.\n"
+        }
+      }
+    },
+    "ProfileBatchRequest": {
+      "type": "object",
+      "required": [
+        "ids"
+      ],
+      "properties": {
+        "ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    "PushDeviceRequest": {
+      "type": "object",
+      "description": "Dispositivo de push do usuário autenticado (PUT/DELETE /users/me/push-device)",
+      "required": [
+        "token"
+      ],
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "Token de registro do FCM (registro atualizado/upsert)"
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "android",
+            "ios"
+          ]
+        },
+        "device_name": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "provider": {
+          "type": "string",
+          "default": "fcm"
+        }
+      }
+    },
+    "ReactionRequest": {
+      "type": "object",
+      "properties": {
+        "emoji_id": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true,
+          "description": "Id de um emoji custom do banco. Exatamente um de emoji_id ou unicode deve ser informado.\n"
+        },
+        "unicode": {
+          "type": "string",
+          "nullable": true,
+          "description": "Emoji unicode (máx 16 caracteres). Exatamente um de emoji_id ou unicode deve ser informado.\n"
         }
       }
     },
@@ -2018,6 +6091,100 @@
         }
       }
     },
+    "ReplaceServerRequest": {
+      "type": "object",
+      "required": [
+        "name",
+        "icon_blob",
+        "icon_format",
+        "password",
+        "public"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "icon_blob": {
+          "type": "string",
+          "format": "byte",
+          "description": "Ícone em base64; string vazia remove o ícone"
+        },
+        "icon_format": {
+          "type": "string",
+          "enum": [
+            "",
+            "GIF",
+            "JPEG",
+            "JPG",
+            "PNG",
+            "WEBP"
+          ],
+          "description": "Formato do ícone; use string vazia quando icon_blob estiver vazio"
+        },
+        "password": {
+          "type": "string",
+          "description": "Campo obrigatório; para servidor público pode ser vazio, para privado deve respeitar a política de senha"
+        },
+        "public": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Role": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string",
+          "nullable": true,
+          "example": "#FF0000"
+        },
+        "permissions": {
+          "$ref": "#/components/schemas/RolePermissions"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "RolePermissions": {
+      "type": "object",
+      "properties": {
+        "manage_server": {
+          "type": "boolean"
+        },
+        "manage_channels": {
+          "type": "boolean"
+        },
+        "manage_roles": {
+          "type": "boolean"
+        },
+        "manage_webhooks": {
+          "type": "boolean"
+        },
+        "ban_members": {
+          "type": "boolean"
+        },
+        "pin_message": {
+          "type": "boolean"
+        },
+        "everyone_message": {
+          "type": "boolean"
+        },
+        "send_attachment": {
+          "type": "boolean"
+        }
+      }
+    },
     "RoleSummary": {
       "type": "object",
       "description": "Visão reduzida de role exposta nas respostas de usuário (whoami, profile, listagem de usuários)",
@@ -2033,6 +6200,113 @@
           "type": "string",
           "nullable": true,
           "example": "#FF0000"
+        }
+      }
+    },
+    "SearchRequest": {
+      "type": "object",
+      "description": "Pelo menos 1 filtro é obrigatório; os filtros podem ser combinados. Menções usam o formato canônico @mention(<@userId>).",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Termo de busca"
+        },
+        "author": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Filtro por autor da mensagem"
+        },
+        "channel_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Filtra mensagens de um canal específico"
+        },
+        "mention": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Filtra mensagens contendo a menção canônica @mention(<@userId>) deste usuário"
+        },
+        "has": {
+          "type": "string",
+          "enum": [
+            "link"
+          ],
+          "description": "link filtra conteúdo que contenha URL http:// ou https://"
+        },
+        "order": {
+          "type": "string",
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "description": "Ordem dos resultados por data"
+        },
+        "date_start": {
+          "type": "string",
+          "format": "date",
+          "description": "Data inicial do filtro (inclusive)"
+        },
+        "date_end": {
+          "type": "string",
+          "format": "date",
+          "description": "Data final do filtro (inclusive)"
+        },
+        "contains_attachment": {
+          "type": "boolean",
+          "description": "Filtra mensagens com attachment"
+        }
+      }
+    },
+    "SearchResponse": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/SearchResult"
+          }
+        },
+        "has_more": {
+          "type": "boolean",
+          "description": "Indica se há mais itens na direção solicitada por order"
+        }
+      }
+    },
+    "SearchResult": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "example": "message"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "content": {
+          "type": "string"
+        },
+        "channel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "channel_name": {
+          "type": "string"
+        },
+        "author_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "author_username": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "score": {
+          "type": "number",
+          "format": "double"
         }
       }
     },
@@ -2081,6 +6355,64 @@
         }
       }
     },
+    "UpdateAvatarRequest": {
+      "type": "object",
+      "required": [
+        "avatar",
+        "avatar_format"
+      ],
+      "properties": {
+        "avatar": {
+          "type": "string",
+          "description": "Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB, 512px)"
+        },
+        "avatar_format": {
+          "type": "string",
+          "enum": [
+            "GIF",
+            "JPEG",
+            "JPG",
+            "PNG",
+            "WEBP"
+          ]
+        }
+      }
+    },
+    "UpdateBannerRequest": {
+      "type": "object",
+      "required": [
+        "banner",
+        "banner_format"
+      ],
+      "properties": {
+        "banner": {
+          "type": "string",
+          "description": "Base64 de GIF, JPEG/JPG, PNG ou WEBP (máx. 2MB, 2048px); vazio remove o banner"
+        },
+        "banner_format": {
+          "type": "string",
+          "enum": [
+            "GIF",
+            "JPEG",
+            "JPG",
+            "PNG",
+            "WEBP"
+          ],
+          "description": "Vazio remove o banner"
+        }
+      }
+    },
+    "UpdateChannelPermissionsRequest": {
+      "type": "object",
+      "required": [
+        "permissions"
+      ],
+      "properties": {
+        "permissions": {
+          "$ref": "#/components/schemas/ChannelPermissions"
+        }
+      }
+    },
     "UpdateChannelRequest": {
       "type": "object",
       "required": [
@@ -2094,6 +6426,17 @@
           "type": "string",
           "nullable": true,
           "description": "Tópico do canal (máx 512 caracteres). Opcional; ausente não altera o tópico, string vazia limpa o tópico. Válido apenas para canais de texto ou voz.\n"
+        }
+      }
+    },
+    "UpdateChannelUserSettingRequest": {
+      "type": "object",
+      "required": [
+        "notification_settings"
+      ],
+      "properties": {
+        "notification_settings": {
+          "$ref": "#/components/schemas/NotificationSettings"
         }
       }
     },
@@ -2116,6 +6459,90 @@
         }
       }
     },
+    "UpdateRoleRequest": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string"
+        },
+        "permissions": {
+          "$ref": "#/components/schemas/RolePermissions"
+        }
+      }
+    },
+    "UpdateStatusRequest": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "nullable": true,
+          "enum": [
+            "away",
+            "busy"
+          ],
+          "description": "Status persistido (away/busy); null remove o status"
+        }
+      }
+    },
+    "UpdateUserRequest": {
+      "type": "object",
+      "required": [
+        "nickname",
+        "status",
+        "description"
+      ],
+      "properties": {
+        "nickname": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "status": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "typing": {
+          "type": "string",
+          "nullable": true,
+          "maxLength": 64,
+          "description": "Frase de digitação personalizada; ausente (null) não altera o valor atual"
+        }
+      }
+    },
+    "UpdateWebhookIdentityRequest": {
+      "type": "object",
+      "description": "Identidade persistente do webhook. Campos ausentes preservam o valor atual; display_name \"\" remove o nickname; avatar \"\" remove o avatar. Avatar: base64 de GIF, JPEG/JPG, PNG ou WEBP de até 2MB (mesmas regras do avatar de usuário), com avatar_format correspondente.\n",
+      "properties": {
+        "display_name": {
+          "type": "string",
+          "nullable": true,
+          "maxLength": 100
+        },
+        "avatar": {
+          "type": "string",
+          "nullable": true
+        },
+        "avatar_format": {
+          "type": "string",
+          "enum": [
+            "gif",
+            "jpg",
+            "jpeg",
+            "png",
+            "webp"
+          ]
+        }
+      }
+    },
     "UserConfig": {
       "type": "object",
       "properties": {
@@ -2133,6 +6560,112 @@
         },
         "display": {
           "$ref": "#/components/schemas/Display"
+        }
+      }
+    },
+    "UserProfile": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "username": {
+          "type": "string"
+        },
+        "nickname": {
+          "type": "string",
+          "nullable": true
+        },
+        "avatar_blob": {
+          "type": "string",
+          "format": "byte",
+          "description": "Avatar em base64"
+        },
+        "avatar_format": {
+          "type": "string",
+          "example": "PNG"
+        },
+        "banner_media": {
+          "type": "string",
+          "nullable": true,
+          "description": "Referência (sha256) do banner na mídia content-addressable; o arquivo é baixado via GET /media/{sha_hash}"
+        },
+        "description": {
+          "type": "string",
+          "nullable": true,
+          "maxLength": 512
+        },
+        "status": {
+          "type": "string",
+          "nullable": true,
+          "enum": [
+            "away",
+            "busy"
+          ],
+          "description": "Status persistido do usuário (vale enquanto online)"
+        },
+        "status_message": {
+          "type": "string",
+          "nullable": true
+        },
+        "typing": {
+          "type": "string",
+          "nullable": true,
+          "maxLength": 64,
+          "description": "Frase de digitação personalizada (exibida no cliente quando o usuário está digitando)"
+        },
+        "status_updated_at": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "roles": {
+          "type": "array",
+          "description": "Roles atribuídas ao usuário",
+          "items": {
+            "$ref": "#/components/schemas/RoleSummary"
+          }
+        }
+      }
+    },
+    "UserRole": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "role_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "assigned_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "UserSettings": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "config": {
+          "$ref": "#/components/schemas/UserConfig"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
         }
       }
     },
@@ -2188,6 +6721,57 @@
           "items": {
             "$ref": "#/components/schemas/RoleSummary"
           }
+        }
+      }
+    },
+    "UserSummaryBatchRequest": {
+      "type": "object",
+      "required": [
+        "ids"
+      ],
+      "properties": {
+        "ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    "Webhook": {
+      "type": "object",
+      "description": "Webhook de canal (tabela webhooks). O secret_hash jamais é exposto; o token em texto puro aparece somente na resposta de criação. `display_name` é o nickname persistente de exibição (null = usa o name); o avatar persistente é servido por GET /webhooks/{webhook_id}/avatar.\n",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "channel_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string",
+          "nullable": true
+        },
+        "created_by": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "revoked_at": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true
         }
       }
     },

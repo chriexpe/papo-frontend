@@ -3,12 +3,11 @@
 use crate::{
     Error, HistoryQuery, Uuid,
     wire::{
-        Channel, ChannelList, ConnectedDevicesResponse, CreateChannelRequest, CreateMessageRequest,
-        CreateServerRequest, CreateServerResponse, DropConnectionRequest, DropConnectionResponse,
-        GenericResponse, LoginRequest, LoginResponse, LoginServerRequest, Message,
-        MessageListResponse, PasswordResetConsumeRequest, Problem, RefreshResponse,
-        RegisterRequest, RegisterResponse, Server, UpdateChannelRequest, UpdateMessageRequest,
-        WhoamiResponse,
+        Channel, ChannelList, ConnectedDevicesResponse, CreateChannelRequest, CreateServerRequest,
+        CreateServerResponse, DropConnectionRequest, DropConnectionResponse, GenericResponse,
+        LoginRequest, LoginResponse, LoginServerRequest, Message, MessageListResponse,
+        PasswordResetConsumeRequest, Problem, RefreshResponse, RegisterRequest, RegisterResponse,
+        Server, UpdateChannelRequest, UpdateMessageRequest, WhoamiResponse,
     },
 };
 use reqwest::{
@@ -23,6 +22,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct RestClient {
     client: reqwest::Client,
+    anonymous: reqwest::Client,
     cookies: Arc<Jar>,
     base: url::Url,
     insecure_loopback: bool,
@@ -68,8 +68,14 @@ impl RestClient {
             .retry(reqwest::retry::never())
             .build()
             .map_err(|_| Error::Transport)?;
+        let anonymous = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .build()
+            .map_err(|_| Error::Transport)?;
         Ok(Self {
             client,
+            anonymous,
             cookies,
             base,
             insecure_loopback,
@@ -86,13 +92,36 @@ impl RestClient {
         self.cookies.cookies(&self.base)
     }
 
-    fn request(&self, method: Method, path: &str) -> Result<RequestBuilder, Error> {
+    pub(crate) fn request(&self, method: Method, path: &str) -> Result<RequestBuilder, Error> {
         Ok(self.client.request(method, self.endpoint(path)?))
     }
 
-    async fn response(&self, request: RequestBuilder) -> Result<Response, Error> {
+    pub(crate) fn anonymous_request(
+        &self,
+        method: Method,
+        path: &str,
+    ) -> Result<RequestBuilder, Error> {
+        Ok(self.anonymous.request(method, self.endpoint(path)?))
+    }
+
+    pub(crate) async fn response(&self, request: RequestBuilder) -> Result<Response, Error> {
+        self.response_inner(request, true).await
+    }
+
+    pub(crate) async fn anonymous_response(
+        &self,
+        request: RequestBuilder,
+    ) -> Result<Response, Error> {
+        self.response_inner(request, false).await
+    }
+
+    async fn response_inner(
+        &self,
+        request: RequestBuilder,
+        authenticated: bool,
+    ) -> Result<Response, Error> {
         let response = request.send().await.map_err(|_| Error::Transport)?;
-        if self.insecure_loopback {
+        if authenticated && self.insecure_loopback {
             for cookie in response.headers().get_all(reqwest::header::SET_COOKIE) {
                 if let Ok(cookie) = cookie.to_str() {
                     let cookie = cookie
@@ -118,7 +147,10 @@ impl RestClient {
         }
     }
 
-    async fn json<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T, Error> {
+    pub(crate) async fn json<T: DeserializeOwned>(
+        &self,
+        request: RequestBuilder,
+    ) -> Result<T, Error> {
         self.response(request)
             .await?
             .json()
@@ -126,7 +158,18 @@ impl RestClient {
             .map_err(|_| Error::Decode)
     }
 
-    async fn post<B: Serialize, T: DeserializeOwned>(
+    pub(crate) async fn anonymous_json<T: DeserializeOwned>(
+        &self,
+        request: RequestBuilder,
+    ) -> Result<T, Error> {
+        self.anonymous_response(request)
+            .await?
+            .json()
+            .await
+            .map_err(|_| Error::Decode)
+    }
+
+    pub(crate) async fn post<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
         body: &B,
@@ -269,25 +312,24 @@ impl RestClient {
     /// Sends a multipart message once. The caller owns ambiguous-send policy.
     /// # Errors
     /// Returns transport, problem or decoding failures.
-    pub async fn create_message(&self, request: &CreateMessageRequest) -> Result<Message, Error> {
+    pub async fn create_message(&self, request: &MessageUpload<'_>) -> Result<Message, Error> {
         let mut form =
-            reqwest::multipart::Form::new().text("channel_id", request.channel_id.clone());
+            reqwest::multipart::Form::new().text("channel_id", request.channel_id.to_owned());
         for (key, value) in [
-            ("content", &request.content),
-            ("reply_to", &request.reply_to),
-            ("embeds", &request.embeds),
+            ("content", request.content),
+            ("reply_to", request.reply_to),
+            ("embeds", request.embeds),
         ] {
             if let Some(value) = value {
-                form = form.text(key, value.clone());
+                form = form.text(key, value.to_owned());
             }
         }
-        if let Some(attachments) = &request.attachments {
-            for bytes in attachments {
-                form = form.part(
-                    "attachments",
-                    reqwest::multipart::Part::bytes(bytes.clone()).file_name("attachment"),
-                );
-            }
+        for attachment in request.attachments {
+            form = form.part(
+                "attachments",
+                reqwest::multipart::Part::bytes(attachment.bytes.to_vec())
+                    .file_name(attachment.filename.to_owned()),
+            );
         }
         self.json(self.request(Method::POST, "messages")?.multipart(form))
             .await
@@ -314,4 +356,26 @@ impl RestClient {
             .await
             .map(|_| ())
     }
+}
+
+/// A multipart message upload; each attachment retains its caller-selected filename.
+pub struct MessageUpload<'a> {
+    /// Target channel identifier.
+    pub channel_id: &'a str,
+    /// Optional message text.
+    pub content: Option<&'a str>,
+    /// Optional identifier of the message being replied to.
+    pub reply_to: Option<&'a str>,
+    /// Optional JSON-encoded embed array.
+    pub embeds: Option<&'a str>,
+    /// Attachments in their intended order.
+    pub attachments: &'a [MessageAttachment<'a>],
+}
+
+/// One multipart attachment, including its backend-visible original filename.
+pub struct MessageAttachment<'a> {
+    /// Filename supplied in the multipart content disposition.
+    pub filename: &'a str,
+    /// Unmodified file contents.
+    pub bytes: &'a [u8],
 }

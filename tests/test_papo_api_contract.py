@@ -48,6 +48,34 @@ class ProtocolDrift(unittest.TestCase):
         key = next(path for path in before if path.name == 'implemented.json')
         self.assertNotEqual(before[key], after[key])
 
+    def test_inline_read_body_changes_wire_record(self):
+        def mutate(doc):
+            schema = doc['paths']['/channels/{channel_id}/read']['put']['requestBody']['content']['application/json']['schema']
+            schema['properties']['message_id']['type'] = 'integer'
+        before, after = self.changed(mutate)
+        key = next(path for path in before if path.name == 'read_channel_request.rs')
+        self.assertNotEqual(before[key], after[key])
+        self.assertIn('i64', after[key])
+
+    def test_composite_embed_fields_change_wire_record(self):
+        def mutate(doc):
+            properties = doc['components']['schemas']['EmbedWithImage']['allOf'][1]['properties']
+            properties['image_data']['type'] = 'integer'
+        before, after = self.changed(mutate)
+        key = next(path for path in before if path.name == 'embed_with_image.rs')
+        self.assertIn('r#image_data: Option<String>', before[key])
+        self.assertIn('r#image_data: Option<i64>', after[key])
+        self.assertNotEqual(before[key], after[key])
+
+    def test_route_inventory_covers_pinned_spec(self):
+        document = yaml.safe_load((contract.API / 'protocol/openapi.yml').read_text(encoding='utf-8'))
+        methods = {'get', 'post', 'put', 'patch', 'delete'}
+        expected = {(path, method) for path, operations in document['paths'].items()
+                    for method in operations if method in methods}
+        registered = {(path, method) for path, operations in contract.ROUTES.items()
+                      for method in operations}
+        self.assertEqual(expected, registered)
+
     def test_removed_implemented_route_fails(self):
         with self.assertRaises(KeyError):
             self.changed(lambda doc: doc['paths'].pop('/auth/login'))

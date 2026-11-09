@@ -10,14 +10,47 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 API = ROOT / 'crates/sdk/api'
 ROUTES = {
+    '/health': ['get'],
     '/auth/register': ['post'], '/auth/login': ['post'],
     '/auth/login_server': ['post'], '/auth/whoami': ['get'],
     '/auth/logout': ['post'], '/auth/refresh': ['post'],
     '/auth/connected_devices': ['get'], '/auth/drop_connection': ['post'],
-    '/auth/password_reset': ['post'], '/server': ['get', 'post'],
+    '/auth/password_reset': ['post'],
+    '/users': ['get'], '/users/{user_id}/profile': ['get'],
+    '/users/profile_batch': ['post'], '/users/user_summary_batch': ['post'],
+    '/users/blocks': ['get'], '/users/{user_id}/block': ['post', 'delete'],
+    '/users/settings': ['put'], '/users/{user_id}': ['put'],
+    '/users/{user_id}/avatar': ['get', 'put'], '/users/{user_id}/banner': ['put'],
+    '/users/{user_id}/status': ['put'], '/users/{user_id}/password': ['put'],
+    '/users/{user_id}/ban': ['put'], '/users/{user_id}/reset': ['post'],
+    '/users/me/push-device': ['put', 'delete'],
+    '/users/{user_id}/roles': ['post'], '/users/{user_id}/roles/{role_id}': ['delete'],
+    '/users/{user_id}/notifications': ['get'], '/users/{user_id}/read_notification': ['put'],
+    '/dms': ['get', 'post'], '/dms/{dm_id}': ['get', 'delete'],
+    '/server': ['get', 'post', 'put', 'patch'],
+    '/roles': ['get', 'post'], '/roles/{role_id}': ['put', 'delete'],
     '/channels': ['get', 'post'], '/channels/{channel_id}': ['put', 'delete'],
+    '/channels/{channel_id}/change_position': ['put'],
+    '/channels/{channel_id}/permissions': ['get'],
+    '/channels/{channel_id}/permissions/{role_id}': ['put'],
+    '/channels/{channel_id}/role/{role_id}': ['delete'],
+    '/channels/{channel_id}/user/{user_id}/settings': ['post'],
+    '/channels/{channel_id}/read': ['put'], '/voice/ice-servers': ['get'],
     '/channels/{channel_id}/messages': ['get'], '/messages': ['post'],
     '/messages/{message_id}': ['put', 'delete'],
+    '/channels/{channel_id}/messages/{message_id}/pin': ['post', 'delete'],
+    '/channels/{channel_id}/pinned': ['get'],
+    '/channels/{channel_id}/messages/{message_id}/reactions': ['get', 'post', 'delete'],
+    '/emojis': ['get', 'post'], '/emojis/{emoji_id}': ['delete'],
+    '/attachments/{file_id}': ['get'], '/attachments/{file_id}/thumbnail': ['get'],
+    '/media/{sha_hash}': ['get'], '/embeds/{embed_id}': ['get'],
+    '/embeds/{embed_id}/video': ['get'], '/search': ['post'],
+    '/admin/audit-logs': ['get'], '/webhooks': ['get', 'post'],
+    '/webhooks/{webhook_id}': ['patch', 'delete'],
+    '/webhooks/{webhook_id}/avatar': ['get'],
+    '/webhooks/{webhook_id}/messages': ['post'],
+    '/webhooks/{webhook_id}/messages/{message_id}': ['put', 'delete'],
+    '/ws': ['get'],
 }
 
 
@@ -69,6 +102,14 @@ def generate():
             return 'std::collections::BTreeMap<String, serde_json::Value>'
         return {'string': 'String', 'integer': 'i64', 'number': 'f64', 'boolean': 'bool'}[kind]
     def record(name, node):
+        if 'allOf' in node:
+            combined = {'type': 'object', 'properties': {}, 'required': []}
+            for part in node['allOf']:
+                if '$ref' in part:
+                    part = schemas[part['$ref'].split('/')[-1]]
+                combined['properties'].update(part.get('properties', {}))
+                combined['required'].extend(part.get('required', []))
+            node = combined
         if node.get('type', 'object') != 'object':
             generated[name] = f'/// Scalar wire value for `{name}`.\npub type {name} = {rust_type(node, name)};\n'
             return
@@ -87,7 +128,23 @@ def generate():
             lines += [f'    pub r#{snake(field)}: {typ},']
         lines += ['}']
         generated[name] = '\n'.join(lines) + '\n'
-    record('ChannelList', spec['paths']['/channels']['get']['responses']['200']['content']['application/json']['schema'])
+    inline = {
+        'ProfileBatchResponse': ('/users/profile_batch', 'post', 'responses', '200'),
+        'MemberListResponse': ('/users', 'get', 'responses', '200'),
+        'BlockListResponse': ('/users/blocks', 'get', 'responses', '200'),
+        'UpdateUserSettingsRequest': ('/users/settings', 'put', 'requestBody', None),
+        'RoleListResponse': ('/roles', 'get', 'responses', '200'),
+        'ChannelList': ('/channels', 'get', 'responses', '200'),
+        'UpdateChannelPermissionsResponse': ('/channels/{channel_id}/permissions/{role_id}', 'put', 'responses', '200'),
+        'ReadChannelRequest': ('/channels/{channel_id}/read', 'put', 'requestBody', None),
+        'EmojiListResponse': ('/emojis', 'get', 'responses', '200'),
+        'WebhookListResponse': ('/webhooks', 'get', 'responses', '200'),
+    }
+    for name, (path, method, section, status) in inline.items():
+        node = spec['paths'][path][method][section]
+        if status is not None:
+            node = node[status]
+        record(name, node['content']['application/json']['schema'])
     seen = set()
     while pending - seen:
         name = sorted(pending - seen)[0]

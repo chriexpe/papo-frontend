@@ -10,11 +10,13 @@
 mod auth;
 mod config;
 mod gateway;
+mod media;
 mod presence;
 mod response;
 mod server;
 
 pub use config::{Config, Failure, GatewayStep, RestStep};
+pub use media::{MediaRequest, MediaTestServer};
 pub use server::TestServer;
 
 /// Sanitized failures; no input, credential, address or event payload is retained.

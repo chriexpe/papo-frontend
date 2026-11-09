@@ -36,6 +36,7 @@ pub(crate) struct State {
     presence: Presence,
     rest: VecDeque<RestStep>,
     base_url: String,
+    message_body: Option<Bytes>,
 }
 
 /// A running in-memory backend bound exclusively to IPv4 loopback.
@@ -46,6 +47,7 @@ pub struct TestServer {
     address: SocketAddr,
     stop: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), Error>>>,
+    state: Arc<Mutex<State>>,
 }
 
 impl TestServer {
@@ -72,13 +74,20 @@ impl TestServer {
             presence: Presence::new(),
             rest: config.rest.clone().into(),
             base_url: format!("http://{address}"),
+            message_body: None,
         }));
         let (stop, stopped) = oneshot::channel();
-        let task = tokio::spawn(serve(listener, Arc::new(config), state, stopped));
+        let task = tokio::spawn(serve(
+            listener,
+            Arc::new(config),
+            Arc::clone(&state),
+            stopped,
+        ));
         Ok(Self {
             address,
             stop: Some(stop),
             task: Some(task),
+            state,
         })
     }
 
@@ -98,6 +107,18 @@ impl TestServer {
     #[must_use]
     pub fn gateway_url(&self) -> String {
         format!("ws://{}/ws", self.address)
+    }
+
+    /// Takes the latest bounded multipart message body, if one was received.
+    ///
+    /// The body is held only in memory and is never logged.
+    pub async fn take_message_body(&self) -> Option<Vec<u8>> {
+        self.state
+            .lock()
+            .await
+            .message_body
+            .take()
+            .map(|body| body.to_vec())
     }
 
     /// Stops accepting requests, cancels every connection, and joins the server task.
@@ -260,9 +281,17 @@ async fn handle(
         return Ok(encode(problem(413, "invalid-param", &path)));
     };
     let mut state = state.lock().await;
+    let body = body.to_bytes();
+    if method == "POST" && path == "/messages" {
+        if state.auth.user_id(cookie.as_deref()).is_none() {
+            return Ok(encode(problem(401, "unauthorized", &path)));
+        }
+        state.message_body = Some(body);
+        return Ok(encode(Reply::json(201, serde_json::json!({}))));
+    }
     let reply = state
         .auth
-        .handle(&config, &method, &path, cookie.as_deref(), &body.to_bytes());
+        .handle(&config, &method, &path, cookie.as_deref(), &body);
     if path == "/auth/register"
         && reply.status == 201
         && let Some(user_id) = reply.body.as_ref().and_then(|body| body["id"].as_str())
@@ -354,6 +383,7 @@ mod tests {
             }]
             .into(),
             base_url: String::new(),
+            message_body: None,
         };
         assert!(take_step(&mut state, "POST", "/auth/login").is_none());
         assert_eq!(take_step(&mut state, "GET", "/server").unwrap().delay_ms, 7);
