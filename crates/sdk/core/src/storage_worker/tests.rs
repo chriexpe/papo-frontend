@@ -107,7 +107,10 @@ fn shared_writer_serves_ready_databases_round_robin() {
         }
     });
     assert_eq!(*events.lock().expect("events"), ['a', 'b', 'a', 'b', 'a']);
-    assert!(finish(&mut worker).unpersisted.is_empty());
+    assert_eq!(
+        finish(&mut worker).unpersisted,
+        [] as [crate::storage_worker::UnpersistedWrite; 0]
+    );
 }
 
 #[test]
@@ -147,7 +150,10 @@ fn full_database_queue_awaits_capacity_without_dropping_accepted_work() {
         second.committed().await.expect("second committed");
         third.committed().await.expect("third committed");
     });
-    assert!(finish(&mut worker).unpersisted.is_empty());
+    assert_eq!(
+        finish(&mut worker).unpersisted,
+        [] as [crate::storage_worker::UnpersistedWrite; 0]
+    );
 }
 
 #[test]

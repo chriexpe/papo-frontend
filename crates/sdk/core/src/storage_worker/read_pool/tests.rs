@@ -164,7 +164,9 @@ fn canceled_read_retains_profile_lease_until_blocking_connection_closes() {
     let directory = tempfile::tempdir().expect("directory");
     let path = directory.path().join("lease-read.sqlite");
     let _connection = fixture(&path);
-    let lease = Arc::new(std::fs::File::create(directory.path().join("lease")).expect("lease"));
+    let lease = crate::DataRoot::new(directory.path())
+        .acquire()
+        .expect("lease");
     let weak = Arc::downgrade(&lease);
     let pool = ReadPool::with_profile_lease(1, lease).expect("leased pool");
     let runtime = runtime();

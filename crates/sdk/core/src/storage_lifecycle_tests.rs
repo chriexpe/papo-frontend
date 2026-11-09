@@ -30,37 +30,33 @@ fn missed_read_deadline_retains_profile_lock_until_blocking_query_really_finishe
         config,
     )
     .unwrap();
-    let lease = Arc::downgrade(&storage.registry().lease);
     let readers = storage.readers();
     let path = root.state();
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let task = runtime.spawn(async move {
-        readers
-            .query(path, move |tx| {
+    let query_thread = std::thread::spawn(move || {
+        let query_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        query_runtime
+            .block_on(readers.query(path, move |tx| {
                 let _: i64 = tx.query_row("SELECT count(*) FROM servers", [], |r| r.get(0))?;
                 entered_tx.send(()).unwrap();
                 let _ = release_rx.recv();
                 Ok(())
-            })
-            .await
+            }))
+            .unwrap();
     });
-    runtime.block_on(async {
-        while entered_rx.try_recv().is_err() {
-            tokio::task::yield_now().await;
-        }
-    });
+    entered_rx.recv().unwrap();
     let mut runtime = Some(runtime);
     let report = storage.shutdown(&mut runtime).unwrap();
     assert!(!report.reads_drained);
-    drop(task);
     drop(storage);
     let refused = matches!(root.acquire(), Err(StorageError::ProfileInUse));
     release_tx.send(()).unwrap();
+    query_thread.join().unwrap();
     assert!(refused);
-    while lease.strong_count() != 0 {
-        std::thread::yield_now();
-    }
     assert!(root.acquire().is_ok());
 }
 

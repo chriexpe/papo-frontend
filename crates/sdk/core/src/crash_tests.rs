@@ -135,24 +135,14 @@ fn repeated_sigkills_during_removal_resume_before_profile_access() {
         integrity(&fixture.root());
         fixture.reopen();
         fixture.runtime().block_on(async {
-            assert!(
-                fixture
-                    .storage()
-                    .removals()
-                    .pending()
-                    .await
-                    .unwrap()
-                    .is_empty()
+            assert_eq!(
+                fixture.storage().removals().pending().await.unwrap(),
+                [] as [crate::removal::RemovalJob; 0]
             );
             if acknowledged {
-                assert!(
-                    fixture
-                        .storage()
-                        .registry()
-                        .servers()
-                        .await
-                        .unwrap()
-                        .is_empty()
+                assert_eq!(
+                    fixture.storage().registry().servers().await.unwrap(),
+                    [] as [crate::SavedServer; 0]
                 );
             }
         });
@@ -225,7 +215,10 @@ fn crash_child() {
             jobs.begin_server(address(1).id()).await.unwrap();
             println!("PAPO_REMOVAL_ACK");
             std::io::stdout().flush().unwrap();
-            assert!(jobs.resume().await.unwrap().is_empty());
+            assert_eq!(
+                jobs.resume().await.unwrap(),
+                [] as [crate::removal::RemovalJob; 0]
+            );
         }
     });
     state

@@ -61,7 +61,10 @@ fn late_secret_delete_keeps_removal_pending_until_read_back_confirms_absence() {
                 Some(RemovalFailureKind::SecretUncertain)
             )
         );
-        assert!(registry.accounts(server.id()).await.unwrap().is_empty());
+        assert_eq!(
+            registry.accounts(server.id()).await.unwrap(),
+            [] as [crate::SavedAccount; 0]
+        );
         assert!(fixture.secrets.snapshot(key).is_some());
         // An unfenced observation cannot acknowledge cleanup while the old delete runs.
         assert_eq!(
@@ -70,7 +73,10 @@ fn late_secret_delete_keeps_removal_pending_until_read_back_confirms_absence() {
         );
         tokio::time::advance(Duration::from_secs(2)).await;
         tokio::task::yield_now().await;
-        assert!(jobs.resume().await.unwrap().is_empty());
+        assert_eq!(
+            jobs.resume().await.unwrap(),
+            [] as [crate::removal::RemovalJob; 0]
+        );
         assert!(fixture.secrets.snapshot(key).is_none());
         assert_eq!(fixture.secrets.calls(Operation::Delete), 1);
         assert!(fixture.secrets.calls(Operation::Read) >= 3);

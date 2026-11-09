@@ -23,7 +23,7 @@ fn removal_deletes_more_than_one_shared_turn_of_state_without_losing_other_accou
         }).await.unwrap();
         let jobs=fixture.storage().removals();
         jobs.begin_account(first).await.unwrap();
-        assert!(jobs.resume().await.unwrap().is_empty());
+        assert_eq!(jobs.resume().await.unwrap(), [] as [crate::removal::RemovalJob; 0]);
         let (drafts,operations):(i64,i64)=registry.readers.query(registry.path.clone(),|tx| {
             Ok((tx.query_row("SELECT count(*) FROM drafts",[],|r|r.get(0))?,tx.query_row("SELECT count(*) FROM operations",[],|r|r.get(0))?))
         }).await.unwrap();

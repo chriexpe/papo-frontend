@@ -1,5 +1,6 @@
 //! Durable device registry mutations; probing, authentication and observable lists live above it.
 
+use crate::data_root::ProfileLease;
 use crate::{
     AccountId, SavedAccount, SavedServer, ServerAddress, ServerId, StorageError, UnixMicros,
 };
@@ -8,7 +9,7 @@ use crate::{
     storage_worker::{DatabaseWriter, ReadPool},
 };
 use rusqlite::{OptionalExtension, params};
-use std::{fs::File, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 /// Cloneable registry access. Successful mutations have completed a FULL commit.
 #[derive(Clone)]
@@ -16,7 +17,7 @@ pub struct Registry {
     pub(crate) writer: DatabaseWriter,
     pub(crate) readers: Arc<ReadPool>,
     pub(crate) path: PathBuf,
-    pub(crate) lease: Arc<File>,
+    pub(crate) lease: Arc<ProfileLease>,
 }
 
 impl Registry {

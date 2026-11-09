@@ -12,6 +12,18 @@ use crate::{AccountId, StorageError};
 #[derive(Clone, Debug)]
 pub struct DataRoot(PathBuf);
 
+/// Shared SDK ownership, distinct from descriptors briefly inherited by fork/exec.
+#[derive(Debug)]
+pub(crate) struct ProfileLease(File);
+
+impl Drop for ProfileLease {
+    fn drop(&mut self) {
+        // Closing alone leaves flock held while a forked child still has the descriptor.
+        // All SDK work shares this Arc lease, so only its final owner releases the lock.
+        let _ = self.0.unlock();
+    }
+}
+
 impl DataRoot {
     /// Describes paths without creating or opening files.
     #[must_use]
@@ -57,7 +69,7 @@ impl DataRoot {
         self.0.join("media").join(&hex[..2]).join(hex)
     }
 
-    pub(crate) fn acquire(&self) -> Result<Arc<File>, StorageError> {
+    pub(crate) fn acquire(&self) -> Result<Arc<ProfileLease>, StorageError> {
         std::fs::create_dir_all(&self.0)?;
         let file = File::options()
             .read(true)
@@ -70,9 +82,10 @@ impl DataRoot {
             Err(std::fs::TryLockError::WouldBlock) => return Err(StorageError::ProfileInUse),
             Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
+        let lease = Arc::new(ProfileLease(file));
         std::fs::create_dir_all(self.0.join("cache"))?;
         std::fs::create_dir_all(self.0.join("media"))?;
-        Ok(Arc::new(file))
+        Ok(lease)
     }
 }
 
@@ -91,6 +104,23 @@ mod tests {
         assert!(matches!(root.acquire(), Err(StorageError::ProfileInUse)));
         drop(other);
         assert!(root.acquire().is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inherited_descriptor_cannot_extend_the_final_sdk_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = DataRoot::new(directory.path());
+        let lease = root.acquire().unwrap();
+        // A forked child shares the open file description until its exec closes it.
+        let inherited = lease.0.try_clone().unwrap();
+        drop(lease);
+        let next = root.acquire();
+        assert!(
+            next.is_ok(),
+            "last SDK owner must explicitly unlock: {next:?}"
+        );
+        drop(inherited);
     }
 
     #[test]

@@ -38,14 +38,9 @@ fn account_removal_is_hidden_durably_and_resumed_before_open_returns() {
     assert_eq!(fixture.hooks.stops.load(Ordering::SeqCst), 0);
     fixture.reopen();
     fixture.runtime().block_on(async {
-        assert!(
-            fixture
-                .storage()
-                .removals()
-                .pending()
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            fixture.storage().removals().pending().await.unwrap(),
+            [] as [crate::removal::RemovalJob; 0]
         );
         assert_eq!(
             fixture
@@ -91,7 +86,10 @@ fn persistent_media_failure_retries_only_the_unfinished_step() {
             (pending[0].step, pending[0].failure),
             (RemovalStep::MediaRefs, Some(RemovalFailureKind::MediaRefs))
         );
-        assert!(registry.servers().await.unwrap().is_empty());
+        assert_eq!(
+            registry.servers().await.unwrap(),
+            [] as [crate::SavedServer; 0]
+        );
     });
     fixture.reopen();
     fixture.runtime().block_on(async {
@@ -101,14 +99,9 @@ fn persistent_media_failure_retries_only_the_unfinished_step() {
     assert_eq!(fixture.hooks.stops.load(Ordering::SeqCst), 1);
     fixture.hooks.fail_media.store(false, Ordering::SeqCst);
     fixture.runtime().block_on(async {
-        assert!(
-            fixture
-                .storage()
-                .removals()
-                .resume()
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            fixture.storage().removals().resume().await.unwrap(),
+            [] as [crate::removal::RemovalJob; 0]
         );
     });
     assert_eq!(fixture.hooks.stops.load(Ordering::SeqCst), 1);
@@ -142,7 +135,7 @@ fn removal_cleans_only_its_account_and_generations_are_never_reused() {
         boundary.activate(first,old).unwrap();
         boundary.write(SecretKey::new(first,old),SecretValue::new(Vec::new()),&CancellationToken::new()).await.unwrap();
         fixture.storage().removals().begin_account(first).await.unwrap();
-        assert!(fixture.storage().removals().resume().await.unwrap().is_empty());
+        assert_eq!(fixture.storage().removals().resume().await.unwrap(), [] as [crate::removal::RemovalJob; 0]);
         assert!(fixture.secrets.snapshot(SecretKey::new(first,old)).is_none());
         let new=registry.add_account(first,None,None,false,UnixMicros(2)).await.unwrap();
         assert!(new.get()>old.get());

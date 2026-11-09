@@ -95,8 +95,14 @@ impl Fixture {
             if !std::thread::panicking() {
                 let report = result.unwrap();
                 assert!(report.reads_drained);
-                assert!(report.state.unpersisted.is_empty());
-                assert!(report.shared.unpersisted.is_empty());
+                assert_eq!(
+                    report.state.unpersisted,
+                    [] as [crate::storage_worker::UnpersistedWrite; 0]
+                );
+                assert_eq!(
+                    report.shared.unpersisted,
+                    [] as [crate::storage_worker::UnpersistedWrite; 0]
+                );
             }
         }
     }

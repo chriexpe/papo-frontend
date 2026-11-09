@@ -1,7 +1,6 @@
 //! Bounded blocking read connections; no read transaction survives its query callback.
 
 use std::{
-    fs::File,
     path::PathBuf,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
@@ -14,6 +13,7 @@ use rusqlite::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::WorkerError;
+use crate::data_root::ProfileLease;
 
 /// Shared bound on active read connections; cancellation retains the permit until
 /// the blocking query actually finishes. Connections never retain a WAL snapshot.
@@ -26,7 +26,7 @@ struct ReadFence {
     capacity: Arc<Semaphore>,
     active: Mutex<usize>,
     finished: Condvar,
-    _profile_lease: Option<Arc<File>>,
+    _profile_lease: Option<Arc<ProfileLease>>,
 }
 
 struct ActiveRead {
@@ -53,7 +53,7 @@ impl Default for ReadPool {
 }
 
 impl ReadPool {
-    fn with_capacity(max_connections: usize, profile_lease: Option<Arc<File>>) -> Self {
+    fn with_capacity(max_connections: usize, profile_lease: Option<Arc<ProfileLease>>) -> Self {
         Self {
             inner: Arc::new(ReadFence {
                 capacity: Arc::new(Semaphore::new(max_connections)),
@@ -77,14 +77,17 @@ impl ReadPool {
     ///
     /// # Errors
     /// Returns invalid configuration for zero or excessive capacity.
-    pub fn with_profile_lease(
+    pub(crate) fn with_profile_lease(
         max_connections: usize,
-        lease: Arc<File>,
+        lease: Arc<ProfileLease>,
     ) -> Result<Self, WorkerError> {
         Self::checked(max_connections, Some(lease))
     }
 
-    fn checked(max_connections: usize, lease: Option<Arc<File>>) -> Result<Self, WorkerError> {
+    fn checked(
+        max_connections: usize,
+        lease: Option<Arc<ProfileLease>>,
+    ) -> Result<Self, WorkerError> {
         if max_connections == 0 || max_connections > Semaphore::MAX_PERMITS {
             return Err(WorkerError::InvalidConfiguration);
         }
