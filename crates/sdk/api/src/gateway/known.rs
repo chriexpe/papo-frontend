@@ -189,3 +189,49 @@ impl KnownEvent {
         )
     }
 }
+#[cfg(test)]
+mod tests {
+    //! Exercises all generated outbound variants without a backend checkout.
+    use super::KnownEvent;
+    #[test]
+    fn every_known_event_round_trips_through_dispatch() {
+        let events = [
+            KnownEvent::Message(Box::default()),
+            KnownEvent::MessageEdit(Box::default()),
+            KnownEvent::MessageDelete(Box::default()),
+            KnownEvent::AttachmentModerationUpdate(Box::default()),
+            KnownEvent::MessageEmbedsUpdate(Box::default()),
+            KnownEvent::ReactUpdate(Box::default()),
+            KnownEvent::MessagePin(Box::default()),
+            KnownEvent::ChannelCreate(Box::default()),
+            KnownEvent::ChannelUpdate(Box::default()),
+            KnownEvent::ChannelDelete(Box::default()),
+            KnownEvent::Typing(Box::default()),
+            KnownEvent::AvatarUpdate(Box::default()),
+            KnownEvent::PresenceUpdate(Box::default()),
+            KnownEvent::UserJoin(Box::default()),
+            KnownEvent::RoleAdd(Box::default()),
+            KnownEvent::RoleRemove(Box::default()),
+            KnownEvent::DMUpdate(Box::default()),
+            KnownEvent::PresenceSync(Box::default()),
+            KnownEvent::HeartbeatAck(Box::default()),
+            KnownEvent::Error(Box::default()),
+            KnownEvent::NewNotification(Box::default()),
+            KnownEvent::VoiceJoined(Box::default()),
+            KnownEvent::VoiceAnswer(Box::default()),
+            KnownEvent::VoiceOffer(Box::default()),
+            KnownEvent::VoiceICECandidate(Box::default()),
+            KnownEvent::VoiceStateUpdate(Box::default()),
+            KnownEvent::VoiceLeave(Box::default()),
+            KnownEvent::ActiveSpeakerUpdate(Box::default()),
+            KnownEvent::VoiceAudioRoutes(Box::default()),
+        ];
+        for event in events {
+            let kind = event.kind();
+            let bytes = serde_json::to_vec(&event).unwrap();
+            let decoded = crate::gateway::Event::decode(&bytes).unwrap();
+            assert_eq!(decoded.kind(), kind);
+            assert!(matches!(decoded, crate::gateway::Event::Known(_)));
+        }
+    }
+}

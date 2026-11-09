@@ -15,13 +15,9 @@ parser.add_argument('--backend', type=pathlib.Path, required=True)
 args = parser.parse_args()
 backend = args.backend.resolve()
 pin = (ROOT / 'crates/sdk/api/protocol/backend-commit').read_text().strip()
-if (backend / '.git').exists():
-    actual = subprocess.check_output(['git', '-C', str(backend), 'rev-parse', 'HEAD'], text=True).strip()
-    if actual != pin:
-        raise SystemExit('Backend checkout does not match the protocol pin')
-if (backend / 'openapi.yml').read_bytes() != (ROOT / 'crates/sdk/api/protocol/openapi.yml').read_bytes():
-    raise SystemExit('Backend OpenAPI differs from the pinned snapshot')
-subprocess.run(['python3', str(ROOT / 'scripts/papo-api-events.py'), '--backend', str(backend)], check=True)
+actual = subprocess.check_output(['git', '-C', str(backend), 'rev-parse', 'HEAD'], text=True).strip()
+if actual != pin:
+    raise SystemExit('Backend checkout does not match the protocol pin')
 # This directory is ignored build output, using the one existing target directory.
 proof = backend / 'backend/cmd/sdk-proof'
 proof.mkdir(parents=True, exist_ok=True)

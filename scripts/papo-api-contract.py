@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Generate protocol records from the pinned contract; check drift without network."""
 import argparse
-import json
 import pathlib
 import re
 import subprocess
@@ -58,12 +57,18 @@ def snake(name):
     return re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
 
 
-def generate():
-    spec = yaml.safe_load((API / 'protocol/openapi.yml').read_text(encoding='utf-8'))
+def generate(spec):
     schemas = spec['components']['schemas']
+    methods = {'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'}
+    actual = {(path, method) for path, operations in spec['paths'].items()
+              for method in operations if method in methods}
+    registered = {(path, method) for path, operations in ROUTES.items() for method in operations}
+    if actual != registered:
+        missing = sorted(registered - actual)
+        extra = sorted(actual - registered)
+        raise ValueError(f'Route coverage mismatch: missing={missing}, unregistered={extra}')
     pending = {'DirectConversation', 'Embed', 'Error'}
-    referenced = {}
-    contract = {}
+    referenced = set()
     def refs(node):
         if isinstance(node, dict):
             if '$ref' in node and node['$ref'].startswith('#/components/schemas/'):
@@ -72,16 +77,16 @@ def generate():
                 target = spec
                 for part in node['$ref'][2:].split('/'):
                     target = target[part]
-                referenced[node['$ref']] = target
+                referenced.add(node['$ref'])
                 refs(target)
             for value in node.values():
                 refs(value)
         elif isinstance(node, list):
             for value in node:
                 refs(value)
-    for path, methods in ROUTES.items():
-        contract[path] = {method: spec['paths'][path][method] for method in methods}
-        refs(contract[path])
+    for path, route_methods in ROUTES.items():
+        for method in route_methods:
+            refs(spec['paths'][path][method])
     output = {}
     generated = {}
     def rust_type(node, name):
@@ -156,32 +161,51 @@ def generate():
             '//! Generated wire record; transport and policy belong to other modules.\n\n' + body)
     modules = '\n'.join(f'mod {snake(name)};\npub use {snake(name)}::*;' for name in sorted(generated))
     output[API / 'src/wire/mod.rs'] = '//! Generated protocol records; owns serialization, never client state.\n\n' + modules + '\n'
-    # Include constraints, parameters, error responses and security, not only field names.
-    contract['references'] = referenced
-    contract['security'] = spec.get('security', [])
-    contract['securitySchemes'] = spec['components'].get('securitySchemes', {})
-    contract['schemas'] = {name: schemas[name] for name in sorted(seen)}
-    output[API / 'protocol/implemented.json'] = json.dumps(contract, indent=2, ensure_ascii=False) + '\n'
     return output
+
+
+def backend_spec(backend):
+    backend = backend.resolve()
+    try:
+        root = subprocess.run(['git', '-C', str(backend), 'rev-parse', '--show-toplevel'],
+                              text=True, capture_output=True, check=True).stdout.strip()
+        head = subprocess.run(['git', '-C', str(backend), 'rev-parse', 'HEAD'],
+                              text=True, capture_output=True, check=True).stdout.strip()
+        pin = (API / 'protocol/backend-commit').read_text(encoding='utf-8').strip()
+        if pathlib.Path(root).resolve() != backend:
+            raise ValueError('Backend path must be the checkout root')
+        if head != pin:
+            raise ValueError(f'Backend HEAD {head} does not match pinned commit {pin}')
+        return yaml.safe_load((backend / 'openapi.yml').read_text(encoding='utf-8'))
+    except (OSError, subprocess.CalledProcessError, yaml.YAMLError) as error:
+        raise ValueError(f'Cannot read backend checkout: {error}') from error
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--backend', required=True, type=pathlib.Path, help='backend checkout root')
     parser.add_argument('--write', action='store_true')
     args = parser.parse_args()
+    try:
+        output = generate(backend_spec(args.backend))
+    except (ValueError, KeyError, TypeError) as error:
+        raise SystemExit(f'Invalid backend contract: {error}') from error
     failed = False
-    for path, content in generate().items():
-        if path.suffix == '.rs':
-            content = subprocess.run(['rustfmt', '--edition', '2024', '--emit', 'stdout'], input=content,
-                                     text=True, capture_output=True, check=True).stdout
+    wire = API / 'src/wire'
+    for path in sorted(set(wire.rglob('*.rs')) - output.keys()):
+        print(f'Stale generated wire file: {path}')
+        failed = True
+    for path, content in output.items():
+        content = subprocess.run(['rustfmt', '--edition', '2024', '--emit', 'stdout'], input=content,
+                                 text=True, capture_output=True, check=True).stdout
         if args.write:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding='utf-8')
         elif not path.exists() or path.read_text(encoding='utf-8') != content:
-            print(f'Protocol drift: {path.relative_to(ROOT)}')
+            print(f'Protocol drift: {path}')
             failed = True
     if failed:
-        raise SystemExit('Review wire changes and regenerate deliberately with --write.')
+        raise SystemExit('Review wire changes and regenerate deliberately with --write; remove stale files manually.')
 
 
 if __name__ == '__main__':

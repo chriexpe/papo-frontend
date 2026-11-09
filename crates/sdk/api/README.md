@@ -8,21 +8,21 @@ HTTP statuses; problem documents remain available as typed data. Wire records
 and live payloads deliberately do not implement `Debug`.
 
 `protocol/backend-commit` pins the public `chriexpe/papo-backend` revision.
-`protocol/openapi.yml` is its verbatim OpenAPI snapshot. Snapshot updates must
-be separate, deliberate commits. Generated records preserve OpenAPI optionality
-and nullability, and keep timestamps as exact strings. IDs are opaque wire
-strings (webhook messages may carry an empty author ID); UUID validation occurs
-when a consumer needs an identity. Use `Message::cursor()` to carry the exact
-`created_at` and `id` pair into either direction of `HistoryQuery`.
+Generated records preserve OpenAPI optionality and nullability, and keep
+timestamps as exact strings. IDs are opaque wire strings (webhook messages may
+carry an empty author ID); UUID validation occurs when a consumer needs an
+identity. Use `Message::cursor()` to carry the exact `created_at` and `id` pair
+into either direction of `HistoryQuery`.
 
-The SDK gate runs `scripts/papo-api-contract.py` to compare generated Rust and
-the complete implemented route/schema contract. It also checks the reviewed
-gateway manifest and generated dispatch; the PostgreSQL proof compares that
-manifest with the pinned backend's Go declarations. Drift regression tests
-mutate response types, required request fields, query constraints and routes.
-The Python build tooling needs PyYAML 6.0.3. After reviewing a contract change,
-regenerate with `python3 scripts/papo-api-contract.py --write` and
-`python3 scripts/papo-api-events.py --write`.
+Both drift checks require a backend Git checkout whose HEAD matches the pin.
+They read its OpenAPI and Go declarations directly and compare generated wire
+records and gateway dispatch with the committed Rust. A committed wire file
+that is no longer generated fails the check and is not deleted automatically.
+The PostgreSQL CI job runs both checks. Set `PAPO_BACKEND` to that checkout when
+running the SDK gate; without it, the gate explicitly reports that the
+backend-dependent checks were not run. The Python build tooling needs PyYAML 6.0.3. After reviewing a contract
+change, regenerate with `python3 scripts/papo-api-contract.py --backend <checkout> --write`
+and `python3 scripts/papo-api-events.py --backend <checkout> --write`.
 
 `Gateway::next()` must be polled continuously. It sends application heartbeats
 at 25-second intervals, requires acknowledgement by the next heartbeat, and

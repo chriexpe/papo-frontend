@@ -157,6 +157,9 @@ jobs:
         with:
           go-version-file: .papo/backend-protocol/backend/go.mod
           cache-dependency-path: .papo/backend-protocol/backend/go.sum
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0
@@ -166,6 +169,12 @@ jobs:
         with:
           key: sdk-postgres-protocol
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Check pinned backend protocol drift
+        shell: bash
+        run: |
+          python3 -m pip install PyYAML==6.0.3
+          python3 scripts/papo-api-contract.py --backend .papo/backend-protocol
+          python3 scripts/papo-api-events.py --backend .papo/backend-protocol
       - name: Generate an ephemeral proof password
         shell: bash
         run: |
