@@ -95,7 +95,7 @@ pub type RemovalFuture<'a> =
 /// before resolving. No later mutation may recreate this generation's secrets or cache.
 /// Media cleanup must remove only this account's refs.
 pub trait RemovalHooks: Send + Sync + 'static {
-    /// Stops the account session; there is no production session implementation yet.
+    /// Revokes the account session and waits for admitted credential users to leave.
     fn stop_session(&self, account: AccountId) -> RemovalFuture<'_>;
     /// Removes media refs; there is no media schema or implementation yet.
     fn delete_media_refs(&self, account: AccountId) -> RemovalFuture<'_>;

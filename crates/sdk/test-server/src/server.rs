@@ -14,7 +14,7 @@ use hyper::{Request, Response, body::Incoming, header, server::conn::http1, serv
 use hyper_util::rt::TokioIo;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{Mutex, mpsc, oneshot},
+    sync::{Mutex, broadcast, mpsc, oneshot},
     task::{JoinHandle, JoinSet},
 };
 
@@ -45,6 +45,7 @@ pub(crate) struct State {
 /// to await completion and observe task failures. Each start resets all counters and scripts.
 pub struct TestServer {
     address: SocketAddr,
+    disconnects: broadcast::Sender<()>,
     stop: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), Error>>>,
     state: Arc<Mutex<State>>,
@@ -77,14 +78,17 @@ impl TestServer {
             message_body: None,
         }));
         let (stop, stopped) = oneshot::channel();
+        let (disconnects, _) = broadcast::channel(1);
         let task = tokio::spawn(serve(
             listener,
             Arc::new(config),
             Arc::clone(&state),
             stopped,
+            disconnects.clone(),
         ));
         Ok(Self {
             address,
+            disconnects,
             stop: Some(stop),
             task: Some(task),
             state,
@@ -107,6 +111,18 @@ impl TestServer {
     #[must_use]
     pub fn gateway_url(&self) -> String {
         format!("ws://{}/ws", self.address)
+    }
+
+    /// Drops currently accepted gateway connections without stopping REST or future reconnects.
+    /// Call only after observing the client's Online state; no timer or script delay is needed.
+    pub fn disconnect_gateways(&self) {
+        let _ = self.disconnects.send(());
+    }
+
+    /// Issues a one-use reset capability for a registered fixture user; never logs the token.
+    /// Missing usernames return `None`; no production reset-generation endpoint is exposed.
+    pub async fn issue_password_reset(&self, username: &str) -> Option<String> {
+        self.state.lock().await.auth.issue_password_reset(username)
     }
 
     /// Takes the latest bounded multipart message body, if one was received.
@@ -168,6 +184,7 @@ async fn serve(
     config: Arc<Config>,
     state: Arc<Mutex<State>>,
     mut stopped: oneshot::Receiver<()>,
+    disconnects: broadcast::Sender<()>,
 ) -> Result<(), Error> {
     let mut connections = JoinSet::new();
     loop {
@@ -175,7 +192,7 @@ async fn serve(
             _ = &mut stopped => break,
             accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => {
                 let (stream, _) = accepted.map_err(|_| Error::Listener)?;
-                connections.spawn(connection(stream, Arc::clone(&config), Arc::clone(&state)));
+                connections.spawn(connection(stream, Arc::clone(&config), Arc::clone(&state), disconnects.subscribe()));
             }
             result = connections.join_next(), if !connections.is_empty() => {
                 if result.is_some_and(|result| result.is_err()) { return Err(Error::Task); }
@@ -191,7 +208,12 @@ async fn serve(
     Ok(())
 }
 
-async fn connection(stream: TcpStream, config: Arc<Config>, state: Arc<Mutex<State>>) {
+async fn connection(
+    stream: TcpStream,
+    config: Arc<Config>,
+    state: Arc<Mutex<State>>,
+    disconnects: broadcast::Receiver<()>,
+) {
     let (upgrades, mut upgrade) = mpsc::channel(1);
     let service_config = Arc::clone(&config);
     let gateway_state = Arc::clone(&state);
@@ -222,6 +244,7 @@ async fn connection(stream: TcpStream, config: Arc<Config>, state: Arc<Mutex<Sta
             updates,
             &config.gateway,
             config.ignore_heartbeats,
+            disconnects,
         )
         .await;
         gateway_state.lock().await.presence.leave(&user_id);
@@ -347,46 +370,4 @@ fn encode(mut reply: Reply, base_url: &str) -> HttpResponse {
 }
 
 #[cfg(test)]
-mod tests {
-    //! Owns pure script matching and validation tests; leaves listeners to integration tests.
-
-    use super::*;
-    use crate::Failure;
-
-    #[test]
-    fn invalid_failure_status_is_refused_before_binding() {
-        let config = Config {
-            rest: vec![RestStep {
-                method: "GET".into(),
-                path: "/server".into(),
-                delay_ms: 0,
-                failure: Some(Failure {
-                    status: 200,
-                    slug: "internal".into(),
-                }),
-            }],
-            ..Config::default()
-        };
-        assert!(matches!(validate(&config), Err(Error::Configuration)));
-    }
-
-    #[test]
-    fn script_waits_for_its_matching_request_and_is_consumed_once() {
-        let mut state = State {
-            auth: Auth::new(),
-            presence: Presence::new(),
-            rest: vec![RestStep {
-                method: "GET".into(),
-                path: "/server".into(),
-                delay_ms: 7,
-                failure: None,
-            }]
-            .into(),
-            base_url: String::new(),
-            message_body: None,
-        };
-        assert!(take_step(&mut state, "POST", "/auth/login").is_none());
-        assert_eq!(take_step(&mut state, "GET", "/server").unwrap().delay_ms, 7);
-        assert!(take_step(&mut state, "GET", "/server").is_none());
-    }
-}
+mod tests;

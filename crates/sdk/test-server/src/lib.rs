@@ -1,7 +1,9 @@
 //! Owns a deterministic loopback test backend; leaves production clients and protocol coverage to `papo-api`.
 //!
 //! Supported routes are public `GET /server`, `POST /auth/register`, `POST /auth/login`,
-//! `POST /auth/login_server`, `GET /auth/whoami`, `POST /auth/logout`, and `GET /ws`.
+//! `POST /auth/login_server`, `GET /auth/whoami`, `POST /auth/logout`, `POST /auth/refresh`,
+//! `GET /auth/connected_devices`, `POST /auth/drop_connection`, `POST /auth/password_reset`,
+//! and `GET /ws`. Reset links can be issued by the in-memory fixture capability only.
 //! The gateway supports initial presence, heartbeat and invalid-event errors, plus ordered
 //! scenario frames. It is not a JWT implementation, expiring-session simulator or voice server.
 //! Cookies are opaque deterministic capabilities and keep the backend's Secure attributes;

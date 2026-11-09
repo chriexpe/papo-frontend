@@ -35,7 +35,7 @@ impl Default for StorageConfig {
     }
 }
 
-/// Storage owned by `Client::open` in the next capability. This owns no runtime.
+/// Storage owned by `Client::open`. This owns no runtime.
 /// Open and shutdown run on an external thread; every async mutation runs on the
 /// supplied runtime. A successful open has already attempted all pending removals.
 pub struct Storage {
@@ -164,7 +164,7 @@ impl Storage {
         Arc::clone(&self.registry.readers)
     }
 
-    /// Cancellation root for credential calls and future session task groups.
+    /// Cancellation root for storage-owned credential calls and removal jobs.
     #[must_use]
     pub fn cancellation(&self) -> CancellationToken {
         self.cancel.child_token()

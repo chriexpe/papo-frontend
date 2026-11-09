@@ -15,11 +15,12 @@ url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "multipart"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "0.27", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+cookie_store = { version = "=0.22.1", default-features = false }
 futures-util = { version = "0.3", features = ["sink"] }
 
 [dev-dependencies]
 papo-test-server = { path = "../test-server" }
-tokio = { version = "1", features = ["test-util"] }
+tokio = { version = "1", features = ["test-util", "io-util"] }
 
 [lints]
 workspace = true

@@ -6,6 +6,10 @@ rust-version = "1.98"
 license = "AGPL-3.0-or-later"
 publish = false
 
+[features]
+# In-memory scriptable credential host for examples and integration tests, never a platform backend.
+test-support = []
+
 [dependencies]
 papo-api = { path = "../api" }
 rusqlite = { version = "0.41.1", features = ["bundled", "hooks"] }
@@ -15,7 +19,12 @@ sha2 = "0.10.9"
 thiserror = "2"
 url = "2.5"
 
+[[example]]
+name = "sdk_session"
+required-features = ["test-support"]
+
 [dev-dependencies]
+papo-test-server = { path = "../test-server" }
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 

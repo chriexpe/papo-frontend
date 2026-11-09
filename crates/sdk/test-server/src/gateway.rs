@@ -58,6 +58,7 @@ pub(crate) async fn serve<S>(
     mut updates: tokio::sync::broadcast::Receiver<Value>,
     script: &[GatewayStep],
     ignore_heartbeats: bool,
+    mut disconnects: tokio::sync::broadcast::Receiver<()>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -123,6 +124,7 @@ pub(crate) async fn serve<S>(
             .min(next_ping)
             .min(pong_deadline);
         tokio::select! {
+            _ = disconnects.recv() => return,
             update = updates.recv() => {
                 let Ok(update) = update else { let _ = socket.close(None).await; return; };
                 if socket.send(Message::text(update.to_string())).await.is_err() { return; }

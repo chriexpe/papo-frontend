@@ -18,7 +18,7 @@
 mod boundary;
 #[cfg(test)]
 mod generation_tests;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_store;
 #[cfg(test)]
 mod tests;

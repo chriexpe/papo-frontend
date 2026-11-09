@@ -1,5 +1,6 @@
 //! Owns one server's cookie-authenticated REST transport; session persistence and retry belong to the SDK.
 
+use crate::credentials::CookieJar;
 use crate::{
     Error, HistoryQuery, Uuid,
     routes::{self, Route},
@@ -8,22 +9,20 @@ use crate::{
         Message, MessageListResponse, Problem, Server, UpdateChannelRequest, UpdateMessageRequest,
     },
 };
-use reqwest::{
-    Method, RequestBuilder, Response,
-    cookie::{CookieStore, Jar},
-};
+use reqwest::{Method, RequestBuilder, Response, cookie::CookieStore};
 use serde::{Serialize, de::DeserializeOwned};
 use std::sync::Arc;
 
 /// An in-memory cookie transport scoped to exactly one validated backend address.
 /// It follows no redirects, persists no cookies and performs no policy retries.
+/// Clones share cookies within one SDK generation. Cross-generation use must restore
+/// a snapshot into a new client so stale responses can mutate only their original jar.
 #[derive(Clone)]
 pub struct RestClient {
     client: reqwest::Client,
     anonymous: reqwest::Client,
-    cookies: Arc<Jar>,
+    cookies: Arc<CookieJar>,
     base: url::Url,
-    insecure_loopback: bool,
 }
 
 impl RestClient {
@@ -42,24 +41,46 @@ impl RestClient {
     }
 
     fn create(address: &str, insecure_loopback: bool) -> Result<Self, Error> {
-        let mut base = url::Url::parse(address).map_err(|_| Error::Address)?;
-        if !matches!(base.scheme(), "http" | "https")
-            || base.host_str().is_none()
-            || !base.username().is_empty()
-            || base.password().is_some()
-            || base.query().is_some()
-            || base.fragment().is_some()
-            || (insecure_loopback
-                && !base.host_str().is_some_and(|host| {
-                    host.trim_matches(['[', ']'])
-                        .parse::<std::net::IpAddr>()
-                        .is_ok_and(|ip| ip.is_loopback())
-                }))
-        {
-            return Err(Error::Address);
-        }
-        base.set_path(&format!("{}/", base.path().trim_end_matches('/')));
-        let cookies = Arc::new(Jar::default());
+        Self::with_cookies(address, insecure_loopback, None)
+    }
+
+    /// Captures scoped cookies as opaque bytes for the caller's secret store.
+    /// # Errors
+    /// Returns a sanitized credential failure if the snapshot cannot be represented.
+    pub fn credential_snapshot(&self) -> Result<crate::CredentialSnapshot, Error> {
+        self.cookies.snapshot(&self.base)
+    }
+
+    /// Restores into a fresh independent transport, never sharing a prior response cookie jar.
+    /// # Errors
+    /// Rejects invalid addresses and snapshots bound to a different normalized base URL.
+    pub fn from_snapshot(
+        address: &str,
+        snapshot: &crate::CredentialSnapshot,
+    ) -> Result<Self, Error> {
+        Self::with_cookies(address, false, Some(snapshot))
+    }
+
+    /// Restores a fresh transport with the literal-loopback Secure-cookie exception.
+    /// # Errors
+    /// Rejects non-loopback addresses and invalid or differently scoped snapshots.
+    pub fn loopback_from_snapshot(
+        address: &str,
+        snapshot: &crate::CredentialSnapshot,
+    ) -> Result<Self, Error> {
+        Self::with_cookies(address, true, Some(snapshot))
+    }
+
+    fn with_cookies(
+        address: &str,
+        insecure_loopback: bool,
+        snapshot: Option<&crate::CredentialSnapshot>,
+    ) -> Result<Self, Error> {
+        let base = validated_base(address, insecure_loopback)?;
+        let cookies = Arc::new(match snapshot {
+            Some(snapshot) => snapshot.restore(&base, insecure_loopback)?,
+            None => CookieJar::new(insecure_loopback),
+        });
         let client = reqwest::Client::builder()
             .cookie_provider(Arc::clone(&cookies))
             .redirect(reqwest::redirect::Policy::none())
@@ -76,7 +97,6 @@ impl RestClient {
             anonymous,
             cookies,
             base,
-            insecure_loopback,
         })
     }
 
@@ -87,7 +107,7 @@ impl RestClient {
     }
 
     pub(crate) fn gateway_cookie(&self) -> Option<reqwest::header::HeaderValue> {
-        self.cookies.cookies(&self.base)
+        self.cookies.cookies(&self.endpoint("ws").ok()?)
     }
 
     pub(crate) fn request(&self, method: Method, path: &str) -> Result<RequestBuilder, Error> {
@@ -103,34 +123,25 @@ impl RestClient {
     }
 
     pub(crate) async fn response(&self, request: RequestBuilder) -> Result<Response, Error> {
-        self.response_inner(request, true).await
+        Self::response_inner(&self.client, request).await
     }
 
     pub(crate) async fn anonymous_response(
         &self,
         request: RequestBuilder,
     ) -> Result<Response, Error> {
-        self.response_inner(request, false).await
+        Self::response_inner(&self.anonymous, request).await
     }
 
     async fn response_inner(
-        &self,
+        client: &reqwest::Client,
         request: RequestBuilder,
-        authenticated: bool,
     ) -> Result<Response, Error> {
-        let response = request.send().await.map_err(|_| Error::Transport)?;
-        if authenticated && self.insecure_loopback {
-            for cookie in response.headers().get_all(reqwest::header::SET_COOKIE) {
-                if let Ok(cookie) = cookie.to_str() {
-                    let cookie = cookie
-                        .split(';')
-                        .filter(|part| !part.trim().eq_ignore_ascii_case("secure"))
-                        .collect::<Vec<_>>()
-                        .join(";");
-                    self.cookies.add_cookie_str(&cookie, &self.base);
-                }
-            }
-        }
+        let request = request.build().map_err(|_| Error::Transport)?;
+        let response = client
+            .execute(request)
+            .await
+            .map_err(|_| Error::Transport)?;
         let status = response.status();
         if status.is_success() {
             return Ok(response);
@@ -333,4 +344,26 @@ pub struct MessageAttachment<'a> {
     pub filename: &'a str,
     /// Unmodified file contents.
     pub bytes: &'a [u8],
+}
+
+/// Validates and normalizes the sole server scope used by transports and snapshots.
+pub(crate) fn validated_base(address: &str, insecure_loopback: bool) -> Result<url::Url, Error> {
+    let mut base = url::Url::parse(address).map_err(|_| Error::Address)?;
+    if !matches!(base.scheme(), "http" | "https")
+        || base.host_str().is_none()
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+        || (insecure_loopback
+            && !base.host_str().is_some_and(|host| {
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+            }))
+    {
+        return Err(Error::Address);
+    }
+    base.set_path(&format!("{}/", base.path().trim_end_matches('/')));
+    Ok(base)
 }

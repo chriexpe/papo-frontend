@@ -1,5 +1,7 @@
 //! Owns deterministic registration, cookie sessions and discovery; leaves sockets and script timing outside.
 
+mod connections;
+
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
@@ -21,6 +23,8 @@ struct User {
 pub(crate) struct Auth {
     users: BTreeMap<String, User>,
     sessions: BTreeMap<String, String>,
+    connections: BTreeMap<String, String>,
+    resets: BTreeMap<String, String>,
     temporary: Vec<String>,
     next_id: u64,
 }
@@ -36,6 +40,8 @@ impl Auth {
         Self {
             users: BTreeMap::new(),
             sessions: BTreeMap::new(),
+            connections: BTreeMap::new(),
+            resets: BTreeMap::new(),
             temporary: Vec::new(),
             next_id: 1,
         }
@@ -66,9 +72,14 @@ impl Auth {
             }
             ("POST", "/auth/login_server") => self.login_server(config, path, body),
             ("GET", "/auth/whoami") => self.whoami(path, cookie),
+            ("POST", "/auth/refresh") => self.refresh(path, cookie),
+            ("GET", "/auth/connected_devices") => self.devices(path, cookie),
+            ("POST", "/auth/drop_connection") => self.drop_connection(path, cookie, body),
+            ("POST", "/auth/password_reset") => self.password_reset(config, path, body),
             ("POST", "/auth/logout") => {
                 if let Some(cookie) = cookie {
                     self.sessions.remove(cookie);
+                    self.connections.remove(cookie);
                 }
                 Reply::empty().clear_cookie()
             }
@@ -156,6 +167,8 @@ impl Auth {
                 json!({"user": {"id": id, "username": user.username}, "connection_violation": false}),
             );
             let token = self.id();
+            let connection = self.id();
+            self.connections.insert(token.clone(), connection);
             self.sessions.insert(token.clone(), id);
             reply.with_cookie(&token, 2_592_000)
         }

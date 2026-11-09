@@ -2,6 +2,8 @@
 
 pub mod administration;
 mod auth;
+mod credentials;
+pub use credentials::CredentialSnapshot;
 mod embeds;
 mod error;
 pub mod gateway;
