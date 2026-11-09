@@ -229,12 +229,13 @@ def route_table(spec):
             success = ', '.join(str(status) for status in sorted(
                 int(code) for code in operation.get('responses', {})
                 if code.isdigit() and 200 <= int(code) < 300))
+            body_field = f'    request_body: Some("{request_body}"),' if request_body else '    request_body: None,'
             lines += [f'/// `{method.upper()} {path}`.',
                       f'pub(crate) const {name}: Route = Route {{',
                       f'    method: reqwest::Method::{method.upper()},',
                       f'    path: "{path}",',
                       f'    query: &[{query}],',
-                      f'    request_body: {f"Some(\"{request_body}\")" if request_body else "None"},',
+                      body_field,
                       f'    success: &[{success}],',
                       '};',
                       '']
