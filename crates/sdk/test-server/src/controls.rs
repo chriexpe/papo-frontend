@@ -189,6 +189,18 @@ impl TestServer {
         Ok(())
     }
 
+    /// Removes a member and their on-demand profile without emitting a synthetic leave event.
+    /// Returns false when the fixture had no such member.
+    pub async fn remove_member(&self, user_id: &str) -> bool {
+        self.state
+            .lock()
+            .await
+            .resources
+            .profiles
+            .remove(user_id)
+            .is_some()
+    }
+
     /// Replaces one account's visible DMs and emits `dm_update` only to that account.
     /// Removing a DM from this snapshot has no synthetic deletion event.
     /// # Errors

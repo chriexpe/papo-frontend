@@ -29,6 +29,7 @@ pub(crate) async fn handle(
     let cookie = cookie_value(request.headers()).map(str::to_owned);
     let (step, base_url) = {
         let mut state = state.lock().await;
+        state.member_requests.record(&method, &path);
         (
             take_step(&mut state, &method, &path),
             state.base_url.clone(),

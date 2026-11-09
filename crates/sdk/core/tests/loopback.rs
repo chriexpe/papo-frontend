@@ -9,6 +9,8 @@ mod cache;
 mod fixture;
 #[path = "loopback/lifecycle.rs"]
 mod lifecycle;
+#[path = "loopback/member_refresh.rs"]
+mod member_refresh;
 #[path = "loopback/profiles.rs"]
 mod profiles;
 #[path = "loopback/reconcile.rs"]

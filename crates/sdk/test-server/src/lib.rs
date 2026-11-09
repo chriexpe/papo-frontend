@@ -23,6 +23,7 @@ mod config;
 mod controls;
 mod gateway;
 mod media;
+mod member_requests;
 mod members;
 mod presence;
 mod request;
@@ -33,6 +34,7 @@ mod server;
 
 pub use config::{Config, Failure, GatewayStep, RestStep};
 pub use media::{MediaRequest, MediaTestServer};
+pub use member_requests::MemberRequestCounts;
 pub use rest_hold::RestHold;
 pub use server::TestServer;
 

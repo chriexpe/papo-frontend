@@ -1,7 +1,10 @@
 //! Resource-specific live event merges; connection journaling and generation checks live in the pump.
 
 use crate::{CacheResource, ClientError, ResourceSnapshot, reconcile::ResourceConnection};
-use papo_api::gateway::{Event, KnownEvent, PresenceMember};
+use papo_api::{
+    gateway::{Event, KnownEvent, PresenceMember},
+    wire::UserSummaryBatchRequest,
+};
 use std::sync::Arc;
 
 pub(crate) fn relevant(event: &Event) -> bool {
@@ -98,7 +101,34 @@ async fn refresh_member(
     snapshot: &mut ResourceSnapshot,
     user: &str,
 ) -> Result<Option<Vec<CacheResource>>, ClientError> {
-    snapshot.members = crate::reconcile_fetch::members(connection).await?.into();
+    let request = UserSummaryBatchRequest {
+        ids: vec![user.to_owned()],
+    };
+    let summaries = connection
+        .client
+        .inner
+        .request(connection.rest.user_summaries(&request))
+        .await?;
+    if summaries.len() > 1
+        || summaries
+            .iter()
+            .any(|summary| summary.id.as_deref() != Some(user))
+    {
+        return Err(ClientError::ResourceData);
+    }
+    let members = Arc::make_mut(&mut snapshot.members);
+    if let Some(summary) = summaries.into_iter().next() {
+        if let Some(member) = members
+            .iter_mut()
+            .find(|member| member.id.as_deref() == Some(user))
+        {
+            *member = summary;
+        } else {
+            members.push(summary);
+        }
+    } else {
+        members.retain(|member| member.id.as_deref() != Some(user));
+    }
     // Profile changes invalidate only requested profiles. A new member does not fetch an avatar blob.
     Arc::make_mut(&mut snapshot.profiles).retain(|profile| profile.id.as_deref() != Some(user));
     Ok(Some(vec![CacheResource::Members, CacheResource::Profiles]))
