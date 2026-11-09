@@ -12,8 +12,12 @@ fi
 "$python_bin" -B scripts/prepare-winit.py
 "$python_bin" -B -m unittest discover -s tests -p 'test_sdk_boundaries.py'
 "$python_bin" -B scripts/check-sdk-boundaries.py
-"$python_bin" -B scripts/papo-api-contract.py
-"$python_bin" -B scripts/papo-api-events.py
+if [[ -n "${PAPO_BACKEND:-}" ]]; then
+    "$python_bin" -B scripts/papo-api-contract.py --backend "$PAPO_BACKEND"
+    "$python_bin" -B scripts/papo-api-events.py --backend "$PAPO_BACKEND"
+else
+    echo "Backend contract and gateway drift checks not run: PAPO_BACKEND is unset."
+fi
 "$python_bin" -B -m unittest discover -s tests -p 'test_papo_api_contract.py'
 cargo fmt "${packages[@]}" -- --check
 cargo clippy --locked "${packages[@]}" --all-targets --all-features -- -D warnings

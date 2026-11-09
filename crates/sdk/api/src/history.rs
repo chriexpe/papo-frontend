@@ -1,5 +1,6 @@
 //! Owns exact history cursor transport; ordering and cache continuity belong to the SDK.
 
+use crate::routes;
 use serde::Serialize;
 
 /// Exact backend cursor. Never parse/reformat `created_at` before sending it back.
@@ -23,7 +24,7 @@ impl crate::wire::Message {
 }
 
 /// Direction of the backend's strict tuple comparison.
-#[derive(Clone, Copy, Default, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HistoryOrder {
     /// Older messages, newest first.
@@ -31,6 +32,15 @@ pub enum HistoryOrder {
     Desc,
     /// Newer messages, oldest first.
     Asc,
+}
+
+impl HistoryOrder {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
 }
 
 /// One history request; the server validates the page size (1 through 100).
@@ -46,20 +56,13 @@ pub struct HistoryQuery<'a> {
 
 impl HistoryQuery<'_> {
     pub(crate) fn parameters(&self) -> Vec<(&'static str, String)> {
-        let mut parameters = vec![(
-            "order",
-            match self.order {
-                HistoryOrder::Asc => "asc",
-                HistoryOrder::Desc => "desc",
-            }
-            .into(),
-        )];
+        let mut parameters = vec![(routes::ORDER, self.order.as_str().to_owned())];
         if let Some(cursor) = self.cursor {
-            parameters.push(("since", cursor.created_at.clone()));
-            parameters.push(("last_id", cursor.id.clone()));
+            parameters.push((routes::SINCE, cursor.created_at.clone()));
+            parameters.push((routes::LAST_ID, cursor.id.clone()));
         }
         if let Some(limit) = self.limit {
-            parameters.push(("limit", limit.to_string()));
+            parameters.push((routes::LIMIT, limit.to_string()));
         }
         parameters
     }
