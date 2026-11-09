@@ -1,0 +1,51 @@
+name: papo-desktop
+
+# The desktop client is paused until its UI framework is chosen, so this check
+# runs only when the desktop crate or its check changes, or on request. The
+# workspace jobs exclude papo-desktop; run this before desktop work resumes.
+on:
+  pull_request:
+    paths:
+      - crates/papo-desktop/**
+      - scripts/papo-desktop-check.sh
+      - .github/workflows/papo-desktop.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CLIPPY_TOOLCHAIN: 1.98.0
+
+jobs:
+  papo-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
+          components: clippy, rustfmt
+      - name: Dependências de sistema
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        uses: ./.github/actions/install-linux-deps
+      # The check script prepares the winit patch itself; this sets up the
+      # Python it needs, as the other jobs do.
+      - uses: ./.github/actions/prepare-winit
+      # Restore only: the job's caches (~3.4 GB) pushed the repository past
+      # the 10 GB Actions quota and evicted the GStreamer SDK cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: papo-desktop
+          save-if: false
+      - name: Check papo-desktop
+        shell: bash
+        run: bash scripts/papo-desktop-check.sh
