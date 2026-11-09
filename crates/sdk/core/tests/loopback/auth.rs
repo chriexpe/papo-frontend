@@ -185,7 +185,7 @@ fn failed_server_probe_is_not_committed_to_the_registry() -> Result {
                 ..
             }))
         ));
-        assert!(handle.subscribe_registry().borrow().servers.is_empty());
+        assert_eq!(handle.subscribe_registry().borrow().servers.len(), 0);
         assert!(
             handle
                 .add_server(&fixture.server().base_url(), UnixMicros(0))

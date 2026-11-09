@@ -2,7 +2,7 @@
 name = "papo-desktop"
 version = "0.9.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 description = "Papo desktop client on GPUI Kit, built from scratch on papo-core"
 license = "AGPL-3.0-or-later"
 publish = false

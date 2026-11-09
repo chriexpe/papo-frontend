@@ -18,7 +18,7 @@ env:
   # ninguém mexeu fica vermelho. A versão que barra o merge é fixa e sobe
   # quando alguém decide subir; o job `clippy-novo` avisa do que vem por aí
   # sem derrubar nada.
-  CLIPPY_TOOLCHAIN: 1.98.0
+  CLIPPY_TOOLCHAIN: 1.99.1
 
 jobs:
   test:

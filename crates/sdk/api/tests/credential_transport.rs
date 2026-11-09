@@ -83,10 +83,10 @@ async fn restore_never_reuses_a_stale_response_jar() {
     let snapshot = original.credential_snapshot().unwrap();
     let restored = RestClient::loopback_from_snapshot(&address, &snapshot).unwrap();
     original.server().await.unwrap();
-    assert!(cookies(&original).is_empty());
+    assert_eq!(cookies(&original).len(), 0);
     assert_eq!(cookies(&restored).len(), 1);
     restored.server().await.unwrap();
-    assert!(cookies(&restored).is_empty());
+    assert_eq!(cookies(&restored).len(), 0);
     let independent = RestClient::loopback_from_snapshot(&address, &snapshot).unwrap();
     independent.server().await.unwrap();
     let observed = server.await.unwrap();
@@ -117,7 +117,10 @@ async fn temporary_server_auth_is_replaced_by_session_auth_and_deletion_persists
     assert!(saved[0].starts_with(&session));
     client.server().await.unwrap();
     let snapshot = client.credential_snapshot().unwrap();
-    assert!(cookies(&RestClient::loopback_from_snapshot(&address, &snapshot).unwrap()).is_empty());
+    assert_eq!(
+        cookies(&RestClient::loopback_from_snapshot(&address, &snapshot).unwrap()).len(),
+        0
+    );
     let observed = server.await.unwrap();
     assert!(
         observed[1]

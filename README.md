@@ -61,7 +61,7 @@ PAPO_FIREBASE_SENDER_ID=…               # project_info.project_number
 
 Sem ela o APK sai sem FCM, e as notificações com o app fechado ficam com a verificação periódica do WorkManager.
 
-O projeto requer **Rust 1.98+**.
+O projeto requer **Rust 1.99+**.
 
 A correção de visibilidade da janela no Wayland fica em um arquivo `.patch`.
 O preparo usa **Python 3.11+**, **Git** e a checksum-pinned crate archive; repita

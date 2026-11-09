@@ -53,7 +53,7 @@ fn account_removal_revokes_only_its_handles_and_server_removal_revokes_the_rest(
         assert!(!second.is_closed());
         assert_eq!(online(&second).await?, second_generation);
         assert_eq!(handle.subscribe_registry().borrow().accounts.len(), 1);
-        assert!(handle.subscribe_registry().borrow().removals.is_empty());
+        assert_eq!(handle.subscribe_registry().borrow().removals.len(), 0);
         handle.remove_server(server).await?;
         assert!(second.is_closed());
         assert!(matches!(
@@ -61,9 +61,9 @@ fn account_removal_revokes_only_its_handles_and_server_removal_revokes_the_rest(
             Err(SessionEventError::Closed)
         ));
         let snapshot = handle.subscribe_registry().borrow().clone();
-        assert!(snapshot.servers.is_empty());
-        assert!(snapshot.accounts.is_empty());
-        assert!(snapshot.removals.is_empty());
+        assert_eq!(snapshot.servers.len(), 0);
+        assert_eq!(snapshot.accounts.len(), 0);
+        assert_eq!(snapshot.removals.len(), 0);
         assert!(matches!(handle.auth(server), Err(ClientError::NotFound)));
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
@@ -110,8 +110,8 @@ fn failed_secret_cleanup_stays_hidden_and_observable_across_retry_and_restart() 
         ));
         handle.retry_removals().await?;
         let snapshot = handle.subscribe_registry().borrow().clone();
-        assert!(snapshot.accounts.is_empty());
-        assert!(snapshot.removals.is_empty());
+        assert_eq!(snapshot.accounts.len(), 0);
+        assert_eq!(snapshot.removals.len(), 0);
         assert_eq!(snapshot.servers.len(), 1);
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
@@ -120,7 +120,7 @@ fn failed_secret_cleanup_stays_hidden_and_observable_across_retry_and_restart() 
 
 fn assert_pending_failure(handle: &papo_sdk::ClientHandle, account: papo_sdk::AccountId) {
     let snapshot = handle.subscribe_registry().borrow().clone();
-    assert!(snapshot.accounts.is_empty());
+    assert_eq!(snapshot.accounts.len(), 0);
     assert_eq!(snapshot.removals.len(), 1);
     let job = &snapshot.removals[0];
     assert_eq!(job.target, RemovalTarget::Account(account));
