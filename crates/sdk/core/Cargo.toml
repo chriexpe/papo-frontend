@@ -8,9 +8,16 @@ publish = false
 
 [dependencies]
 papo-api = { path = "../api" }
+rusqlite = { version = "0.41.1", features = ["bundled", "hooks"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 sha2 = "0.10.9"
 thiserror = "2"
 url = "2.5"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
 
 [lints]
 workspace = true
