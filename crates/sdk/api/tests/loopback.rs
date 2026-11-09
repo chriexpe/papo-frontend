@@ -2,7 +2,7 @@
 
 use papo_api::{
     Error, ProblemKind, RestClient,
-    gateway::{CloseReason, Event, Gateway, KnownEvent},
+    gateway::{CloseReason, Command, Event, Gateway, KnownEvent},
     wire::{LoginRequest, RegisterRequest},
 };
 use papo_test_server::{Config, Failure, GatewayStep, RestStep, TestServer};
@@ -140,12 +140,12 @@ async fn malformed_known_event_is_an_error_instead_of_unknown() {
     server.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
-async fn heartbeat_is_acknowledged_without_application_activity() {
+#[tokio::test]
+async fn explicit_heartbeat_is_acknowledged_without_application_activity() {
     let (server, client) = signed_in(Config::default()).await;
     let mut gateway = Gateway::connect(&client).await.unwrap();
     gateway.next().await.unwrap();
-    // The paused runtime advances to the next heartbeat while socket IO remains active.
+    gateway.send(&Command::Heartbeat).await.unwrap();
     assert_eq!(
         gateway.next().await.unwrap().unwrap().kind(),
         "heartbeat_ack"
