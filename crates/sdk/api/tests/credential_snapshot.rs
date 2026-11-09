@@ -84,7 +84,7 @@ fn expired_snapshots_import_but_restore_without_expired_credentials() {
     ))
     .unwrap();
     let client = RestClient::from_snapshot(base, &snapshot).unwrap();
-    assert!(cookies(&client.credential_snapshot().unwrap()).is_empty());
+    assert_eq!(cookies(&client.credential_snapshot().unwrap()).len(), 0);
 }
 
 #[test]
