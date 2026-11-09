@@ -75,6 +75,9 @@ pub enum Error {
     /// The supplied base URL violates the HTTP transport contract.
     #[error("invalid API address")]
     Address,
+    /// Credential snapshot encoding, bounds or scope validation failed.
+    #[error("invalid API credential snapshot")]
+    Credentials,
     /// A request failed; dispatch may have occurred. No automatic retry is performed.
     #[error("API transport failed")]
     Transport,

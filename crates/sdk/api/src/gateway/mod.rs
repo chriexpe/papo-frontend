@@ -161,8 +161,8 @@ impl Event {
 
 /// A single socket; callers must poll `next` continuously to service heartbeats.
 /// Dropping the socket cancels it. No background task, retry or reconnect is created.
-pub struct Gateway {
-    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+pub struct Gateway<S = MaybeTlsStream<TcpStream>> {
+    socket: WebSocketStream<S>,
     heartbeat: tokio::time::Interval,
     awaiting_ack: bool,
     ended: bool,
@@ -198,16 +198,25 @@ impl Gateway {
                         Error::Transport
                     }
                 })?;
+        Ok(Self::from_socket(socket))
+    }
+}
+
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Gateway<S> {
+    /// Takes ownership of one already-upgraded socket; never connects or reconnects.
+    /// Heartbeats begin 25 seconds after construction; callers must poll `next`.
+    #[must_use]
+    pub fn from_socket(socket: WebSocketStream<S>) -> Self {
         let heartbeat = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs(25),
             Duration::from_secs(25),
         );
-        Ok(Self {
+        Self {
             socket,
             heartbeat,
             awaiting_ack: false,
             ended: false,
-        })
+        }
     }
 
     /// Writes a command on this connection without waiting for server acceptance.
@@ -322,3 +331,6 @@ mod tests {
         assert_eq!(CloseReason::from(4001), CloseReason::Other(4001));
     }
 }
+
+#[cfg(test)]
+mod timing_tests;

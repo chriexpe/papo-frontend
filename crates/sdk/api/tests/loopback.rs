@@ -178,20 +178,3 @@ async fn protocol_pings_binary_events_and_typed_close_are_serviced() {
     ));
     server.shutdown().await.unwrap();
 }
-
-#[tokio::test(start_paused = true)]
-async fn missing_heartbeat_ack_times_out_without_reconnecting() {
-    let (server, client) = signed_in(Config {
-        ignore_heartbeats: true,
-        ..Config::default()
-    })
-    .await;
-    let mut gateway = Gateway::connect(&client).await.unwrap();
-    gateway.next().await.unwrap();
-    assert!(matches!(
-        gateway.next().await,
-        Err(papo_api::gateway::Error::HeartbeatTimeout)
-    ));
-    assert!(gateway.next().await.unwrap().is_none());
-    server.shutdown().await.unwrap();
-}

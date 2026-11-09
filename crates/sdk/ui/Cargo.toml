@@ -8,9 +8,10 @@ publish = false
 
 [dependencies]
 papo-sdk = { path = "../core" }
-
-[dev-dependencies]
 eyeball-im = "=0.9.1"
+futures-util = "0.3"
+imbl = "=7.0.2"
+tokio = { version = "1", features = ["sync"] }
 
 [lints]
 workspace = true
