@@ -43,6 +43,8 @@ pub(crate) async fn run(
             .await?;
         session.epochs.validate(epoch.generation)?;
         connection.cache.replace(&snapshot).await?;
+        crate::history::reconnect::resources(session, connection, &snapshot).await?;
+        crate::history::reconnect::refresh(session, connection, epoch.generation).await?;
         session.publish_resources(snapshot)
     })
     .await?;
@@ -65,6 +67,12 @@ async fn replay(
     while let Some(event) = journal.pop_front() {
         if matches!(event, Event::Closed(_)) {
             return Err(ClientError::Gateway(papo_api::gateway::Error::Transport));
+        }
+        if crate::history::live::relevant(&event) {
+            collect(session, epoch, socket, journal, async {
+                crate::history::live::apply(session, connection, epoch.generation, &event).await
+            })
+            .await?;
         }
         if !crate::reconcile_event::relevant(&event) {
             session.epochs.apply(epoch.generation, || {
@@ -95,6 +103,14 @@ async fn replay(
                         .await?;
                 }
                 connection.cache.update(&snapshot, &changed).await?;
+                if changed.iter().any(|resource| {
+                    matches!(
+                        resource,
+                        crate::CacheResource::Channels | crate::CacheResource::Dms
+                    )
+                }) {
+                    crate::history::reconnect::resources(session, connection, &snapshot).await?;
+                }
                 session.publish_resources(snapshot)?;
             }
             session.epochs.apply(epoch.generation, || {

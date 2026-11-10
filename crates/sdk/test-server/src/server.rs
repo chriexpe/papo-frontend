@@ -27,6 +27,7 @@ pub(crate) struct State {
     pub(crate) auth: Auth,
     pub(crate) presence: Presence,
     pub(crate) resources: Resources,
+    pub(crate) history: crate::history::History,
     pub(crate) member_requests: crate::MemberRequestCounts,
     pub(crate) holds: Vec<PendingHold>,
     pub(crate) gateway_accepting: bool,
@@ -62,6 +63,7 @@ impl TestServer {
     /// Returns [`Error::Configuration`] for invalid scenarios or [`Error::Bind`] if binding fails.
     pub async fn on_port(config: Config, port: u16) -> Result<Self, Error> {
         validate(&config)?;
+        let (resources, history) = crate::history_seed::prepare(&config.history)?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .await
             .map_err(|_| Error::Bind)?;
@@ -69,7 +71,8 @@ impl TestServer {
         let state = Arc::new(Mutex::new(State {
             auth: Auth::new(),
             presence: Presence::new(),
-            resources: Resources::default(),
+            resources,
+            history,
             member_requests: crate::MemberRequestCounts::default(),
             holds: Vec::new(),
             gateway_accepting: true,

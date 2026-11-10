@@ -128,7 +128,7 @@ pub(crate) async fn serve<S>(
             _ = disconnects.recv() => return,
             update = updates.recv() => {
                 let Ok(update) = update else { let _ = socket.close(None).await; return; };
-                if update.recipient.as_deref().is_none_or(|recipient| recipient == user_id) && socket.send(Message::text(update.payload.to_string())).await.is_err() { return; }
+                if update.visible_to(user_id) && socket.send(Message::text(update.payload.to_string())).await.is_err() { return; }
             }
             () = tokio::time::sleep_until(wake_at) => {
                 let now = tokio::time::Instant::now();
@@ -203,3 +203,6 @@ mod tests {
         assert!(origin_allowed(&HeaderMap::new(), &[]));
     }
 }
+
+#[cfg(test)]
+mod timing_tests;

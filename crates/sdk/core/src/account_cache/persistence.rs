@@ -69,17 +69,7 @@ pub(super) async fn replace(
             context.validate(generation)?;
         }
     }
-    let mut switch: Vec<_> = encoded
-        .tables
-        .iter()
-        .map(|(index, _)| SqlMutation::new(TABLES[*index].switch, vec![Value::Integer(revision)]))
-        .collect();
-    switch.push(SqlMutation::new(
-        "UPDATE cache_metadata SET snapshot_version=?1 WHERE singleton=1",
-        vec![Value::Integer(encoded.version)],
-    ));
-    context.validate(generation)?;
-    context.writer.commit(SqlBatch::new(switch)?).await?;
+    publish(context, &encoded, &metadata, generation).await?;
     for table in &TABLES {
         loop {
             let result = context
@@ -94,8 +84,77 @@ pub(super) async fn replace(
             }
         }
     }
+    super::history_purge::purge(context).await?;
     context.writer.checkpoint().await?;
     drop(fence);
+    Ok(())
+}
+
+/// Publish resource pointers and the durable history marker in one bounded transaction.
+async fn publish(
+    context: &CacheContext,
+    encoded: &Encoded,
+    metadata: &schema::Metadata,
+    generation: Generation,
+) -> Result<(), CacheError> {
+    let account = context.account;
+    let revision = metadata.next_revision;
+    let version = encoded.version;
+    let channels_changed = encoded.tables.iter().any(|(index, _)| *index == 1);
+    let dms_changed = encoded.tables.iter().any(|(index, _)| *index == 5);
+    let visibility_changed = channels_changed || dms_changed;
+    if visibility_changed {
+        super::history_manifest::stage(
+            context,
+            revision,
+            if channels_changed {
+                revision
+            } else {
+                metadata.revisions[1]
+            },
+            if dms_changed {
+                revision
+            } else {
+                metadata.revisions[5]
+            },
+            generation,
+        )
+        .await?;
+    }
+    let switch: Vec<_> = encoded
+        .tables
+        .iter()
+        .map(|(index, _)| TABLES[*index].switch)
+        .collect();
+    let check = Arc::clone(&context.generation);
+    context.validate(generation)?;
+    context
+        .writer
+        .cache_write(move |transaction| {
+            schema::metadata(transaction, account).map_err(WorkerError::from)?;
+            super::history::validate_generation(&check, generation)?;
+            for statement in switch {
+                transaction
+                    .execute(statement, [revision])
+                    .map_err(WorkerError::from)?;
+            }
+            transaction
+                .execute(
+                    "UPDATE cache_metadata SET snapshot_version=?1 WHERE singleton=1",
+                    [version],
+                )
+                .map_err(WorkerError::from)?;
+            if visibility_changed {
+                transaction
+                    .execute(
+                        "UPDATE cache_metadata SET history_revision=?1 WHERE singleton=1",
+                        [revision],
+                    )
+                    .map_err(WorkerError::from)?;
+            }
+            super::history::validate_generation(&check, generation)
+        })
+        .await?;
     Ok(())
 }
 

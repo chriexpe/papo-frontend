@@ -1,14 +1,24 @@
 //! Owns counted live gateway presence and bounded updates; leaves identity and socket ownership outside.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
 #[derive(Clone)]
 pub(crate) struct Update {
-    pub(crate) recipient: Option<String>,
+    recipient: Option<String>,
+    excluded: BTreeSet<String>,
     pub(crate) payload: Value,
+}
+
+impl Update {
+    pub(crate) fn visible_to(&self, user_id: &str) -> bool {
+        self.recipient
+            .as_deref()
+            .is_none_or(|recipient| recipient == user_id)
+            && !self.excluded.contains(user_id)
+    }
 }
 
 pub(crate) struct Presence {
@@ -46,6 +56,15 @@ impl Presence {
     pub(crate) fn emit(&self, recipient: Option<&str>, payload: Value) {
         let _ = self.updates.send(Update {
             recipient: recipient.map(str::to_owned),
+            excluded: BTreeSet::new(),
+            payload,
+        });
+    }
+
+    pub(crate) fn emit_except(&self, excluded: BTreeSet<String>, payload: Value) {
+        let _ = self.updates.send(Update {
+            recipient: None,
+            excluded,
             payload,
         });
     }
@@ -96,5 +115,26 @@ mod tests {
         ));
         presence.leave("member");
         assert_eq!(updates.try_recv().unwrap().payload["status"], "offline");
+    }
+}
+
+#[cfg(test)]
+mod audience_tests {
+    //! Owns pure account filtering and bounded-broadcast proofs; leaves frame transport outside.
+    use super::*;
+
+    #[test]
+    fn filtered_history_event_is_one_broadcast_not_one_per_reader() {
+        let mut presence = Presence::new();
+        let (_, mut updates) = presence.join("reader");
+        let excluded = (0..10_000).map(|index| format!("denied-{index}")).collect();
+        presence.emit_except(excluded, json!({"type": "heartbeat_ack"}));
+        let update = updates.try_recv().unwrap();
+        assert!(update.visible_to("reader"));
+        assert!(!update.visible_to("denied-9999"));
+        assert!(matches!(
+            updates.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 }

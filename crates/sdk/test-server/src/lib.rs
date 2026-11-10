@@ -3,7 +3,8 @@
 //! Supported routes are public `GET /server`, `POST /auth/register`, `POST /auth/login`,
 //! `POST /auth/login_server`, `GET /auth/whoami`, `POST /auth/logout`, `POST /auth/refresh`,
 //! `GET /auth/connected_devices`, `POST /auth/drop_connection`, `POST /auth/password_reset`,
-//! and `GET /ws`. Reconciliation supports `GET /channels`, channel permission snapshots,
+//! and `GET /ws`. History supports `GET /channels/{id}/messages` and
+//! `GET /channels/{id}/pinned`. Reconciliation supports `GET /channels`, channel permission snapshots,
 //! `GET /roles`, paginated `GET /users`, individual profiles and profile/summary batches,
 //! `GET /dms`, and `GET /users/blocks`. Read marks are account-scoped channel fields,
 //! not a separate listing route. Profiles are fetched only when requested.
@@ -14,6 +15,13 @@
 //! to keep reconnects rejected with HTTP 503 until mutations are complete.
 //! Server-info, role-definition, overwrite-only, block and read-mark changes
 //! have no live event in the pinned backend; this fixture does not invent one.
+//! [`HistorySeed`] recipes in [`Config::history`] create content-free synthetic channels,
+//! including equal-microsecond timestamps and explicit deterministic message UUID ranges.
+//! [`TestServer::seed_messages`] silently seeds exact wire messages; mutation controls
+//! update REST state and deliver pinned event shapes to readable accounts. Own reactions
+//! are account-scoped; message payloads have no invented pin flag or deletion tombstone.
+//! [`TestServer::set_channel_readable`] scripts an authorization result, not a role/DM
+//! permission engine. Existing raw event controls deliberately bypass that filtering.
 //! It is not a JWT implementation, expiring-session simulator or voice server.
 //! Cookies are opaque deterministic capabilities and keep the backend's Secure attributes;
 //! plain-HTTP test clients must explicitly forward them. Nothing is logged.
@@ -22,6 +30,11 @@ mod auth;
 mod config;
 mod controls;
 mod gateway;
+mod history;
+mod history_controls;
+mod history_http;
+mod history_query;
+mod history_seed;
 mod media;
 mod member_requests;
 mod members;
@@ -33,6 +46,7 @@ mod rest_hold;
 mod server;
 
 pub use config::{Config, Failure, GatewayStep, RestStep};
+pub use history_seed::HistorySeed;
 pub use media::{MediaRequest, MediaTestServer};
 pub use member_requests::MemberRequestCounts;
 pub use rest_hold::RestHold;

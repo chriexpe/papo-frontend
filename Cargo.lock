@@ -7482,8 +7482,10 @@ dependencies = [
 name = "papo-sdk"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "papo-api",
  "papo-test-server",
+ "proptest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -7514,6 +7516,7 @@ name = "papo-test-server"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "chrono",
  "futures-util",
  "http-body-util",
  "hyper",
