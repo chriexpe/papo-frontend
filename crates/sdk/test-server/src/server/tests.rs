@@ -26,6 +26,7 @@ fn script_waits_for_its_matching_request_and_is_consumed_once() {
         auth: Auth::new(),
         presence: Presence::new(),
         resources: Resources::default(),
+        history: crate::history::History::default(),
         member_requests: crate::MemberRequestCounts::default(),
         holds: Vec::new(),
         gateway_accepting: true,

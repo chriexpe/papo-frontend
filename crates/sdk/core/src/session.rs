@@ -26,6 +26,7 @@ pub(crate) struct SessionInner {
     pub driver_running: AtomicBool,
     pub auth_serial: tokio::sync::Mutex<()>,
     pub resource_serial: tokio::sync::Mutex<()>,
+    pub history: crate::history::HistoryStore,
 }
 impl SessionInner {
     pub fn new(
@@ -57,6 +58,7 @@ impl SessionInner {
             driver_running: AtomicBool::new(false),
             auth_serial: tokio::sync::Mutex::new(()),
             resource_serial: tokio::sync::Mutex::new(()),
+            history: crate::history::HistoryStore::default(),
         })
     }
     pub async fn stop(&self) {

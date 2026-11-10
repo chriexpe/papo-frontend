@@ -75,6 +75,7 @@ impl TestServer {
         if state.resources.channels.remove(id).is_none() {
             return false;
         }
+        state.history.remove_channel(id);
         state
             .resources
             .read_marks

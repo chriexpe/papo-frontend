@@ -10,6 +10,12 @@ mod client_handle;
 mod connection;
 mod connection_driver;
 mod generation;
+mod history;
+pub use history::{
+    HistoryClosedReason, HistoryError, HistoryGap, HistoryHandle, HistoryPage, HistorySource,
+};
+pub use papo_api::wire::Message;
+pub use papo_api::{HistoryCursor, HistoryOrder, HistoryQuery};
 mod observable;
 mod profiles;
 mod read_points;

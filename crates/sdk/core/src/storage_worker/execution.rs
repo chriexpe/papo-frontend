@@ -134,6 +134,9 @@ where
                 .take()
                 .unwrap_or_else(|| Err(E::from(WorkerError::WorkerStopped))),
             Err(WorkerError::ShutdownDeadline) => Err(E::from(WorkerError::ShutdownDeadline)),
+            // A progress-handler interrupt is a turn deadline, not a SQLite failure;
+            // report the deadline even when the callback observed the interrupt first.
+            Err(WorkerError::TurnDeadline) => Err(E::from(WorkerError::TurnDeadline)),
             Err(error) => match self.output.take() {
                 Some(Err(original)) => Err(original),
                 _ => Err(E::from(error)),

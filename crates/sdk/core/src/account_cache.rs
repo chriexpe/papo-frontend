@@ -1,10 +1,17 @@
-//! Account-scoped non-message cache ownership; sessions verify identity and fence connection generations.
+//! Account-scoped resource/history cache ownership; sessions verify identity and fence generations.
 
 #[cfg(test)]
 mod admission_tests;
 mod encoding;
+pub(crate) mod history;
+mod history_manifest;
+mod history_purge;
+mod history_rows;
+#[cfg(test)]
+mod history_tests;
 #[cfg(test)]
 mod lifecycle_tests;
+mod migration;
 mod persistence;
 mod schema;
 #[cfg(test)]
@@ -166,6 +173,10 @@ impl AccountCaches {
                 serial: Arc::new(Mutex::new(false)),
                 generation: Arc::new(AtomicU64::new(0)),
             });
+            if let Err(error) = cache.history_recover().await {
+                let _ = cache.writer.close().await;
+                return Err(error);
+            }
             *registered = Some(Arc::clone(&cache));
             Ok(cache)
         })

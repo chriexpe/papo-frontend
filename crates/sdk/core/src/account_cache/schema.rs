@@ -1,4 +1,4 @@
-//! Version-one cache schema and account identity checks; resource encoding and scheduling live elsewhere.
+//! Frozen version-one schema, forward migration dispatch and identity checks; scheduling lives elsewhere.
 
 use crate::{AccountId, storage_worker::WorkerError};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -21,7 +21,7 @@ macro_rules! table {
             insert: concat!("INSERT INTO ", $name, " (revision,id,position,payload) VALUES (?1,?2,?3,?4)"),
             select: concat!("SELECT position,payload FROM ", $name, " WHERE revision=?1 AND position>=?2 ORDER BY position LIMIT 500"),
             switch: concat!("UPDATE cache_metadata SET ", $column, "=?1 WHERE singleton=1"),
-            prune: concat!("DELETE FROM ", $name, " WHERE rowid IN (SELECT rowid FROM ", $name, " WHERE revision < (SELECT ", $column, " FROM cache_metadata) OR revision > (SELECT ", $column, " FROM cache_metadata) LIMIT 500)"),
+            prune: concat!("DELETE FROM ", $name, " WHERE rowid IN (SELECT rowid FROM ", $name, " WHERE revision < (SELECT ", $column, " FROM cache_metadata) OR revision > (SELECT ", $column, " FROM cache_metadata) LIMIT 100)"),
         }
     };
 }
@@ -54,10 +54,29 @@ pub(super) fn initialize(
     account: AccountId,
 ) -> Result<(), WorkerError> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version == 1 {
-        metadata(connection, account).map_err(|_| WorkerError::IntegrityCheckFailed)?;
-        return Ok(());
+    match version {
+        0 => create_version_one(connection, account)?,
+        1 => {
+            metadata_version(connection, account, 1)
+                .map_err(|_| WorkerError::IntegrityCheckFailed)?;
+        }
+        2 => {
+            metadata(connection, account).map_err(|_| WorkerError::IntegrityCheckFailed)?;
+            return Ok(());
+        }
+        _ => return Err(WorkerError::IntegrityCheckFailed),
     }
+    super::migration::version_two(connection)?;
+    metadata(connection, account).map_err(|_| WorkerError::IntegrityCheckFailed)?;
+    Ok(())
+}
+
+/// Frozen version-one creation path, also used by forward-migration tests.
+pub(super) fn create_version_one(
+    connection: &mut Connection,
+    account: AccountId,
+) -> Result<(), WorkerError> {
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let tables: i64 = connection.query_row(
         "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
         [],
@@ -79,6 +98,23 @@ pub(super) fn initialize(
 
 /// Reads only metadata until schema and created-for identity have matched.
 pub(super) fn metadata(connection: &Connection, account: AccountId) -> rusqlite::Result<Metadata> {
+    let metadata = metadata_version(connection, account, 2)?;
+    let history_revision: i64 = connection.query_row(
+        "SELECT history_revision FROM cache_metadata WHERE singleton=1",
+        [],
+        |row| row.get(0),
+    )?;
+    if history_revision < 0 || history_revision >= metadata.next_revision {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(metadata)
+}
+
+fn metadata_version(
+    connection: &Connection,
+    account: AccountId,
+    expected_version: i64,
+) -> rusqlite::Result<Metadata> {
     let identity: Option<(i64, Vec<u8>, Vec<u8>)> = connection
         .query_row(
             "SELECT schema_version,server_id,user_id FROM cache_metadata WHERE singleton=1",
@@ -87,7 +123,9 @@ pub(super) fn metadata(connection: &Connection, account: AccountId) -> rusqlite:
         )
         .optional()?;
     if !identity.is_some_and(|(version, server, user)| {
-        version == 1 && server == account.server().as_bytes() && user == account.user().as_bytes()
+        version == expected_version
+            && server == account.server().as_bytes()
+            && user == account.user().as_bytes()
     }) {
         return Err(rusqlite::Error::InvalidQuery);
     }

@@ -105,6 +105,31 @@ impl DatabaseWriter {
             .map_err(|_| E::from(WorkerError::WorkerStopped))?
     }
 
+    /// Run a trusted cache transaction on the shared writer. The existing execution
+    /// boundary rolls back callbacks exceeding 500 changed rows or the turn deadline.
+    /// Callbacks must not block or issue transaction, schema or PRAGMA statements.
+    pub(crate) async fn cache_write<T, E, F>(&self, callback: F) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: std::error::Error + From<WorkerError> + Send + 'static,
+        F: FnOnce(&Transaction<'_>) -> Result<T, E> + Send + 'static,
+    {
+        if self.state {
+            return Err(E::from(WorkerError::InvalidConfiguration));
+        }
+        let (sender, receiver) = oneshot::channel();
+        self.admit(QueuedJob::Write(Box::new(StateJob {
+            callback: Some(callback),
+            output: None,
+            sender: Some(sender),
+        })))
+        .await
+        .map_err(E::from)?;
+        receiver
+            .await
+            .map_err(|_| E::from(WorkerError::WorkerStopped))?
+    }
+
     /// Permanently stop admission on all clones, drain accepted commands, then checkpoint
     /// and drop this NORMAL database's connection on the shared writer thread.
     /// Concurrent/repeated callers observe the same terminal result. Once first polled,

@@ -166,6 +166,7 @@ fn unknown_versions_corrupt_files_and_wrong_identity_rebuild_before_reads() {
         "version_new",
         "version_negative",
         "metadata_version",
+        "history_marker",
         "corrupt",
         "identity",
         "server_identity",
@@ -191,7 +192,12 @@ fn unknown_versions_corrupt_files_and_wrong_identity_rebuild_before_reads() {
                 "version_negative" => connection.pragma_update(None, "user_version", -1).unwrap(),
                 "metadata_version" => {
                     connection
-                        .execute("UPDATE cache_metadata SET schema_version=2", [])
+                        .execute("UPDATE cache_metadata SET schema_version=3", [])
+                        .unwrap();
+                }
+                "history_marker" => {
+                    connection
+                        .execute("UPDATE cache_metadata SET history_revision=-1", [])
                         .unwrap();
                 }
                 "server_identity" => {
@@ -265,11 +271,19 @@ fn required_non_message_tables_round_trip_overwrites_and_blob_role_memberships()
                 "blocks",
                 "cache_metadata",
                 "channels",
+                "chunk_items",
+                "chunks",
                 "dms",
+                "history_channels",
+                "history_manifest",
+                "history_sets",
                 "member_roles",
                 "members",
+                "messages",
+                "pins",
                 "roles",
                 "server_info",
+                "sqlite_sequence",
                 "users"
             ]
         );

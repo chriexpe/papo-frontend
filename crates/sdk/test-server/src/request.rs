@@ -81,6 +81,10 @@ pub(crate) async fn handle(
                 Reply::json(201, serde_json::json!({}))
             }
         } else if let Some(reply) =
+            crate::history_http::handle(&state, &method, &path, &query, user_id.as_deref())
+        {
+            reply
+        } else if let Some(reply) =
             state
                 .resources
                 .handle(&config, &method, &path, &query, user_id.as_deref(), &body)

@@ -31,6 +31,8 @@ pub struct Config {
     pub gateway: Vec<GatewayStep>,
     /// Suppress application heartbeat acknowledgements for timeout verification.
     pub ignore_heartbeats: bool,
+    /// Deterministic synthetic history channels created before binding the listener.
+    pub history: Vec<crate::HistorySeed>,
 }
 
 impl Default for Config {
@@ -47,6 +49,7 @@ impl Default for Config {
             rest: Vec::new(),
             gateway: Vec::new(),
             ignore_heartbeats: false,
+            history: Vec::new(),
         }
     }
 }
