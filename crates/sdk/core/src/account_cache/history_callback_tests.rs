@@ -66,7 +66,7 @@ fn request_canceled_inside_actual_callback_rolls_back_before_commit() {
 
 #[test]
 fn cache_callback_row_overrun_rolls_back_the_entire_delta() {
-    run(|caches, _| async move {
+    run(|caches, root| async move {
         let (cache, set_id) = populated(&caches, 1).await;
         let result = cache
             .history_transaction(GENERATION, move |transaction| {
@@ -82,20 +82,19 @@ fn cache_callback_row_overrun_rolls_back_the_entire_delta() {
             })
             .await;
         assert_eq!(result, Err(CacheError::Storage(WorkerError::RowLimit)));
-        assert_eq!(
-            cache
-                .history_load(CHANNEL, GENERATION)
-                .await
-                .unwrap()
-                .unwrap()
-                .rows
-                .len(),
-            1
-        );
+        // A row-limit violation is fatal: the writer connection is closed. A
+        // concurrent separate reader may succeed, so rollback is checked from the
+        // file only after close has dropped that connection.
         assert_eq!(
             caches.close(account()).await,
             Err(CacheError::Storage(WorkerError::RowLimit))
         );
+        // Verify the transaction rollback from the file after its connection closed.
+        let connection = Connection::open(root.account_cache(account())).unwrap();
+        let rows: i64 = connection
+            .query_row("SELECT count(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
     });
 }
 
