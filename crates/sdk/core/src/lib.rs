@@ -2,6 +2,7 @@
 //! Wire transport belongs to `papo-api`; UI projections and platform integration live above this crate.
 
 mod account;
+mod account_cache;
 mod auth;
 mod client;
 mod client_error;
@@ -10,6 +11,16 @@ mod connection;
 mod connection_driver;
 mod generation;
 mod observable;
+mod profiles;
+mod read_points;
+mod reconcile;
+mod reconcile_event;
+mod reconcile_fetch;
+mod resources;
+pub use account_cache::{AccountCache, AccountCaches, CacheError, CacheResource};
+pub use papo_api::wire::{Channel, LoginRequest, LoginServerRequest, RegisterRequest};
+pub use read_points::ServerReadPoint;
+pub use resources::ResourceSnapshot;
 mod session;
 mod session_pool;
 

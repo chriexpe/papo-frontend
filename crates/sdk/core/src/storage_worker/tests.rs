@@ -12,19 +12,19 @@ use rusqlite::{Connection, hooks::Action, types::Value};
 
 use super::*;
 
-fn runtime() -> tokio::runtime::Runtime {
+pub(super) fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("runtime")
 }
 
-fn schema(connection: &mut Connection) -> Result<(), WorkerError> {
+pub(super) fn schema(connection: &mut Connection) -> Result<(), WorkerError> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS fixture (value INTEGER NOT NULL)")?;
     Ok(())
 }
 
-fn batch() -> SqlBatch {
+pub(super) fn batch() -> SqlBatch {
     SqlBatch::new(vec![SqlMutation::new(
         "INSERT INTO fixture VALUES (?)",
         vec![Value::Integer(1)],
@@ -32,7 +32,7 @@ fn batch() -> SqlBatch {
     .expect("batch")
 }
 
-fn finish(worker: &mut StorageWorker) -> ShutdownReport {
+pub(super) fn finish(worker: &mut StorageWorker) -> ShutdownReport {
     let report = worker
         .shutdown(Instant::now() + Duration::from_secs(30))
         .expect("shutdown");

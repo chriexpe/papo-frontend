@@ -7,7 +7,7 @@ use tokio::sync::{Semaphore, oneshot};
 
 use super::{
     WorkerError,
-    execution::{CommitInfo, Job, SqlBatch, StateJob},
+    execution::{CommitInfo, QueuedJob, SqlBatch, StateJob},
     scheduler::Shared,
 };
 
@@ -55,11 +55,11 @@ impl DatabaseWriter {
     pub async fn submit(&self, batch: SqlBatch) -> Result<CommitReceipt<CommitInfo>, WorkerError> {
         let (sender, receiver) = oneshot::channel();
         let command_id = self
-            .admit(Box::new(super::execution::BatchJob {
+            .admit(QueuedJob::Write(Box::new(super::execution::BatchJob {
                 batch,
                 sender: Some(sender),
                 rows: 0,
-            }))
+            })))
             .await?;
         Ok(CommitReceipt {
             command_id,
@@ -93,11 +93,11 @@ impl DatabaseWriter {
             return Err(E::from(WorkerError::InvalidConfiguration));
         }
         let (sender, receiver) = oneshot::channel();
-        self.admit(Box::new(StateJob {
+        self.admit(QueuedJob::Write(Box::new(StateJob {
             callback: Some(callback),
             output: None,
             sender: Some(sender),
-        }))
+        })))
         .await
         .map_err(E::from)?;
         receiver
@@ -105,7 +105,45 @@ impl DatabaseWriter {
             .map_err(|_| E::from(WorkerError::WorkerStopped))?
     }
 
-    async fn admit(&self, job: Box<dyn Job>) -> Result<u64, WorkerError> {
+    /// Permanently stop admission on all clones, drain accepted commands, then checkpoint
+    /// and drop this NORMAL database's connection on the shared writer thread.
+    /// Concurrent/repeated callers observe the same terminal result. Once first polled,
+    /// cancelling this future does not cancel close or reopen admission. Completion,
+    /// including an error, guarantees the writer connection was dropped; callers must
+    /// separately fence their reads before deleting files. A later registration of the
+    /// same path gets a new database ID; old handles remain closed.
+    ///
+    /// # Errors
+    /// Returns `InvalidConfiguration` for the FULL state writer, or a typed database,
+    /// checkpoint, or shutdown failure after the connection has been dropped.
+    pub async fn close(&self) -> Result<(), WorkerError> {
+        let mut completion = self.shared.request_close(self.database_id)?;
+        completion
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|_| WorkerError::WorkerStopped)?
+            .clone()
+            .ok_or(WorkerError::WorkerStopped)?
+    }
+
+    /// Queue a fixed passive WAL checkpoint after previously accepted commands.
+    /// Shares bounded queue capacity and round-robin turns with batches; does not wait
+    /// for active readers or promise FULL durability. Cancellation before admission
+    /// cancels the request; after admission it does not cancel the checkpoint.
+    ///
+    /// # Errors
+    /// Returns `InvalidConfiguration` for the state writer, admission/database errors,
+    /// or typed SQLite and shutdown failures.
+    pub async fn checkpoint(&self) -> Result<(), WorkerError> {
+        if self.state {
+            return Err(WorkerError::InvalidConfiguration);
+        }
+        let (sender, receiver) = oneshot::channel();
+        self.admit(QueuedJob::Checkpoint(sender)).await?;
+        receiver.await.map_err(|_| WorkerError::WorkerStopped)?
+    }
+
+    async fn admit(&self, job: QueuedJob) -> Result<u64, WorkerError> {
         let permit = Arc::clone(&self.capacity)
             .acquire_owned()
             .await

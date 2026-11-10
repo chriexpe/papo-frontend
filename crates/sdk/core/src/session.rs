@@ -22,8 +22,10 @@ pub(crate) struct SessionInner {
     pub auth: Arc<crate::observable::StateCell<AuthState>>,
     pub connection: Arc<crate::observable::StateCell<ConnectionStatus>>,
     pub events: broadcast::Sender<Generated<Event>>,
+    pub resources: Arc<crate::observable::StateCell<Arc<crate::ResourceSnapshot>>>,
     pub driver_running: AtomicBool,
     pub auth_serial: tokio::sync::Mutex<()>,
+    pub resource_serial: tokio::sync::Mutex<()>,
 }
 impl SessionInner {
     pub fn new(
@@ -49,8 +51,12 @@ impl SessionInner {
                 state: ConnectionState::Offline,
             }),
             events: broadcast::channel(64).0,
+            resources: crate::observable::StateCell::new(Arc::new(crate::ResourceSnapshot::empty(
+                generation,
+            ))),
             driver_running: AtomicBool::new(false),
             auth_serial: tokio::sync::Mutex::new(()),
+            resource_serial: tokio::sync::Mutex::new(()),
         })
     }
     pub async fn stop(&self) {
@@ -63,7 +69,23 @@ impl SessionInner {
         self.auth.send_replace(AuthState::SignedOut);
         self.auth.close();
         self.connection.close();
+        self.resources.close();
         self.tasks.wait().await;
+    }
+    pub fn publish_resources(
+        &self,
+        mut snapshot: crate::ResourceSnapshot,
+    ) -> Result<(), ClientError> {
+        self.epochs.apply(snapshot.generation, || {
+            snapshot.version = self
+                .resources
+                .borrow()
+                .version
+                .checked_add(1)
+                .ok_or(ClientError::Closed)?;
+            self.resources.send_replace(Arc::new(snapshot));
+            Ok(())
+        })?
     }
     pub fn status(
         &self,
@@ -117,6 +139,12 @@ impl Session {
             inner: Arc::clone(&self.inner),
             receiver: self.inner.events.subscribe(),
         }
+    }
+    /// Subscribes atomically to this account's generation-stamped resource image.
+    /// The bounded watch coalesces intermediate publications and closes on revocation.
+    #[must_use]
+    pub fn subscribe_resources(&self) -> watch::Receiver<Arc<crate::ResourceSnapshot>> {
+        self.inner.resources.subscribe()
     }
     /// Requests a new connection generation, canceling old socket and REST work.
     /// # Errors

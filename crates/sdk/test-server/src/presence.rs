@@ -5,9 +5,15 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
+#[derive(Clone)]
+pub(crate) struct Update {
+    pub(crate) recipient: Option<String>,
+    pub(crate) payload: Value,
+}
+
 pub(crate) struct Presence {
     connections: BTreeMap<String, usize>,
-    updates: broadcast::Sender<Value>,
+    updates: broadcast::Sender<Update>,
 }
 
 impl Presence {
@@ -19,11 +25,11 @@ impl Presence {
         }
     }
 
-    pub(crate) fn join(&mut self, user_id: &str) -> (Value, broadcast::Receiver<Value>) {
+    pub(crate) fn join(&mut self, user_id: &str) -> (Value, broadcast::Receiver<Update>) {
         let count = self.connections.entry(user_id.to_owned()).or_default();
         *count += 1;
         if *count == 1 {
-            let _ = self.updates.send(update(user_id, "online"));
+            self.emit(None, update(user_id, "online"));
         }
         let updates = self.updates.subscribe();
         let members: Vec<_> = self.connections.keys().map(|user_id| json!({"user_id": user_id, "status": "online", "status_message": null, "user_voice": []})).collect();
@@ -34,9 +40,14 @@ impl Presence {
     }
 
     pub(crate) fn user_registered(&self, user_id: &str) {
-        let _ = self
-            .updates
-            .send(json!({"type": "user_join", "user_id": user_id}));
+        self.emit(None, json!({"type": "user_join", "user_id": user_id}));
+    }
+
+    pub(crate) fn emit(&self, recipient: Option<&str>, payload: Value) {
+        let _ = self.updates.send(Update {
+            recipient: recipient.map(str::to_owned),
+            payload,
+        });
     }
 
     pub(crate) fn leave(&mut self, user_id: &str) {
@@ -46,7 +57,7 @@ impl Presence {
         *count -= 1;
         if *count == 0 {
             self.connections.remove(user_id);
-            let _ = self.updates.send(update(user_id, "offline"));
+            self.emit(None, update(user_id, "offline"));
         }
     }
 }
@@ -84,6 +95,6 @@ mod tests {
             Err(broadcast::error::TryRecvError::Empty)
         ));
         presence.leave("member");
-        assert_eq!(updates.try_recv().unwrap()["status"], "offline");
+        assert_eq!(updates.try_recv().unwrap().payload["status"], "offline");
     }
 }

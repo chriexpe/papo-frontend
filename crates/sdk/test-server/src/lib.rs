@@ -3,22 +3,39 @@
 //! Supported routes are public `GET /server`, `POST /auth/register`, `POST /auth/login`,
 //! `POST /auth/login_server`, `GET /auth/whoami`, `POST /auth/logout`, `POST /auth/refresh`,
 //! `GET /auth/connected_devices`, `POST /auth/drop_connection`, `POST /auth/password_reset`,
-//! and `GET /ws`. Reset links can be issued by the in-memory fixture capability only.
-//! The gateway supports initial presence, heartbeat and invalid-event errors, plus ordered
-//! scenario frames. It is not a JWT implementation, expiring-session simulator or voice server.
+//! and `GET /ws`. Reconciliation supports `GET /channels`, channel permission snapshots,
+//! `GET /roles`, paginated `GET /users`, individual profiles and profile/summary batches,
+//! `GET /dms`, and `GET /users/blocks`. Read marks are account-scoped channel fields,
+//! not a separate listing route. Profiles are fetched only when requested.
+//! Reset links can be issued by the in-memory fixture capability only.
+//! The gateway supports presence, typed channel/member/DM changes, heartbeat, invalid-event
+//! errors and ordered scenario frames. Scripted controls keep authoritative state while
+//! disconnected. Disable [`TestServer::set_gateway_accepting`] before disconnecting sockets
+//! to keep reconnects rejected with HTTP 503 until mutations are complete.
+//! Server-info, role-definition, overwrite-only, block and read-mark changes
+//! have no live event in the pinned backend; this fixture does not invent one.
+//! It is not a JWT implementation, expiring-session simulator or voice server.
 //! Cookies are opaque deterministic capabilities and keep the backend's Secure attributes;
 //! plain-HTTP test clients must explicitly forward them. Nothing is logged.
 
 mod auth;
 mod config;
+mod controls;
 mod gateway;
 mod media;
+mod member_requests;
+mod members;
 mod presence;
+mod request;
+mod resources;
 mod response;
+mod rest_hold;
 mod server;
 
 pub use config::{Config, Failure, GatewayStep, RestStep};
 pub use media::{MediaRequest, MediaTestServer};
+pub use member_requests::MemberRequestCounts;
+pub use rest_hold::RestHold;
 pub use server::TestServer;
 
 /// Sanitized failures; no input, credential, address or event payload is retained.

@@ -95,6 +95,13 @@ fn remove_database(path: &Path) -> Result<(), WorkerError> {
     Ok(())
 }
 
+pub(super) fn checkpoint(connection: &Connection) -> Result<(), WorkerError> {
+    let _: (i64, i64, i64) = connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    Ok(())
+}
+
 pub(super) fn close(connection: OpenConnection) -> Result<(), WorkerError> {
     let (busy, _, _): (i64, i64, i64) =
         connection

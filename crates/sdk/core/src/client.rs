@@ -52,6 +52,7 @@ impl Default for ClientConfig {
 pub(crate) struct ClientInner {
     pub runtime: tokio::runtime::Handle,
     pub registry: Registry,
+    pub caches: crate::AccountCaches,
     pub removals: RemovalJobs,
     pub secrets: Arc<SecretStoreBoundary>,
     pub pool: Arc<SessionPool>,
@@ -106,11 +107,14 @@ impl Client {
             pool.clone(),
             config.storage.clone(),
         )?;
+        let caches = storage.account_caches();
+        pool.set_caches(caches.clone());
         let (tx, rx) = watch::channel(Arc::new(RegistrySnapshot::default()));
         let handle = ClientHandle {
             inner: Arc::new(ClientInner {
                 runtime: runtime.handle().clone(),
                 registry: storage.registry(),
+                caches,
                 removals: storage.removals(),
                 secrets,
                 pool,

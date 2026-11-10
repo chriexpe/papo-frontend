@@ -4,6 +4,9 @@
 mod admission;
 mod connection;
 mod execution;
+mod lifecycle;
+#[cfg(test)]
+mod lifecycle_tests;
 mod read_pool;
 #[cfg(test)]
 mod recovery_tests;
@@ -29,7 +32,7 @@ pub enum WorkerError {
     /// Work was not admitted because shutdown has started.
     #[error("storage admission is closed")]
     AdmissionClosed,
-    /// This database was closed after an earlier failure.
+    /// This database is closing or was closed explicitly or after an earlier failure.
     #[error("database writer is closed")]
     DatabaseClosed,
     /// A SQLite failure, retaining its extended numeric code only.
@@ -155,6 +158,7 @@ impl StorageWorker {
     /// Register a rebuildable database without opening it or inventing a schema.
     /// The hook must verify account identity before accessing account-owned rows.
     /// Existing corrupt files and hooks returning `NewerSchema` are rebuilt once.
+    /// A completed per-database close releases the path for a fresh database ID.
     ///
     /// # Errors
     /// Returns closed admission, duplicate registration, or wrong-worker errors.
@@ -164,6 +168,16 @@ impl StorageWorker {
         initializer: impl Fn(&mut Connection) -> Result<(), WorkerError> + Send + Sync + 'static,
     ) -> Result<DatabaseWriter, WorkerError> {
         self.shared.register(path, Arc::new(initializer), false)
+    }
+
+    /// Capture shared-writer registration without transferring its runtime owner.
+    /// The returned factory retains admission policy and never owns the writer thread.
+    pub(crate) fn registrar(
+        &self,
+    ) -> impl Fn(PathBuf, Initializer) -> Result<DatabaseWriter, WorkerError> + Send + Sync + 'static
+    {
+        let shared = Arc::clone(&self.shared);
+        move |path, initializer| shared.register(path, initializer, false)
     }
 
     /// Atomically stop admission and install the final acknowledgement deadline without

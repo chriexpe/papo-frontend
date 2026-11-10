@@ -27,6 +27,15 @@ pub enum ClientError {
     /// Authenticated identity did not match the expected account.
     #[error("account identity mismatch")]
     Identity,
+    /// An authoritative resource lacked a required identity or pagination boundary.
+    #[error("invalid resource response")]
+    ResourceData,
+    /// Reconcile could not keep up with the bounded event journal; a new generation is required.
+    #[error("reconcile event journal overflow")]
+    ReconcileOverflow,
+    /// Rebuildable account storage failed.
+    #[error(transparent)]
+    Cache(#[from] crate::CacheError),
     /// Required typed response fields or saved credentials were malformed.
     #[error("invalid authentication response")]
     InvalidAuth,

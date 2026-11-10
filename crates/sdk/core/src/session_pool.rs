@@ -16,6 +16,7 @@ pub(crate) struct SessionPool {
     pub root: CancellationToken,
     pub next: Arc<AtomicU64>,
     sessions: Mutex<HashMap<AccountId, Arc<SessionInner>>>,
+    caches: Mutex<Option<crate::AccountCaches>>,
     retired: Mutex<HashMap<AccountId, u64>>,
     retired_servers: Mutex<HashMap<ServerId, u64>>,
     attempts: Mutex<
@@ -31,10 +32,17 @@ impl SessionPool {
             root: CancellationToken::new(),
             next: Arc::new(AtomicU64::new(1)),
             sessions: Mutex::new(HashMap::new()),
+            caches: Mutex::new(None),
             retired: Mutex::new(HashMap::new()),
             retired_servers: Mutex::new(HashMap::new()),
             attempts: Mutex::new(Vec::new()),
         })
+    }
+    pub fn set_caches(&self, caches: crate::AccountCaches) {
+        *self
+            .caches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(caches);
     }
     pub fn get(&self, account: AccountId) -> Option<Arc<SessionInner>> {
         self.sessions
@@ -165,6 +173,17 @@ impl RemovalHooks for SessionPool {
     fn stop_session(&self, account: AccountId) -> RemovalFuture<'_> {
         Box::pin(async move {
             self.stop(account).await;
+            let caches = self
+                .caches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(caches) = caches {
+                caches
+                    .close(account)
+                    .await
+                    .map_err(|_| crate::removal::RemovalHookError::Incomplete)?;
+            }
             Ok(())
         })
     }

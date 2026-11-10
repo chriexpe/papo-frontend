@@ -1,4 +1,4 @@
-//! Generation-fenced reconnect task; transport connects once and cache reconciliation belongs to 5b.
+//! Generation-fenced reconnect task; transport connects once and resource reconciliation owns its journal.
 
 use crate::{
     AuthState, ClientError, ClientHandle, ConnectionState, Generated, generation::Epoch,
@@ -10,6 +10,21 @@ use std::{future::Future, pin::Pin, sync::Arc};
 type IoFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ClientError>> + Send + 'a>>;
 pub(crate) trait Socket: Send {
     fn next(&mut self) -> IoFuture<'_, Option<Event>>;
+    fn resources(&self) -> Option<crate::reconcile::ResourceConnection> {
+        None
+    }
+}
+struct AccountSocket {
+    gateway: Gateway,
+    resources: crate::reconcile::ResourceConnection,
+}
+impl Socket for AccountSocket {
+    fn next(&mut self) -> IoFuture<'_, Option<Event>> {
+        Box::pin(async { Ok(self.gateway.next().await?) })
+    }
+    fn resources(&self) -> Option<crate::reconcile::ResourceConnection> {
+        Some(self.resources.clone())
+    }
 }
 impl Socket for Gateway {
     fn next(&mut self) -> IoFuture<'_, Option<Event>> {
@@ -48,12 +63,21 @@ impl Connector for ApiConnector {
             if who.id.as_deref().and_then(|id| id.parse().ok()) != Some(session.account.user()) {
                 return Err(ClientError::Identity);
             }
+            let cache = self.0.inner.caches.open(session.account).await?;
+            session.epochs.validate(epoch.generation)?;
             let gateway =
                 tokio::time::timeout(self.0.inner.config.request_timeout, Gateway::connect(&rest))
                     .await
                     .map_err(|_| ClientError::Timeout)??;
             session.epochs.validate(epoch.generation)?;
-            Ok(Box::new(gateway) as Box<dyn Socket>)
+            Ok(Box::new(AccountSocket {
+                gateway,
+                resources: crate::reconcile::ResourceConnection {
+                    client: self.0.clone(),
+                    rest,
+                    cache,
+                },
+            }) as Box<dyn Socket>)
         })
     }
 }
@@ -106,9 +130,10 @@ pub(crate) async fn drive(
         };
         let failure = match connected {
             Ok(mut socket) => {
-                if session
-                    .status(epoch.generation, ConnectionState::Online)
-                    .is_err()
+                if socket.resources().is_none()
+                    && session
+                        .status(epoch.generation, ConnectionState::Online)
+                        .is_err()
                 {
                     continue;
                 }
@@ -174,6 +199,27 @@ async fn pump(
     epoch: &Epoch,
     socket: &mut dyn Socket,
 ) -> Option<ClientError> {
+    if let Some(resources) = socket.resources() {
+        let result = crate::reconcile::run(session, epoch, socket, &resources).await;
+        if matches!(
+            &result,
+            Err(ClientError::Cache(
+                crate::CacheError::Storage(_)
+                    | crate::CacheError::InvalidData
+                    | crate::CacheError::TaskStopped
+            ))
+        ) && session.epochs.validate(epoch.generation).is_ok()
+            && let Err(error) = resources
+                .client
+                .inner
+                .caches
+                .invalidate(session.account)
+                .await
+        {
+            return Some(error.into());
+        }
+        return result.err();
+    }
     loop {
         let next = tokio::select! {
             biased;

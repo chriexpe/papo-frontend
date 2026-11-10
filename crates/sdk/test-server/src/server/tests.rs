@@ -25,6 +25,10 @@ fn script_waits_for_its_matching_request_and_is_consumed_once() {
     let mut state = State {
         auth: Auth::new(),
         presence: Presence::new(),
+        resources: Resources::default(),
+        member_requests: crate::MemberRequestCounts::default(),
+        holds: Vec::new(),
+        gateway_accepting: true,
         rest: vec![RestStep {
             method: "GET".into(),
             path: "/server".into(),

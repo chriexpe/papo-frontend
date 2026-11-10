@@ -7485,6 +7485,8 @@ dependencies = [
  "papo-api",
  "papo-test-server",
  "rusqlite",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
@@ -7501,6 +7503,9 @@ dependencies = [
  "futures-util",
  "imbl",
  "papo-sdk",
+ "papo-test-server",
+ "proptest",
+ "tempfile",
  "tokio",
 ]
 
@@ -7513,12 +7518,14 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "papo-api",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
+ "url",
 ]
 
 [[package]]

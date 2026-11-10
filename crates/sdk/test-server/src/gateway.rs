@@ -55,10 +55,11 @@ fn inbound(raw: &[u8]) -> Option<Value> {
 pub(crate) async fn serve<S>(
     stream: S,
     presence: Value,
-    mut updates: tokio::sync::broadcast::Receiver<Value>,
+    mut updates: tokio::sync::broadcast::Receiver<crate::presence::Update>,
     script: &[GatewayStep],
     ignore_heartbeats: bool,
     mut disconnects: tokio::sync::broadcast::Receiver<()>,
+    user_id: &str,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -127,7 +128,7 @@ pub(crate) async fn serve<S>(
             _ = disconnects.recv() => return,
             update = updates.recv() => {
                 let Ok(update) = update else { let _ = socket.close(None).await; return; };
-                if socket.send(Message::text(update.to_string())).await.is_err() { return; }
+                if update.recipient.as_deref().is_none_or(|recipient| recipient == user_id) && socket.send(Message::text(update.payload.to_string())).await.is_err() { return; }
             }
             () = tokio::time::sleep_until(wake_at) => {
                 let now = tokio::time::Instant::now();
