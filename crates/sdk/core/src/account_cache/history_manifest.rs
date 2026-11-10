@@ -8,6 +8,8 @@ use std::sync::Arc;
 /// Stage the next visibility manifest without changing the currently visible incarnation.
 /// Existing active membership, not merely a lingering current-set pointer, is required:
 /// disappearance followed by regrant must never revive an old partially purged set.
+const STAGE_ROWS: usize = 100;
+
 pub(super) async fn stage(
     context: &CacheContext,
     revision: i64,
@@ -31,7 +33,7 @@ pub(super) async fn stage(
                   AND (?1 IS NULL OR h.channel_id>?1)
                   AND (EXISTS(SELECT 1 FROM channels c WHERE c.id=h.channel_id AND c.revision=?2)
                     OR EXISTS(SELECT 1 FROM dms d WHERE d.id=h.channel_id AND d.revision=?3))
-                ORDER BY h.channel_id LIMIT 500"
+                ORDER BY h.channel_id LIMIT 100"
             ).map_err(WorkerError::from)?;
             let rows = statement.query_map(params![after, channels_revision, dms_revision], |row| {
                 Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
@@ -44,7 +46,7 @@ pub(super) async fn stage(
         }).await?;
         let count = batch.len();
         after = batch.last().map(|(channel, _)| channel.clone());
-        if count < 500 {
+        if count < STAGE_ROWS {
             return Ok(());
         }
     }

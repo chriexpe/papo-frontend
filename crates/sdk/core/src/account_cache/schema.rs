@@ -21,7 +21,7 @@ macro_rules! table {
             insert: concat!("INSERT INTO ", $name, " (revision,id,position,payload) VALUES (?1,?2,?3,?4)"),
             select: concat!("SELECT position,payload FROM ", $name, " WHERE revision=?1 AND position>=?2 ORDER BY position LIMIT 500"),
             switch: concat!("UPDATE cache_metadata SET ", $column, "=?1 WHERE singleton=1"),
-            prune: concat!("DELETE FROM ", $name, " WHERE rowid IN (SELECT rowid FROM ", $name, " WHERE revision < (SELECT ", $column, " FROM cache_metadata) OR revision > (SELECT ", $column, " FROM cache_metadata) LIMIT 500)"),
+            prune: concat!("DELETE FROM ", $name, " WHERE rowid IN (SELECT rowid FROM ", $name, " WHERE revision < (SELECT ", $column, " FROM cache_metadata) OR revision > (SELECT ", $column, " FROM cache_metadata) LIMIT 100)"),
         }
     };
 }

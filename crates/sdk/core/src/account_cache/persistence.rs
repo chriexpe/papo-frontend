@@ -79,7 +79,7 @@ pub(super) async fn replace(
                     Vec::new(),
                 )])?)
                 .await?;
-            if result.affected_rows < 500 {
+            if result.affected_rows == 0 {
                 break;
             }
         }

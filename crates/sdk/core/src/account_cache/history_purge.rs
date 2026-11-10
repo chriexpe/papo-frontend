@@ -7,6 +7,8 @@ use super::{
 use crate::storage_worker::WorkerError;
 use rusqlite::Transaction;
 
+const TURN_ROWS: usize = 100;
+
 impl AccountCache {
     /// Reclaim hidden incarnations in <=500-row shared-writer turns. A crash between
     /// turns leaves the durable manifest/revocation filter intact; the next open resumes.
@@ -31,7 +33,7 @@ impl AccountCache {
             let account = self.account;
             let changed = self.writer.cache_write(move |transaction| {
                 history_rows::verify(transaction, account)?;
-                transaction.execute("UPDATE history_channels SET verified_generation=NULL WHERE channel_id IN (SELECT channel_id FROM history_channels WHERE verified_generation IS NOT NULL LIMIT 500)", []).map_err(WorkerError::from).map_err(CacheError::from)
+                transaction.execute("UPDATE history_channels SET verified_generation=NULL WHERE channel_id IN (SELECT channel_id FROM history_channels WHERE verified_generation IS NOT NULL LIMIT 100)", []).map_err(WorkerError::from).map_err(CacheError::from)
             }).await?;
             if changed < 500 {
                 break;
@@ -65,9 +67,9 @@ pub(super) fn turn(transaction: &Transaction<'_>) -> Result<usize, CacheError> {
             SELECT h.current_set FROM history_channels h WHERE h.current_set IS NOT NULL
               AND NOT EXISTS(SELECT 1 FROM history_manifest m WHERE m.channel_id=h.channel_id
                 AND m.set_id=h.current_set AND m.revision=(SELECT history_revision FROM cache_metadata WHERE singleton=1))
-            LIMIT 500)", []
+            LIMIT 100)", []
     ).map_err(WorkerError::from)?;
-    if changed == 500 {
+    if changed == TURN_ROWS {
         return Ok(changed);
     }
     changed += transaction
@@ -78,7 +80,7 @@ pub(super) fn turn(transaction: &Transaction<'_>) -> Result<usize, CacheError> {
             [limit(changed)?],
         )
         .map_err(WorkerError::from)?;
-    if changed == 500 {
+    if changed == TURN_ROWS {
         return Ok(changed);
     }
     changed += transaction
@@ -91,12 +93,12 @@ pub(super) fn turn(transaction: &Transaction<'_>) -> Result<usize, CacheError> {
         )
         .map_err(WorkerError::from)?;
     for table in TABLES {
-        if changed == 500 {
+        if changed == TURN_ROWS {
             return Ok(changed);
         }
-        changed += table.purge(transaction, 500 - changed)?;
+        changed += table.purge(transaction, TURN_ROWS.saturating_sub(changed))?;
     }
-    if changed == 500 {
+    if changed == TURN_ROWS {
         return Ok(changed);
     }
     changed += transaction.execute(
@@ -113,5 +115,5 @@ pub(super) fn turn(transaction: &Transaction<'_>) -> Result<usize, CacheError> {
 }
 
 fn limit(changed_rows: usize) -> Result<i64, CacheError> {
-    i64::try_from(500_usize.saturating_sub(changed_rows)).map_err(|_| CacheError::InvalidData)
+    i64::try_from(TURN_ROWS.saturating_sub(changed_rows)).map_err(|_| CacheError::InvalidData)
 }
