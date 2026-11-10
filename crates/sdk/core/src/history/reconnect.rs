@@ -38,11 +38,12 @@ pub(crate) async fn resources(
     let mut channels = store.channels.lock().await;
     for (id, channel) in channels.iter() {
         if !visible.contains(id) {
+            // Close before revoking: a reader that sees the revoked row must also see why.
+            channel.close(HistoryClosedReason::ChannelRemoved);
             connection
                 .cache
                 .history_revoke(*id.as_bytes(), snapshot.generation)
                 .await?;
-            channel.close(HistoryClosedReason::ChannelRemoved);
         }
     }
     // A re-grant creates a new handle identity; the revoked Arc is never revived.

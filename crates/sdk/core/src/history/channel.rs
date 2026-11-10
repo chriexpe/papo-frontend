@@ -219,17 +219,7 @@ impl HistoryHandle {
                         super::fetch::pins(&handle, &connection, generation).await?;
                     }
                     let mut state = handle.channel.state.lock().await;
-                    state
-                        .ensure(&connection.cache, *handle.channel.id.as_bytes(), generation)
-                        .await?;
-                    connection
-                        .cache
-                        .history_validate(
-                            *handle.channel.id.as_bytes(),
-                            state.set_id.ok_or(HistoryError::Unverified)?,
-                            generation,
-                        )
-                        .await?;
+                    handle.restore(&mut state, &connection, generation).await?;
                     handle.check(generation)?;
                     let value = state
                         .model
@@ -261,6 +251,33 @@ impl HistoryHandle {
         Ok(())
     }
 
+    /// Restore and validate this channel's cache incarnation under the caller's state lock.
+    /// A revocation that raced the caller is reported as the handle's typed closure, never as
+    /// the masked cache row it left behind.
+    async fn restore(
+        &self,
+        state: &mut State,
+        connection: &CacheConnection,
+        generation: Generation,
+    ) -> Result<(), HistoryError> {
+        let result = async {
+            state
+                .ensure(&connection.cache, *self.channel.id.as_bytes(), generation)
+                .await?;
+            connection
+                .cache
+                .history_validate(
+                    *self.channel.id.as_bytes(),
+                    state.set_id.ok_or(HistoryError::Unverified)?,
+                    generation,
+                )
+                .await?;
+            Ok(())
+        }
+        .await;
+        result.map_err(|error| self.check(generation).err().unwrap_or(error))
+    }
+
     pub(super) async fn connection(&self) -> Result<CacheConnection, HistoryError> {
         self.channel.check()?;
         self.session
@@ -284,17 +301,7 @@ impl HistoryHandle {
         let connection = self.connection().await?;
         let ticket = {
             let mut state = self.channel.state.lock().await;
-            state
-                .ensure(&connection.cache, *self.channel.id.as_bytes(), generation)
-                .await?;
-            connection
-                .cache
-                .history_validate(
-                    *self.channel.id.as_bytes(),
-                    state.set_id.ok_or(HistoryError::Unverified)?,
-                    generation,
-                )
-                .await?;
+            self.restore(&mut state, &connection, generation).await?;
             self.check(generation)?;
             let cached = state
                 .model

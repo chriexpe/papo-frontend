@@ -49,14 +49,15 @@ pub(crate) async fn apply(
     if let Some(id) = channel_id {
         let id = Uuid::from_bytes(Model::id(id)?);
         if matches!(event, KnownEvent::ChannelDelete(_)) {
+            // Close before revoking: a reader that sees the revoked row must also see why.
+            if let Some(channel) = session.history.channels.lock().await.get(&id) {
+                channel.close(HistoryClosedReason::ChannelDeleted);
+            }
             connection
                 .cache
                 .history_revoke(*id.as_bytes(), generation)
                 .await?;
             session.history.verified.write().await.remove(&id);
-            if let Some(channel) = session.history.channels.lock().await.get(&id) {
-                channel.close(HistoryClosedReason::ChannelDeleted);
-            }
             return Ok(());
         }
         if !session.history.verified.read().await.contains(&id) {
