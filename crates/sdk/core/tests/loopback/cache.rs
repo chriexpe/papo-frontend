@@ -194,16 +194,20 @@ fn reconnect_refreshes_server_read_point_without_touching_local_pending_bytes() 
         online(&session).await?;
         let account = session.account();
         let path = fixture.root.state();
-        let pending = vec![0, 7, 255, 9];
+        let pending = serde_json::to_vec(&papo_sdk::ReadPoint {
+            created_at_us: 1_234_567,
+            message_id: Uuid::from_u128(91),
+        })?;
         let expected = pending.clone();
         tokio::task::spawn_blocking(move || -> rusqlite::Result<()> {
             let connection = Connection::open(path)?;
-            connection.execute("UPDATE read_points SET local_point=?1 WHERE server_id=?2 AND user_id=?3 AND channel_id=?4", params![pending, account.server().as_bytes(), account.user().as_bytes(), channel_id.as_bytes()])?;
+            connection.execute("INSERT INTO read_points(server_id,user_id,channel_id,local_point) VALUES(?2,?3,?4,?1) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET local_point=excluded.local_point", params![pending, account.server().as_bytes(), account.user().as_bytes(), channel_id.as_bytes()])?;
             Ok(())
         }).await??;
         let message = Uuid::from_u128(90);
         let recorded_at = "2026-11-09T12:00:00.000001Z";
         server.set_read_mark(&account.user().to_string(), channel.id.as_deref().unwrap(), &message.to_string(), recorded_at).await?;
+        let pending_upload = server.hold_next_rest("PUT", &format!("/channels/{channel_id}/read")).await?;
         session.reconnect()?;
         online(&session).await?;
         let path = fixture.root.state();
@@ -214,6 +218,7 @@ fn reconnect_refreshes_server_read_point_without_touching_local_pending_bytes() 
         let uploaded: ServerReadPoint = serde_json::from_slice(&uploaded)?;
         assert_eq!(uploaded.message_id, message);
         assert_eq!(uploaded.recorded_at.as_deref(), Some(recorded_at));
+        pending_upload.release();
         server.shutdown().await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;

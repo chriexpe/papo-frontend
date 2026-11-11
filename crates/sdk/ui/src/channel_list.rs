@@ -2,7 +2,8 @@
 //!
 //! Backend order is preserved exactly, including tied, absent or negative positions.
 //! No channels are invented, deduplicated or permission-filtered here. Permissions,
-//! capabilities, unread state, navigation and presentation belong to other layers.
+//! capabilities, navigation and presentation belong to other layers. Unread state is an overlay
+//! from the SDK's durable read-point/coverage projection, never inferred from metadata timestamps.
 
 use std::{pin::Pin, sync::Arc};
 
@@ -13,7 +14,7 @@ use papo_sdk::{Generation, Session};
 
 use crate::channel_projection;
 
-/// Backend channel metadata, without locally inferred permissions or unread state.
+/// Backend channel metadata with SDK-provided unread state, without inferred permissions.
 ///
 /// Optional fields remain optional. A missing, empty or duplicated ID cannot provide
 /// stable identity, so transitions involving those lists use a full `Reset`.
@@ -31,6 +32,8 @@ pub struct ChannelListItem {
     pub topic: Option<String>,
     /// Exact backend timestamp string, without reparsing or precision loss.
     pub created_at: Option<String>,
+    /// SDK read-point/coverage projection. Absent until this generation has verified read state.
+    pub unread: Option<papo_sdk::ReadState>,
 }
 
 /// One complete resource publication projected onto channel metadata.
@@ -40,7 +43,7 @@ pub struct ChannelListItem {
 /// generation change produces exactly one `Reset`, even if metadata is unchanged.
 #[derive(Clone, Debug)]
 pub struct ChannelListUpdate {
-    /// SDK resource version represented after applying the entire batch.
+    /// Channel-list projection version represented after applying the entire batch.
     pub version: u64,
     /// Connection epoch stamped on the committed resource snapshot.
     pub generation: Generation,
@@ -57,11 +60,11 @@ pub type ChannelListStream = Pin<Box<dyn Stream<Item = ChannelListUpdate> + Send
 
 /// Atomic channel baseline and changes strictly after that captured publication.
 pub struct ChannelListSubscription {
-    /// SDK resource version represented by `snapshot`.
+    /// Channel-list projection version represented by `snapshot`.
     pub version: u64,
     /// Epoch belonging to that same captured version, not a separate session read.
     pub generation: Generation,
-    /// Channel metadata in backend order, without access or unread inference.
+    /// Channel metadata in backend order, with generation-matching SDK unread state.
     pub snapshot: Vector<Arc<ChannelListItem>>,
     /// Subsequent batches; final unseen changes drain before closure ends the stream.
     pub stream: ChannelListStream,
@@ -88,6 +91,9 @@ impl ChannelListService {
     /// existing subscriptions after any final unseen publication has been drained.
     #[must_use]
     pub fn subscribe(&self) -> ChannelListSubscription {
-        channel_projection::subscribe(self.session.subscribe_resources())
+        crate::channel_reading::subscribe(
+            channel_projection::subscribe(self.session.subscribe_resources()),
+            self.session.subscribe_reading(),
+        )
     }
 }

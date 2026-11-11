@@ -1,11 +1,12 @@
-//! Reconcile persistence of server read marks; advancing and uploading local pending points belongs to reading.
+//! FULL-writer ordered read-point persistence; resolution, retries and unread policy belong to reading.
 
-use crate::{AccountId, Registry, StorageError};
-use papo_api::{
-    Uuid,
-    wire::{Channel, DirectConversation},
+use crate::{
+    AccountId, ClientError, Generation, Registry, StorageError, reading::ReadPoint,
+    session::SessionInner,
 };
-use rusqlite::params;
+use papo_api::Uuid;
+use rusqlite::{OptionalExtension, params};
+use std::{collections::BTreeMap, sync::Arc};
 
 /// Backend read acknowledgement, not a message-order cursor.
 /// `recorded_at` is the server's acknowledgement time and must never order messages.
@@ -18,121 +19,194 @@ pub struct ServerReadPoint {
     pub recorded_at: Option<String>,
 }
 
-fn serialize_id<S: serde::Serializer>(id: &Uuid, serializer: S) -> Result<S::Ok, S::Error> {
+pub(crate) fn serialize_id<S: serde::Serializer>(
+    id: &Uuid,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(&id.to_string())
 }
-fn deserialize_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Uuid, D::Error> {
+pub(crate) fn deserialize_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Uuid, D::Error> {
     let value = <String as serde::Deserialize>::deserialize(deserializer)?;
     value
         .parse()
         .map_err(|_| serde::de::Error::custom("invalid read point UUID"))
 }
 
+/// Persisted server mark, compatible with the unresolved session-5b representation.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UploadedPoint {
+    #[serde(flatten)]
+    pub server: ServerReadPoint,
+    #[serde(default)]
+    pub created_at_us: Option<i64>,
+    #[serde(default)]
+    pub known_point: Option<ReadPoint>,
+}
+impl UploadedPoint {
+    pub fn point(&self) -> Option<ReadPoint> {
+        self.created_at_us
+            .map(|created_at_us| ReadPoint {
+                created_at_us,
+                message_id: self.server.message_id,
+            })
+            .max(self.known_point)
+    }
+}
+
+pub(crate) struct StoredPoints {
+    pub local: Option<ReadPoint>,
+    pub uploaded: Option<UploadedPoint>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ReadWriteError {
+    #[error(transparent)]
+    Session(#[from] ClientError),
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error(transparent)]
+    History(#[from] crate::HistoryError),
+}
+impl From<rusqlite::Error> for ReadWriteError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Storage(error.into())
+    }
+}
+impl From<crate::storage_worker::WorkerError> for ReadWriteError {
+    fn from(error: crate::storage_worker::WorkerError) -> Self {
+        Self::Storage(error.into())
+    }
+}
+impl From<ReadWriteError> for ClientError {
+    fn from(error: ReadWriteError) -> Self {
+        match error {
+            ReadWriteError::Session(error) => error,
+            ReadWriteError::Storage(error) => error.into(),
+            ReadWriteError::History(error) => error.into(),
+        }
+    }
+}
+impl From<ReadWriteError> for crate::ReadingError {
+    fn from(error: ReadWriteError) -> Self {
+        match error {
+            ReadWriteError::Session(error) => Self::Session(error),
+            ReadWriteError::Storage(error) => Self::Storage(error),
+            ReadWriteError::History(error) => Self::History(error),
+        }
+    }
+}
+
 impl Registry {
-    pub(crate) async fn reconcile_read_points(
+    pub(crate) async fn load_read_points(
         &self,
         account: AccountId,
-        channels: &[Channel],
-        dms: &[DirectConversation],
-    ) -> Result<(), StorageError> {
-        let marks = channels
-            .iter()
-            .map(|channel| {
-                (
-                    channel.id.as_deref(),
-                    channel.last_read_message.as_deref(),
-                    channel.last_read_at.clone(),
-                )
-            })
-            .chain(dms.iter().map(|dm| {
-                (
-                    Some(dm.id.as_str()),
-                    dm.last_read_message.as_deref(),
-                    dm.last_read_at.clone(),
-                )
-            }))
-            .map(|(channel, message, recorded_at)| {
-                let channel: Uuid = channel
-                    .ok_or(StorageError::InvalidState)?
-                    .parse()
-                    .map_err(|_| StorageError::InvalidState)?;
-                let mark = message
-                    .map(|message| {
-                        let message_id = message.parse().map_err(|_| StorageError::InvalidState)?;
-                        serde_json::to_vec(&ServerReadPoint {
-                            message_id,
-                            recorded_at,
-                        })
-                        .map_err(|_| StorageError::InvalidState)
+    ) -> Result<BTreeMap<Uuid, StoredPoints>, StorageError> {
+        let lease = Arc::clone(&self.lease);
+        let rows = self.readers.query(self.path.clone(), move |tx| {
+            let _lease = lease;
+            tx.prepare("SELECT channel_id,local_point,uploaded_point FROM read_points WHERE server_id=?1 AND user_id=?2 AND EXISTS(SELECT 1 FROM accounts WHERE server_id=?1 AND user_id=?2 AND hidden=0)")?
+                .query_map(params![account.server().as_bytes(), account.user().as_bytes()], |row| Ok((row.get::<_,Vec<u8>>(0)?, row.get::<_,Option<Vec<u8>>>(1)?, row.get::<_,Option<Vec<u8>>>(2)?)))?
+                .collect::<Result<Vec<_>,_>>()
+        }).await?;
+        rows.into_iter()
+            .map(|(channel, local, uploaded)| {
+                let channel = Uuid::from_slice(&channel).map_err(|_| StorageError::InvalidState)?;
+                let local = local
+                    .map(|bytes| {
+                        serde_json::from_slice(&bytes).map_err(|_| StorageError::InvalidState)
                     })
                     .transpose()?;
-                Ok((channel, mark))
+                let uploaded = uploaded
+                    .map(|bytes| {
+                        serde_json::from_slice(&bytes).map_err(|_| StorageError::InvalidState)
+                    })
+                    .transpose()?;
+                Ok((channel, StoredPoints { local, uploaded }))
             })
-            .collect::<Result<Vec<_>, StorageError>>()?;
-        for batch in marks.chunks(500) {
-            let batch = batch.to_vec();
-            self.writer.write(move |tx| {
-                for (channel, mark) in batch {
-                    // Pending bytes are deliberately untouched: only the backend can advance a read mark.
-                    tx.execute("INSERT INTO read_points(server_id,user_id,channel_id,uploaded_point) SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM accounts WHERE server_id=?1 AND user_id=?2 AND hidden=0) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET uploaded_point=excluded.uploaded_point", params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes(), mark])?;
-                }
-                Ok::<_,StorageError>(())
-            }).await?;
-        }
-        Ok(())
+            .collect()
     }
+
+    pub(crate) async fn advance_visible_read(
+        &self,
+        history: crate::HistoryHandle,
+        generation: Generation,
+        version: u64,
+        point: ReadPoint,
+    ) -> Result<(), crate::ReadingError> {
+        let bytes = serde_json::to_vec(&point).map_err(|_| StorageError::InvalidState)?;
+        let account = history.account();
+        let channel = history.channel();
+        self.writer
+            .write(move |tx| {
+                history.with_current_snapshot(generation, version, || {
+                    advance_local(tx, account, channel, point, &bytes)
+                })?
+            })
+            .await
+            .map_err(crate::ReadingError::from)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn advance_local_read(
+        &self,
+        session: Arc<SessionInner>,
+        channel: Uuid,
+        generation: Generation,
+        point: ReadPoint,
+    ) -> Result<(), ClientError> {
+        let bytes = serde_json::to_vec(&point).map_err(|_| StorageError::InvalidState)?;
+        self.writer
+            .write(move |tx| {
+                session.epochs.apply(generation, || {
+                    advance_local(tx, session.account, channel, point, &bytes)
+                })?
+            })
+            .await
+            .map_err(ClientError::from)
+    }
+
+    pub(crate) async fn save_uploaded_read(
+        &self,
+        session: Arc<SessionInner>,
+        channel: Uuid,
+        generation: Generation,
+        uploaded: UploadedPoint,
+    ) -> Result<(), ClientError> {
+        let bytes = serde_json::to_vec(&uploaded).map_err(|_| StorageError::InvalidState)?;
+        self.writer.write(move |tx| {
+            session.epochs.apply(generation, || {
+                let account = session.account;
+                let changed = tx.execute("INSERT INTO read_points(server_id,user_id,channel_id,uploaded_point) SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM accounts WHERE server_id=?1 AND user_id=?2 AND hidden=0) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET uploaded_point=excluded.uploaded_point",params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes(), bytes])?;
+                if changed != 1 { return Err(ReadWriteError::Session(ClientError::Closed)); }
+                Ok::<_,ReadWriteError>(())
+            })?
+        }).await.map_err(ClientError::from)
+    }
+}
+
+fn advance_local(
+    tx: &rusqlite::Transaction<'_>,
+    account: AccountId,
+    channel: Uuid,
+    point: ReadPoint,
+    bytes: &[u8],
+) -> Result<(), ReadWriteError> {
+    let current: Option<Option<Vec<u8>>> = tx.query_row("SELECT local_point FROM read_points WHERE server_id=?1 AND user_id=?2 AND channel_id=?3", params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes()], |row| row.get(0)).optional()?;
+    let current: Option<ReadPoint> = current
+        .flatten()
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| StorageError::InvalidState))
+        .transpose()?;
+    if current.is_some_and(|current| current >= point) {
+        return Ok(());
+    }
+    let changed = tx.execute("INSERT INTO read_points(server_id,user_id,channel_id,local_point) SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM accounts WHERE server_id=?1 AND user_id=?2 AND hidden=0) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET local_point=excluded.local_point",params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes(), bytes])?;
+    if changed != 1 {
+        return Err(ReadWriteError::Session(ClientError::Closed));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    //! Server refresh never overwrites local pending state.
-    use super::*;
-    use crate::{
-        ServerAddress,
-        storage_worker::{StorageWorker, WorkerConfig},
-    };
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn server_refresh_preserves_pending_read_bytes() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("state.sqlite");
-        let (mut worker, writer) = StorageWorker::state(
-            path.clone(),
-            |connection| {
-                crate::state_schema::migrate(connection)
-                    .map_err(|_| crate::storage_worker::WorkerError::Initialization)
-            },
-            WorkerConfig::default(),
-        )
-        .unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let account = AccountId::new(
-            ServerAddress::parse("https://example.invalid")
-                .unwrap()
-                .id(),
-            Uuid::from_u128(1),
-        );
-        runtime.block_on(async {
-            writer.write(move |tx| {
-                tx.execute("INSERT INTO servers VALUES(?1,'https://example.invalid',0,0,0)",[account.server().as_bytes()])?;
-                tx.execute("INSERT INTO accounts(server_id,user_id,position,created_at_us) VALUES(?1,?2,0,0)",params![account.server().as_bytes(),account.user().as_bytes()])?;
-                tx.execute("INSERT INTO read_points VALUES(?1,?2,?3,?4,NULL)",params![account.server().as_bytes(),account.user().as_bytes(),Uuid::from_u128(2).as_bytes(),b"pending".as_slice()])?;
-                Ok::<_,StorageError>(())
-            }).await.unwrap();
-            let data = crate::DataRoot::new(root.path().join("lease"));
-            let registry = Registry { writer, readers: std::sync::Arc::new(crate::storage_worker::ReadPool::default()), path:path.clone(), lease:data.acquire().unwrap() };
-            registry.reconcile_read_points(account,&[Channel { id:Some(Uuid::from_u128(2).to_string()),last_read_message:Some(Uuid::from_u128(3).to_string()),last_read_at:Some("2026-01-01T00:00:00Z".into()),..Channel::default() }],&[]).await.unwrap();
-            let row: (Vec<u8>,Vec<u8>)=registry.readers.query(path,|tx|tx.query_row("SELECT local_point,uploaded_point FROM read_points",[],|row|Ok((row.get(0)?,row.get(1)?)))).await.unwrap();
-            assert_eq!(row.0,b"pending");
-            assert_eq!(serde_json::from_slice::<ServerReadPoint>(&row.1).unwrap().message_id,Uuid::from_u128(3));
-        });
-        worker
-            .shutdown(Instant::now() + Duration::from_secs(2))
-            .unwrap();
-        worker.join().unwrap();
-    }
-}
+mod tests;

@@ -110,6 +110,11 @@ pub(super) async fn server_page(
         *state = super::persistence::State::default();
         return Err(error);
     }
+    handle
+        .session
+        .inner
+        .epochs
+        .apply(generation, || handle.channel.publish(&state, generation))??;
     handle.check(generation)?;
     let messages = points
         .iter()
@@ -199,6 +204,11 @@ pub(super) async fn pins(
         *state = super::persistence::State::default();
         return Err(error);
     }
+    handle
+        .session
+        .inner
+        .epochs
+        .apply(generation, || handle.channel.publish(&state, generation))??;
     Ok(())
 }
 
@@ -223,6 +233,8 @@ async fn rejection(
         _ => return error.into(),
     };
     let _state = handle.channel.state.lock().await;
+    // Loss of access ends capabilities even when persisting the revocation fails.
+    handle.channel.close(reason);
     if let Err(error) = connection
         .cache
         .history_revoke(*handle.channel.id.as_bytes(), generation)
@@ -230,6 +242,5 @@ async fn rejection(
     {
         return error.into();
     }
-    handle.channel.close(reason);
     HistoryError::Closed(reason)
 }

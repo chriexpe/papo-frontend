@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use papo_api::wire::{
-    BlockListResponse, Channel, ChannelList, ChannelPermissionsResponse, DirectConversation,
+    BlockListResponse, Channel, ChannelPermissionsResponse, DirectConversation,
     DirectConversationList, Role, RoleListResponse, Server, UserProfile, UserSummary,
 };
 use serde_json::json;
@@ -76,7 +76,6 @@ impl Resources {
             return Some(problem(401, "unauthorized", path));
         };
         let reply = match (method, path) {
-            ("GET", "/channels") => self.channel_list(user_id),
             ("GET", "/roles") => Reply::json(
                 200,
                 json!(RoleListResponse {
@@ -142,33 +141,5 @@ impl Resources {
         server.role_count = i64::try_from(self.roles.len()).ok();
         server.member_count = i64::try_from(self.profiles.len()).ok();
         Reply::json(200, json!(server))
-    }
-
-    fn channel_list(&self, user_id: &str) -> Reply {
-        let mut channels: Vec<_> = self
-            .channels
-            .values()
-            .cloned()
-            .map(|mut channel| {
-                channel.last_read_message = None;
-                channel.last_read_at = None;
-                if let Some(mark) = channel
-                    .id
-                    .as_ref()
-                    .and_then(|id| self.read_marks.get(&(user_id.to_owned(), id.clone())))
-                {
-                    channel.last_read_message = Some(mark.0.clone());
-                    channel.last_read_at = Some(mark.1.clone());
-                }
-                channel
-            })
-            .collect();
-        channels.sort_by(|left, right| (left.position, &left.id).cmp(&(right.position, &right.id)));
-        Reply::json(
-            200,
-            json!(ChannelList {
-                channels: Some(channels)
-            }),
-        )
     }
 }

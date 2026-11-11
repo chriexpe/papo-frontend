@@ -8,9 +8,10 @@ use papo_sdk::HistorySource;
 
 #[test]
 fn held_server_page_keeps_newer_live_edits_and_deletes_and_exact_far_boundary_cursor() -> Result {
-    let fixture = Fixture::new(config(12))?;
+    let fixture = Fixture::new(config(0))?;
     fixture.run(async {
         let session = signed_in(&fixture, "history-overlay").await?;
+        fixture.server().seed_history(recipe(12)).await?;
         let history = session.history(channel()).await?;
         let mut events = session.subscribe_events();
         let mut hold = fixture

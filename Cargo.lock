@@ -7501,6 +7501,7 @@ dependencies = [
 name = "papo-sdk-ui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "eyeball-im",
  "futures-util",
  "imbl",

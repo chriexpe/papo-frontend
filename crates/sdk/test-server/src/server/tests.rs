@@ -28,6 +28,8 @@ fn script_waits_for_its_matching_request_and_is_consumed_once() {
         resources: Resources::default(),
         history: crate::history::History::default(),
         member_requests: crate::MemberRequestCounts::default(),
+        read_requests: Arc::default(),
+        read_acknowledged_at: crate::resources::CREATED_AT.into(),
         holds: Vec::new(),
         gateway_accepting: true,
         rest: vec![RestStep {

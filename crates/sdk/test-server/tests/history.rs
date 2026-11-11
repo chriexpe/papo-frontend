@@ -86,7 +86,7 @@ async fn public_rest_client_pages_ten_thousand_messages_both_directions_with_exa
         assert_eq!(observed, expected);
     }
     let channels: Value = account.get("/channels").await?;
-    assert!(channels["channels"][0].get("last_read_message").is_none());
+    assert_eq!(channels["channels"][0]["last_read_message"], Value::Null);
     server.shutdown().await
 }
 

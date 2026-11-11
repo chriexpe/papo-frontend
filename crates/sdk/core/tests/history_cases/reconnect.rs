@@ -62,9 +62,10 @@ fn disconnected_creation_edit_delete_and_pin_are_revalidated_on_open_channel_rec
 #[test]
 fn held_old_generation_history_response_is_rejected_and_cannot_overwrite_reconnect_payload()
 -> Result {
-    let fixture = Fixture::new(config(12))?;
+    let fixture = Fixture::new(config(0))?;
     fixture.run(async {
         let session = signed_in(&fixture, "history-stale").await?;
+        fixture.server().seed_history(recipe(12)).await?;
         let history = session.history(channel()).await?;
         let mut hold = fixture
             .server()

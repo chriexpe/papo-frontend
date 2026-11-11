@@ -12,13 +12,16 @@ mod connection_driver;
 mod generation;
 mod history;
 pub use history::{
-    HistoryClosedReason, HistoryError, HistoryGap, HistoryHandle, HistoryPage, HistorySource,
+    HistoryChunk, HistoryClosedReason, HistoryError, HistoryGap, HistoryHandle, HistoryPage,
+    HistorySnapshot, HistorySource, HistorySubscription, HistoryUpdate,
 };
 pub use papo_api::wire::Message;
-pub use papo_api::{HistoryCursor, HistoryOrder, HistoryQuery};
+pub use papo_api::{HistoryCursor, HistoryOrder, HistoryQuery, Uuid};
 mod observable;
 mod profiles;
 mod read_points;
+mod reading;
+pub use reading::{ReadPoint, ReadState, ReadingError, ReadingSnapshot, UnreadCount};
 mod reconcile;
 mod reconcile_event;
 mod reconcile_fetch;

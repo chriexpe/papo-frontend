@@ -35,15 +35,10 @@ pub(crate) async fn run(
     collect(session, epoch, socket, &mut journal, async {
         let _guard = session.resource_serial.lock().await;
         let snapshot = crate::reconcile_fetch::fetch(connection, session, epoch).await?;
-        connection
-            .client
-            .inner
-            .registry
-            .reconcile_read_points(session.account, &snapshot.channels, &snapshot.dms)
-            .await?;
         session.epochs.validate(epoch.generation)?;
         connection.cache.replace(&snapshot).await?;
         crate::history::reconnect::resources(session, connection, &snapshot).await?;
+        crate::reading::reconcile::resources(session, connection, &snapshot).await?;
         crate::history::reconnect::refresh(session, connection, epoch.generation).await?;
         session.publish_resources(snapshot)
     })
@@ -94,14 +89,6 @@ async fn replay(
                 crate::reconcile_event::apply(connection, &mut snapshot, &event).await?
             {
                 session.epochs.validate(epoch.generation)?;
-                if changed.contains(&crate::CacheResource::Channels) {
-                    connection
-                        .client
-                        .inner
-                        .registry
-                        .reconcile_read_points(session.account, &snapshot.channels, &snapshot.dms)
-                        .await?;
-                }
                 connection.cache.update(&snapshot, &changed).await?;
                 if changed.iter().any(|resource| {
                     matches!(
@@ -110,6 +97,7 @@ async fn replay(
                     )
                 }) {
                     crate::history::reconnect::resources(session, connection, &snapshot).await?;
+                    crate::reading::reconcile::resources(session, connection, &snapshot).await?;
                 }
                 session.publish_resources(snapshot)?;
             }

@@ -139,9 +139,11 @@ async fn traverse(
 
 #[test]
 fn exact_microsecond_cursors_page_both_directions_then_cache_offline_without_network() -> Result {
-    let fixture = Fixture::new(config(205))?;
+    let fixture = Fixture::new(config(0))?;
     fixture.run(async {
         let session = signed_in(&fixture, "history-pages").await?;
+        // Isolate explicit paging from the automatic unread-channel reconnect fetch.
+        fixture.server().seed_history(recipe(205)).await?;
         let history = session.history(channel()).await?;
         assert_eq!(history.account(), session.account());
         assert_eq!(history.channel(), channel());
@@ -257,7 +259,7 @@ fn chronological_cache_and_detached_pin_payloads_survive_clean_client_restart() 
 fn two_accounts_keep_own_reactions_and_pins_independent_without_cross_account_cache_reads() -> Result
 {
     use papo_api::wire::{MessageReactionSummary, MessageUserReaction};
-    let fixture = Fixture::new(config(12))?;
+    let fixture = Fixture::new(config(0))?;
     fixture.run(async {
         let first = signed_in(&fixture, "history-one").await?;
         let handle = fixture.client().handle();
@@ -265,6 +267,8 @@ fn two_accounts_keep_own_reactions_and_pins_independent_without_cross_account_ca
         register(&auth, "history-two").await?;
         let second = login(&auth, "history-two").await?;
         online(&second).await?;
+        // Both account caches must fetch after their account-local reaction fixtures are set.
+        fixture.server().seed_history(recipe(12)).await?;
         let unicode = char::from_u32(0x1f44d)
             .ok_or("invalid fixture scalar")?
             .to_string();

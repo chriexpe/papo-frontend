@@ -27,6 +27,7 @@ fn expected(channels: &[Channel]) -> Vector<Arc<ChannelListItem>> {
                 position: channel.position,
                 topic: channel.topic.clone(),
                 created_at: channel.created_at.clone(),
+                unread: None,
             })
         })
         .collect()
