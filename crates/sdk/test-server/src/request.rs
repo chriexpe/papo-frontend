@@ -27,12 +27,13 @@ pub(crate) async fn handle(
     let path = request.uri().path().to_owned();
     let query = request.uri().query().unwrap_or_default().to_owned();
     let cookie = cookie_value(request.headers()).map(str::to_owned);
-    let (step, base_url) = {
+    let (step, base_url, _upload_guard) = {
         let mut state = state.lock().await;
         state.member_requests.record(&method, &path);
         (
             take_step(&mut state, &method, &path),
             state.base_url.clone(),
+            state.read_requests.record(&method, &path),
         )
     };
     let encode = |reply| encode(reply, &base_url);
@@ -81,6 +82,14 @@ pub(crate) async fn handle(
                 Reply::json(201, serde_json::json!({}))
             }
         } else if let Some(reply) =
+            crate::read_marks::handle(&mut state, &method, &path, user_id.as_deref(), &body)
+        {
+            reply
+        } else if let Some(reply) =
+            crate::channel_list::handle(&state, &method, &path, user_id.as_deref())
+        {
+            reply
+        } else if let Some(reply) =
             crate::history_http::handle(&state, &method, &path, &query, user_id.as_deref())
         {
             reply
@@ -91,19 +100,14 @@ pub(crate) async fn handle(
         {
             reply
         } else {
-            let reply = state
-                .auth
-                .handle(&config, &method, &path, cookie.as_deref(), &body);
-            if path == "/auth/register"
-                && reply.status == 201
-                && let Some(value) = reply.body.as_ref()
-                && let (Some(id), Some(username)) =
-                    (value["id"].as_str(), value["username"].as_str())
-            {
-                state.resources.register(id, username);
-                state.presence.user_registered(id);
-            }
-            reply
+            auth_reply(
+                &mut state,
+                &config,
+                &method,
+                &path,
+                cookie.as_deref(),
+                &body,
+            )
         };
         let hold = state
             .holds
@@ -116,6 +120,26 @@ pub(crate) async fn handle(
         hold.wait().await;
     }
     Ok(encode(reply))
+}
+
+fn auth_reply(
+    state: &mut State,
+    config: &Config,
+    method: &str,
+    path: &str,
+    cookie: Option<&str>,
+    body: &[u8],
+) -> Reply {
+    let reply = state.auth.handle(config, method, path, cookie, body);
+    if path == "/auth/register"
+        && reply.status == 201
+        && let Some(value) = reply.body.as_ref()
+        && let (Some(id), Some(username)) = (value["id"].as_str(), value["username"].as_str())
+    {
+        state.resources.register(id, username);
+        state.presence.user_registered(id);
+    }
+    reply
 }
 
 fn encode(mut reply: Reply, base_url: &str) -> HttpResponse {

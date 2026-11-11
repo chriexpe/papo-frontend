@@ -37,6 +37,13 @@ impl History {
         Ok(())
     }
 
+    pub(crate) fn latest(&self, channel: &str) -> Option<&Message> {
+        self.channels
+            .get(channel)?
+            .last_key_value()
+            .map(|(_, message)| message)
+    }
+
     pub(crate) fn contains(&self, id: Uuid) -> bool {
         self.index.contains_key(&id)
     }

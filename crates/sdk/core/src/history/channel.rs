@@ -4,18 +4,18 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Arc,
-        atomic::{AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
 use papo_api::{HistoryOrder, HistoryQuery, RestClient, Uuid};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::{AccountCache, ClientError, ConnectionState, Generated, Generation, Session};
 
 use super::{
     HistoryClosedReason, HistoryError, HistoryPage, HistorySource, merge::Ticket, ordering::Point,
-    persistence::State,
+    persistence::State, publication::Publication,
 };
 
 #[derive(Clone)]
@@ -25,11 +25,22 @@ pub(super) struct CacheConnection {
     pub generation: Generation,
 }
 
-#[derive(Default)]
 pub(crate) struct HistoryStore {
+    pub(super) changes: watch::Sender<()>,
     pub(super) channels: Mutex<BTreeMap<Uuid, Arc<Channel>>>,
     pub(super) verified: RwLock<BTreeSet<Uuid>>,
     pub(super) connection: RwLock<Option<CacheConnection>>,
+}
+
+impl Default for HistoryStore {
+    fn default() -> Self {
+        Self {
+            channels: Mutex::default(),
+            verified: RwLock::default(),
+            connection: RwLock::default(),
+            changes: watch::channel(()).0,
+        }
+    }
 }
 
 pub(super) struct Channel {
@@ -37,43 +48,35 @@ pub(super) struct Channel {
     pub state: Mutex<State>,
     pub opens: AtomicUsize,
     pub pins_serial: Mutex<()>,
-    closed: AtomicU8,
+    pub(super) publication: std::sync::Mutex<Publication>,
+    pub(super) changes: watch::Sender<()>,
 }
 
 impl Channel {
-    pub fn new(id: Uuid) -> Self {
+    pub fn new(id: Uuid, changes: watch::Sender<()>) -> Self {
         Self {
             id,
             state: Mutex::new(State::default()),
             opens: AtomicUsize::new(0),
             pins_serial: Mutex::new(()),
-            closed: AtomicU8::new(0),
+            publication: std::sync::Mutex::default(),
+            changes,
         }
     }
 
     pub fn close(&self, reason: HistoryClosedReason) {
-        let code = match reason {
-            HistoryClosedReason::AccountClosed => 1,
-            HistoryClosedReason::ChannelRemoved => 2,
-            HistoryClosedReason::ChannelDeleted => 3,
-            HistoryClosedReason::Forbidden => 4,
-            HistoryClosedReason::NotFound => 5,
-        };
-        let _ = self
-            .closed
-            .compare_exchange(0, code, Ordering::AcqRel, Ordering::Acquire);
+        self.publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .close(reason);
+        self.changes.send_replace(());
     }
 
     pub fn check(&self) -> Result<(), HistoryError> {
-        let reason = match self.closed.load(Ordering::Acquire) {
-            0 => return Ok(()),
-            2 => HistoryClosedReason::ChannelRemoved,
-            3 => HistoryClosedReason::ChannelDeleted,
-            4 => HistoryClosedReason::Forbidden,
-            5 => HistoryClosedReason::NotFound,
-            _ => HistoryClosedReason::AccountClosed,
-        };
-        Err(HistoryError::Closed(reason))
+        self.publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .check()
     }
 }
 
@@ -124,11 +127,9 @@ impl Session {
                         .ok_or(HistoryError::Unverified)?;
                     let channel = {
                         let mut channels = store.channels.lock().await;
-                        Arc::clone(
-                            channels
-                                .entry(channel)
-                                .or_insert_with(|| Arc::new(Channel::new(channel))),
-                        )
+                        Arc::clone(channels.entry(channel).or_insert_with(|| {
+                            Arc::new(Channel::new(channel, store.changes.clone()))
+                        }))
                     };
                     channel.check()?;
                     let mut state = channel.state.lock().await;
@@ -137,6 +138,9 @@ impl Session {
                         .await?;
                     session.inner.epochs.validate(epoch.generation)?;
                     channel.check()?;
+                    session.inner.epochs.apply(epoch.generation, || {
+                        channel.initialize(&state, epoch.generation)
+                    })??;
                     drop(state);
                     channel.opens.fetch_add(1, Ordering::Relaxed);
                     Ok(HistoryHandle {
@@ -187,7 +191,7 @@ impl HistoryHandle {
             let epoch = handle.session.inner.epochs.current();
             let result = tokio::select! {
                 biased;
-                () = handle.session.inner.root.cancelled() => Err(HistoryError::Closed(HistoryClosedReason::AccountClosed)),
+                () = handle.session.inner.root.cancelled() => Err(handle.account_closed()),
                 () = epoch.cancel.cancelled() => Err(HistoryError::from(ClientError::Superseded)),
                 result = handle.page_current(cursor, order, limit, epoch.generation) => result,
             };
@@ -232,7 +236,7 @@ impl HistoryHandle {
                 };
                 let result = tokio::select! {
                     biased;
-                    () = handle.session.inner.root.cancelled() => Err(HistoryError::Closed(HistoryClosedReason::AccountClosed)),
+                    () = handle.session.inner.root.cancelled() => Err(handle.account_closed()),
                     () = epoch.cancel.cancelled() => Err(HistoryError::from(ClientError::Superseded)),
                     result = work => result,
                 };
@@ -243,12 +247,20 @@ impl HistoryHandle {
     }
 
     pub(super) fn check(&self, generation: Generation) -> Result<(), HistoryError> {
-        if self.session.is_closed() {
-            return Err(HistoryError::Closed(HistoryClosedReason::AccountClosed));
-        }
         self.channel.check()?;
+        if self.session.is_closed() {
+            return Err(self.account_closed());
+        }
         self.session.inner.epochs.validate(generation)?;
         Ok(())
+    }
+
+    fn account_closed(&self) -> HistoryError {
+        self.channel.close(HistoryClosedReason::AccountClosed);
+        self.channel
+            .check()
+            .err()
+            .unwrap_or(HistoryError::Closed(HistoryClosedReason::AccountClosed))
     }
 
     /// Restore and validate this channel's cache incarnation under the caller's state lock.
@@ -272,6 +284,10 @@ impl HistoryHandle {
                     generation,
                 )
                 .await?;
+            self.session
+                .inner
+                .epochs
+                .apply(generation, || self.channel.initialize(state, generation))??;
             Ok(())
         }
         .await;

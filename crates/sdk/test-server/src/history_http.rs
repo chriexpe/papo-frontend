@@ -56,6 +56,7 @@ pub(crate) fn handle(
     }
     let body = if let Some(query) = parsed {
         let (messages, has_more) = state.history.page(channel, user, &query);
+        state.read_requests.history_rows(messages.len());
         let mut body = json!(MessageListResponse {
             channel_id: Some(channel.to_owned()),
             messages: Some(Vec::new()),

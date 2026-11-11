@@ -12,6 +12,13 @@ use tokio_util::sync::CancellationToken;
 pub struct Generation(pub(crate) u64);
 
 impl Generation {
+    /// Construct a deterministic epoch for isolated projection tests, never session admission.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub const fn for_test(value: u64) -> Self {
+        Self(value)
+    }
+
     /// Returns the diagnostic epoch number, without account or credential data.
     #[must_use]
     pub const fn get(self) -> u64 {

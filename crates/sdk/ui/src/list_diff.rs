@@ -5,7 +5,7 @@ use imbl::Vector;
 
 /// Produces sequential edits without replacing unchanged identities.
 /// Both lists must have unique identities, as guaranteed by the SDK registry.
-pub(crate) fn between<T: Clone + Eq, K: Eq>(
+pub(crate) fn between<T: Clone + PartialEq, K: Eq>(
     previous: &Vector<T>,
     next: &Vector<T>,
     identity: impl Fn(&T) -> K,
@@ -42,11 +42,18 @@ pub(crate) fn between<T: Clone + Eq, K: Eq>(
             current.remove(old_index);
             diffs.push(VectorDiff::Remove { index: old_index });
         }
-        current.insert(index, value.clone());
-        diffs.push(VectorDiff::Insert {
-            index,
-            value: value.clone(),
-        });
+        if index == current.len() {
+            current.push_back(value.clone());
+            diffs.push(VectorDiff::PushBack {
+                value: value.clone(),
+            });
+        } else {
+            current.insert(index, value.clone());
+            diffs.push(VectorDiff::Insert {
+                index,
+                value: value.clone(),
+            });
+        }
     }
     diffs
 }

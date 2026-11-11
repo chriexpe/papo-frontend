@@ -1,7 +1,7 @@
 //! Owns public history revocation/eviction proofs; leaves backend permission evaluation and cache schema outside.
 
 use super::{
-    CHANNEL, Fixture, Result, channel, config, disconnect, login, online, query, signed_in,
+    CHANNEL, Fixture, Result, channel, config, disconnect, login, online, query, recipe, signed_in,
     wait_event,
 };
 use papo_api::{HistoryOrder, HistoryQuery, Uuid};
@@ -10,9 +10,10 @@ use papo_test_server::{Failure, RestStep};
 
 #[test]
 fn forbidden_history_fetch_permanently_closes_warm_handle_and_pin_snapshot() -> Result {
-    let fixture = Fixture::new(config(25))?;
+    let fixture = Fixture::new(config(0))?;
     fixture.run(async {
         let session = signed_in(&fixture, "history-denied").await?;
+        fixture.server().seed_history(recipe(25)).await?;
         let history = session.history(channel()).await?;
         let page = history
             .page(HistoryQuery {
@@ -66,7 +67,7 @@ fn forbidden_history_fetch_permanently_closes_warm_handle_and_pin_snapshot() -> 
 #[test]
 fn missing_history_page_is_typed_not_found_and_does_not_serve_old_cached_messages() -> Result {
     let path = format!("/channels/{CHANNEL}/messages");
-    let mut scenario = config(25);
+    let mut scenario = config(0);
     scenario.rest = vec![
         RestStep {
             method: "GET".into(),
@@ -87,6 +88,7 @@ fn missing_history_page_is_typed_not_found_and_does_not_serve_old_cached_message
     let fixture = Fixture::new(scenario)?;
     fixture.run(async {
         let session = signed_in(&fixture, "history-missing").await?;
+        fixture.server().seed_history(recipe(25)).await?;
         let history = session.history(channel()).await?;
         let first = history
             .page(HistoryQuery {

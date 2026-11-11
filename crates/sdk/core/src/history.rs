@@ -9,7 +9,15 @@ mod model;
 mod mutations;
 mod ordering;
 mod persistence;
+mod publication;
 pub(crate) mod reconnect;
+#[cfg(test)]
+mod reconnect_tests;
+mod subscription;
+#[cfg(test)]
+mod subscription_handle_tests;
+#[cfg(test)]
+mod subscription_tests;
 #[cfg(test)]
 mod tests;
 
@@ -19,6 +27,7 @@ use std::sync::Arc;
 
 pub use channel::HistoryHandle;
 pub(crate) use channel::HistoryStore;
+pub use subscription::{HistoryChunk, HistorySnapshot, HistorySubscription, HistoryUpdate};
 
 /// Why a history handle can no longer access its channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +58,9 @@ pub enum HistoryError {
     /// The requested page violates ordering, identity, precision or progress requirements.
     #[error("invalid history page")]
     InvalidPage,
+    /// A reported snapshot version is no longer current.
+    #[error("history snapshot superseded")]
+    StaleSnapshot,
     /// Account-cache storage failed.
     #[error(transparent)]
     Cache(#[from] CacheError),
@@ -72,7 +84,9 @@ impl From<HistoryError> for ClientError {
             HistoryError::Session(error) => error,
             HistoryError::Cache(error) => Self::Cache(error),
             HistoryError::Closed(_) => Self::Closed,
-            HistoryError::Unverified | HistoryError::InvalidPage => Self::ResourceData,
+            HistoryError::Unverified | HistoryError::InvalidPage | HistoryError::StaleSnapshot => {
+                Self::ResourceData
+            }
         }
     }
 }

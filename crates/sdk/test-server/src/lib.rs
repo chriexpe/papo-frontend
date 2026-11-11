@@ -7,7 +7,12 @@
 //! `GET /channels/{id}/pinned`. Reconciliation supports `GET /channels`, channel permission snapshots,
 //! `GET /roles`, paginated `GET /users`, individual profiles and profile/summary batches,
 //! `GET /dms`, and `GET /users/blocks`. Read marks are account-scoped channel fields,
-//! not a separate listing route. Profiles are fetched only when requested.
+//! not a separate listing route. `PUT /channels/{id}/read` returns empty 204 and
+//! advances only by the pinned `(created_at,id)` order, never by acknowledgement time.
+//! [`TestServer::set_read_acknowledged_at`] controls HTTP acknowledgement time;
+//! [`TestServer::advance_read_mark`] silently models another device. Existing REST scripts
+//! and [`TestServer::hold_next_rest`] combine with [`TestServer::read_request_counts`]
+//! for debounce, retry and inflight assertions. Profiles are fetched only when requested.
 //! Reset links can be issued by the in-memory fixture capability only.
 //! The gateway supports presence, typed channel/member/DM changes, heartbeat, invalid-event
 //! errors and ordered scenario frames. Scripted controls keep authoritative state while
@@ -27,6 +32,7 @@
 //! plain-HTTP test clients must explicitly forward them. Nothing is logged.
 
 mod auth;
+mod channel_list;
 mod config;
 mod controls;
 mod gateway;
@@ -39,6 +45,8 @@ mod media;
 mod member_requests;
 mod members;
 mod presence;
+mod read_marks;
+mod read_requests;
 mod request;
 mod resources;
 mod response;
@@ -49,6 +57,7 @@ pub use config::{Config, Failure, GatewayStep, RestStep};
 pub use history_seed::HistorySeed;
 pub use media::{MediaRequest, MediaTestServer};
 pub use member_requests::MemberRequestCounts;
+pub use read_requests::ReadRequestCounts;
 pub use rest_hold::RestHold;
 pub use server::TestServer;
 

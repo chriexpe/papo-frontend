@@ -117,6 +117,14 @@ pub(crate) async fn drive(
         }
         let epoch = session.epochs.current();
         if session
+            .history
+            .generation_changed(epoch.generation)
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        if session
             .status(epoch.generation, ConnectionState::Connecting)
             .is_err()
         {
@@ -172,6 +180,14 @@ pub(crate) async fn drive(
         let Ok(next) = session.epochs.advance() else {
             return;
         };
+        if session
+            .history
+            .generation_changed(next.generation)
+            .await
+            .is_err()
+        {
+            continue;
+        }
         let retry_at =
             tokio::time::Instant::now() + config.backoff.delay(attempt, config.jitter.as_ref());
         attempt = attempt.saturating_add(1);

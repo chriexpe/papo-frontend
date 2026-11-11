@@ -23,7 +23,7 @@ pub(super) struct State {
     pub model: Model,
     pub set_id: Option<i64>,
     pub authorized_generation: u64,
-    cache_instance: Option<u64>,
+    pub(super) cache_instance: Option<u64>,
     layout: Layout,
 }
 

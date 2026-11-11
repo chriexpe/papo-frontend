@@ -66,15 +66,23 @@ pub(crate) async fn refresh(
     if !std::ptr::eq(Arc::as_ptr(&session_handle.inner), session) {
         return Err(ClientError::Superseded);
     }
-    let channels: Vec<_> = session
-        .history
-        .channels
-        .lock()
-        .await
-        .values()
-        .filter(|channel| channel.opens.load(Ordering::Relaxed) > 0 && channel.check().is_ok())
-        .cloned()
-        .collect();
+    let unread = unread_channels(&session.reading).await;
+    let verified = session.history.verified.read().await.clone();
+    let channels: Vec<_> = {
+        let mut channels = session.history.channels.lock().await;
+        for id in unread.intersection(&verified) {
+            channels
+                .entry(*id)
+                .or_insert_with(|| Arc::new(Channel::new(*id, session.history.changes.clone())));
+        }
+        channels
+            .values()
+            .filter(|channel| {
+                (channel.is_open() || unread.contains(&channel.id)) && channel.check().is_ok()
+            })
+            .cloned()
+            .collect()
+    };
     let cache_connection = CacheConnection {
         cache: Arc::clone(&connection.cache),
         rest: connection.rest.clone(),
@@ -150,4 +158,20 @@ async fn refresh_channel(
         cursor = oldest;
     }
     super::fetch::pins(&handle, connection, generation).await
+}
+
+/// Server heads and durable read points share message ordering; acknowledgement time is irrelevant.
+pub(super) async fn unread_channels(reading: &crate::reading::Reading) -> BTreeSet<Uuid> {
+    let heads = reading.heads.lock().await;
+    let image = reading.image.borrow();
+    heads
+        .iter()
+        .filter_map(|(channel, head)| {
+            let point = image
+                .channels
+                .get(channel)
+                .and_then(|state| state.local_point.max(state.uploaded_point));
+            (Some(*head) > point).then_some(*channel)
+        })
+        .collect()
 }

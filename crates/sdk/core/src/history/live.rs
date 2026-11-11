@@ -67,7 +67,7 @@ pub(crate) async fn apply(
         let channel = Arc::clone(
             channels
                 .entry(id)
-                .or_insert_with(|| Arc::new(Channel::new(id))),
+                .or_insert_with(|| Arc::new(Channel::new(id, session.history.changes.clone()))),
         );
         selected.push(channel);
     } else {
@@ -92,15 +92,22 @@ pub(crate) async fn apply(
                     .entries
                     .get(&id)
                     .is_none_or(|entry| entry.message.is_none())
-                && channel.opens.load(std::sync::atomic::Ordering::Relaxed) > 0
+                && channel.is_open()
         } else {
             false
         };
         if state.model.event(event, generation.get())? {
             session.epochs.validate(generation)?;
-            state
+            if let Err(error) = state
                 .persist(&connection.cache, *channel.id.as_bytes(), &epoch)
-                .await?;
+                .await
+            {
+                *state = super::persistence::State::default();
+                return Err(error.into());
+            }
+            session
+                .epochs
+                .apply(generation, || channel.publish(&state, generation))??;
         }
         drop(state);
         if refresh_pins {
