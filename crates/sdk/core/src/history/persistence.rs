@@ -89,7 +89,7 @@ impl State {
         epoch: &crate::generation::Epoch,
     ) -> Result<(), HistoryError> {
         let generation = epoch.generation;
-        let next_layout = layout(&self.model)?;
+        let next_layout = structural_layout(&self.model)?;
         let mut upserts = Vec::new();
         for ((table, id), payload) in &next_layout {
             if self.layout.get(&(*table, *id)) != Some(payload) {
@@ -103,6 +103,22 @@ impl State {
         for id in &self.model.dirty {
             let entry = self.model.entries.get(id).ok_or(CacheError::InvalidData)?;
             if !entry.deleted {
+                if entry.timeline {
+                    upserts.push(HistoryRow {
+                        table: HistoryTable::Items,
+                        id: *id,
+                        payload: encode(&Item::Message {
+                            point: entry.point.clone().ok_or(CacheError::InvalidData)?,
+                        })?,
+                    });
+                }
+                if entry.pinned {
+                    upserts.push(HistoryRow {
+                        table: HistoryTable::Pins,
+                        id: *id,
+                        payload: encode(&true)?,
+                    });
+                }
                 upserts.push(HistoryRow {
                     table: HistoryTable::Messages,
                     id: *id,
@@ -238,7 +254,7 @@ fn restore(
     {
         return Err(CacheError::InvalidData.into());
     }
-    state.layout = expected;
+    state.layout = structural_layout(&state.model)?;
     // Connection epochs are process-local, so persisted numeric equality is never freshness evidence.
     state.model.empty_generation = 0;
     for entry in state.model.entries.values_mut() {
@@ -251,7 +267,7 @@ fn restore(
     Ok(state)
 }
 
-fn layout(model: &Model) -> Result<Layout, HistoryError> {
+fn structural_layout(model: &Model) -> Result<Layout, HistoryError> {
     let mut rows = BTreeMap::new();
     for (index, chunk) in model.chunks.iter().enumerate() {
         let linked = LinkedChunk {
@@ -298,6 +314,11 @@ fn layout(model: &Model) -> Result<Layout, HistoryError> {
             return Err(CacheError::InvalidData.into());
         }
     }
+    Ok(rows)
+}
+
+fn layout(model: &Model) -> Result<Layout, HistoryError> {
+    let mut rows = structural_layout(model)?;
     for (id, entry) in &model.entries {
         if entry.timeline && !entry.deleted {
             let point = entry.point.as_ref().ok_or(CacheError::InvalidData)?;

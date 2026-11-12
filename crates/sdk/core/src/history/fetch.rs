@@ -79,6 +79,7 @@ pub(super) async fn server_page(
         order: ticket.order,
         limit: Some(limit),
     };
+    let pending = handle.session.inner.history.unscoped.request(generation);
     let response = handle
         .session
         .client
@@ -103,6 +104,10 @@ pub(super) async fn server_page(
         .ensure(&connection.cache, ticket.channel, generation)
         .await?;
     state.model.merge_page(&ticket, &messages, has_more)?;
+    if let Err(error) = pending.replay(&mut state.model) {
+        *state = super::persistence::State::default();
+        return Err(error);
+    }
     if let Err(error) = state
         .persist(&connection.cache, ticket.channel, &epoch)
         .await
@@ -179,6 +184,7 @@ pub(super) async fn pins(
             limit: 100,
         }
     };
+    let pending = handle.session.inner.history.unscoped.request(generation);
     let response = handle
         .session
         .client
@@ -197,6 +203,10 @@ pub(super) async fn pins(
     let mut state = handle.channel.state.lock().await;
     handle.check(generation)?;
     state.model.pins(&ticket, &messages)?;
+    if let Err(error) = pending.replay(&mut state.model) {
+        *state = super::persistence::State::default();
+        return Err(error);
+    }
     if let Err(error) = state
         .persist(&connection.cache, ticket.channel, &epoch)
         .await

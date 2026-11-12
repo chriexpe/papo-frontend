@@ -217,22 +217,9 @@ impl Session {
         let _serial = self.inner.reading.serial.lock().await;
         self.inner.epochs.validate(generation)?;
         let history = self.history(channel).await?;
-        let snapshot = history
-            .validate_snapshot(generation, history_version)
+        let (snapshot, point) = history
+            .visible_snapshot(generation, history_version, ids)
             .await?;
-        let visible: std::collections::BTreeSet<_> = ids.iter().copied().collect();
-        let mut found = std::collections::BTreeSet::new();
-        let mut point = None;
-        for message in &snapshot.messages {
-            let key = ReadPoint::message(message)?;
-            if visible.contains(&key.message_id) {
-                found.insert(key.message_id);
-                point = point.max(Some(key));
-            }
-        }
-        if found != visible {
-            return Err(ReadingError::InvalidReport);
-        }
         let Some(point) = point else {
             return Ok(());
         };

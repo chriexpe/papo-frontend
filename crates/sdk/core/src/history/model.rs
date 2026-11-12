@@ -1,6 +1,9 @@
 //! Canonical channel messages and proven ranges; network admission and persistence live separately.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Bound::{Excluded, Included},
+};
 
 use papo_api::{HistoryOrder, Uuid, wire::Message};
 use serde::{Deserialize, Serialize};
@@ -155,20 +158,20 @@ impl Model {
         // A cursor in a hole must not jump directly to the next cached run.
         let first = chunk.first.key()?;
         let last = chunk.last.key()?;
-        let mut candidates: Vec<_> = self
-            .order
-            .range(first..=last)
-            .filter(|(key, _)| {
-                boundary.is_none_or(|boundary| match order {
-                    HistoryOrder::Desc => **key < boundary,
-                    HistoryOrder::Asc => **key > boundary,
-                })
-            })
-            .filter_map(|(_, id)| self.entries.get(id)?.message.as_ref())
-            .collect();
-        if order == HistoryOrder::Desc {
-            candidates.reverse();
-        }
+        let lower = match (order, boundary) {
+            (HistoryOrder::Asc, Some(key)) => Excluded(key),
+            _ => Included(first),
+        };
+        let upper = match (order, boundary) {
+            (HistoryOrder::Desc, Some(key)) => Excluded(key),
+            _ => Included(last),
+        };
+        let range = self.order.range((lower, upper));
+        let payload = |(_, id): (&Key, &[u8; 16])| self.entries.get(id)?.message.as_ref();
+        let candidates: Vec<_> = match order {
+            HistoryOrder::Desc => range.rev().filter_map(payload).take(limit + 1).collect(),
+            HistoryOrder::Asc => range.filter_map(payload).take(limit + 1).collect(),
+        };
         let more_cached = candidates.len() > limit;
         let complete = match order {
             HistoryOrder::Desc => chunk.oldest_complete,

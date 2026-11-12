@@ -16,7 +16,7 @@ pub struct Fixture {
     client: Option<Client>,
     pub server: Option<TestServer>,
     pub store: Arc<ScriptedSecretStore>,
-    profile: tempfile::TempDir,
+    pub(super) profile: tempfile::TempDir,
     server_runtime: Option<Runtime>,
     config: ClientConfig,
 }

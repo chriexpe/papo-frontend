@@ -73,7 +73,7 @@ impl<T: Clone + PartialEq, G: Copy, C: Clone> Publisher<T, G, C> {
         }
     }
 
-    pub fn publish<K: Eq>(
+    pub fn publish<K: Ord>(
         &mut self,
         version: u64,
         generation: G,

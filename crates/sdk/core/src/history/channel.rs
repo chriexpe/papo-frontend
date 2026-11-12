@@ -27,6 +27,7 @@ pub(super) struct CacheConnection {
 
 pub(crate) struct HistoryStore {
     pub(super) changes: watch::Sender<()>,
+    pub(super) unscoped: Arc<super::unscoped::Journal>,
     pub(super) channels: Mutex<BTreeMap<Uuid, Arc<Channel>>>,
     pub(super) verified: RwLock<BTreeSet<Uuid>>,
     pub(super) connection: RwLock<Option<CacheConnection>>,
@@ -35,6 +36,7 @@ pub(crate) struct HistoryStore {
 impl Default for HistoryStore {
     fn default() -> Self {
         Self {
+            unscoped: Arc::default(),
             channels: Mutex::default(),
             verified: RwLock::default(),
             connection: RwLock::default(),

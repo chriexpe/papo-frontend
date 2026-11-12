@@ -169,3 +169,33 @@ fn pinned_snapshot_larger_than_backend_cap_is_rejected_before_mutation() {
     assert_eq!(model.revision, 0);
     assert!(model.entries.is_empty());
 }
+
+#[test]
+fn large_equal_timestamp_chunk_pages_both_ways_with_exclusive_deleted_boundaries() {
+    let mut model = Model::default();
+    for index in 0..10_000 {
+        model.event(&live(&message(index)), 1).unwrap();
+    }
+    let deleted = message(5_000);
+    model
+        .event(
+            &KnownEvent::MessageDelete(Box::new(MessageDeleteEvent {
+                id: deleted.id.clone().unwrap(),
+                channel_id: Uuid::from_u128(CHANNEL).to_string(),
+            })),
+            1,
+        )
+        .unwrap();
+    for limit in [1, 100] {
+        for (order, expected) in [(HistoryOrder::Asc, 5_002), (HistoryOrder::Desc, 5_000)] {
+            let page = model.page(Some(&point(&deleted)), order, limit, 1).unwrap();
+            assert_eq!(page.messages.len(), limit);
+            assert_eq!(
+                page.messages[0].id,
+                Some(Uuid::from_u128(expected).to_string())
+            );
+            assert!(page.has_more);
+            assert!(page.gap.is_none());
+        }
+    }
+}

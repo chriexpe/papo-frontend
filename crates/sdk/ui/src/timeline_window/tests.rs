@@ -208,3 +208,42 @@ fn focused_end_is_not_live_head_and_deleting_boundary_does_not_shift_window() {
         .collect();
     assert_eq!(ids, [Uuid::from_u128(2)]);
 }
+
+#[test]
+fn narrow_focused_window_selects_exact_equal_timestamp_bounds_from_large_history() {
+    let raw = snapshot(
+        (1..=100_000)
+            .map(|id| message(id, "2026-01-01T00:00:00.123456Z"))
+            .collect(),
+    );
+    let bounds = Bounds {
+        lower: Some(key(&raw.messages[49_999].cursor().unwrap()).unwrap()),
+        upper: Some(key(&raw.messages[50_028].cursor().unwrap()).unwrap()),
+        live: false,
+    };
+    let offsets = std::sync::atomic::AtomicUsize::new(0);
+    let items = project(
+        &raw,
+        &bounds,
+        None,
+        [false; 2],
+        &|_| {
+            offsets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::UtcOffset::default()
+        },
+        &Vector::new(),
+    )
+    .unwrap();
+    let ids: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item.as_ref() {
+            TimelineItem::Message { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        (50_000..50_030).map(Uuid::from_u128).collect::<Vec<_>>()
+    );
+    assert_eq!(offsets.load(std::sync::atomic::Ordering::Relaxed), 30);
+}

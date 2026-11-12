@@ -32,6 +32,8 @@ pub(crate) async fn resources(
         .load_read_points(session.account)
         .await?;
     let mut image = (**session.reading.image.borrow()).clone();
+    let same_generation = image.generation == snapshot.generation;
+    let previously_unresolved = session.reading.unresolved.lock().await.clone();
     image.generation = snapshot.generation;
     let mut heads = BTreeMap::new();
     let mut unresolved = BTreeMap::new();
@@ -56,35 +58,42 @@ pub(crate) async fn resources(
             heads.insert(channel, head);
         }
         if let Some(server) = server {
-            let point = resolve(
-                &handle,
-                connection,
-                snapshot.generation,
-                channel,
-                &server,
-                &state,
-                heads.get(&channel).copied(),
-            )
-            .await?;
+            let saved = previous.and_then(|points| points.uploaded.as_ref());
+            let point = if let Some(point) = saved
+                .filter(|saved| saved.server.message_id == server.message_id)
+                .and_then(|saved| saved.created_at_us)
+            {
+                Some(ReadPoint {
+                    created_at_us: point,
+                    message_id: server.message_id,
+                })
+            } else if same_generation && previously_unresolved.get(&channel) == Some(&server) {
+                None
+            } else {
+                resolve(
+                    &handle,
+                    connection,
+                    snapshot.generation,
+                    channel,
+                    &server,
+                    &state,
+                    heads.get(&channel).copied(),
+                )
+                .await?
+            };
             if point.is_none() {
                 unresolved.insert(channel, server.clone());
             }
-            let uploaded = UploadedPoint {
+            save_resolved(
+                &handle,
+                snapshot.generation,
+                channel,
                 server,
-                created_at_us: point.map(|point| point.created_at_us),
-                known_point: state.uploaded_point.max(point),
-            };
-            connection
-                .client
-                .inner
-                .registry
-                .save_uploaded_read(
-                    Arc::clone(&handle.inner),
-                    channel,
-                    snapshot.generation,
-                    uploaded,
-                )
-                .await?;
+                point,
+                &state,
+                saved,
+            )
+            .await?;
             state.uploaded_point = state.uploaded_point.max(point);
         }
         state.unread_count = UnreadCount::AtLeast(u64::from(
@@ -102,7 +111,13 @@ pub(crate) async fn resources(
     install_resources(session, connection, image, heads, unresolved).await?;
     drop(serial);
     refresh(&handle).await?;
-    let pending: Vec<_> = session
+    resume_uploads(&handle).await;
+    Ok(())
+}
+
+async fn resume_uploads(handle: &Session) {
+    let pending: Vec<_> = handle
+        .inner
         .reading
         .image
         .borrow()
@@ -111,7 +126,31 @@ pub(crate) async fn resources(
         .filter_map(|(id, state)| state.pending().map(|_| *id))
         .collect();
     for channel in pending {
-        upload::schedule(&handle, channel).await;
+        upload::schedule(handle, channel).await;
+    }
+}
+
+async fn save_resolved(
+    handle: &Session,
+    generation: crate::Generation,
+    channel: Uuid,
+    server: ServerReadPoint,
+    point: Option<ReadPoint>,
+    state: &ReadState,
+    saved: Option<&UploadedPoint>,
+) -> Result<(), ClientError> {
+    let uploaded = UploadedPoint {
+        server,
+        created_at_us: point.map(|point| point.created_at_us),
+        known_point: state.uploaded_point.max(point),
+    };
+    if saved != Some(&uploaded) {
+        handle
+            .client
+            .inner
+            .registry
+            .save_uploaded_read(Arc::clone(&handle.inner), channel, generation, uploaded)
+            .await?;
     }
     Ok(())
 }

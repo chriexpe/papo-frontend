@@ -37,53 +37,26 @@ pub(crate) async fn apply(
     let Event::Known(event) = event else {
         return Ok(());
     };
-    let channel_id = match event {
-        KnownEvent::Message(event) => Some(event.channel_id.as_str()),
-        KnownEvent::MessageEdit(event) => Some(event.channel_id.as_str()),
-        KnownEvent::MessageDelete(event) => Some(event.channel_id.as_str()),
-        KnownEvent::MessageEmbedsUpdate(event) => Some(event.channel_id.as_str()),
-        KnownEvent::ChannelDelete(event) => Some(event.channel_id.as_str()),
-        _ => None,
-    };
-    let mut selected = Vec::new();
-    if let Some(id) = channel_id {
-        let id = Uuid::from_bytes(Model::id(id)?);
-        if matches!(event, KnownEvent::ChannelDelete(_)) {
-            // Close before revoking: a reader that sees the revoked row must also see why.
-            if let Some(channel) = session.history.channels.lock().await.get(&id) {
-                channel.close(HistoryClosedReason::ChannelDeleted);
-            }
-            connection
-                .cache
-                .history_revoke(*id.as_bytes(), generation)
-                .await?;
-            session.history.verified.write().await.remove(&id);
-            return Ok(());
-        }
-        if !session.history.verified.read().await.contains(&id) {
-            return Ok(());
-        }
-        let mut channels = session.history.channels.lock().await;
-        let channel = Arc::clone(
-            channels
-                .entry(id)
-                .or_insert_with(|| Arc::new(Channel::new(id, session.history.changes.clone()))),
-        );
-        selected.push(channel);
-    } else {
-        // The pinned backend omits channel IDs from reaction and pin events.
-        // Unloaded channels stay stale and are revalidated by their next server page.
-        selected.extend(session.history.channels.lock().await.values().cloned());
+    let unscoped_id = super::unscoped::message_id(event)?;
+    if unscoped_id.is_some() {
+        session.history.unscoped.record(generation, event);
     }
+    let selected = select(session, connection, generation, event).await?;
     for channel in selected {
         if channel.check().is_err() {
             continue;
         }
         let mut state = channel.state.lock().await;
         session.epochs.validate(generation)?;
+        if unscoped_id.is_some_and(|id| !state.model.entries.contains_key(&id)) {
+            continue;
+        }
         state
             .ensure(&connection.cache, *channel.id.as_bytes(), generation)
             .await?;
+        if unscoped_id.is_some_and(|id| !state.model.entries.contains_key(&id)) {
+            continue;
+        }
         let refresh_pins = if let KnownEvent::MessagePin(event) = event {
             let id = Model::id(&event.message_id)?;
             event.is_pinned
@@ -131,4 +104,51 @@ pub(crate) async fn apply(
         }
     }
     Ok(())
+}
+
+async fn select(
+    session: &SessionInner,
+    connection: &ResourceConnection,
+    generation: Generation,
+    event: &KnownEvent,
+) -> Result<Vec<Arc<Channel>>, ClientError> {
+    let channel_id = match event {
+        KnownEvent::Message(event) => Some(event.channel_id.as_str()),
+        KnownEvent::MessageEdit(event) => Some(event.channel_id.as_str()),
+        KnownEvent::MessageDelete(event) => Some(event.channel_id.as_str()),
+        KnownEvent::MessageEmbedsUpdate(event) => Some(event.channel_id.as_str()),
+        KnownEvent::ChannelDelete(event) => Some(event.channel_id.as_str()),
+        _ => None,
+    };
+    let mut selected = Vec::new();
+    if let Some(id) = channel_id {
+        let id = Uuid::from_bytes(Model::id(id)?);
+        if matches!(event, KnownEvent::ChannelDelete(_)) {
+            // Close before revoking: a reader that sees the revoked row must also see why.
+            if let Some(channel) = session.history.channels.lock().await.get(&id) {
+                channel.close(HistoryClosedReason::ChannelDeleted);
+            }
+            connection
+                .cache
+                .history_revoke(*id.as_bytes(), generation)
+                .await?;
+            session.history.verified.write().await.remove(&id);
+            return Ok(Vec::new());
+        }
+        if !session.history.verified.read().await.contains(&id) {
+            return Ok(Vec::new());
+        }
+        let mut channels = session.history.channels.lock().await;
+        let channel = Arc::clone(
+            channels
+                .entry(id)
+                .or_insert_with(|| Arc::new(Channel::new(id, session.history.changes.clone()))),
+        );
+        selected.push(channel);
+    } else {
+        // The pinned backend omits channel IDs from reaction and pin events.
+        // Only already-owned IDs may mutate a channel; in-flight pages replay the bounded journal.
+        selected.extend(session.history.channels.lock().await.values().cloned());
+    }
+    Ok(selected)
 }

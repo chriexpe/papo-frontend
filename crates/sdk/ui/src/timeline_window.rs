@@ -62,7 +62,13 @@ pub(crate) fn project(
         values.push(TimelineItem::Loading(TimelineDirection::Older));
     }
     let mut previous_day = None;
-    for message in &raw.messages {
+    let start = bound_index(&raw.messages, bounds.lower, false)?;
+    let end = if bounds.live {
+        raw.messages.len()
+    } else {
+        bound_index(&raw.messages, bounds.upper, true)?
+    };
+    for message in &raw.messages[start.min(end)..end] {
         let cursor = message.cursor().ok_or(TimelineError::InvalidCursor)?;
         let point = key(&cursor)?;
         if !bounds.contains(point) {
@@ -136,6 +142,31 @@ pub(crate) fn project(
                 .map_or_else(|| Arc::new(item), |old| Arc::clone(old))
         })
         .collect())
+}
+
+/// Binary search uses canonical ordering; no timestamp parsing outside the window except
+/// logarithmically many boundary probes. Deleted anchors remain inclusive key boundaries.
+fn bound_index(
+    messages: &[Arc<papo_sdk::Message>],
+    boundary: Option<Key>,
+    upper: bool,
+) -> Result<usize, TimelineError> {
+    let Some(boundary) = boundary else {
+        return Ok(if upper { 0 } else { messages.len() });
+    };
+    let (mut low, mut high) = (0, messages.len());
+    while low < high {
+        let middle = low + (high - low) / 2;
+        let point = key(&messages[middle]
+            .cursor()
+            .ok_or(TimelineError::InvalidCursor)?)?;
+        if point < boundary || (upper && point == boundary) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    Ok(low)
 }
 
 #[cfg(test)]

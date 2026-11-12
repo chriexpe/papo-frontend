@@ -9,17 +9,28 @@ pub(super) fn update(
     server_head: Option<ReadPoint>,
 ) -> Result<(), ReadingError> {
     let point = state.point();
-    let mut count = 0_u64;
-    let mut first = None;
-    let mut cached_head = None;
-    for message in &snapshot.messages {
-        let key = ReadPoint::message(message)?;
-        cached_head = Some(key);
-        if Some(key) > point {
-            count += 1;
-            first.get_or_insert(key.message_id);
+    let (mut low, mut high) = (0, snapshot.messages.len());
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if Some(ReadPoint::message(&snapshot.messages[middle])?) <= point {
+            low = middle + 1;
+        } else {
+            high = middle;
         }
     }
+    let mut count =
+        u64::try_from(snapshot.messages.len() - low).map_err(|_| ReadingError::InvalidPoint)?;
+    let first = snapshot
+        .messages
+        .get(low)
+        .map(|message| ReadPoint::message(message))
+        .transpose()?
+        .map(|point| point.message_id);
+    let cached_head = snapshot
+        .messages
+        .last()
+        .map(|message| ReadPoint::message(message))
+        .transpose()?;
     // Metadata names a real additional message, but never proves the unknown middle complete.
     if server_head.is_some_and(|head| Some(head) > point && Some(head) > cached_head) {
         count += 1;
