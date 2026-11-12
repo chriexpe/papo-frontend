@@ -48,6 +48,40 @@ pub(crate) fn file(path: &Path) -> Result<File, StorageError> {
     Ok(file)
 }
 
+/// Staging runs under the profile lease after the legacy ACL migration. On Windows,
+/// new descendants inherit only the owner's allow ACE; migrated blobs are already private.
+/// Same-user modifications while the SDK owns the profile are outside this boundary.
+pub(crate) fn staging_directory(path: &Path) -> Result<(), StorageError> {
+    #[cfg(windows)]
+    {
+        fs::create_dir_all(path)?;
+        if fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(StorageError::InvalidState);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    directory(path)
+}
+
+/// Uses the migrated owner-only parent ACL without starting a shell per attachment.
+pub(crate) fn staged_file(path: &Path) -> Result<File, StorageError> {
+    #[cfg(windows)]
+    {
+        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(StorageError::InvalidState);
+        }
+        Ok(File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?)
+    }
+    #[cfg(not(windows))]
+    file(path)
+}
+
 /// Existing Windows files may have explicit broad ACEs despite a private parent.
 /// Unix traversal through the owner-only root protects all SQLite sidecars too.
 pub(crate) fn profile(path: &Path) -> Result<(), StorageError> {

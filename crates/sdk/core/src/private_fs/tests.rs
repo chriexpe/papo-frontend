@@ -60,19 +60,34 @@ fn profile_and_staged_files_have_only_owner_allow_rules() {
     fs::create_dir(&root).unwrap();
     let state = root.join("state.sqlite");
     fs::write(&state, []).unwrap();
+    for tree in ["cache", "media", "outgoing"] {
+        let directory = root.join(tree);
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("legacy"), []).unwrap();
+    }
+    // A pre-existing broadly inherited marker cannot certify the migration.
+    fs::write(root.join(".private-acl-v1"), b"papo-owner-acl-v1").unwrap();
     profile(&root).unwrap();
     audit(&root).unwrap();
-    let path = root.join("staging");
-    directory(&path).unwrap();
+    // Both the migration and inherited staging path run below a deliberately public parent.
+    let path = root.join("outgoing/new/account");
+    staging_directory(&path).unwrap();
     let bytes = path.join("file");
-    file(&bytes).unwrap();
+    staged_file(&bytes).unwrap();
+    audit(&root).unwrap();
     let script = r"$ErrorActionPreference='Stop';try {
         $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         foreach($path in @($env:PAPO_ACL_ROOT,$env:PAPO_ACL_DIR,$env:PAPO_ACL_FILE,$env:PAPO_ACL_STATE)) {
             $acl=Get-Acl -LiteralPath $path
-            if(-not $acl.AreAccessRulesProtected) {exit 2}
+            if($path -eq $env:PAPO_ACL_ROOT -and -not $acl.AreAccessRulesProtected) {exit 2}
             $rules=$acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])
             if($rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].AccessControlType -ne 'Allow') {exit 3}
+        }
+        foreach($tree in @('cache','media','outgoing')) {
+            $legacy=[System.IO.Path]::Combine($env:PAPO_ACL_ROOT,$tree,'legacy')
+            $acl=Get-Acl -LiteralPath $legacy
+            $rules=$acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])
+            if(-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid) {exit 4}
         };exit 0
     } catch {exit 1}";
     let result = std::process::Command::new(shell)

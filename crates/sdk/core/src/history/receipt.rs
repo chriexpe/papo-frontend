@@ -100,6 +100,20 @@ mod tests {
         }
     }
     #[test]
+    fn recovered_receipt_does_not_claim_freshness_or_live_coverage() {
+        let mut model = Model::default();
+        model.receipt(&message(), 0).unwrap();
+        let chunk = &model.chunks[0];
+        assert_eq!(chunk.generation, 0);
+        assert_eq!(chunk.live_generation, 0);
+        assert!(!chunk.oldest_complete);
+        assert!(!chunk.newest_complete);
+        assert_eq!(
+            model.entries[Uuid::from_u128(1).as_bytes()].validated_generation,
+            0
+        );
+    }
+    #[test]
     fn newer_edits_embed_replacements_and_deletes_always_win_over_the_receipt() {
         let mut model = Model::default();
         let message = message();

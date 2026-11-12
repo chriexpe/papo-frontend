@@ -151,6 +151,7 @@ fn pending_receipt(deleted: bool) -> Result {
         };
         until(&mut stream,|s|s.items.iter().any(|item|matches!(item.as_ref(),TimelineItem::LocalEcho {id,operation} if *id==local() && operation.state==OperationState::Sent && operation.message_id==Some(remote)))).await?;
         assert!(!stream.items.iter().any(|item|matches!(item.as_ref(),TimelineItem::Message {id,..} if *id==remote)));
+        let reads = f.server().read_request_counts().await;
         db.execute_batch("DROP TRIGGER fail_receipt;")?;
         drop(db);
         assert!(matches!(timeline.report_visible(stream.version,stream.generation,&[local()]).await,Err(papo_sdk_ui::TimelineError::StaleSnapshot)));
@@ -159,9 +160,16 @@ fn pending_receipt(deleted: bool) -> Result {
             f.server().delete_message(&remote.to_string()).await?;
             until(&mut stream,|s|!s.items.iter().any(|item|matches!(item.as_ref(),TimelineItem::LocalEcho {id,..} if *id==local()))).await?;
         } else {
-        session.reconnect()?;
-        online(&session).await?;
+        let generation = session.subscribe_connection().borrow().generation;
         until(&mut stream,|s|s.items.iter().any(|item|matches!(item.as_ref(),TimelineItem::Message {id,..} if *id==remote)) && !s.items.iter().any(|item|matches!(item.as_ref(),TimelineItem::LocalEcho {id,..} if *id==local()))).await?;
+        assert_eq!(session.subscribe_connection().borrow().generation, generation);
+        assert_eq!(f.server().read_request_counts().await.history_pages, reads.history_pages);
+        loop {
+            if outgoing.borrow_and_update().operations.iter().any(|op| op.id == local() && op.history_projected) {
+                break;
+            }
+            outgoing.changed().await?;
+        }
         }
         assert_eq!(f.server().outgoing_request_counts().await.accepted,1);
         assert_eq!(f.server().outgoing_request_counts().await.requests,1);

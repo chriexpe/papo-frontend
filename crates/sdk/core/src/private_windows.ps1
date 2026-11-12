@@ -20,7 +20,13 @@ try {
         if ([System.IO.Directory]::Exists($path)) {
             $info = [System.IO.DirectoryInfo]::new($path)
             if ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'reparse point' }
-            $info.SetAccessControl((DirectoryAcl))
+            $expected = DirectoryAcl
+            $sections = [System.Security.AccessControl.AccessControlSections]'Access,Owner'
+            # Reapplying an unchanged inheritable DACL can propagate through new files.
+            # Compare the root ACL first so warm startup does not indirectly walk the tree.
+            if ($info.GetAccessControl().GetSecurityDescriptorSddlForm($sections) -ne $expected.GetSecurityDescriptorSddlForm($sections)) {
+                $info.SetAccessControl($expected)
+            }
         } else {
             [void][System.IO.Directory]::CreateDirectory($path, (DirectoryAcl))
         }
@@ -35,6 +41,20 @@ try {
             $file.Dispose()
         }
     }
+    function Migrated($marker) {
+        if (-not [System.IO.File]::Exists($marker)) { return $false }
+        $info = [System.IO.FileInfo]::new($marker)
+        if ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'reparse point' }
+        $acl = $info.GetAccessControl()
+        $rules = $acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])
+        return ($acl.AreAccessRulesProtected -and
+            $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -eq $sid.Value -and
+            $rules.Count -eq 1 -and $rules[0].IdentityReference.Value -eq $sid.Value -and
+            $rules[0].AccessControlType -eq 'Allow' -and
+            $rules[0].FileSystemRights -eq [System.Security.AccessControl.FileSystemRights]::FullControl -and
+            $info.Length -eq 17 -and
+            [System.IO.File]::ReadAllText($marker) -eq 'papo-owner-acl-v1')
+    }
     function SecureTree($path) {
         SecureDirectory $path
         foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($path)) {
@@ -46,9 +66,21 @@ try {
         'directory' { SecureDirectory $path }
         'file' { SecureFile $path }
         'profile' {
-            foreach ($name in @('cache','media','outgoing')) {
-                $child = [System.IO.Path]::Combine($path,$name)
-                if ([System.IO.Directory]::Exists($child)) { SecureTree $child }
+            # Only a completed owner-private migration can skip the legacy tree walk.
+            # The profile lease serializes migration with every SDK file creator.
+            $marker = [System.IO.Path]::Combine($path,'.private-acl-v1')
+            if (-not (Migrated $marker)) {
+                foreach ($name in @('cache','media','outgoing')) {
+                    $child = [System.IO.Path]::Combine($path,$name)
+                    if ([System.IO.Directory]::Exists($child)) { SecureTree $child }
+                }
+                SecureFile $marker
+                $stream = [System.IO.File]::Open($marker,'Truncate','Write','None')
+                try {
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes('papo-owner-acl-v1')
+                    $stream.Write($bytes,0,$bytes.Length)
+                    $stream.Flush($true)
+                } finally { $stream.Dispose() }
             }
             foreach ($name in @('.lock','state.sqlite','state.sqlite-wal','state.sqlite-shm','state.sqlite-journal')) {
                 $child = [System.IO.Path]::Combine($path,$name)

@@ -1,4 +1,4 @@
-//! Observes canonical receipt insertion or deletion; never dispatches or infers sends from content.
+//! Retries local confirmed-receipt projection; never dispatches or infers sends from content.
 
 use super::{OperationState, OutgoingError, OutgoingService};
 
@@ -21,6 +21,11 @@ pub(super) async fn reconcile_receipts(service: &OutgoingService) -> Result<(), 
             continue;
         };
         if crate::history::live::contains_receipt(session, op.channel_id, id).await {
+            ids.push(op.id);
+        } else if let Some(message) = &op.message {
+            // Persisted receipts may predate this socket or process. Restore the known
+            // identity without treating its old contents as current live-edge evidence.
+            crate::history::live::restore_receipt(session, message).await?;
             ids.push(op.id);
         }
     }

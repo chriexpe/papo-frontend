@@ -37,6 +37,20 @@ jobs:
           python-version: "3.13"
       - name: Install protocol-check YAML parser
         run: python -m pip install PyYAML==6.0.3
+      - name: Measure Windows ACL migration and warm profile audit
+        if: matrix.os == 'windows-2025'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force target | Out-Null
+          $report = ./scripts/papo-sdk-acl-cost.ps1
+          $report
+          $report | Set-Content -Encoding utf8 target/papo-sdk-acl-cost.json
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'windows-2025'
+        with:
+          name: sdk-windows-acl-cost
+          path: target/papo-sdk-acl-cost.json
+          if-no-files-found: error
       - name: Check SDK boundaries, format, Clippy, docs, tests and build
         shell: bash
         run: bash scripts/papo-sdk-check.sh

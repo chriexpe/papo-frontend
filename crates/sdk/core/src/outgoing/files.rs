@@ -55,7 +55,7 @@ pub(super) fn stage_observed(
             .to_path_buf(),
         directory.clone(),
     ] {
-        crate::private_fs::directory(&path)?;
+        crate::private_fs::staging_directory(&path)?;
     }
     let mut refs = Vec::with_capacity(values.len());
     for bytes in values {
@@ -64,7 +64,7 @@ pub(super) fn stage_observed(
         if size_bytes > MAX_FILE_BYTES {
             return Err(StorageError::InvalidState);
         }
-        let mut file = crate::private_fs::file(&directory.join(name(&digest)))?;
+        let mut file = crate::private_fs::staged_file(&directory.join(name(&digest)))?;
         if file.metadata()?.len() != size_bytes || hash(&mut file)? != digest {
             // A process may have died while writing an unreferenced new digest. No valid
             // existing blob is rewritten; references become visible only after sync_all.

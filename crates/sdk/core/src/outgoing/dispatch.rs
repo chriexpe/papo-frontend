@@ -23,26 +23,61 @@ pub(crate) fn start(session: Session) {
         let service = OutgoingService {
             session: session.clone(),
         };
+        let mut retry_attempt = 0_u32;
         loop {
             if session.is_closed() {
                 break;
             }
-            let result=async {service.ensure().await?;drain(&service).await}.await;
-            let retry=result.is_err() || session.inner.outgoing.image.borrow().operations.iter().any(|op|op.state==OperationState::Sent && !op.history_projected);
-            if let Err(error)=result {
+            let result = async {
+                service.ensure().await?;
+                drain(&service).await
+            }
+            .await;
+            let retry = result.is_err()
+                || session
+                    .inner
+                    .outgoing
+                    .image
+                    .borrow()
+                    .operations
+                    .iter()
+                    .any(|op| op.state == OperationState::Sent && !op.history_projected);
+            if let Err(error) = result {
                 let _guard = session.inner.outgoing.serial.lock().await;
-                let fault=match error {OutgoingError::Storage(_)|OutgoingError::InvalidData=>OutgoingFault::Storage,_=>OutgoingFault::Unavailable};
+                let fault = match error {
+                    OutgoingError::Storage(_) | OutgoingError::InvalidData => {
+                        OutgoingFault::Storage
+                    }
+                    _ => OutgoingFault::Unavailable,
+                };
                 session.inner.outgoing.image.send_if_modified(|image| {
-                    if image.fault==Some(fault) {return false;}
-                    let mut next=(**image).clone(); next.fault=Some(fault); next.version=next.version.saturating_add(1); *image=Arc::new(next);true
+                    if image.fault == Some(fault) {
+                        return false;
+                    }
+                    let mut next = (**image).clone();
+                    next.fault = Some(fault);
+                    next.version = next.version.saturating_add(1);
+                    *image = Arc::new(next);
+                    true
                 });
             }
+            let retry_delay = session
+                .client
+                .inner
+                .config
+                .backoff
+                .delay(retry_attempt, session.client.inner.config.jitter.as_ref());
+            retry_attempt = if retry {
+                retry_attempt.saturating_add(1)
+            } else {
+                0
+            };
             tokio::select! {
                 biased;
                 ()=session.inner.root.cancelled()=>break,
                 ()=session.inner.outgoing.wake.notified()=>{},
                 result=connection.changed()=>{if result.is_err(){break;}},
-                ()=tokio::time::sleep(session.client.inner.config.backoff.delay(0,session.client.inner.config.jitter.as_ref())), if retry=>{},
+                ()=tokio::time::sleep(retry_delay), if retry=>{},
             }
         }
         session

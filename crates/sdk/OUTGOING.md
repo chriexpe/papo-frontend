@@ -115,11 +115,23 @@ relax any outgoing SDK gate above.
 Profile privacy is enforced for caller-selected roots. Unix roots and staging
 directories are 0700 and staged files/lock/state database are 0600; existing staged
 files are hardened on access. Windows uses built-in Windows PowerShell/.NET ACL
-creation with an owner-only protected DACL, not inherited directory assumptions.
-Existing SDK-owned cache/media/outgoing files and database sidecars are hardened
-under the profile lease; ACL failures fail closed. This adds no Rust dependency or
+creation with an owner-only protected root DACL. A one-time migration hardens
+existing cache/media/outgoing trees under the profile lease, then writes and fsyncs
+an owner-private version marker. Warm opens validate that marker's owner and DACL
+and audit only the fixed database/lock paths. Missing or invalid markers repeat
+the migration. Staging descendants inherit only owner access from that migrated
+tree and start no PowerShell processes. Same-user modifications while the SDK owns
+the profile are outside this permission boundary; ACL failures fail closed. This adds no Rust dependency or
 unsafe code. Windows hosts must provide Windows PowerShell 5.1 and filesystem ACL
 support. Native Windows tests deliberately grant Everyone access on a parent and
-verify protected owner-only rules on the profile and staged file; these require
-hosted Windows execution. See Microsoft's [directory ACL creation](https://learn.microsoft.com/en-us/dotnet/api/system.io.directory.createdirectory?view=netframework-4.8)
+verify owner-only rules on the profile, legacy files and inherited staged files;
+these require hosted Windows execution. `scripts/papo-sdk-acl-cost.ps1` measures
+first migration and five warm audits of a synthetic 10,000-file profile, plus the
+shell ACL-call overhead eliminated from staging. Times are diagnostic, not CI
+latency thresholds. See Microsoft's [directory ACL creation](https://learn.microsoft.com/en-us/dotnet/api/system.io.directory.createdirectory?view=netframework-4.8)
 and [file ACL creation](https://learn.microsoft.com/en-us/dotnet/api/system.io.filestream.-ctor).
+
+Pending confirmed receipts retry only their local history projection with capped
+exponential backoff. Saved receipts restore known message identities without
+asserting fresh socket or contiguous live-edge evidence; tombstones and newer
+mutations win. Cache recovery needs no reconnect, history fetch or HTTP send.
