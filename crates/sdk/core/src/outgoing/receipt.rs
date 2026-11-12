@@ -36,6 +36,7 @@ pub(super) fn message(
         }
     }
     Ok(Outcome {
+        projected: false,
         message_id: Some(id),
         message: Some(message),
     })

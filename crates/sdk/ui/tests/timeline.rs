@@ -6,6 +6,8 @@ mod cancellation;
 mod lifecycle;
 #[path = "timeline/outgoing.rs"]
 mod outgoing;
+#[path = "timeline/outgoing_faults.rs"]
+mod outgoing_faults;
 #[path = "timeline/support.rs"]
 mod support;
 

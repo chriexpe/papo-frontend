@@ -69,6 +69,8 @@ pub(crate) struct ClientInner {
     pub registry_tx: Mutex<Option<watch::Sender<Arc<RegistrySnapshot>>>>,
     pub registry_rx: watch::Receiver<Arc<RegistrySnapshot>>,
     pub config: ClientConfig,
+    pub outgoing_files: Arc<tokio::sync::Semaphore>,
+    pub outgoing_collection: Arc<tokio::sync::Semaphore>,
 }
 
 /// External-thread owner of one Tokio runtime and session 4's storage owner.
@@ -131,6 +133,8 @@ impl Client {
                 registry_tx: Mutex::new(Some(tx)),
                 registry_rx: rx,
                 config,
+                outgoing_files: Arc::new(tokio::sync::Semaphore::new(2)),
+                outgoing_collection: Arc::new(tokio::sync::Semaphore::new(1)),
             }),
         };
         let mut client = Self {

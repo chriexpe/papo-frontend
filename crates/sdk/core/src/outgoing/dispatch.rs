@@ -28,7 +28,7 @@ pub(crate) fn start(session: Session) {
                 break;
             }
             let result=async {service.ensure().await?;drain(&service).await}.await;
-            let retry=result.is_err();
+            let retry=result.is_err() || session.inner.outgoing.image.borrow().operations.iter().any(|op|op.state==OperationState::Sent && !op.history_projected);
             if let Err(error)=result {
                 let _guard = session.inner.outgoing.serial.lock().await;
                 let fault=match error {OutgoingError::Storage(_)|OutgoingError::InvalidData=>OutgoingFault::Storage,_=>OutgoingFault::Unavailable};
@@ -81,6 +81,7 @@ async fn drain(service: &OutgoingService) -> Result<(), OutgoingError> {
         if session.inner.connection.borrow().state != ConnectionState::Online {
             return Ok(());
         }
+        super::projection::reconcile_receipts(service).await?;
         let epoch = session.inner.epochs.current();
         let operation = {
             let snapshot = session.inner.outgoing.image.borrow();
@@ -143,14 +144,8 @@ async fn drain(service: &OutgoingService) -> Result<(), OutgoingError> {
                 failure,
             )
             .await?;
-        let history_result = if matches!(operation.kind.as_ref(), OperationKind::Message(_))
-            && session.inner.epochs.validate(epoch.generation).is_ok()
-        {
-            if let Some(message) = acknowledged {
-                crate::history::live::acknowledge(session, &rest, epoch.generation, &message).await
-            } else {
-                Ok(())
-            }
+        let projection_result = if state == OperationState::Sent {
+            super::projection::finish(service, &operation, epoch.generation, acknowledged).await
         } else {
             Ok(())
         };
@@ -162,7 +157,7 @@ async fn drain(service: &OutgoingService) -> Result<(), OutgoingError> {
         };
         drop(guard);
         collection_result?;
-        history_result?;
+        projection_result?;
         probe(session, operation.id, OutgoingDispatchPhase::Committed).await;
         if state == OperationState::Queued {
             return Err(ClientError::Api(papo_api::Error::NotDispatched).into());
@@ -286,6 +281,7 @@ async fn send(
         super::receipt::message(message, operation.channel_id, author, expected)
     } else {
         Ok(Outcome {
+            projected: true,
             message_id: target,
             message: None,
         })
@@ -342,6 +338,7 @@ mod tests {
                 failure: None,
                 message_id: None,
                 message: None,
+                history_projected: true,
                 created_at_us: 0,
             })
         };

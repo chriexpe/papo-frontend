@@ -14,6 +14,8 @@ use std::path::Path;
 pub(super) struct Outcome {
     pub message_id: Option<Uuid>,
     pub message: Option<Message>,
+    #[serde(default)]
+    pub projected: bool,
 }
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, OutgoingError> {
     serde_json::to_vec(value).map_err(|_| OutgoingError::InvalidData)
@@ -21,7 +23,7 @@ fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, OutgoingError> {
 fn decode<T: serde::de::DeserializeOwned>(value: &[u8]) -> Result<T, OutgoingError> {
     serde_json::from_slice(value).map_err(|_| OutgoingError::InvalidData)
 }
-fn visible(tx: &Transaction<'_>, session: &Session) -> Result<(), OutgoingError> {
+pub(super) fn visible(tx: &Transaction<'_>, session: &Session) -> Result<(), OutgoingError> {
     if session.is_closed() {
         return Err(ClientError::Closed.into());
     }
@@ -77,24 +79,23 @@ fn read_operation(
             .map(|v| decode(&v))
             .transpose()?,
         message_id: outcome.message_id,
+        history_projected: outcome.projected,
         message: outcome.message.map(Arc::new),
         created_at_us: row.get(8)?,
     })
 }
 impl Registry {
-    pub(super) async fn outgoing_collect(&self, session: Session) -> Result<(), OutgoingError> {
-        let root = self
-            .path
-            .parent()
-            .ok_or(OutgoingError::InvalidData)?
-            .to_path_buf();
-        self.writer
-            .write(move |tx| {
-                visible(tx, &session)?;
-                files::collect(&root, session.account(), tx)?;
-                Ok(())
-            })
-            .await
+    pub(super) async fn outgoing_projected(
+        &self,
+        session: Session,
+        ids: Vec<Uuid>,
+    ) -> Result<(), OutgoingError> {
+        self.writer.write(move |tx| {
+            visible(tx,&session)?;
+            let account=session.account();
+            for id in ids {tx.execute("UPDATE operations SET result=CAST(json_set(result,'$.projected',json('true')) AS BLOB) WHERE local_id=?1 AND server_id=?2 AND user_id=?3 AND state='Sent'",params![id.as_bytes(),account.server().as_bytes(),account.user().as_bytes()])?;}
+            Ok(())
+        }).await
     }
 
     pub(super) async fn outgoing_list(
@@ -134,32 +135,41 @@ impl Registry {
         created_at_us: i64,
         draft_revision: Option<u64>,
     ) -> Result<(), OutgoingError> {
-        let root = self
-            .path
-            .parent()
-            .ok_or(OutgoingError::InvalidData)?
-            .to_path_buf();
+        let mut kind = if let Some(revision) = draft_revision {
+            let draft = self
+                .draft_load(session.clone(), channel)
+                .await?
+                .ok_or(OutgoingError::StaleDraft)?;
+            if draft.revision != revision {
+                return Err(OutgoingError::StaleDraft);
+            }
+            OperationKind::Message(draft.body.message)
+        } else {
+            kind
+        };
+        kind.validate()?;
+        let bytes = if let OperationKind::Message(message) = &mut kind {
+            files::detach(&mut message.attachments)
+        } else {
+            Vec::new()
+        };
+        let (references, attachment_bytes) = self.stage_files(&session, bytes, local).await?;
+        let payload = encode(&kind)?;
         self.writer.write(move |tx| {
             visible(tx, &session)?;
             let account = session.account();
-            let mut kind = if let Some(revision) = draft_revision {
-                let draft = load_draft(tx, account, channel, &root)?.ok_or(OutgoingError::StaleDraft)?;
-                if draft.revision != revision { return Err(OutgoingError::StaleDraft); }
-                OperationKind::Message(draft.body.message)
-            } else { kind };
-            kind.validate()?;
+            if let Some(expected) = draft_revision {
+                let current: i64 = tx.query_row("SELECT revision FROM drafts WHERE server_id=?1 AND user_id=?2 AND channel_id=?3",params![account.server().as_bytes(),account.user().as_bytes(),channel.as_bytes()],|row|row.get(0))?;
+                if u64::try_from(current).ok()!=Some(expected) {return Err(OutgoingError::StaleDraft);}
+            }
             let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE local_id=?1)", [local.as_bytes()], |row|row.get(0))?;
             if exists { return Err(OutgoingError::AlreadyExists); }
-            let bytes = if let OperationKind::Message(message) = &mut kind { files::detach(&mut message.attachments) } else { Vec::new() };
-            let attachment_bytes = files::size(&bytes)?;
-            let payload = encode(&kind)?;
-            let (count, retained_bytes):(i64,i64) = tx.query_row("SELECT count(*),coalesce(sum(length(payload)+attachment_bytes),0) FROM operations WHERE server_id=?1 AND user_id=?2 AND discarded=0 AND state!='Sent'",params![account.server().as_bytes(),account.user().as_bytes()], |row|Ok((row.get(0)?,row.get(1)?)))?;
+            let (count, retained_bytes):(i64,i64) = tx.query_row("SELECT count(*),coalesce(sum(length(payload)+attachment_bytes),0) FROM operations WHERE server_id=?1 AND user_id=?2 AND discarded=0 AND (state!='Sent' OR coalesce(json_extract(result,'$.projected'),0)=0)",params![account.server().as_bytes(),account.user().as_bytes()], |row|Ok((row.get(0)?,row.get(1)?)))?;
             if count >= 256 || retained_bytes.saturating_add(i64::try_from(payload.len()).map_err(|_|OutgoingError::Budget)?).saturating_add(attachment_bytes) > 256*1024*1024 { return Err(OutgoingError::Budget); }
             if let Some(dependency) = kind.dependency() {
                 let data: Option<Vec<u8>> = tx.query_row("SELECT payload FROM operations WHERE local_id=?1 AND server_id=?2 AND user_id=?3 AND channel_id=?4 AND discarded=0",params![dependency.as_bytes(),account.server().as_bytes(),account.user().as_bytes(),channel.as_bytes()], |row|row.get(0)).optional()?;
                 if !matches!(data.map(|v|decode::<OperationKind>(&v)).transpose()?, Some(OperationKind::Message(_))) { return Err(OutgoingError::NotFound); }
             }
-            let references = files::stage(&root, account, &bytes)?;
             tx.execute("INSERT INTO operations(local_id,server_id,user_id,channel_id,kind,payload,depends_on,state,created_at_us,draft_revision,files,attachment_bytes) VALUES(?1,?2,?3,?4,'sdk-v1',?5,?6,'Queued',?7,?8,?9,?10)",params![local.as_bytes(),account.server().as_bytes(),account.user().as_bytes(),channel.as_bytes(),payload,kind.dependency().map(|id|id.as_bytes().to_vec()),created_at_us,draft_revision.map(i64::try_from).transpose().map_err(|_|OutgoingError::InvalidData)?,encode(&references)?,attachment_bytes])?;
             Ok(())
         }).await
@@ -189,7 +199,7 @@ impl Registry {
                 let order=order.checked_add(1).ok_or(OutgoingError::InvalidData)?;
                 tx.execute("UPDATE operations SET payload=?1,depends_on=NULL,confirmed_order=?3,files=NULL,attachment_bytes=0 WHERE local_id=?2",params![encode(&kind)?,local.as_bytes(),order])?;
                 // Only confirmed receipts are compacted; unresolved intent and required mappings survive.
-                tx.execute("DELETE FROM operations WHERE server_id=?1 AND user_id=?2 AND (state='Sent' OR discarded=1) AND NOT EXISTS(SELECT 1 FROM operations child WHERE child.depends_on=operations.local_id) AND rowid NOT IN (SELECT rowid FROM operations WHERE server_id=?1 AND user_id=?2 AND state='Sent' AND discarded=0 ORDER BY confirmed_order DESC LIMIT 256)",params![account.server().as_bytes(),account.user().as_bytes()])?;
+                tx.execute("DELETE FROM operations WHERE server_id=?1 AND user_id=?2 AND ((state='Sent' AND json_extract(result,'$.projected')=1) OR discarded=1) AND NOT EXISTS(SELECT 1 FROM operations child WHERE child.depends_on=operations.local_id) AND rowid NOT IN (SELECT rowid FROM operations WHERE server_id=?1 AND user_id=?2 AND state='Sent' AND discarded=0 ORDER BY confirmed_order DESC LIMIT 256)",params![account.server().as_bytes(),account.user().as_bytes()])?;
                 // Clear only the captured revision. A newer draft is unrelated device-owned work.
                 tx.execute("UPDATE drafts SET body=NULL,files=NULL,text='',mentions=x'',reply_to=NULL,revision=revision+1 WHERE server_id=?1 AND user_id=?2 AND (channel_id,revision) IN (SELECT channel_id,draft_revision FROM operations WHERE local_id=?3)",params![account.server().as_bytes(),account.user().as_bytes(),local.as_bytes()])?;
             }
@@ -246,23 +256,24 @@ impl Registry {
         updated_at_us: i64,
         expected: Option<u64>,
     ) -> Result<u64, OutgoingError> {
-        let root = self
-            .path
-            .parent()
-            .ok_or(OutgoingError::InvalidData)?
-            .to_path_buf();
+        let mut kind = OperationKind::Message(body.message);
+        kind.validate()?;
+        let bytes = if let OperationKind::Message(message) = &mut kind {
+            files::detach(&mut message.attachments)
+        } else {
+            Vec::new()
+        };
+        let OperationKind::Message(message) = kind else {
+            return Err(OutgoingError::InvalidData);
+        };
+        body.message = message;
+        let (references, _) = self.stage_files(&session, bytes, channel).await?;
         self.writer.write(move |tx| {
             visible(tx,&session)?;
-            let mut kind = OperationKind::Message(body.message);
-            kind.validate()?;
-            let bytes = if let OperationKind::Message(message) = &mut kind { files::detach(&mut message.attachments) } else { Vec::new() };
-            let OperationKind::Message(message) = kind else { return Err(OutgoingError::InvalidData); };
-            body.message = message;
             let a=session.account();
             let revision:i64=tx.query_row("SELECT revision FROM drafts WHERE server_id=?1 AND user_id=?2 AND channel_id=?3",params![a.server().as_bytes(),a.user().as_bytes(),channel.as_bytes()],|r|r.get(0)).optional()?.unwrap_or(0);
             if expected.is_some_and(|expected|i64::try_from(expected).ok()!=Some(revision)) { return Err(OutgoingError::StaleDraft); }
             let revision=revision.checked_add(1).ok_or(OutgoingError::InvalidData)?;
-            let references = files::stage(&root, a, &bytes)?;
             tx.execute("INSERT INTO drafts(server_id,user_id,channel_id,text,mentions,updated_at_us,body,revision,files) VALUES(?1,?2,?3,'',x'',?4,?5,?6,?7) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET body=excluded.body,files=excluded.files,revision=excluded.revision,updated_at_us=excluded.updated_at_us",params![a.server().as_bytes(),a.user().as_bytes(),channel.as_bytes(),updated_at_us,encode(&body)?,revision,encode(&references)?])?;
             u64::try_from(revision).map_err(|_|OutgoingError::InvalidData)
         }).await

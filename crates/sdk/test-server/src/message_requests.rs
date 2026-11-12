@@ -22,6 +22,10 @@ pub struct OutgoingRequestCounts {
     pub accepted: u64,
 }
 impl TestServer {
+    /// Suppresses create gateway delivery so HTTP receipt projection can be proved independently.
+    pub async fn set_silent_outgoing(&self, silent: bool) {
+        self.state.lock().await.silent_outgoing = silent;
+    }
     /// Observes bounded payload-free dispatch counters.
     pub async fn outgoing_request_counts(&self) -> OutgoingRequestCounts {
         self.state.lock().await.outgoing
@@ -190,6 +194,7 @@ fn create(state: &mut State, user: &str, content_type: &str, body: &[u8], path: 
         content: parts.fields.get("content").cloned(),
         reply_to: parts.fields.get("reply_to").cloned(),
         created_at: Some(created_at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)),
+        embeds: Some(response_embeds(&parts, &attachments)),
         attachments: Some(attachments.clone()),
         ..Default::default()
     };
@@ -207,7 +212,9 @@ fn create(state: &mut State, user: &str, content_type: &str, body: &[u8], path: 
         attachments,
         ..Default::default()
     }));
-    let _ = crate::history_controls::emit_channel(state, channel, event);
+    if !state.silent_outgoing {
+        let _ = crate::history_controls::emit_channel(state, channel, event);
+    }
     Reply::json(201, json!(message))
 }
 fn mutate(state: &mut State, user: &str, method: &str, path: &str, body: &[u8]) -> Reply {
@@ -268,6 +275,41 @@ fn mutate(state: &mut State, user: &str, method: &str, path: &str, body: &[u8]) 
     } else {
         Reply::json(201, json!({}))
     }
+}
+
+fn response_embeds(parts: &Parts, attachments: &[Attachment]) -> Vec<papo_api::wire::Embed> {
+    let mut embeds: Vec<serde_json::Value> = parts
+        .fields
+        .get("embeds")
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default();
+    for embed in &mut embeds {
+        for field in ["image", "thumbnail", "video"] {
+            if let Some(media) = embed
+                .get_mut(field)
+                .and_then(serde_json::Value::as_object_mut)
+                && let Some(name) = media
+                    .remove("attachment_name")
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                && let Some(attachment) = attachments
+                    .iter()
+                    .find(|file| file.original_file_name.as_deref() == Some(&name))
+            {
+                media.insert(
+                    "url".into(),
+                    json!(format!(
+                        "/media/{}",
+                        attachment.id.as_deref().unwrap_or_default()
+                    )),
+                );
+                media.insert("size_bytes".into(), json!(attachment.size_bytes));
+            }
+        }
+    }
+    embeds
+        .into_iter()
+        .filter_map(|embed| serde_json::from_value(embed).ok())
+        .collect()
 }
 
 #[cfg(test)]

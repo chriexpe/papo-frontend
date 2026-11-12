@@ -37,6 +37,7 @@ pub(crate) struct State {
     pub(crate) base_url: String,
     pub(crate) message_body: Option<Bytes>,
     pub(crate) outgoing: crate::OutgoingRequestCounts,
+    pub(crate) silent_outgoing: bool,
 }
 
 /// A running in-memory backend bound exclusively to IPv4 loopback.
@@ -85,6 +86,7 @@ impl TestServer {
             base_url: format!("http://{address}"),
             message_body: None,
             outgoing: crate::OutgoingRequestCounts::default(),
+            silent_outgoing: false,
         }));
         let (stop, stopped) = oneshot::channel();
         let (disconnects, _) = broadcast::channel(1);

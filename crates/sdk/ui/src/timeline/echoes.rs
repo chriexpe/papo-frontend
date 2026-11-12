@@ -10,6 +10,7 @@ pub(super) fn append(
     outgoing: &OutgoingSnapshot,
     channel: Uuid,
     previous: &Vector<Arc<TimelineItem>>,
+    history: &papo_sdk::HistorySnapshot,
 ) {
     let reusable: BTreeMap<_, _> = previous
         .iter()
@@ -25,7 +26,30 @@ pub(super) fn append(
             continue;
         }
         if operation.state == OperationState::Sent {
-            continue;
+            let visible = operation
+                .message
+                .as_ref()
+                .and_then(|message| message.cursor())
+                .and_then(|cursor| crate::timeline_window::key(&cursor).ok())
+                .is_some_and(|point| {
+                    history
+                        .messages
+                        .binary_search_by(|message| {
+                            message
+                                .cursor()
+                                .and_then(|cursor| crate::timeline_window::key(&cursor).ok())
+                                .cmp(&Some(point))
+                        })
+                        .is_ok()
+                });
+            if operation.history_projected
+                || visible
+                || operation
+                    .message_id
+                    .is_some_and(|id| history.tombstones.contains(&id))
+            {
+                continue;
+            }
         }
         let value = TimelineItem::LocalEcho {
             id: operation.id,

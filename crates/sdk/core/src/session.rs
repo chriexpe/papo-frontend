@@ -67,6 +67,7 @@ impl SessionInner {
     }
     pub async fn stop(&self) {
         self.root.cancel();
+        drop(self.outgoing.files_serial.lock().await);
         self.history.close_all().await;
         self.reading.image.close();
         self.outgoing.image.close();

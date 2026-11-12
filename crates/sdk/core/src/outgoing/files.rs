@@ -27,17 +27,36 @@ fn name(digest: &[u8; 32]) -> String {
     name
 }
 
-/// Called only on the durable writer, before its reference transaction commits.
-pub(super) fn stage(
+#[cfg(test)]
+fn stage(
     root: &Path,
     account: AccountId,
     values: &[Vec<u8>],
+) -> Result<Vec<Reference>, StorageError> {
+    stage_observed(root, account, values, || {})
+}
+
+/// Runs on a bounded blocking file task before the short reference transaction commits.
+pub(super) fn stage_observed(
+    root: &Path,
+    account: AccountId,
+    values: &[Vec<u8>],
+    mut copied_chunk: impl FnMut(),
 ) -> Result<Vec<Reference>, StorageError> {
     if values.is_empty() {
         return Ok(Vec::new());
     }
     let directory = DataRoot::new(root).outgoing_files(account);
-    fs::create_dir_all(&directory)?;
+    for path in [
+        root.join("outgoing"),
+        directory
+            .parent()
+            .ok_or(StorageError::InvalidState)?
+            .to_path_buf(),
+        directory.clone(),
+    ] {
+        crate::private_fs::directory(&path)?;
+    }
     let mut refs = Vec::with_capacity(values.len());
     for bytes in values {
         let digest: [u8; 32] = Sha256::digest(bytes).into();
@@ -45,18 +64,16 @@ pub(super) fn stage(
         if size_bytes > MAX_FILE_BYTES {
             return Err(StorageError::InvalidState);
         }
-        let mut file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(directory.join(name(&digest)))?;
+        let mut file = crate::private_fs::file(&directory.join(name(&digest)))?;
         if file.metadata()?.len() != size_bytes || hash(&mut file)? != digest {
             // A process may have died while writing an unreferenced new digest. No valid
             // existing blob is rewritten; references become visible only after sync_all.
             file.set_len(0)?;
             file.seek(SeekFrom::Start(0))?;
-            file.write_all(bytes)?;
+            for chunk in bytes.chunks(64 * 1024) {
+                file.write_all(chunk)?;
+                copied_chunk();
+            }
         }
         file.sync_all()?;
         refs.push(Reference { digest, size_bytes });
@@ -125,11 +142,34 @@ pub(super) fn load(
         return Err(StorageError::InvalidState);
     }
     let directory = DataRoot::new(root).outgoing_files(account);
+    #[cfg(unix)]
+    if !refs.is_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [
+            root.join("outgoing"),
+            directory
+                .parent()
+                .ok_or(StorageError::InvalidState)?
+                .to_path_buf(),
+            directory.clone(),
+        ] {
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(StorageError::InvalidState);
+            }
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        }
+    }
     for (file, reference) in files.iter_mut().zip(refs) {
         if reference.size_bytes > MAX_FILE_BYTES {
             return Err(StorageError::InvalidState);
         }
         let source = File::open(directory.join(name(&reference.digest)))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            source.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         if source.metadata()?.len() != reference.size_bytes {
             return Err(StorageError::InvalidState);
         }
@@ -150,17 +190,10 @@ pub(super) fn load(
 
 /// Called on the durable writer after committed reference changes, or before account recovery.
 /// Serializing it with file readers prevents unlinking a blob used by an in-flight draft load.
-pub(crate) fn collect(
-    root: &Path,
+pub(super) fn referenced_names(
     account: AccountId,
     db: &rusqlite::Connection,
-) -> Result<(), StorageError> {
-    let directory = DataRoot::new(root).outgoing_files(account);
-    let entries = match fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
+) -> Result<BTreeSet<String>, StorageError> {
     let mut names = BTreeSet::new();
     for table in ["operations", "drafts"] {
         let mut statement = db.prepare(&format!(
@@ -176,6 +209,20 @@ pub(crate) fn collect(
             names.extend(refs.iter().map(|reference| name(&reference.digest)));
         }
     }
+    Ok(names)
+}
+
+pub(super) fn collect(
+    root: &Path,
+    account: AccountId,
+    names: &BTreeSet<String>,
+) -> Result<(), StorageError> {
+    let directory = DataRoot::new(root).outgoing_files(account);
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
     for entry in entries {
         let entry = entry?;
         if !names.contains(&entry.file_name().to_string_lossy().into_owned()) {

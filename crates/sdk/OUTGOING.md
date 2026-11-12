@@ -25,6 +25,11 @@ errors classified `NotDispatched` can return to Queued. The transport disables
 redirects and policy retries. Preparation failures leave Queued work intact
 with a bounded backoff and observable typed queue fault.
 
+Outgoing subscription is nonblocking: queue initialization and attachment-read
+failures appear as an observable `OutgoingSnapshot.fault`, without preventing
+canonical live or focused history from opening. Mutations still require a
+successfully initialized durable queue.
+
 `retry(id, AcceptPossibleDuplicate)` is the explicit user decision needed for
 Unknown. `DefiniteFailure` cannot retry Unknown. Neither gateway messages nor
 reconciliation resolve operations by matching text, filenames, author or time.
@@ -48,11 +53,19 @@ Attachments are copied into fsynced, digest-verified account-owned staging files
 with only metadata and references in SQLite. Caller paths and platform grants
 are never needed after acknowledgement. Their names and bytes remain immutable
 until Sent or explicit discard. Committed reference changes precede orphan
-collection; account removal deletes its staging directory. Sent releases
+collection; account removal deletes its staging directory. Copy/hash/fsync and
+collection run outside the SQLite writer on bounded blocking tasks (two staging
+slots and a separate collection slot per profile), so bulk copies cannot occupy
+the durable writer or prevent metadata-only work from completing. Transactional
+reference snapshots serialize collection with accepted commits; canceled or
+failed admission leaves collectible orphans. Sent releases
 attachment references and retains backend metadata. Admission is capped at 256
-unresolved operations and 256 MiB of metadata plus attachment bytes per account,
+unresolved operations (including Sent receipts awaiting projection) and 256 MiB
+of input metadata plus attachment bytes per account,
 with at most ten files / 100 MiB of input bytes per message. Confirmed receipts compact to the most
-recent 256 confirmations plus mappings still needed by dependencies. Discarded
+recent 256 projected confirmations plus mappings still needed by dependencies.
+Confirmed receipts awaiting projection are retained and count toward admission;
+they are not compacted away while their visible replacement is missing. Discarded
 payloads are cleared immediately and old unreferenced identity tombstones are
 bounded. Draft data and consumer-held old snapshots are separate from the
 queue admission budget; this is not a process-memory ceiling.
@@ -67,8 +80,13 @@ newer edits win. Successful receipt persistence never depends on cache success.
 
 `TimelineItem::LocalEcho` exposes unresolved create intents in live windows.
 Focused windows exclude them, and read reports cannot acknowledge their local
-UUIDs. A confirmed ID merges into canonical history before the echo is removed;
-a late HTTP response cannot resurrect a message already deleted by the gateway.
+UUIDs. Sent and presentation are independent: `history_projected` stays false
+if cache insertion fails or its epoch is superseded. A Sent local item displays
+the authoritative `Operation.message` until canonical history accounts for its
+ID, then retires without another mutation request. Canonical tombstones also
+retire it, so a late HTTP response cannot resurrect a deleted message. Complete
+REST embed payloads supplement sparse gateway messages while newer gateway
+edits, embed replacements, reactions and deletes retain precedence.
 Subscriptions remain bounded and snapshot/diff replay stays framework-neutral.
 
 Validation is part of the SDK, not deferred native UI work:
@@ -93,3 +111,15 @@ Validation is part of the SDK, not deferred native UI work:
 Desktop composer widgets remain separate until the framework choice; Android
 bindings/client wiring follow their planned milestones. Those deferrals do not
 relax any outgoing SDK gate above.
+
+Profile privacy is enforced for caller-selected roots. Unix roots and staging
+directories are 0700 and staged files/lock/state database are 0600; existing staged
+files are hardened on access. Windows uses built-in Windows PowerShell/.NET ACL
+creation with an owner-only protected DACL, not inherited directory assumptions.
+Existing SDK-owned cache/media/outgoing files and database sidecars are hardened
+under the profile lease; ACL failures fail closed. This adds no Rust dependency or
+unsafe code. Windows hosts must provide Windows PowerShell 5.1 and filesystem ACL
+support. Native Windows tests deliberately grant Everyone access on a parent and
+verify protected owner-only rules on the profile and staged file; these require
+hosted Windows execution. See Microsoft's [directory ACL creation](https://learn.microsoft.com/en-us/dotnet/api/system.io.directory.createdirectory?view=netframework-4.8)
+and [file ACL creation](https://learn.microsoft.com/en-us/dotnet/api/system.io.filestream.-ctor).

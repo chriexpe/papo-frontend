@@ -159,39 +159,64 @@ async fn select(
 /// Reuse normal event merge rules so prior deletes and newer edits still win.
 pub(crate) async fn acknowledge(
     session: &crate::Session,
-    rest: &papo_api::RestClient,
     generation: Generation,
     message: &papo_api::wire::Message,
 ) -> Result<(), ClientError> {
+    let epoch = session.inner.epochs.current();
     session.inner.epochs.validate(generation)?;
-    let cache = session.client.inner.caches.open(session.account()).await?;
-    let connection = ResourceConnection {
-        client: session.client.clone(),
-        rest: rest.clone(),
-        cache,
-    };
-    let event = papo_api::gateway::MessageEvent {
-        id: message.id.clone().ok_or(ClientError::ResourceData)?,
-        channel_id: message
+    let id = Uuid::from_bytes(Model::id(
+        message
             .channel_id
-            .clone()
+            .as_deref()
             .ok_or(ClientError::ResourceData)?,
-        author_id: message.author_id.clone().ok_or(ClientError::ResourceData)?,
-        content: message.content.clone().unwrap_or_default(),
-        created_at: message
-            .created_at
-            .clone()
-            .ok_or(ClientError::ResourceData)?,
-        reply_to: message.reply_to.clone(),
-        attachments: message.attachments.clone().unwrap_or_default(),
-        webhook_id: message.webhook_id.clone(),
-        external_author: message.external_author.clone(),
+    )?);
+    if !session.inner.history.verified.read().await.contains(&id) {
+        return Err(ClientError::ResourceData);
+    }
+    let cache = session.client.inner.caches.open(session.account()).await?;
+    let channel = {
+        let mut channels = session.inner.history.channels.lock().await;
+        Arc::clone(channels.entry(id).or_insert_with(|| {
+            Arc::new(Channel::new(
+                id,
+                session.inner.history.changes.clone(),
+                Arc::clone(&session.inner.history.counters),
+            ))
+        }))
     };
-    apply(
-        &session.inner,
-        &connection,
-        generation,
-        &Event::Known(KnownEvent::Message(Box::new(event))),
-    )
-    .await
+    channel.check()?;
+    let mut state = channel.state.lock().await;
+    session.inner.epochs.validate(generation)?;
+    state.ensure(&cache, *id.as_bytes(), generation).await?;
+    state.model.receipt(message, generation.get())?;
+    if let Err(error) = state.persist(&cache, *id.as_bytes(), &epoch).await {
+        state.reset();
+        return Err(error.into());
+    }
+    session
+        .inner
+        .epochs
+        .apply(generation, || channel.publish(&state, generation))??;
+    Ok(())
+}
+
+/// Read-only canonical evidence for an already confirmed outgoing ID.
+pub(crate) async fn contains_receipt(session: &crate::Session, channel: Uuid, id: Uuid) -> bool {
+    let channel = session
+        .inner
+        .history
+        .channels
+        .lock()
+        .await
+        .get(&channel)
+        .cloned();
+    if let Some(channel) = channel {
+        let state = channel.state.lock().await;
+        return state
+            .model
+            .entries
+            .get(id.as_bytes())
+            .is_some_and(|entry| entry.deleted || entry.timeline);
+    }
+    false
 }

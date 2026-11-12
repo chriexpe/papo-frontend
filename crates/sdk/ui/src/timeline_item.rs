@@ -58,7 +58,8 @@ impl TimelineDirection {
 #[derive(Clone)]
 #[non_exhaustive]
 pub enum TimelineItem {
-    /// Durable unresolved create intent. Confirmed responses merge into canonical history by backend ID.
+    /// Durable create intent, including a confirmed Sent receipt awaiting canonical projection.
+    /// Render Sent from its authoritative receipt; it is never an ambiguous retry candidate.
     /// Unknown remains an echo even if similar content/time appears in history.
     LocalEcho {
         /// Stable local operation identity.

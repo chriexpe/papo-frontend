@@ -2,8 +2,10 @@
 
 mod content;
 pub(crate) mod dispatch;
+mod file_io;
 pub(crate) mod files;
 mod persistence;
+mod projection;
 mod receipt;
 mod service;
 #[cfg(test)]
@@ -71,6 +73,8 @@ pub struct Operation {
     pub failure: Option<OperationFailure>,
     /// Backend ID obtained only from a confirmed response or resolved dependency.
     pub message_id: Option<Uuid>,
+    /// Confirmed create is accounted for by canonical history (including deletion), independent of send success.
+    pub history_projected: bool,
     /// Confirmed create/edit payload, when supplied by the response.
     pub message: Option<Arc<Message>>,
     /// Original Unix microseconds, never used as send ordering or message matching.
@@ -84,7 +88,8 @@ pub struct OutgoingSnapshot {
     pub account: Option<AccountId>,
     /// Monotonic session publication version; operation changes appear only after FULL commits.
     pub version: u64,
-    /// Unresolved intent and up to 256 recent confirmed receipts, plus receipts needed by dependencies.
+    /// Unresolved intent, confirmed receipts pending projection, and 256 recent projected receipts
+    /// plus receipts needed by dependencies. Pending projection counts toward admission.
     /// Entries follow durable insertion order. Consumer-held snapshots may retain older bytes.
     pub operations: Vec<Arc<Operation>>,
     /// A dispatcher failure leaves committed intent intact and is observable to consumers.
@@ -140,6 +145,7 @@ impl From<crate::storage_worker::WorkerError> for OutgoingError {
 pub(crate) struct AccountQueue {
     pub image: Arc<crate::observable::StateCell<Arc<OutgoingSnapshot>>>,
     serial: Mutex<()>,
+    pub(crate) files_serial: Arc<Mutex<()>>,
     initialized: AtomicBool,
     running: AtomicBool,
     wake: Notify,
@@ -154,6 +160,7 @@ impl Default for AccountQueue {
                 fault: None,
             })),
             serial: Mutex::new(()),
+            files_serial: Arc::new(Mutex::new(())),
             initialized: AtomicBool::new(false),
             running: AtomicBool::new(false),
             wake: Notify::new(),
@@ -178,13 +185,16 @@ pub trait OutgoingDispatchProbe: Send + Sync {
 pub enum OutgoingFault {
     /// Durable read/write/decoding could not complete; Sending is never replayed.
     Storage,
-    /// Credentials or connection preparation failed before dispatch.
+    /// Credentials, connection preparation or canonical receipt projection is unavailable.
     Unavailable,
 }
 
 /// Deterministic process-test boundaries; never indicates transport retry safety on its own.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum OutgoingDispatchPhase {
+    /// First attachment chunk copied on a blocking file task; ID is the operation or draft channel.
+    #[cfg(feature = "test-support")]
+    Staging,
     /// Intent is committed Queued; no claim or request occurred.
     Queued,
     /// Sending has completed its FULL commit, before network execution.

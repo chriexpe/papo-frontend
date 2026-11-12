@@ -93,6 +93,7 @@ impl OutgoingService {
                 && old.attempts == operation.attempts
                 && old.failure == operation.failure
                 && old.message_id == operation.message_id
+                && old.history_projected == operation.history_projected
             {
                 *operation = Arc::clone(old);
             }
@@ -112,16 +113,13 @@ impl OutgoingService {
         }));
         Ok(())
     }
-    /// Captures a committed baseline and a coalescing watch under the same state lock.
+    /// Observes committed images and independent initialization faults without waiting for storage.
     /// Clone an image and release watch borrows before awaiting or reentering this service.
     /// # Errors
-    /// Returns revoked account or durable decode/read failures.
+    /// Returns a revoked account; storage initialization failures arrive as a typed queue fault.
     pub async fn subscribe(&self) -> Result<watch::Receiver<Arc<OutgoingSnapshot>>, OutgoingError> {
-        self.run(|this| async move {
-            this.ensure().await?;
-            Ok(this.session.inner.outgoing.image.subscribe())
-        })
-        .await
+        self.run(|this| async move { Ok(this.session.inner.outgoing.image.subscribe()) })
+            .await
     }
     /// Enqueues an immutable intent in FULL insertion order, never ordered by wall-clock timestamps.
     /// Duplicate IDs are rejected rather than interpreted as retries.
@@ -148,12 +146,17 @@ impl OutgoingService {
             this.ensure().await?;
             let _guard = this.session.inner.outgoing.serial.lock().await;
             this.check()?;
-            this.session
+            let result = this
+                .session
                 .client
                 .inner
                 .registry
                 .outgoing_enqueue(this.session.clone(), channel, local, kind, at.0, revision)
-                .await?;
+                .await;
+            if let Err(error) = result {
+                this.collect().await?;
+                return Err(error);
+            }
             this.publish().await?;
             this.session.inner.outgoing.wake.notify_one();
             Ok(())
@@ -210,15 +213,15 @@ impl OutgoingService {
         self.run(move |this| async move {
             this.ensure().await?;
             let _guard = this.session.inner.outgoing.serial.lock().await;
-            let revision = this
+            let result = this
                 .session
                 .client
                 .inner
                 .registry
                 .draft_save(this.session.clone(), channel, body, at.0, expected)
-                .await?;
+                .await;
             this.collect().await?;
-            Ok(revision)
+            result
         })
         .await
     }

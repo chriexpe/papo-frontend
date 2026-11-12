@@ -22,6 +22,7 @@ pub(super) struct Publication {
     payloads: BTreeMap<[u8; 16], Payload>,
     keys: imbl::Vector<super::ordering::Key>,
     messages: imbl::Vector<Arc<Message>>,
+    tombstones: imbl::HashSet<papo_api::Uuid>,
     revision: u64,
     pub(super) payload_bytes: usize,
     counters: Arc<super::diagnostics::Counters>,
@@ -68,7 +69,8 @@ impl Publication {
             self.payloads
                 .keys()
                 .copied()
-                .chain(state.model.order.values().copied())
+                .chain(state.model.entries.keys().copied())
+                .chain(self.tombstones.iter().map(|id| *id.as_bytes()))
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect()
@@ -105,6 +107,7 @@ impl Publication {
             version,
             generation,
             messages: self.messages.clone(),
+            tombstones: self.tombstones.clone(),
             chunks,
             gaps,
             empty_complete: state.model.order.is_empty()
@@ -160,6 +163,20 @@ impl Publication {
     }
 
     fn apply_entry(&mut self, state: &State, id: [u8; 16], same: bool) -> Result<(), HistoryError> {
+        let uuid = papo_api::Uuid::from_bytes(id);
+        if state
+            .model
+            .entries
+            .get(&id)
+            .is_some_and(|entry| entry.deleted)
+        {
+            if self.tombstones.insert(uuid).is_none() {
+                self.payload_bytes = self.payload_bytes.saturating_add(16);
+            }
+        } else if self.tombstones.remove(&uuid).is_some() {
+            self.payload_bytes = self.payload_bytes.saturating_sub(16);
+        }
+
         let entry = state
             .model
             .entries
@@ -282,6 +299,7 @@ impl Publication {
             self.payloads.clear();
             self.keys.clear();
             self.messages.clear();
+            self.tombstones.clear();
             self.payload_bytes = 0;
             self.snapshot = None;
             if let Some(updates) = &self.updates {

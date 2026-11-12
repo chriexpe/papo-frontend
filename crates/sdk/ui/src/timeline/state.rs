@@ -118,6 +118,7 @@ impl WindowState {
                 &outgoing.borrow(),
                 self.channel,
                 &self.publisher.items,
+                &self.raw,
             );
         }
         Ok(items)

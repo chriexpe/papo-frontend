@@ -224,13 +224,15 @@ impl Timeline {
             channel,
             &config,
         )?;
-        state.outgoing = Some(
-            session
-                .outgoing()
-                .subscribe()
-                .await
-                .map_err(TimelineError::Outgoing)?,
-        );
+        if focus.is_none() {
+            state.outgoing = Some(
+                session
+                    .outgoing()
+                    .subscribe()
+                    .await
+                    .map_err(TimelineError::Outgoing)?,
+            );
+        }
         state.refresh(&config)?;
         Ok(Self {
             inner: Arc::new(Owner {

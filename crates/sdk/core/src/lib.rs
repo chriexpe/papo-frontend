@@ -27,6 +27,7 @@ pub use outgoing::{
     RetryDecision,
 };
 pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
+mod private_fs;
 mod profiles;
 mod read_points;
 mod reading;

@@ -79,19 +79,15 @@ impl DataRoot {
     }
 
     pub(crate) fn acquire(&self) -> Result<Arc<ProfileLease>, StorageError> {
-        std::fs::create_dir_all(&self.0)?;
-        let file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(self.0.join(".lock"))?;
+        crate::private_fs::profile(&self.0)?;
+        let file = crate::private_fs::file(&self.0.join(".lock"))?;
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => return Err(StorageError::ProfileInUse),
             Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
         let lease = Arc::new(ProfileLease(file));
+        crate::private_fs::audit(&self.0)?;
         std::fs::create_dir_all(self.0.join("cache"))?;
         std::fs::create_dir_all(self.0.join("media"))?;
         Ok(lease)

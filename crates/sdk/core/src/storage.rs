@@ -65,6 +65,7 @@ impl Storage {
     ) -> Result<Self, StorageError> {
         outside_runtime()?;
         let lease = root.acquire()?;
+        crate::private_fs::file(&root.state())?;
         let thread_lease = Arc::clone(&lease);
         let (state, writer) = StorageWorker::state(
             root.state(),

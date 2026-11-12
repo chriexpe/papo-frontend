@@ -4,6 +4,8 @@
 mod fixture;
 #[path = "outgoing_cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "outgoing_cases/staging.rs"]
+mod staging;
 use fixture::{Fixture, Result, login, register};
 use papo_sdk::{
     DraftBody, MessageTarget, OperationKind, OperationState, OutgoingAttachment, OutgoingError,

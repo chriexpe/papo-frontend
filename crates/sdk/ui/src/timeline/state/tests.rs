@@ -17,6 +17,7 @@ fn initial_live_snapshot_includes_arrival_after_empty_page_without_waiting_for_a
         })
         .collect();
     let raw = Arc::new(HistorySnapshot {
+        tombstones: imbl::HashSet::new(),
         version: 8,
         generation,
         messages: messages.into(),
