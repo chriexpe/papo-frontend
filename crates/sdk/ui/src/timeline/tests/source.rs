@@ -80,7 +80,7 @@ impl Source {
         Arc::new(HistorySnapshot {
             version: self.version,
             generation,
-            messages,
+            messages: messages.into(),
             chunks,
             gaps,
             empty_complete: self.messages.is_empty(),

@@ -304,10 +304,13 @@ fn start(session: &Session) {
     let runtime = session.client.inner.runtime.clone();
     runtime.spawn(async move {
         let _token = token;
+        let mut maintenance = tokio::time::interval(std::time::Duration::from_secs(1));
+        maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 biased;
                 () = session.inner.root.cancelled() => return,
+                _ = maintenance.tick() => {},
                 result = changes.changed() => if result.is_err() { return; },
                 result = connection.changed() => if result.is_err() { return; },
             }
@@ -318,7 +321,7 @@ fn start(session: &Session) {
     });
 }
 
-pub(super) async fn refresh(session: &Session) -> Result<(), ClientError> {
+pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
     let _serial = session.inner.reading.serial.lock().await;
     let generation = session.generation();
     session.inner.epochs.validate(generation)?;
@@ -375,6 +378,11 @@ pub(super) async fn refresh(session: &Session) -> Result<(), ClientError> {
     if previous != image.channels || old_generation != generation {
         session.inner.reading.publish(&session.inner, image)?;
     }
+    session
+        .inner
+        .history
+        .trim(session.client.inner.config.history)
+        .await;
     Ok(())
 }
 

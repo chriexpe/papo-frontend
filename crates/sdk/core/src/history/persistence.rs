@@ -2,9 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
 use crate::{
     AccountCache, CacheError, Generation,
     account_cache::history::{HistoryData, HistoryRow, HistoryTable},
@@ -12,11 +9,12 @@ use crate::{
 
 use super::{
     HistoryError,
-    model::{Chunk, Entry, Model},
-    ordering::Point,
+    diagnostics::Counters,
+    model::{Entry, Model},
+    persisted_layout::{
+        Item, Layout, LinkedChunk, Metadata, encode, layout, partition, structural_layout,
+    },
 };
-
-type Layout = BTreeMap<(u8, [u8; 16]), Vec<u8>>;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -25,31 +23,26 @@ pub(super) struct State {
     pub authorized_generation: u64,
     pub(super) cache_instance: Option<u64>,
     layout: Layout,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Metadata {
-    revision: u64,
-    empty_generation: u64,
-    active_chunks: Vec<[u8; 16]>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct LinkedChunk {
-    chunk: Chunk,
-    older: Option<[u8; 16]>,
-    newer: Option<[u8; 16]>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind")]
-enum Item {
-    Message { point: Point },
-    Gap { cursor: Point, ascending: bool },
-    Tombstones { ids: Vec<[u8; 16]> },
+    pub counters: std::sync::Arc<Counters>,
+    pub encoded_bytes: usize,
+    entry_bytes: BTreeMap<[u8; 16], usize>,
+    pub changed: Vec<[u8; 16]>,
+    pub committed_from: u64,
+    pub committed_revision: u64,
 }
 
 impl State {
+    pub fn with_counters(counters: std::sync::Arc<Counters>) -> Self {
+        Self {
+            counters,
+            ..Self::default()
+        }
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::with_counters(std::sync::Arc::clone(&self.counters));
+    }
+
     pub async fn ensure(
         &mut self,
         cache: &AccountCache,
@@ -72,7 +65,12 @@ impl State {
                 .history_load(channel, generation)
                 .await?
                 .ok_or(CacheError::InvalidData)?;
+            let counters = std::sync::Arc::clone(&self.counters);
             *self = decode(data)?;
+            self.counters = counters;
+            self.counters
+                .cache_loads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         self.set_id = Some(set_id);
         self.cache_instance = Some(instance);
@@ -100,8 +98,11 @@ impl State {
                 });
             }
         }
+        let mut sizes = Vec::new();
         for id in &self.model.dirty {
             let entry = self.model.entries.get(id).ok_or(CacheError::InvalidData)?;
+            let payload = encode(entry)?;
+            sizes.push((*id, payload.len()));
             if !entry.deleted {
                 if entry.timeline {
                     upserts.push(HistoryRow {
@@ -122,7 +123,7 @@ impl State {
                 upserts.push(HistoryRow {
                     table: HistoryTable::Messages,
                     id: *id,
-                    payload: encode(entry)?,
+                    payload,
                 });
             }
         }
@@ -132,6 +133,9 @@ impl State {
             active_chunks: self.model.chunks.iter().map(|chunk| chunk.id).collect(),
         })?;
         let set_id = self.set_id.ok_or(CacheError::InvalidData)?;
+        let row_count = upserts.len();
+        let written_bytes =
+            metadata.len() + upserts.iter().map(|row| row.payload.len()).sum::<usize>();
         cache
             .history_commit_current(
                 channel,
@@ -142,7 +146,21 @@ impl State {
                 Vec::new(),
             )
             .await?;
-        self.model.dirty.clear();
+        self.counters
+            .persisted_rows
+            .fetch_add(row_count as u64, std::sync::atomic::Ordering::Relaxed);
+        self.counters
+            .persisted_bytes
+            .fetch_add(written_bytes as u64, std::sync::atomic::Ordering::Relaxed);
+        for (id, bytes) in sizes {
+            self.encoded_bytes = self
+                .encoded_bytes
+                .saturating_sub(self.entry_bytes.insert(id, bytes).unwrap_or(0))
+                .saturating_add(bytes);
+        }
+        self.committed_from = self.committed_revision;
+        self.committed_revision = self.model.revision;
+        self.changed = std::mem::take(&mut self.model.dirty).into_iter().collect();
         self.layout = next_layout;
         Ok(())
     }
@@ -166,6 +184,7 @@ fn decode(data: HistoryData) -> Result<State, HistoryError> {
         serde_json::from_slice::<Metadata>(&data.metadata).map_err(|_| CacheError::InvalidData)?
     };
     state.model.revision = metadata.revision;
+    state.committed_revision = metadata.revision;
     state.model.empty_generation = metadata.empty_generation;
     let active_chunks: BTreeSet<_> = metadata.active_chunks.iter().copied().collect();
     if active_chunks.len() != metadata.active_chunks.len() {
@@ -179,6 +198,8 @@ fn decode(data: HistoryData) -> Result<State, HistoryError> {
             if entry.revision > state.model.revision {
                 return Err(CacheError::InvalidData.into());
             }
+            state.entry_bytes.insert(row.id, row.payload.len());
+            state.encoded_bytes = state.encoded_bytes.saturating_add(row.payload.len());
             state.model.entries.insert(row.id, entry);
         } else {
             let index = match row.table {
@@ -265,91 +286,4 @@ fn restore(
         chunk.live_generation = 0;
     }
     Ok(state)
-}
-
-fn structural_layout(model: &Model) -> Result<Layout, HistoryError> {
-    let mut rows = BTreeMap::new();
-    for (index, chunk) in model.chunks.iter().enumerate() {
-        let linked = LinkedChunk {
-            chunk: chunk.clone(),
-            older: index
-                .checked_sub(1)
-                .and_then(|index| model.chunks.get(index))
-                .map(|chunk| chunk.id),
-            newer: model.chunks.get(index + 1).map(|chunk| chunk.id),
-        };
-        rows.insert((0, chunk.id), encode(&linked)?);
-        for (ascending, complete, point) in [
-            (false, chunk.oldest_complete, &chunk.first),
-            (true, chunk.newest_complete, &chunk.last),
-        ] {
-            if !complete {
-                let mut hash = Sha256::new();
-                hash.update(b"papo-history-gap/v1");
-                hash.update(chunk.id);
-                hash.update([u8::from(ascending)]);
-                let digest = hash.finalize();
-                let mut id = [0; 16];
-                id.copy_from_slice(&digest[..16]);
-                if rows
-                    .insert(
-                        (1, id),
-                        encode(&Item::Gap {
-                            cursor: point.clone(),
-                            ascending,
-                        })?,
-                    )
-                    .is_some()
-                {
-                    return Err(CacheError::InvalidData.into());
-                }
-            }
-        }
-    }
-    for (id, ids) in &model.deletions {
-        if rows
-            .insert((1, *id), encode(&Item::Tombstones { ids: ids.clone() })?)
-            .is_some()
-        {
-            return Err(CacheError::InvalidData.into());
-        }
-    }
-    Ok(rows)
-}
-
-fn layout(model: &Model) -> Result<Layout, HistoryError> {
-    let mut rows = structural_layout(model)?;
-    for (id, entry) in &model.entries {
-        if entry.timeline && !entry.deleted {
-            let point = entry.point.as_ref().ok_or(CacheError::InvalidData)?;
-            if rows
-                .insert(
-                    (1, *id),
-                    encode(&Item::Message {
-                        point: point.clone(),
-                    })?,
-                )
-                .is_some()
-            {
-                return Err(CacheError::InvalidData.into());
-            }
-        }
-        if entry.pinned && !entry.deleted {
-            rows.insert((2, *id), encode(&true)?);
-        }
-    }
-    Ok(rows)
-}
-
-fn partition(index: u8) -> Result<HistoryTable, HistoryError> {
-    match index {
-        0 => Ok(HistoryTable::Chunks),
-        1 => Ok(HistoryTable::Items),
-        2 => Ok(HistoryTable::Pins),
-        _ => Err(CacheError::InvalidData.into()),
-    }
-}
-
-fn encode(value: &impl Serialize) -> Result<Vec<u8>, HistoryError> {
-    serde_json::to_vec(value).map_err(|_| CacheError::InvalidData.into())
 }

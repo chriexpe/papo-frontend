@@ -1,6 +1,7 @@
 //! Account/channel history paging and proven continuity; Timeline windows, items and read state live above it.
 
 mod channel;
+mod diagnostics;
 mod fetch;
 pub(crate) mod live;
 mod live_edge;
@@ -8,11 +9,13 @@ mod merge;
 mod model;
 mod mutations;
 mod ordering;
+mod persisted_layout;
 mod persistence;
 mod publication;
 pub(crate) mod reconnect;
 #[cfg(test)]
 mod reconnect_tests;
+mod residency;
 mod subscription;
 #[cfg(test)]
 mod subscription_handle_tests;
@@ -28,6 +31,7 @@ use std::sync::Arc;
 
 pub use channel::HistoryHandle;
 pub(crate) use channel::HistoryStore;
+pub use diagnostics::{HistoryBudget, HistoryDiagnostics, HistoryWork};
 pub use subscription::{HistoryChunk, HistorySnapshot, HistorySubscription, HistoryUpdate};
 
 /// Why a history handle can no longer access its channel.

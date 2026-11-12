@@ -99,6 +99,9 @@ async fn journal_overflow_fails_the_generation_without_growing_the_queue() {
     .await;
     assert!(matches!(result, Err(ClientError::ReconcileOverflow)));
     assert_eq!(journal.len(), JOURNAL_CAPACITY);
+    let work = session.history.counters.snapshot();
+    assert_eq!(work.reconnect_journal_peak, JOURNAL_CAPACITY as u64);
+    assert_eq!(work.reconnect_overflows, 1);
 }
 
 #[tokio::test]

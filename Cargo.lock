@@ -7483,6 +7483,7 @@ name = "papo-sdk"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "imbl",
  "papo-api",
  "papo-test-server",
  "proptest",
@@ -7508,6 +7509,7 @@ dependencies = [
  "papo-sdk",
  "papo-test-server",
  "proptest",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

@@ -35,8 +35,8 @@ pub struct HistorySnapshot {
     pub version: u64,
     /// Current connection epoch, including epoch changes with no message changes.
     pub generation: Generation,
-    /// Chronological server payloads; unchanged payloads retain their `Arc` identity.
-    pub messages: Vec<Arc<Message>>,
+    /// Structurally shared chronological server payloads; unchanged payloads retain their `Arc` identity.
+    pub messages: imbl::Vector<Arc<Message>>,
     /// Proven runs in ascending boundary order, independent of any consumer's window.
     pub chunks: Vec<HistoryChunk>,
     /// Exact excluded boundaries and directions that can be passed to `page()` to fill holes.

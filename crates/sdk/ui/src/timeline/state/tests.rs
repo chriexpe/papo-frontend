@@ -19,7 +19,7 @@ fn initial_live_snapshot_includes_arrival_after_empty_page_without_waiting_for_a
     let raw = Arc::new(HistorySnapshot {
         version: 8,
         generation,
-        messages,
+        messages: messages.into(),
         chunks: vec![],
         gaps: vec![],
         empty_complete: false,

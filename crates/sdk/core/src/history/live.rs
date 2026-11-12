@@ -75,7 +75,7 @@ pub(crate) async fn apply(
                 .persist(&connection.cache, *channel.id.as_bytes(), &epoch)
                 .await
             {
-                *state = super::persistence::State::default();
+                state.reset();
                 return Err(error.into());
             }
             session
@@ -139,11 +139,13 @@ async fn select(
             return Ok(Vec::new());
         }
         let mut channels = session.history.channels.lock().await;
-        let channel = Arc::clone(
-            channels
-                .entry(id)
-                .or_insert_with(|| Arc::new(Channel::new(id, session.history.changes.clone()))),
-        );
+        let channel = Arc::clone(channels.entry(id).or_insert_with(|| {
+            Arc::new(Channel::new(
+                id,
+                session.history.changes.clone(),
+                Arc::clone(&session.history.counters),
+            ))
+        }));
         selected.push(channel);
     } else {
         // The pinned backend omits channel IDs from reaction and pin events.

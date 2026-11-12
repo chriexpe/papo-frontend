@@ -28,6 +28,8 @@ pub struct ClientConfig {
     pub request_timeout: Duration,
     /// Durable/shared storage configuration.
     pub storage: StorageConfig,
+    /// Per-account warm idle-history limits; active capabilities are accounted separately.
+    pub history: crate::HistoryBudget,
     /// Capped retry delay configuration.
     pub backoff: Backoff,
     /// Injectable jitter; tests use deterministic implementations.
@@ -42,6 +44,7 @@ impl Default for ClientConfig {
             credential_timeout: Duration::from_secs(30),
             request_timeout: Duration::from_secs(30),
             storage: StorageConfig::default(),
+            history: crate::HistoryBudget::default(),
             backoff: Backoff::default(),
             jitter: Arc::new(RuntimeJitter::default()),
             insecure_loopback: false,

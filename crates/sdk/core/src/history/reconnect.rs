@@ -36,15 +36,20 @@ pub(crate) async fn resources(
     }
     let store = &session.history;
     let mut channels = store.channels.lock().await;
-    for (id, channel) in channels.iter() {
-        if !visible.contains(id) {
-            // Close before revoking: a reader that sees the revoked row must also see why.
+    let previous = store.verified.read().await.clone();
+    let revoked: BTreeSet<_> = previous
+        .difference(&visible)
+        .copied()
+        .chain(channels.keys().filter(|id| !visible.contains(id)).copied())
+        .collect();
+    for id in revoked {
+        if let Some(channel) = channels.get(&id) {
             channel.close(HistoryClosedReason::ChannelRemoved);
-            connection
-                .cache
-                .history_revoke(*id.as_bytes(), snapshot.generation)
-                .await?;
         }
+        connection
+            .cache
+            .history_revoke(*id.as_bytes(), snapshot.generation)
+            .await?;
     }
     // A re-grant creates a new handle identity; the revoked Arc is never revived.
     channels.retain(|_, channel| channel.check().is_ok());
@@ -68,27 +73,35 @@ pub(crate) async fn refresh(
     }
     let unread = unread_channels(&session.reading).await;
     let verified = session.history.verified.read().await.clone();
-    let channels: Vec<_> = {
-        let mut channels = session.history.channels.lock().await;
-        for id in unread.intersection(&verified) {
+    let mut selected = unread
+        .intersection(&verified)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    {
+        let channels = session.history.channels.lock().await;
+        selected.extend(
             channels
-                .entry(*id)
-                .or_insert_with(|| Arc::new(Channel::new(*id, session.history.changes.clone())));
-        }
-        channels
-            .values()
-            .filter(|channel| {
-                (channel.is_open() || unread.contains(&channel.id)) && channel.check().is_ok()
-            })
-            .cloned()
-            .collect()
-    };
+                .iter()
+                .filter(|(_, channel)| channel.is_open() && channel.check().is_ok())
+                .map(|(id, _)| *id),
+        );
+    }
     let cache_connection = CacheConnection {
         cache: Arc::clone(&connection.cache),
         rest: connection.rest.clone(),
         generation,
     };
-    for channel in channels {
+    for id in selected {
+        let channel = {
+            let mut channels = session.history.channels.lock().await;
+            Arc::clone(channels.entry(id).or_insert_with(|| {
+                Arc::new(Channel::new(
+                    id,
+                    session.history.changes.clone(),
+                    Arc::clone(&session.history.counters),
+                ))
+            }))
+        };
         match refresh_channel(&session_handle, channel, &cache_connection, generation).await {
             Ok(()) | Err(HistoryError::Closed(_)) => {}
             Err(error) => return Err(error.into()),
