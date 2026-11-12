@@ -161,7 +161,9 @@ fn owner_refuses_newer_schema_without_modifying_it() {
     let directory = tempfile::tempdir().unwrap();
     let root = DataRoot::new(directory.path());
     let connection = rusqlite::Connection::open(root.state()).unwrap();
-    connection.pragma_update(None, "user_version", 2).unwrap();
+    connection
+        .pragma_update(None, "user_version", crate::state_schema::VERSION + 1)
+        .unwrap();
     drop(connection);
     let before = std::fs::read(root.state()).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -180,7 +182,7 @@ fn owner_refuses_newer_schema_without_modifying_it() {
             Arc::new(Hooks::default()),
             StorageConfig::default()
         ),
-        Err(StorageError::NewerSchema { found: 2 })
+        Err(StorageError::NewerSchema { found: 3 })
     ));
     assert_eq!(std::fs::read(root.state()).unwrap(), before);
 }

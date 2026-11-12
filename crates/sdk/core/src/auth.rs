@@ -143,6 +143,7 @@ impl AuthService {
         match error {
             ClientError::Api(
                 papo_api::Error::Transport
+                | papo_api::Error::NotDispatched
                 | papo_api::Error::Decode
                 | papo_api::Error::Http {
                     status: 429 | 500..=599,

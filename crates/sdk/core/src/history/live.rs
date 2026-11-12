@@ -154,3 +154,44 @@ async fn select(
     }
     Ok(selected)
 }
+
+/// A confirmed creation is a live insertion, never pagination/coverage evidence.
+/// Reuse normal event merge rules so prior deletes and newer edits still win.
+pub(crate) async fn acknowledge(
+    session: &crate::Session,
+    rest: &papo_api::RestClient,
+    generation: Generation,
+    message: &papo_api::wire::Message,
+) -> Result<(), ClientError> {
+    session.inner.epochs.validate(generation)?;
+    let cache = session.client.inner.caches.open(session.account()).await?;
+    let connection = ResourceConnection {
+        client: session.client.clone(),
+        rest: rest.clone(),
+        cache,
+    };
+    let event = papo_api::gateway::MessageEvent {
+        id: message.id.clone().ok_or(ClientError::ResourceData)?,
+        channel_id: message
+            .channel_id
+            .clone()
+            .ok_or(ClientError::ResourceData)?,
+        author_id: message.author_id.clone().ok_or(ClientError::ResourceData)?,
+        content: message.content.clone().unwrap_or_default(),
+        created_at: message
+            .created_at
+            .clone()
+            .ok_or(ClientError::ResourceData)?,
+        reply_to: message.reply_to.clone(),
+        attachments: message.attachments.clone().unwrap_or_default(),
+        webhook_id: message.webhook_id.clone(),
+        external_author: message.external_author.clone(),
+    };
+    apply(
+        &session.inner,
+        &connection,
+        generation,
+        &Event::Known(KnownEvent::Message(Box::new(event))),
+    )
+    .await
+}

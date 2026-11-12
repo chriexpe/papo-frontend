@@ -36,6 +36,7 @@ pub(crate) struct State {
     rest: VecDeque<RestStep>,
     pub(crate) base_url: String,
     pub(crate) message_body: Option<Bytes>,
+    pub(crate) outgoing: crate::OutgoingRequestCounts,
 }
 
 /// A running in-memory backend bound exclusively to IPv4 loopback.
@@ -83,6 +84,7 @@ impl TestServer {
             rest: config.rest.clone().into(),
             base_url: format!("http://{address}"),
             message_body: None,
+            outgoing: crate::OutgoingRequestCounts::default(),
         }));
         let (stop, stopped) = oneshot::channel();
         let (disconnects, _) = broadcast::channel(1);

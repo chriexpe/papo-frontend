@@ -1,19 +1,14 @@
 //! Independent observable channel windows over public SDK history/read APIs; transport and durable policy stay in core.
 
+mod echoes;
 mod paging;
 mod state;
+mod subscription;
 pub use paging::TimelinePage;
 
-use crate::{
-    list_subscription,
-    timeline_item::{TimelineDirection, TimelineItem, UtcOffset, UtcOffsetProvider},
-};
+use crate::timeline_item::{TimelineDirection, TimelineItem, UtcOffset, UtcOffsetProvider};
 use eyeball_im::VectorDiff;
-use futures_util::{
-    Stream, StreamExt,
-    future::{self, Either},
-    stream,
-};
+use futures_util::Stream;
 use imbl::Vector;
 use papo_sdk::{
     Generation, HistoryClosedReason, HistoryCursor, HistoryError, HistoryHandle, HistoryOrder,
@@ -57,6 +52,8 @@ pub enum TimelineError {
     History(HistoryError),
     /// Durable reading policy or upload-admission failure.
     Reading(ReadingError),
+    /// Durable outgoing state failed to load.
+    Outgoing(papo_sdk::OutgoingError),
     /// Exact cursor lacked a valid timestamp or UUID.
     InvalidCursor,
     /// Page size or queue capacity was zero or outside the protocol limit.
@@ -77,6 +74,7 @@ impl std::fmt::Display for TimelineError {
         match self {
             Self::History(error) => error.fmt(f),
             Self::Reading(error) => error.fmt(f),
+            Self::Outgoing(error) => error.fmt(f),
             _ => f.write_str("timeline operation rejected"),
         }
     }
@@ -218,7 +216,7 @@ impl Timeline {
         }
         let subscription = history.subscribe().await?;
         let reading = session.subscribe_reading();
-        let state = WindowState::new(
+        let mut state = WindowState::new(
             subscription,
             reading,
             messages,
@@ -226,6 +224,14 @@ impl Timeline {
             channel,
             &config,
         )?;
+        state.outgoing = Some(
+            session
+                .outgoing()
+                .subscribe()
+                .await
+                .map_err(TimelineError::Outgoing)?,
+        );
+        state.refresh(&config)?;
         Ok(Self {
             inner: Arc::new(Owner {
                 session,
@@ -233,94 +239,6 @@ impl Timeline {
                 config,
                 state: Mutex::new(state),
             }),
-        })
-    }
-
-    /// Capture `(version, items, stream)` under one lock. Slow subscriptions retain at most
-    /// `subscriber_capacity` batches; overflow discards them and emits one current Reset.
-    /// # Errors
-    /// Returns a terminal closure, invalid authoritative cursor or exhausted version.
-    pub fn subscribe(&self) -> Result<TimelineSubscription, TimelineError> {
-        let mut state = self.inner.lock();
-        state.refresh(&self.inner.config)?;
-        let version = state.publisher.version;
-        let generation = state.publisher.generation;
-        let items = state.publisher.items.clone();
-        let receiver = state
-            .publisher
-            .subscribe(self.inner.config.subscriber_capacity);
-        let history = state.history.clone();
-        let reading = state.reading.clone();
-        let owner = Arc::clone(&self.inner);
-        let changes = stream::unfold(
-            (owner, receiver, history, reading),
-            |(owner, mut receiver, mut history, mut reading)| async move {
-                loop {
-                    // A terminal refresh has already enqueued Closed; drain it rather than losing the reason.
-                    let _ = owner.lock().refresh(&owner.config);
-                    let wake = {
-                        match future::select(
-                            Box::pin(receiver.next()),
-                            Box::pin(future::select(
-                                Box::pin(history.changed()),
-                                Box::pin(reading.changed()),
-                            )),
-                        )
-                        .await
-                        {
-                            Either::Left((event, pending)) => {
-                                drop(pending);
-                                Either::Left(event)
-                            }
-                            Either::Right((change, pending)) => {
-                                drop(pending);
-                                let closed = match change {
-                                    Either::Left((result, pending)) => {
-                                        drop(pending);
-                                        result.is_err()
-                                    }
-                                    Either::Right((result, pending)) => {
-                                        drop(pending);
-                                        result.is_err()
-                                    }
-                                };
-                                Either::Right(closed)
-                            }
-                        }
-                    };
-                    match wake {
-                        Either::Left(Some(event)) => {
-                            let event = match event {
-                                list_subscription::Event::Update {
-                                    version,
-                                    generation,
-                                    diffs,
-                                } => TimelineEvent::Update(TimelineUpdate {
-                                    version,
-                                    generation,
-                                    diffs,
-                                }),
-                                list_subscription::Event::Closed(reason) => {
-                                    TimelineEvent::Closed(reason)
-                                }
-                            };
-                            return Some((event, (owner, receiver, history, reading)));
-                        }
-                        Either::Left(None) => return None,
-                        Either::Right(closed) => {
-                            if closed {
-                                owner.lock().close(HistoryClosedReason::AccountClosed);
-                            }
-                        }
-                    }
-                }
-            },
-        );
-        Ok(TimelineSubscription {
-            version,
-            generation,
-            items,
-            stream: Box::pin(changes.fuse()),
         })
     }
 

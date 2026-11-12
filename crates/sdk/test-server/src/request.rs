@@ -18,7 +18,7 @@ use crate::{
 type HttpResponse = Response<Full<Bytes>>;
 
 pub(crate) async fn handle(
-    mut request: Request<Incoming>,
+    request: Request<Incoming>,
     config: Arc<Config>,
     state: Arc<Mutex<State>>,
     upgrades: mpsc::Sender<(hyper::upgrade::OnUpgrade, String)>,
@@ -27,9 +27,18 @@ pub(crate) async fn handle(
     let path = request.uri().path().to_owned();
     let query = request.uri().query().unwrap_or_default().to_owned();
     let cookie = cookie_value(request.headers()).map(str::to_owned);
+    let content_type = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
     let (step, base_url, _upload_guard) = {
         let mut state = state.lock().await;
         state.member_requests.record(&method, &path);
+        if crate::message_requests::relevant(&method, &path) {
+            state.outgoing.requests = state.outgoing.requests.saturating_add(1);
+        }
         (
             take_step(&mut state, &method, &path),
             state.base_url.clone(),
@@ -44,25 +53,11 @@ pub(crate) async fn handle(
         }
     }
     if method == "GET" && path == "/ws" {
-        let state = state.lock().await;
-        if !state.gateway_accepting {
-            return Ok(encode(problem(503, "unavailable", &path)));
-        }
-        let user_id = state.auth.user_id(cookie.as_deref()).map(str::to_owned);
-        let Some(user_id) = user_id else {
-            return Ok(encode(problem(401, "unauthorized", &path)));
-        };
-        if !gateway::origin_allowed(request.headers(), &config.allowed_origins) {
-            return Ok(encode(problem(403, "ws-upgrade", &path)));
-        }
-        let Ok(response) = gateway::upgrade_response(&request) else {
-            return Ok(encode(problem(400, "ws-upgrade", &path)));
-        };
-        let pending = hyper::upgrade::on(&mut request);
-        if upgrades.try_send((pending, user_id)).is_err() {
-            return Ok(encode(problem(500, "internal", &path)));
-        }
-        return Ok(response);
+        return upgrade(request, &config, &state, &upgrades, &base_url).await;
+    }
+    let request_hold = take_hold(&mut *state.lock().await, &method, &path, true);
+    if let Some(hold) = request_hold {
+        hold.wait().await;
     }
     let Ok(body) = Limited::new(request.into_body(), MAX_BODY_BYTES)
         .collect()
@@ -74,13 +69,18 @@ pub(crate) async fn handle(
     let (reply, hold) = {
         let mut state = state.lock().await;
         let user_id = state.auth.user_id(cookie.as_deref()).map(str::to_owned);
-        let reply = if method == "POST" && path == "/messages" {
-            if user_id.is_none() {
-                problem(401, "unauthorized", &path)
-            } else {
-                state.message_body = Some(body);
-                Reply::json(201, serde_json::json!({}))
-            }
+        if method == "POST" && path == "/messages" {
+            state.message_body = Some(body.clone());
+        }
+        let reply = if let Some(reply) = crate::message_requests::handle(
+            &mut state,
+            &method,
+            &path,
+            user_id.as_deref(),
+            &content_type,
+            &body,
+        ) {
+            reply
         } else if let Some(reply) =
             crate::read_marks::handle(&mut state, &method, &path, user_id.as_deref(), &body)
         {
@@ -112,7 +112,7 @@ pub(crate) async fn handle(
         let hold = state
             .holds
             .iter()
-            .position(|hold| hold.method == method && hold.path == path)
+            .position(|hold| !hold.before_body && hold.method == method && hold.path == path)
             .map(|index| state.holds.remove(index));
         (reply, hold)
     };
@@ -173,4 +173,50 @@ fn encode(mut reply: Reply, base_url: &str) -> HttpResponse {
         response.headers_mut().insert(header::SET_COOKIE, cookie);
     }
     response
+}
+
+async fn upgrade(
+    mut request: Request<Incoming>,
+    config: &Config,
+    state: &Mutex<State>,
+    upgrades: &mpsc::Sender<(hyper::upgrade::OnUpgrade, String)>,
+    base_url: &str,
+) -> Result<HttpResponse, Infallible> {
+    let cookie = cookie_value(request.headers()).map(str::to_owned);
+    let path = request.uri().path().to_owned();
+    let encode = |reply| encode(reply, base_url);
+    let state = state.lock().await;
+    if !state.gateway_accepting {
+        return Ok(encode(problem(503, "unavailable", &path)));
+    }
+    let user_id = state.auth.user_id(cookie.as_deref()).map(str::to_owned);
+    let Some(user_id) = user_id else {
+        return Ok(encode(problem(401, "unauthorized", &path)));
+    };
+    if !gateway::origin_allowed(request.headers(), &config.allowed_origins) {
+        return Ok(encode(problem(403, "ws-upgrade", &path)));
+    }
+    let Ok(response) = gateway::upgrade_response(&request) else {
+        return Ok(encode(problem(400, "ws-upgrade", &path)));
+    };
+    let pending = hyper::upgrade::on(&mut request);
+    if upgrades.try_send((pending, user_id)).is_err() {
+        return Ok(encode(problem(500, "internal", &path)));
+    }
+    Ok(response)
+}
+
+fn take_hold(
+    state: &mut State,
+    method: &str,
+    path: &str,
+    before_body: bool,
+) -> Option<crate::rest_hold::PendingHold> {
+    state
+        .holds
+        .iter()
+        .position(|hold| {
+            hold.before_body == before_body && hold.method == method && hold.path == path
+        })
+        .map(|index| state.holds.remove(index))
 }

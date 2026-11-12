@@ -2,7 +2,7 @@
 
 use papo_api::{
     MessageAttachment, MessageUpload, RestClient,
-    wire::{EmbedInput, EmbedMediaInput, LoginRequest, RegisterRequest},
+    wire::{EmbedInput, EmbedMediaInput, LoginRequest, Message, RegisterRequest},
 };
 use papo_test_server::{Config, TestServer};
 
@@ -28,6 +28,20 @@ async fn multipart_upload_preserves_each_filename_and_payload() {
         })
         .await
         .unwrap();
+    let channel = server.create_channel("upload").await.unwrap().id.unwrap();
+    let reply = "70000000-0000-4000-8000-000000000001";
+    server
+        .seed_messages(
+            &channel,
+            vec![Message {
+                id: Some(reply.into()),
+                channel_id: Some(channel.clone()),
+                created_at: Some("2026-01-01T00:00:00Z".into()),
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
     let files = [
         MessageAttachment {
             filename: "renamed.png",
@@ -48,9 +62,9 @@ async fn multipart_upload_preserves_each_filename_and_payload() {
     .unwrap();
     client
         .create_message(&MessageUpload {
-            channel_id: "channel-id",
+            channel_id: &channel,
             content: Some("caption"),
-            reply_to: Some("reply-id"),
+            reply_to: Some(reply),
             embeds: Some(&embeds),
             attachments: &files,
         })
@@ -67,7 +81,7 @@ async fn multipart_upload_preserves_each_filename_and_payload() {
     assert!(body[first..second].contains("first-bytes"));
     assert!(body[second..].contains("second-bytes"));
     assert!(body.contains("caption"));
-    assert!(body.contains("reply-id"));
+    assert!(body.contains(reply));
     assert!(body.contains(&embeds));
     assert!(!body.contains("\"url\""));
     assert!(server.take_message_body().await.is_none());

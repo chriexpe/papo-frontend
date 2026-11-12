@@ -62,6 +62,7 @@ impl RemovalJobs {
 
     async fn delete_cache(&self, account: AccountId) -> Result<(), Failure> {
         let path = self.root.account_cache(account);
+        let outgoing = self.root.outgoing_files(account);
         let lease = std::sync::Arc::clone(&self.registry.lease);
         tokio::task::spawn_blocking(move || {
             let _lease = lease;
@@ -73,6 +74,11 @@ impl RemovalJobs {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(_) => return Err(Failure::CacheIo),
                 }
+            }
+            match std::fs::remove_dir_all(outgoing) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(Failure::CacheIo),
             }
             Ok(())
         })

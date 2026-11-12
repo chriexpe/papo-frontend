@@ -1,0 +1,11 @@
+ALTER TABLE operations ADD COLUMN result BLOB;
+ALTER TABLE operations ADD COLUMN files BLOB;
+ALTER TABLE operations ADD COLUMN attachment_bytes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE operations ADD COLUMN confirmed_order INTEGER;
+ALTER TABLE operations ADD COLUMN draft_revision INTEGER;
+ALTER TABLE operations ADD COLUMN discarded INTEGER NOT NULL DEFAULT 0 CHECK(discarded IN (0,1));
+ALTER TABLE drafts ADD COLUMN body BLOB;
+ALTER TABLE drafts ADD COLUMN files BLOB;
+ALTER TABLE drafts ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX operation_account_order ON operations(server_id,user_id,channel_id);
+CREATE INDEX operation_receipt_order ON operations(server_id,user_id,state,confirmed_order);

@@ -13,7 +13,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 eyeball-im = "=0.9.1"
 futures-util = "0.3"
 imbl = "=7.0.2"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "macros"] }
 
 [dev-dependencies]
 # Reuse the locked serializer for portable, payload-free performance fixture reports.

@@ -36,6 +36,9 @@ pub struct ClientConfig {
     pub jitter: Arc<dyn Jitter>,
     /// Permit Secure cookies over literal HTTP loopback only, for integration proofs.
     pub insecure_loopback: bool,
+    /// Test-only deterministic interruption points; production builds have no dispatch hook.
+    #[cfg(feature = "test-support")]
+    pub outgoing_probe: Option<Arc<dyn crate::OutgoingDispatchProbe>>,
 }
 impl Default for ClientConfig {
     fn default() -> Self {
@@ -48,6 +51,8 @@ impl Default for ClientConfig {
             backoff: Backoff::default(),
             jitter: Arc::new(RuntimeJitter::default()),
             insecure_loopback: false,
+            #[cfg(feature = "test-support")]
+            outgoing_probe: None,
         }
     }
 }

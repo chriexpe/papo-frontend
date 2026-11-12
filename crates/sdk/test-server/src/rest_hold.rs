@@ -7,6 +7,7 @@ use crate::{Error, TestServer};
 pub(crate) struct PendingHold {
     pub(crate) method: String,
     pub(crate) path: String,
+    pub(crate) before_body: bool,
     started: oneshot::Sender<()>,
     released: oneshot::Receiver<()>,
 }
@@ -54,6 +55,15 @@ impl TestServer {
     /// # Errors
     /// Returns [`Error::Configuration`] for an invalid method or non-absolute path.
     pub async fn hold_next_rest(&self, method: &str, path: &str) -> Result<RestHold, Error> {
+        self.hold(method, path, false).await
+    }
+    /// Holds a request after headers and before reading its body or applying a mutation.
+    /// # Errors
+    /// Returns invalid method/path or connection cancellation through `RestHold`.
+    pub async fn hold_next_request(&self, method: &str, path: &str) -> Result<RestHold, Error> {
+        self.hold(method, path, true).await
+    }
+    async fn hold(&self, method: &str, path: &str, before_body: bool) -> Result<RestHold, Error> {
         if hyper::Method::from_bytes(method.as_bytes()).is_err() || !path.starts_with('/') {
             return Err(Error::Configuration);
         }
@@ -64,6 +74,7 @@ impl TestServer {
             path: path.to_owned(),
             started,
             released,
+            before_body,
         });
         Ok(RestHold {
             started: Some(observed),

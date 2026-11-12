@@ -41,6 +41,7 @@ fn script_waits_for_its_matching_request_and_is_consumed_once() {
         .into(),
         base_url: String::new(),
         message_body: None,
+        outgoing: crate::OutgoingRequestCounts::default(),
     };
     assert!(take_step(&mut state, "POST", "/auth/login").is_none());
     assert_eq!(take_step(&mut state, "GET", "/server").unwrap().delay_ms, 7);

@@ -78,6 +78,10 @@ pub enum Error {
     /// Credential snapshot encoding, bounds or scope validation failed.
     #[error("invalid API credential snapshot")]
     Credentials,
+    /// Request construction or connection establishment failed before any origin request bytes.
+    /// The transport has redirects and internal retries disabled.
+    #[error("API request was not dispatched")]
+    NotDispatched,
     /// A request failed; dispatch may have occurred. No automatic retry is performed.
     #[error("API transport failed")]
     Transport,

@@ -22,6 +22,8 @@ pub(super) struct WindowState {
     pub history: watch::Receiver<HistoryUpdate>,
     pub reading: watch::Receiver<Arc<ReadingSnapshot>>,
     pub raw: Arc<HistorySnapshot>,
+    pub outgoing: Option<watch::Receiver<Arc<papo_sdk::OutgoingSnapshot>>>,
+    outgoing_version: u64,
     pub bounds: Bounds,
     pub older_cursor: Option<HistoryCursor>,
     pub newer_cursor: Option<HistoryCursor>,
@@ -64,6 +66,8 @@ impl WindowState {
             },
             publisher: Publisher::new(1, subscription.snapshot.generation, Vector::new()),
             raw: subscription.snapshot,
+            outgoing: None,
+            outgoing_version: 0,
             history: subscription.updates,
             reading_version,
             reading,
@@ -98,14 +102,25 @@ impl WindowState {
         let read = (reading.generation == self.raw.generation)
             .then(|| reading.channels.get(&self.channel))
             .flatten();
-        timeline_window::project(
+        let mut items = timeline_window::project(
             &self.raw,
             &self.bounds,
             read,
             self.loading,
             config.offset_provider.as_ref(),
             &self.publisher.items,
-        )
+        )?;
+        if self.bounds.live
+            && let Some(outgoing) = &self.outgoing
+        {
+            super::echoes::append(
+                &mut items,
+                &outgoing.borrow(),
+                self.channel,
+                &self.publisher.items,
+            );
+        }
+        Ok(items)
     }
 
     pub fn reproject(&mut self, config: &TimelineConfig, reset: bool) -> Result<(), TimelineError> {
@@ -136,9 +151,14 @@ impl WindowState {
             _ => return Err(TimelineError::InvalidCursor),
         };
         let reading_version = self.reading.borrow_and_update().version;
+        let outgoing_version = self
+            .outgoing
+            .as_mut()
+            .map_or(0, |rx| rx.borrow_and_update().version);
         if self.raw.version == next.version
             && self.raw.generation == next.generation
             && self.reading_version == reading_version
+            && self.outgoing_version == outgoing_version
         {
             return Ok(());
         }
@@ -147,6 +167,7 @@ impl WindowState {
                 && self.raw.version.checked_add(1) != Some(next.version));
         self.raw = next;
         self.reading_version = reading_version;
+        self.outgoing_version = outgoing_version;
         if self.bounds.lower.is_none() {
             let cursors: Vec<_> = self
                 .raw

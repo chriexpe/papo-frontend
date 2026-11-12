@@ -58,6 +58,15 @@ impl DataRoot {
             .join(format!("{}.sqlite", account.user()))
     }
 
+    /// Durable, account-owned outgoing attachment staging; this is not the rebuildable media cache.
+    #[must_use]
+    pub fn outgoing_files(&self, account: AccountId) -> PathBuf {
+        self.0
+            .join("outgoing")
+            .join(account.server().to_string())
+            .join(account.user().to_string())
+    }
+
     /// Content-addressed media path for a SHA-256 digest.
     #[must_use]
     pub fn media_content(&self, digest: &[u8; 32]) -> PathBuf {

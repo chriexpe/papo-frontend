@@ -83,6 +83,10 @@ impl Connector for ApiConnector {
 }
 
 pub(crate) fn start(client: ClientHandle, session: Arc<SessionInner>) {
+    crate::outgoing::dispatch::start(crate::Session {
+        inner: Arc::clone(&session),
+        client: client.clone(),
+    });
     if session
         .driver_running
         .swap(true, std::sync::atomic::Ordering::AcqRel)

@@ -4,6 +4,8 @@
 mod cancellation;
 #[path = "timeline/lifecycle.rs"]
 mod lifecycle;
+#[path = "timeline/outgoing.rs"]
+mod outgoing;
 #[path = "timeline/support.rs"]
 mod support;
 
