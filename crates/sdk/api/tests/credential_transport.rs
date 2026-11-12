@@ -143,13 +143,9 @@ async fn relative_max_age_is_exported_as_absolute_expiry_without_renewal() {
     let first = client.credential_snapshot().unwrap();
     let restored = RestClient::loopback_from_snapshot(&address, &first).unwrap();
     let second = restored.credential_snapshot().unwrap();
-    #[expect(
-        clippy::manual_assert_eq,
-        reason = "Credential bytes must never appear in assertion diagnostics"
-    )]
-    {
-        assert!(first.expose_bytes() == second.expose_bytes());
-    }
+    // Compare outside the assertion so diagnostics can never expose credential bytes.
+    let unchanged = first.expose_bytes() == second.expose_bytes();
+    assert!(unchanged);
     let saved = cookies(&restored);
     assert!(!saved[0].contains("Max-Age"));
     assert!(saved[0].contains("Expires="));
