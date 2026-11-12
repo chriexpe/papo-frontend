@@ -11,4 +11,10 @@ pub struct CreateChannelRequest {
     /// Backend `topic` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#topic: Option<String>,
+    /// Backend `parent_id` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#parent_id: Option<String>,
+    /// Backend `access_roles` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#access_roles: Option<Vec<String>>,
 }

@@ -18,6 +18,9 @@ pub struct Channel {
     /// Backend `topic` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#topic: Option<String>,
+    /// Backend `parent_id` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#parent_id: Option<String>,
     /// Backend `permissions` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#permissions: Option<Vec<super::ChannelPermissionEntry>>,

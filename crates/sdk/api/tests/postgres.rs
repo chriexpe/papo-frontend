@@ -1,4 +1,4 @@
-//! Verifies exact history tuple boundaries against the pinned production backend and PostgreSQL.
+//! Verifies history tuples and multipart embed uploads against the pinned backend and PostgreSQL.
 //! Run only through the isolated loopback proof harness, never against a user server.
 
 use papo_api::{
@@ -6,9 +6,12 @@ use papo_api::{
     wire::{CreateChannelRequest, CreateServerRequest, LoginRequest, RegisterRequest},
 };
 
+#[path = "postgres_upload/mod.rs"]
+mod postgres_upload;
+
 #[tokio::test]
 #[ignore = "requires the pinned backend with a fresh PostgreSQL database"]
-async fn equal_timestamps_page_both_directions_without_gaps_or_duplicates() {
+async fn pinned_backend_preserves_history_tuples_and_multipart_embed_references() {
     let (client, channel) = seed_backend().await;
     let expected: Vec<_> = (1..=7)
         .map(|n| format!("00000000-0000-4000-8000-{n:012}"))
@@ -80,6 +83,7 @@ async fn equal_timestamps_page_both_directions_without_gaps_or_duplicates() {
         }
     }
     reverse_at_interior_boundary(&client, channel, &expected).await;
+    postgres_upload::verify(&client).await;
 }
 
 async fn reverse_at_interior_boundary(client: &RestClient, channel: Uuid, expected: &[String]) {

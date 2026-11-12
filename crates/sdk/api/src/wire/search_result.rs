@@ -24,6 +24,12 @@ pub struct SearchResult {
     /// Backend `author_username` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#author_username: Option<String>,
+    /// Backend `webhook_id` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#webhook_id: Option<String>,
+    /// Backend `external_author` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#external_author: Option<super::ExternalAuthor>,
     /// Backend `created_at` field. Timestamp strings are preserved verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#created_at: Option<String>,

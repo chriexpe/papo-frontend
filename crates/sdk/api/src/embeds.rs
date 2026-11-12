@@ -38,4 +38,37 @@ mod tests {
             assert_eq!(encoded[key], value[key]);
         }
     }
+
+    #[test]
+    fn attachment_backed_media_omits_url_and_preserves_exact_filename() {
+        let media: crate::wire::EmbedMediaInput = serde_json::from_value(json!({
+            "attachment_name": "SPOILER_diagram.png", "mime_type": "image/png"
+        }))
+        .unwrap();
+        assert!(media.url.is_none());
+        assert_eq!(
+            serde_json::to_value(media).unwrap(),
+            json!({"attachment_name": "SPOILER_diagram.png", "mime_type": "image/png"})
+        );
+    }
+
+    #[test]
+    fn url_media_remains_compatible_without_an_attachment_reference() {
+        let value = json!({"url": "https://example.invalid/synthetic.png"});
+        let media: crate::wire::EmbedMediaInput = serde_json::from_value(value.clone()).unwrap();
+        assert!(media.attachment_name.is_none());
+        assert_eq!(serde_json::to_value(media).unwrap(), value);
+    }
+
+    #[test]
+    fn attachment_dimensions_round_trip_without_filling_unknown_sizes() {
+        for value in [
+            json!({"width": 1920, "height": 1080, "thumbnail_width": 320, "thumbnail_height": 180}),
+            json!({}),
+        ] {
+            let attachment: crate::wire::Attachment =
+                serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(attachment).unwrap(), value);
+        }
+    }
 }
