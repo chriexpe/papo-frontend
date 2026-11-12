@@ -18,6 +18,8 @@ mod held_pins;
 mod live;
 #[path = "history_cases/reconnect.rs"]
 mod reconnect;
+#[path = "history_cases/routing.rs"]
+mod routing;
 use fixture::{Fixture, Result, login, register, wait_for};
 
 const CHANNEL: &str = "10000000-0000-4000-8000-000000000001";

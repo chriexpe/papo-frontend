@@ -1,22 +1,42 @@
 //! Identity-aware list edits; source versions and subscription lifetimes belong to projections.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use eyeball_im::VectorDiff;
 use imbl::Vector;
 
 /// Produces sequential edits without replacing unchanged identities.
 /// Both lists must have unique identities, as guaranteed by the SDK registry.
-pub(crate) fn between<T: Clone + PartialEq, K: Eq>(
+pub(crate) fn between<T: Clone + PartialEq, K: Ord>(
     previous: &Vector<T>,
     next: &Vector<T>,
     identity: impl Fn(&T) -> K,
 ) -> Vec<VectorDiff<T>> {
+    let positions: BTreeMap<_, _> = previous
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (identity(item), index))
+        .collect();
+    let identities: BTreeSet<_> = next.iter().map(&identity).collect();
+    let mut last = None;
+    let reordered = next
+        .iter()
+        .filter_map(|item| positions.get(&identity(item)))
+        .any(|&index| {
+            let moved = last.is_some_and(|last| last > index);
+            last = Some(index);
+            moved
+        });
+    // Bound general move searches; common append/prepend/edit/delete paths never search.
+    if reordered && previous.len().max(next.len()) > 64 {
+        return vec![VectorDiff::Reset {
+            values: next.clone(),
+        }];
+    }
     let mut current = previous.clone();
     let mut diffs = Vec::new();
     for index in (0..current.len()).rev() {
-        if !next
-            .iter()
-            .any(|item| identity(item) == identity(&current[index]))
-        {
+        if !identities.contains(&identity(&current[index])) {
             current.remove(index);
             diffs.push(VectorDiff::Remove { index });
         }
@@ -35,9 +55,10 @@ pub(crate) fn between<T: Clone + PartialEq, K: Eq>(
             }
             continue;
         }
-        if let Some(old_index) = current
-            .iter()
-            .position(|item| identity(item) == identity(value))
+        if reordered
+            && let Some(old_index) = current
+                .iter()
+                .position(|item| identity(item) == identity(value))
         {
             current.remove(old_index);
             diffs.push(VectorDiff::Remove { index: old_index });
@@ -129,6 +150,45 @@ mod tests {
                     diff.apply(&mut actual);
                 }
                 assert_eq!(&actual, next);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod scaling_tests {
+    //! Deterministic identity-work budgets supplement replay properties without timing assertions.
+
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn large_append_prepend_edit_delete_and_reorder_have_bounded_identity_work() {
+        for count in [100, 1_000, 10_000] {
+            let previous: Vector<_> = (0..count).map(|id| (id, 0)).collect();
+            let mut append = previous.clone();
+            append.push_back((count, 0));
+            let prepend = (count..count + 100)
+                .map(|id| (id, 0))
+                .chain(previous.iter().copied())
+                .collect();
+            let mut edit = previous.clone();
+            edit.set(count / 2, (count / 2, 1));
+            let mut delete = previous.clone();
+            delete.remove(count / 2);
+            let reorder = previous.iter().rev().copied().collect();
+            for next in [append, prepend, edit, delete, reorder] {
+                let calls = Cell::new(0);
+                let diffs = between(&previous, &next, |item| {
+                    calls.set(calls.get() + 1);
+                    item.0
+                });
+                assert!(calls.get() <= 8 * (previous.len() + next.len()));
+                let mut applied = previous.clone();
+                for diff in diffs {
+                    diff.apply(&mut applied);
+                }
+                assert_eq!(applied, next);
             }
         }
     }

@@ -85,6 +85,35 @@ impl super::HistoryHandle {
         })?
     }
 
+    /// Resolve only reported chronological IDs under the canonical lock and exact publication
+    /// fence. Detached pins and placeholders never qualify as actually visible messages.
+    pub(crate) async fn visible_snapshot(
+        &self,
+        generation: Generation,
+        version: u64,
+        ids: &[Uuid],
+    ) -> Result<(Arc<HistorySnapshot>, Option<crate::ReadPoint>), crate::ReadingError> {
+        let state = self.channel.state.lock().await;
+        self.check(generation)?;
+        let subscription = self.channel.subscribe()?;
+        self.with_current_snapshot(generation, version, || ())?;
+        let mut point = None;
+        for id in ids {
+            let entry = state
+                .model
+                .entries
+                .get(id.as_bytes())
+                .filter(|entry| entry.timeline && !entry.deleted)
+                .ok_or(crate::ReadingError::InvalidReport)?;
+            let message = entry
+                .message
+                .as_ref()
+                .ok_or(crate::ReadingError::InvalidReport)?;
+            point = point.max(Some(crate::ReadPoint::message(message)?));
+        }
+        Ok((subscription.snapshot, point))
+    }
+
     /// Linearize a queued visible report with this exact channel incarnation's accepted
     /// publication. The callback must be short, synchronous and contain no commit/fsync;
     /// the FULL writer acknowledges only after its later SQLite commit succeeds.

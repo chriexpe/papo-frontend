@@ -35,7 +35,7 @@ pub(crate) fn deserialize_id<'de, D: serde::Deserializer<'de>>(
 }
 
 /// Persisted server mark, compatible with the unresolved session-5b representation.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct UploadedPoint {
     #[serde(flatten)]
     pub server: ServerReadPoint,

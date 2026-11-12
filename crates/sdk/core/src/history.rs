@@ -20,6 +20,7 @@ mod subscription_handle_tests;
 mod subscription_tests;
 #[cfg(test)]
 mod tests;
+mod unscoped;
 
 use crate::{CacheError, ClientError, Generation};
 use papo_api::{HistoryCursor, HistoryOrder, wire::Message};

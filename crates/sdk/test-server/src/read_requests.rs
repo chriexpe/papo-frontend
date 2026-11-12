@@ -17,6 +17,8 @@ pub struct ReadRequestCounts {
     pub history_pages: usize,
     /// Number of message rows returned by successful history responses.
     pub history_rows: usize,
+    /// Number of GET /channels/{id}/pinned requests admitted.
+    pub pin_lists: usize,
     /// Number of PUT /channels/{id}/read requests admitted.
     pub uploads: usize,
     /// Read uploads currently being handled, including delayed or held responses.
@@ -30,6 +32,7 @@ pub(crate) struct ReadRequests {
     channel_lists: AtomicUsize,
     history_pages: AtomicUsize,
     history_rows: AtomicUsize,
+    pin_lists: AtomicUsize,
     uploads: AtomicUsize,
     inflight: AtomicUsize,
     max_inflight: AtomicUsize,
@@ -50,6 +53,14 @@ impl ReadRequests {
         {
             self.history_pages.fetch_add(1, Ordering::SeqCst);
         }
+        if method == "GET"
+            && path
+                .strip_prefix("/channels/")
+                .and_then(|tail| tail.strip_suffix("/pinned"))
+                .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        {
+            self.pin_lists.fetch_add(1, Ordering::SeqCst);
+        }
         if method != "PUT" || super::read_marks::channel_id(path).is_none() {
             return None;
         }
@@ -68,6 +79,7 @@ impl ReadRequests {
             channel_lists: self.channel_lists.load(Ordering::SeqCst),
             history_pages: self.history_pages.load(Ordering::SeqCst),
             history_rows: self.history_rows.load(Ordering::SeqCst),
+            pin_lists: self.pin_lists.load(Ordering::SeqCst),
             uploads: self.uploads.load(Ordering::SeqCst),
             inflight: self.inflight.load(Ordering::SeqCst),
             max_inflight: self.max_inflight.load(Ordering::SeqCst),
@@ -122,6 +134,7 @@ mod tests {
             ReadRequestCounts {
                 history_pages: 2,
                 history_rows: 100,
+                pin_lists: 1,
                 ..ReadRequestCounts::default()
             }
         );

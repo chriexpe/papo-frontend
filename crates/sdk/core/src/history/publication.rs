@@ -50,7 +50,13 @@ impl Publication {
             .as_ref()
             .map_or(Some(1), |snapshot| snapshot.version.checked_add(1))
             .ok_or(HistoryError::InvalidPage)?;
-        let mut payloads = BTreeMap::new();
+        self.payloads.retain(|id, _| {
+            state
+                .model
+                .entries
+                .get(id)
+                .is_some_and(|entry| entry.timeline && !entry.deleted)
+        });
         let mut messages = Vec::with_capacity(state.model.order.len());
         for id in state.model.order.values() {
             let entry = state.model.entries.get(id).ok_or(CacheError::InvalidData)?;
@@ -59,12 +65,14 @@ impl Publication {
             }
             let message = entry.message.as_ref().ok_or(CacheError::InvalidData)?;
             let previous = self.payloads.get(id);
-            let payload = if let Some(previous) = previous.filter(|previous| {
+            if let Some(previous) = previous.filter(|previous| {
                 previous.revision == entry.revision
                     && self.incarnation == Some((state.cache_instance, state.set_id))
             }) {
-                previous.clone()
-            } else {
+                messages.push(Arc::clone(&previous.message));
+                continue;
+            }
+            let payload = {
                 let bytes = serde_json::to_vec(message).map_err(|_| CacheError::InvalidData)?;
                 if let Some(previous) = previous.filter(|previous| previous.bytes.as_ref() == bytes)
                 {
@@ -81,7 +89,7 @@ impl Publication {
                 }
             };
             messages.push(Arc::clone(&payload.message));
-            payloads.insert(*id, payload);
+            self.payloads.insert(*id, payload);
         }
         let mut chunks = Vec::with_capacity(state.model.chunks.len());
         let mut gaps = Vec::new();
@@ -116,7 +124,6 @@ impl Publication {
             empty_complete: state.model.order.is_empty()
                 && state.model.empty_generation == generation.get(),
         });
-        self.payloads = payloads;
         self.incarnation = Some((state.cache_instance, state.set_id));
         self.snapshot = Some(Arc::clone(&snapshot));
         self.deliver(snapshot);

@@ -3,6 +3,8 @@
 #![cfg(feature = "test-support")]
 
 mod fixture;
+#[path = "reading_cases/reconcile.rs"]
+mod reconcile;
 use fixture::{Fixture, Result, login, register};
 use papo_api::{HistoryQuery, Uuid};
 use papo_sdk::{ConnectionState, HistorySnapshot, ReadState, ReadingSnapshot, Session, UnixMicros};

@@ -52,7 +52,9 @@ pub(crate) fn subscribe_accounts(
             let current = Arc::clone(&source.borrow_and_update());
             let next = accounts(&current, server);
             let diffs = if version.checked_add(1) == Some(current.version) {
-                list_diff::between(&previous, &next, |account| account.id)
+                list_diff::between(&previous, &next, |account| {
+                    (account.id.server(), account.id.user())
+                })
             } else {
                 vec![VectorDiff::Reset {
                     values: next.clone(),
@@ -119,7 +121,9 @@ fn update(
         servers: list_diff::between(&previous.servers, &next.servers, |server| {
             server.address.id()
         }),
-        accounts: list_diff::between(&previous.accounts, &next.accounts, |account| account.id),
+        accounts: list_diff::between(&previous.accounts, &next.accounts, |account| {
+            (account.id.server(), account.id.user())
+        }),
         removals: list_diff::between(&previous.removals, &next.removals, |job| job.id),
     }
 }
