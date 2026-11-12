@@ -2,7 +2,7 @@
 
 use papo_api::{
     MessageAttachment, MessageUpload, RestClient,
-    wire::{LoginRequest, RegisterRequest},
+    wire::{EmbedInput, EmbedMediaInput, LoginRequest, RegisterRequest},
 };
 use papo_test_server::{Config, TestServer};
 
@@ -38,12 +38,20 @@ async fn multipart_upload_preserves_each_filename_and_payload() {
             bytes: b"second-bytes",
         },
     ];
+    let embeds = serde_json::to_string(&[EmbedInput {
+        image: Some(EmbedMediaInput {
+            attachment_name: Some("renamed.png".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }])
+    .unwrap();
     client
         .create_message(&MessageUpload {
             channel_id: "channel-id",
             content: Some("caption"),
             reply_to: Some("reply-id"),
-            embeds: None,
+            embeds: Some(&embeds),
             attachments: &files,
         })
         .await
@@ -60,6 +68,8 @@ async fn multipart_upload_preserves_each_filename_and_payload() {
     assert!(body[second..].contains("second-bytes"));
     assert!(body.contains("caption"));
     assert!(body.contains("reply-id"));
+    assert!(body.contains(&embeds));
+    assert!(!body.contains("\"url\""));
     assert!(server.take_message_body().await.is_none());
     server.shutdown().await.unwrap();
 }

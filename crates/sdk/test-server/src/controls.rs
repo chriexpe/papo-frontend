@@ -296,11 +296,21 @@ fn install_channel(state: &mut State, channel: Channel) -> Result<(), Error> {
                 channel_type: channel.r#type.unwrap_or_default(),
                 position: channel.position.unwrap_or_default(),
                 topic: channel.topic,
+                parent_id: channel.parent_id,
             })),
         ),
         Some(previous)
-            if (&previous.name, previous.position, &previous.topic)
-                != (&channel.name, channel.position, &channel.topic) =>
+            if (
+                &previous.name,
+                previous.position,
+                &previous.topic,
+                &previous.parent_id,
+            ) != (
+                &channel.name,
+                channel.position,
+                &channel.topic,
+                &channel.parent_id,
+            ) =>
         {
             emit(state, None, channel_update(&channel, &id))
         }
@@ -314,6 +324,7 @@ fn channel_update(channel: &Channel, id: &str) -> KnownEvent {
         name: channel.name.clone().unwrap_or_default(),
         position: channel.position.unwrap_or_default(),
         topic: channel.topic.clone(),
+        parent_id: channel.parent_id.clone(),
     }))
 }
 

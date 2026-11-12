@@ -10,6 +10,33 @@ mod test_client;
 use test_client::{Account, next, resource_event};
 
 #[tokio::test]
+async fn category_only_changes_emit_parent_id_and_match_rest_snapshots() -> Result<(), Error> {
+    let server = TestServer::start(Config::default()).await?;
+    let account = Account::register(&server, "parentproof").await?;
+    let mut socket = account.socket(&server).await?;
+    assert_eq!(next(&mut socket).await?.kind(), "presence_sync");
+    let mut channel = server.create_channel("child").await?;
+    let Event::Known(KnownEvent::ChannelCreate(created)) = resource_event(&mut socket).await?
+    else {
+        return Err(Error::Connection);
+    };
+    assert!(created.parent_id.is_none());
+    for parent in [Some("10000000-0000-4000-8000-000000000001"), None] {
+        channel.parent_id = parent.map(str::to_owned);
+        server.set_channel(channel.clone()).await?;
+        let Event::Known(KnownEvent::ChannelUpdate(updated)) = resource_event(&mut socket).await?
+        else {
+            return Err(Error::Connection);
+        };
+        assert_eq!(updated.parent_id.as_deref(), parent);
+        let channels: papo_api::wire::ChannelList = account.get("/channels").await?;
+        assert_eq!(channels.channels.unwrap()[0].parent_id.as_deref(), parent);
+    }
+    socket.close(None).await.map_err(|_| Error::Connection)?;
+    server.shutdown().await
+}
+
+#[tokio::test]
 async fn member_profile_changes_emit_pinned_events_and_dm_updates_stay_private() -> Result<(), Error>
 {
     let server = TestServer::start(Config::default()).await?;

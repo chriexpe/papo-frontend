@@ -164,7 +164,7 @@ jobs:
         run: echo "commit=$(cat crates/sdk/api/protocol/backend-commit)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
-          repository: chriexpe/papo-backend
+          repository: Papo-Chat/papo-backend
           ref: ${{ steps.backend-pin.outputs.commit }}
           path: .papo/backend-protocol
           persist-credentials: false

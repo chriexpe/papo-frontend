@@ -11,4 +11,7 @@ pub struct CreateRoleRequest {
     /// Backend `permissions` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#permissions: Option<super::RolePermissions>,
+    /// Backend `users` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#users: Option<Vec<String>>,
 }
