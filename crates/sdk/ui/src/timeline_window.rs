@@ -68,7 +68,7 @@ pub(crate) fn project(
     } else {
         bound_index(&raw.messages, bounds.upper, true)?
     };
-    for message in &raw.messages[start.min(end)..end] {
+    for message in &raw.messages.skip(start.min(end)).take(end - start.min(end)) {
         let cursor = message.cursor().ok_or(TimelineError::InvalidCursor)?;
         let point = key(&cursor)?;
         if !bounds.contains(point) {
@@ -147,7 +147,7 @@ pub(crate) fn project(
 /// Binary search uses canonical ordering; no timestamp parsing outside the window except
 /// logarithmically many boundary probes. Deleted anchors remain inclusive key boundaries.
 fn bound_index(
-    messages: &[Arc<papo_sdk::Message>],
+    messages: &imbl::Vector<Arc<papo_sdk::Message>>,
     boundary: Option<Key>,
     upper: bool,
 ) -> Result<usize, TimelineError> {

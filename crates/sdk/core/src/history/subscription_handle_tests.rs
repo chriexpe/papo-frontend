@@ -41,6 +41,7 @@ fn fixture() -> (tempfile::TempDir, Client, HistoryHandle) {
     let channel = Arc::new(Channel::new(
         Uuid::nil(),
         session.inner.history.changes.clone(),
+        Arc::clone(&session.inner.history.counters),
     ));
     client
         .block_on(async {
@@ -196,6 +197,7 @@ fn queued_visible_report_rejects_revocation_of_its_original_channel_before_sql_m
             let replacement = Arc::new(Channel::new(
                 handle.channel(),
                 handle.session.inner.history.changes.clone(),
+                Arc::clone(&handle.session.inner.history.counters),
             ));
             {
                 let state = replacement.state.lock().await;

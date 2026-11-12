@@ -105,14 +105,14 @@ pub(super) async fn server_page(
         .await?;
     state.model.merge_page(&ticket, &messages, has_more)?;
     if let Err(error) = pending.replay(&mut state.model) {
-        *state = super::persistence::State::default();
+        state.reset();
         return Err(error);
     }
     if let Err(error) = state
         .persist(&connection.cache, ticket.channel, &epoch)
         .await
     {
-        *state = super::persistence::State::default();
+        state.reset();
         return Err(error);
     }
     handle
@@ -204,14 +204,14 @@ pub(super) async fn pins(
     handle.check(generation)?;
     state.model.pins(&ticket, &messages)?;
     if let Err(error) = pending.replay(&mut state.model) {
-        *state = super::persistence::State::default();
+        state.reset();
         return Err(error);
     }
     if let Err(error) = state
         .persist(&connection.cache, ticket.channel, &epoch)
         .await
     {
-        *state = super::persistence::State::default();
+        state.reset();
         return Err(error);
     }
     handle

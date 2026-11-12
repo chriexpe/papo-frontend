@@ -14,7 +14,7 @@ fn snapshot(messages: Vec<Arc<Message>>) -> HistorySnapshot {
     HistorySnapshot {
         version: 1,
         generation: Generation::for_test(1),
-        messages,
+        messages: messages.into(),
         chunks: vec![],
         gaps: vec![],
         empty_complete: false,
@@ -24,7 +24,7 @@ fn bounds(raw: &HistorySnapshot, live: bool) -> Bounds {
     Bounds {
         lower: raw
             .messages
-            .first()
+            .front()
             .map(|message| key(&message.cursor().unwrap()).unwrap()),
         upper: raw
             .messages
@@ -103,7 +103,7 @@ fn one_edit_replaces_one_item_and_arrival_is_one_push_back() {
         diffs.as_slice(),
         [eyeball_im::VectorDiff::Set { index: 2, .. }]
     ));
-    raw.messages.push(message(3, "2026-01-01T00:00:03Z"));
+    raw.messages.push_back(message(3, "2026-01-01T00:00:03Z"));
     let third = project(
         &raw,
         &bounds,

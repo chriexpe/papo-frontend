@@ -20,12 +20,18 @@ pub(super) struct Publication {
     pub snapshot: Option<Arc<HistorySnapshot>>,
     incarnation: Option<(Option<u64>, Option<i64>)>,
     payloads: BTreeMap<[u8; 16], Payload>,
+    keys: imbl::Vector<super::ordering::Key>,
+    messages: imbl::Vector<Arc<Message>>,
+    revision: u64,
+    pub(super) payload_bytes: usize,
+    counters: Arc<super::diagnostics::Counters>,
     updates: Option<watch::Sender<HistoryUpdate>>,
 }
 
 #[derive(Clone)]
 struct Payload {
     revision: u64,
+    key: super::ordering::Key,
     bytes: Arc<[u8]>,
     message: Arc<Message>,
 }
@@ -45,52 +51,32 @@ impl Publication {
         {
             return Err(crate::ClientError::Superseded.into());
         }
-        let version = self
-            .snapshot
-            .as_ref()
-            .map_or(Some(1), |snapshot| snapshot.version.checked_add(1))
-            .ok_or(HistoryError::InvalidPage)?;
-        self.payloads.retain(|id, _| {
-            state
-                .model
-                .entries
-                .get(id)
-                .is_some_and(|entry| entry.timeline && !entry.deleted)
-        });
-        let mut messages = Vec::with_capacity(state.model.order.len());
-        for id in state.model.order.values() {
-            let entry = state.model.entries.get(id).ok_or(CacheError::InvalidData)?;
-            if !entry.timeline || entry.deleted {
-                return Err(CacheError::InvalidData.into());
-            }
-            let message = entry.message.as_ref().ok_or(CacheError::InvalidData)?;
-            let previous = self.payloads.get(id);
-            if let Some(previous) = previous.filter(|previous| {
-                previous.revision == entry.revision
-                    && self.incarnation == Some((state.cache_instance, state.set_id))
-            }) {
-                messages.push(Arc::clone(&previous.message));
-                continue;
-            }
-            let payload = {
-                let bytes = serde_json::to_vec(message).map_err(|_| CacheError::InvalidData)?;
-                if let Some(previous) = previous.filter(|previous| previous.bytes.as_ref() == bytes)
-                {
-                    Payload {
-                        revision: entry.revision,
-                        ..previous.clone()
-                    }
-                } else {
-                    Payload {
-                        revision: entry.revision,
-                        bytes: bytes.into(),
-                        message: Arc::new(message.clone()),
-                    }
-                }
-            };
-            messages.push(Arc::clone(&payload.message));
-            self.payloads.insert(*id, payload);
-        }
+        self.counters = Arc::clone(&state.counters);
+        let version = self.next_version(self.snapshot.as_ref().map(|snapshot| snapshot.version))?;
+        let same = self.incarnation == Some((state.cache_instance, state.set_id))
+            && self.snapshot.is_some();
+        let committed = same
+            && self.revision == state.committed_from
+            && state.committed_revision == state.model.revision;
+        let ids: Vec<_> = if committed {
+            state.changed.clone()
+        } else if same && !state.model.dirty.is_empty() {
+            state.model.dirty.iter().copied().collect()
+        } else if same && self.revision == state.model.revision {
+            Vec::new()
+        } else {
+            self.payloads
+                .keys()
+                .copied()
+                .chain(state.model.order.values().copied())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        self.counters
+            .publication_entries
+            .fetch_add(ids.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        self.apply_changes(state, ids, same)?;
         let mut chunks = Vec::with_capacity(state.model.chunks.len());
         let mut gaps = Vec::new();
         for chunk in &state.model.chunks {
@@ -118,16 +104,145 @@ impl Publication {
         let snapshot = Arc::new(HistorySnapshot {
             version,
             generation,
-            messages,
+            messages: self.messages.clone(),
             chunks,
             gaps,
             empty_complete: state.model.order.is_empty()
                 && state.model.empty_generation == generation.get(),
         });
+        self.revision = state.model.revision;
         self.incarnation = Some((state.cache_instance, state.set_id));
         self.snapshot = Some(Arc::clone(&snapshot));
+        self.counters
+            .publications
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.deliver(snapshot);
         Ok(())
+    }
+
+    fn apply_changes(
+        &mut self,
+        state: &State,
+        ids: Vec<[u8; 16]>,
+        same: bool,
+    ) -> Result<(), HistoryError> {
+        let mut ordered = ids
+            .into_iter()
+            .map(|id| {
+                let key = state
+                    .model
+                    .entries
+                    .get(&id)
+                    .and_then(|entry| entry.point.as_ref())
+                    .map(super::ordering::Point::key)
+                    .transpose()?;
+                Ok::<_, HistoryError>((key, id))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // Back-pagination should push a batch at the front, not repeatedly split and
+        // rejoin the persistent tree at indexes 1..limit. Forward batches append in order.
+        let prepend = self.keys.front().is_some_and(|first| {
+            ordered
+                .iter()
+                .filter(|(_, id)| !self.payloads.contains_key(id))
+                .filter_map(|(key, _)| *key)
+                .all(|key| key < *first)
+        });
+        if prepend {
+            ordered.sort_unstable_by(|a, b| b.cmp(a));
+        } else {
+            ordered.sort_unstable();
+        }
+        for (_, id) in ordered {
+            self.apply_entry(state, id, same)?;
+        }
+        Ok(())
+    }
+
+    fn apply_entry(&mut self, state: &State, id: [u8; 16], same: bool) -> Result<(), HistoryError> {
+        let entry = state
+            .model
+            .entries
+            .get(&id)
+            .filter(|entry| entry.timeline && !entry.deleted);
+        let Some(entry) = entry else {
+            if let Some(old) = self.payloads.remove(&id) {
+                let index = self
+                    .keys
+                    .binary_search(&old.key)
+                    .map_err(|_| CacheError::InvalidData)?;
+                self.keys.remove(index);
+                self.messages.remove(index);
+                self.payload_bytes = self.payload_bytes.saturating_sub(old.bytes.len());
+            }
+            return Ok(());
+        };
+        let message = entry.message.as_ref().ok_or(CacheError::InvalidData)?;
+        let key = entry.point.as_ref().ok_or(CacheError::InvalidData)?.key()?;
+        let previous = self.payloads.get(&id);
+        if same && previous.is_some_and(|old| old.revision == entry.revision && old.key == key) {
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(message).map_err(|_| CacheError::InvalidData)?;
+        self.counters
+            .publication_encodes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let payload = if let Some(old) = previous.filter(|old| old.bytes.as_ref() == bytes) {
+            Payload {
+                revision: entry.revision,
+                key,
+                ..old.clone()
+            }
+        } else {
+            Payload {
+                revision: entry.revision,
+                key,
+                bytes: bytes.into(),
+                message: Arc::new(message.clone()),
+            }
+        };
+        if let Some(old) = previous {
+            if old.key != key {
+                return Err(CacheError::InvalidData.into());
+            }
+            let index = self
+                .keys
+                .binary_search(&key)
+                .map_err(|_| CacheError::InvalidData)?;
+            if !Arc::ptr_eq(&self.messages[index], &payload.message) {
+                self.messages.set(index, Arc::clone(&payload.message));
+            }
+            self.payload_bytes = self.payload_bytes.saturating_sub(old.bytes.len());
+        } else {
+            let index = self
+                .keys
+                .binary_search(&key)
+                .err()
+                .ok_or(CacheError::InvalidData)?;
+            self.keys.insert(index, key);
+            self.messages.insert(index, Arc::clone(&payload.message));
+        }
+        self.payload_bytes = self.payload_bytes.saturating_add(payload.bytes.len());
+        self.payloads.insert(id, payload);
+        Ok(())
+    }
+
+    /// Normal channel updates remain consecutive. A newly hydrated publication starts above
+    /// every version accepted by this account, preventing old snapshot stamps from aliasing
+    /// a same-generation model recreated after idle eviction, without retaining per-ID clocks.
+    fn next_version(&self, previous: Option<u64>) -> Result<u64, HistoryError> {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Some(previous) = previous {
+            let version = previous.checked_add(1).ok_or(HistoryError::InvalidPage)?;
+            self.counters.version_high_water.fetch_max(version, Relaxed);
+            Ok(version)
+        } else {
+            self.counters
+                .version_high_water
+                .try_update(Relaxed, Relaxed, |version| version.checked_add(1))
+                .map(|previous| previous + 1)
+                .map_err(|_| HistoryError::InvalidPage)
+        }
     }
 
     fn deliver(&mut self, snapshot: Arc<HistorySnapshot>) {
@@ -151,10 +266,7 @@ impl Publication {
             return Ok(());
         }
         let snapshot = Arc::new(HistorySnapshot {
-            version: previous
-                .version
-                .checked_add(1)
-                .ok_or(HistoryError::InvalidPage)?,
+            version: self.next_version(Some(previous.version))?,
             generation,
             empty_complete: false,
             ..(**previous).clone()
@@ -168,6 +280,9 @@ impl Publication {
         if self.closed.is_none() {
             self.closed = Some(reason);
             self.payloads.clear();
+            self.keys.clear();
+            self.messages.clear();
+            self.payload_bytes = 0;
             self.snapshot = None;
             if let Some(updates) = &self.updates {
                 updates.send_replace(HistoryUpdate::Closed(reason));

@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "recorded_on": "2026-11-12",
+  "baseline_revision": "c49b984a",
+  "baseline_method": "Audit baseline with identical counter/persistence accounting and the same public workload; baseline work-budget assertions disabled, no publication or retention optimization. Diagnostic adapter omitted publication bytes from resident estimates; do not compare its byte estimates.",
+  "candidate": "session7c",
+  "candidate_core_ui_rs_sha256": "7ff620a28621263ee0e1fdb2ea3b042e9cbaf42e73554243c93684c187df36d8",
+  "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "hardware": {
+    "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
+    "architecture": "x86_64",
+    "os": "Linux"
+  },
+  "profile": {
+    "dev_opt_level": 1,
+    "dependency_opt_level": 3,
+    "target_directory": "shared existing target"
+  },
+  "timing_policy": "Single observations, advisory; same host/toolchain/profiles, other build work may contend. No percentile or general latency claim.",
+  "rss_scope": "Entire fixture process, including SDK, in-process backend, fixture payloads and allocator behavior; not SDK-only bytes.",
+  "history": {
+    "10000": {
+      "before": {
+        "hydrate": {
+          "publication_entries_delta": 505300,
+          "publication_encodes_delta": 10100,
+          "elapsed_us_advisory": 327188,
+          "whole_fixture_process_peak_rss_bytes": 54943744
+        },
+        "reaction": {
+          "publication_entries_delta": 10000,
+          "publication_encodes_delta": 1,
+          "elapsed_us_advisory": 2276,
+          "whole_fixture_process_peak_rss_bytes": 55091200
+        },
+        "edit": {
+          "publication_entries_delta": 20000,
+          "publication_encodes_delta": 2,
+          "elapsed_us_advisory": 3859,
+          "whole_fixture_process_peak_rss_bytes": 55296000
+        },
+        "append": {
+          "publication_entries_delta": 10001,
+          "publication_encodes_delta": 1,
+          "elapsed_us_advisory": 2216,
+          "whole_fixture_process_peak_rss_bytes": 55373824
+        },
+        "delete": {
+          "publication_entries_delta": 10000,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 2395,
+          "whole_fixture_process_peak_rss_bytes": 55373824
+        },
+        "visible": {
+          "publication_entries_delta": 0,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 110,
+          "whole_fixture_process_peak_rss_bytes": 55377920
+        }
+      },
+      "after": {
+        "hydrate": {
+          "publication_entries_delta": 10100,
+          "publication_encodes_delta": 10100,
+          "elapsed_us_advisory": 227648,
+          "whole_fixture_process_peak_rss_bytes": 56053760
+        },
+        "reaction": {
+          "publication_entries_delta": 1,
+          "publication_encodes_delta": 1,
+          "elapsed_us_advisory": 265,
+          "whole_fixture_process_peak_rss_bytes": 56250368
+        },
+        "edit": {
+          "publication_entries_delta": 2,
+          "publication_encodes_delta": 2,
+          "elapsed_us_advisory": 263,
+          "whole_fixture_process_peak_rss_bytes": 56250368
+        },
+        "append": {
+          "publication_entries_delta": 1,
+          "publication_encodes_delta": 1,
+          "elapsed_us_advisory": 130,
+          "whole_fixture_process_peak_rss_bytes": 56250368
+        },
+        "delete": {
+          "publication_entries_delta": 1,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 118,
+          "whole_fixture_process_peak_rss_bytes": 56250368
+        },
+        "visible": {
+          "publication_entries_delta": 0,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 93,
+          "whole_fixture_process_peak_rss_bytes": 56254464
+        },
+        "cache_page_100": {
+          "publication_entries_delta": 0,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 238,
+          "whole_fixture_process_peak_rss_bytes": 56254464
+        }
+      }
+    },
+    "100000": {
+      "before": {
+        "hydrate": {
+          "publication_entries_delta": 50050300,
+          "publication_encodes_delta": 100100,
+          "elapsed_us_advisory": 29105342,
+          "whole_fixture_process_peak_rss_bytes": 397627392
+        },
+        "reaction": {
+          "publication_entries_delta": 100000,
+          "publication_encodes_delta": 1,
+          "elapsed_us_advisory": 34982,
+          "whole_fixture_process_peak_rss_bytes": 397885440
+        },
+        "edit": {
+          "publication_entries_delta": 200000,
+          "publication_encodes_delta": 2,
+          "elapsed_us_advisory": 71246,
+          "whole_fixture_process_peak_rss_bytes": 399482880
+        },
+        "append": {
+          "publication_entries_delta": 100001,
+          "publication_encodes_delta": 1,
+          "elapsed_us_advisory": 37541,
+          "whole_fixture_process_peak_rss_bytes": 400281600
+        },
+        "delete": {
+          "publication_entries_delta": 100000,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 35466,
+          "whole_fixture_process_peak_rss_bytes": 400281600
+        },
+        "visible": {
+          "publication_entries_delta": 0,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 245,
+          "whole_fixture_process_peak_rss_bytes": 400285696
+        }
+      },
+      "after": {
+        "hydrate": {
+          "publication_entries_delta": 100100,
+          "publication_encodes_delta": 100100,
+          "elapsed_us_advisory": 8926332,
+          "whole_fixture_process_peak_rss_bytes": 404705280
+        },
+        "reaction": {
+          "publication_entries_delta": 1,
+          "publication_encodes_delta": 1,
+          "elapsed_us_advisory": 307,
+          "whole_fixture_process_peak_rss_bytes": 404787200
+        },
+        "edit": {
+          "publication_entries_delta": 2,
+          "publication_encodes_delta": 2,
+          "elapsed_us_advisory": 282,
+          "whole_fixture_process_peak_rss_bytes": 404787200
+        },
+        "append": {
+          "publication_entries_delta": 1,
+          "publication_encodes_delta": 1,
+          "elapsed_us_advisory": 145,
+          "whole_fixture_process_peak_rss_bytes": 404787200
+        },
+        "delete": {
+          "publication_entries_delta": 1,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 258,
+          "whole_fixture_process_peak_rss_bytes": 404795392
+        },
+        "visible": {
+          "publication_entries_delta": 0,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 88,
+          "whole_fixture_process_peak_rss_bytes": 404807680
+        },
+        "cache_page_100": {
+          "publication_entries_delta": 0,
+          "publication_encodes_delta": 0,
+          "elapsed_us_advisory": 240,
+          "whole_fixture_process_peak_rss_bytes": 404889600
+        }
+      }
+    }
+  },
+  "residency_500_channels": {
+    "before_idle_models_by_cycle": [
+      499,
+      499,
+      499
+    ],
+    "after_idle_models_by_cycle": [
+      4,
+      4,
+      4
+    ],
+    "before_cache_loads": 500,
+    "after_cache_loads": 1998,
+    "before_cycle_us_advisory": [
+      127957,
+      124476,
+      157585
+    ],
+    "after_cycle_us_advisory": [
+      433149,
+      430867,
+      420723
+    ],
+    "tradeoff": "Evicted idle histories need SQLite rehydration; reopening a Timeline can also revalidate stale coverage. Warm revisit cost is intentionally traded for bounded idle retention."
+  },
+  "reconnect_100_unread_channels_900_events": {
+    "peak": 901,
+    "overflows": 0,
+    "elapsed_us_advisory": 1436591
+  },
+  "default_idle_budget": {
+    "channels": 4,
+    "estimated_bytes": 33554432
+  },
+  "not_measured": [
+    "allocation count",
+    "GPU resources",
+    "native UI rendering"
+  ]
+}

@@ -12,8 +12,9 @@ mod connection_driver;
 mod generation;
 mod history;
 pub use history::{
-    HistoryChunk, HistoryClosedReason, HistoryError, HistoryGap, HistoryHandle, HistoryPage,
-    HistorySnapshot, HistorySource, HistorySubscription, HistoryUpdate,
+    HistoryBudget, HistoryChunk, HistoryClosedReason, HistoryDiagnostics, HistoryError, HistoryGap,
+    HistoryHandle, HistoryPage, HistorySnapshot, HistorySource, HistorySubscription, HistoryUpdate,
+    HistoryWork,
 };
 pub use papo_api::wire::Message;
 pub use papo_api::{HistoryCursor, HistoryOrder, HistoryQuery, Uuid};

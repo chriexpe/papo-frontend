@@ -35,7 +35,11 @@ fn merge(state: &mut State, messages: &[Message]) {
 }
 
 fn channel() -> Channel {
-    Channel::new(Uuid::nil(), tokio::sync::watch::channel(()).0)
+    Channel::new(
+        Uuid::nil(),
+        tokio::sync::watch::channel(()).0,
+        Arc::default(),
+    )
 }
 
 #[tokio::test]
@@ -180,7 +184,11 @@ async fn equal_payload_refetch_keeps_the_original_arc_despite_model_revision() {
 #[tokio::test]
 async fn epoch_restamp_uses_last_accepted_snapshot_not_an_unpublished_mutation() {
     let store = super::channel::HistoryStore::default();
-    let channel = Arc::new(Channel::new(Uuid::nil(), store.changes.clone()));
+    let channel = Arc::new(Channel::new(
+        Uuid::nil(),
+        store.changes.clone(),
+        Arc::clone(&store.counters),
+    ));
     store
         .channels
         .lock()
@@ -202,7 +210,11 @@ async fn epoch_restamp_uses_last_accepted_snapshot_not_an_unpublished_mutation()
 #[tokio::test]
 async fn idle_account_close_wakes_subscriber_without_waiting_for_the_model_lock() {
     let store = super::channel::HistoryStore::default();
-    let channel = Arc::new(Channel::new(Uuid::nil(), store.changes.clone()));
+    let channel = Arc::new(Channel::new(
+        Uuid::nil(),
+        store.changes.clone(),
+        Arc::clone(&store.counters),
+    ));
     store
         .channels
         .lock()
@@ -269,4 +281,37 @@ async fn raw_coverage_preserves_unknown_gap_boundaries_and_exact_cursors() {
     );
     assert!(snapshot.gaps.iter().all(|gap| gap.cursor.created_at == AT));
     assert!(!snapshot.empty_complete);
+}
+
+#[tokio::test]
+async fn epoch_only_snapshot_shares_its_vector_and_old_snapshots_survive_one_edit() {
+    let channel = channel();
+    let mut state = channel.state.lock().await;
+    let rows: Vec<_> = (1..=100).rev().map(message).collect();
+    merge(&mut state, &rows);
+    channel.publish(&state, Generation(1)).unwrap();
+    let before = channel.subscribe().unwrap().snapshot;
+    channel.generation_changed(Generation(2)).unwrap();
+    let restamped = channel.subscribe().unwrap().snapshot;
+    assert!(before.messages.ptr_eq(&restamped.messages));
+    state
+        .model
+        .event(
+            &papo_api::gateway::KnownEvent::MessageEdit(Box::new(
+                papo_api::gateway::MessageEditEvent {
+                    id: message(50).id.unwrap(),
+                    channel_id: Uuid::nil().to_string(),
+                    content: String::new(),
+                    edited_at: "2026-01-02T00:00:00.123456Z".into(),
+                },
+            )),
+            2,
+        )
+        .unwrap();
+    channel.publish(&state, Generation(2)).unwrap();
+    let edited = channel.subscribe().unwrap().snapshot;
+    assert!(before.messages[49].edited_at.is_none());
+    assert!(edited.messages[49].edited_at.is_some());
+    assert!(Arc::ptr_eq(&before.messages[0], &edited.messages[0]));
+    assert_eq!(before.messages.len(), edited.messages.len());
 }

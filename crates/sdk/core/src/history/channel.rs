@@ -27,6 +27,8 @@ pub(super) struct CacheConnection {
 
 pub(crate) struct HistoryStore {
     pub(super) changes: watch::Sender<()>,
+    pub(crate) counters: Arc<super::diagnostics::Counters>,
+    pub(super) access: std::sync::atomic::AtomicU64,
     pub(super) unscoped: Arc<super::unscoped::Journal>,
     pub(super) channels: Mutex<BTreeMap<Uuid, Arc<Channel>>>,
     pub(super) verified: RwLock<BTreeSet<Uuid>>,
@@ -36,6 +38,8 @@ pub(crate) struct HistoryStore {
 impl Default for HistoryStore {
     fn default() -> Self {
         Self {
+            counters: Arc::default(),
+            access: std::sync::atomic::AtomicU64::new(0),
             unscoped: Arc::default(),
             channels: Mutex::default(),
             verified: RwLock::default(),
@@ -50,15 +54,21 @@ pub(super) struct Channel {
     pub state: Mutex<State>,
     pub opens: AtomicUsize,
     pub pins_serial: Mutex<()>,
+    pub last_access: std::sync::atomic::AtomicU64,
     pub(super) publication: std::sync::Mutex<Publication>,
     pub(super) changes: watch::Sender<()>,
 }
 
 impl Channel {
-    pub fn new(id: Uuid, changes: watch::Sender<()>) -> Self {
+    pub fn new(
+        id: Uuid,
+        changes: watch::Sender<()>,
+        counters: Arc<super::diagnostics::Counters>,
+    ) -> Self {
         Self {
             id,
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State::with_counters(counters)),
+            last_access: std::sync::atomic::AtomicU64::new(0),
             opens: AtomicUsize::new(0),
             pins_serial: Mutex::new(()),
             publication: std::sync::Mutex::default(),
@@ -102,6 +112,7 @@ impl Clone for HistoryHandle {
 impl Drop for HistoryHandle {
     fn drop(&mut self) {
         self.channel.opens.fetch_sub(1, Ordering::Relaxed);
+        self.channel.changes.send_replace(());
     }
 }
 
@@ -130,9 +141,17 @@ impl Session {
                     let channel = {
                         let mut channels = store.channels.lock().await;
                         Arc::clone(channels.entry(channel).or_insert_with(|| {
-                            Arc::new(Channel::new(channel, store.changes.clone()))
+                            Arc::new(Channel::new(
+                                channel,
+                                store.changes.clone(),
+                                Arc::clone(&store.counters),
+                            ))
                         }))
                     };
+                    channel.last_access.store(
+                        store.access.fetch_add(1, Ordering::Relaxed),
+                        Ordering::Relaxed,
+                    );
                     channel.check()?;
                     let mut state = channel.state.lock().await;
                     state

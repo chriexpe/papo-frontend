@@ -9,6 +9,8 @@ use std::collections::BTreeSet;
 
 #[path = "history_cases/access.rs"]
 mod access;
+#[path = "history_cases/budget.rs"]
+mod budget;
 mod fixture;
 #[path = "history_cases/held_page.rs"]
 mod held_page;
