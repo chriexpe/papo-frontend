@@ -40,14 +40,14 @@ fn profile_and_staged_files_have_only_owner_allow_rules() {
     let parent = tempfile::tempdir().unwrap();
     let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let public = r#"$ErrorActionPreference='Stop';try {
+    let public = r"$ErrorActionPreference='Stop';try {
         $path=$env:PAPO_PUBLIC_PARENT
         $acl=Get-Acl -LiteralPath $path
         $world=[System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
         $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($world,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
         [System.IO.Directory]::SetAccessControl($path,$acl)
         exit 0
-    } catch {exit 1}"#;
+    } catch {exit 1}";
     assert!(
         std::process::Command::new(&shell)
             .args(["-NoProfile", "-NonInteractive", "-Command", public])
@@ -66,7 +66,7 @@ fn profile_and_staged_files_have_only_owner_allow_rules() {
     directory(&path).unwrap();
     let bytes = path.join("file");
     file(&bytes).unwrap();
-    let script = r#"$ErrorActionPreference='Stop';try {
+    let script = r"$ErrorActionPreference='Stop';try {
         $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         foreach($path in @($env:PAPO_ACL_ROOT,$env:PAPO_ACL_DIR,$env:PAPO_ACL_FILE,$env:PAPO_ACL_STATE)) {
             $acl=Get-Acl -LiteralPath $path
@@ -74,7 +74,7 @@ fn profile_and_staged_files_have_only_owner_allow_rules() {
             $rules=$acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])
             if($rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].AccessControlType -ne 'Allow') {exit 3}
         };exit 0
-    } catch {exit 1}"#;
+    } catch {exit 1}";
     let result = std::process::Command::new(shell)
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .env("PAPO_ACL_ROOT", root)

@@ -80,6 +80,7 @@ pub(super) fn stage_observed(
     }
     // On Unix this also persists each new directory entry. Other platforms use the
     // staged file's sync_all boundary; the tested guarantee is process crash, not power loss.
+    #[cfg(unix)]
     for path in [
         directory.as_path(),
         directory.parent().ok_or(StorageError::InvalidState)?,
@@ -110,10 +111,6 @@ fn hash(file: &mut File) -> Result<[u8; 32], StorageError> {
 #[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), StorageError> {
     File::open(path)?.sync_all()?;
-    Ok(())
-}
-#[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
@@ -229,7 +226,9 @@ pub(super) fn collect(
             fs::remove_file(entry.path())?;
         }
     }
-    sync_directory(&directory)
+    #[cfg(unix)]
+    sync_directory(&directory)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -26,6 +26,9 @@ pub(super) fn append(
             continue;
         }
         if operation.state == OperationState::Sent {
+            if operation.history_projected {
+                continue;
+            }
             let visible = operation
                 .message
                 .as_ref()
@@ -42,8 +45,7 @@ pub(super) fn append(
                         })
                         .is_ok()
                 });
-            if operation.history_projected
-                || visible
+            if visible
                 || operation
                     .message_id
                     .is_some_and(|id| history.tombstones.contains(&id))
