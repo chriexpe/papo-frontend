@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "source_context": "Session 11 candidate based on d0296ed8; full SDK gate and Android arm64/API31 checks passed",
+  "platform": "Linux x86_64",
+  "rust": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "profile": "dev, workspace optimized dependencies; shared target; other checks/builds may run concurrently",
+  "scope": "One local observation per size; elapsed times advisory; structural and physical limits asserted",
+  "reports": [
+    {
+      "elapsed_us_advisory": 442303,
+      "explicit_gaps": 1,
+      "physical": {
+        "allocated_bytes": 2097152,
+        "budget_bytes": 2097152,
+        "database_bytes": 2097152,
+        "history_turns": 405,
+        "max_history_rows_per_turn": 43,
+        "media_bytes": 0,
+        "media_evictions": 0,
+        "outgoing_bytes": 0,
+        "pressure": false,
+        "profile_bytes": 0,
+        "reclaim_blocked": false,
+        "reclaimed_bytes": 9457664
+      },
+      "retained_messages": 1900,
+      "rows": 10000,
+      "scenario": "disk",
+      "schema_version": 1
+    },
+    {
+      "diagnostics": {
+        "idle_bytes": 0,
+        "idle_channels": 0,
+        "pinned_bytes": 2885756,
+        "pinned_channels": 1,
+        "work": {
+          "cache_loads": 1,
+          "evictions": 0,
+          "persisted_bytes": 6896161,
+          "persisted_rows": 21209,
+          "publication_encodes": 10100,
+          "publication_entries": 18200,
+          "publications": 508,
+          "reconnect_journal_peak": 1,
+          "reconnect_overflows": 0
+        }
+      },
+      "elapsed_us_advisory": 442321,
+      "not_measured": [
+        "allocations",
+        "GPU",
+        "native rendering"
+      ],
+      "process_peak_rss_bytes": 58179584,
+      "process_rss_scope": "SDK plus in-process synthetic backend and fixture data",
+      "rows": 10000,
+      "scenario": "disk-residency",
+      "schema_version": 1
+    },
+    {
+      "elapsed_us_advisory": 7671149,
+      "explicit_gaps": 1,
+      "physical": {
+        "allocated_bytes": 2093056,
+        "budget_bytes": 2097152,
+        "database_bytes": 2093056,
+        "history_turns": 4948,
+        "max_history_rows_per_turn": 43,
+        "media_bytes": 0,
+        "media_evictions": 0,
+        "outgoing_bytes": 0,
+        "pressure": false,
+        "profile_bytes": 0,
+        "reclaim_blocked": false,
+        "reclaimed_bytes": 85995520
+      },
+      "retained_messages": 1040,
+      "rows": 100000,
+      "scenario": "disk",
+      "schema_version": 1
+    },
+    {
+      "diagnostics": {
+        "idle_bytes": 0,
+        "idle_channels": 0,
+        "pinned_bytes": 1579416,
+        "pinned_channels": 1,
+        "work": {
+          "cache_loads": 1,
+          "evictions": 0,
+          "persisted_bytes": 68988929,
+          "persisted_rows": 212095,
+          "publication_encodes": 100100,
+          "publication_entries": 199060,
+          "publications": 5951,
+          "reconnect_journal_peak": 1,
+          "reconnect_overflows": 0
+        }
+      },
+      "elapsed_us_advisory": 7671170,
+      "not_measured": [
+        "allocations",
+        "GPU",
+        "native rendering"
+      ],
+      "process_peak_rss_bytes": 405659648,
+      "process_rss_scope": "SDK plus in-process synthetic backend and fixture data",
+      "rows": 100000,
+      "scenario": "disk-residency",
+      "schema_version": 1
+    }
+  ]
+}

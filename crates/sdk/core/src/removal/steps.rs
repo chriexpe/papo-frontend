@@ -90,7 +90,15 @@ impl RemovalJobs {
         self.registry
             .writer
             .write(move |tx| {
-                for table in ["operations", "drafts", "read_points", "notification_ledger"] {
+                for table in [
+                    "operations",
+                    "drafts",
+                    "read_points",
+                    "notification_ledger",
+                    "expression_favorites",
+                    "expression_recent",
+                    "expression_usage",
+                ] {
                     tx.execute(
                         &format!("DELETE FROM {table} WHERE server_id=?1 AND user_id=?2"),
                         rusqlite::params![account.server().as_bytes(), account.user().as_bytes()],

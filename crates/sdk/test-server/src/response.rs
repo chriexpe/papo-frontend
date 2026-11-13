@@ -7,6 +7,8 @@ pub(crate) struct Reply {
     pub(crate) body: Option<Value>,
     pub(crate) cookie: Option<String>,
     pub(crate) problem: bool,
+    pub(crate) encoded: Option<Vec<u8>>,
+    pub(crate) headers: Vec<(String, String)>,
 }
 
 impl Reply {
@@ -16,6 +18,8 @@ impl Reply {
             body: Some(body),
             cookie: None,
             problem: false,
+            encoded: None,
+            headers: Vec::new(),
         }
     }
 
@@ -25,6 +29,8 @@ impl Reply {
             body: None,
             cookie: None,
             problem: false,
+            encoded: None,
+            headers: Vec::new(),
         }
     }
 

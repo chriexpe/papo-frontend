@@ -228,7 +228,7 @@ async fn install(
     );
     let epoch = inner.epochs.current();
     let task = inner.tasks.token();
-    client.inner.pool.insert(Arc::clone(&inner));
+    client.inner.pool.insert(Arc::clone(&inner)).await;
     client.inner.publish_registry().await?;
     drop(guard);
     let snapshot = verified.rest.credential_snapshot()?;

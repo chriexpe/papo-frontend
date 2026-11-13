@@ -1,10 +1,10 @@
-//! Forward-only durable schema; cache and media schemas belong to later capabilities.
+//! Forward-only durable schema; account caches and media own their separate rebuildable schemas.
 
 use rusqlite::Connection;
 
 use crate::storage_error::StorageError;
 
-pub(crate) const VERSION: i64 = 2;
+pub(crate) const VERSION: i64 = 3;
 
 /// Refuses newer files before persistent pragmas, then migrates and recovers interrupted sends.
 pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
@@ -30,6 +30,12 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
         transaction.pragma_update(None, "user_version", 2)?;
         transaction.commit()?;
     }
+    if version < 3 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(include_str!("state_v3.sql"))?;
+        transaction.pragma_update(None, "user_version", 3)?;
+        transaction.commit()?;
+    }
     // A committed Sending may have crossed the socket boundary, even before its first byte.
     connection.execute(
         "UPDATE operations SET state='Unknown' WHERE state='Sending'",
@@ -45,7 +51,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migration_is_repeatable_and_creates_only_session_four_tables() {
+    fn forward_migrations_are_repeatable_and_create_the_current_durable_tables() {
         let mut connection = Connection::open_in_memory().unwrap();
         migrate(&mut connection).unwrap();
         migrate(&mut connection).unwrap();
@@ -56,6 +62,9 @@ mod tests {
             [
                 "accounts",
                 "drafts",
+                "expression_favorites",
+                "expression_recent",
+                "expression_usage",
                 "notification_ledger",
                 "operations",
                 "read_points",
@@ -79,7 +88,7 @@ mod tests {
         let mut connection = Connection::open(&path).unwrap();
         assert!(matches!(
             migrate(&mut connection),
-            Err(StorageError::NewerSchema { found: 3 })
+            Err(StorageError::NewerSchema { found: 4 })
         ));
         drop(connection);
         assert_eq!(std::fs::read(path).unwrap(), before);

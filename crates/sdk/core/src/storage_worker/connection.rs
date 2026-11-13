@@ -54,6 +54,10 @@ fn open_once(specification: &Specification) -> Result<OpenConnection, WorkerErro
     connection.pragma_update(None, "foreign_keys", "ON")?;
     if !specification.durable {
         (specification.initializer)(&mut connection)?;
+        let vacuum: i64 = connection.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?;
+        if vacuum != 2 {
+            return Err(WorkerError::IntegrityCheckFailed);
+        }
     }
     // Reassert policy after the caller-owned migration hook, before accepting writes.
     connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -100,6 +104,26 @@ pub(super) fn checkpoint(connection: &Connection) -> Result<(), WorkerError> {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?))
     })?;
     Ok(())
+}
+
+/// One maintenance turn bounds vacuum to 64 pages; busy readers leave pressure observable.
+pub(super) fn reclaim(connection: &Connection) -> Result<bool, WorkerError> {
+    // incremental_vacuum yields after each moved page; stepping only once reclaims one page.
+    let mut vacuum = connection.prepare("PRAGMA incremental_vacuum(64)")?;
+    let mut pages = vacuum.query([])?;
+    while pages.next()?.is_some() {}
+    drop(pages);
+    drop(vacuum);
+    truncate(connection)
+}
+
+/// Checkpoint committed frames without modifying rows; busy readers are reported without blocking.
+pub(super) fn truncate(connection: &Connection) -> Result<bool, WorkerError> {
+    let (busy, _, _): (i64, i64, i64) =
+        connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    Ok(busy != 0)
 }
 
 pub(super) fn close(connection: OpenConnection) -> Result<(), WorkerError> {

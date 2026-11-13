@@ -1,8 +1,10 @@
 //! Headless public SDK/UI fixtures with deterministic work budgets and advisory durations.
 //! Run `cargo run -p papo-sdk-ui --example history_cost -- history 10000`;
-//! scenarios are history (10000/100000 rows), residency (500 channels), reconnect (100 channels).
+//! scenarios are history/disk (10000/100000 rows), residency (500 channels), reconnect (100 channels).
 //! JSON Lines omit content, IDs, credentials and addresses. Byte estimates are not process RSS.
 
+#[path = "history_cost/disk.rs"]
+mod disk;
 #[path = "history_cost/fixture.rs"]
 mod fixture;
 #[path = "history_cost/history.rs"]
@@ -34,6 +36,14 @@ fn run() -> Result {
         Arc::new(ScriptedSecretStore::default()),
         ClientConfig {
             insecure_loopback: true,
+            disk: if scenario == "disk" {
+                papo_sdk::DiskBudget {
+                    bytes: 2 * 1024 * 1024,
+                    maintenance_interval: Duration::from_hours(1),
+                }
+            } else {
+                papo_sdk::DiskBudget::default()
+            },
             ..ClientConfig::default()
         },
     )?;
@@ -43,6 +53,7 @@ fn run() -> Result {
                 "history" => history::run(&client, count).await,
                 "residency" => residency::run(&client, 500).await,
                 "reconnect" => reconnect::run(&client, 100).await,
+                "disk" => disk::run(&client, count).await,
                 _ => Err("unknown fixture scenario".into()),
             }
         })

@@ -31,6 +31,7 @@ pub(crate) struct SessionInner {
     pub history: crate::history::HistoryStore,
     pub reading: crate::reading::Reading,
     pub outgoing: crate::outgoing::AccountQueue,
+    pub expression_changes: watch::Sender<u64>,
 }
 impl SessionInner {
     pub fn new(
@@ -67,6 +68,7 @@ impl SessionInner {
             history: crate::history::HistoryStore::default(),
             reading: crate::reading::Reading::new(generation),
             outgoing: crate::outgoing::AccountQueue::default(),
+            expression_changes: watch::channel(0).0,
         })
     }
     pub async fn stop(&self) {

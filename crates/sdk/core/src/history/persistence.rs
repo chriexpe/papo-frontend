@@ -25,10 +25,13 @@ pub(super) struct State {
     layout: Layout,
     pub counters: std::sync::Arc<Counters>,
     pub encoded_bytes: usize,
-    entry_bytes: BTreeMap<[u8; 16], usize>,
+    pub(super) entry_bytes: BTreeMap<[u8; 16], usize>,
     pub changed: Vec<[u8; 16]>,
     pub committed_from: u64,
     pub committed_revision: u64,
+    pub(super) physical_deletes: Vec<crate::account_cache::history::HistoryKey>,
+    pub(super) retention_version: u64,
+    pub(super) last_write_rows: usize,
 }
 
 impl State {
@@ -50,9 +53,11 @@ impl State {
         generation: Generation,
     ) -> Result<(), HistoryError> {
         let instance = cache.history_instance();
+        let retention_version = cache.retention_version(channel);
         if self.set_id.is_some()
             && self.cache_instance == Some(instance)
             && self.authorized_generation == generation.get()
+            && self.retention_version == retention_version
         {
             return Ok(());
         }
@@ -60,6 +65,7 @@ impl State {
         if self.set_id != Some(set_id)
             || self.cache_instance != Some(instance)
             || self.authorized_generation != generation.get()
+            || self.retention_version != retention_version
         {
             let data = cache
                 .history_load(channel, generation)
@@ -75,6 +81,11 @@ impl State {
         self.set_id = Some(set_id);
         self.cache_instance = Some(instance);
         self.authorized_generation = generation.get();
+        if cache.retention_version(channel) != retention_version {
+            self.reset();
+            return Err(CacheError::Superseded.into());
+        }
+        self.retention_version = retention_version;
         Ok(())
     }
 
@@ -134,18 +145,35 @@ impl State {
         })?;
         let set_id = self.set_id.ok_or(CacheError::InvalidData)?;
         let row_count = upserts.len();
+        let submitted_rows = row_count + self.physical_deletes.len() + 1;
         let written_bytes =
             metadata.len() + upserts.iter().map(|row| row.payload.len()).sum::<usize>();
-        cache
-            .history_commit_current(
-                channel,
-                set_id,
-                (generation, epoch.cancel.clone()),
-                metadata,
-                upserts,
-                Vec::new(),
-            )
-            .await?;
+        if generation.get() == 0 {
+            cache
+                .retention_commit(
+                    channel,
+                    set_id,
+                    self.committed_revision,
+                    metadata,
+                    upserts,
+                    self.physical_deletes.clone(),
+                )
+                .await?;
+        } else {
+            cache
+                .history_commit_versioned(
+                    channel,
+                    set_id,
+                    (generation, epoch.cancel.clone()),
+                    metadata,
+                    upserts,
+                    self.physical_deletes.clone(),
+                    Some((self.retention_version, self.committed_revision)),
+                )
+                .await?;
+        }
+        self.physical_deletes.clear();
+        self.last_write_rows = submitted_rows;
         self.counters
             .persisted_rows
             .fetch_add(row_count as u64, std::sync::atomic::Ordering::Relaxed);
@@ -166,7 +194,7 @@ impl State {
     }
 }
 
-fn decode(data: HistoryData) -> Result<State, HistoryError> {
+pub(super) fn decode(data: HistoryData) -> Result<State, HistoryError> {
     let mut state = State {
         set_id: Some(data.set_id),
         ..State::default()

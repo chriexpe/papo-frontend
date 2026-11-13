@@ -17,8 +17,10 @@ pub(crate) struct SessionPool {
     pub next: Arc<AtomicU64>,
     sessions: Mutex<HashMap<AccountId, Arc<SessionInner>>>,
     caches: Mutex<Option<crate::AccountCaches>>,
+    media: Mutex<Option<crate::media::MediaStore>>,
     retired: Mutex<HashMap<AccountId, u64>>,
     retired_servers: Mutex<HashMap<ServerId, u64>>,
+    lifecycle: Mutex<HashMap<AccountId, Arc<tokio::sync::RwLock<()>>>>,
     attempts: Mutex<
         Vec<(
             ServerId,
@@ -33,8 +35,10 @@ impl SessionPool {
             next: Arc::new(AtomicU64::new(1)),
             sessions: Mutex::new(HashMap::new()),
             caches: Mutex::new(None),
+            media: Mutex::new(None),
             retired: Mutex::new(HashMap::new()),
             retired_servers: Mutex::new(HashMap::new()),
+            lifecycle: Mutex::new(HashMap::new()),
             attempts: Mutex::new(Vec::new()),
         })
     }
@@ -44,6 +48,12 @@ impl SessionPool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(caches);
     }
+    pub fn set_media(&self, media: crate::media::MediaStore) {
+        *self
+            .media
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(media);
+    }
     pub fn get(&self, account: AccountId) -> Option<Arc<SessionInner>> {
         self.sessions
             .lock()
@@ -51,7 +61,17 @@ impl SessionPool {
             .get(&account)
             .cloned()
     }
-    pub fn insert(&self, session: Arc<SessionInner>) {
+    pub(crate) fn lifecycle(&self, account: AccountId) -> Arc<tokio::sync::RwLock<()>> {
+        Arc::clone(
+            self.lifecycle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(account)
+                .or_default(),
+        )
+    }
+    pub async fn insert(&self, session: Arc<SessionInner>) {
+        let _lifecycle = self.lifecycle(session.account).write_owned().await;
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -119,6 +139,10 @@ impl SessionPool {
         !self.root.is_cancelled() && account_retired < admitted && server_retired < admitted
     }
     pub async fn stop(&self, account: AccountId) {
+        let _lifecycle = self.lifecycle(account).write_owned().await;
+        self.stop_inner(account).await;
+    }
+    async fn stop_inner(&self, account: AccountId) {
         self.retired
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -133,6 +157,7 @@ impl SessionPool {
         }
     }
     pub async fn stop_if_current(&self, expected: &Arc<SessionInner>) {
+        let _lifecycle = self.lifecycle(expected.account).write_owned().await;
         let removed = {
             let mut sessions = self
                 .sessions
@@ -172,7 +197,8 @@ impl SessionPool {
 impl RemovalHooks for SessionPool {
     fn stop_session(&self, account: AccountId) -> RemovalFuture<'_> {
         Box::pin(async move {
-            self.stop(account).await;
+            let _lifecycle = self.lifecycle(account).write_owned().await;
+            self.stop_inner(account).await;
             let caches = self
                 .caches
                 .lock()
@@ -187,8 +213,18 @@ impl RemovalHooks for SessionPool {
             Ok(())
         })
     }
-    fn delete_media_refs(&self, _: AccountId) -> RemovalFuture<'_> {
-        // Session 11 opens the media index; no references exist before that capability.
-        Box::pin(async { Ok(()) })
+    fn delete_media_refs(&self, account: AccountId) -> RemovalFuture<'_> {
+        Box::pin(async move {
+            let media = self
+                .media
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let media = media.ok_or(crate::removal::RemovalHookError::Incomplete)?;
+            media
+                .remove_account(account)
+                .await
+                .map_err(|_| crate::removal::RemovalHookError::Incomplete)
+        })
     }
 }

@@ -125,6 +125,10 @@ fn check_integrity(f: &Fixture, mode: &str) -> Result {
         }
     );
     assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
+    let recents: i64 = db.query_row("SELECT count(*) FROM expression_recent", [], |row| {
+        row.get(0)
+    })?;
+    assert_eq!(recents, i64::from(mode == "sent"));
     assert_eq!(
         db.query_row("SELECT count(*) FROM operations", [], |row| row
             .get::<_, u32>(0))?,
@@ -169,6 +173,10 @@ async fn verify_restart(
         image.changed().await?;
     }
     let values = image.borrow().clone();
+    assert_eq!(
+        session.expressions().snapshot().await?.recent_gifs.len(),
+        usize::from(matches!(mode, "queued" | "sent"))
+    );
     assert_eq!(values.operations.len(), 3);
     let first = values
         .operations

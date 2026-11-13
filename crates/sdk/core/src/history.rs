@@ -17,6 +17,7 @@ pub(crate) mod reconnect;
 #[cfg(test)]
 mod reconnect_tests;
 mod residency;
+pub(crate) mod retention;
 mod subscription;
 #[cfg(test)]
 mod subscription_handle_tests;

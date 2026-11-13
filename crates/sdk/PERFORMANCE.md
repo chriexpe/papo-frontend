@@ -117,3 +117,40 @@ The checked structural budgets are the stable regression gates.
 The 900-event reconnect case leaves headroom under the 1024-entry journal. Bursts
 exceeding capacity still deliberately reject their generation and reconcile again;
 this fixture does not claim infinite traffic tolerance or authorize dropping events.
+
+## Physical disk budget (Session 11)
+
+The same harness also accepts `disk 10000` and `disk 100000`. Both run in Linux
+CI and emit a physical report followed by the existing history diagnostics.
+They hydrate one channel, explicitly trim to 2 MiB, and require actual allocated
+files to fit that ceiling, bounded history transactions (at most 80 changed
+rows), retained messages, and an explicit older-history gap. The small ceiling
+is a fixture setting, not a production default. Microsecond cursors and equal
+creation timestamps use the existing 7c seed convention.
+
+`physical` includes `budget_bytes`, `allocated_bytes`, `database_bytes`
+(main SQLite plus WAL/SHM/journal), `media_bytes`, protected `outgoing_bytes`, profile lock/security-marker `profile_bytes`,
+`reclaimed_bytes`, `media_evictions`, `history_turns`,
+`max_history_rows_per_turn`, `reclaim_blocked` and `pressure`. Allocation uses
+filesystem allocated-size APIs, not SQLite row sizes or logical file lengths.
+Content-addressed files count once. Directory entries, exported client files,
+OS credentials and process memory are outside this file-allocation report.
+Concurrent writers can change allocation during maintenance; final pressure is
+always measured again, never inferred from deleted row counts.
+
+Before eviction, maintenance checkpoints WALs and incrementally vacuums already
+free cache pages in 64-page turns. It then retires global LRU media refs/files,
+followed by 20-message oldest prefixes in least recently opened channels across
+accounts. It measures affected database allocation between bounded turns and
+rescans the profile every 64 eviction turns and at the end. A held reader stops
+further deletion in that cache and reports blocked reclamation; a later trim
+reclaims already free pages even when there are no remaining message victims.
+The durable state/outgoing floor and 24-hour orphan recovery grace can prevent
+meeting a tiny ceiling; `pressure` remains true in that case.
+
+`media-performance-baseline.json` records local observations, source context and
+advisory durations. These establish deterministic physical/row gates, not p95
+latency, SDK-only RSS, real-device performance or a complete process-memory cap.
+Unit/integration regressions additionally cover allocated WAL/SHM accounting,
+reader-blocked recovery, account-removal fences, cold retention, pinned entries,
+tombstones and exact pagination after eviction.

@@ -63,6 +63,28 @@ impl Storage {
         hooks: Arc<dyn RemovalHooks>,
         config: StorageConfig,
     ) -> Result<Self, StorageError> {
+        Self::open_with_removals(root, runtime, secrets, hooks, config, true)
+    }
+
+    /// Client installs cache/media cleanup capabilities before its single startup removal attempt.
+    pub(crate) fn open_deferred(
+        root: DataRoot,
+        runtime: &Runtime,
+        secrets: Arc<SecretStoreBoundary>,
+        hooks: Arc<dyn RemovalHooks>,
+        config: StorageConfig,
+    ) -> Result<Self, StorageError> {
+        Self::open_with_removals(root, runtime, secrets, hooks, config, false)
+    }
+
+    fn open_with_removals(
+        root: DataRoot,
+        runtime: &Runtime,
+        secrets: Arc<SecretStoreBoundary>,
+        hooks: Arc<dyn RemovalHooks>,
+        config: StorageConfig,
+        resume: bool,
+    ) -> Result<Self, StorageError> {
         outside_runtime()?;
         let lease = root.acquire()?;
         crate::private_fs::file(&root.state())?;
@@ -74,7 +96,7 @@ impl Storage {
                 crate::state_schema::migrate(connection).map_err(|error| match error {
                     StorageError::NewerSchema { found } => WorkerError::NewerSchema {
                         found: u32::try_from(found).unwrap_or(u32::MAX),
-                        supported: 1,
+                        supported: u32::try_from(crate::state_schema::VERSION).unwrap_or(u32::MAX),
                     },
                     StorageError::Sqlite(error) => WorkerError::from(error),
                     _ => WorkerError::Initialization,
@@ -117,7 +139,9 @@ impl Storage {
             cancel,
             config,
         };
-        runtime.block_on(storage.removals.resume())?;
+        if resume {
+            runtime.block_on(storage.removals.resume())?;
+        }
         Ok(storage)
     }
 

@@ -27,24 +27,14 @@ pub(crate) async fn handle(
     let path = request.uri().path().to_owned();
     let query = request.uri().query().unwrap_or_default().to_owned();
     let cookie = cookie_value(request.headers()).map(str::to_owned);
+    let media_headers = request.headers().clone();
     let content_type = request
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned();
-    let (step, base_url, _upload_guard) = {
-        let mut state = state.lock().await;
-        state.member_requests.record(&method, &path);
-        if crate::message_requests::relevant(&method, &path) {
-            state.outgoing.requests = state.outgoing.requests.saturating_add(1);
-        }
-        (
-            take_step(&mut state, &method, &path),
-            state.base_url.clone(),
-            state.read_requests.record(&method, &path),
-        )
-    };
+    let (step, base_url, _upload_guard) = observe(&mut *state.lock().await, &method, &path);
     let encode = |reply| encode(reply, &base_url);
     if let Some(step) = step {
         tokio::time::sleep(Duration::from_millis(step.delay_ms)).await;
@@ -72,7 +62,15 @@ pub(crate) async fn handle(
         if method == "POST" && path == "/messages" {
             state.message_body = Some(body.clone());
         }
-        let reply = if let Some(reply) = crate::message_requests::handle(
+        let reply = if let Some(reply) = crate::encoded_media::handle(
+            &mut state,
+            &method,
+            &path,
+            user_id.as_deref(),
+            &media_headers,
+        ) {
+            reply
+        } else if let Some(reply) = crate::message_requests::handle(
             &mut state,
             &method,
             &path,
@@ -150,9 +148,11 @@ fn encode(mut reply: Reply, base_url: &str) -> HttpResponse {
         body["type"] = format!("{base_url}{slug}").into();
     }
     let has_body = reply.body.is_some();
-    let body = reply
-        .body
-        .map_or_else(Vec::new, |value| value.to_string().into_bytes());
+    let body = reply.encoded.take().unwrap_or_else(|| {
+        reply
+            .body
+            .map_or_else(Vec::new, |value| value.to_string().into_bytes())
+    });
     let mut response = Response::new(Full::new(Bytes::from(body)));
     *response.status_mut() = hyper::StatusCode::from_u16(reply.status)
         .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
@@ -171,6 +171,14 @@ fn encode(mut reply: Reply, base_url: &str) -> HttpResponse {
         .and_then(|value| header::HeaderValue::from_str(&value).ok())
     {
         response.headers_mut().insert(header::SET_COOKIE, cookie);
+    }
+    for (name, value) in reply.headers {
+        if let (Ok(name), Ok(value)) = (
+            header::HeaderName::from_bytes(name.as_bytes()),
+            header::HeaderValue::from_str(&value),
+        ) {
+            response.headers_mut().insert(name, value);
+        }
     }
     response
 }
@@ -219,4 +227,24 @@ fn take_hold(
             hold.before_body == before_body && hold.method == method && hold.path == path
         })
         .map(|index| state.holds.remove(index))
+}
+
+fn observe(
+    state: &mut State,
+    method: &str,
+    path: &str,
+) -> (
+    Option<crate::RestStep>,
+    String,
+    Option<crate::read_requests::UploadGuard>,
+) {
+    state.member_requests.record(method, path);
+    if crate::message_requests::relevant(method, path) {
+        state.outgoing.requests = state.outgoing.requests.saturating_add(1);
+    }
+    (
+        take_step(state, method, path),
+        state.base_url.clone(),
+        state.read_requests.record(method, path),
+    )
 }

@@ -2,7 +2,12 @@
 //! Platform widgets, navigation and translated text belong to client applications.
 
 mod activity;
+mod expressions;
 pub use activity::{ActivityService, ActivitySubscription, ActivityView, TypingItem};
+pub use expressions::{
+    ExpressionId, ExpressionItem, ExpressionLibraryService, ExpressionLibrarySubscription,
+    ExpressionLibraryUpdate, ExpressionLibraryView,
+};
 mod capabilities;
 pub use capabilities::{
     AuthorIdentity, CapabilityService, CapabilitySubscription, CapabilityView, ChannelCapabilities,
