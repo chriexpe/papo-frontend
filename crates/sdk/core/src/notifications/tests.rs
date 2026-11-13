@@ -76,6 +76,7 @@ pub(super) fn candidate() -> policy::Candidate {
         content: String::new(),
         triggered: true,
         read: false,
+        trigger_revision: None,
         observed_at_us: 0,
         message_point: None,
     }

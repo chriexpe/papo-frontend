@@ -361,3 +361,6 @@ mod push_races;
 
 #[path = "notification_cases/continuation.rs"]
 mod continuation;
+
+#[path = "notification_cases/reliability.rs"]
+mod reliability;

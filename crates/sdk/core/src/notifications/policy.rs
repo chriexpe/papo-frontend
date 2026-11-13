@@ -59,6 +59,7 @@ pub(crate) struct Candidate {
     pub content: String,
     pub triggered: bool,
     pub read: bool,
+    pub trigger_revision: Option<u64>,
     pub observed_at_us: i64,
     pub message_point: Option<crate::ReadPoint>,
 }

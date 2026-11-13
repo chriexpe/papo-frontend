@@ -183,31 +183,9 @@ async fn run(
         let preemption = preemption.clone();
         let slots = Arc::clone(&slots);
         jobs.spawn(async move {
-            let work = async {
-                let _permit = slots.acquire().await.map_err(|_| {
-                    crate::NotificationError::from(ClientError::Closed)
-                })?;
-                let session = session.map_err(crate::NotificationError::from)?;
-                catch_up(&session).await
-            };
-            let result = tokio::select! {
-                biased;
-                () = preemption.cancelled() => (BackgroundOutcome::Preempted, Vec::new()),
-                () = cancel.cancelled() => (BackgroundOutcome::Interrupted, Vec::new()),
-                () = dropped.cancelled() => (BackgroundOutcome::Interrupted, Vec::new()),
-                () = tokio::time::sleep_until(deadline) => (BackgroundOutcome::Interrupted, Vec::new()),
-                result = work => match result {
-                    Ok(result) => result,
-                    Err(_) => (BackgroundOutcome::Failed, Vec::new()),
-                },
-            };
-            (
-                BackgroundAccountResult {
-                    account,
-                    outcome: result.0,
-                },
-                result.1,
-            )
+            let (outcome, deliveries) =
+                account_job(session, slots, preemption, cancel, dropped, deadline).await;
+            (BackgroundAccountResult { account, outcome }, deliveries)
         });
     }
     while let Some(result) = jobs.join_next().await {
@@ -241,4 +219,41 @@ async fn run(
                 })
     });
     Ok(report)
+}
+
+async fn account_job(
+    session: Result<crate::Session, ClientError>,
+    slots: Arc<tokio::sync::Semaphore>,
+    preemption: CancellationToken,
+    cancel: CancellationToken,
+    dropped: CancellationToken,
+    deadline: Instant,
+) -> (BackgroundOutcome, Vec<crate::NotificationDelivery>) {
+    let mut deliveries = Vec::new();
+    let work = async {
+        let _permit = slots
+            .acquire()
+            .await
+            .map_err(|_| crate::NotificationError::from(ClientError::Closed))?;
+        let session = session.map_err(crate::NotificationError::from)?;
+        catch_up(&session, &mut deliveries).await
+    };
+    let result = tokio::select! {
+        biased;
+        () = preemption.cancelled() => BackgroundOutcome::Preempted,
+        () = cancel.cancelled() => BackgroundOutcome::Interrupted,
+        () = dropped.cancelled() => BackgroundOutcome::Interrupted,
+        () = tokio::time::sleep_until(deadline) => BackgroundOutcome::Interrupted,
+        result = work => match result {
+            Ok(result) => result,
+            Err(_) => BackgroundOutcome::Failed,
+        },
+    };
+    if matches!(
+        result,
+        BackgroundOutcome::Interrupted | BackgroundOutcome::Preempted
+    ) {
+        deliveries.clear();
+    }
+    (result, deliveries)
 }

@@ -3,7 +3,8 @@ use super::BackgroundOutcome;
 use crate::{ClientError, Session};
 pub(super) async fn catch_up(
     session: &Session,
-) -> Result<(BackgroundOutcome, Vec<crate::NotificationDelivery>), crate::NotificationError> {
+    deliveries: &mut Vec<crate::NotificationDelivery>,
+) -> Result<BackgroundOutcome, crate::NotificationError> {
     use crate::notifications::{inbox, ledger, live};
     let epoch = session.inner.epochs.current();
     let work = async {
@@ -18,9 +19,8 @@ pub(super) async fn catch_up(
         };
         let Some(mut boundary) = cursor.take() else {
             establish_baseline(session, &rest, epoch.generation).await?;
-            return Ok((BackgroundOutcome::Complete, Vec::new()));
+            return Ok(BackgroundOutcome::Complete);
         };
-        let mut deliveries = Vec::new();
         for _ in 0..4 {
             let cursor = (!boundary.created_at.is_empty()).then_some(&boundary);
             let page = inbox::page(
@@ -52,7 +52,7 @@ pub(super) async fn catch_up(
                 };
                 if matches!(point, crate::notifications::context::Resolution::Pending) {
                     // Never acknowledge an inbox row whose canonical identity is still unresolved.
-                    return Ok((BackgroundOutcome::More, deliveries));
+                    return Ok(BackgroundOutcome::More);
                 }
                 if let Some(point) = point.point() {
                     candidate.message_point = Some(point);
@@ -79,10 +79,10 @@ pub(super) async fn catch_up(
                 ledger::save_cursor(session, epoch.generation, boundary.clone()).await?;
             }
             if page.next.is_none() {
-                return Ok((BackgroundOutcome::Complete, deliveries));
+                return Ok(BackgroundOutcome::Complete);
             }
         }
-        Ok((BackgroundOutcome::More, deliveries))
+        Ok(BackgroundOutcome::More)
     };
     tokio::select! {
         biased;

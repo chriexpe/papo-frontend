@@ -89,19 +89,46 @@ impl NotificationService {
             return Ok(());
         }
         let session = self.session.clone();
-        self.session.client.dispatch(async move {
-            let epoch = session.inner.epochs.current();
-            session.inner.epochs.validate(generation)?;
-            let work = async {
-                let rest = crate::scoped_request::authenticated(&session, &epoch).await?;
-                match session.client.inner.request(rest.mark_notifications_read(session.account().user(), &MarkNotificationsReadRequest { notification_ids: ids })).await {
-                    Ok(_) | Err(crate::ClientError::Api(papo_api::Error::Http {status:404} | papo_api::Error::Problem {status:404,..})) => {},
-                    Err(error) => return Err(error),
+        self.session
+            .client
+            .dispatch(async move {
+                let epoch = session.inner.epochs.current();
+                session.inner.epochs.validate(generation)?;
+                let work = async {
+                    let rest = crate::scoped_request::authenticated(&session, &epoch).await?;
+                    let request = MarkNotificationsReadRequest {
+                        notification_ids: ids,
+                    };
+                    let result = session
+                        .client
+                        .inner
+                        .request(rest.mark_notifications_read(session.account().user(), &request))
+                        .await;
+                    match result {
+                        Ok(_)
+                        | Err(crate::ClientError::Api(
+                            papo_api::Error::Http { status: 404 }
+                            | papo_api::Error::Problem { status: 404, .. },
+                        )) => {}
+                        Err(error) => return Err(error),
+                    }
+                    let _serial = session.inner.notifications.serial.lock().await;
+                    session.inner.epochs.apply(generation, || {
+                        session
+                            .inner
+                            .notifications
+                            .inbox_revision
+                            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    })
+                };
+                tokio::select! {
+                    biased;
+                    () = epoch.cancel.cancelled() => Err(crate::ClientError::Superseded),
+                    result = work => result,
                 }
-                session.inner.epochs.validate(generation)
-            };
-            tokio::select! { biased; ()=epoch.cancel.cancelled()=>Err(crate::ClientError::Superseded), result=work=>result }
-        }).await.map_err(Into::into)
+            })
+            .await
+            .map_err(Into::into)
     }
     /// Resolves a backend-confirmed inbox row to its original scoped target, without marking read.
     /// # Errors

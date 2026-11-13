@@ -1,7 +1,7 @@
 //! Bounded live candidate ingestion; historical cache/reconnect pages never enter this producer.
 
 use super::{
-    NotificationError, NotificationStatus, inbox, ledger,
+    NotificationError, NotificationStatus, ledger,
     policy::{self, Candidate},
 };
 use crate::{Generated, Session};
@@ -56,7 +56,12 @@ pub(crate) fn start(session: Session) {
     runtime.spawn(async move {
         let _token = token;
         let mut recent = VecDeque::<(crate::Generation, Candidate)>::new();
+        let mut triggers = super::triggers::TriggerEvidence::default();
         loop {
+            // Evidence is shared only across an active event backlog, never across idle periods.
+            if rx.is_empty() {
+                triggers.clear();
+            }
             let event = tokio::select! {
                 biased;
                 () = session.inner.root.cancelled() => return,
@@ -70,7 +75,7 @@ pub(crate) fn start(session: Session) {
                 continue;
             }
             recent.retain(|(generation, _)| *generation == epoch.generation);
-            let work = process(&session, event, &mut recent);
+            let work = process(&session, event, &mut recent, &mut triggers);
             let result = tokio::select! {
                 biased;
                 () = epoch.cancel.cancelled() => continue,
@@ -90,6 +95,7 @@ async fn process(
     session: &Session,
     event: Generated<Event>,
     recent: &mut VecDeque<(crate::Generation, Candidate)>,
+    triggers: &mut super::triggers::TriggerEvidence,
 ) -> Result<(), NotificationError> {
     let candidate = match event.value {
         Event::Known(KnownEvent::Message(message)) => {
@@ -100,6 +106,7 @@ async fn process(
                 triggered: policy::mentions(&message.content, session.account().user()),
                 content: message.content,
                 read: false,
+                trigger_revision: None,
                 observed_at_us: parse_time(&message.created_at)?,
                 message_point: Some(crate::ReadPoint {
                     created_at_us: parse_time(&message.created_at)?,
@@ -122,7 +129,7 @@ async fn process(
             {
                 candidate.clone()
             } else {
-                let candidate = authoritative_trigger(session, event.generation, message).await?;
+                let candidate = triggers.resolve(session, event.generation, message).await?;
                 let Some(mut candidate) = candidate else {
                     return Ok(());
                 };
@@ -167,6 +174,7 @@ pub(crate) fn record_candidate(
         content: record.message_content.clone().unwrap_or_default(),
         triggered: true,
         read: record.read != Some(false),
+        trigger_revision: None,
         observed_at_us: parse_time(
             record
                 .created_at
@@ -208,6 +216,16 @@ pub(super) async fn deliver_at(
     }
     let _serial = session.inner.notifications.serial.lock().await;
     session.inner.epochs.validate(generation)?;
+    if candidate.trigger_revision.is_some_and(|revision| {
+        revision
+            != session
+                .inner
+                .notifications
+                .inbox_revision
+                .load(std::sync::atomic::Ordering::Acquire)
+    }) {
+        return Ok(None);
+    }
     let backend = session
         .inner
         .notifications
@@ -259,39 +277,4 @@ fn parse_time(raw: &str) -> Result<i64, NotificationError> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .map(|date| date.timestamp_micros())
         .map_err(|_| NotificationError::InvalidData)
-}
-
-async fn authoritative_trigger(
-    session: &Session,
-    generation: crate::Generation,
-    message: crate::Uuid,
-) -> Result<Option<Candidate>, NotificationError> {
-    // An ephemeral 'all' notification is not proof of a reply/everyone trigger.
-    let epoch = session.inner.epochs.current();
-    let rest = crate::scoped_request::authenticated(session, &epoch).await?;
-    let mut cursor = None;
-    for _ in 0..10 {
-        let page = inbox::page(
-            session,
-            &rest,
-            generation,
-            cursor.as_ref(),
-            crate::HistoryOrder::Desc,
-        )
-        .await?;
-        if let Some(found) = page.records.into_iter().find(|row| {
-            row.record
-                .message_id
-                .as_deref()
-                .and_then(|id| id.parse().ok())
-                == Some(message)
-        }) {
-            return record_candidate(&found.record).map(Some);
-        }
-        cursor = page.next;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    Ok(None)
 }

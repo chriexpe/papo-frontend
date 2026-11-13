@@ -47,7 +47,14 @@ at 512 characters, so this flag cannot prove absence beyond that preview.
 
 Cache hydration and ordinary history/reconnect REST pages are never producers.
 Live input and output queues each hold 64 entries; overflow is an observable
-notification fault. Canonical history remains independent. Old generations are
+notification fault. Live reply evidence is indexed by canonical message ID and
+reused only across an active event backlog, with at most 1,000 records. Idle or
+generation changes clear it. Completed local inbox reads invalidate both cached
+and in-flight evidence. Admission rechecks that revision under the same short
+serialization boundary as read completion, so stale evidence never consumes a claim.
+Reuse reflects that bounded backlog's backend snapshot;
+other-device reads have no additional backend notification event. Misses still
+fetch real inbox pages and negative lookups are never cached. Canonical history remains independent. Old generations are
 discarded before delivery. Validate the scoped target again before native
 presentation or tap navigation; fetching/tapping does not acknowledge a read.
 Only explicit `mark_read` calls or existing channel read reporting acknowledge
@@ -69,7 +76,10 @@ Fresh policy versions cannot be overwritten by older same-generation responses.
 Inbox rows outlive access: a bounded history authorization read validates each
 candidate channel without inserting history or reporting reads. Authoritative
 403/404/410 rows are skipped with cursor progress; transient failures remain
-retryable. One account's failure never cancels another's work.
+retryable. One account's failure never cancels another's work. A later ordinary
+request/storage failure returns Failed alongside that account's already-claimed
+deliveries; it does not discard those handoffs. Cancellation, preemption and
+account/generation invalidation still suppress stale handoffs.
 
 The first inbox observation establishes a quiet durable baseline. Later runs use
 ascending exact `(notification.created_at, notification.id)` pages from that

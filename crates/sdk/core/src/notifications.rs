@@ -7,6 +7,7 @@ pub(crate) mod ledger;
 pub(crate) mod live;
 mod policy;
 pub(crate) mod push;
+mod triggers;
 pub use inbox::{InboxCursor, InboxPage, NotificationRecord};
 pub use policy::{ChannelNotificationMode, NotificationSettings};
 pub use push::{PushDevice, PushRegistration};
@@ -20,7 +21,10 @@ mod tests;
 use crate::{AccountId, ClientError, Generation, Session, Uuid};
 use std::{
     collections::BTreeSet,
-    sync::{Mutex, atomic::AtomicBool},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicU64},
+    },
 };
 use tokio::sync::{mpsc, watch};
 
@@ -92,6 +96,7 @@ pub struct NotificationDelivery {
 
 pub(crate) struct Notifications {
     pub push_closing: AtomicBool,
+    pub inbox_revision: AtomicU64,
     pub backend: Mutex<Option<backend::BackendPolicy>>,
     pub canonical_points: tokio::sync::Mutex<context::CanonicalPoints>,
     pub poll_serial: tokio::sync::Mutex<()>,
@@ -107,6 +112,7 @@ impl Default for Notifications {
         let (deliveries, receiver) = mpsc::channel(64);
         Self {
             push_closing: AtomicBool::new(false),
+            inbox_revision: AtomicU64::new(0),
             backend: Mutex::default(),
             canonical_points: tokio::sync::Mutex::default(),
             poll_serial: tokio::sync::Mutex::new(()),
