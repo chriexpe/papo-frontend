@@ -261,7 +261,14 @@ impl Timeline {
             if state.publisher.version != version || state.publisher.generation != generation {
                 return Err(TimelineError::StaleSnapshot);
             }
-            if ids.iter().any(|id| !state.publisher.items.iter().any(|item| matches!(item.as_ref(), TimelineItem::Message { id: current, .. } if current == id))) { return Err(TimelineError::StaleSnapshot); }
+            let all_visible = ids.iter().all(|id| {
+                state.publisher.items.iter().any(|item| {
+                    matches!(item.as_ref(), TimelineItem::Message { id: current, .. } if current == id)
+                })
+            });
+            if !all_visible {
+                return Err(TimelineError::StaleSnapshot);
+            }
             state.raw.version
         };
         self.inner

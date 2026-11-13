@@ -1,15 +1,14 @@
 //! Bounded asynchronous attachment I/O; only the short reference snapshot enters the SQLite writer.
 
-use super::{OutgoingError, Uuid, files, persistence::visible};
+use super::{
+    OutgoingError, Uuid, files,
+    persistence::{data_root, visible},
+};
 use crate::{Registry, Session};
 
 impl Registry {
     pub(super) async fn outgoing_collect(&self, session: Session) -> Result<(), OutgoingError> {
-        let root = self
-            .path
-            .parent()
-            .ok_or(OutgoingError::InvalidData)?
-            .to_path_buf();
+        let root = data_root(self)?;
         let guard = self
             .file_guard(&session, session.client.inner.outgoing_collection.clone())
             .await?;
@@ -68,14 +67,9 @@ impl Registry {
         let guard = self
             .file_guard(session, session.client.inner.outgoing_files.clone())
             .await?;
-        let root = self
-            .path
-            .parent()
-            .ok_or(OutgoingError::InvalidData)?
-            .to_path_buf();
+        let root = data_root(self)?;
         let session = session.clone();
         let lease = self.lease.clone();
-        let runtime = session.client.inner.runtime.clone();
         tokio::task::spawn_blocking(move || {
             let (_guard, _lease) = (guard, lease);
             if session.is_closed() {
@@ -86,19 +80,26 @@ impl Registry {
             let refs = files::stage_observed(&root, session.account(), &bytes, || {
                 if !notified {
                     notified = true;
-                    #[cfg(feature = "test-support")]
-                    if let Some(probe) = &session.client.inner.config.outgoing_probe {
-                        runtime.block_on(
-                            probe.reached(identity, super::OutgoingDispatchPhase::Staging),
-                        );
-                    }
+                    notify_staging_probe(&session, identity);
                 }
             })?;
-            #[cfg(not(feature = "test-support"))]
-            let _ = (identity, runtime);
             Ok((refs, size))
         })
         .await
         .map_err(|_| OutgoingError::InvalidData)?
     }
 }
+
+#[cfg(feature = "test-support")]
+fn notify_staging_probe(session: &Session, identity: Uuid) {
+    if let Some(probe) = &session.client.inner.config.outgoing_probe {
+        session
+            .client
+            .inner
+            .runtime
+            .block_on(probe.reached(identity, super::OutgoingDispatchPhase::Staging));
+    }
+}
+
+#[cfg(not(feature = "test-support"))]
+fn notify_staging_probe(_session: &Session, _identity: Uuid) {}

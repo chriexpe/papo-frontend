@@ -30,12 +30,7 @@ pub(super) async fn reconcile_receipts(service: &OutgoingService) -> Result<(), 
         }
     }
     if !ids.is_empty() {
-        session
-            .client
-            .inner
-            .registry
-            .outgoing_projected(session.clone(), ids)
-            .await?;
+        mark(service, ids).await?;
         service.publish().await?;
     }
     Ok(())

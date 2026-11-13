@@ -25,33 +25,8 @@ pub(super) fn append(
         {
             continue;
         }
-        if operation.state == OperationState::Sent {
-            if operation.history_projected {
-                continue;
-            }
-            let visible = operation
-                .message
-                .as_ref()
-                .and_then(|message| message.cursor())
-                .and_then(|cursor| crate::timeline_window::key(&cursor).ok())
-                .is_some_and(|point| {
-                    history
-                        .messages
-                        .binary_search_by(|message| {
-                            message
-                                .cursor()
-                                .and_then(|cursor| crate::timeline_window::key(&cursor).ok())
-                                .cmp(&Some(point))
-                        })
-                        .is_ok()
-                });
-            if visible
-                || operation
-                    .message_id
-                    .is_some_and(|id| history.tombstones.contains(&id))
-            {
-                continue;
-            }
+        if operation.state == OperationState::Sent && is_sent_echo_retired(operation, history) {
+            continue;
         }
         let value = TimelineItem::LocalEcho {
             id: operation.id,
@@ -63,4 +38,33 @@ pub(super) fn append(
             .map_or_else(|| Arc::new(value), |old| Arc::clone(old));
         items.push_back(item);
     }
+}
+
+fn is_sent_echo_retired(
+    operation: &papo_sdk::Operation,
+    history: &papo_sdk::HistorySnapshot,
+) -> bool {
+    if operation.history_projected {
+        return true;
+    }
+    let visible_in_history = operation
+        .message
+        .as_ref()
+        .and_then(|message| message.cursor())
+        .and_then(|cursor| crate::timeline_window::key(&cursor).ok())
+        .is_some_and(|point| {
+            history
+                .messages
+                .binary_search_by(|message| {
+                    message
+                        .cursor()
+                        .and_then(|cursor| crate::timeline_window::key(&cursor).ok())
+                        .cmp(&Some(point))
+                })
+                .is_ok()
+        });
+    visible_in_history
+        || operation
+            .message_id
+            .is_some_and(|id| history.tombstones.contains(&id))
 }

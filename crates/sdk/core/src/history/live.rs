@@ -71,16 +71,15 @@ pub(crate) async fn apply(
         };
         if state.model.event(event, generation.get())? {
             session.epochs.validate(generation)?;
-            if let Err(error) = state
-                .persist(&connection.cache, *channel.id.as_bytes(), &epoch)
-                .await
-            {
-                state.reset();
-                return Err(error.into());
-            }
-            session
-                .epochs
-                .apply(generation, || channel.publish(&state, generation))??;
+            persist_and_publish(
+                session,
+                &connection.cache,
+                &channel,
+                &mut state,
+                &epoch,
+                generation,
+            )
+            .await?;
         }
         drop(state);
         if refresh_pins {
@@ -138,15 +137,7 @@ async fn select(
         if !session.history.verified.read().await.contains(&id) {
             return Ok(Vec::new());
         }
-        let mut channels = session.history.channels.lock().await;
-        let channel = Arc::clone(channels.entry(id).or_insert_with(|| {
-            Arc::new(Channel::new(
-                id,
-                session.history.changes.clone(),
-                Arc::clone(&session.history.counters),
-            ))
-        }));
-        selected.push(channel);
+        selected.push(session.history.channel(id).await);
     } else {
         // The pinned backend omits channel IDs from reaction and pin events.
         // Only already-owned IDs may mutate a channel; in-flight pages replay the bounded journal.
@@ -197,16 +188,7 @@ async fn project_receipt(
         return Err(ClientError::ResourceData);
     }
     let cache = session.client.inner.caches.open(session.account()).await?;
-    let channel = {
-        let mut channels = session.inner.history.channels.lock().await;
-        Arc::clone(channels.entry(id).or_insert_with(|| {
-            Arc::new(Channel::new(
-                id,
-                session.inner.history.changes.clone(),
-                Arc::clone(&session.inner.history.counters),
-            ))
-        }))
-    };
+    let channel = session.inner.history.channel(id).await;
     channel.check()?;
     let mut state = channel.state.lock().await;
     session.inner.epochs.validate(generation)?;
@@ -214,14 +196,32 @@ async fn project_receipt(
     state
         .model
         .receipt(message, if live { generation.get() } else { 0 })?;
-    if let Err(error) = state.persist(&cache, *id.as_bytes(), &epoch).await {
+    persist_and_publish(
+        &session.inner,
+        &cache,
+        &channel,
+        &mut state,
+        &epoch,
+        generation,
+    )
+    .await
+}
+
+async fn persist_and_publish(
+    session: &SessionInner,
+    cache: &crate::AccountCache,
+    channel: &Channel,
+    state: &mut super::persistence::State,
+    epoch: &crate::generation::Epoch,
+    generation: Generation,
+) -> Result<(), ClientError> {
+    if let Err(error) = state.persist(cache, *channel.id.as_bytes(), epoch).await {
         state.reset();
         return Err(error.into());
     }
     session
-        .inner
         .epochs
-        .apply(generation, || channel.publish(&state, generation))??;
+        .apply(generation, || channel.publish(state, generation))??;
     Ok(())
 }
 

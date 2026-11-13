@@ -57,7 +57,16 @@ impl Timeline {
         {
             let mut state = self.inner.lock();
             state.refresh(&self.inner.config)?;
-            if !state.publisher.items.iter().any(|item| matches!(item.as_ref(), TimelineItem::Gap(current) if current.cursor == gap.cursor && current.order == gap.order)) { return Err(TimelineError::StaleSnapshot); }
+            let gap_present = state.publisher.items.iter().any(|item| {
+                matches!(
+                    item.as_ref(),
+                    TimelineItem::Gap(current)
+                        if current.cursor == gap.cursor && current.order == gap.order
+                )
+            });
+            if !gap_present {
+                return Err(TimelineError::StaleSnapshot);
+            }
         }
         let direction = if gap.order == HistoryOrder::Desc {
             TimelineDirection::Older

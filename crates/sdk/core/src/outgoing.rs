@@ -2,11 +2,14 @@
 
 mod content;
 pub(crate) mod dispatch;
+mod drafts;
+mod enqueue;
 mod file_io;
 pub(crate) mod files;
 mod persistence;
 mod projection;
 mod receipt;
+mod request;
 mod service;
 #[cfg(test)]
 mod tests;
@@ -33,6 +36,34 @@ pub enum OperationState {
     Failed,
     /// May have reached the backend; automatic retry and content/time matching forbidden.
     Unknown,
+}
+
+impl OperationState {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "Queued",
+            Self::Sending => "Sending",
+            Self::Sent => "Sent",
+            Self::Failed => "Failed",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    pub(super) fn from_db(value: &str) -> Result<Self, OutgoingError> {
+        match value {
+            "Queued" => Ok(Self::Queued),
+            "Sending" => Ok(Self::Sending),
+            "Sent" => Ok(Self::Sent),
+            "Failed" => Ok(Self::Failed),
+            "Unknown" => Ok(Self::Unknown),
+            _ => Err(OutgoingError::InvalidData),
+        }
+    }
+}
+
+pub(super) enum EnqueueSource {
+    Kind(OperationKind),
+    Draft { revision: u64 },
 }
 
 /// Sanitized durable failure category; no backend diagnostic text or payload is retained here.
