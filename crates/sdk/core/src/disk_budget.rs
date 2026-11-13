@@ -140,12 +140,27 @@ async fn measure(client: &ClientHandle) -> Result<DiskReport, DiskError> {
 }
 
 async fn trim(client: &ClientHandle) -> Result<DiskReport, DiskError> {
+    trim_at(client, std::time::SystemTime::now()).await
+}
+
+async fn trim_at(
+    client: &ClientHandle,
+    now: std::time::SystemTime,
+) -> Result<DiskReport, DiskError> {
     let _serial = client.inner.disk_serial.lock().await;
     let initial = measure(client).await?;
+    client
+        .inner
+        .media
+        .collect_step(Duration::from_hours(24), now)
+        .await?;
     if !initial.pressure {
-        return Ok(initial);
+        let mut report = measure(client).await?;
+        report.reclaimed_bytes = initial
+            .allocated_bytes
+            .saturating_sub(report.allocated_bytes);
+        return Ok(report);
     }
-    client.inner.media.collect(Duration::from_hours(24)).await?;
     let (candidates, caches) = victims::select(client).await?;
     // Reclaim already free pages and WAL before sacrificing any cached content.
     let mut reclaim_blocked = reclamation::existing(client, &caches).await?;

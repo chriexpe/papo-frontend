@@ -46,5 +46,9 @@ required-features = ["test-support"]
 name = "outgoing"
 required-features = ["test-support"]
 
+[[example]]
+name = "media_cost"
+required-features = ["test-support"]
+
 [lints]
 workspace = true

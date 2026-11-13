@@ -31,12 +31,10 @@ impl MediaService {
     pub async fn cached(&self, source: MediaSource) -> Result<Generated<MediaData>, MediaError> {
         self.run(move |session, epoch| async move {
             let store = &session.client.inner.media;
-            let _gate = store.gate.lock().await;
-            let reference = store
-                .reference(session.account(), &source)
+            let (_, value) = store
+                .cached_reference(&session, &epoch, &source, false)
                 .await?
                 .ok_or(MediaError::Unavailable)?;
-            let value = store.read_reference(reference).await?;
             session.inner.epochs.validate(epoch.generation)?;
             Ok(Generated {
                 generation: epoch.generation,
@@ -61,56 +59,45 @@ impl MediaService {
                 .acquire_owned()
                 .await
                 .map_err(|_| MediaError::TaskStopped)?;
-            let previous = {
-                let _gate = store.gate.lock().await;
-                let mut reference = store.reference(session.account(), &source).await?;
-                if let Some(known) = reference.clone() {
-                    match store.read_reference(known).await {
-                        Ok(value) if !refresh => {
-                            session.inner.epochs.validate(epoch.generation)?;
-                            return Ok(Generated {
-                                generation: epoch.generation,
-                                value,
-                            });
-                        }
-                        Ok(_) => {}
-                        Err(
-                            MediaError::Unavailable
-                            | MediaError::InvalidData
-                            | MediaError::TooLarge,
-                        ) => {
-                            store.revoke(session.account(), &source).await?;
-                            reference = None;
-                        }
-                        Err(error) => return Err(error),
+            let previous = match store
+                .cached_reference(&session, &epoch, &source, true)
+                .await?
+            {
+                Some((reference, value)) => {
+                    if !refresh {
+                        return Ok(Generated {
+                            generation: epoch.generation,
+                            value,
+                        });
                     }
+                    Some(reference)
                 }
-                reference
+                None => None,
             };
             let mut response = match download(&session, &epoch, &source, previous.as_ref()).await {
                 Ok(response) => response,
                 Err(error) => {
                     if denied(&error) {
-                        let _gate = store.gate.lock().await;
-                        store.revoke_family(session.account(), &source).await?;
+                        store
+                            .revoke_denied(&session, epoch.generation, &source)
+                            .await?;
                     }
                     return Err(error);
                 }
             };
             session.inner.epochs.validate(epoch.generation)?;
-            let _gate = Arc::clone(&store.gate).lock_owned().await;
             if response.status == 304 {
-                let reference = store
-                    .reference(session.account(), &source)
+                let (_, value) = store
+                    .cached_reference(&session, &epoch, &source, false)
                     .await?
                     .ok_or(MediaError::Unavailable)?;
-                let value = store.read_reference(reference).await?;
-                session.inner.epochs.validate(epoch.generation)?;
                 return Ok(Generated {
                     generation: epoch.generation,
                     value,
                 });
             }
+            let _gate = Arc::clone(&store.gate).lock_owned().await;
+            session.inner.epochs.validate(epoch.generation)?;
             let range = super::ranges::normalize(&source, &mut response)?;
             let bytes: Arc<[u8]> = response.bytes.into();
             let digest = store.install(Arc::clone(&bytes)).await?;
@@ -204,5 +191,18 @@ impl MediaService {
                     .and_then(std::convert::identity))
             })
             .await?
+    }
+}
+
+impl super::MediaStore {
+    pub(super) async fn revoke_denied(
+        &self,
+        session: &Session,
+        generation: crate::Generation,
+        source: &MediaSource,
+    ) -> Result<(), MediaError> {
+        let _gate = self.gate.lock().await;
+        session.inner.epochs.validate(generation)?;
+        self.revoke_family(session, generation, source).await
     }
 }

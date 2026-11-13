@@ -110,5 +110,58 @@
       "scenario": "disk-residency",
       "schema_version": 1
     }
-  ]
+  ],
+  "cache_hit_comparison": {
+    "base_revision": "bf9d2e0d",
+    "candidate": "media lifecycle and pinned cache-read follow-up on Session 11",
+    "scope": "Single local observation, same Linux x86_64 dev profile and warm files; durations advisory, not a timing budget",
+    "before": [
+      {
+        "accounts": 2,
+        "elapsed_us_advisory": 308240,
+        "object_bytes": 16777216,
+        "parallel": false,
+        "requests_per_round": 4,
+        "rounds": 8,
+        "scenario": "warm-media-hits",
+        "schema_version": 1,
+        "scope": "Warm encoded file reads plus SHA-256, ref validation and LRU; no decoder or native rendering"
+      },
+      {
+        "accounts": 2,
+        "elapsed_us_advisory": 307802,
+        "object_bytes": 16777216,
+        "parallel": true,
+        "requests_per_round": 4,
+        "rounds": 8,
+        "scenario": "warm-media-hits",
+        "schema_version": 1,
+        "scope": "Warm encoded file reads plus SHA-256, ref validation and LRU; no decoder or native rendering"
+      }
+    ],
+    "after": [
+      {
+        "accounts": 2,
+        "elapsed_us_advisory": 302264,
+        "object_bytes": 16777216,
+        "parallel": false,
+        "requests_per_round": 4,
+        "rounds": 8,
+        "scenario": "warm-media-hits",
+        "schema_version": 1,
+        "scope": "Warm encoded file reads plus SHA-256, ref validation and LRU; no decoder or native rendering"
+      },
+      {
+        "accounts": 2,
+        "elapsed_us_advisory": 160005,
+        "object_bytes": 16777216,
+        "parallel": true,
+        "requests_per_round": 4,
+        "rounds": 8,
+        "scenario": "warm-media-hits",
+        "schema_version": 1,
+        "scope": "Warm encoded file reads plus SHA-256, ref validation and LRU; no decoder or native rendering"
+      }
+    ]
+  }
 }

@@ -65,6 +65,7 @@ jobs:
           cargo run --locked -p papo-sdk-ui --example history_cost -- reconnect > target/papo-sdk-7c/reconnect-100.jsonl
           cargo run --locked -p papo-sdk-ui --example history_cost -- disk 10000 > target/papo-sdk-7c/disk-10000.jsonl
           cargo run --locked -p papo-sdk-ui --example history_cost -- disk 100000 > target/papo-sdk-7c/disk-100000.jsonl
+          cargo run --locked -p papo-sdk --features test-support --example media_cost > target/papo-sdk-7c/media-hits.jsonl
       - uses: actions/upload-artifact@v4
         if: always() && matrix.os == 'ubuntu-24.04'
         with:

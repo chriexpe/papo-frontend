@@ -2,6 +2,8 @@
 
 #![cfg(feature = "test-support")]
 mod fixture;
+#[path = "media_cases/lifecycle.rs"]
+mod lifecycle;
 use fixture::{Fixture, Result, login, register};
 use papo_sdk::{MediaError, MediaSource, Session, UnixMicros, Uuid};
 use papo_test_server::{Config, EncodedMedia};

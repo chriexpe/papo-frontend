@@ -40,6 +40,22 @@ it never sweeps fresh unindexed content belonging to an index-recovery window.
 `clear_cache` retires this account's refs without touching credentials, drafts,
 operations, expression metadata or another account's shared files.
 
+Cache hits acquire one of two profile-wide read slots before reference admission.
+Under media exclusion they validate the account/source ref and pin its digest;
+file reading and SHA-256 run outside the global lock. The blocking read owns the
+pin and profile lease through cancellation. Before delivery the SDK rechecks the
+exact reference metadata and generation, then fences LRU updates on the writer
+thread. Eviction skips pinned files; account cleanup retires their refs immediately
+and defers unlink to orphan collection. A retired ref cannot deliver late bytes.
+A stale download denial rechecks its generation after taking exclusion and again
+inside every bounded source-family deletion callback.
+
+Orphan collection runs independently of pressure, with at most 100 directory
+entries inspected per automatic maintenance turn and a resumable cursor. The
+24-hour grace remains mandatory. Explicit collection starts its own complete pass,
+yielding exclusion between bounded turns. Reference/pin checks and unlink remain
+under the same exclusion, with a lease retained by blocking work.
+
 Content hashing, private file creation and fsync run outside SQLite writers.
 Unix directories/files use 0700/0600; Windows uses the existing private filesystem
 ACL boundary. Admitted blocking work retains the profile lease, and blocking

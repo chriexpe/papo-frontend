@@ -63,11 +63,13 @@ fn recreated_index_does_not_adopt_existing_content_and_orphans_observe_grace() {
     let digest = files::install(&root, b"orphan").unwrap();
     let path = root.media_content(&digest);
     let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
-    std::fs::File::open(&path)
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
         .unwrap()
         .set_times(std::fs::FileTimes::new().set_modified(modified))
         .unwrap();
-    files::collect_files(
+    collection::collect_files(
         &root,
         &BTreeSet::new(),
         modified + Duration::from_secs(10),
@@ -75,7 +77,7 @@ fn recreated_index_does_not_adopt_existing_content_and_orphans_observe_grace() {
     )
     .unwrap();
     assert!(path.exists());
-    files::collect_files(
+    collection::collect_files(
         &root,
         &BTreeSet::new(),
         modified + Duration::from_secs(20),
@@ -207,5 +209,67 @@ fn global_media_eviction_uses_last_access_and_retires_all_shared_refs() {
                     .is_none()
             );
         }
+    });
+}
+
+#[test]
+fn orphan_scan_is_bounded_and_resumes_through_a_large_prefix() {
+    let fixture = Fixture::new();
+    let store = MediaStore::new(fixture.storage()).unwrap();
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let mut paths = Vec::new();
+    for index in 0_u128..250 {
+        let mut digest = [0; 32];
+        digest[16..].copy_from_slice(&index.to_be_bytes());
+        let path = store.root.media_content(&digest);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, [7; 16]).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(now))
+            .unwrap();
+        paths.push(path);
+    }
+    fixture.runtime().block_on(async {
+        assert!(!store.collect_step(Duration::ZERO, now).await.unwrap());
+        let removed = paths.iter().filter(|path| !path.exists()).count();
+        assert!((1..=100).contains(&removed));
+        let mut turns = 1;
+        while !store.collect_step(Duration::ZERO, now).await.unwrap() {
+            turns += 1;
+            assert!(turns <= 4);
+        }
+        assert!(paths.iter().all(|path| !path.exists()));
+    });
+}
+
+#[test]
+fn explicit_collection_revisits_files_scanned_before_they_expired() {
+    let fixture = Fixture::new();
+    let store = MediaStore::new(fixture.storage()).unwrap();
+    let created = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let grace = Duration::from_hours(24);
+    let mut paths = Vec::new();
+    for index in 0_u128..150 {
+        let mut digest = [0; 32];
+        digest[16..].copy_from_slice(&index.to_be_bytes());
+        let path = store.root.media_content(&digest);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, [7; 16]).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(created))
+            .unwrap();
+        paths.push(path);
+    }
+    fixture.runtime().block_on(async {
+        assert!(!store.collect_step(grace, created).await.unwrap());
+        assert!(paths.iter().all(|path| path.exists()));
+        store.collect_at(grace, created + grace).await.unwrap();
+        assert!(paths.iter().all(|path| !path.exists()));
     });
 }

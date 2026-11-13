@@ -154,3 +154,23 @@ latency, SDK-only RSS, real-device performance or a complete process-memory cap.
 Unit/integration regressions additionally cover allocated WAL/SHM accounting,
 reader-blocked recovery, account-removal fences, cold retention, pinned entries,
 tombstones and exact pagination after eviction.
+
+
+## Concurrent encoded cache hits
+
+`cargo run --locked -p papo-sdk --features test-support --example media_cost`
+measures eight rounds of four warm 16 MiB objects across two accounts, sequentially
+and concurrently. Both modes include reference validation, file reading, SHA-256
+and LRU work; network population precedes measurement. JSON contains counts and
+advisory durations only. This fixture does not measure native decoding or assert
+a latency threshold.
+
+The recorded local comparison in `media-performance-baseline.json` observed
+sequential/concurrent totals of 308/308 ms before and 302/160 ms after narrowing
+read exclusion. These are individual warm-cache observations, not p95 evidence.
+Two read slots bound admitted read allocations; digest pins protect files while
+reading outside global exclusion. Deterministic tests prove that a held read
+allows another account's hit, survives eviction/collection, and cannot deliver
+after its reference is retired. Queued stale denial callbacks cannot revoke a
+new-generation grant. Under-budget orphan cleanup and resumable 100-entry turns
+are separately checked, including explicit collection starting a full pass.

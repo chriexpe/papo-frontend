@@ -1,10 +1,15 @@
 //! Account-authorized encoded media references; rendering, decoding and durable uploads live elsewhere.
 
+mod cached;
+mod collection;
 mod download;
 mod emojis;
 mod eviction;
 mod files;
 mod index;
+mod pins;
+#[cfg(test)]
+mod race_tests;
 mod ranges;
 mod service;
 #[cfg(test)]
@@ -131,6 +136,11 @@ pub(crate) struct MediaStore {
     gate: Arc<Mutex<()>>,
     lease: Arc<crate::data_root::ProfileLease>,
     fetches: Arc<tokio::sync::Semaphore>,
+    reads: Arc<tokio::sync::Semaphore>,
+    #[cfg(test)]
+    read_probe: Arc<std::sync::Mutex<Option<files::ReadProbe>>>,
+    pins: pins::ReadPins,
+    collection: Arc<std::sync::Mutex<collection::Scan>>,
 }
 
 impl MediaStore {
@@ -143,6 +153,11 @@ impl MediaStore {
             gate: Arc::default(),
             lease: Arc::clone(&storage.registry().lease),
             fetches: Arc::new(tokio::sync::Semaphore::new(2)),
+            reads: Arc::new(tokio::sync::Semaphore::new(2)),
+            #[cfg(test)]
+            read_probe: Arc::default(),
+            pins: pins::ReadPins::default(),
+            collection: Arc::default(),
         })
     }
 }

@@ -2,7 +2,6 @@
 
 use super::{MediaError, MediaStore, index::account_key};
 use crate::AccountId;
-use rusqlite::OptionalExtension;
 
 impl MediaStore {
     pub(crate) async fn clear_refs(&self, account: AccountId) -> Result<(), MediaError> {
@@ -29,7 +28,7 @@ impl MediaStore {
                 let retired:bool=self.writer.cache_write(move |tx|->Result<_,MediaError> {
                     Ok(tx.execute("DELETE FROM files WHERE digest=?1 AND NOT EXISTS(SELECT 1 FROM refs WHERE digest=?1)",[digest.as_slice()])?==1)
                 }).await?;
-                if retired {
+                if retired && !self.pins.contains(&digest) {
                     let path = self.root.media_content(&digest);
                     let lease = std::sync::Arc::clone(&self.lease);
                     let gate = std::sync::Arc::clone(&gate);
@@ -73,16 +72,22 @@ impl MediaStore {
     /// Remove all references before unlinking a victim. Cancellation can only leave an orphan.
     pub(crate) async fn evict_one(&self) -> Result<Option<u64>, MediaError> {
         let gate = std::sync::Arc::clone(&self.gate).lock_owned().await;
+        let pinned = self.pins.snapshot();
         let digest: Option<Vec<u8>> = self
             .writer
-            .cache_write(|tx| -> Result<_, MediaError> {
-                Ok(tx
-                    .query_row(
-                        "SELECT digest FROM files ORDER BY last_used,digest LIMIT 1",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .optional()?)
+            .cache_write(move |tx| -> Result<_, MediaError> {
+                // At most two admitted reads can pin distinct digests, so one extra row suffices.
+                let mut query =
+                    tx.prepare("SELECT digest FROM files ORDER BY last_used,digest LIMIT ?1")?;
+                let limit = i64::try_from(pinned.len() + 1).map_err(|_| MediaError::InvalidData)?;
+                let candidates = query.query_map([limit], |row| row.get::<_, Vec<u8>>(0))?;
+                for digest in candidates {
+                    let digest = digest?;
+                    if !pinned.iter().any(|known| known.as_slice() == digest) {
+                        return Ok(Some(digest));
+                    }
+                }
+                Ok(None)
             })
             .await?;
         let Some(digest) = digest else {

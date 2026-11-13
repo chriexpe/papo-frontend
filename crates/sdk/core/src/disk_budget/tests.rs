@@ -168,3 +168,45 @@ fn allocation_includes_database_wal_shm_and_counts_shared_bytes_once() {
     assert!(!report.pressure);
     assert!(measurement::measure(&root, expected - 1).unwrap().pressure);
 }
+
+#[test]
+fn under_budget_maintenance_collects_expired_orphans_but_preserves_recovery_grace() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = crate::DataRoot::new(directory.path());
+    let mut client = client(root.clone(), 1024 * 1024 * 1024);
+    let modified = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let grace = Duration::from_hours(24);
+    for (digest, timestamp) in [
+        ([1; 32], modified),
+        ([2; 32], modified + Duration::from_secs(1)),
+    ] {
+        let path = root.media_content(&digest);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, [7; 8193]).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(timestamp))
+            .unwrap();
+    }
+    client
+        .block_on(async {
+            let handle = client.handle();
+            handle
+                .inner
+                .media
+                .writer
+                .cache_write(|_| Ok::<_, MediaError>(()))
+                .await
+                .unwrap();
+            assert!(!handle.disk_usage().await.unwrap().pressure);
+            let report = trim_at(&handle, modified + grace).await.unwrap();
+            assert!(!report.pressure);
+            assert!(report.reclaimed_bytes > 0);
+            assert!(!root.media_content(&[1; 32]).exists());
+            assert!(root.media_content(&[2; 32]).exists());
+        })
+        .unwrap();
+    client.shutdown().unwrap();
+}

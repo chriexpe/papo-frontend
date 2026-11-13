@@ -5,7 +5,7 @@ use crate::{AccountId, Session, storage_worker::WorkerError};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Reference {
     pub digest: [u8; 32],
     pub content_type: Option<String>,
@@ -133,26 +133,34 @@ impl MediaStore {
             })
             .await
     }
-    pub(super) async fn revoke(
+    pub(super) async fn revoke_current(
         &self,
-        account: AccountId,
+        session: &Session,
+        generation: crate::Generation,
         source: &MediaSource,
     ) -> Result<(), MediaError> {
-        let account = account_key(account);
+        let account = account_key(session.account());
         let source = source_key(source)?;
+        let session = session.clone();
         self.writer
-            .cache_write(move |tx| -> Result<(), MediaError> {
-                tx.execute(
-                    "DELETE FROM refs WHERE account=?1 AND source=?2",
-                    params![account, source],
-                )?;
-                Ok(())
+            .cache_write(move |tx| {
+                session
+                    .inner
+                    .epochs
+                    .apply(generation, || -> Result<(), MediaError> {
+                        tx.execute(
+                            "DELETE FROM refs WHERE account=?1 AND source=?2",
+                            params![account, source],
+                        )?;
+                        Ok(())
+                    })?
             })
             .await
     }
     pub(super) async fn revoke_family(
         &self,
-        account: AccountId,
+        session: &Session,
+        generation: crate::Generation,
         source: &MediaSource,
     ) -> Result<(), MediaError> {
         let source = match source {
@@ -165,21 +173,31 @@ impl MediaStore {
             MediaSource::Thumbnail(id) => sources.push(MediaSource::Attachment(*id)),
             _ => {}
         }
-        let account = account_key(account);
+        let account = account_key(session.account());
         for source in sources {
             let source = source_key(&source)?;
             loop {
                 let account = account.clone();
                 let source = source.clone();
-                let changed = self.writer.cache_write(move |tx| -> Result<_, MediaError> {
-                    Ok(tx.execute(
-                        "DELETE FROM refs WHERE rowid IN (
-                            SELECT rowid FROM refs WHERE account=?1
-                            AND (source=?2 OR json_extract(source,'$.Range.source')=CAST(?2 AS TEXT))
-                            LIMIT 100)",
-                        params![account, source],
-                    )?)
-                }).await?;
+                let session = session.clone();
+                let changed = self
+                    .writer
+                    .cache_write(move |tx| -> Result<_, MediaError> {
+                        session
+                            .inner
+                            .epochs
+                            .apply(generation, || -> Result<_, MediaError> {
+                                Ok(tx.execute(
+                                    "DELETE FROM refs WHERE rowid IN (
+                                SELECT rowid FROM refs WHERE account=?1
+                                AND (source=?2 OR
+                                     json_extract(source,'$.Range.source')=CAST(?2 AS TEXT))
+                                LIMIT 100)",
+                                    params![account, source],
+                                )?)
+                            })?
+                    })
+                    .await?;
                 if changed == 0 {
                     break;
                 }
@@ -263,6 +281,7 @@ impl MediaStore {
             .await
     }
 
+    #[cfg(test)]
     pub(super) async fn touch(&self, digest: [u8; 32]) -> Result<(), MediaError> {
         self.writer
             .cache_write(move |tx| {
