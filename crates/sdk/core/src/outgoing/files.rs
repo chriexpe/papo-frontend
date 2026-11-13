@@ -8,7 +8,7 @@ use std::{
     collections::BTreeSet,
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 const MAX_FILE_BYTES: u64 = 100 * 1024 * 1024;
@@ -47,42 +47,60 @@ pub(super) fn stage_observed(
         return Ok(Vec::new());
     }
     let directory = DataRoot::new(root).outgoing_files(account);
-    for path in [
+    for path in account_directories(root, &directory)? {
+        crate::private_fs::staging_directory(&path)?;
+    }
+    let mut refs = Vec::with_capacity(values.len());
+    for bytes in values {
+        refs.push(stage_blob(&directory, bytes, &mut copied_chunk)?);
+    }
+    #[cfg(unix)]
+    sync_directories(root, &directory)?;
+    Ok(refs)
+}
+
+fn account_directories(root: &Path, directory: &Path) -> Result<[PathBuf; 3], StorageError> {
+    Ok([
         root.join("outgoing"),
         directory
             .parent()
             .ok_or(StorageError::InvalidState)?
             .to_path_buf(),
-        directory.clone(),
-    ] {
-        crate::private_fs::staging_directory(&path)?;
+        directory.to_path_buf(),
+    ])
+}
+
+fn stage_blob(
+    directory: &Path,
+    bytes: &[u8],
+    copied_chunk: &mut impl FnMut(),
+) -> Result<Reference, StorageError> {
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    let size_bytes = u64::try_from(bytes.len()).map_err(|_| StorageError::InvalidState)?;
+    if size_bytes > MAX_FILE_BYTES {
+        return Err(StorageError::InvalidState);
     }
-    let mut refs = Vec::with_capacity(values.len());
-    for bytes in values {
-        let digest: [u8; 32] = Sha256::digest(bytes).into();
-        let size_bytes = u64::try_from(bytes.len()).map_err(|_| StorageError::InvalidState)?;
-        if size_bytes > MAX_FILE_BYTES {
-            return Err(StorageError::InvalidState);
+    let mut file = crate::private_fs::staged_file(&directory.join(name(&digest)))?;
+    if file.metadata()?.len() != size_bytes || hash(&mut file)? != digest {
+        // A process may have died while writing an unreferenced new digest. No valid
+        // existing blob is rewritten; references become visible only after sync_all.
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        for chunk in bytes.chunks(64 * 1024) {
+            file.write_all(chunk)?;
+            copied_chunk();
         }
-        let mut file = crate::private_fs::staged_file(&directory.join(name(&digest)))?;
-        if file.metadata()?.len() != size_bytes || hash(&mut file)? != digest {
-            // A process may have died while writing an unreferenced new digest. No valid
-            // existing blob is rewritten; references become visible only after sync_all.
-            file.set_len(0)?;
-            file.seek(SeekFrom::Start(0))?;
-            for chunk in bytes.chunks(64 * 1024) {
-                file.write_all(chunk)?;
-                copied_chunk();
-            }
-        }
-        file.sync_all()?;
-        refs.push(Reference { digest, size_bytes });
     }
-    // On Unix this also persists each new directory entry. Other platforms use the
-    // staged file's sync_all boundary; the tested guarantee is process crash, not power loss.
-    #[cfg(unix)]
+    file.sync_all()?;
+    Ok(Reference { digest, size_bytes })
+}
+
+// On Unix this also persists each new directory entry. Other platforms use the
+// staged file's sync_all boundary; the tested guarantee is process crash, not power loss.
+#[cfg(unix)]
+fn sync_directories(root: &Path, directory: &Path) -> Result<(), StorageError> {
     for path in [
-        directory.as_path(),
+        directory,
         directory.parent().ok_or(StorageError::InvalidState)?,
         directory
             .parent()
@@ -92,7 +110,7 @@ pub(super) fn stage_observed(
     ] {
         sync_directory(path)?;
     }
-    Ok(refs)
+    Ok(())
 }
 
 fn hash(file: &mut File) -> Result<[u8; 32], StorageError> {
@@ -142,14 +160,7 @@ pub(super) fn load(
     #[cfg(unix)]
     if !refs.is_empty() {
         use std::os::unix::fs::PermissionsExt;
-        for path in [
-            root.join("outgoing"),
-            directory
-                .parent()
-                .ok_or(StorageError::InvalidState)?
-                .to_path_buf(),
-            directory.clone(),
-        ] {
+        for path in account_directories(root, &directory)? {
             let metadata = fs::symlink_metadata(&path)?;
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
                 return Err(StorageError::InvalidState);

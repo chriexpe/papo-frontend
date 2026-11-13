@@ -29,19 +29,17 @@ impl Timeline {
             |(owner, mut receiver, mut history, mut reading, mut outgoing)| async move {
                 loop {
                     let _ = owner.lock().refresh(&owner.config);
-                    let event = tokio::select! {
-                        event=receiver.next()=>return event.map(|event| {
-                            let event=match event {
-                                list_subscription::Event::Update {version,generation,diffs}=>TimelineEvent::Update(TimelineUpdate {version,generation,diffs}),
-                                list_subscription::Event::Closed(reason)=>TimelineEvent::Closed(reason),
-                            };
-                            (event,(owner,receiver,history,reading,outgoing))
-                        }),
-                        change=history.changed()=>change.is_err(),
-                        change=reading.changed()=>change.is_err(),
-                        change=async {match outgoing.as_mut(){Some(rx)=>rx.changed().await,None=>std::future::pending().await}}=>change.is_err(),
+                    let closed = tokio::select! {
+                        event = receiver.next() => {
+                            return event.map(|event| {
+                                (map_event(event), (owner, receiver, history, reading, outgoing))
+                            });
+                        }
+                        change = history.changed() => change.is_err(),
+                        change = reading.changed() => change.is_err(),
+                        change = outgoing_changed(outgoing.as_mut()) => change.is_err(),
                     };
-                    if event {
+                    if closed {
                         owner.lock().close(HistoryClosedReason::AccountClosed);
                     }
                 }
@@ -53,5 +51,35 @@ impl Timeline {
             items,
             stream: Box::pin(changes.fuse()),
         })
+    }
+}
+
+fn map_event(
+    event: list_subscription::Event<
+        Arc<crate::TimelineItem>,
+        papo_sdk::Generation,
+        HistoryClosedReason,
+    >,
+) -> TimelineEvent {
+    match event {
+        list_subscription::Event::Update {
+            version,
+            generation,
+            diffs,
+        } => TimelineEvent::Update(TimelineUpdate {
+            version,
+            generation,
+            diffs,
+        }),
+        list_subscription::Event::Closed(reason) => TimelineEvent::Closed(reason),
+    }
+}
+
+async fn outgoing_changed(
+    outgoing: Option<&mut tokio::sync::watch::Receiver<Arc<papo_sdk::OutgoingSnapshot>>>,
+) -> Result<(), tokio::sync::watch::error::RecvError> {
+    match outgoing {
+        Some(rx) => rx.changed().await,
+        None => std::future::pending().await,
     }
 }

@@ -1,8 +1,8 @@
 //! Public async outgoing/draft services and committed publications; network dispatch lives in dispatch.
 
 use super::{
-    Arc, ClientError, Draft, DraftBody, Operation, OperationKind, OperationState, OutgoingError,
-    OutgoingMessage, OutgoingSnapshot, RetryDecision, Uuid,
+    Arc, ClientError, Draft, DraftBody, EnqueueSource, Operation, OperationKind, OperationState,
+    OutgoingError, OutgoingSnapshot, RetryDecision, Uuid,
 };
 use crate::{Session, UnixMicros};
 use std::{future::Future, sync::atomic::Ordering};
@@ -47,11 +47,10 @@ impl OutgoingService {
         self.session
             .client
             .dispatch(async move {
-                Ok(async {
-                    service.check()?;
-                    action(service).await
+                if let Err(error) = service.check() {
+                    return Ok(Err(error));
                 }
-                .await)
+                Ok(action(service).await)
             })
             .await?
     }
@@ -132,15 +131,15 @@ impl OutgoingService {
         kind: OperationKind,
         at: UnixMicros,
     ) -> Result<(), OutgoingError> {
-        self.enqueue_inner(channel, local, kind, at, None).await
+        self.enqueue_source(channel, local, EnqueueSource::Kind(kind), at)
+            .await
     }
-    async fn enqueue_inner(
+    async fn enqueue_source(
         &self,
         channel: Uuid,
         local: Uuid,
-        kind: OperationKind,
+        source: EnqueueSource,
         at: UnixMicros,
-        revision: Option<u64>,
     ) -> Result<(), OutgoingError> {
         self.run(move |this| async move {
             this.ensure().await?;
@@ -151,7 +150,7 @@ impl OutgoingService {
                 .client
                 .inner
                 .registry
-                .outgoing_enqueue(this.session.clone(), channel, local, kind, at.0, revision)
+                .outgoing_enqueue(this.session.clone(), channel, local, source, at.0)
                 .await;
             if let Err(error) = result {
                 this.collect().await?;
@@ -174,14 +173,8 @@ impl OutgoingService {
         revision: u64,
         at: UnixMicros,
     ) -> Result<(), OutgoingError> {
-        self.enqueue_inner(
-            channel,
-            local,
-            OperationKind::Message(OutgoingMessage::default()),
-            at,
-            Some(revision),
-        )
-        .await
+        self.enqueue_source(channel, local, EnqueueSource::Draft { revision }, at)
+            .await
     }
     /// Restores this account/channel's durable draft, including immutable attachments.
     /// # Errors

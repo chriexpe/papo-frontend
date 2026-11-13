@@ -49,6 +49,19 @@ impl Default for HistoryStore {
     }
 }
 
+impl HistoryStore {
+    pub(super) async fn channel(&self, id: Uuid) -> Arc<Channel> {
+        let mut channels = self.channels.lock().await;
+        Arc::clone(channels.entry(id).or_insert_with(|| {
+            Arc::new(Channel::new(
+                id,
+                self.changes.clone(),
+                Arc::clone(&self.counters),
+            ))
+        }))
+    }
+}
+
 pub(super) struct Channel {
     pub id: Uuid,
     pub state: Mutex<State>,
@@ -138,16 +151,7 @@ impl Session {
                         .await
                         .clone()
                         .ok_or(HistoryError::Unverified)?;
-                    let channel = {
-                        let mut channels = store.channels.lock().await;
-                        Arc::clone(channels.entry(channel).or_insert_with(|| {
-                            Arc::new(Channel::new(
-                                channel,
-                                store.changes.clone(),
-                                Arc::clone(&store.counters),
-                            ))
-                        }))
-                    };
+                    let channel = store.channel(channel).await;
                     channel.last_access.store(
                         store.access.fetch_add(1, Ordering::Relaxed),
                         Ordering::Relaxed,

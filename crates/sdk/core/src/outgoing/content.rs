@@ -88,6 +88,52 @@ pub enum OperationKind {
         add: bool,
     },
 }
+impl OutgoingMessage {
+    pub(super) fn validate(&self) -> Result<(), super::OutgoingError> {
+        validate_text(&self.content)?;
+        validate_attachments(&self.attachments)
+    }
+}
+
+fn validate_text(content: &str) -> Result<(), super::OutgoingError> {
+    if content.chars().count() > 8192 {
+        return Err(super::OutgoingError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_attachments(attachments: &[OutgoingAttachment]) -> Result<(), super::OutgoingError> {
+    if attachments.len() > 10 {
+        return Err(super::OutgoingError::InvalidInput);
+    }
+    let total_bytes = attachments
+        .iter()
+        .try_fold(0_usize, |size, file| size.checked_add(file.bytes.len()));
+    if total_bytes.is_none_or(|bytes| bytes > 100 * 1024 * 1024) {
+        return Err(super::OutgoingError::InvalidInput);
+    }
+    let invalid_filename = attachments.iter().any(|file| {
+        file.filename.is_empty() || file.filename.contains(['/', '\\', '\r', '\n', '\0'])
+    });
+    if invalid_filename {
+        return Err(super::OutgoingError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_reaction(
+    has_custom_emoji: bool,
+    unicode: Option<&str>,
+) -> Result<(), super::OutgoingError> {
+    if has_custom_emoji == unicode.is_some() {
+        return Err(super::OutgoingError::InvalidInput);
+    }
+    if unicode.is_some_and(|text| text.is_empty() || text.chars().count() > 16) {
+        return Err(super::OutgoingError::InvalidInput);
+    }
+    Ok(())
+}
+
 impl OperationKind {
     pub(super) fn target(&self) -> Option<MessageTarget> {
         match self {
@@ -104,40 +150,14 @@ impl OperationKind {
         }
     }
     pub(super) fn validate(&self) -> Result<(), super::OutgoingError> {
-        let (text, files) = match self {
-            Self::Message(message) => (
-                Some(message.content.as_str()),
-                message.attachments.as_slice(),
-            ),
-            Self::Edit { content, .. } => (Some(content.as_str()), &[][..]),
+        match self {
+            Self::Message(message) => message.validate(),
+            Self::Edit { content, .. } => validate_text(content),
+            Self::Delete { .. } => Ok(()),
             Self::Reaction {
                 emoji_id, unicode, ..
-            } => {
-                if emoji_id.is_some() == unicode.is_some()
-                    || unicode
-                        .as_ref()
-                        .is_some_and(|s| s.is_empty() || s.chars().count() > 16)
-                {
-                    return Err(super::OutgoingError::InvalidInput);
-                }
-                (None, &[][..])
-            }
-            Self::Delete { .. } => (None, &[][..]),
-        };
-        if text.is_some_and(|text| text.chars().count() > 8192) || files.len() > 10 {
-            return Err(super::OutgoingError::InvalidInput);
+            } => validate_reaction(emoji_id.is_some(), unicode.as_deref()),
         }
-        let bytes = files
-            .iter()
-            .try_fold(0_usize, |size, file| size.checked_add(file.bytes.len()));
-        if bytes.is_none_or(|bytes| bytes > 100 * 1024 * 1024)
-            || files.iter().any(|file| {
-                file.filename.is_empty() || file.filename.contains(['/', '\\', '\r', '\n', '\0'])
-            })
-        {
-            return Err(super::OutgoingError::InvalidInput);
-        }
-        Ok(())
     }
 }
 
