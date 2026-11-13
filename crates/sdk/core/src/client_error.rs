@@ -30,6 +30,9 @@ pub enum ClientError {
     /// An authoritative resource lacked a required identity or pagination boundary.
     #[error("invalid resource response")]
     ResourceData,
+    /// A profile request exceeded the bounded 1000-ID admission limit.
+    #[error("profile request limit exceeded")]
+    ProfileLimit,
     /// Reconcile could not keep up with the bounded event journal; a new generation is required.
     #[error("reconcile event journal overflow")]
     ReconcileOverflow,

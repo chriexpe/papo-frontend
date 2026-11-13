@@ -49,8 +49,8 @@ pub(crate) async fn apply(
             Ok(Some(vec![CacheResource::Channels]))
         }
         KnownEvent::UserJoin(event) => refresh_member(connection, snapshot, &event.user_id).await,
-        KnownEvent::RoleAdd(event) => refresh_member(connection, snapshot, &event.user_id).await,
-        KnownEvent::RoleRemove(event) => refresh_member(connection, snapshot, &event.user_id).await,
+        KnownEvent::RoleAdd(event) => refresh_roles(connection, snapshot, &event.user_id).await,
+        KnownEvent::RoleRemove(event) => refresh_roles(connection, snapshot, &event.user_id).await,
         KnownEvent::AvatarUpdate(event) => {
             refresh_member(connection, snapshot, &event.user_id).await
         }
@@ -132,4 +132,26 @@ async fn refresh_member(
     // Profile changes invalidate only requested profiles. A new member does not fetch an avatar blob.
     Arc::make_mut(&mut snapshot.profiles).retain(|profile| profile.id.as_deref() != Some(user));
     Ok(Some(vec![CacheResource::Members, CacheResource::Profiles]))
+}
+
+async fn refresh_roles(
+    connection: &ResourceConnection,
+    snapshot: &mut ResourceSnapshot,
+    user: &str,
+) -> Result<Option<Vec<CacheResource>>, ClientError> {
+    refresh_member(connection, snapshot, user).await?;
+    // A newly created role can arrive with its first assignment; only this small definition list is refreshed.
+    snapshot.roles = connection
+        .client
+        .inner
+        .request(connection.rest.roles())
+        .await?
+        .roles
+        .unwrap_or_default()
+        .into();
+    Ok(Some(vec![
+        CacheResource::Members,
+        CacheResource::Profiles,
+        CacheResource::Roles,
+    ]))
 }

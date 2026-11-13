@@ -136,6 +136,7 @@ async fn collect<T>(
                     session.history.counters.reconnect_overflows.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Err(ClientError::ReconcileOverflow);
                 }
+                crate::activity::receive(session, epoch.generation, &event);
                 journal.push_back(event);
                 session.history.counters.reconnect_journal_peak.fetch_max(journal.len() as u64, std::sync::atomic::Ordering::Relaxed);
             }
@@ -152,6 +153,10 @@ async fn next(
         biased;
         ()=session.root.cancelled()=>Err(ClientError::Closed),
         ()=epoch.cancel.cancelled()=>Err(ClientError::Superseded),
-        event=socket.next()=>event?.ok_or(ClientError::Gateway(papo_api::gateway::Error::Transport)),
+        event=socket.next()=> {
+            let event = event?.ok_or(ClientError::Gateway(papo_api::gateway::Error::Transport))?;
+            crate::activity::receive(session, epoch.generation, &event);
+            Ok(event)
+        },
     }
 }

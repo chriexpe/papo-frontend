@@ -88,6 +88,7 @@ func run() error {
 	handlers.RegisterRoleRoutes(e, cfg)
 	handlers.RegisterDirectMessageRoutes(e, cfg)
 	handlers.RegisterWebSocketRoutes(e, cfg)
+	registerPermissionProof(e)
 	e.GET("/health", func(c echo.Context) error { return c.NoContent(204) })
 	e.POST("/__proof/seed", func(c echo.Context) error {
 		_, err := storage.GetDB().ExecContext(c.Request().Context(), `

@@ -23,6 +23,8 @@ pub(crate) struct SessionInner {
     pub connection: Arc<crate::observable::StateCell<ConnectionStatus>>,
     pub events: broadcast::Sender<Generated<Event>>,
     pub resources: Arc<crate::observable::StateCell<Arc<crate::ResourceSnapshot>>>,
+    pub activity: Arc<crate::observable::StateCell<crate::ActivitySnapshot>>,
+    pub typing_command: watch::Sender<Option<Generated<(papo_api::Uuid, tokio::time::Instant)>>>,
     pub driver_running: AtomicBool,
     pub auth_serial: tokio::sync::Mutex<()>,
     pub resource_serial: tokio::sync::Mutex<()>,
@@ -57,6 +59,8 @@ impl SessionInner {
             resources: crate::observable::StateCell::new(Arc::new(crate::ResourceSnapshot::empty(
                 generation,
             ))),
+            activity: crate::activity::cell(generation),
+            typing_command: watch::channel(None).0,
             driver_running: AtomicBool::new(false),
             auth_serial: tokio::sync::Mutex::new(()),
             resource_serial: tokio::sync::Mutex::new(()),
@@ -79,6 +83,8 @@ impl SessionInner {
         self.auth.send_replace(AuthState::SignedOut);
         self.auth.close();
         self.connection.close();
+        crate::activity::clear(self, self.epochs.current().generation);
+        self.activity.close();
         self.resources.close();
         self.tasks.wait().await;
     }
@@ -103,6 +109,18 @@ impl SessionInner {
         state: ConnectionState,
     ) -> Result<(), ClientError> {
         self.epochs.apply(generation, || {
+            if state != ConnectionState::Online {
+                crate::activity::clear(self, generation);
+                self.resources.send_if_modified(|snapshot| {
+                    if snapshot.presence.is_empty() {
+                        return false;
+                    }
+                    let snapshot = Arc::make_mut(snapshot);
+                    snapshot.presence = Arc::default();
+                    snapshot.version = snapshot.version.saturating_add(1);
+                    true
+                });
+            }
             self.connection
                 .send_replace(ConnectionStatus { generation, state })
         })?;
@@ -158,7 +176,7 @@ impl Session {
     }
     /// Requests a new connection generation, canceling old socket and REST work.
     /// # Errors
-    /// Returns `Closed` if this handle was revoked.
+    /// Returns `Closed` if revoked or `Superseded` if another reconnect already replaced this request.
     pub fn reconnect(&self) -> Result<(), ClientError> {
         if !matches!(
             *self.inner.auth.borrow(),
@@ -166,7 +184,10 @@ impl Session {
         ) {
             return Err(ClientError::SignedOut);
         }
-        self.inner.epochs.advance()?;
+        let epoch = self.inner.epochs.advance()?;
+        self.inner.epochs.apply(epoch.generation, || {
+            crate::activity::clear(&self.inner, epoch.generation);
+        })?;
         crate::connection_driver::start(self.client.clone(), Arc::clone(&self.inner));
         Ok(())
     }

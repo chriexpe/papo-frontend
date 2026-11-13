@@ -126,3 +126,33 @@ fn profile_batch_captured_before_reconnect_cannot_publish_in_the_new_generation(
     })??;
     fixture.finish()
 }
+
+#[test]
+fn profile_admission_is_bounded_and_duplicate_ids_are_requested_only_once() -> Result {
+    let fixture = Fixture::new(Config::default())?;
+    fixture.run(async {
+        let profile = profile(42);
+        let id = Uuid::parse_str(profile.id.as_deref().unwrap())?;
+        fixture.server().set_profile(profile).await?;
+        let session = signed_in(&fixture, "bounded-profiles").await?;
+        let before = fixture.server().member_request_counts().await;
+        assert!(matches!(
+            session.profiles(&vec![id; 1001]).await,
+            Err(ClientError::ProfileLimit)
+        ));
+        let after = fixture.server().member_request_counts().await;
+        assert_eq!(before.profile_requests, after.profile_requests);
+        let response = session.profiles(&[id, id, id]).await?;
+        assert_eq!(response.value.len(), 1);
+        assert_eq!(
+            fixture
+                .server()
+                .member_request_counts()
+                .await
+                .profile_requests,
+            before.profile_requests + 1
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}

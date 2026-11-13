@@ -7,7 +7,7 @@ use crate::ServerId;
 /// An account is a backend user UUID paired with one canonical server identity.
 ///
 /// Constructing an ID does not authenticate a user or authorize cache access.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AccountId {
     server: ServerId,
     user: Uuid,

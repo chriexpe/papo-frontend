@@ -1,6 +1,6 @@
 //! On-demand generation-stamped profile batches; member listing and live invalidation belong to reconcile.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use papo_api::{
     Uuid,
@@ -10,7 +10,7 @@ use papo_api::{
 use crate::{CacheResource, ClientError, Generated, Session, generation::Epoch};
 
 impl Session {
-    /// Fetches profiles on demand in backend-sized batches of at most 50.
+    /// Fetches up to 1000 requested IDs in batches of at most 50, deduplicating IDs.
     /// Results and cache publication are fenced by the requesting connection generation.
     /// # Errors
     /// Returns revoked/stale generations, identity, transport or rebuildable storage failures.
@@ -18,7 +18,15 @@ impl Session {
         &self,
         users: &[Uuid],
     ) -> Result<Generated<Vec<UserProfile>>, ClientError> {
-        let users = users.iter().map(ToString::to_string).collect();
+        if users.len() > 1000 {
+            return Err(ClientError::ProfileLimit);
+        }
+        let mut seen = HashSet::new();
+        let users = users
+            .iter()
+            .filter(|user| seen.insert(**user))
+            .map(ToString::to_string)
+            .collect();
         let session = self.clone();
         let token = self.inner.tasks.token();
         self.client
@@ -41,7 +49,6 @@ impl Session {
         epoch: &Epoch,
         users: Vec<String>,
     ) -> Result<Generated<Vec<UserProfile>>, ClientError> {
-        let _serial = self.inner.resource_serial.lock().await;
         let secret = self
             .client
             .inner
@@ -61,26 +68,31 @@ impl Session {
         let cache = self.client.inner.caches.open(self.account()).await?;
         let mut profiles = Vec::new();
         for ids in users.chunks(50) {
+            // Serialize one bounded batch with member invalidation, then yield to waiting live merges.
+            let _serial = self.inner.resource_serial.lock().await;
+            self.inner.epochs.validate(epoch.generation)?;
             let request = ProfileBatchRequest { ids: ids.to_vec() };
             let response = self.client.inner.request(rest.profiles(&request)).await?;
-            profiles.extend(response.profiles.unwrap_or_default());
-        }
-        self.inner.epochs.validate(epoch.generation)?;
-        let mut snapshot = (**self.inner.resources.borrow()).clone();
-        if snapshot.generation != epoch.generation {
-            return Err(ClientError::Superseded);
-        }
-        let cached = Arc::make_mut(&mut snapshot.profiles);
-        for profile in &profiles {
-            let id = profile.id.as_ref().ok_or(ClientError::ResourceData)?;
-            if !users.contains(id) {
-                return Err(ClientError::ResourceData);
+            let batch = response.profiles.unwrap_or_default();
+            let mut returned = HashSet::new();
+            for profile in &batch {
+                let id = profile.id.as_ref().ok_or(ClientError::ResourceData)?;
+                if !ids.contains(id) || !returned.insert(id) {
+                    return Err(ClientError::ResourceData);
+                }
             }
-            cached.retain(|existing| existing.id.as_ref() != Some(id));
-            cached.push(profile.clone());
+            self.inner.epochs.validate(epoch.generation)?;
+            let mut snapshot = (**self.inner.resources.borrow()).clone();
+            if snapshot.generation != epoch.generation {
+                return Err(ClientError::Superseded);
+            }
+            let cached = Arc::make_mut(&mut snapshot.profiles);
+            cached.retain(|existing| !existing.id.as_ref().is_some_and(|id| ids.contains(id)));
+            cached.extend(batch.iter().cloned());
+            cache.update(&snapshot, &[CacheResource::Profiles]).await?;
+            self.inner.publish_resources(snapshot)?;
+            profiles.extend(batch);
         }
-        cache.update(&snapshot, &[CacheResource::Profiles]).await?;
-        self.inner.publish_resources(snapshot)?;
         Ok(Generated {
             generation: epoch.generation,
             value: profiles,
