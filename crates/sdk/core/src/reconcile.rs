@@ -43,6 +43,7 @@ pub(crate) async fn run(
         session.publish_resources(snapshot)
     })
     .await?;
+    crate::notifications::live::start(connection.client.session(session.account)?);
     replay(session, epoch, socket, connection, &mut journal).await?;
     session.status(epoch.generation, ConnectionState::Online)?;
     loop {
@@ -63,6 +64,7 @@ async fn replay(
         if matches!(event, Event::Closed(_)) {
             return Err(ClientError::Gateway(papo_api::gateway::Error::Transport));
         }
+        crate::notifications::live::submit(session, epoch.generation, &event);
         if crate::history::live::relevant(&event) {
             collect(session, epoch, socket, journal, async {
                 crate::history::live::apply(session, connection, epoch.generation, &event).await

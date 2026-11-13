@@ -16,7 +16,22 @@ impl RestClient {
         user: Uuid,
         cursor: Option<&Cursor<'_>>,
     ) -> Result<NotificationList, Error> {
-        let parameters = cursor.map_or_else(Vec::new, Cursor::parameters);
+        self.user_notifications_ordered(user, cursor, crate::HistoryOrder::Desc)
+            .await
+    }
+
+    /// Lists notifications in explicit backend tuple order, including an initial ascending page.
+    /// # Errors
+    /// Returns transport, backend or decoding errors.
+    pub async fn user_notifications_ordered(
+        &self,
+        user: Uuid,
+        cursor: Option<&Cursor<'_>>,
+        order: crate::HistoryOrder,
+    ) -> Result<NotificationList, Error> {
+        let mut parameters = cursor.map_or_else(Vec::new, Cursor::parameters);
+        parameters.retain(|(key, _)| *key != routes::ORDER);
+        parameters.push((routes::ORDER, order.as_str().to_owned()));
         self.json(
             self.route_request(
                 &routes::GET_USERS_USER_ID_NOTIFICATIONS,

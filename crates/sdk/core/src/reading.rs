@@ -27,10 +27,10 @@ pub struct ReadPoint {
     pub message_id: Uuid,
 }
 impl ReadPoint {
-    pub(super) fn message(message: &Message) -> Result<Self, ReadingError> {
+    pub(crate) fn message(message: &Message) -> Result<Self, ReadingError> {
         Self::parse(message.created_at.as_deref(), message.id.as_deref())
     }
-    pub(super) fn parse(created_at: Option<&str>, id: Option<&str>) -> Result<Self, ReadingError> {
+    pub(crate) fn parse(created_at: Option<&str>, id: Option<&str>) -> Result<Self, ReadingError> {
         let at =
             chrono::DateTime::parse_from_rfc3339(created_at.ok_or(ReadingError::InvalidPoint)?)
                 .map_err(|_| ReadingError::InvalidPoint)?;

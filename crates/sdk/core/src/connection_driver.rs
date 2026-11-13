@@ -81,6 +81,8 @@ impl Connector for ApiConnector {
             if who.id.as_deref().and_then(|id| id.parse().ok()) != Some(session.account.user()) {
                 return Err(ClientError::Identity);
             }
+            crate::notifications::backend::remember(session, epoch.generation, who.settings)?;
+            *session.verified_rest.lock().await = Some((epoch.generation, rest.clone()));
             let cache = self.0.inner.caches.open(session.account).await?;
             session.epochs.validate(epoch.generation)?;
             let gateway =
