@@ -104,7 +104,10 @@ pub fn capabilities(
     ))
 }
 
-// Only a Session-bound service may interpret the account-owned DM list as access evidence.
+// The pinned /dms query excludes hidden rows and blocks in BOTH directions. This is the
+// account-bound evidence, not an inference from the own block list. DMUpdate replay refreshes
+// that query rather than reusing an older event payload. Later unannounced changes can still
+// make any cached affordance stale; the backend always authorizes the request.
 fn direct_capabilities(
     snapshot: &ResourceSnapshot,
     channel: Uuid,

@@ -166,3 +166,73 @@ fn unified_dm_list_removes_revoked_account_rows() -> Result {
     })??;
     fixture.finish()
 }
+
+#[test]
+fn a_journaled_dm_update_cannot_restore_a_conversation_removed_by_newer_rest_data() -> Result {
+    let fixture = Fixture::new(0, vec![])?;
+    fixture.run(async {
+        let session = fixture.signed_in("stale-dm").await?;
+        let dm = papo_sdk::DirectConversation {
+            id: Uuid::from_u128(19).to_string(),
+            user: papo_sdk::UserSummary {
+                id: Some(Uuid::from_u128(18).to_string()),
+                ..Default::default()
+            },
+            created_at: "2026-01-01T00:00:00Z".into(),
+            last_message: None,
+            last_read_message: None,
+            last_read_at: None,
+            unread_count: 0,
+        };
+        let account = session.account().user().to_string();
+        fixture
+            .server()
+            .set_direct_conversations(&account, vec![dm.clone()])
+            .await?;
+        let mut resources = session.subscribe_resources();
+        while resources.borrow_and_update().dms.is_empty() {
+            resources.changed().await?;
+        }
+        let channel = Uuid::from_u128(19);
+        let capabilities = CapabilityService::new(session.clone());
+        assert!(capabilities.channel(channel)?.value.send);
+        // Models a reverse block or hide: the own block list remains empty, but /dms excludes the row.
+        fixture
+            .server()
+            .set_direct_conversations(&account, Vec::new())
+            .await?;
+        let mut hold = fixture
+            .server()
+            .hold_next_rest("GET", "/users/blocks")
+            .await?;
+        session.reconnect()?;
+        hold.wait_started().await?;
+        let mut events = session.subscribe_events();
+        fixture
+            .server()
+            .emit_event(serde_json::from_value(
+                serde_json::json!({"type": "dm_update", "dm": dm}),
+            )?)
+            .await?;
+        hold.release();
+        loop {
+            if events.next().await?.value.kind() == "dm_update" {
+                break;
+            }
+        }
+        super::support::online(&session).await?;
+        let image = session.subscribe_resources().borrow().clone();
+        assert_eq!(image.blocks.len(), 0);
+        assert_eq!(image.dms.len(), 0);
+        assert!(capabilities.channel(channel).is_err());
+        assert_eq!(
+            DirectMessageService::new(vec![session])
+                .subscribe()
+                .snapshot
+                .len(),
+            0
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}

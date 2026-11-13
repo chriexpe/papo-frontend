@@ -11,7 +11,6 @@ fn image(generation: u64, timestamp: &str) -> Arc<ResourceSnapshot> {
         members: Arc::default(),
         profiles: Arc::default(),
         blocks: Arc::default(),
-        presence: Arc::default(),
         dms: Arc::new(vec![DirectConversation {
             id: Uuid::from_u128(1).to_string(),
             user: UserSummary {

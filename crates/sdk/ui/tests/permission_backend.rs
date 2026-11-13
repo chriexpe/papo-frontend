@@ -36,7 +36,6 @@ async fn capabilities_match_pinned_go_for_role_combinations_overrides_owner_and_
             profiles: Arc::default(),
             dms: Arc::default(),
             blocks: Arc::default(),
-            presence: Arc::default(),
         };
         let global = global_permissions(&snapshot, user).unwrap();
         let actual = [
@@ -175,3 +174,6 @@ fn sdk_typing_command_uses_session_gateway_and_live_generation() {
         .unwrap();
     assert!(client.shutdown().unwrap().reads_drained);
 }
+
+#[path = "permission_backend/dm_snapshot.rs"]
+mod dm_snapshot;

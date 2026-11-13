@@ -2,7 +2,7 @@
 
 use crate::{CacheResource, ClientError, ResourceSnapshot, reconcile::ResourceConnection};
 use papo_api::{
-    gateway::{Event, KnownEvent, PresenceMember},
+    gateway::{Event, KnownEvent},
     wire::UserSummaryBatchRequest,
 };
 use std::sync::Arc;
@@ -19,8 +19,6 @@ pub(crate) fn relevant(event: &Event) -> bool {
                 | KnownEvent::RoleRemove(_)
                 | KnownEvent::AvatarUpdate(_)
                 | KnownEvent::DMUpdate(_)
-                | KnownEvent::PresenceSync(_)
-                | KnownEvent::PresenceUpdate(_)
         )
     )
 }
@@ -54,13 +52,16 @@ pub(crate) async fn apply(
         KnownEvent::AvatarUpdate(event) => {
             refresh_member(connection, snapshot, &event.user_id).await
         }
-        KnownEvent::DMUpdate(event) => {
-            let dms = Arc::make_mut(&mut snapshot.dms);
-            if let Some(dm) = dms.iter_mut().find(|dm| dm.id == event.dm.id) {
-                *dm = event.dm.clone();
-            } else {
-                dms.push(event.dm.clone());
-            }
+        KnownEvent::DMUpdate(_) => {
+            // A journaled payload can predate a reverse block or hide. Only the current list
+            // proves both membership/access and visibility; own blocks alone are insufficient.
+            snapshot.dms = connection
+                .client
+                .inner
+                .request(connection.rest.direct_conversations())
+                .await?
+                .dms
+                .into();
             snapshot.blocks = connection
                 .client
                 .inner
@@ -69,28 +70,6 @@ pub(crate) async fn apply(
                 .users
                 .into();
             Ok(Some(vec![CacheResource::Dms, CacheResource::Blocks]))
-        }
-        KnownEvent::PresenceSync(event) => {
-            snapshot.presence = Arc::new(event.members.clone());
-            Ok(Some(Vec::new()))
-        }
-        KnownEvent::PresenceUpdate(event) => {
-            let presence = Arc::make_mut(&mut snapshot.presence);
-            if let Some(member) = presence
-                .iter_mut()
-                .find(|member| member.user_id == event.user_id)
-            {
-                member.status.clone_from(&event.status);
-                member.status_message.clone_from(&event.status_message);
-            } else {
-                presence.push(PresenceMember {
-                    user_id: event.user_id.clone(),
-                    status: event.status.clone(),
-                    status_message: event.status_message.clone(),
-                    user_voice: Vec::new(),
-                });
-            }
-            Ok(Some(Vec::new()))
         }
         _ => Ok(None),
     }

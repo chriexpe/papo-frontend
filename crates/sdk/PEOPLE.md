@@ -46,6 +46,15 @@ events. Reconnect replaces them; membership events also refresh role definitions
 | DM read/send/pin/unpin | Membership and no block in either direction; owner has no bypass |
 | Hidden DM | Hiding changes list visibility, not membership/access |
 
+The pinned `storage.ListDirectConversations` SQL filters membership, hidden_at,
+and a NOT EXISTS block query in **both directions**. Thus a freshly reconciled
+DM list proves access for its owning session without requiring reverse blocks
+in the own block list. A queued DM event can predate that REST image: each
+`DMUpdate` therefore refreshes the authoritative DM list and own blocks instead
+of reinserting its payload. This adds one DM-list request per event, avoiding
+stale block/visibility inference. The targeted GET-by-ID endpoint alone would
+not suffice because it intentionally returns hidden conversations.
+
 A DM list proves access only for its owning session. The public raw
 `capabilities(snapshot, user, channel)` evaluator handles ordinary channels and
 returns unavailable for DMs. Session-bound `CapabilityService` can use its own
@@ -75,14 +84,18 @@ profile projection and SQLite; media handling remains separate.
 People lists keep unchanged item Arcs, use generation/version-stamped diffs and
 Reset after source discontinuities. Relevant resource Arc identities prevent
 presence-only publications from projecting/diffing a roster or sorting DMs.
-Sources coalesce at capacity one and close on session revocation. Global DMs use
+Sources coalesce at capacity one and close on session revocation. Inline avatar
+blobs remain only in the explicit owned profile response for a future media
+handoff; the shared in-memory profile snapshots also exclude them. Global DMs use
 (account, channel) identity and sort parsed activity instants, retaining exact
 backend timestamps. Removing/replacing an account removes its rows; actions must
 use the originating session and validate its generation again.
 
 ## Ephemeral activity
 
-Presence and typing use memory-only, generation-scoped snapshots. Offline users
+Presence and typing use memory-only, generation-scoped `ActivitySnapshot` as
+their single source. `ResourceSnapshot` has no duplicate presence vector, and
+presence events do not advance resource versions or write the account cache. Offline users
 are retired, connection loss clears activity immediately, old generation events
 cannot restore it, and removal closes subscriptions. There is no SQLite table,
 restart restoration, or background send retry for activity.
@@ -123,6 +136,13 @@ fresh disposable loopback PostgreSQL database through `DATABASE_URL` and a runti
 Unexpected Go errors fail the proof rather than being counted as denials. CI's
 existing PostgreSQL job runs this expanded harness. Unit projection tests also
 cover independent typing/reaction/attachment gates and external author separation.
+Actual REST regressions also create a DM, block in each direction, hide it and
+reconcile a real Session before checking CapabilityService. A held-reconcile
+fixture replays an obsolete DM event after a newer empty list and proves it
+cannot restore list rows or grants. A 10,000-user/100-update presence fixture
+asserts unchanged resource publication/cache revisions; a 2 MiB avatar fixture
+asserts metadata-only shared retention and intact owned response bytes.
+
 This proves shared SDK behavior, not native client presentation or power-loss
 protection. Ambiguous outgoing sends remain Unknown and are never automatically
 retried.

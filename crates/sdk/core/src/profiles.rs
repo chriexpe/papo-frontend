@@ -12,6 +12,7 @@ use crate::{CacheResource, ClientError, Generated, Session, generation::Epoch};
 impl Session {
     /// Fetches up to 1000 requested IDs in batches of at most 50, deduplicating IDs.
     /// Results and cache publication are fenced by the requesting connection generation.
+    /// Shared snapshots retain metadata only. Inline avatar blobs stay in the returned owned response.
     /// # Errors
     /// Returns revoked/stale generations, identity, transport or rebuildable storage failures.
     pub async fn profiles(
@@ -73,7 +74,7 @@ impl Session {
             self.inner.epochs.validate(epoch.generation)?;
             let request = ProfileBatchRequest { ids: ids.to_vec() };
             let response = self.client.inner.request(rest.profiles(&request)).await?;
-            let batch = response.profiles.unwrap_or_default();
+            let mut batch = response.profiles.unwrap_or_default();
             let mut returned = HashSet::new();
             for profile in &batch {
                 let id = profile.id.as_ref().ok_or(ClientError::ResourceData)?;
@@ -88,7 +89,12 @@ impl Session {
             }
             let cached = Arc::make_mut(&mut snapshot.profiles);
             cached.retain(|existing| !existing.id.as_ref().is_some_and(|id| ids.contains(id)));
-            cached.extend(batch.iter().cloned());
+            for profile in &mut batch {
+                // Do not clone the base64 bytes into the shared resource image.
+                let avatar = profile.avatar_blob.take();
+                cached.push(profile.clone());
+                profile.avatar_blob = avatar;
+            }
             cache.update(&snapshot, &[CacheResource::Profiles]).await?;
             self.inner.publish_resources(snapshot)?;
             profiles.extend(batch);

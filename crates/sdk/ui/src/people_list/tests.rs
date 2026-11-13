@@ -22,11 +22,10 @@ fn image() -> ResourceSnapshot {
         profiles: Arc::default(),
         dms: Arc::default(),
         blocks: Arc::default(),
-        presence: Arc::default(),
     }
 }
 #[tokio::test]
-async fn presence_only_publications_never_project_or_diff_the_roster() {
+async fn unrelated_publications_never_project_or_diff_the_roster() {
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
     let baseline = Arc::new(image());
@@ -48,7 +47,7 @@ async fn presence_only_publications_never_project_or_diff_the_roster() {
     let mut current = (*baseline).clone();
     for version in 2..=10 {
         current.version = version;
-        current.presence = Arc::new(Vec::new());
+        current.profiles = Arc::new(Vec::new());
         sender.send_replace(Arc::new(current.clone()));
         let update = subscription.stream.next().await.unwrap();
         assert_eq!(update.diffs.len(), 0);

@@ -111,15 +111,6 @@ impl SessionInner {
         self.epochs.apply(generation, || {
             if state != ConnectionState::Online {
                 crate::activity::clear(self, generation);
-                self.resources.send_if_modified(|snapshot| {
-                    if snapshot.presence.is_empty() {
-                        return false;
-                    }
-                    let snapshot = Arc::make_mut(snapshot);
-                    snapshot.presence = Arc::default();
-                    snapshot.version = snapshot.version.saturating_add(1);
-                    true
-                });
             }
             self.connection
                 .send_replace(ConnectionStatus { generation, state })
