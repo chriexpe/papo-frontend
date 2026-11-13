@@ -53,11 +53,20 @@ impl TimelineDirection {
     }
 }
 
-/// View-ready items, with no local echoes, author grouping, platform types or translated text.
+/// View-ready history and local echoes; author grouping, platform types and strings belong to clients.
 /// Unchanged items retain their `Arc`; messages retain the canonical SDK payload `Arc` too.
 #[derive(Clone)]
 #[non_exhaustive]
 pub enum TimelineItem {
+    /// Durable create intent, including a confirmed Sent receipt awaiting canonical projection.
+    /// Render Sent from its authoritative receipt; it is never an ambiguous retry candidate.
+    /// Unknown remains an echo even if similar content/time appears in history.
+    LocalEcho {
+        /// Stable local operation identity.
+        id: Uuid,
+        /// Committed payload and typed dispatch state; callers render their own status strings.
+        operation: Arc<papo_sdk::Operation>,
+    },
     /// An authenticated chronological message, never a detached pin/search preview.
     Message {
         /// Backend UUID, stable across edits and view movement.
@@ -87,6 +96,7 @@ pub enum TimelineItem {
 impl TimelineItem {
     pub(crate) fn identity(&self) -> ItemIdentity {
         match self {
+            Self::LocalEcho { id, .. } => ItemIdentity::Local(*id),
             Self::Message { id, .. } => ItemIdentity::Message(*id),
             Self::DateSeparator { before, .. } => ItemIdentity::Date(*before),
             Self::UnreadMarker { .. } => ItemIdentity::Unread,
@@ -103,6 +113,16 @@ impl TimelineItem {
 impl PartialEq for TimelineItem {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (
+                Self::LocalEcho {
+                    id: a,
+                    operation: x,
+                },
+                Self::LocalEcho {
+                    id: b,
+                    operation: y,
+                },
+            ) => a == b && Arc::ptr_eq(x, y),
             (Self::Message { id: a, message: x }, Self::Message { id: b, message: y }) => {
                 a == b && Arc::ptr_eq(x, y)
             }
@@ -120,6 +140,7 @@ impl PartialEq for TimelineItem {
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ItemIdentity {
+    Local(Uuid),
     Message(Uuid),
     Date(Uuid),
     Unread,

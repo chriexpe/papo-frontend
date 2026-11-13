@@ -18,6 +18,7 @@ fn cursor(index: u128) -> HistoryCursor {
 }
 fn snapshot(start: u128, end: u128) -> HistorySnapshot {
     HistorySnapshot {
+        tombstones: imbl::HashSet::new(),
         version: 1,
         generation: Generation(1),
         messages: (start..=end)

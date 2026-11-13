@@ -67,6 +67,7 @@ impl Model {
             return Ok(());
         }
         if let Some(newest) = self.chunks.last_mut()
+            && generation != 0
             && newest.live_generation == generation
             && key > newest.last.key()?
         {
@@ -81,7 +82,8 @@ impl Model {
             .chunks
             .first()
             .is_none_or(|chunk| chunk.first.key().is_ok_and(|first| key < first));
-        let empty_proven = self.chunks.is_empty() && self.empty_generation == generation;
+        let empty_proven =
+            generation != 0 && self.chunks.is_empty() && self.empty_generation == generation;
         if newest && let Some(chunk) = self.chunks.last_mut() {
             chunk.newest_complete = false;
             chunk.live_generation = 0;
@@ -94,7 +96,7 @@ impl Model {
             first: point.clone(),
             last: point,
             oldest_complete: empty_proven,
-            newest_complete: newest,
+            newest_complete: newest && generation != 0,
             generation,
             live_generation: if newest { generation } else { 0 },
         });

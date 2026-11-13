@@ -18,7 +18,7 @@ pub struct Fixture {
     pub store: Arc<ScriptedSecretStore>,
     pub(super) profile: tempfile::TempDir,
     server_runtime: Option<Runtime>,
-    config: ClientConfig,
+    pub(super) config: ClientConfig,
 }
 
 struct NoJitter;

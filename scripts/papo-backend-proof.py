@@ -49,6 +49,8 @@ with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
             env.update(PAPO_ADDRESS=address, PAPO_USERNAME='cursorproof', PAPO_PASSWORD=env['PAPO_PROOF_PASSWORD'],
                        PAPO_LOOPBACK_HTTP='1', PAPO_EVENT_LIMIT='1')
             subprocess.run(['cargo', 'run', '--locked', '-p', 'papo-api', '--example', 'live_events'], cwd=ROOT, env=env, check=True)
+            env['PAPO_CHANNEL_NAME'] = 'upload-proof'
+            subprocess.run(['cargo', 'run', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--example', 'outgoing'], cwd=ROOT, env=env, check=True)
         finally:
             process.terminate()
             process.wait(timeout=10)

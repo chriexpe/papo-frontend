@@ -12,6 +12,7 @@ fn message(id: u128, at: &str) -> Arc<Message> {
 }
 fn snapshot(messages: Vec<Arc<Message>>) -> HistorySnapshot {
     HistorySnapshot {
+        tombstones: imbl::HashSet::new(),
         version: 1,
         generation: Generation::for_test(1),
         messages: messages.into(),

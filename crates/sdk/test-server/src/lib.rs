@@ -43,6 +43,8 @@ mod history_query;
 mod history_seed;
 mod media;
 mod member_requests;
+mod message_requests;
+pub use message_requests::OutgoingRequestCounts;
 mod members;
 mod presence;
 mod read_marks;

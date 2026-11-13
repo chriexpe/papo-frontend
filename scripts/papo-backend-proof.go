@@ -84,6 +84,9 @@ func run() error {
 	handlers.RegisterChannelRoutes(e, cfg)
 	handlers.RegisterMessageRoutes(e, cfg)
 	handlers.RegisterEmbedRoutes(e, cfg)
+	handlers.RegisterUserRoutes(e, cfg)
+	handlers.RegisterRoleRoutes(e, cfg)
+	handlers.RegisterDirectMessageRoutes(e, cfg)
 	handlers.RegisterWebSocketRoutes(e, cfg)
 	e.GET("/health", func(c echo.Context) error { return c.NoContent(204) })
 	e.POST("/__proof/seed", func(c echo.Context) error {

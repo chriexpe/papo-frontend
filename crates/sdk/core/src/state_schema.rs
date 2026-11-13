@@ -4,9 +4,9 @@ use rusqlite::Connection;
 
 use crate::storage_error::StorageError;
 
-pub(crate) const VERSION: i64 = 1;
+pub(crate) const VERSION: i64 = 2;
 
-/// Refuses a newer file before persistent pragmas, and commits migration 1 atomically.
+/// Refuses newer files before persistent pragmas, then migrates and recovers interrupted sends.
 pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version > VERSION {
@@ -21,9 +21,20 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
     if version == 0 {
         let transaction = connection.transaction()?;
         transaction.execute_batch(include_str!("state_v1.sql"))?;
-        transaction.pragma_update(None, "user_version", VERSION)?;
+        transaction.pragma_update(None, "user_version", 1)?;
         transaction.commit()?;
     }
+    if version < 2 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(include_str!("state_v2.sql"))?;
+        transaction.pragma_update(None, "user_version", 2)?;
+        transaction.commit()?;
+    }
+    // A committed Sending may have crossed the socket boundary, even before its first byte.
+    connection.execute(
+        "UPDATE operations SET state='Unknown' WHERE state='Sending'",
+        [],
+    )?;
     Ok(())
 }
 
@@ -68,7 +79,7 @@ mod tests {
         let mut connection = Connection::open(&path).unwrap();
         assert!(matches!(
             migrate(&mut connection),
-            Err(StorageError::NewerSchema { found: 2 })
+            Err(StorageError::NewerSchema { found: 3 })
         ));
         drop(connection);
         assert_eq!(std::fs::read(path).unwrap(), before);

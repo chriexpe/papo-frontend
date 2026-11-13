@@ -37,6 +37,8 @@ pub struct HistorySnapshot {
     pub generation: Generation,
     /// Structurally shared chronological server payloads; unchanged payloads retain their `Arc` identity.
     pub messages: imbl::Vector<Arc<Message>>,
+    /// Canonical tombstones in this cache incarnation; receipt fallbacks never resurrect these IDs.
+    pub tombstones: imbl::HashSet<papo_api::Uuid>,
     /// Proven runs in ascending boundary order, independent of any consumer's window.
     pub chunks: Vec<HistoryChunk>,
     /// Exact excluded boundaries and directions that can be passed to `page()` to fill holes.

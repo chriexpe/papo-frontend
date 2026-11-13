@@ -202,6 +202,10 @@ pub(super) async fn pins(
     let messages = response.pinned.ok_or(HistoryError::InvalidPage)?;
     let mut state = handle.channel.state.lock().await;
     handle.check(generation)?;
+    // A concurrent failed receipt/page commit can reset state while HTTP is pending.
+    state
+        .ensure(&connection.cache, ticket.channel, generation)
+        .await?;
     state.model.pins(&ticket, &messages)?;
     if let Err(error) = pending.replay(&mut state.model) {
         state.reset();

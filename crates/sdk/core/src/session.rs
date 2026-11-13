@@ -28,6 +28,7 @@ pub(crate) struct SessionInner {
     pub resource_serial: tokio::sync::Mutex<()>,
     pub history: crate::history::HistoryStore,
     pub reading: crate::reading::Reading,
+    pub outgoing: crate::outgoing::AccountQueue,
 }
 impl SessionInner {
     pub fn new(
@@ -61,12 +62,15 @@ impl SessionInner {
             resource_serial: tokio::sync::Mutex::new(()),
             history: crate::history::HistoryStore::default(),
             reading: crate::reading::Reading::new(generation),
+            outgoing: crate::outgoing::AccountQueue::default(),
         })
     }
     pub async fn stop(&self) {
         self.root.cancel();
+        drop(self.outgoing.files_serial.lock().await);
         self.history.close_all().await;
         self.reading.image.close();
+        self.outgoing.image.close();
         self.tasks.close();
         self.connection.send_replace(ConnectionStatus {
             generation: self.epochs.current().generation,

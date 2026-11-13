@@ -193,6 +193,7 @@ fn ordinary_operation_rejection_does_not_expire_authenticated_identity() {
 #[test]
 fn rate_limits_and_protocol_failures_do_not_expire_credentials() {
     for error in [
+        papo_api::Error::NotDispatched,
         papo_api::Error::Http { status: 429 },
         papo_api::Error::Decode,
     ] {

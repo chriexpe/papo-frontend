@@ -50,7 +50,9 @@ pub struct Fixture {
     client: Option<Client>,
     server: Option<TestServer>,
     runtime: Option<tokio::runtime::Runtime>,
-    _profile: tempfile::TempDir,
+    pub profile: tempfile::TempDir,
+    store: Arc<ScriptedSecretStore>,
+    config: ClientConfig,
     pub messages: Vec<Message>,
 }
 
@@ -66,24 +68,24 @@ impl Fixture {
             ..Config::default()
         }))?;
         let profile = tempfile::tempdir()?;
-        let client = Client::open(
-            DataRoot::new(profile.path()),
-            Arc::new(ScriptedSecretStore::default()),
-            ClientConfig {
-                insecure_loopback: true,
-                jitter: Arc::new(NoJitter),
-                backoff: Backoff {
-                    initial: Duration::from_secs(2),
-                    maximum: Duration::from_secs(2),
-                },
-                ..ClientConfig::default()
+        let store = Arc::new(ScriptedSecretStore::default());
+        let config = ClientConfig {
+            insecure_loopback: true,
+            jitter: Arc::new(NoJitter),
+            backoff: Backoff {
+                initial: Duration::from_secs(2),
+                maximum: Duration::from_secs(2),
             },
-        )?;
+            ..ClientConfig::default()
+        };
+        let client = Client::open(DataRoot::new(profile.path()), store.clone(), config.clone())?;
         Ok(Self {
             client: Some(client),
             server: Some(server),
             runtime: Some(runtime),
-            _profile: profile,
+            profile,
+            store,
+            config,
             messages: recipe(count).messages()?,
         })
     }
@@ -121,6 +123,21 @@ impl Fixture {
         Ok(session)
     }
 
+    pub fn close_client(&mut self) -> Result {
+        if let Some(mut client) = self.client.take() {
+            client.shutdown()?;
+        }
+        Ok(())
+    }
+    pub fn reopen(&mut self) -> Result {
+        self.close_client()?;
+        self.client = Some(Client::open(
+            DataRoot::new(self.profile.path()),
+            self.store.clone(),
+            self.config.clone(),
+        )?);
+        Ok(())
+    }
     pub fn finish(mut self) -> Result {
         self.shutdown()
     }

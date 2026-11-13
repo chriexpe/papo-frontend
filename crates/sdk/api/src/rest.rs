@@ -137,11 +137,14 @@ impl RestClient {
         client: &reqwest::Client,
         request: RequestBuilder,
     ) -> Result<Response, Error> {
-        let request = request.build().map_err(|_| Error::Transport)?;
-        let response = client
-            .execute(request)
-            .await
-            .map_err(|_| Error::Transport)?;
+        let request = request.build().map_err(|_| Error::NotDispatched)?;
+        let response = client.execute(request).await.map_err(|error| {
+            if error.is_connect() {
+                Error::NotDispatched
+            } else {
+                Error::Transport
+            }
+        })?;
         let status = response.status();
         if status.is_success() {
             return Ok(response);

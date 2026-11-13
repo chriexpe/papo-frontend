@@ -19,6 +19,15 @@ pub use history::{
 pub use papo_api::wire::Message;
 pub use papo_api::{HistoryCursor, HistoryOrder, HistoryQuery, Uuid};
 mod observable;
+mod outgoing;
+pub use outgoing::OutgoingFault;
+pub use outgoing::{
+    Draft, DraftBody, MessageTarget, Operation, OperationFailure, OperationKind, OperationState,
+    OutgoingAttachment, OutgoingError, OutgoingMessage, OutgoingService, OutgoingSnapshot,
+    RetryDecision,
+};
+pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
+mod private_fs;
 mod profiles;
 mod read_points;
 mod reading;
@@ -77,3 +86,6 @@ pub use registry::Registry;
 pub use registry_record::{SavedAccount, SavedServer, UnixMicros};
 pub use server::{ServerAddress, ServerAddressError, ServerId};
 pub use storage_error::StorageError;
+
+#[cfg(feature = "test-support")]
+pub use outgoing::{OutgoingDispatchPhase, OutgoingDispatchProbe};

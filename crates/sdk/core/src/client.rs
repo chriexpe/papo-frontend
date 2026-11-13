@@ -36,6 +36,9 @@ pub struct ClientConfig {
     pub jitter: Arc<dyn Jitter>,
     /// Permit Secure cookies over literal HTTP loopback only, for integration proofs.
     pub insecure_loopback: bool,
+    /// Test-only deterministic interruption points; production builds have no dispatch hook.
+    #[cfg(feature = "test-support")]
+    pub outgoing_probe: Option<Arc<dyn crate::OutgoingDispatchProbe>>,
 }
 impl Default for ClientConfig {
     fn default() -> Self {
@@ -48,6 +51,8 @@ impl Default for ClientConfig {
             backoff: Backoff::default(),
             jitter: Arc::new(RuntimeJitter::default()),
             insecure_loopback: false,
+            #[cfg(feature = "test-support")]
+            outgoing_probe: None,
         }
     }
 }
@@ -64,6 +69,8 @@ pub(crate) struct ClientInner {
     pub registry_tx: Mutex<Option<watch::Sender<Arc<RegistrySnapshot>>>>,
     pub registry_rx: watch::Receiver<Arc<RegistrySnapshot>>,
     pub config: ClientConfig,
+    pub outgoing_files: Arc<tokio::sync::Semaphore>,
+    pub outgoing_collection: Arc<tokio::sync::Semaphore>,
 }
 
 /// External-thread owner of one Tokio runtime and session 4's storage owner.
@@ -126,6 +133,8 @@ impl Client {
                 registry_tx: Mutex::new(Some(tx)),
                 registry_rx: rx,
                 config,
+                outgoing_files: Arc::new(tokio::sync::Semaphore::new(2)),
+                outgoing_collection: Arc::new(tokio::sync::Semaphore::new(1)),
             }),
         };
         let mut client = Self {

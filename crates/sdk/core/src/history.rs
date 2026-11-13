@@ -12,6 +12,7 @@ mod ordering;
 mod persisted_layout;
 mod persistence;
 mod publication;
+mod receipt;
 pub(crate) mod reconnect;
 #[cfg(test)]
 mod reconnect_tests;

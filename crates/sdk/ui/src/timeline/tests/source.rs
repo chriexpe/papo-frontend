@@ -78,6 +78,7 @@ impl Source {
             Vec::new()
         };
         Arc::new(HistorySnapshot {
+            tombstones: imbl::HashSet::new(),
             version: self.version,
             generation,
             messages: messages.into(),

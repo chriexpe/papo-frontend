@@ -7482,6 +7482,7 @@ dependencies = [
 name = "papo-sdk"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "imbl",
  "papo-api",
@@ -7496,6 +7497,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -7509,6 +7511,7 @@ dependencies = [
  "papo-sdk",
  "papo-test-server",
  "proptest",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "tokio",
