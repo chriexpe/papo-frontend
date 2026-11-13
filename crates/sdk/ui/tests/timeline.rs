@@ -8,6 +8,8 @@ mod lifecycle;
 mod outgoing;
 #[path = "timeline/outgoing_faults.rs"]
 mod outgoing_faults;
+#[path = "timeline/search.rs"]
+mod search;
 #[path = "timeline/support.rs"]
 mod support;
 

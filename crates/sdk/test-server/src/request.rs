@@ -62,51 +62,18 @@ pub(crate) async fn handle(
         if method == "POST" && path == "/messages" {
             state.message_body = Some(body.clone());
         }
-        let reply = if let Some(reply) = crate::encoded_media::handle(
+        let reply = route(
             &mut state,
+            &config,
             &method,
             &path,
+            &query,
             user_id.as_deref(),
             &media_headers,
-        ) {
-            reply
-        } else if let Some(reply) = crate::message_requests::handle(
-            &mut state,
-            &method,
-            &path,
-            user_id.as_deref(),
             &content_type,
+            cookie.as_deref(),
             &body,
-        ) {
-            reply
-        } else if let Some(reply) =
-            crate::read_marks::handle(&mut state, &method, &path, user_id.as_deref(), &body)
-        {
-            reply
-        } else if let Some(reply) =
-            crate::channel_list::handle(&state, &method, &path, user_id.as_deref())
-        {
-            reply
-        } else if let Some(reply) =
-            crate::history_http::handle(&state, &method, &path, &query, user_id.as_deref())
-        {
-            reply
-        } else if let Some(reply) =
-            state
-                .resources
-                .handle(&config, &method, &path, &query, user_id.as_deref(), &body)
-        {
-            reply
-        } else {
-            auth_reply(
-                &mut state,
-                &config,
-                &method,
-                &path,
-                cookie.as_deref(),
-                &body,
-            )
-        };
+        );
         let hold = state
             .holds
             .iter()
@@ -247,4 +214,48 @@ fn observe(
         state.base_url.clone(),
         state.read_requests.record(method, path),
     )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fixture HTTP request parts are borrowed only during routing"
+)]
+fn route(
+    state: &mut State,
+    config: &Config,
+    method: &str,
+    path: &str,
+    query: &str,
+    user_id: Option<&str>,
+    media_headers: &hyper::HeaderMap,
+    content_type: &str,
+    cookie: Option<&str>,
+    body: &[u8],
+) -> Reply {
+    if let Some(reply) =
+        crate::notification_search::handle(state, method, path, query, user_id, body)
+    {
+        reply
+    } else if let Some(reply) =
+        crate::encoded_media::handle(state, method, path, user_id, media_headers)
+    {
+        reply
+    } else if let Some(reply) =
+        crate::message_requests::handle(state, method, path, user_id, content_type, body)
+    {
+        reply
+    } else if let Some(reply) = crate::read_marks::handle(state, method, path, user_id, body) {
+        reply
+    } else if let Some(reply) = crate::channel_list::handle(state, method, path, user_id) {
+        reply
+    } else if let Some(reply) = crate::history_http::handle(state, method, path, query, user_id) {
+        reply
+    } else if let Some(reply) = state
+        .resources
+        .handle(config, method, path, query, user_id, body)
+    {
+        reply
+    } else {
+        auth_reply(state, config, method, path, cookie, body)
+    }
 }

@@ -46,6 +46,7 @@ mod media;
 pub use encoded_media::{EncodedMedia, EncodedMediaObservation};
 mod member_requests;
 mod message_requests;
+mod notification_search;
 pub use message_requests::OutgoingRequestCounts;
 mod members;
 mod presence;

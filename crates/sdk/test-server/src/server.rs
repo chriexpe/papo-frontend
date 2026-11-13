@@ -33,11 +33,12 @@ pub(crate) struct State {
     pub(crate) read_acknowledged_at: String,
     pub(crate) holds: Vec<PendingHold>,
     pub(crate) gateway_accepting: bool,
-    rest: VecDeque<RestStep>,
+    pub(crate) rest: VecDeque<RestStep>,
     pub(crate) base_url: String,
     pub(crate) message_body: Option<Bytes>,
     pub(crate) outgoing: crate::OutgoingRequestCounts,
     pub(crate) silent_outgoing: bool,
+    pub(crate) notification_search: crate::notification_search::NotificationSearch,
     pub(crate) media: crate::encoded_media::Media,
 }
 
@@ -88,6 +89,7 @@ impl TestServer {
             message_body: None,
             outgoing: crate::OutgoingRequestCounts::default(),
             silent_outgoing: false,
+            notification_search: crate::notification_search::NotificationSearch::default(),
             media: crate::encoded_media::Media::default(),
         }));
         let (stop, stopped) = oneshot::channel();

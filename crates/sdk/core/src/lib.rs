@@ -6,6 +6,11 @@ pub use activity::{ActivitySnapshot, Presence, PresenceStatus, Typing};
 mod account;
 mod account_cache;
 mod auth;
+mod background;
+pub use background::{
+    BackgroundAccountResult, BackgroundCancellation, BackgroundOutcome, BackgroundReport,
+    InteractiveSyncGuard,
+};
 mod client;
 mod client_error;
 mod client_handle;
@@ -57,6 +62,18 @@ pub use papo_api::wire::{
 };
 pub use read_points::ServerReadPoint;
 pub use resources::ResourceSnapshot;
+mod notifications;
+pub use notifications::{
+    ChannelNotificationMode, InboxCursor, InboxPage, NotificationDelivery, NotificationError,
+    NotificationRecord, NotificationService, NotificationSettings, NotificationStatus,
+    NotificationTarget, PushDevice, PushRegistration,
+};
+mod scoped_request;
+mod search;
+pub use search::{
+    DetachedMessageRequest, DetachedMessageUpdate, SearchCursor, SearchError, SearchHit,
+    SearchNames, SearchPage, SearchQuery, SearchRequestHandle, SearchTarget,
+};
 mod session;
 mod session_pool;
 

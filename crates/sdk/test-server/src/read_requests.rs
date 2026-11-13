@@ -11,6 +11,8 @@ use crate::TestServer;
 /// No account, channel, message ID or body is retained by this instrumentation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReadRequestCounts {
+    /// Number of GET /users/{id}/notifications requests admitted.
+    pub notification_pages: usize,
     /// Number of GET /channels requests admitted.
     pub channel_lists: usize,
     /// Number of GET /channels/{id}/messages requests admitted, including failures.
@@ -29,6 +31,7 @@ pub struct ReadRequestCounts {
 
 #[derive(Default)]
 pub(crate) struct ReadRequests {
+    notification_pages: AtomicUsize,
     channel_lists: AtomicUsize,
     history_pages: AtomicUsize,
     history_rows: AtomicUsize,
@@ -42,6 +45,9 @@ pub(crate) struct UploadGuard(Arc<ReadRequests>);
 
 impl ReadRequests {
     pub(crate) fn record(self: &Arc<Self>, method: &str, path: &str) -> Option<UploadGuard> {
+        if method == "GET" && path.starts_with("/users/") && path.ends_with("/notifications") {
+            self.notification_pages.fetch_add(1, Ordering::SeqCst);
+        }
         if method == "GET" && path == "/channels" {
             self.channel_lists.fetch_add(1, Ordering::SeqCst);
         }
@@ -76,6 +82,7 @@ impl ReadRequests {
 
     pub(crate) fn snapshot(&self) -> ReadRequestCounts {
         ReadRequestCounts {
+            notification_pages: self.notification_pages.load(Ordering::SeqCst),
             channel_lists: self.channel_lists.load(Ordering::SeqCst),
             history_pages: self.history_pages.load(Ordering::SeqCst),
             history_rows: self.history_rows.load(Ordering::SeqCst),

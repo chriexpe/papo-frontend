@@ -43,6 +43,7 @@ fn script_waits_for_its_matching_request_and_is_consumed_once() {
         message_body: None,
         outgoing: crate::OutgoingRequestCounts::default(),
         silent_outgoing: false,
+        notification_search: crate::notification_search::NotificationSearch::default(),
         media: crate::encoded_media::Media::default(),
     };
     assert!(take_step(&mut state, "POST", "/auth/login").is_none());

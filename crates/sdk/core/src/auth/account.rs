@@ -57,9 +57,15 @@ impl AuthService {
     /// Returns backend or credential failures; an uncertain deletion requires read-back on reuse.
     pub async fn logout(&self) -> Result<(), ClientError> {
         let session = self.session.clone().ok_or(ClientError::SignedOut)?;
+        session
+            .inner
+            .notifications
+            .push_closing
+            .store(true, std::sync::atomic::Ordering::Release);
         let result = self
             .run(|this, epoch| async move {
                 let session = this.session.as_ref().ok_or(ClientError::SignedOut)?;
+                let push = crate::notifications::push::unregister_known(session).await;
                 let remote = match this.transport(epoch.as_ref()).await {
                     Ok(rest) => this.client.inner.request(rest.logout()).await,
                     Err(error) => Err(error),
@@ -71,7 +77,10 @@ impl AuthService {
                     .delete(session.inner.key, &session.inner.root)
                     .await?;
                 this.publish(epoch.as_ref(), AuthState::SignedOut)?;
-                remote
+                match push {
+                    Ok(crate::PushRegistration::Unknown) | Err(_) => Err(ClientError::Timeout),
+                    _ => remote,
+                }
             })
             .await;
         let client = self.client.clone();

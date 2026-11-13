@@ -46,6 +46,7 @@ with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
                 raise RuntimeError('Backend readiness timed out')
             env['PAPO_BACKEND_PROOF_ADDRESS'] = address
             subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-api', '--test', 'postgres', '--', '--ignored'], cwd=ROOT, env=env, check=True)
+            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--test', 'session12_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True)
             subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk-ui', '--test', 'permission_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True)
             env.pop('PAPO_SERVER_PASSWORD', None)
             env.update(PAPO_ADDRESS=address, PAPO_USERNAME='cursorproof', PAPO_PASSWORD=env['PAPO_PROOF_PASSWORD'],

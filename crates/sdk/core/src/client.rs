@@ -78,6 +78,8 @@ pub(crate) struct ClientInner {
     pub outgoing_files: Arc<tokio::sync::Semaphore>,
     pub outgoing_collection: Arc<tokio::sync::Semaphore>,
     pub media: crate::media::MediaStore,
+    pub push: crate::notifications::push::PushState,
+    pub background: crate::background::BackgroundState,
     pub disk_serial: tokio::sync::Mutex<()>,
     pub disk_status: tokio::sync::watch::Sender<crate::DiskStatus>,
 }
@@ -138,6 +140,8 @@ impl Client {
                 registry: storage.registry(),
                 caches,
                 media,
+                push: crate::notifications::push::PushState::default(),
+                background: crate::background::BackgroundState::default(),
                 disk_serial: tokio::sync::Mutex::new(()),
                 disk_status: tokio::sync::watch::channel(crate::DiskStatus::Unmeasured).0,
                 removals: storage.removals(),

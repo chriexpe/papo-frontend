@@ -27,10 +27,13 @@ pub(crate) struct SessionInner {
     pub typing_command: watch::Sender<Option<Generated<(papo_api::Uuid, tokio::time::Instant)>>>,
     pub driver_running: AtomicBool,
     pub auth_serial: tokio::sync::Mutex<()>,
+    pub verified_rest: tokio::sync::Mutex<Option<(Generation, papo_api::RestClient)>>,
     pub resource_serial: tokio::sync::Mutex<()>,
     pub history: crate::history::HistoryStore,
     pub reading: crate::reading::Reading,
     pub outgoing: crate::outgoing::AccountQueue,
+    pub detached: crate::search::DetachedStore,
+    pub notifications: crate::notifications::Notifications,
     pub expression_changes: watch::Sender<u64>,
 }
 impl SessionInner {
@@ -64,10 +67,13 @@ impl SessionInner {
             typing_command: watch::channel(None).0,
             driver_running: AtomicBool::new(false),
             auth_serial: tokio::sync::Mutex::new(()),
+            verified_rest: tokio::sync::Mutex::new(None),
             resource_serial: tokio::sync::Mutex::new(()),
             history: crate::history::HistoryStore::default(),
             reading: crate::reading::Reading::new(generation),
             outgoing: crate::outgoing::AccountQueue::default(),
+            detached: crate::search::DetachedStore::default(),
+            notifications: crate::notifications::Notifications::default(),
             expression_changes: watch::channel(0).0,
         })
     }
@@ -83,6 +89,9 @@ impl SessionInner {
             state: ConnectionState::Offline,
         });
         self.auth.send_replace(AuthState::SignedOut);
+        self.notifications
+            .status
+            .send_replace(crate::NotificationStatus::Closed);
         self.auth.close();
         self.connection.close();
         crate::activity::clear(self, self.epochs.current().generation);

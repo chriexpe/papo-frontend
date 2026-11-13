@@ -86,6 +86,7 @@ func run() error {
 	handlers.RegisterEmbedRoutes(e, cfg)
 	handlers.RegisterUserRoutes(e, cfg)
 	handlers.RegisterRoleRoutes(e, cfg)
+	handlers.RegisterSearchRoutes(e, cfg)
 	handlers.RegisterDirectMessageRoutes(e, cfg)
 	handlers.RegisterWebSocketRoutes(e, cfg)
 	registerPermissionProof(e)
