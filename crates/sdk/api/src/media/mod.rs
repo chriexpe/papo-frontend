@@ -51,6 +51,9 @@ pub enum MediaError {
     /// A byte range is empty or reversed.
     #[error("invalid byte range")]
     InvalidRange,
+    /// Encoded representation exceeded the caller's byte budget.
+    #[error("media response exceeds byte limit")]
+    TooLarge,
     /// The transport failed or the backend rejected the request.
     #[error(transparent)]
     Api(#[from] Error),
@@ -188,13 +191,75 @@ impl RestClient {
         };
         let status = response.status().as_u16();
         let headers = representation_headers(response.headers());
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|_| Error::Transport)?
-            .to_vec();
+        let bytes = bounded_body(response, 100 * 1024 * 1024).await?;
         Ok(MediaResponse {
             status,
+            bytes,
+            headers,
+        })
+    }
+}
+
+/// Read encoded media incrementally; a dishonest or absent Content-Length cannot bypass the limit.
+async fn bounded_body(
+    mut response: reqwest::Response,
+    limit_bytes: usize,
+) -> Result<Vec<u8>, MediaError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit_bytes as u64)
+    {
+        return Err(MediaError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| Error::Transport)? {
+        if chunk.len() > limit_bytes.saturating_sub(bytes.len()) {
+            return Err(MediaError::TooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+impl RestClient {
+    /// Conditionally fetch an anonymous mutable avatar. A 304 has no body; callers retain their scoped representation.
+    /// # Errors
+    /// Returns transport/backend rejection or a bounded-body failure. No session cookies are attached.
+    pub async fn conditional_avatar_bytes(
+        &self,
+        id: Uuid,
+        webhook: bool,
+        etag: Option<&str>,
+        modified: Option<&str>,
+    ) -> Result<MediaResponse, MediaError> {
+        let route = if webhook {
+            &routes::GET_WEBHOOKS_WEBHOOK_ID_AVATAR
+        } else {
+            &routes::GET_USERS_USER_ID_AVATAR
+        };
+        let mut request = self.anonymous_route_request(route, &[id.to_string()])?;
+        if let Some(value) = etag {
+            request = request.header(header::IF_NONE_MATCH, value);
+        }
+        if let Some(value) = modified {
+            request = request.header(header::IF_MODIFIED_SINCE, value);
+        }
+        let response = request.send().await.map_err(|_| Error::Transport)?;
+        let status = response.status();
+        if !status.is_success() && status != reqwest::StatusCode::NOT_MODIFIED {
+            return Err(Error::Http {
+                status: status.as_u16(),
+            }
+            .into());
+        }
+        let headers = representation_headers(response.headers());
+        let bytes = if status == reqwest::StatusCode::NOT_MODIFIED {
+            Vec::new()
+        } else {
+            bounded_body(response, 100 * 1024 * 1024).await?
+        };
+        Ok(MediaResponse {
+            status: status.as_u16(),
             bytes,
             headers,
         })

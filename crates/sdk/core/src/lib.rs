@@ -11,7 +11,18 @@ mod client_error;
 mod client_handle;
 mod connection;
 mod connection_driver;
+mod disk_budget;
 mod generation;
+pub use disk_budget::{DiskBudget, DiskError, DiskFault, DiskReport, DiskStatus};
+mod expressions;
+pub use expressions::{
+    CatalogPage, ExpressionError, ExpressionService, ExpressionSnapshot, Gif, GiphyConfig, Sticker,
+};
+pub use expressions::{ExpressionFault, ExpressionUpdate};
+mod media;
+pub use media::{
+    EmojiMetadata, EmojiPage, MediaData, MediaError, MediaRange, MediaService, MediaSource,
+};
 mod history;
 pub use history::{
     HistoryBudget, HistoryChunk, HistoryClosedReason, HistoryDiagnostics, HistoryError, HistoryGap,

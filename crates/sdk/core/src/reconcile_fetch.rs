@@ -15,7 +15,9 @@ pub(crate) async fn fetch(
     let client = &connection.client.inner;
     let rest = &connection.rest;
     let mut snapshot = ResourceSnapshot::empty(epoch.generation);
-    snapshot.server = Some(client.request(rest.server()).await?.into());
+    let mut server = client.request(rest.server()).await?;
+    server.icon_blob = None;
+    snapshot.server = Some(server.into());
     snapshot.channels = client
         .request(rest.channels())
         .await?

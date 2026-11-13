@@ -215,6 +215,7 @@ fn finalize_sent(
         |row| row.get(0),
     )?;
     let mut kind: OperationKind = decode(&bytes)?;
+    crate::expressions::confirmed(tx, account, &kind)?;
     if let OperationKind::Message(message) = &mut kind {
         for file in &mut message.attachments {
             file.bytes.clear();
@@ -342,6 +343,7 @@ impl Registry {
         outcome: Option<Outcome>,
         failure: Option<OperationFailure>,
     ) -> Result<(), OutgoingError> {
+        let notifications = session.inner.expression_changes.clone();
         self.writer
             .write(move |tx| {
                 visible(tx, &session)?;
@@ -367,7 +369,11 @@ impl Registry {
                 }
                 Ok(())
             })
-            .await
+            .await?;
+        if next == OperationState::Sent {
+            notifications.send_modify(|revision| *revision = revision.saturating_add(1));
+        }
+        Ok(())
     }
 
     pub(super) async fn outgoing_discard(

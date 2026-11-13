@@ -35,6 +35,9 @@ pub struct OutgoingMessage {
     pub embeds: Vec<EmbedInput>,
     /// Immutable multipart files in order.
     pub attachments: Vec<OutgoingAttachment>,
+    /// Optional GIF selection bound to this exact durable message; recents change only in Sent commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gif: Option<crate::Gif>,
 }
 
 /// Durable composer state; bindings retain canonical user IDs, never display-name lookup results.
@@ -90,6 +93,13 @@ pub enum OperationKind {
 }
 impl OutgoingMessage {
     pub(super) fn validate(&self) -> Result<(), super::OutgoingError> {
+        if let Some(gif) = &self.gif {
+            gif.validate()
+                .map_err(|_| super::OutgoingError::InvalidInput)?;
+            if self.content != gif.url {
+                return Err(super::OutgoingError::InvalidInput);
+            }
+        }
         validate_text(&self.content)?;
         validate_attachments(&self.attachments)
     }

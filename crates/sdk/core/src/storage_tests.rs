@@ -182,7 +182,7 @@ fn owner_refuses_newer_schema_without_modifying_it() {
             Arc::new(Hooks::default()),
             StorageConfig::default()
         ),
-        Err(StorageError::NewerSchema { found: 3 })
+        Err(StorageError::NewerSchema { found: 4 })
     ));
     assert_eq!(std::fs::read(root.state()).unwrap(), before);
 }

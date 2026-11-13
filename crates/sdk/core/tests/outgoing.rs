@@ -1,6 +1,8 @@
 //! Public durable outgoing/draft behavior over loopback; process-kill gates are a separate Linux suite.
 
 #![cfg(feature = "test-support")]
+#[path = "outgoing_cases/expressions.rs"]
+mod expressions;
 mod fixture;
 #[path = "outgoing_cases/lifecycle.rs"]
 mod lifecycle;

@@ -44,7 +44,7 @@ pub(super) const TABLES: [HistoryTable; 4] = [
 ];
 
 impl HistoryTable {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Chunks => "chunks",
             Self::Items => "chunk_items",

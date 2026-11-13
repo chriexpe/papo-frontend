@@ -50,6 +50,24 @@ pub(crate) async fn apply(
         KnownEvent::RoleAdd(event) => refresh_roles(connection, snapshot, &event.user_id).await,
         KnownEvent::RoleRemove(event) => refresh_roles(connection, snapshot, &event.user_id).await,
         KnownEvent::AvatarUpdate(event) => {
+            let user = event
+                .user_id
+                .parse()
+                .map_err(|_| ClientError::ResourceData)?;
+            if connection
+                .client
+                .inner
+                .media
+                .invalidate_avatar(connection.cache.account_id(), user)
+                .await
+                .is_err()
+            {
+                connection
+                    .client
+                    .inner
+                    .disk_status
+                    .send_replace(crate::DiskStatus::Fault(crate::DiskFault::Media));
+            }
             refresh_member(connection, snapshot, &event.user_id).await
         }
         KnownEvent::DMUpdate(_) => {

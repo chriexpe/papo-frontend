@@ -27,6 +27,10 @@ tokio-util = { version = "0.7", features = ["rt"] }
 sha2 = "0.10.9"
 thiserror = "2"
 url = "2.5"
+# Separate cookie-free provider/media transport; reuse the locked reqwest version.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Safe cross-platform allocated disk-byte measurement, including sparse SQLite files.
+fs2 = "=0.4.3"
 
 [dev-dependencies]
 papo-test-server = { path = "../test-server" }
@@ -40,6 +44,10 @@ required-features = ["test-support"]
 
 [[example]]
 name = "outgoing"
+required-features = ["test-support"]
+
+[[example]]
+name = "media_cost"
 required-features = ["test-support"]
 
 [lints]

@@ -50,6 +50,9 @@ impl Default for HistoryStore {
 }
 
 impl HistoryStore {
+    pub(crate) async fn is_verified(&self, id: Uuid) -> bool {
+        self.verified.read().await.contains(&id)
+    }
     pub(super) async fn channel(&self, id: Uuid) -> Arc<Channel> {
         let mut channels = self.channels.lock().await;
         Arc::clone(channels.entry(id).or_insert_with(|| {
@@ -167,6 +170,20 @@ impl Session {
                         channel.initialize(&state, epoch.generation)
                     })??;
                     drop(state);
+                    if session
+                        .client
+                        .inner
+                        .media
+                        .opened(session.account(), channel.id)
+                        .await
+                        .is_err()
+                    {
+                        session
+                            .client
+                            .inner
+                            .disk_status
+                            .send_replace(crate::DiskStatus::Fault(crate::DiskFault::Media));
+                    }
                     channel.opens.fetch_add(1, Ordering::Relaxed);
                     Ok(HistoryHandle {
                         session: session.clone(),

@@ -38,6 +38,7 @@ pub(crate) struct State {
     pub(crate) message_body: Option<Bytes>,
     pub(crate) outgoing: crate::OutgoingRequestCounts,
     pub(crate) silent_outgoing: bool,
+    pub(crate) media: crate::encoded_media::Media,
 }
 
 /// A running in-memory backend bound exclusively to IPv4 loopback.
@@ -87,6 +88,7 @@ impl TestServer {
             message_body: None,
             outgoing: crate::OutgoingRequestCounts::default(),
             silent_outgoing: false,
+            media: crate::encoded_media::Media::default(),
         }));
         let (stop, stopped) = oneshot::channel();
         let (disconnects, _) = broadcast::channel(1);

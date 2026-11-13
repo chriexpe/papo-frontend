@@ -5,17 +5,34 @@ use crate::{
     wire::{CreateEmojiRequest, Emoji, EmojiListResponse},
 };
 
+const EMOJI_PAGE_LIMIT_BYTES: usize = 12 * 1024 * 1024;
+
 impl RestClient {
     /// Fetches one page of server emoji.
     /// # Errors
     /// Returns transport, backend or decoding failures.
     pub async fn emojis(&self, cursor: Option<&Cursor<'_>>) -> Result<EmojiListResponse, Error> {
         let parameters = cursor.map_or_else(Vec::new, Cursor::parameters);
-        self.json(
-            self.route_request(&routes::GET_EMOJIS, &[])?
-                .query(&parameters),
-        )
-        .await
+        let mut response = self
+            .response(
+                self.route_request(&routes::GET_EMOJIS, &[])?
+                    .query(&parameters),
+            )
+            .await?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > EMOJI_PAGE_LIMIT_BYTES as u64)
+        {
+            return Err(Error::Decode);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| Error::Transport)? {
+            if chunk.len() > EMOJI_PAGE_LIMIT_BYTES.saturating_sub(bytes.len()) {
+                return Err(Error::Decode);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| Error::Decode)
     }
 
     /// Uploads a base64 image as an emoji once.

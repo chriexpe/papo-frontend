@@ -15,6 +15,8 @@ mod shutdown;
 mod startup;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vacuum_tests;
 
 use std::{path::PathBuf, sync::Arc, thread::JoinHandle, time::Duration};
 

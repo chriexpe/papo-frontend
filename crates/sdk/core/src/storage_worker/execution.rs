@@ -64,6 +64,14 @@ pub struct CommitInfo {
 pub(super) enum QueuedJob {
     Write(Box<dyn Job>),
     Checkpoint(oneshot::Sender<Result<(), WorkerError>>),
+    Reclaim {
+        sender: oneshot::Sender<Result<bool, WorkerError>>,
+        busy: bool,
+    },
+    Truncate {
+        sender: oneshot::Sender<Result<bool, WorkerError>>,
+        busy: bool,
+    },
 }
 
 impl QueuedJob {
@@ -72,6 +80,9 @@ impl QueuedJob {
             Self::Write(job) => job.respond(result),
             Self::Checkpoint(sender) => {
                 let _ = sender.send(result.map(|_| ()));
+            }
+            Self::Reclaim { sender, busy } | Self::Truncate { sender, busy } => {
+                let _ = sender.send(result.map(|_| busy));
             }
         }
     }
@@ -174,6 +185,20 @@ pub(super) fn run(
     durable: bool,
 ) -> Result<CommitInfo, WorkerError> {
     let job = match job {
+        QueuedJob::Reclaim { busy, .. } => {
+            *busy = super::connection::reclaim(connection)?;
+            return Ok(CommitInfo {
+                affected_rows: 0,
+                durable: false,
+            });
+        }
+        QueuedJob::Truncate { busy, .. } => {
+            *busy = super::connection::truncate(connection)?;
+            return Ok(CommitInfo {
+                affected_rows: 0,
+                durable,
+            });
+        }
         QueuedJob::Write(job) => job.as_mut(),
         QueuedJob::Checkpoint(_) => {
             super::connection::checkpoint(connection)?;

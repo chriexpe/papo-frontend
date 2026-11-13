@@ -170,13 +170,40 @@ async fn stopping_an_old_handle_never_stops_its_replacement() {
     let pool = SessionPool::new();
     let old = session();
     let replacement = session();
-    pool.insert(Arc::clone(&replacement));
+    pool.insert(Arc::clone(&replacement)).await;
     pool.stop_if_current(&old).await;
     assert!(!replacement.root.is_cancelled());
     assert!(pool.get(replacement.account).is_some());
     pool.stop_if_current(&replacement).await;
     assert!(replacement.root.is_cancelled());
     assert!(pool.get(replacement.account).is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn maintenance_lifecycle_fence_blocks_login_and_stop_until_its_turn_finishes() {
+    let pool = SessionPool::new();
+    let account = session();
+    let guard = pool.lifecycle(account.account).read_owned().await;
+    let registering = Arc::clone(&pool);
+    let pending = Arc::clone(&account);
+    let registration = tokio::spawn(async move {
+        registering.insert(pending).await;
+    });
+    tokio::task::yield_now().await;
+    assert!(pool.get(account.account).is_none());
+    drop(guard);
+    registration.await.unwrap();
+    let guard = pool.lifecycle(account.account).read_owned().await;
+    let stopping = Arc::clone(&pool);
+    let id = account.account;
+    let stop = tokio::spawn(async move {
+        stopping.stop(id).await;
+    });
+    tokio::task::yield_now().await;
+    assert!(!account.root.is_cancelled());
+    drop(guard);
+    stop.await.unwrap();
+    assert!(account.root.is_cancelled());
 }
 
 #[test]

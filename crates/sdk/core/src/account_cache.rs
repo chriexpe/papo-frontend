@@ -13,6 +13,7 @@ mod history_tests;
 mod lifecycle_tests;
 mod migration;
 mod persistence;
+mod retention;
 mod schema;
 #[cfg(test)]
 mod tests;
@@ -122,6 +123,7 @@ pub struct AccountCache {
     readers: Arc<ReadPool>,
     serial: Arc<Mutex<bool>>,
     generation: Arc<AtomicU64>,
+    retention: std::sync::Mutex<HashMap<[u8; 16], Arc<AtomicU64>>>,
 }
 
 impl AccountCaches {
@@ -172,6 +174,7 @@ impl AccountCaches {
                 readers: Arc::clone(&inner.readers),
                 serial: Arc::new(Mutex::new(false)),
                 generation: Arc::new(AtomicU64::new(0)),
+                retention: std::sync::Mutex::new(HashMap::new()),
             });
             if let Err(error) = cache.history_recover().await {
                 let _ = cache.writer.close().await;
@@ -249,6 +252,9 @@ impl AccountCaches {
 }
 
 impl AccountCache {
+    pub(crate) fn account_id(&self) -> AccountId {
+        self.account
+    }
     /// Load the visible coherent revision, tagged with the caller's current generation.
     /// Identity metadata is checked before every bounded query batch. Presence is empty.
     /// Canceling this future does not release the fence around a running blocking query.

@@ -127,6 +127,7 @@ impl AccountCache {
 
     /// Commit a model delta only while its dispatched request epoch is still current.
     /// The token is checked on the actual writer thread before and after mutation.
+    #[cfg(test)]
     pub(crate) async fn history_commit_current(
         &self,
         channel: [u8; 16],
@@ -136,11 +137,42 @@ impl AccountCache {
         upserts: Vec<HistoryRow>,
         deletes: Vec<HistoryKey>,
     ) -> Result<(), CacheError> {
+        self.history_commit_versioned(channel, set_id, current, metadata, upserts, deletes, None)
+            .await
+    }
+
+    pub(crate) async fn history_commit_versioned(
+        &self,
+        channel: [u8; 16],
+        set_id: i64,
+        current: (Generation, CancellationToken),
+        metadata: Vec<u8>,
+        upserts: Vec<HistoryRow>,
+        deletes: Vec<HistoryKey>,
+        expected: Option<(u64, u64)>,
+    ) -> Result<(), CacheError> {
         let (generation, cancel) = current;
+        let retention = self.retention_clock(channel);
         if upserts.len().saturating_add(deletes.len()) > 499 {
             return Err(WorkerError::RowLimit.into());
         }
         self.history_transaction_current(generation, cancel, move |transaction| {
+            if let Some((version, revision)) = expected {
+                if retention.load(std::sync::atomic::Ordering::Acquire) != version {
+                    return Err(CacheError::Superseded);
+                }
+                let actual: i64 = transaction
+                    .query_row(
+                        "SELECT CASE WHEN length(metadata)=0 THEN 0
+                     ELSE json_extract(metadata,'$.revision') END FROM history_sets WHERE id=?1",
+                        [set_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(WorkerError::from)?;
+                if u64::try_from(actual).ok() != Some(revision) {
+                    return Err(CacheError::Superseded);
+                }
+            }
             if authorized(transaction, channel, generation)? != Some(set_id) {
                 return Err(CacheError::InvalidData);
             }

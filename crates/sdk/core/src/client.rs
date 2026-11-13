@@ -30,6 +30,10 @@ pub struct ClientConfig {
     pub storage: StorageConfig,
     /// Per-account warm idle-history limits; active capabilities are accounted separately.
     pub history: crate::HistoryBudget,
+    /// Optional external GIF provider key. Never persisted or shared with Papo transport.
+    pub giphy: Option<crate::GiphyConfig>,
+    /// Global physical allocation ceiling, including protected durable bytes.
+    pub disk: crate::DiskBudget,
     /// Capped retry delay configuration.
     pub backoff: Backoff,
     /// Injectable jitter; tests use deterministic implementations.
@@ -48,6 +52,8 @@ impl Default for ClientConfig {
             request_timeout: Duration::from_secs(30),
             storage: StorageConfig::default(),
             history: crate::HistoryBudget::default(),
+            giphy: None,
+            disk: crate::DiskBudget::default(),
             backoff: Backoff::default(),
             jitter: Arc::new(RuntimeJitter::default()),
             insecure_loopback: false,
@@ -71,6 +77,9 @@ pub(crate) struct ClientInner {
     pub config: ClientConfig,
     pub outgoing_files: Arc<tokio::sync::Semaphore>,
     pub outgoing_collection: Arc<tokio::sync::Semaphore>,
+    pub media: crate::media::MediaStore,
+    pub disk_serial: tokio::sync::Mutex<()>,
+    pub disk_status: tokio::sync::watch::Sender<crate::DiskStatus>,
 }
 
 /// External-thread owner of one Tokio runtime and session 4's storage owner.
@@ -99,6 +108,7 @@ impl Client {
         if config.worker_threads == 0
             || config.credential_timeout.is_zero()
             || config.request_timeout.is_zero()
+            || config.disk.maintenance_interval.is_zero()
         {
             return Err(ClientError::Configuration);
         }
@@ -110,7 +120,7 @@ impl Client {
             .map_err(|_| ClientError::Executor)?;
         let pool = SessionPool::new();
         let secrets = Arc::new(SecretStoreBoundary::new(store, config.credential_timeout));
-        let storage = Storage::open(
+        let storage = Storage::open_deferred(
             root,
             &runtime,
             Arc::clone(&secrets),
@@ -119,12 +129,17 @@ impl Client {
         )?;
         let caches = storage.account_caches();
         pool.set_caches(caches.clone());
+        let media = crate::media::MediaStore::new(&storage)?;
+        pool.set_media(media.clone());
         let (tx, rx) = watch::channel(Arc::new(RegistrySnapshot::default()));
         let handle = ClientHandle {
             inner: Arc::new(ClientInner {
                 runtime: runtime.handle().clone(),
                 registry: storage.registry(),
                 caches,
+                media,
+                disk_serial: tokio::sync::Mutex::new(()),
+                disk_status: tokio::sync::watch::channel(crate::DiskStatus::Unmeasured).0,
                 removals: storage.removals(),
                 secrets,
                 pool,
@@ -147,6 +162,7 @@ impl Client {
             .as_ref()
             .ok_or(ClientError::Closed)?
             .block_on(async {
+                client.handle.inner.removals.resume().await?;
                 client.handle.inner.publish_registry().await?;
                 client.handle.restore_accounts().await
             });
@@ -154,6 +170,7 @@ impl Client {
             let _ = client.shutdown();
             return Err(error);
         }
+        crate::disk_budget::start(client.handle.clone());
         Ok(client)
     }
     /// Returns async services; they schedule work only on this client's runtime.

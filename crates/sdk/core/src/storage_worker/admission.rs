@@ -168,6 +168,31 @@ impl DatabaseWriter {
         receiver.await.map_err(|_| WorkerError::WorkerStopped)?
     }
 
+    /// Reclaims up to 64 free pages and attempts a nonblocking truncating checkpoint.
+    /// A held reader may leave allocated bytes unchanged; callers must remeasure.
+    pub(crate) async fn reclaim(&self) -> Result<bool, WorkerError> {
+        if self.state {
+            return Err(WorkerError::InvalidConfiguration);
+        }
+        let (sender, receiver) = oneshot::channel();
+        self.admit(QueuedJob::Reclaim {
+            sender,
+            busy: false,
+        })
+        .await?;
+        receiver.await.map_err(|_| WorkerError::WorkerStopped)?
+    }
+    /// Truncates checkpointable WAL frames on either writer; true means an active reader prevented truncation.
+    pub(crate) async fn truncate_wal(&self) -> Result<bool, WorkerError> {
+        let (sender, receiver) = oneshot::channel();
+        self.admit(QueuedJob::Truncate {
+            sender,
+            busy: false,
+        })
+        .await?;
+        receiver.await.map_err(|_| WorkerError::WorkerStopped)?
+    }
+
     async fn admit(&self, job: QueuedJob) -> Result<u64, WorkerError> {
         let permit = Arc::clone(&self.capacity)
             .acquire_owned()

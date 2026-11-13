@@ -128,7 +128,13 @@ fn outgoing_child() {
 fn draft() -> DraftBody {
     DraftBody {
         message: OutgoingMessage {
-            content: "synthetic".into(),
+            content: "https://example.invalid/synthetic.gif".into(),
+            gif: Some(papo_sdk::Gif {
+                id: "kill-gif".into(),
+                url: "https://example.invalid/synthetic.gif".into(),
+                page_url: "https://example.invalid/synthetic".into(),
+                title: String::new(),
+            }),
             attachments: vec![OutgoingAttachment {
                 filename: "kill.bin".into(),
                 bytes: vec![0, 255, 1],
