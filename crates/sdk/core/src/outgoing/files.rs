@@ -54,6 +54,7 @@ pub(super) fn stage_observed(
     for bytes in values {
         refs.push(stage_blob(&directory, bytes, &mut copied_chunk)?);
     }
+    #[cfg(unix)]
     sync_directories(root, &directory)?;
     Ok(refs)
 }
@@ -109,11 +110,6 @@ fn sync_directories(root: &Path, directory: &Path) -> Result<(), StorageError> {
     ] {
         sync_directory(path)?;
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn sync_directories(_root: &Path, _directory: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 

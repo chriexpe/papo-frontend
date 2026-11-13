@@ -333,7 +333,9 @@ async fn probe(session: &Session, id: Uuid, phase: OutgoingDispatchPhase) {
 }
 
 #[cfg(not(feature = "test-support"))]
-async fn probe(_session: &Session, _id: Uuid, _phase: OutgoingDispatchPhase) {}
+fn probe(_session: &Session, _id: Uuid, _phase: OutgoingDispatchPhase) -> std::future::Ready<()> {
+    std::future::ready(())
+}
 
 #[cfg(test)]
 mod tests;
