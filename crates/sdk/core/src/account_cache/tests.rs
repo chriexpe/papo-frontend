@@ -141,7 +141,6 @@ fn persistence_strips_nested_live_state_and_image_bytes() {
         let cache = caches.open(account(1)).await.unwrap();
         cache.replace(&snapshot()).await.unwrap();
         let loaded = cache.load(Generation(4)).await.unwrap();
-        assert!(loaded.presence.is_empty());
         assert!(loaded.server.unwrap().icon_blob.is_none());
         assert!(loaded.profiles[0].avatar_blob.is_none());
         assert!(loaded.profiles[0].status.is_none());

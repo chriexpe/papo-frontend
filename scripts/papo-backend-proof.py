@@ -22,6 +22,7 @@ if actual != pin:
 proof = backend / 'backend/cmd/sdk-proof'
 proof.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(ROOT / 'scripts/papo-backend-proof.go', proof / 'main.go')
+shutil.copyfile(ROOT / 'scripts/papo-permission-proof.go', proof / 'permissions.go')
 subprocess.run(['go', 'build', '-o', str(ROOT / 'target/papo-backend-pinned'), './cmd/main.go'], cwd=backend / 'backend', check=True)
 subprocess.run(['go', 'build', '-o', str(ROOT / 'target/papo-backend-proof'), './cmd/sdk-proof'], cwd=backend / 'backend', check=True)
 with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
@@ -45,6 +46,7 @@ with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
                 raise RuntimeError('Backend readiness timed out')
             env['PAPO_BACKEND_PROOF_ADDRESS'] = address
             subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-api', '--test', 'postgres', '--', '--ignored'], cwd=ROOT, env=env, check=True)
+            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk-ui', '--test', 'permission_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True)
             env.pop('PAPO_SERVER_PASSWORD', None)
             env.update(PAPO_ADDRESS=address, PAPO_USERNAME='cursorproof', PAPO_PASSWORD=env['PAPO_PROOF_PASSWORD'],
                        PAPO_LOOPBACK_HTTP='1', PAPO_EVENT_LIMIT='1')

@@ -1,9 +1,25 @@
 //! Observable Papo UI services belong here; transport and durable state belong to `papo-sdk`.
 //! Platform widgets, navigation and translated text belong to client applications.
 
+mod activity;
+pub use activity::{ActivityService, ActivitySubscription, ActivityView, TypingItem};
+mod capabilities;
+pub use capabilities::{
+    AuthorIdentity, CapabilityService, CapabilitySubscription, CapabilityView, ChannelCapabilities,
+    ServerCapabilities, capabilities,
+};
+mod direct_messages;
+pub use direct_messages::{
+    DirectMessageId, DirectMessageItem, DirectMessageService, DirectMessageSubscription,
+    DirectMessageUpdate,
+};
 mod channel_list;
 mod channel_projection;
 mod channel_reading;
+mod people;
+mod people_list;
+pub use people::{MemberItem, PeopleService, ProfileItem, RoleLabel};
+pub use people_list::{PeopleListSubscription, PeopleListUpdate};
 mod list_diff;
 mod list_subscription;
 mod registry_projection;

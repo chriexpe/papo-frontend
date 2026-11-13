@@ -4,7 +4,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 
 use papo_api::{
     Uuid,
-    gateway::{KnownEvent, PresenceMember, PresenceSyncEvent},
+    gateway::{KnownEvent, PresenceMember, PresenceSyncEvent, PresenceUpdateEvent},
     wire::{DirectConversation, UserSummary},
 };
 use papo_sdk::{
@@ -16,7 +16,7 @@ use rusqlite::{Connection, params};
 
 use super::{
     fixture::{Result, login, register},
-    reconcile::{online, resources},
+    reconcile::online,
 };
 
 struct CacheFixture {
@@ -68,6 +68,19 @@ async fn cache_revision(path: std::path::PathBuf) -> Result<i64> {
     .await??)
 }
 
+async fn activity(
+    receiver: &mut tokio::sync::watch::Receiver<papo_sdk::ActivitySnapshot>,
+    predicate: impl Fn(&papo_sdk::ActivitySnapshot) -> bool,
+) -> Result<papo_sdk::ActivitySnapshot> {
+    loop {
+        let snapshot = receiver.borrow_and_update().clone();
+        if predicate(&snapshot) {
+            return Ok(snapshot);
+        }
+        receiver.changed().await?;
+    }
+}
+
 #[test]
 fn presence_sync_replaces_memory_without_writing_presence_to_the_account_cache() -> Result {
     let fixture = CacheFixture::new()?;
@@ -81,23 +94,37 @@ fn presence_sync_replaces_memory_without_writing_presence_to_the_account_cache()
         online(&session).await?;
         let cache_path = fixture.root.account_cache(session.account());
         let revision = cache_revision(cache_path.clone()).await?;
-        let mut snapshots = session.subscribe_resources();
+        let mut resource_source = session.subscribe_resources();
+        let resource_version = resource_source.borrow_and_update().version;
+        let mut snapshots = session.subscribe_activity();
         let synthetic = Uuid::from_u128(77).to_string();
         server.emit_event(KnownEvent::PresenceSync(Box::new(PresenceSyncEvent {
             members: vec![PresenceMember { user_id: synthetic.clone(), status: "idle".into(), ..PresenceMember::default() }],
         }))).await?;
-        resources(&mut snapshots, |snapshot| snapshot.presence.len() == 1 && snapshot.presence[0].user_id == synthetic).await?;
+        activity(&mut snapshots, |snapshot| snapshot.presence.len() == 1 && snapshot.presence.contains_key(&Uuid::from_u128(77))).await?;
         server.emit_event(KnownEvent::PresenceSync(Box::default())).await?;
-        resources(&mut snapshots, |snapshot| snapshot.presence.is_empty()).await?;
+        activity(&mut snapshots, |snapshot| snapshot.presence.is_empty()).await?;
         server.emit_event(KnownEvent::PresenceSync(Box::new(PresenceSyncEvent {
             members: vec![PresenceMember { user_id: synthetic.clone(), status: "idle".into(), ..PresenceMember::default() }],
         }))).await?;
-        resources(&mut snapshots, |snapshot| snapshot.presence.iter().any(|member| member.user_id == synthetic)).await?;
+        activity(&mut snapshots, |snapshot| snapshot.presence.contains_key(&Uuid::from_u128(77))).await?;
+        // A large connected roster and repeated individual updates must not touch resource storage/publication.
+        server.emit_event(KnownEvent::PresenceSync(Box::new(PresenceSyncEvent {
+            members: (1..=10_000).map(|user| PresenceMember { user_id: Uuid::from_u128(user).to_string(), status: "online".into(), ..PresenceMember::default() }).collect(),
+        }))).await?;
+        activity(&mut snapshots, |snapshot| snapshot.presence.len() == 10_000).await?;
+        let expected_version = snapshots.borrow().version + 100;
+        for _ in 0..100 {
+            server.emit_event(KnownEvent::PresenceUpdate(Box::new(PresenceUpdateEvent { user_id: synthetic.clone(), status: "away".into(), ..PresenceUpdateEvent::default() }))).await?;
+        }
+        activity(&mut snapshots, |snapshot| snapshot.version >= expected_version).await?;
+        assert_eq!(resource_source.borrow().version, resource_version);
+        assert!(!resource_source.has_changed()?);
         assert_eq!(cache_revision(cache_path).await?, revision);
         session.reconnect()?;
         let generation = online(&session).await?;
-        let snapshot = resources(&mut snapshots, |snapshot| snapshot.generation == generation && snapshot.presence.iter().any(|member| member.user_id == session.account().user().to_string())).await?;
-        assert!(snapshot.presence.iter().all(|member| member.user_id != synthetic));
+        let snapshot = activity(&mut snapshots, |snapshot| snapshot.generation == generation && snapshot.presence.contains_key(&session.account().user())).await?;
+        assert!(!snapshot.presence.contains_key(&Uuid::from_u128(77)));
         let cache = fixture.root.account_cache(session.account());
         let rows = tokio::task::spawn_blocking(move || -> rusqlite::Result<Vec<String>> {
             let connection = Connection::open(cache)?;

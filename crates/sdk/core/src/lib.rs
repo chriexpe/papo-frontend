@@ -1,6 +1,8 @@
 //! Client, account sessions, authentication, reconnect policy and durable device state.
 //! Wire transport belongs to `papo-api`; UI projections and platform integration live above this crate.
 
+mod activity;
+pub use activity::{ActivitySnapshot, Presence, PresenceStatus, Typing};
 mod account;
 mod account_cache;
 mod auth;
@@ -27,6 +29,7 @@ pub use outgoing::{
     RetryDecision,
 };
 pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
+pub mod permissions;
 mod private_fs;
 mod profiles;
 mod read_points;
@@ -37,7 +40,10 @@ mod reconcile_event;
 mod reconcile_fetch;
 mod resources;
 pub use account_cache::{AccountCache, AccountCaches, CacheError, CacheResource};
-pub use papo_api::wire::{Channel, LoginRequest, LoginServerRequest, RegisterRequest};
+pub use papo_api::wire::{
+    Channel, DirectConversation, ExternalAuthor, LoginRequest, LoginServerRequest, RegisterRequest,
+    Role, RoleSummary, UserProfile, UserSummary,
+};
 pub use read_points::ServerReadPoint;
 pub use resources::ResourceSnapshot;
 mod session;

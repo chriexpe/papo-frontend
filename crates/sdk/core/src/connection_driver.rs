@@ -17,10 +17,28 @@ pub(crate) trait Socket: Send {
 struct AccountSocket {
     gateway: Gateway,
     resources: crate::reconcile::ResourceConnection,
+    typing: tokio::sync::watch::Receiver<Option<Generated<(papo_api::Uuid, tokio::time::Instant)>>>,
+    generation: crate::Generation,
 }
 impl Socket for AccountSocket {
     fn next(&mut self) -> IoFuture<'_, Option<Event>> {
-        Box::pin(async { Ok(self.gateway.next().await?) })
+        Box::pin(async {
+            loop {
+                tokio::select! {
+                    result = self.gateway.next() => return Ok(result?),
+                    changed = self.typing.changed() => {
+                        if changed.is_err() { return Err(ClientError::Closed); }
+                        let command = self.typing.borrow_and_update().clone();
+                        if let Some(command) = command
+                            && command.generation == self.generation
+                            && command.value.1.elapsed() < std::time::Duration::from_secs(10)
+                        {
+                            self.gateway.send(&papo_api::gateway::Command::Typing { channel_id: command.value.0.to_string() }).await?;
+                        }
+                    }
+                }
+            }
+        })
     }
     fn resources(&self) -> Option<crate::reconcile::ResourceConnection> {
         Some(self.resources.clone())
@@ -72,6 +90,8 @@ impl Connector for ApiConnector {
             session.epochs.validate(epoch.generation)?;
             Ok(Box::new(AccountSocket {
                 gateway,
+                typing: session.typing_command.subscribe(),
+                generation: epoch.generation,
                 resources: crate::reconcile::ResourceConnection {
                     client: self.0.clone(),
                     rest,
@@ -93,6 +113,12 @@ pub(crate) fn start(client: ClientHandle, session: Arc<SessionInner>) {
     {
         return;
     }
+    let expiry_session = Arc::clone(&session);
+    let expiry_token = session.tasks.token();
+    client.inner.runtime.spawn(async move {
+        let _token = expiry_token;
+        crate::activity::expire_loop(expiry_session).await;
+    });
     let token = session.tasks.token();
     let runtime = client.inner.runtime.clone();
     runtime.spawn(async move {

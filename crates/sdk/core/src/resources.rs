@@ -1,14 +1,11 @@
-//! Account resource snapshots and in-memory presence; persistence and reconciliation live separately.
+//! Account resource metadata snapshots; persistence and reconciliation live separately.
 
 use crate::Generation;
-use papo_api::{
-    gateway::PresenceMember,
-    wire::{Channel, DirectConversation, Role, Server, UserProfile, UserSummary},
-};
+use papo_api::wire::{Channel, DirectConversation, Role, Server, UserProfile, UserSummary};
 use std::sync::Arc;
 
 /// One account's coherent resource image, never an authorization decision.
-/// Presence is memory-only. Message history, unread counts and capability evaluation are not included.
+/// Live presence/typing belong to `ActivitySnapshot`; history and unread state have separate services.
 #[derive(Clone)]
 pub struct ResourceSnapshot {
     /// Monotonically increasing publication within this session, including reconcile replacements.
@@ -29,8 +26,6 @@ pub struct ResourceSnapshot {
     pub dms: Arc<Vec<DirectConversation>>,
     /// Backend-authoritative block list.
     pub blocks: Arc<Vec<UserSummary>>,
-    /// Current generation's presence, replaced by `PresenceSync`; never persisted.
-    pub presence: Arc<Vec<PresenceMember>>,
 }
 impl ResourceSnapshot {
     pub(crate) fn empty(generation: Generation) -> Self {
@@ -44,7 +39,6 @@ impl ResourceSnapshot {
             profiles: Arc::default(),
             dms: Arc::default(),
             blocks: Arc::default(),
-            presence: Arc::default(),
         }
     }
 }

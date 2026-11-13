@@ -126,3 +126,75 @@ fn profile_batch_captured_before_reconnect_cannot_publish_in_the_new_generation(
     })??;
     fixture.finish()
 }
+
+#[test]
+fn profile_admission_is_bounded_and_duplicate_ids_are_requested_only_once() -> Result {
+    let fixture = Fixture::new(Config::default())?;
+    fixture.run(async {
+        let profile = profile(42);
+        let id = Uuid::parse_str(profile.id.as_deref().unwrap())?;
+        fixture.server().set_profile(profile).await?;
+        let session = signed_in(&fixture, "bounded-profiles").await?;
+        let before = fixture.server().member_request_counts().await;
+        assert!(matches!(
+            session.profiles(&vec![id; 1001]).await,
+            Err(ClientError::ProfileLimit)
+        ));
+        let after = fixture.server().member_request_counts().await;
+        assert_eq!(before.profile_requests, after.profile_requests);
+        let response = session.profiles(&[id, id, id]).await?;
+        assert_eq!(response.value.len(), 1);
+        assert_eq!(
+            fixture
+                .server()
+                .member_request_counts()
+                .await
+                .profile_requests,
+            before.profile_requests + 1
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}
+
+#[test]
+fn avatar_bytes_are_returned_to_the_caller_but_never_retained_in_shared_profiles() -> Result {
+    let fixture = Fixture::new(Config::default())?;
+    fixture.run(async {
+        let mut user = profile(99);
+        let id = Uuid::parse_str(user.id.as_deref().unwrap())?;
+        user.avatar_blob = Some("A".repeat(2 * 1024 * 1024));
+        user.avatar_format = Some("webp".into());
+        fixture.server().set_profile(user).await?;
+        let session = signed_in(&fixture, "profile-blobs").await?;
+        let response = session.profiles(&[id]).await?;
+        assert_eq!(
+            response.value[0].avatar_blob.as_ref().map(String::len),
+            Some(2 * 1024 * 1024)
+        );
+        let image = session.subscribe_resources().borrow().clone();
+        let retained = image
+            .profiles
+            .iter()
+            .find(|profile| profile.id.as_deref() == Some(id.to_string().as_str()))
+            .unwrap();
+        assert!(retained.avatar_blob.is_none());
+        assert_eq!(retained.avatar_format.as_deref(), Some("webp"));
+        assert_eq!(retained.nickname.as_deref(), Some("before-invalidation"));
+        let response = session.profiles(&[id]).await?;
+        assert!(
+            session
+                .subscribe_resources()
+                .borrow()
+                .profiles
+                .iter()
+                .all(|profile| profile.avatar_blob.is_none())
+        );
+        assert_eq!(
+            response.value[0].avatar_blob.as_ref().map(String::len),
+            Some(2 * 1024 * 1024)
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}

@@ -187,3 +187,6 @@ fn public_visible_reports_reject_old_canonical_and_window_versions_without_advan
     })??;
     fixture.finish()
 }
+
+#[path = "timeline/people.rs"]
+mod people;
