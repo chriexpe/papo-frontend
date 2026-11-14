@@ -23,11 +23,14 @@ proof = backend / 'backend/cmd/sdk-proof'
 proof.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(ROOT / 'scripts/papo-backend-proof.go', proof / 'main.go')
 shutil.copyfile(ROOT / 'scripts/papo-permission-proof.go', proof / 'permissions.go')
+shutil.copyfile(ROOT / 'scripts/papo-operations-proof.go', proof / 'operations.go')
 subprocess.run(['go', 'build', '-o', str(ROOT / 'target/papo-backend-pinned'), './cmd/main.go'], cwd=backend / 'backend', check=True)
 subprocess.run(['go', 'build', '-o', str(ROOT / 'target/papo-backend-proof'), './cmd/sdk-proof'], cwd=backend / 'backend', check=True)
 with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
     address_file = pathlib.Path(directory) / 'address'
-    env = dict(os.environ, PAPO_PROOF_ADDRESS_FILE=str(address_file))
+    # All independent proof clients share one loopback IP and the auth token bucket.
+    # Provision burst capacity for the suite; keep real authentication/authorization middleware.
+    env = dict(os.environ, PAPO_PROOF_ADDRESS_FILE=str(address_file), AUTH_RATE_BURST='256')
     with subprocess.Popen([str(ROOT / 'target/papo-backend-proof')], cwd=backend / 'backend', env=env,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as process:
         try:
@@ -45,15 +48,16 @@ with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
             else:
                 raise RuntimeError('Backend readiness timed out')
             env['PAPO_BACKEND_PROOF_ADDRESS'] = address
-            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-api', '--test', 'postgres', '--', '--ignored'], cwd=ROOT, env=env, check=True)
-            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--test', 'session12_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True)
-            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk-ui', '--test', 'permission_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True)
+            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-api', '--test', 'postgres', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)
+            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--test', 'session12_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)
+            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk-ui', '--test', 'permission_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)
+            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--test', 'session13_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)
             env.pop('PAPO_SERVER_PASSWORD', None)
             env.update(PAPO_ADDRESS=address, PAPO_USERNAME='cursorproof', PAPO_PASSWORD=env['PAPO_PROOF_PASSWORD'],
                        PAPO_LOOPBACK_HTTP='1', PAPO_EVENT_LIMIT='1')
-            subprocess.run(['cargo', 'run', '--locked', '-p', 'papo-api', '--example', 'live_events'], cwd=ROOT, env=env, check=True)
+            subprocess.run(['cargo', 'run', '--locked', '-p', 'papo-api', '--example', 'live_events'], cwd=ROOT, env=env, check=True, timeout=300)
             env['PAPO_CHANNEL_NAME'] = 'upload-proof'
-            subprocess.run(['cargo', 'run', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--example', 'outgoing'], cwd=ROOT, env=env, check=True)
+            subprocess.run(['cargo', 'run', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--example', 'outgoing'], cwd=ROOT, env=env, check=True, timeout=300)
         finally:
             process.terminate()
             process.wait(timeout=10)

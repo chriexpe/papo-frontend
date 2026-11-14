@@ -24,6 +24,7 @@ pub(crate) struct Resources {
     pub(crate) dms: BTreeMap<String, Vec<DirectConversation>>,
     pub(crate) blocks: BTreeMap<String, Vec<UserSummary>>,
     pub(crate) read_marks: BTreeMap<(String, String), (String, String)>,
+    pub(crate) channel_settings: BTreeMap<(String, String), papo_api::wire::NotificationSettings>,
     pub(crate) next_channel_id: u64,
 }
 

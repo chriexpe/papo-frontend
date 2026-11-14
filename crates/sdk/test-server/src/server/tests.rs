@@ -23,6 +23,7 @@ fn invalid_failure_status_is_refused_before_binding() {
 #[test]
 fn script_waits_for_its_matching_request_and_is_consumed_once() {
     let mut state = State {
+        operations: crate::operation_requests::Operations::default(),
         auth: Auth::new(),
         presence: Presence::new(),
         resources: Resources::default(),

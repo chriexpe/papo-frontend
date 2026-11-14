@@ -87,9 +87,13 @@ func run() error {
 	handlers.RegisterUserRoutes(e, cfg)
 	handlers.RegisterRoleRoutes(e, cfg)
 	handlers.RegisterSearchRoutes(e, cfg)
+	handlers.RegisterEmojiRoutes(e, cfg)
+	handlers.RegisterAdminRoutes(e, cfg)
+	handlers.RegisterWebhookRoutes(e, cfg)
 	handlers.RegisterDirectMessageRoutes(e, cfg)
 	handlers.RegisterWebSocketRoutes(e, cfg)
 	registerPermissionProof(e)
+	registerOperationsProof(e)
 	e.GET("/health", func(c echo.Context) error { return c.NoContent(204) })
 	e.POST("/__proof/seed", func(c echo.Context) error {
 		_, err := storage.GetDB().ExecContext(c.Request().Context(), `

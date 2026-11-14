@@ -92,7 +92,7 @@ pub enum OperationKind {
     },
 }
 impl OutgoingMessage {
-    pub(super) fn validate(&self) -> Result<(), super::OutgoingError> {
+    pub(crate) fn validate(&self) -> Result<(), super::OutgoingError> {
         if let Some(gif) = &self.gif {
             gif.validate()
                 .map_err(|_| super::OutgoingError::InvalidInput)?;

@@ -95,7 +95,16 @@ fn auth_reply(
     cookie: Option<&str>,
     body: &[u8],
 ) -> Reply {
-    let reply = state.auth.handle(config, method, path, cookie, body);
+    let mut reply = state.auth.handle(config, method, path, cookie, body);
+    if method == "GET"
+        && path == "/auth/whoami"
+        && reply.status == 200
+        && let Some(user) = state.auth.user_id(cookie)
+        && let Some(settings) = state.operations.settings.get(user)
+        && let Some(value) = reply.body.as_mut()
+    {
+        value["settings"] = settings.clone();
+    }
     if path == "/auth/register"
         && reply.status == 201
         && let Some(value) = reply.body.as_ref()
@@ -233,6 +242,10 @@ fn route(
     body: &[u8],
 ) -> Reply {
     if let Some(reply) =
+        crate::operation_requests::handle(state, method, path, query, user_id, body)
+    {
+        reply
+    } else if let Some(reply) =
         crate::notification_search::handle(state, method, path, query, user_id, body)
     {
         reply

@@ -131,8 +131,26 @@ impl OutgoingService {
         kind: OperationKind,
         at: UnixMicros,
     ) -> Result<(), OutgoingError> {
-        self.enqueue_source(channel, local, EnqueueSource::Kind(kind), at)
+        self.enqueue_source(channel, local, EnqueueSource::Kind(kind), at, None)
             .await
+    }
+    /// Internal ephemeral-command admission. Already committed operations remain generation-independent.
+    pub(crate) async fn enqueue_in_generation(
+        &self,
+        channel: Uuid,
+        local: Uuid,
+        kind: OperationKind,
+        at: UnixMicros,
+        generation: crate::Generation,
+    ) -> Result<(), OutgoingError> {
+        self.enqueue_source(
+            channel,
+            local,
+            EnqueueSource::Kind(kind),
+            at,
+            Some(generation),
+        )
+        .await
     }
     async fn enqueue_source(
         &self,
@@ -140,17 +158,28 @@ impl OutgoingService {
         local: Uuid,
         source: EnqueueSource,
         at: UnixMicros,
+        expected_generation: Option<crate::Generation>,
     ) -> Result<(), OutgoingError> {
         self.run(move |this| async move {
             this.ensure().await?;
             let _guard = this.session.inner.outgoing.serial.lock().await;
             this.check()?;
+            if let Some(generation) = expected_generation {
+                this.session.inner.epochs.validate(generation)?;
+            }
             let result = this
                 .session
                 .client
                 .inner
                 .registry
-                .outgoing_enqueue(this.session.clone(), channel, local, source, at.0)
+                .outgoing_enqueue(
+                    this.session.clone(),
+                    channel,
+                    local,
+                    source,
+                    at.0,
+                    expected_generation,
+                )
                 .await;
             if let Err(error) = result {
                 this.collect().await?;
@@ -173,7 +202,7 @@ impl OutgoingService {
         revision: u64,
         at: UnixMicros,
     ) -> Result<(), OutgoingError> {
-        self.enqueue_source(channel, local, EnqueueSource::Draft { revision }, at)
+        self.enqueue_source(channel, local, EnqueueSource::Draft { revision }, at, None)
             .await
     }
     /// Restores this account/channel's durable draft, including immutable attachments.
