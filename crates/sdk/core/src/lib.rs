@@ -37,6 +37,8 @@ pub use history::{
 pub use papo_api::wire::Message;
 pub use papo_api::{HistoryCursor, HistoryOrder, HistoryQuery, Uuid};
 mod observable;
+pub mod operations;
+pub use operations::{OperationError, OperationReceipt, Operations, RefreshFault, RefreshStatus};
 mod outgoing;
 pub use outgoing::OutgoingFault;
 pub use outgoing::{

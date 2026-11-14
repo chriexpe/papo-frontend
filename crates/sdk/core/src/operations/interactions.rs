@@ -1,0 +1,201 @@
+//! Pin acknowledgments and exact grouped reactor pagination; durable human edits/reactions stay in outgoing.
+
+use super::{OperationError, OperationReceipt, Operations, Refresh};
+use crate::{AccountId, Generated, Generation, HistoryOrder, Uuid};
+use papo_api::Cursor;
+pub use papo_api::wire::{MessageReactionGroup, PinnedMessage};
+
+/// Exact continuation derived from all raw grouped reaction users, not the last displayed group.
+#[derive(Clone)]
+pub struct ReactorCursor {
+    account: AccountId,
+    generation: Generation,
+    channel: Uuid,
+    message: Uuid,
+    created_at: String,
+    id: Uuid,
+}
+/// One backend-authoritative grouped page, with counts scoped to that page.
+#[derive(Clone)]
+pub struct ReactorPage {
+    /// Groups retain backend identity and user membership; counts are not whole-message totals.
+    pub groups: Vec<MessageReactionGroup>,
+    /// Descending exact tuple boundary, absent only when the backend reports exhaustion.
+    pub next: Option<ReactorCursor>,
+}
+impl Operations {
+    /// Pins a known backend message. Backend pin and channel gates remain authoritative.
+    /// # Errors
+    /// Returns definite denial or unknown dispatch; post-ack pin fetch failure is only a warning.
+    pub async fn pin_message(
+        &self,
+        channel: Uuid,
+        message: Uuid,
+    ) -> Result<OperationReceipt<PinnedMessage>, OperationError> {
+        self.mutate(
+            move |rest| async move { rest.pin_message(channel, message).await },
+            Refresh::Pins(channel),
+        )
+        .await
+    }
+    /// Unpins a known message, without marking it read or moving any timeline window.
+    /// # Errors
+    /// Returns definite denial or unknown dispatch; post-ack pin fetch failure is only a warning.
+    pub async fn unpin_message(
+        &self,
+        channel: Uuid,
+        message: Uuid,
+    ) -> Result<OperationReceipt<()>, OperationError> {
+        self.mutate(
+            move |rest| async move { rest.unpin_message(channel, message).await },
+            Refresh::Pins(channel),
+        )
+        .await
+    }
+    /// Lists reaction users in descending backend tuple order, grouped only after raw pagination.
+    /// Human reaction mutations use `OutgoingService::enqueue(OperationKind::Reaction)`.
+    /// # Errors
+    /// Rejects foreign/stale cursor identities, malformed boundaries or typed backend failure.
+    pub async fn reaction_users(
+        &self,
+        channel: Uuid,
+        message: Uuid,
+        cursor: Option<ReactorCursor>,
+    ) -> Result<Generated<ReactorPage>, OperationError> {
+        let account = self.session.account();
+        let generation = self.session.generation();
+        if cursor.as_ref().is_some_and(|cursor| {
+            cursor.account != account
+                || cursor.generation != generation
+                || cursor.channel != channel
+                || cursor.message != message
+        }) {
+            return Err(OperationError::InvalidInput);
+        }
+        let boundary = cursor.clone();
+        let result = self
+            .read(move |rest| async move {
+                let wire = boundary.as_ref().map(|cursor| Cursor {
+                    since: &cursor.created_at,
+                    last_id: None,
+                    order: Some(HistoryOrder::Desc),
+                });
+                let id = boundary.as_ref().map(|cursor| cursor.id.to_string());
+                let wire = wire.map(|mut cursor| {
+                    cursor.last_id = id.as_deref();
+                    cursor
+                });
+                rest.message_reactions(channel, message, wire.as_ref())
+                    .await
+            })
+            .await?;
+        if result.generation != generation {
+            return Err(crate::ClientError::Superseded.into());
+        }
+        if result
+            .value
+            .message_id
+            .as_deref()
+            .and_then(|id| id.parse().ok())
+            != Some(message)
+        {
+            return Err(OperationError::InvalidData);
+        }
+        let groups = result.value.reactions.ok_or(OperationError::InvalidData)?;
+        let more = result.value.has_more.ok_or(OperationError::InvalidData)?;
+        let last = last_boundary(&groups, cursor.as_ref())?;
+        let next = if more {
+            let (created_at, id) = last.ok_or(OperationError::InvalidData)?;
+            Some(ReactorCursor {
+                account,
+                generation,
+                channel,
+                message,
+                created_at,
+                id,
+            })
+        } else {
+            None
+        };
+        self.session.inner.epochs.validate(generation)?;
+        Ok(Generated {
+            generation,
+            value: ReactorPage { groups, next },
+        })
+    }
+}
+
+fn last_boundary(
+    groups: &[MessageReactionGroup],
+    cursor: Option<&ReactorCursor>,
+) -> Result<Option<(String, Uuid)>, OperationError> {
+    let boundary = cursor
+        .map(|cursor| tuple(&cursor.created_at, cursor.id))
+        .transpose()?;
+    let mut ids = std::collections::HashSet::new();
+    let mut last: Option<(String, Uuid)> = None;
+    for group in groups {
+        for user in group.users.as_deref().ok_or(OperationError::InvalidData)? {
+            let id = user
+                .id
+                .as_deref()
+                .and_then(|id| id.parse().ok())
+                .ok_or(OperationError::InvalidData)?;
+            let time = user
+                .created_at
+                .as_ref()
+                .ok_or(OperationError::InvalidData)?;
+            let point = tuple(time, id)?;
+            if !ids.insert(id)
+                || ids.len() > 100
+                || boundary.as_ref().is_some_and(|boundary| point >= *boundary)
+            {
+                return Err(OperationError::InvalidData);
+            }
+            if last
+                .as_ref()
+                .map(|(time, id)| tuple(time, *id))
+                .transpose()?
+                .is_none_or(|current| point < current)
+            {
+                last = Some((time.clone(), id));
+            }
+        }
+    }
+    Ok(last)
+}
+fn tuple(
+    time: &str,
+    id: Uuid,
+) -> Result<(chrono::DateTime<chrono::FixedOffset>, Uuid), OperationError> {
+    Ok((
+        chrono::DateTime::parse_from_rfc3339(time).map_err(|_| OperationError::InvalidData)?,
+        id,
+    ))
+}
+#[cfg(test)]
+mod tests {
+    //! Interleaved grouped users must produce the final raw boundary, independent of group order.
+    use super::*;
+    #[test]
+    fn interleaved_groups_keep_raw_cursor() {
+        let user = |index| papo_api::wire::MessageReactionUser {
+            id: Some(Uuid::from_u128(index).to_string()),
+            created_at: Some("2030-01-01T00:00:00.123456+03:00".into()),
+            ..Default::default()
+        };
+        let groups = vec![
+            MessageReactionGroup {
+                users: Some(vec![user(5), user(1)]),
+                ..Default::default()
+            },
+            MessageReactionGroup {
+                users: Some(vec![user(4), user(2)]),
+                ..Default::default()
+            },
+        ];
+        let (time, id) = last_boundary(&groups, None).unwrap().unwrap();
+        assert_eq!(id, Uuid::from_u128(1));
+        assert_eq!(time, "2030-01-01T00:00:00.123456+03:00");
+    }
+}

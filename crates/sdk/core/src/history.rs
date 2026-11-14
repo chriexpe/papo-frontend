@@ -8,6 +8,7 @@ mod live_edge;
 mod merge;
 mod model;
 mod mutations;
+pub(crate) mod operation_receipts;
 mod ordering;
 mod persisted_layout;
 mod persistence;

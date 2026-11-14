@@ -94,6 +94,7 @@ impl Registry {
         local: Uuid,
         source: EnqueueSource,
         created_at_us: i64,
+        expected_generation: Option<crate::Generation>,
     ) -> Result<(), OutgoingError> {
         let (mut kind, draft_revision) = match source {
             EnqueueSource::Kind(kind) => (kind, None),
@@ -119,36 +120,44 @@ impl Registry {
         let dependency = kind.dependency();
         self.writer
             .write(move |tx| {
-                visible(tx, &session)?;
-                let account = session.account();
-                if let Some(expected) = draft_revision {
-                    drafts::verify_revision(tx, account, channel, expected)?;
+                let admit = || {
+                    visible(tx, &session)?;
+                    let account = session.account();
+                    if let Some(expected) = draft_revision {
+                        drafts::verify_revision(tx, account, channel, expected)?;
+                    }
+                    ensure_unique_local_id(tx, local)?;
+                    check_admission_budget(tx, account, payload.len(), attachment_bytes)?;
+                    if let Some(dependency_id) = dependency {
+                        verify_dependency(tx, account, channel, dependency_id)?;
+                    }
+                    let db_revision = draft_revision
+                        .map(i64::try_from)
+                        .transpose()
+                        .map_err(|_| OutgoingError::InvalidData)?;
+                    tx.execute(
+                        INSERT_OPERATION_SQL,
+                        params![
+                            local.as_bytes(),
+                            account.server().as_bytes(),
+                            account.user().as_bytes(),
+                            channel.as_bytes(),
+                            payload,
+                            dependency.map(|id| id.as_bytes().to_vec()),
+                            created_at_us,
+                            db_revision,
+                            encode(&references)?,
+                            attachment_bytes
+                        ],
+                    )?;
+                    Ok(())
+                };
+                if let Some(generation) = expected_generation {
+                    // Waiting for the shared writer must not admit an obsolete ephemeral command.
+                    session.inner.epochs.apply(generation, admit)?
+                } else {
+                    admit()
                 }
-                ensure_unique_local_id(tx, local)?;
-                check_admission_budget(tx, account, payload.len(), attachment_bytes)?;
-                if let Some(dependency_id) = dependency {
-                    verify_dependency(tx, account, channel, dependency_id)?;
-                }
-                let db_revision = draft_revision
-                    .map(i64::try_from)
-                    .transpose()
-                    .map_err(|_| OutgoingError::InvalidData)?;
-                tx.execute(
-                    INSERT_OPERATION_SQL,
-                    params![
-                        local.as_bytes(),
-                        account.server().as_bytes(),
-                        account.user().as_bytes(),
-                        channel.as_bytes(),
-                        payload,
-                        dependency.map(|id| id.as_bytes().to_vec()),
-                        created_at_us,
-                        db_revision,
-                        encode(&references)?,
-                        attachment_bytes
-                    ],
-                )?;
-                Ok(())
             })
             .await
     }

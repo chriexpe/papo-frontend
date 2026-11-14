@@ -1,6 +1,8 @@
 //! Observable Papo UI services belong here; transport and durable state belong to `papo-sdk`.
 //! Platform widgets, navigation and translated text belong to client applications.
 
+pub mod operations;
+pub use operations::{OperationService, ReactionService};
 mod search;
 pub use search::{SearchService, SearchSubscription, SearchUpdate};
 mod notifications;

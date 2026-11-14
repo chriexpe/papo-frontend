@@ -40,6 +40,7 @@ pub(crate) struct State {
     pub(crate) silent_outgoing: bool,
     pub(crate) notification_search: crate::notification_search::NotificationSearch,
     pub(crate) media: crate::encoded_media::Media,
+    pub(crate) operations: crate::operation_requests::Operations,
 }
 
 /// A running in-memory backend bound exclusively to IPv4 loopback.
@@ -91,6 +92,7 @@ impl TestServer {
             silent_outgoing: false,
             notification_search: crate::notification_search::NotificationSearch::default(),
             media: crate::encoded_media::Media::default(),
+            operations: crate::operation_requests::Operations::default(),
         }));
         let (stop, stopped) = oneshot::channel();
         let (disconnects, _) = broadcast::channel(1);

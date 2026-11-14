@@ -13,9 +13,8 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 async fn online(session: &Session) -> Result {
     let mut connection = session.subscribe_connection();
     loop {
-        if connection.borrow().generation == session.generation()
-            && connection.borrow().state == ConnectionState::Online
-        {
+        let status = *connection.borrow_and_update();
+        if status.generation == session.generation() && status.state == ConnectionState::Online {
             return Ok(());
         }
         connection.changed().await?;
