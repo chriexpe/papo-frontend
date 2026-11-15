@@ -9,6 +9,7 @@ mod tests;
 impl Model {
     /// Retire at most twenty oldest chronological entries without manufacturing deletion tombstones.
     pub(super) fn evict_prefix(&mut self) -> Result<Vec<[u8; 16]>, HistoryError> {
+        self.drop_leading_runs_without_messages()?;
         let Some(chunk) = self.chunks.first() else {
             return Ok(Vec::new());
         };
@@ -51,6 +52,8 @@ impl Model {
             }
             self.chunks[0].first = point;
             self.chunks[0].oldest_complete = false;
+            // The anchor proved the space before the evicted prefix, not before the new first.
+            self.chunks[0].oldest_anchor = None;
         } else {
             self.chunks.remove(0);
             if let Some(next) = self.chunks.first_mut() {
@@ -64,6 +67,29 @@ impl Model {
             self.live_arrival_floor = None;
         }
         Ok(deleted)
+    }
+}
+
+impl Model {
+    /// A leading run holding no message (an anchor-only proof, or one whose messages were all
+    /// deleted) would stop eviction from ever reaching the next run. Its proof is dropped with
+    /// it, as an evicted run's is. Runs are kept while no message is held, so a turn that
+    /// evicts nothing changes nothing.
+    fn drop_leading_runs_without_messages(&mut self) -> Result<(), HistoryError> {
+        if self.order.is_empty() {
+            return Ok(());
+        }
+        while let Some(chunk) = self.chunks.first() {
+            let (first, last) = (chunk.first.key()?, chunk.last.key()?);
+            if self.order.range(first..=last).next().is_some() && !chunk.is_anchor_only() {
+                break;
+            }
+            self.chunks.remove(0);
+            if let Some(next) = self.chunks.first_mut() {
+                next.oldest_complete = false;
+            }
+        }
+        Ok(())
     }
 }
 

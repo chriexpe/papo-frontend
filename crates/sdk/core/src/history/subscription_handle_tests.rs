@@ -135,7 +135,7 @@ fn queued_visible_report_rejects_a_newer_same_generation_publication_before_sql_
     client
         .block_on(async {
             let snapshot = visible_snapshot(&client, &handle).await;
-            let point = crate::ReadPoint::message(&snapshot.messages[0]).unwrap();
+            let point = crate::MessageKey::from_message(&snapshot.messages[0]).unwrap();
             let registry = client.handle().inner.registry.clone();
             let (release, blocked) = block_full_writer(&client).await;
             let mut report = Box::pin(registry.commit_visible_read_and_catch_up(
@@ -180,7 +180,7 @@ fn queued_visible_report_rejects_revocation_of_its_original_channel_before_sql_m
     client
         .block_on(async {
             let snapshot = visible_snapshot(&client, &handle).await;
-            let point = crate::ReadPoint::message(&snapshot.messages[0]).unwrap();
+            let point = crate::MessageKey::from_message(&snapshot.messages[0]).unwrap();
             let registry = client.handle().inner.registry.clone();
             let (release, blocked) = block_full_writer(&client).await;
             let mut report = Box::pin(registry.commit_visible_read_and_catch_up(
@@ -242,7 +242,7 @@ fn queued_visible_report_rejects_a_replaced_account_generation_before_sql_mutati
     client
         .block_on(async {
             let snapshot = visible_snapshot(&client, &handle).await;
-            let point = crate::ReadPoint::message(&snapshot.messages[0]).unwrap();
+            let point = crate::MessageKey::from_message(&snapshot.messages[0]).unwrap();
             let registry = client.handle().inner.registry.clone();
             let (release, blocked) = block_full_writer(&client).await;
             let mut report = Box::pin(registry.commit_visible_read_and_catch_up(

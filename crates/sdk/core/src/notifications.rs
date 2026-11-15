@@ -42,6 +42,11 @@ pub enum NotificationError {
     #[error(transparent)]
     Session(#[from] ClientError),
 }
+impl From<crate::InvalidMessageKey> for NotificationError {
+    fn from(_: crate::InvalidMessageKey) -> Self {
+        Self::InvalidData
+    }
+}
 impl From<crate::StorageError> for NotificationError {
     fn from(error: crate::StorageError) -> Self {
         Self::Session(error.into())

@@ -10,7 +10,7 @@ impl Model {
         generation: u64,
     ) -> Result<(), HistoryError> {
         let point = Point::from(&message.cursor().ok_or(HistoryError::InvalidPage)?);
-        let id = point.key()?.id;
+        let id = point.key()?.id_bytes();
         let revision = self.next_revision()?;
         if self.entries.get(&id).is_some_and(|entry| entry.deleted) {
             return Ok(());

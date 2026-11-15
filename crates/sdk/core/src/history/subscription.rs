@@ -10,6 +10,9 @@ use crate::Generation;
 use super::{HistoryClosedReason, HistoryError, HistoryGap};
 
 /// One proven chronological run, including boundaries whose messages may have been deleted.
+/// A run proven only by an empty page from a cursor the model did not hold has that cursor as
+/// both `first` and `last` and as its anchor; it holds no message. Read coverage through
+/// `HistorySnapshot::coverage()` rather than from these fields.
 #[derive(Clone)]
 pub struct HistoryChunk {
     /// Exact oldest boundary, inclusive; never reconstructed from a rounded timestamp.
@@ -24,6 +27,11 @@ pub struct HistoryChunk {
     pub generation: Option<Generation>,
     /// Epoch that validated the newest edge, or `None` after restoring from disk.
     pub live_generation: Option<Generation>,
+    /// Excluded cursor this run is proven to start right after (an `Asc` page from a cursor
+    /// the model did not hold). The cursor's own message, if any, is not proven.
+    pub oldest_anchor: Option<HistoryCursor>,
+    /// Excluded cursor this run is proven to end right before (a `Desc` page from such a cursor).
+    pub newest_anchor: Option<HistoryCursor>,
 }
 
 /// Complete canonical raw history for one account/channel, not a view window.
@@ -42,6 +50,7 @@ pub struct HistorySnapshot {
     /// Proven runs in ascending boundary order, independent of any consumer's window.
     pub chunks: Vec<HistoryChunk>,
     /// Exact excluded boundaries and directions that can be passed to `page()` to fill holes.
+    /// They mark exactly where `coverage().range(..)` is incomplete.
     pub gaps: Vec<HistoryGap>,
     /// A server response proved the entire channel empty in this snapshot's generation.
     pub empty_complete: bool,
@@ -101,8 +110,8 @@ impl super::HistoryHandle {
     ) -> Result<
         (
             Arc<HistorySnapshot>,
-            Vec<crate::ReadPoint>,
-            Option<crate::ReadPoint>,
+            Vec<crate::MessageKey>,
+            Option<crate::MessageKey>,
         ),
         crate::ReadingError,
     > {
@@ -123,7 +132,7 @@ impl super::HistoryHandle {
                 .message
                 .as_ref()
                 .ok_or(crate::ReadingError::InvalidReport)?;
-            let resolved = crate::ReadPoint::message(message)?;
+            let resolved = crate::MessageKey::from_message(message)?;
             points.push(resolved);
             point = point.max(Some(resolved));
         }

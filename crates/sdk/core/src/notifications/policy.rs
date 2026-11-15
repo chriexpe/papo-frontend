@@ -61,7 +61,7 @@ pub(crate) struct Candidate {
     pub read: bool,
     pub trigger_revision: Option<u64>,
     pub observed_at_us: i64,
-    pub message_point: Option<crate::ReadPoint>,
+    pub message_point: Option<crate::MessageKey>,
 }
 pub(super) fn contains_channel(resources: &ResourceSnapshot, channel: Uuid) -> bool {
     resources

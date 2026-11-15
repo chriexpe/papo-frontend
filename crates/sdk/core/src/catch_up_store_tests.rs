@@ -1,10 +1,10 @@
 //! Decoding validation tests for serialized `catch_up_intervals` span JSON blobs.
 
 use super::decode_spans;
-use crate::{ReadPoint, StorageError, Uuid, catch_up::ReadSpan};
+use crate::{MessageKey, StorageError, Uuid, catch_up::ReadSpan};
 
-fn pt(us: i64, id: u128) -> ReadPoint {
-    ReadPoint {
+fn pt(us: i64, id: u128) -> MessageKey {
+    MessageKey {
         created_at_us: us,
         message_id: Uuid::from_u128(id),
     }

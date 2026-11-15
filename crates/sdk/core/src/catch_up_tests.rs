@@ -48,6 +48,8 @@ pub(super) fn snapshot(start: u128, end: u128, authors: impl Fn(u128) -> Uuid) -
             newest_complete: true,
             generation: Some(Generation(1)),
             live_generation: Some(Generation(1)),
+            oldest_anchor: None,
+            newest_anchor: None,
         }],
         gaps: Vec::new(),
         empty_complete: false,
@@ -56,15 +58,14 @@ pub(super) fn snapshot(start: u128, end: u128, authors: impl Fn(u128) -> Uuid) -
     }
 }
 
-pub(super) fn actual_pt(index: u128) -> ReadPoint {
-    ReadPoint::parse(Some(&cursor(index).created_at), Some(&cursor(index).id)).unwrap()
+pub(super) fn actual_pt(index: u128) -> MessageKey {
+    MessageKey::parse(&cursor(index).created_at, &cursor(index).id).unwrap()
 }
 
 #[test]
 fn reading_through_the_gap_retires_the_hourglass() {
     let snap = snapshot(1, 10, |_| peer_user());
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
     let mut state = CatchUpState {
         seen_to: Some(actual_pt(2)),
         interval: None,
@@ -95,8 +96,7 @@ fn reading_through_the_gap_retires_the_hourglass() {
 #[test]
 fn continuous_scrolling_covers_rows_between_frames() {
     let snap = snapshot(1, 10, |_| peer_user());
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
     let mut state = CatchUpState {
         seen_to: Some(actual_pt(2)),
         interval: Some(CatchUpInterval {
@@ -135,8 +135,7 @@ fn continuous_scrolling_covers_rows_between_frames() {
 #[test]
 fn a_jump_does_not_cover_what_it_flew_over() {
     let snap = snapshot(1, 10, |_| peer_user());
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
     let mut state = CatchUpState {
         seen_to: Some(actual_pt(10)),
         interval: Some(CatchUpInterval {
@@ -185,8 +184,7 @@ fn a_batch_of_arrivals_at_the_bottom_and_own_messages_leave_no_hourglass() {
             peer_user()
         }
     });
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
     let mut state = CatchUpState {
         seen_to: Some(actual_pt(2)),
         interval: None,
@@ -205,7 +203,7 @@ fn a_batch_of_arrivals_at_the_bottom_and_own_messages_leave_no_hourglass() {
 
     // Arrival batch [7, 8] completely visible -> still no interval.
     let snap2 = snapshot(1, 8, |_| peer_user());
-    let index2 = SnapshotIndex::build(&snap2, self_user(), &asc).unwrap();
+    let index2 = CatchUpHistory::new(&snap2, self_user()).unwrap();
     state
         .observe_visible(
             &index2,
@@ -221,8 +219,7 @@ fn a_batch_of_arrivals_at_the_bottom_and_own_messages_leave_no_hourglass() {
 #[test]
 fn hourglass_range_shrinks_from_top_and_bottom_and_meets_in_middle() {
     let snap = snapshot(1, 10, |_| peer_user());
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
     let mut state = CatchUpState {
         seen_to: Some(actual_pt(2)),
         interval: None,
@@ -287,37 +284,25 @@ fn hourglass_range_shrinks_from_top_and_bottom_and_meets_in_middle() {
 fn unloaded_gap_and_deleted_or_millisecond_anchors_behave_soundly() {
     // Disconnected chunk [1..=3] and [8..=10] with context [5..=6] in between.
     let mut snap = snapshot(1, 10, |_| peer_user());
-    let chunk1 = HistoryChunk {
-        first: cursor(1),
-        last: cursor(3),
-        oldest_complete: true,
-        newest_complete: false,
+    let chunk = |first, last, oldest_complete, newest_complete: bool| HistoryChunk {
+        first: cursor(first),
+        last: cursor(last),
+        oldest_complete,
+        newest_complete,
         generation: Some(Generation(1)),
-        live_generation: None,
+        live_generation: newest_complete.then_some(Generation(1)),
+        oldest_anchor: None,
+        newest_anchor: None,
     };
-    let chunk2 = HistoryChunk {
-        first: cursor(5),
-        last: cursor(6),
-        oldest_complete: false,
-        newest_complete: false,
-        generation: Some(Generation(1)),
-        live_generation: None,
-    };
-    let chunk3 = HistoryChunk {
-        first: cursor(8),
-        last: cursor(10),
-        oldest_complete: false,
-        newest_complete: true,
-        generation: Some(Generation(1)),
-        live_generation: Some(Generation(1)),
-    };
+    let chunk1 = chunk(1, 3, true, false);
+    let chunk2 = chunk(5, 6, false, false);
+    let chunk3 = chunk(8, 10, false, true);
     snap.chunks = vec![chunk1, chunk2, chunk3];
     snap.messages.retain(|m| {
-        let p = ReadPoint::message(m).unwrap();
+        let p = MessageKey::from_message(m).unwrap();
         p <= actual_pt(3) || (p >= actual_pt(5) && p <= actual_pt(6)) || p >= actual_pt(8)
     });
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
 
     // Context page [5, 6] does not close unloaded interval (after 2, before 9).
     let mut state = CatchUpState {
@@ -344,7 +329,7 @@ fn unloaded_gap_and_deleted_or_millisecond_anchors_behave_soundly() {
     );
 
     // Legacy millisecond truncated anchor for msg 3 (.000Z while message has .000003Z).
-    let ms_truncated = ReadPoint {
+    let ms_truncated = MessageKey {
         created_at_us: 1_767_225_600_000_000,
         message_id: msg_id(3),
     };
@@ -366,7 +351,7 @@ fn unloaded_gap_and_deleted_or_millisecond_anchors_behave_soundly() {
     deleted_snap
         .messages
         .retain(|m| m.id.as_deref() != Some(&msg_id(2).to_string()));
-    let del_index = SnapshotIndex::build(&deleted_snap, self_user(), &asc).unwrap();
+    let del_index = CatchUpHistory::new(&deleted_snap, self_user()).unwrap();
     let mut del_state = CatchUpState {
         seen_to: Some(actual_pt(10)),
         interval: Some(CatchUpInterval {

@@ -7,7 +7,7 @@ use std::{
 
 use papo_api::Uuid;
 
-use crate::{Generation, ReadPoint, ReadState, ReadingSnapshot, reading::Reading};
+use crate::{Generation, MessageKey, ReadState, ReadingSnapshot, reading::Reading};
 
 use super::reconnect::unread_channels;
 
@@ -15,7 +15,7 @@ use super::reconnect::unread_channels;
 async fn unread_reconnect_uses_the_greater_local_and_uploaded_message_point() {
     let reading = Reading::new(Generation(1));
     let points: Vec<_> = (1..=3)
-        .map(|id| ReadPoint {
+        .map(|id| MessageKey {
             created_at_us: 100,
             message_id: Uuid::from_u128(id),
         })

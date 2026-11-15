@@ -133,10 +133,13 @@ async fn refresh_channel(
         state
             .ensure(&connection.cache, *channel.id.as_bytes(), generation)
             .await?;
+        // The newest run holding messages; an anchor-only proof holds none to overlap with.
         state
             .model
             .chunks
-            .last()
+            .iter()
+            .rev()
+            .find(|chunk| !chunk.is_anchor_only())
             .map(|chunk| {
                 let first = chunk.first.key()?;
                 let last = chunk.last.key()?;
@@ -174,7 +177,7 @@ async fn refresh_channel(
         let (page, oldest) = super::fetch::server_page(&handle, connection, ticket).await?;
         let overlap = oldest
             .as_ref()
-            .map(|point| point.key().map(|key| old_newest.contains(&key.id)))
+            .map(|point| point.key().map(|key| old_newest.contains(&key.id_bytes())))
             .transpose()?
             .unwrap_or(false);
         if old_newest.is_empty() || overlap || !page.has_more || attempt == 3 {

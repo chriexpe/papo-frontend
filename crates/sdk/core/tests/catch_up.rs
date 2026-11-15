@@ -17,7 +17,7 @@ mod sparse_visibility;
 use fixture::{Fixture, Result, login, register};
 use papo_api::{HistoryQuery, Uuid, wire::Message};
 use papo_sdk::{
-    ConnectionState, HistoryError, HistorySnapshot, ReadPoint, ReadState, ReadingError, Session,
+    ConnectionState, HistoryError, HistorySnapshot, MessageKey, ReadState, ReadingError, Session,
     UnixMicros, VisibilityContinuity,
 };
 use papo_test_server::{Config, HistorySeed};
@@ -92,10 +92,10 @@ pub(crate) fn msg_id(snapshot: &HistorySnapshot, index: usize) -> Uuid {
         .unwrap()
 }
 
-pub(crate) fn msg_point(snapshot: &HistorySnapshot, index: usize) -> ReadPoint {
+pub(crate) fn msg_point(snapshot: &HistorySnapshot, index: usize) -> MessageKey {
     let msg = &snapshot.messages[index];
     let at = chrono::DateTime::parse_from_rfc3339(msg.created_at.as_deref().unwrap()).unwrap();
-    ReadPoint {
+    MessageKey {
         created_at_us: at.timestamp_micros(),
         message_id: msg.id.as_deref().unwrap().parse().unwrap(),
     }
@@ -200,7 +200,7 @@ pub(crate) async fn wait_pos(
 pub(crate) fn sqlite_catch_up_row(
     profile_dir: &std::path::Path,
     ch: Uuid,
-) -> Result<Option<(Option<ReadPoint>, bool)>> {
+) -> Result<Option<(Option<MessageKey>, bool)>> {
     let db = rusqlite::Connection::open(profile_dir.join("state.sqlite"))?;
     let mut stmt = db.prepare(
         "SELECT seen_to, end_before FROM catch_up_intervals WHERE channel_id = ?1 LIMIT 1",

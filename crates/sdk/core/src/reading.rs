@@ -17,76 +17,13 @@ pub use observers::ReadingObserver;
 
 use crate::{
     CatchUpSnapshot, CatchUpView, ClientError, Generation, HistoryError, HistorySnapshot,
-    ReadingPosition, ReadingPositionsSnapshot, Session, StorageError, VisibilityContinuity,
+    MessageKey, ReadingPosition, ReadingPositionsSnapshot, Session, StorageError,
+    VisibilityContinuity,
     catch_up::{CatchUpStore, VisibleBounds},
 };
-use papo_api::{HistoryCursor, Uuid, wire::Message};
+use papo_api::Uuid;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
-
-/// Message-order cursor, never an acknowledgement timestamp. Ordering is PostgreSQL
-/// microseconds followed by the opaque UUID's bytes, exactly like history pagination.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
-pub struct ReadPoint {
-    /// Server message creation time in microseconds since Unix epoch.
-    pub created_at_us: i64,
-    /// Backend message UUID, used only as an equal-timestamp tiebreaker.
-    #[serde(
-        serialize_with = "crate::read_points::serialize_id",
-        deserialize_with = "crate::read_points::deserialize_id"
-    )]
-    pub message_id: Uuid,
-}
-impl ReadPoint {
-    /// Parses the microsecond chronological cursor from a canonical history `Message`.
-    /// # Errors
-    /// Returns `ReadingError::InvalidPoint` when `created_at` or `id` is absent or invalid.
-    pub fn from_message(message: &Message) -> Result<Self, ReadingError> {
-        Self::parse(message.created_at.as_deref(), message.id.as_deref())
-    }
-
-    /// Parses a wire `HistoryCursor` into a microsecond `ReadPoint`.
-    /// # Errors
-    /// Returns `ReadingError::InvalidPoint` when timestamp precision exceeds microseconds or ID fails UUID parsing.
-    pub fn from_cursor(cursor: &HistoryCursor) -> Result<Self, ReadingError> {
-        Self::parse(Some(&cursor.created_at), Some(&cursor.id))
-    }
-
-    /// Formats this point as a microsecond RFC 3339 `HistoryCursor`.
-    /// # Errors
-    /// Returns `ReadingError::InvalidPoint` if `created_at_us` is outside valid UTC timestamp range.
-    pub fn to_cursor(&self) -> Result<HistoryCursor, ReadingError> {
-        let created_at = chrono::DateTime::from_timestamp_micros(self.created_at_us)
-            .ok_or(ReadingError::InvalidPoint)?
-            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
-        Ok(HistoryCursor {
-            created_at,
-            id: self.message_id.to_string(),
-        })
-    }
-
-    pub(crate) fn message(message: &Message) -> Result<Self, ReadingError> {
-        Self::from_message(message)
-    }
-
-    pub(crate) fn parse(created_at: Option<&str>, id: Option<&str>) -> Result<Self, ReadingError> {
-        let at =
-            chrono::DateTime::parse_from_rfc3339(created_at.ok_or(ReadingError::InvalidPoint)?)
-                .map_err(|_| ReadingError::InvalidPoint)?;
-        if at.timestamp_subsec_nanos() % 1_000 != 0 {
-            return Err(ReadingError::InvalidPoint);
-        }
-        Ok(Self {
-            created_at_us: at.timestamp_micros(),
-            message_id: id
-                .ok_or(ReadingError::InvalidPoint)?
-                .parse()
-                .map_err(|_| ReadingError::InvalidPoint)?,
-        })
-    }
-}
 
 /// Ordered unread count. Incomplete coverage never claims an exact total.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,19 +44,19 @@ impl Default for UnreadCount {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReadState {
     /// Furthest locally reported visible message, committed with synchronous=FULL.
-    pub local_point: Option<ReadPoint>,
+    pub local_point: Option<MessageKey>,
     /// Furthest resolved server mark (including confirmed uploads).
-    pub uploaded_point: Option<ReadPoint>,
+    pub uploaded_point: Option<MessageKey>,
     /// Unread messages after the greater of local and uploaded points.
     pub unread_count: UnreadCount,
     /// First cached unread message, not a claim that an unknown prefix is complete.
     pub first_unread: Option<Uuid>,
 }
 impl ReadState {
-    pub(super) fn point(&self) -> Option<ReadPoint> {
+    pub(super) fn point(&self) -> Option<MessageKey> {
         self.local_point.max(self.uploaded_point)
     }
-    pub(super) fn pending(&self) -> Option<ReadPoint> {
+    pub(super) fn pending(&self) -> Option<MessageKey> {
         self.local_point
             .filter(|point| Some(*point) > self.uploaded_point)
     }
@@ -157,6 +94,12 @@ pub enum ReadingError {
     Session(#[from] ClientError),
 }
 
+impl From<crate::InvalidMessageKey> for ReadingError {
+    fn from(_: crate::InvalidMessageKey) -> Self {
+        Self::InvalidPoint
+    }
+}
+
 pub(crate) type ObserverVisibilityMap = BTreeMap<u64, BTreeMap<Uuid, VisibleBounds>>;
 
 pub(crate) struct Reading {
@@ -167,12 +110,11 @@ pub(crate) struct Reading {
     pub position_image: Arc<crate::observable::StateCell<Arc<crate::ReadingPositionsSnapshot>>>,
     pub started: std::sync::atomic::AtomicBool,
     pub uploads: Mutex<BTreeMap<Uuid, Arc<tokio::sync::Notify>>>,
-    pub heads: Mutex<BTreeMap<Uuid, ReadPoint>>,
+    pub heads: Mutex<BTreeMap<Uuid, MessageKey>>,
     pub unresolved: Mutex<BTreeMap<Uuid, crate::ServerReadPoint>>,
     pub connection: Mutex<Option<(Generation, crate::reconcile::ResourceConnection)>>,
     pub observers: std::sync::Mutex<ObserverVisibilityMap>,
     pub next_observer: std::sync::atomic::AtomicU64,
-    pub asc_successors: std::sync::Mutex<Option<catch_up_state::AscSuccessorsState>>,
     pub reconcile_keys: std::sync::Mutex<BTreeMap<Uuid, catch_up_sync::ReconcileKey>>,
     pub positions: Arc<positions::PositionCoordinator>,
 }
@@ -203,7 +145,6 @@ impl Reading {
             connection: Mutex::new(None),
             observers: std::sync::Mutex::new(BTreeMap::new()),
             next_observer: std::sync::atomic::AtomicU64::new(1),
-            asc_successors: std::sync::Mutex::new(None),
             reconcile_keys: std::sync::Mutex::new(BTreeMap::new()),
             positions: Arc::new(positions::PositionCoordinator::default()),
         }

@@ -344,7 +344,7 @@ fn delayed_live_candidate_is_suppressed_after_a_newer_local_read_point() {
     image.channels.insert(
         candidate().channel,
         crate::ReadState {
-            local_point: Some(crate::ReadPoint {
+            local_point: Some(crate::MessageKey {
                 created_at_us: 1,
                 message_id: Uuid::from_u128(99),
             }),
@@ -353,7 +353,7 @@ fn delayed_live_candidate_is_suppressed_after_a_newer_local_read_point() {
     );
     session.inner.reading.image.send_replace(Arc::new(image));
     let mut item = candidate();
-    item.message_point = Some(crate::ReadPoint {
+    item.message_point = Some(crate::MessageKey {
         created_at_us: 0,
         message_id: item.message,
     });
@@ -369,4 +369,14 @@ fn delayed_live_candidate_is_suppressed_after_a_newer_local_read_point() {
         .is_none()
     );
     client.shutdown().unwrap();
+}
+
+#[test]
+fn submicrosecond_inbox_cursor_is_rejected_like_history() {
+    let cursor = super::inbox::InboxCursor {
+        created_at: "2026-01-01T00:00:00.123456789Z".into(),
+        id: Uuid::from_u128(1).to_string(),
+    };
+    assert!(matches!(cursor.key(), Err(NotificationError::InvalidData)));
+    assert!(crate::MessageKey::parse(&cursor.created_at, &cursor.id).is_err());
 }

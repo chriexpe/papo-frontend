@@ -1,7 +1,10 @@
-//! Behind-head live arrival counting and two-stop down-arrow target projection.
-//! Separate catch-up boundary state and overlay streams live in `timeline_reading`.
+//! Behind-head live arrival counting and two-stop down-arrow target projection, asked of
+//! history's coverage queries and its one authorship rule. Separate catch-up boundary state
+//! and overlay streams live in `timeline_reading`.
 
-use papo_sdk::{HistoryCursor, HistorySnapshot, ReadPoint, Uuid, is_foreign_message};
+use papo_sdk::{
+    HistoryCoverage, HistoryCursor, HistorySnapshot, MessageKey, Uuid, authored_by_other,
+};
 
 use super::TimelineError;
 
@@ -26,82 +29,77 @@ impl std::fmt::Debug for TimelineArrivals {
     }
 }
 
-pub(super) fn is_live_complete(raw: &HistorySnapshot) -> bool {
-    raw.empty_complete
-        || raw
-            .chunks
-            .last()
-            .is_some_and(|c| c.newest_complete && c.live_generation == Some(raw.generation))
-}
-
-pub(super) fn initial_live_tail(raw: &HistorySnapshot) -> Result<Option<ReadPoint>, TimelineError> {
-    if !is_live_complete(raw) {
-        return Ok(None);
-    }
+fn newest_key(raw: &HistorySnapshot) -> Result<Option<MessageKey>, TimelineError> {
     Ok(raw
         .messages
         .last()
-        .map(|msg| ReadPoint::from_message(msg.as_ref()))
+        .map(|message| MessageKey::from_message(message))
         .transpose()?)
+}
+
+/// Nothing unknown follows the newest held message in this generation.
+pub(super) fn is_live_complete(raw: &HistorySnapshot) -> Result<bool, TimelineError> {
+    live_complete(&raw.coverage()?, raw)
+}
+
+fn live_complete(
+    coverage: &HistoryCoverage<'_>,
+    raw: &HistorySnapshot,
+) -> Result<bool, TimelineError> {
+    Ok(coverage.range(newest_key(raw)?, None)?.complete)
+}
+
+pub(super) fn initial_live_tail(
+    raw: &HistorySnapshot,
+) -> Result<Option<MessageKey>, TimelineError> {
+    if !is_live_complete(raw)? {
+        return Ok(None);
+    }
+    newest_key(raw)
 }
 
 pub(super) fn tail_before_live_arrivals(
     raw: &HistorySnapshot,
-) -> Result<Option<ReadPoint>, TimelineError> {
-    if !is_live_complete(raw) {
+) -> Result<Option<MessageKey>, TimelineError> {
+    if !is_live_complete(raw)? {
         return Ok(None);
     }
     if let Some(cursor) = &raw.live_arrival_start {
-        let floor = ReadPoint::from_cursor(cursor)?;
+        let floor = MessageKey::from_cursor(cursor)?;
         return tail_before_point(raw, floor);
     }
     initial_live_tail(raw)
 }
 
+/// The newest held message strictly before `floor`.
 pub(super) fn tail_before_point(
     raw: &HistorySnapshot,
-    floor: ReadPoint,
-) -> Result<Option<ReadPoint>, TimelineError> {
-    let idx = raw.lower_bound(floor)?;
-    if idx == 0 {
+    floor: MessageKey,
+) -> Result<Option<MessageKey>, TimelineError> {
+    let before = raw.coverage()?.range(None, Some(floor))?.messages;
+    let Some(index) = before.end.checked_sub(1) else {
         return Ok(None);
-    }
-    Ok(Some(ReadPoint::from_message(
-        raw.messages[idx - 1].as_ref(),
-    )?))
+    };
+    Ok(Some(MessageKey::from_message(&raw.messages[index])?))
 }
 
 pub(super) fn compute_arrivals(
     self_user: Uuid,
     raw: &HistorySnapshot,
-    window_seen_to: Option<ReadPoint>,
+    window_seen_to: Option<MessageKey>,
 ) -> Result<TimelineArrivals, TimelineError> {
-    if !is_live_complete(raw) || raw.messages.is_empty() {
+    let coverage = raw.coverage()?;
+    if !live_complete(&coverage, raw)? {
         return Ok(TimelineArrivals::default());
     }
     let cutoff = window_seen_to
-        .map(|point| raw.resolve_read_point(point))
+        .map(|point| coverage.resolve(point).map(|resolved| resolved.key))
         .transpose()?;
-    if let Some(cutoff) = cutoff
-        && let Some(last) = raw.messages.last()
-        && ReadPoint::from_message(last.as_ref())? <= cutoff
-    {
-        return Ok(TimelineArrivals::default());
-    }
-    let start_idx = match cutoff {
-        Some(cutoff) => raw.first_index_after(cutoff)?,
-        None => 0,
-    };
-
     let mut count = 0u64;
     let mut oldest_unseen = None;
-    for idx in start_idx..raw.messages.len() {
-        let message = &raw.messages[idx];
-        let point = ReadPoint::from_message(message.as_ref())?;
-        if cutoff.is_some_and(|c| point <= c) {
-            continue;
-        }
-        if !is_foreign_message(message, self_user) {
+    for index in coverage.range(cutoff, None)?.messages {
+        let message = &raw.messages[index];
+        if !authored_by_other(message, self_user) {
             continue;
         }
         count += 1;
@@ -110,7 +108,7 @@ pub(super) fn compute_arrivals(
         }
     }
     let live_head = (count > 0)
-        .then(|| raw.messages.last().and_then(|msg| msg.cursor()))
+        .then(|| raw.messages.last().and_then(|message| message.cursor()))
         .flatten();
     Ok(TimelineArrivals {
         count,

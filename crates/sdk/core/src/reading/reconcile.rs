@@ -1,12 +1,12 @@
 //! Server-mark resolution and coalesced cache-driven unread refresh; fetches never acknowledge reads.
 
 use super::{
-    ReadPoint, ReadState, UnreadCount, counts,
+    ReadState, UnreadCount, counts,
     reconcile_marks::{Mark, marks, resolve},
     upload,
 };
 use crate::{
-    ClientError, ResourceSnapshot, Session,
+    ClientError, MessageKey, ResourceSnapshot, Session,
     read_points::{ServerReadPoint, UploadedPoint},
     reconcile::ResourceConnection,
     session::SessionInner,
@@ -53,7 +53,7 @@ pub(crate) async fn resources(
 
 type ChannelImageParts = (
     super::ReadingSnapshot,
-    BTreeMap<Uuid, ReadPoint>,
+    BTreeMap<Uuid, MessageKey>,
     BTreeMap<Uuid, ServerReadPoint>,
 );
 
@@ -101,7 +101,7 @@ async fn build_channel_image(
                 .filter(|saved| saved.server.message_id == server.message_id)
                 .and_then(|saved| saved.created_at_us)
             {
-                Some(ReadPoint {
+                Some(MessageKey {
                     created_at_us: point,
                     message_id: server.message_id,
                 })
@@ -169,7 +169,7 @@ async fn save_resolved(
     generation: crate::Generation,
     channel: Uuid,
     server: ServerReadPoint,
-    point: Option<ReadPoint>,
+    point: Option<MessageKey>,
     state: &ReadState,
     saved: Option<&UploadedPoint>,
 ) -> Result<(), ClientError> {
@@ -193,7 +193,7 @@ async fn install_resources(
     session: &SessionInner,
     connection: &ResourceConnection,
     image: super::ReadingSnapshot,
-    heads: BTreeMap<Uuid, ReadPoint>,
+    heads: BTreeMap<Uuid, MessageKey>,
     unresolved: BTreeMap<Uuid, ServerReadPoint>,
 ) -> Result<(), ClientError> {
     {
@@ -258,7 +258,7 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
                     .messages
                     .iter()
                     .map(|message| {
-                        ReadPoint::message(message).map_err(|_| ClientError::ResourceData)
+                        MessageKey::from_message(message).map_err(|_| ClientError::ResourceData)
                     })
                     .collect::<Result<Vec<_>, _>>()?
                     .into_iter()

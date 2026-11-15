@@ -5,7 +5,7 @@ use std::{pin::Pin, sync::Arc};
 
 use futures_util::{Stream, stream};
 use papo_sdk::{
-    CatchUpSnapshot, Generation, HistoryClosedReason, HistorySnapshot, HistoryUpdate, ReadPoint,
+    CatchUpSnapshot, Generation, HistoryClosedReason, HistorySnapshot, HistoryUpdate, MessageKey,
     Session, Uuid,
 };
 use tokio::sync::watch;
@@ -74,7 +74,7 @@ struct OverlayKey {
     raw_version: u64,
     catch_generation: Generation,
     catch_revision: Option<u64>,
-    window_seen_to: Option<ReadPoint>,
+    window_seen_to: Option<MessageKey>,
     live_baseline_captured: bool,
     seeking: bool,
 }
@@ -84,7 +84,7 @@ impl OverlayKey {
         raw: &HistorySnapshot,
         catch_snap: &CatchUpSnapshot,
         channel: Uuid,
-        window_seen_to: Option<ReadPoint>,
+        window_seen_to: Option<MessageKey>,
         live_baseline_captured: bool,
         seeking: bool,
     ) -> Self {
@@ -104,9 +104,9 @@ pub(super) struct ReadingOverlay {
     pub history: watch::Receiver<HistoryUpdate>,
     pub catch_up: watch::Receiver<Arc<CatchUpSnapshot>>,
     raw: Arc<HistorySnapshot>,
-    window_seen_to: Option<ReadPoint>,
+    window_seen_to: Option<MessageKey>,
     live_baseline_captured: bool,
-    pending_rest_fill: Option<ReadPoint>,
+    pending_rest_fill: Option<MessageKey>,
     seeking_count: usize,
     last_key: OverlayKey,
     pub state: TimelineReadingState,
@@ -124,7 +124,7 @@ impl ReadingOverlay {
     ) -> Result<Self, TimelineError> {
         let _ = history.borrow_and_update();
         let catch_snap = catch_up.borrow_and_update().clone();
-        let live_baseline_captured = is_live_complete(&raw);
+        let live_baseline_captured = is_live_complete(&raw)?;
         let window_seen_to = if live_baseline_captured {
             initial_live_tail(&raw)?
         } else {
@@ -165,11 +165,11 @@ impl ReadingOverlay {
         &mut self,
         session: &Session,
         channel: Uuid,
-        exposed: Option<ReadPoint>,
+        exposed: Option<MessageKey>,
     ) -> Result<(), TimelineError> {
         self.pull_updates()?;
         if let Some(point) = exposed {
-            let resolved = self.raw.resolve_read_point(point)?;
+            let resolved = self.raw.coverage()?.resolve(point)?.key;
             if Some(resolved) > self.window_seen_to {
                 self.window_seen_to = Some(resolved);
             }
@@ -192,7 +192,7 @@ impl ReadingOverlay {
             _ => return Err(TimelineError::InvalidCursor),
         };
         self.raw = next_raw;
-        if !self.live_baseline_captured && is_live_complete(&self.raw) {
+        if !self.live_baseline_captured && is_live_complete(&self.raw)? {
             self.live_baseline_captured = true;
             let tail = tail_before_live_arrivals(&self.raw)?;
             if tail > self.window_seen_to {
@@ -201,7 +201,7 @@ impl ReadingOverlay {
             if !self.raw.server_live_complete
                 && let Some(cursor) = &self.raw.live_arrival_start
             {
-                self.pending_rest_fill = Some(ReadPoint::from_cursor(cursor)?);
+                self.pending_rest_fill = Some(MessageKey::from_cursor(cursor)?);
             }
         } else if let Some(floor) = self.pending_rest_fill {
             let tail = tail_before_point(&self.raw, floor)?;
@@ -290,7 +290,7 @@ fn project_reading_state(
     session: &Session,
     channel: Uuid,
     raw: &HistorySnapshot,
-    window_seen_to: Option<ReadPoint>,
+    window_seen_to: Option<MessageKey>,
     seeking: bool,
     version: u64,
 ) -> Result<TimelineReadingState, TimelineError> {

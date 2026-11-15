@@ -2,13 +2,13 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use papo_api::{HistoryOrder, wire::Message};
+use papo_api::wire::Message;
 use tokio::sync::watch;
 
 use crate::{CacheError, Generation};
 
 use super::{
-    HistoryClosedReason, HistoryError, HistoryGap,
+    HistoryClosedReason, HistoryError,
     channel::Channel,
     persistence::State,
     subscription::{HistoryChunk, HistorySnapshot, HistorySubscription, HistoryUpdate},
@@ -20,7 +20,7 @@ pub(super) struct Publication {
     pub snapshot: Option<Arc<HistorySnapshot>>,
     incarnation: Option<(Option<u64>, Option<i64>)>,
     payloads: BTreeMap<[u8; 16], Payload>,
-    keys: imbl::Vector<super::ordering::Key>,
+    keys: imbl::Vector<super::message_key::MessageKey>,
     messages: imbl::Vector<Arc<Message>>,
     tombstones: imbl::HashSet<papo_api::Uuid>,
     revision: u64,
@@ -32,9 +32,28 @@ pub(super) struct Publication {
 #[derive(Clone)]
 struct Payload {
     revision: u64,
-    key: super::ordering::Key,
+    key: super::message_key::MessageKey,
     bytes: Arc<[u8]>,
     message: Arc<Message>,
+}
+
+pub(super) fn published_chunk(chunk: &super::model::Chunk) -> HistoryChunk {
+    HistoryChunk {
+        first: chunk.first.cursor(),
+        last: chunk.last.cursor(),
+        oldest_complete: chunk.oldest_complete,
+        newest_complete: chunk.newest_complete,
+        generation: (chunk.generation != 0).then_some(Generation(chunk.generation)),
+        live_generation: (chunk.live_generation != 0).then_some(Generation(chunk.live_generation)),
+        oldest_anchor: chunk
+            .oldest_anchor
+            .as_ref()
+            .map(super::ordering::Point::cursor),
+        newest_anchor: chunk
+            .newest_anchor
+            .as_ref()
+            .map(super::ordering::Point::cursor),
+    }
 }
 
 impl Publication {
@@ -79,30 +98,11 @@ impl Publication {
             .publication_entries
             .fetch_add(ids.len() as u64, std::sync::atomic::Ordering::Relaxed);
         self.apply_changes(state, ids, same)?;
-        let mut chunks = Vec::with_capacity(state.model.chunks.len());
-        let mut gaps = Vec::new();
-        for chunk in &state.model.chunks {
-            chunks.push(HistoryChunk {
-                first: chunk.first.cursor(),
-                last: chunk.last.cursor(),
-                oldest_complete: chunk.oldest_complete,
-                newest_complete: chunk.newest_complete,
-                generation: (chunk.generation != 0).then_some(Generation(chunk.generation)),
-                live_generation: (chunk.live_generation != 0)
-                    .then_some(Generation(chunk.live_generation)),
-            });
-            for (complete, point, order) in [
-                (chunk.oldest_complete, &chunk.first, HistoryOrder::Desc),
-                (chunk.newest_complete, &chunk.last, HistoryOrder::Asc),
-            ] {
-                if !complete {
-                    gaps.push(HistoryGap {
-                        cursor: point.cursor(),
-                        order,
-                    });
-                }
-            }
-        }
+        let chunks: Vec<_> = state.model.chunks.iter().map(published_chunk).collect();
+        let empty_complete =
+            state.model.order.is_empty() && state.model.empty_generation == generation.get();
+        let gaps =
+            super::snapshot_query::published_gaps(&chunks, generation.get(), empty_complete)?;
         let snapshot = Arc::new(HistorySnapshot {
             version,
             generation,
@@ -110,8 +110,7 @@ impl Publication {
             tombstones: self.tombstones.clone(),
             chunks,
             gaps,
-            empty_complete: state.model.order.is_empty()
-                && state.model.empty_generation == generation.get(),
+            empty_complete,
             server_live_complete: state.model.server_live_generation == generation.get(),
             live_arrival_start: (state.model.live_arrival_generation == generation.get())
                 .then(|| {
@@ -292,9 +291,13 @@ impl Publication {
         if previous.generation == generation {
             return Ok(());
         }
+        // A live edge proven in the previous generation is not evidence in this one.
+        let gaps =
+            super::snapshot_query::published_gaps(&previous.chunks, generation.get(), false)?;
         let snapshot = Arc::new(HistorySnapshot {
             version: self.next_version(Some(previous.version))?,
             generation,
+            gaps,
             empty_complete: false,
             server_live_complete: false,
             live_arrival_start: None,

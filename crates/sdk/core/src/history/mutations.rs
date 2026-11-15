@@ -185,10 +185,10 @@ impl Model {
             }
             let point = Point::from(&message.cursor().ok_or(HistoryError::InvalidPage)?);
             let key = point.key()?;
-            if !checked.insert(key.id)
+            if !checked.insert(key.id_bytes())
                 || self
                     .entries
-                    .get(&key.id)
+                    .get(&key.id_bytes())
                     .and_then(|entry| entry.point.as_ref())
                     .is_some_and(|old| old.key().ok() != Some(key))
             {
@@ -211,7 +211,7 @@ impl Model {
                 return Err(HistoryError::InvalidPage);
             }
             let point = Point::from(&message.cursor().ok_or(HistoryError::InvalidPage)?);
-            let id = point.key()?.id;
+            let id = point.key()?.id_bytes();
             if !pinned.insert(id) {
                 return Err(HistoryError::InvalidPage);
             }

@@ -44,6 +44,8 @@ fn model(count: u128) -> Model {
         newest_complete: true,
         generation: 1,
         live_generation: 1,
+        oldest_anchor: None,
+        newest_anchor: None,
     });
     model.rebuild_order().unwrap();
     model
@@ -62,6 +64,8 @@ fn prefix_retirement_is_bounded_and_does_not_cross_an_existing_gap() {
         newest_complete: true,
         generation: 1,
         live_generation: 1,
+        oldest_anchor: None,
+        newest_anchor: None,
     });
     for index in 6..=10 {
         model.entries.remove(Uuid::from_u128(index).as_bytes());

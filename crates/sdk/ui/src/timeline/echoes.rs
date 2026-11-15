@@ -50,18 +50,12 @@ fn is_sent_echo_retired(
     let visible_in_history = operation
         .message
         .as_ref()
-        .and_then(|message| message.cursor())
-        .and_then(|cursor| crate::timeline_window::key(&cursor).ok())
+        .and_then(|message| papo_sdk::MessageKey::from_message(message).ok())
         .is_some_and(|point| {
             history
-                .messages
-                .binary_search_by(|message| {
-                    message
-                        .cursor()
-                        .and_then(|cursor| crate::timeline_window::key(&cursor).ok())
-                        .cmp(&Some(point))
-                })
-                .is_ok()
+                .coverage()
+                .and_then(|coverage| coverage.resolve(point))
+                .is_ok_and(|resolved| resolved.index.is_some())
         });
     visible_in_history
         || operation

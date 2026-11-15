@@ -9,7 +9,7 @@ use papo_api::Uuid;
 use rusqlite::{Transaction, params};
 
 use crate::{
-    AccountId, ClientError, Generation, HistoryError, HistoryHandle, ReadPoint, ReadingError,
+    AccountId, ClientError, Generation, HistoryError, HistoryHandle, MessageKey, ReadingError,
     Registry, StorageError,
     catch_up::{CatchUpInterval, CatchUpState, ReadSpan, ReadingPosition},
     registry::{account_is_visible, visible_account},
@@ -76,13 +76,13 @@ impl From<CatchUpWriteError> for ClientError {
     }
 }
 
-fn decode_point(bytes: Option<Vec<u8>>) -> Result<Option<ReadPoint>, StorageError> {
+fn decode_point(bytes: Option<Vec<u8>>) -> Result<Option<MessageKey>, StorageError> {
     bytes
         .map(|raw| serde_json::from_slice(&raw).map_err(|_| StorageError::InvalidState))
         .transpose()
 }
 
-fn encode_point(point: Option<&ReadPoint>) -> Result<Option<Vec<u8>>, StorageError> {
+fn encode_point(point: Option<&MessageKey>) -> Result<Option<Vec<u8>>, StorageError> {
     point
         .map(|value| serde_json::to_vec(value).map_err(|_| StorageError::InvalidState))
         .transpose()
@@ -250,7 +250,7 @@ impl Registry {
         history: HistoryHandle,
         generation: Generation,
         version: u64,
-        local_point: Option<ReadPoint>,
+        local_point: Option<MessageKey>,
         catch_up: Option<CatchUpState>,
     ) -> Result<(), ReadingError> {
         let account = history.account();

@@ -3,8 +3,8 @@
 use super::{
     HistoryBudget, HistoryDiagnostics,
     channel::{Channel, HistoryStore},
+    message_key::MessageKey,
     model::Entry,
-    ordering::Key,
 };
 use crate::{ClientError, Session};
 use std::{
@@ -92,7 +92,7 @@ async fn retained_bytes(channel: &Channel) -> usize {
                 .model
                 .order
                 .len()
-                .saturating_mul(size_of::<Key>() + INDEX_ENTRY_OVERHEAD_BYTES),
+                .saturating_mul(size_of::<MessageKey>() + INDEX_ENTRY_OVERHEAD_BYTES),
         )
         .saturating_add(
             state

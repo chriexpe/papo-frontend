@@ -60,6 +60,8 @@ impl Source {
                         self.generation
                     })),
                     live_generation: (index + 1 == groups.len()).then_some(generation),
+                    oldest_anchor: None,
+                    newest_anchor: None,
                 })
             })
             .collect();

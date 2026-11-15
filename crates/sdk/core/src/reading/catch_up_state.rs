@@ -1,4 +1,4 @@
-//! Account-scoped in-memory catch-up state, revision snapshot publishing and `Asc` successor tracking.
+//! Account-scoped in-memory catch-up state and revision snapshot publishing.
 //! Async reporting, clear operations and SQLite commits live in `reading::catch_up_ops` and `catch_up_store`.
 
 use std::{collections::BTreeMap, sync::Arc};
@@ -6,21 +6,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use papo_api::Uuid;
 
 use crate::{
-    CatchUpSnapshot, ClientError, Generation, ReadPoint,
-    catch_up::{AscSuccessors, CatchUpState},
-    session::SessionInner,
+    CatchUpSnapshot, ClientError, Generation, catch_up::CatchUpState, session::SessionInner,
 };
-
-pub(crate) struct AscSuccessorsState {
-    pub generation: Generation,
-    pub version: u64,
-    pub channels: BTreeMap<Uuid, AscSuccessors>,
-}
-
-pub(crate) struct ChannelAscSuccessors {
-    pub successors: AscSuccessors,
-    pub version: u64,
-}
 
 impl super::Reading {
     fn publish_catch_up_revisions(
@@ -127,63 +114,6 @@ impl super::Reading {
         let (changed, revisions) = guard.remove_channels(channels);
         if changed {
             let _ = self.publish_catch_up_revisions(session, generation, revisions);
-        }
-    }
-
-    pub(crate) fn record_asc_successor(
-        &self,
-        channel: Uuid,
-        generation: Generation,
-        after_id: Uuid,
-        first_returned: Option<ReadPoint>,
-    ) {
-        let mut guard = self
-            .asc_successors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = match &mut *guard {
-            Some(current) if current.generation == generation => current,
-            slot => slot.insert(AscSuccessorsState {
-                generation,
-                version: 0,
-                channels: BTreeMap::new(),
-            }),
-        };
-        state.version = state.version.saturating_add(1);
-        state
-            .channels
-            .entry(channel)
-            .or_default()
-            .insert(after_id, first_returned);
-    }
-
-    pub(crate) fn asc_successors_for(
-        &self,
-        generation: Generation,
-        channel: Uuid,
-    ) -> AscSuccessors {
-        self.asc_successors_with_version(generation, channel)
-            .successors
-    }
-
-    pub(crate) fn asc_successors_with_version(
-        &self,
-        generation: Generation,
-        channel: Uuid,
-    ) -> ChannelAscSuccessors {
-        let guard = self
-            .asc_successors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match &*guard {
-            Some(state) if state.generation == generation => ChannelAscSuccessors {
-                successors: state.channels.get(&channel).cloned().unwrap_or_default(),
-                version: state.version,
-            },
-            _ => ChannelAscSuccessors {
-                successors: BTreeMap::new(),
-                version: 0,
-            },
         }
     }
 }

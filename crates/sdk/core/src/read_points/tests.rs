@@ -74,13 +74,13 @@ impl Fixture {
         self.worker.join().unwrap();
     }
 }
-fn point(created_at_us: i64, id: u128) -> ReadPoint {
-    ReadPoint {
+fn point(created_at_us: i64, id: u128) -> MessageKey {
+    MessageKey {
         created_at_us,
         message_id: Uuid::from_u128(id),
     }
 }
-fn uploaded(point: ReadPoint) -> UploadedPoint {
+fn uploaded(point: MessageKey) -> UploadedPoint {
     UploadedPoint {
         server: ServerReadPoint {
             message_id: point.message_id,
@@ -110,7 +110,7 @@ fn local_acknowledgement_is_full_committed_and_reopens_at_microsecond_precision(
         .query_row("SELECT local_point FROM read_points", [], |row| row.get(0))
         .unwrap();
     assert_eq!(
-        serde_json::from_slice::<ReadPoint>(&bytes).unwrap(),
+        serde_json::from_slice::<MessageKey>(&bytes).unwrap(),
         point(123_456, 10)
     );
     drop(connection);

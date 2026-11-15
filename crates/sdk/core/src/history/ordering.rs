@@ -1,35 +1,20 @@
-//! Exact cursor storage and validated microsecond ordering; continuity belongs to the history model.
+//! Exact cursor strings as the server sent them; their parsed order is `message_key::MessageKey`.
 
-use papo_api::{HistoryCursor, Uuid};
+use papo_api::HistoryCursor;
 use serde::{Deserialize, Serialize};
 
-use super::HistoryError;
+use super::{HistoryError, message_key::MessageKey};
 
+/// A message boundary kept verbatim so cursors round-trip to the backend unchanged.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Point {
     pub created_at: String,
     pub id: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Key {
-    pub created_at_us: i64,
-    pub id: [u8; 16],
-}
-
 impl Point {
-    pub fn key(&self) -> Result<Key, HistoryError> {
-        let timestamp = chrono::DateTime::parse_from_rfc3339(&self.created_at)
-            .map_err(|_| HistoryError::InvalidPage)?;
-        if timestamp.timestamp_subsec_nanos() % 1_000 != 0 {
-            return Err(HistoryError::InvalidPage);
-        }
-        Ok(Key {
-            created_at_us: timestamp.timestamp_micros(),
-            id: *Uuid::parse_str(&self.id)
-                .map_err(|_| HistoryError::InvalidPage)?
-                .as_bytes(),
-        })
+    pub fn key(&self) -> Result<MessageKey, HistoryError> {
+        Ok(MessageKey::parse(&self.created_at, &self.id)?)
     }
 
     pub fn cursor(&self) -> HistoryCursor {
@@ -49,16 +34,16 @@ impl From<&HistoryCursor> for Point {
     }
 }
 
+/// Edit times follow the same precision rule as creation times.
 pub(super) fn timestamp_us(value: &str) -> Result<i64, HistoryError> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|timestamp| timestamp.timestamp_micros())
-        .map_err(|_| HistoryError::InvalidPage)
+    Ok(super::message_key::parse_message_timestamp_us(value)?)
 }
 
 #[cfg(test)]
 mod tests {
-    //! Precision and tuple-order regressions; transport round-trips are API tests.
+    //! Cursor text preservation; precision and ordering are `message_key` tests.
     use super::*;
+    use papo_api::Uuid;
 
     #[test]
     fn equal_microseconds_order_by_uuid_without_changing_cursor_text() {

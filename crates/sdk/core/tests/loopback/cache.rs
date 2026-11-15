@@ -221,7 +221,7 @@ fn reconnect_refreshes_server_read_point_without_touching_local_pending_bytes() 
         online(&session).await?;
         let account = session.account();
         let path = fixture.root.state();
-        let pending = serde_json::to_vec(&papo_sdk::ReadPoint {
+        let pending = serde_json::to_vec(&papo_sdk::MessageKey {
             created_at_us: 1_234_567,
             message_id: Uuid::from_u128(91),
         })?;

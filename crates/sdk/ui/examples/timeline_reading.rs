@@ -9,7 +9,7 @@
 mod observe;
 
 use papo_sdk::{
-    AccountId, Client, ClientConfig, DataRoot, ReadPoint, Uuid,
+    AccountId, Client, ClientConfig, DataRoot, MessageKey, Uuid,
     secret::test_store::ScriptedSecretStore,
 };
 use papo_test_server::{Config, HistorySeed, TestServer};
@@ -20,7 +20,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 struct Checkpoint {
     account: AccountId,
     channel: Uuid,
-    point: ReadPoint,
+    point: MessageKey,
 }
 
 fn main() -> ExitCode {

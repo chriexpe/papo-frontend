@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 
 use super::{
     HistoryError, HistoryGap,
-    ordering::{Key, Point},
+    coverage::{ChunkEvidence, Extent, live_edge_current},
+    message_key::MessageKey,
+    ordering::Point,
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -51,6 +53,9 @@ impl Entry {
     }
 }
 
+/// A proven run of messages. `first` and `last` are message boundaries (possibly deleted since);
+/// the anchors are excluded cursors the run is proven to reach (see `coverage`). A chunk made
+/// only of an anchor (an empty page from an unheld cursor) has `first == last == anchor`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Chunk {
     pub id: [u8; 16],
@@ -60,18 +65,60 @@ pub(super) struct Chunk {
     pub newest_complete: bool,
     pub generation: u64,
     pub live_generation: u64,
+    /// No message lies between this excluded cursor and `first`. Absent in rows written
+    /// before anchors existed, and skipped when absent so those rows re-encode identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_anchor: Option<Point>,
+    /// No message lies between `last` and this excluded cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_anchor: Option<Point>,
 }
 
 impl Chunk {
-    pub fn contains(&self, key: Key) -> Result<bool, HistoryError> {
+    pub fn contains(&self, key: MessageKey) -> Result<bool, HistoryError> {
         Ok(self.first.key()? <= key && key <= self.last.key()?)
+    }
+
+    /// The chunk holds no message boundary of its own, only an anchored proof.
+    pub fn is_anchor_only(&self) -> bool {
+        self.evidence(0)
+            .is_ok_and(|evidence| evidence.is_anchor_only())
+    }
+
+    /// The keys between this chunk's boundaries and anchors, ignoring completeness flags.
+    pub fn bounds(&self) -> Result<Extent, HistoryError> {
+        Ok(Extent::of(&ChunkEvidence {
+            oldest_complete: false,
+            live_edge_current: false,
+            ..self.evidence(0)?
+        }))
+    }
+
+    /// What this chunk proves when evaluated in connection `generation`.
+    pub fn extent(&self, generation: u64) -> Result<Extent, HistoryError> {
+        Ok(Extent::of(&self.evidence(generation)?))
+    }
+
+    fn evidence(&self, generation: u64) -> Result<ChunkEvidence, HistoryError> {
+        Ok(ChunkEvidence {
+            first: self.first.key()?,
+            last: self.last.key()?,
+            oldest_complete: self.oldest_complete,
+            oldest_anchor: self.oldest_anchor.as_ref().map(Point::key).transpose()?,
+            live_edge_current: live_edge_current(
+                self.newest_complete,
+                self.live_generation,
+                generation,
+            ),
+            newest_anchor: self.newest_anchor.as_ref().map(Point::key).transpose()?,
+        })
     }
 }
 
 #[derive(Default)]
 pub(super) struct Model {
     pub entries: BTreeMap<[u8; 16], Entry>,
-    pub order: BTreeMap<Key, [u8; 16]>,
+    pub order: BTreeMap<MessageKey, [u8; 16]>,
     pub chunks: Vec<Chunk>,
     pub revision: u64,
     pub empty_generation: u64,
@@ -123,7 +170,7 @@ impl Model {
                     .as_ref()
                     .ok_or(HistoryError::InvalidPage)?
                     .key()?;
-                if key.id != *id || self.order.insert(key, *id).is_some() {
+                if key.id_bytes() != *id || self.order.insert(key, *id).is_some() {
                     return Err(HistoryError::InvalidPage);
                 }
             }
@@ -170,7 +217,7 @@ impl Model {
             _ => Included(last),
         };
         let range = self.order.range((lower, upper));
-        let payload = |(_, id): (&Key, &[u8; 16])| self.entries.get(id)?.message.as_ref();
+        let payload = |(_, id): (&MessageKey, &[u8; 16])| self.entries.get(id)?.message.as_ref();
         let candidates: Vec<_> = match order {
             HistoryOrder::Desc => range.rev().filter_map(payload).take(limit + 1).collect(),
             HistoryOrder::Asc => range.filter_map(payload).take(limit + 1).collect(),

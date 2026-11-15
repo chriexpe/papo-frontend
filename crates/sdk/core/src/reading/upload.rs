@@ -1,6 +1,7 @@
 //! Debounced per-channel read uploads; durable points survive cancellation and only current completions are adopted.
 
-use super::{ReadPoint, counts, reconcile_marks};
+use super::{counts, reconcile_marks};
+use crate::MessageKey;
 use crate::{
     ClientError, ConnectionState, Session,
     read_points::{ServerReadPoint, UploadedPoint},
@@ -229,7 +230,7 @@ async fn confirm(
     session: &Session,
     channel: Uuid,
     generation: crate::Generation,
-    point: ReadPoint,
+    point: MessageKey,
     recorded_at: Option<String>,
     unresolved: Option<ServerReadPoint>,
 ) -> Result<(), ClientError> {

@@ -1,7 +1,7 @@
 //! Exact window selection, historical UTC offsets and Arc identity without runtime or network.
 
 use super::*;
-use papo_sdk::{Generation, Message, ReadPoint, UnreadCount};
+use papo_sdk::{Generation, Message, MessageKey, UnreadCount, Uuid};
 
 fn message(id: u128, at: &str) -> Arc<Message> {
     Arc::new(Message {
@@ -28,11 +28,11 @@ fn bounds(raw: &HistorySnapshot, live: bool) -> Bounds {
         lower: raw
             .messages
             .front()
-            .map(|message| key(&message.cursor().unwrap()).unwrap()),
+            .map(|message| MessageKey::from_message(message).unwrap()),
         upper: raw
             .messages
             .last()
-            .map(|message| key(&message.cursor().unwrap()).unwrap()),
+            .map(|message| MessageKey::from_message(message).unwrap()),
         live,
     }
 }
@@ -176,13 +176,13 @@ fn focused_end_is_not_live_head_and_deleting_boundary_does_not_shift_window() {
         message(3, "2026-01-01T00:00:03Z"),
     ]);
     let bounds = Bounds {
-        lower: Some(key(&raw.messages[0].cursor().unwrap()).unwrap()),
-        upper: Some(key(&raw.messages[1].cursor().unwrap()).unwrap()),
+        lower: Some(MessageKey::from_message(&raw.messages[0]).unwrap()),
+        upper: Some(MessageKey::from_message(&raw.messages[1]).unwrap()),
         live: false,
     };
     raw.messages.remove(0);
     let read = ReadState {
-        local_point: Some(ReadPoint {
+        local_point: Some(MessageKey {
             created_at_us: 0,
             message_id: Uuid::nil(),
         }),
@@ -220,8 +220,8 @@ fn narrow_focused_window_selects_exact_equal_timestamp_bounds_from_large_history
             .collect(),
     );
     let bounds = Bounds {
-        lower: Some(key(&raw.messages[49_999].cursor().unwrap()).unwrap()),
-        upper: Some(key(&raw.messages[50_028].cursor().unwrap()).unwrap()),
+        lower: Some(MessageKey::from_message(&raw.messages[49_999]).unwrap()),
+        upper: Some(MessageKey::from_message(&raw.messages[50_028]).unwrap()),
         live: false,
     };
     let offsets = std::sync::atomic::AtomicUsize::new(0);
@@ -249,4 +249,26 @@ fn narrow_focused_window_selects_exact_equal_timestamp_bounds_from_large_history
         (50_000..50_030).map(Uuid::from_u128).collect::<Vec<_>>()
     );
     assert_eq!(offsets.load(std::sync::atomic::Ordering::Relaxed), 30);
+}
+
+#[test]
+fn submicrosecond_message_timestamp_is_rejected_like_history() {
+    let raw = snapshot(vec![message(1, "2026-01-01T00:00:00.123456789Z")]);
+    let bounds = Bounds {
+        lower: Some(MessageKey {
+            created_at_us: 0,
+            message_id: Uuid::nil(),
+        }),
+        upper: None,
+        live: true,
+    };
+    let projected = project(
+        &raw,
+        &bounds,
+        None,
+        [false; 2],
+        &|_| crate::UtcOffset::default(),
+        &Vector::new(),
+    );
+    assert!(matches!(projected, Err(TimelineError::InvalidCursor)));
 }
