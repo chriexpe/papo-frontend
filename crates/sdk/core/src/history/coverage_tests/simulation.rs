@@ -137,6 +137,15 @@ pub(super) fn check(
     let coverage = snapshot.coverage().unwrap();
     let slots = Slots::new(universe, oracle, generation);
     let held: BTreeSet<_> = model.order.keys().copied().collect();
+    // A held message is always inside a run with real boundaries, never only an anchor.
+    for point in &held {
+        assert!(
+            model.chunks.iter().any(|chunk| !chunk.is_anchor_only()
+                && key(&chunk.first) <= *point
+                && *point <= key(&chunk.last)),
+            "held message outside every run with message boundaries"
+        );
+    }
     // Prefix counts of server messages the client lacks, per slot.
     let mut missing = vec![0usize; slots.covered.len() + 1];
     for slot in 0..slots.covered.len() {
@@ -259,6 +268,15 @@ impl Simulation {
         self.next_index += 1;
         let point = MessageKey::from_message(&message).unwrap();
         self.server.insert(point, message.clone());
+        self.model.event(&live(&message), self.generation).unwrap();
+        self.oracle.accept_live(point, self.generation);
+    }
+
+    /// A gateway event for a message the server already had, delivered late.
+    pub(super) fn deliver_late(&mut self, index: u128) {
+        let message = message(index);
+        let point = MessageKey::from_message(&message).unwrap();
+        assert!(self.server.contains_key(&point));
         self.model.event(&live(&message), self.generation).unwrap();
         self.oracle.accept_live(point, self.generation);
     }

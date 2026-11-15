@@ -137,6 +137,46 @@ fn an_unheld_cursor_anchors_the_page_without_proving_itself() {
 
 #[test]
 fn an_anchored_proof_is_restored_unvalidated_and_revalidated_under_chunk_rules() {
+    let mut simulation = Simulation::new();
+    simulation.generation = 5;
+    let anchor = message_point(4);
+    simulation.page(Some(&anchor), HistoryOrder::Asc, 3);
+    // A restart decodes the cache: the anchor survives, its validation does not.
+    let restored = persist_and_restore(std::mem::take(&mut simulation.model), 5);
+    assert_eq!(restored.model.chunks.len(), 1);
+    let chunk = &restored.model.chunks[0];
+    assert_eq!(chunk.oldest_anchor.as_ref(), Some(&anchor));
+    assert_eq!((chunk.generation, chunk.live_generation), (0, 0));
+    let published = publish(&restored.model, 6);
+    assert!(published.chunks[0].generation.is_none());
+    let seventh = key(&message_point(7));
+    let coverage = published.coverage().unwrap();
+    // Interior and anchored proofs persist like any chunk boundary; the cursor itself never.
+    assert!(
+        coverage
+            .range(Some(key(&anchor)), Some(seventh))
+            .unwrap()
+            .complete
+    );
+    assert!(
+        !coverage
+            .range(Some(key(&message_point(3))), Some(seventh))
+            .unwrap()
+            .complete
+    );
+
+    // The same page in the new generation revalidates the run and keeps its anchor.
+    simulation.model = restored.model;
+    simulation.generation = 6;
+    simulation.page(Some(&anchor), HistoryOrder::Asc, 3);
+    let chunk = &simulation.model.chunks[0];
+    assert_eq!(simulation.model.chunks.len(), 1);
+    assert_eq!(chunk.oldest_anchor.as_ref(), Some(&anchor));
+    assert_eq!(chunk.generation, 6);
+}
+
+/// Persists `model` in a fresh account cache and decodes it back, as a restart would.
+fn persist_and_restore(model: super::model::Model, generation: u64) -> super::persistence::State {
     use crate::{
         ResourceSnapshot,
         generation::Epoch,
@@ -152,71 +192,74 @@ fn an_anchored_proof_is_restored_unvalidated_and_revalidated_under_chunk_rules()
             .await
             .unwrap();
         let channel = Uuid::from_u128(CHANNEL);
-        let mut resources = ResourceSnapshot::empty(Generation(5));
+        let mut resources = ResourceSnapshot::empty(Generation(generation));
         resources.channels = vec![crate::Channel {
             id: Some(channel.to_string()),
             ..crate::Channel::default()
         }]
         .into();
         cache.replace(&resources).await.unwrap();
-
-        let mut simulation = Simulation::new();
-        simulation.generation = 5;
-        let anchor = message_point(4);
-        simulation.page(Some(&anchor), HistoryOrder::Asc, 3);
         let mut state = super::persistence::State::default();
         state
-            .ensure(&cache, *channel.as_bytes(), Generation(5))
+            .ensure(&cache, *channel.as_bytes(), Generation(generation))
             .await
             .unwrap();
-        state.model = std::mem::take(&mut simulation.model);
+        state.model = model;
         let epoch = Epoch {
-            generation: Generation(5),
+            generation: Generation(generation),
             cancel: tokio_util::sync::CancellationToken::new(),
         };
         state
             .persist(&cache, *channel.as_bytes(), &epoch)
             .await
             .unwrap();
-
-        // A restart decodes the cache: the anchor survives, its validation does not.
         let data = cache
             .retention_data(*channel.as_bytes())
             .await
             .unwrap()
             .unwrap();
-        let restored = super::persistence::decode(data).unwrap();
-        assert_eq!(restored.model.chunks.len(), 1);
-        let chunk = &restored.model.chunks[0];
-        assert_eq!(chunk.oldest_anchor.as_ref(), Some(&anchor));
-        assert_eq!((chunk.generation, chunk.live_generation), (0, 0));
-        let published = publish(&restored.model, 6);
-        assert!(published.chunks[0].generation.is_none());
-        let seventh = key(&message_point(7));
-        let coverage = published.coverage().unwrap();
-        // Interior and anchored proofs persist like any chunk boundary; the cursor itself never.
-        assert!(
-            coverage
-                .range(Some(key(&anchor)), Some(seventh))
-                .unwrap()
-                .complete
-        );
-        assert!(
-            !coverage
-                .range(Some(key(&message_point(3))), Some(seventh))
-                .unwrap()
-                .complete
-        );
+        super::persistence::decode(data).unwrap()
+    })
+}
 
-        // The same page in the new generation revalidates the run and keeps its anchor.
-        simulation.model = restored.model;
-        simulation.generation = 6;
-        simulation.page(Some(&anchor), HistoryOrder::Asc, 3);
-        let chunk = &simulation.model.chunks[0];
-        assert_eq!(simulation.model.chunks.len(), 1);
-        assert_eq!(chunk.oldest_anchor.as_ref(), Some(&anchor));
-        assert_eq!(chunk.generation, 6);
-    });
+#[test]
+fn a_late_event_for_an_anchored_cursor_turns_the_anchor_into_a_held_boundary() {
+    let mut simulation = Simulation::new();
+    let newest = INITIAL_MESSAGES - 1;
+    let anchor = message_point(newest);
+    // The newest message is not held yet: an empty `Asc` page from it anchors a proof.
+    simulation.page(Some(&anchor), HistoryOrder::Asc, 3);
+    assert!(simulation.model.chunks[0].is_anchor_only());
+    // Its own gateway event arrives late; the message is now held.
+    simulation.deliver_late(newest);
+    simulation.check();
+    assert_eq!(simulation.model.chunks.len(), 1);
+    let chunk = &simulation.model.chunks[0];
+    assert!(!chunk.is_anchor_only());
+    assert!(chunk.oldest_anchor.is_none());
+
+    let snapshot = publish(&simulation.model, simulation.generation);
+    let coverage = snapshot.coverage().unwrap();
+    assert_eq!(coverage.resolve(key(&anchor)).unwrap().index, Some(0));
+    assert!(coverage.range(Some(key(&anchor)), None).unwrap().complete);
+    let older = key(&message_point(newest - 1));
+    assert!(!coverage.range(Some(older), None).unwrap().complete);
+    assert_eq!(snapshot.gaps.len(), 1);
+    assert_eq!(snapshot.gaps[0].order, HistoryOrder::Desc);
+    assert!(snapshot.gaps[0].cursor == anchor.cursor());
+
+    // A restart keeps the held boundary and starts a new connection generation.
+    let restored =
+        persist_and_restore(std::mem::take(&mut simulation.model), simulation.generation);
+    assert!(!restored.model.chunks[0].is_anchor_only());
+    assert_eq!(restored.model.order.len(), 1);
+    simulation.model = restored.model;
+    simulation.reconnect(0);
+    simulation.check();
+    // Retention evicts the message together with its run; nothing is left orphaned.
+    simulation.evict();
+    simulation.check();
+    assert!(simulation.model.order.is_empty());
 }
 
 #[test]

@@ -73,15 +73,16 @@ impl Model {
 impl Model {
     /// A leading run holding no message (an anchor-only proof, or one whose messages were all
     /// deleted) would stop eviction from ever reaching the next run. Its proof is dropped with
-    /// it, as an evicted run's is. Runs are kept while no message is held, so a turn that
-    /// evicts nothing changes nothing.
+    /// it, as an evicted run's is. Only held entries decide, so a held message is never left
+    /// outside every run. Runs are kept while no message is held, so a turn that evicts
+    /// nothing changes nothing.
     fn drop_leading_runs_without_messages(&mut self) -> Result<(), HistoryError> {
         if self.order.is_empty() {
             return Ok(());
         }
         while let Some(chunk) = self.chunks.first() {
             let (first, last) = (chunk.first.key()?, chunk.last.key()?);
-            if self.order.range(first..=last).next().is_some() && !chunk.is_anchor_only() {
+            if self.order.range(first..=last).next().is_some() {
                 break;
             }
             self.chunks.remove(0);
