@@ -2,7 +2,9 @@
 //! message order and read points.
 
 use imbl::Vector;
-use papo_sdk::{AccountId, HistoryOrder, HistorySnapshot, Message, MessageKey, ReadState, Uuid};
+use papo_sdk::{
+    AccountId, HistoryGap, HistoryOrder, HistorySnapshot, Message, MessageKey, ReadState, Uuid,
+};
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
@@ -126,6 +128,25 @@ pub(crate) fn project_with_cache(
             );
         }
     }
+    insert_deleted_gap_boundaries(&mut values, gaps);
+    if loading[1] {
+        values.push(TimelineItem::Loading(TimelineDirection::Newer));
+    }
+    Ok(values
+        .into_iter()
+        .map(|item| {
+            reusable
+                .get(&item.identity())
+                .filter(|old| old.as_ref() == &item)
+                .map_or_else(|| Arc::new(item), |old| Arc::clone(old))
+        })
+        .collect())
+}
+
+fn insert_deleted_gap_boundaries(
+    values: &mut Vec<TimelineItem>,
+    gaps: BTreeMap<MessageKey, Vec<&HistoryGap>>,
+) {
     // A deleted boundary is still a real gap, even if its cursor no longer has a message row.
     for (point, boundaries) in gaps {
         let index = values
@@ -141,18 +162,6 @@ pub(crate) fn project_with_cache(
             values.insert(index, TimelineItem::Gap(gap.clone()));
         }
     }
-    if loading[1] {
-        values.push(TimelineItem::Loading(TimelineDirection::Newer));
-    }
-    Ok(values
-        .into_iter()
-        .map(|item| {
-            reusable
-                .get(&item.identity())
-                .filter(|old| old.as_ref() == &item)
-                .map_or_else(|| Arc::new(item), |old| Arc::clone(old))
-        })
-        .collect())
 }
 
 fn resolve_content(
