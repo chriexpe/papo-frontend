@@ -176,3 +176,28 @@ async fn background_private_server_gate_is_published_in_the_auth_observable() {
     session.root.cancel();
     run.await;
 }
+
+struct PendingConnect;
+impl Connector for PendingConnect {
+    fn connect<'a>(&'a self, _: &'a SessionInner, _: &'a Epoch) -> IoFuture<'a, Box<dyn Socket>> {
+        Box::pin(std::future::pending())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn driver_cancel_stops_pending_connect_without_cancelling_session_root() {
+    let session = session();
+    let config = ClientConfig {
+        jitter: Arc::new(ZeroJitter),
+        ..ClientConfig::default()
+    };
+    let run = drive(&config, &session, &PendingConnect);
+    tokio::pin!(run);
+    tokio::select! {
+        () = &mut run => panic!("driver stopped early"),
+        () = tokio::task::yield_now() => {}
+    }
+    session.driver_cancel.cancel();
+    run.await;
+    assert!(!session.root.is_cancelled());
+}

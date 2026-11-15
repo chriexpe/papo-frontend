@@ -79,10 +79,8 @@ pub(super) async fn authenticated(
     epoch: &Epoch,
 ) -> Result<papo_api::RestClient, MediaError> {
     let secret = session
-        .client
         .inner
-        .secrets
-        .read(session.inner.key, &epoch.cancel)
+        .read_secret(&session.client.inner.secrets, &epoch.cancel)
         .await
         .map_err(crate::ClientError::from)?
         .ok_or(crate::ClientError::SignedOut)?;

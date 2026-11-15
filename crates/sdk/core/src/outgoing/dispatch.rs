@@ -308,7 +308,7 @@ async fn prepare(
         biased;
         () = session.inner.root.cancelled() => return Err(ClientError::Closed.into()),
         () = epoch.cancel.cancelled() => return Err(ClientError::Superseded.into()),
-        result = session.client.inner.secrets.read(session.inner.key, &epoch.cancel) => {
+        result = session.inner.read_secret(&session.client.inner.secrets, &epoch.cancel) => {
             result.map_err(ClientError::from)?
         }
     }

@@ -54,11 +54,10 @@ impl AuthService {
             }
             if let Some(session) = &this.session {
                 let snapshot = rest.credential_snapshot()?;
-                this.client
+                session
                     .inner
-                    .secrets
-                    .write(
-                        session.inner.key,
+                    .write_secret(
+                        &this.client.inner.secrets,
                         SecretValue::new(snapshot.expose_bytes().to_vec()),
                         &session.inner.root,
                     )
@@ -233,11 +232,9 @@ async fn install(
     client.inner.publish_registry().await?;
     drop(guard);
     let snapshot = verified.rest.credential_snapshot()?;
-    let result = client
-        .inner
-        .secrets
-        .write(
-            inner.key,
+    let result = inner
+        .write_secret(
+            &client.inner.secrets,
             SecretValue::new(snapshot.expose_bytes().to_vec()),
             &epoch.cancel,
         )

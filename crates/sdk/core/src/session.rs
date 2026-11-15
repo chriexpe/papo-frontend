@@ -2,7 +2,9 @@
 
 use crate::{
     AccountId, AuthService, AuthState, ClientError, ClientHandle, ConnectionState,
-    ConnectionStatus, Generated, Generation, ServerAddress, generation::Epochs, secret::SecretKey,
+    ConnectionStatus, Generated, Generation, ServerAddress,
+    generation::Epochs,
+    secret::{SecretError, SecretFailure, SecretKey, SecretStoreBoundary, SecretValue},
 };
 use papo_api::gateway::Event;
 use std::sync::{
@@ -17,6 +19,7 @@ pub(crate) struct SessionInner {
     pub address: ServerAddress,
     pub key: SecretKey,
     pub root: CancellationToken,
+    pub driver_cancel: CancellationToken,
     pub epochs: Epochs,
     pub tasks: TaskTracker,
     pub auth: Arc<crate::observable::StateCell<AuthState>>,
@@ -26,6 +29,7 @@ pub(crate) struct SessionInner {
     pub activity: Arc<crate::observable::StateCell<crate::ActivitySnapshot>>,
     pub typing_command: watch::Sender<Option<Generated<(papo_api::Uuid, tokio::time::Instant)>>>,
     pub driver_running: AtomicBool,
+    pub secret_serial: tokio::sync::Mutex<()>,
     pub auth_serial: tokio::sync::Mutex<()>,
     pub verified_rest: tokio::sync::Mutex<Option<(Generation, papo_api::RestClient)>>,
     pub resource_serial: tokio::sync::Mutex<()>,
@@ -47,6 +51,7 @@ impl SessionInner {
         root: CancellationToken,
         auth_state: AuthState,
     ) -> Arc<Self> {
+        let driver_cancel = root.child_token();
         let epochs = Epochs::new(next, root.clone());
         let generation = epochs.current().generation;
         Arc::new(Self {
@@ -54,6 +59,7 @@ impl SessionInner {
             address,
             key,
             root,
+            driver_cancel,
             epochs,
             tasks: TaskTracker::new(),
             auth: crate::observable::StateCell::new(auth_state),
@@ -68,6 +74,7 @@ impl SessionInner {
             activity: crate::activity::cell(generation),
             typing_command: watch::channel(None).0,
             driver_running: AtomicBool::new(false),
+            secret_serial: tokio::sync::Mutex::new(()),
             auth_serial: tokio::sync::Mutex::new(()),
             verified_rest: tokio::sync::Mutex::new(None),
             resource_serial: tokio::sync::Mutex::new(()),
@@ -131,6 +138,42 @@ impl SessionInner {
                 .send_replace(ConnectionStatus { generation, state })
         })?;
         Ok(())
+    }
+    async fn acquire_secret_slot(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, SecretError> {
+        tokio::select! {
+            biased;
+            () = self.root.cancelled() => Err(SecretError::Failure(SecretFailure::Canceled)),
+            () = cancel.cancelled() => Err(SecretError::Failure(SecretFailure::Canceled)),
+            guard = self.secret_serial.lock() => Ok(guard),
+        }
+    }
+    pub async fn read_secret(
+        &self,
+        secrets: &SecretStoreBoundary,
+        cancel: &CancellationToken,
+    ) -> Result<Option<SecretValue>, SecretError> {
+        let _guard = self.acquire_secret_slot(cancel).await?;
+        secrets.read(self.key, cancel).await
+    }
+    pub async fn write_secret(
+        &self,
+        secrets: &SecretStoreBoundary,
+        value: SecretValue,
+        cancel: &CancellationToken,
+    ) -> Result<(), SecretError> {
+        let _guard = self.acquire_secret_slot(cancel).await?;
+        secrets.write(self.key, value, cancel).await
+    }
+    pub async fn delete_secret(
+        &self,
+        secrets: &SecretStoreBoundary,
+        cancel: &CancellationToken,
+    ) -> Result<(), SecretError> {
+        let _guard = self.acquire_secret_slot(cancel).await?;
+        secrets.delete(self.key, cancel).await
     }
 }
 

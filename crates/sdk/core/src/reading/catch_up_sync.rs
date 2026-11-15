@@ -103,15 +103,17 @@ pub(crate) async fn revoke_channels(
         .reading
         .positions
         .revoke(channels, generation, reason);
-    position_publish::remove_from_image(session, channels, generation);
-    session
-        .reading
-        .remove_catch_up_channels(session, generation, channels);
+    session.epochs.validate(generation)?;
     client
         .inner
         .registry
         .delete_channel_reading_state(session.account, channels.to_vec())
         .await?;
+    // Publish removal after the synchronous=FULL delete commits and fences any newer grant.
+    position_publish::remove_from_image(session, channels, generation);
+    session
+        .reading
+        .remove_catch_up_channels(session, generation, channels);
     Ok(())
 }
 
@@ -121,42 +123,49 @@ pub(crate) async fn reconcile_removed_channels(
     generation: Generation,
     visible: &BTreeSet<Uuid>,
 ) -> Result<(), ClientError> {
-    let mut stale_set = BTreeSet::new();
+    let mut removed_set = BTreeSet::new();
     for channel in session.reading.position_image.borrow().channels.keys() {
         if !visible.contains(channel) {
-            stale_set.insert(*channel);
+            removed_set.insert(*channel);
         }
     }
     for channel in session.reading.catch_up_image.borrow().channels.keys() {
         if !visible.contains(channel) {
-            stale_set.insert(*channel);
+            removed_set.insert(*channel);
         }
     }
-    let stale: Vec<Uuid> = stale_set.into_iter().collect();
+    let stale: Vec<Uuid> = removed_set.iter().copied().collect();
     if !stale.is_empty() {
         session
             .reading
             .positions
             .revoke(&stale, generation, HistoryClosedReason::ChannelRemoved);
-        position_publish::remove_from_image(session, &stale, generation);
-        session
-            .reading
-            .remove_catch_up_channels(session, generation, &stale);
     }
+    session.epochs.validate(generation)?;
     let deleted = client
         .inner
         .registry
         .retain_channel_reading_state(session.account, visible.clone())
         .await?;
-    if !deleted.is_empty() {
+    let new_deleted: Vec<Uuid> = deleted
+        .iter()
+        .copied()
+        .filter(|channel| !removed_set.contains(channel))
+        .collect();
+    if !new_deleted.is_empty() {
+        session.reading.positions.revoke(
+            &new_deleted,
+            generation,
+            HistoryClosedReason::ChannelRemoved,
+        );
+    }
+    removed_set.extend(deleted);
+    if !removed_set.is_empty() {
+        let removed: Vec<Uuid> = removed_set.into_iter().collect();
+        position_publish::remove_from_image(session, &removed, generation);
         session
             .reading
-            .positions
-            .revoke(&deleted, generation, HistoryClosedReason::ChannelRemoved);
-        position_publish::remove_from_image(session, &deleted, generation);
-        session
-            .reading
-            .remove_catch_up_channels(session, generation, &deleted);
+            .remove_catch_up_channels(session, generation, &removed);
     }
     Ok(())
 }

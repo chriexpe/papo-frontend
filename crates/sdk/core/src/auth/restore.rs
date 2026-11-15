@@ -23,7 +23,7 @@ pub(crate) async fn restore(
         client.inner.pool.root.child_token(),
         AuthState::NeedsServer,
     );
-    let secret_result = client.inner.secrets.read(inner.key, &inner.root).await;
+    let secret_result = inner.read_secret(&client.inner.secrets, &inner.root).await;
     if let Ok(Some(_)) = &secret_result {
         crate::reading::catch_up_sync::hydrate_from_storage(client, &inner).await?;
     }

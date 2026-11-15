@@ -157,24 +157,22 @@ fn channel_deleted_discards_saved_position() -> Result {
         };
         session.save_reading_position(channel(), Some(pos)).await?;
         let observer = session.reading_observer();
-        observer
-            .report_visible(
-                channel(),
-                snap.generation,
-                snap.version,
-                &[msg_id(&snap, 0)],
-                papo_sdk::VisibilityContinuity::Continuous,
-            )
-            .await?;
-        observer
-            .report_visible(
-                channel(),
-                snap.generation,
-                snap.version,
-                &[msg_id(&snap, 3)],
-                papo_sdk::VisibilityContinuity::Discontinuous,
-            )
-            .await?;
+        super::report_with(
+            &observer,
+            &session,
+            channel(),
+            0..=0,
+            papo_sdk::VisibilityContinuity::Continuous,
+        )
+        .await?;
+        super::report_with(
+            &observer,
+            &session,
+            channel(),
+            3..=3,
+            papo_sdk::VisibilityContinuity::Discontinuous,
+        )
+        .await?;
         let mut rx = session.subscribe_reading_positions();
         let mut cu_rx = session.subscribe_catch_up();
         assert!(cu_rx.borrow().channels.contains_key(&channel()));

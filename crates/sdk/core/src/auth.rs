@@ -184,11 +184,9 @@ impl AuthService {
         epoch: Option<&Epoch>,
     ) -> Result<papo_api::RestClient, ClientError> {
         if let Some(session) = &self.session {
-            let secret = self
-                .client
+            let secret = session
                 .inner
-                .secrets
-                .read(session.inner.key, &session.inner.root)
+                .read_secret(&self.client.inner.secrets, &session.inner.root)
                 .await?
                 .ok_or(ClientError::SignedOut)?;
             self.validate(epoch)?;

@@ -14,10 +14,8 @@ pub(crate) async fn authenticated(
         return Ok(rest.clone());
     }
     let secret = session
-        .client
         .inner
-        .secrets
-        .read(session.inner.key, &epoch.cancel)
+        .read_secret(&session.client.inner.secrets, &epoch.cancel)
         .await?
         .ok_or(ClientError::SignedOut)?;
     let rest = session
