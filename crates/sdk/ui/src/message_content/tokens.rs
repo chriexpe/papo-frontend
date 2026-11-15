@@ -49,7 +49,12 @@ pub(crate) fn expand_pieces(
                 allow_tokens: false,
             } => {
                 if !text.is_empty() {
-                    out.push(InlinePiece::Literal(Inline::Text { text, style, link }));
+                    out.push(InlinePiece::Literal(Inline::Text {
+                        text,
+                        style,
+                        link,
+                        allow_tokens: false,
+                    }));
                 }
             }
             InlinePiece::Text {
@@ -92,6 +97,7 @@ pub(crate) fn apply_tokens_to_inlines(
                 text,
                 style,
                 link: None,
+                allow_tokens: true,
             } if needs_token_scan(&text, catalog) => {
                 split_text_tokens(&text, style, catalog, &mut out);
             }
@@ -163,6 +169,7 @@ fn apply_emoji_inlines(inlines: &[Inline], catalog: &[CustomEmojiRef]) -> Vec<In
                 text,
                 style,
                 link: None,
+                allow_tokens: true,
             } if text.contains(':') => {
                 split_text_tokens_with_options(text, *style, catalog, false, &mut out);
             }
@@ -253,6 +260,7 @@ fn flush_plain(text: &str, range: std::ops::Range<usize>, style: TextStyle, out:
                 text: text[range].to_owned(),
                 style,
                 link: None,
+                allow_tokens: true,
             },
         );
     }

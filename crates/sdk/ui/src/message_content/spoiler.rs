@@ -14,6 +14,7 @@ pub(crate) enum InlinePiece {
     EscapedPipe {
         style: TextStyle,
         link: Option<String>,
+        allow_tokens: bool,
     },
     /// Already resolved leaf (e.g. a mention, custom emoji, or non-token link/image fallback)
     /// that must never be split by `||` spoiler delimiters.
@@ -131,16 +132,32 @@ fn pieces_without_spoilers(pieces: Vec<InlinePiece>) -> Vec<Inline> {
     for piece in pieces {
         match piece {
             InlinePiece::Text {
-                text, style, link, ..
+                text,
+                style,
+                link,
+                allow_tokens,
             } if !text.is_empty() => {
-                push_coalesced(&mut out, Inline::Text { text, style, link });
+                push_coalesced(
+                    &mut out,
+                    Inline::Text {
+                        text,
+                        style,
+                        link,
+                        allow_tokens,
+                    },
+                );
             }
-            InlinePiece::EscapedPipe { style, link } => push_coalesced(
+            InlinePiece::EscapedPipe {
+                style,
+                link,
+                allow_tokens,
+            } => push_coalesced(
                 &mut out,
                 Inline::Text {
                     text: String::from("|"),
                     style,
                     link,
+                    allow_tokens,
                 },
             ),
             InlinePiece::Literal(inline) => push_coalesced(&mut out, inline),
@@ -163,7 +180,12 @@ fn split_delim_atoms(pieces: Vec<InlinePiece>) -> Vec<Atom> {
                 allow_tokens: false,
             } => {
                 if !text.is_empty() {
-                    atoms.push(Atom::Inline(Inline::Text { text, style, link }));
+                    atoms.push(Atom::Inline(Inline::Text {
+                        text,
+                        style,
+                        link,
+                        allow_tokens: false,
+                    }));
                 }
             }
             InlinePiece::Text {
@@ -174,7 +196,12 @@ fn split_delim_atoms(pieces: Vec<InlinePiece>) -> Vec<Atom> {
             } => {
                 if !text.contains("||") {
                     if !text.is_empty() {
-                        atoms.push(Atom::Inline(Inline::Text { text, style, link }));
+                        atoms.push(Atom::Inline(Inline::Text {
+                            text,
+                            style,
+                            link,
+                            allow_tokens: true,
+                        }));
                     }
                     continue;
                 }
@@ -185,6 +212,7 @@ fn split_delim_atoms(pieces: Vec<InlinePiece>) -> Vec<Atom> {
                             text: rest[..pos].to_owned(),
                             style,
                             link: link.clone(),
+                            allow_tokens: true,
                         }));
                     }
                     atoms.push(Atom::Delim {
@@ -202,14 +230,20 @@ fn split_delim_atoms(pieces: Vec<InlinePiece>) -> Vec<Atom> {
                         },
                         style,
                         link,
+                        allow_tokens: true,
                     }));
                 }
             }
-            InlinePiece::EscapedPipe { style, link } => {
+            InlinePiece::EscapedPipe {
+                style,
+                link,
+                allow_tokens,
+            } => {
                 atoms.push(Atom::Inline(Inline::Text {
                     text: String::from("|"),
                     style,
                     link,
+                    allow_tokens,
                 }));
             }
             InlinePiece::Literal(inline) => atoms.push(Atom::Inline(inline)),
@@ -227,6 +261,7 @@ fn push_text(frame: &mut Frame, text: &str, style: TextStyle, link: Option<Strin
             text: text.to_owned(),
             style,
             link,
+            allow_tokens: true,
         },
     );
 }
@@ -244,13 +279,18 @@ pub(crate) fn push_coalesced(target: &mut Vec<Inline>, item: Inline) {
                 text: existing,
                 style: existing_style,
                 link: existing_link,
+                allow_tokens: existing_allow_tokens,
             }),
             Inline::Text {
                 text: addition,
                 style: addition_style,
                 link: addition_link,
+                allow_tokens: addition_allow_tokens,
             },
-        ) if *existing_style == addition_style && *existing_link == addition_link => {
+        ) if *existing_style == addition_style
+            && *existing_link == addition_link
+            && *existing_allow_tokens == addition_allow_tokens =>
+        {
             existing.push_str(&addition);
         }
         (_, Inline::Text { text, .. }) if text.is_empty() => {}

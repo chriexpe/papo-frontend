@@ -67,6 +67,7 @@ fn literal_fallback(source: &str, custom_emojis: &[CustomEmojiRef]) -> MessageCo
             text,
             style: TextStyle::default(),
             link: None,
+            allow_tokens: true,
         }],
         custom_emojis,
     );
@@ -310,6 +311,7 @@ impl Builder<'_> {
                     out.push(InlinePiece::EscapedPipe {
                         style: self.style(),
                         link: self.link(),
+                        allow_tokens: self.allow_tokens(),
                     });
                     if text.len() > 1 {
                         out.push(InlinePiece::Text {

@@ -62,6 +62,12 @@ pub enum Inline {
         style: TextStyle,
         /// Safe target URL (`http`, `https` or `mailto` only).
         link: Option<String>,
+        /// Whether Layer 2 token scans (mentions, custom emoji) may expand inside this text.
+        ///
+        /// False for safe links, rejected unsafe links and image fallbacks so
+        /// [`MessageContent::with_custom_emojis`] leaves those ranges literal just like
+        /// [`MessageContent::parse_with_custom_emojis`].
+        allow_tokens: bool,
     },
     /// Inline code span (backtick-delimited); mentions, spoilers and emoji remain literal inside.
     Code(String),
@@ -159,7 +165,11 @@ impl MessageContent {
         parser::parse(source, catalog)
     }
 
-    /// Re-scans plain text leaves in an already-parsed tree against `catalog` without re-parsing Markdown.
+    /// Re-scans token-eligible plain text leaves in an already-parsed tree against `catalog`
+    /// without re-parsing Markdown.
+    ///
+    /// Text belonging to links (safe or rejected) and image fallbacks carries `allow_tokens: false`
+    /// and stays literal, matching [`MessageContent::parse_with_custom_emojis`].
     #[must_use]
     pub fn with_custom_emojis(&self, catalog: &[CustomEmojiRef]) -> Self {
         if catalog.is_empty() || self.blocks.is_empty() {

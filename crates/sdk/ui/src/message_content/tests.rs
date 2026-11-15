@@ -74,7 +74,9 @@ fn text_runs(inlines: &[Inline]) -> Vec<(&str, TextStyle, Option<&str>)> {
     inlines
         .iter()
         .filter_map(|inline| match inline {
-            Inline::Text { text, style, link } => Some((text.as_str(), *style, link.as_deref())),
+            Inline::Text {
+                text, style, link, ..
+            } => Some((text.as_str(), *style, link.as_deref())),
             _ => None,
         })
         .collect()
@@ -99,6 +101,7 @@ fn plain_text_is_one_paragraph() {
             text: "hello".into(),
             style: TextStyle::default(),
             link: None,
+            allow_tokens: true,
         }]
     );
 }
@@ -310,10 +313,14 @@ fn links_allow_only_http_https_and_mailto_and_no_media_nodes_exist() {
          [w](/relative) [h](#sec) [ok](https://e.com) [m](mailto:a@b.c) <https://auto.test>",
     );
     let runs = text_runs(only_paragraph(&parsed));
-    assert!(
-        runs.iter()
-            .any(|(t, _, l)| t.contains("x y z") && l.is_none())
-    );
+    assert!(plain_text(&parsed).starts_with("x y z w h ok"));
+    for unsafe_label in ["x", "y", "z", "w", "h"] {
+        assert!(
+            runs.iter()
+                .any(|(t, _, l)| *t == unsafe_label && l.is_none()),
+            "missing literal run for {unsafe_label}: {runs:?}"
+        );
+    }
     assert!(
         runs.iter()
             .any(|(t, _, l)| *t == "ok" && *l == Some("https://e.com"))
@@ -340,6 +347,7 @@ fn escapes_entities_and_spoilers() {
             text: "secret".into(),
             style: TextStyle::default(),
             link: None,
+            allow_tokens: true,
         }])]
     );
     assert_eq!(
@@ -352,6 +360,7 @@ fn escapes_entities_and_spoilers() {
                 strikethrough: false,
             },
             link: None,
+            allow_tokens: true,
         }])]
     );
     assert_eq!(
@@ -360,6 +369,7 @@ fn escapes_entities_and_spoilers() {
             text: "||literal||".into(),
             style: TextStyle::default(),
             link: None,
+            allow_tokens: true,
         }]
     );
     assert_eq!(
@@ -368,6 +378,7 @@ fn escapes_entities_and_spoilers() {
             text: "a | b".into(),
             style: TextStyle::default(),
             link: None,
+            allow_tokens: true,
         }])]
     );
     assert_eq!(
@@ -376,6 +387,7 @@ fn escapes_entities_and_spoilers() {
             text: "||||".into(),
             style: TextStyle::default(),
             link: None,
+            allow_tokens: true,
         }]
     );
     assert_eq!(

@@ -151,11 +151,13 @@ fn escaped_backslash_pairs_and_blank_marker_literal_do_not_corrupt_output() {
                 text: "\\".into(),
                 style: TextStyle::default(),
                 link: None,
+                allow_tokens: true,
             },
             Inline::Spoiler(vec![Inline::Text {
                 text: "secret".into(),
                 style: TextStyle::default(),
                 link: None,
+                allow_tokens: true,
             }]),
         ]
     );
@@ -165,6 +167,7 @@ fn escaped_backslash_pairs_and_blank_marker_literal_do_not_corrupt_output() {
             text: "a | b || c".into(),
             style: TextStyle::default(),
             link: None,
+            allow_tokens: true,
         }]
     );
     assert_eq!(
@@ -246,11 +249,20 @@ fn unsafe_links_images_and_html_blocks_keep_tokens_literal_and_flush_paragraphs(
     let hello_unsafe = blocks("hello [@everyone](javascript:alert(1))");
     assert_eq!(
         only_paragraph(&hello_unsafe),
-        &[Inline::Text {
-            text: "hello @everyone".into(),
-            style: TextStyle::default(),
-            link: None,
-        }]
+        &[
+            Inline::Text {
+                text: "hello ".into(),
+                style: TextStyle::default(),
+                link: None,
+                allow_tokens: true,
+            },
+            Inline::Text {
+                text: "@everyone".into(),
+                style: TextStyle::default(),
+                link: None,
+                allow_tokens: false,
+            },
+        ]
     );
 
     let image_alt = blocks("![||secret|| @everyone](https://a.com/x.png)");
@@ -260,6 +272,7 @@ fn unsafe_links_images_and_html_blocks_keep_tokens_literal_and_flush_paragraphs(
             text: "||secret|| @everyone".into(),
             style: TextStyle::default(),
             link: Some("https://a.com/x.png".into()),
+            allow_tokens: false,
         }]
     );
 
@@ -268,4 +281,64 @@ fn unsafe_links_images_and_html_blocks_keep_tokens_literal_and_flush_paragraphs(
         panic!("expected list block, got {html_split:?}");
     };
     assert_eq!(items[0].blocks.len(), 2);
+}
+
+#[test]
+fn with_custom_emojis_matches_direct_parse_for_rejected_links_and_images() {
+    let wave = CustomEmojiRef {
+        id: uuid(ID_A),
+        name: "wave".into(),
+    };
+    let catalog = [wave.clone()];
+
+    for source in [
+        "[:wave:](javascript:alert(1))",
+        "hello [:wave:](javascript:alert(1))",
+        "hello [:wave:](javascript:alert(1)) :wave:",
+        ":wave:[:bad:](vbscript:alert(1)) :wave:",
+        ":wa[x](javascript:alert(1))ve:",
+        "[:\\|wave\\|:](javascript:alert(1))",
+        "![:wave:](javascript:alert(1))",
+        "![:wave:](https://a.com/x.png) :wave:",
+        "[:wave:](https://a.com/x) :wave: `:wave:`",
+    ] {
+        let direct = MessageContent::parse_with_custom_emojis(source, &catalog);
+        let overlay = MessageContent::parse(source).with_custom_emojis(&catalog);
+        assert_eq!(
+            overlay, direct,
+            "overlay diverged from direct parse for {source:?}"
+        );
+    }
+
+    let rejected_only =
+        MessageContent::parse("hello [:wave:](javascript:alert(1))").with_custom_emojis(&catalog);
+    assert_eq!(
+        only_paragraph(&rejected_only.blocks),
+        &[
+            Inline::Text {
+                text: "hello ".into(),
+                style: TextStyle::default(),
+                link: None,
+                allow_tokens: true,
+            },
+            Inline::Text {
+                text: ":wave:".into(),
+                style: TextStyle::default(),
+                link: None,
+                allow_tokens: false,
+            },
+        ]
+    );
+
+    let rejected_img =
+        MessageContent::parse("![:wave:](javascript:alert(1))").with_custom_emojis(&catalog);
+    assert_eq!(
+        only_paragraph(&rejected_img.blocks),
+        &[Inline::Text {
+            text: ":wave:".into(),
+            style: TextStyle::default(),
+            link: None,
+            allow_tokens: false,
+        }]
+    );
 }

@@ -15,6 +15,15 @@ fn check_invariants(input: &str) {
         check_block_links(block);
     }
 
+    let catalog = [CustomEmojiRef {
+        id: papo_sdk::Uuid::from_u128(1),
+        name: "wave".into(),
+    }];
+    assert_eq!(
+        parsed.with_custom_emojis(&catalog),
+        MessageContent::parse_with_custom_emojis(input, &catalog)
+    );
+
     let spans = preview_spans(input);
     for span in spans {
         assert!(span.byte_range.start <= span.byte_range.end);
@@ -79,6 +88,7 @@ proptest! {
                 Just("*"), Just("**"), Just("_"), Just("~"), Just("`"), Just("```"),
                 Just("|"), Just("||"), Just("\\"), Just("> "), Just("- "), Just("+ "),
                 Just("["), Just("]"), Just("("), Just(")"), Just("<script>"),
+                Just("javascript:alert(1)"), Just(":wave:"), Just("!"),
                 Just("@mention(<@11111111-2222-3333-4444-555555555555>)"),
                 Just("@everyone"), Just("\n"), Just("\r\n"), Just("a"),
             ],
