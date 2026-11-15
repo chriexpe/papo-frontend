@@ -315,9 +315,8 @@ impl Timeline {
                 else {
                     return Err(TimelineError::StaleSnapshot);
                 };
-                if let Some(point) = crate::timeline_arrivals::message_point(message)? {
-                    max_reported = Some(max_reported.map_or(point, |current| current.max(point)));
-                }
+                let point = papo_sdk::ReadPoint::from_message(message)?;
+                max_reported = Some(max_reported.map_or(point, |current| current.max(point)));
             }
             (state.raw.version, max_reported)
         };

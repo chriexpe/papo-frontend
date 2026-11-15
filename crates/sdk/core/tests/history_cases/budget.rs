@@ -72,6 +72,7 @@ fn raw_watch_pins_history_and_evicted_channel_revocation_cannot_restore_old_rows
         );
         assert!(matches!(
             session
+                .reading_observer()
                 .report_visible(
                     channel,
                     old_snapshot.generation,

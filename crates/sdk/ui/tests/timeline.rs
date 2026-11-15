@@ -166,8 +166,9 @@ fn public_visible_reports_reject_old_canonical_and_window_versions_without_advan
                 .is_some_and(|message| message.edited_at.as_deref() == Some(edited_at))
         })
         .await?;
+        let observer = session.reading_observer();
         assert!(matches!(
-            session
+            observer
                 .report_visible(
                     channel(),
                     raw.generation,

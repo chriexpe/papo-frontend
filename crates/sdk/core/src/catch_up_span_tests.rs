@@ -89,8 +89,7 @@ fn sparse_discontinuous_report_in_loaded_chunk_leaves_interior_in_catch_up() {
     assert_eq!(interval.start_after, Some(actual_pt(2)));
     assert_eq!(interval.end_before, actual_pt(8));
     assert_eq!(interval.covered_spans, vec![]);
-    let view = state.view(&index).unwrap();
-    assert!(view.has_catch_up);
+    let view = state.view(&index).unwrap().expect("active catch-up view");
     assert_eq!(view.start_target, Some(msg_id(3)));
 }
 
@@ -130,7 +129,7 @@ fn sparse_interior_and_own_reports_keep_only_foreign_holes_in_catch_up() {
         ]
     );
     assert_eq!(
-        interior_state.view(&index).unwrap().start_target,
+        interior_state.view(&index).unwrap().unwrap().start_target,
         Some(msg_id(2))
     );
     interior_state
@@ -143,7 +142,7 @@ fn sparse_interior_and_own_reports_keep_only_foreign_holes_in_catch_up() {
         )
         .unwrap();
     assert_eq!(
-        interior_state.view(&index).unwrap().start_target,
+        interior_state.view(&index).unwrap().unwrap().start_target,
         Some(msg_id(4))
     );
 
@@ -201,7 +200,7 @@ fn viewport_sequence_matches_naive_unread_set_reduction_including_upward_catch_u
     let mut oracle_unread = std::collections::BTreeSet::<u128>::new();
     let mut seen_max: u128 = 2;
     let mut last_vis: Option<(u128, u128)> = None;
-    let mut sdk_last: Option<(ReadPoint, ReadPoint)> = None;
+    let mut sdk_last: Option<VisibleBounds> = None;
 
     for _ in 0..200 {
         let a = u128::from((next_u64() % 20) + 1);
@@ -213,9 +212,10 @@ fn viewport_sequence_matches_naive_unread_set_reduction_including_upward_catch_u
             VisibilityContinuity::Discontinuous
         };
         let pts: Vec<_> = (a..=b).map(actual_pt).collect();
-        let (_, new_sdk_last) = state
+        let new_sdk_last = state
             .observe_visible(&index, None, sdk_last, &pts, cont)
-            .unwrap();
+            .unwrap()
+            .next_bounds;
         sdk_last = new_sdk_last;
 
         let is_contiguous_scroll = continuous && last_vis.is_some();
@@ -236,9 +236,9 @@ fn viewport_sequence_matches_naive_unread_set_reduction_including_upward_catch_u
         last_vis = Some((a, b));
 
         let view = state.view(&index).unwrap();
-        assert_eq!(view.has_catch_up, !oracle_unread.is_empty());
+        assert_eq!(view.is_some(), !oracle_unread.is_empty());
         assert_eq!(
-            view.start_target,
+            view.and_then(|v| v.start_target),
             oracle_unread.first().copied().map(msg_id)
         );
         assert_eq!(state.seen_to, Some(actual_pt(seen_max)));
@@ -271,7 +271,7 @@ fn empty_asc_successor_does_not_bridge_later_detached_chunk() {
         },
     ];
     let mut asc = AscSuccessors::new();
-    asc.insert(actual_pt(1), None);
+    asc.insert(msg_id(1), None);
     let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
     assert!(
         !index
@@ -329,16 +329,26 @@ fn continuous_scroll_bridges_only_seam_not_internal_chunk_gap() {
             covered_spans: Vec::new(),
         }),
     };
-    let (_, last) = state
+    let last = state
         .observe_visible(
             &index,
             None,
-            Some((actual_pt(1), actual_pt(2))),
+            Some(VisibleBounds {
+                min: actual_pt(1),
+                max: actual_pt(2),
+            }),
             &[actual_pt(3), actual_pt(8)],
             VisibilityContinuity::Continuous,
         )
-        .unwrap();
-    assert_eq!(last, Some((actual_pt(3), actual_pt(8))));
+        .unwrap()
+        .next_bounds;
+    assert_eq!(
+        last,
+        Some(VisibleBounds {
+            min: actual_pt(3),
+            max: actual_pt(8)
+        })
+    );
     let gap = state
         .interval
         .as_ref()

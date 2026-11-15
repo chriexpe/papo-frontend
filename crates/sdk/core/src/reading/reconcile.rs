@@ -1,7 +1,7 @@
 //! Server-mark resolution and coalesced cache-driven unread refresh; fetches never acknowledge reads.
 
 use super::{
-    ReadPoint, ReadState, ReadingError, UnreadCount, counts,
+    ReadPoint, ReadState, UnreadCount, counts,
     reconcile_marks::{Mark, marks, resolve},
     upload,
 };
@@ -39,6 +39,10 @@ pub(crate) async fn resources(
             &visible,
         )
         .await?;
+        session
+            .reading
+            .positions
+            .clear_revocations(&visible, snapshot.generation);
     }
     install_resources(session, connection, image, heads, unresolved).await?;
     drop(serial);
@@ -299,15 +303,4 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
         .trim(session.client.inner.config.history)
         .await;
     Ok(())
-}
-
-impl From<ReadingError> for ClientError {
-    fn from(error: ReadingError) -> Self {
-        match error {
-            ReadingError::Session(error) => error,
-            ReadingError::History(error) => error.into(),
-            ReadingError::Storage(error) => error.into(),
-            ReadingError::InvalidPoint | ReadingError::InvalidReport => Self::ResourceData,
-        }
-    }
 }

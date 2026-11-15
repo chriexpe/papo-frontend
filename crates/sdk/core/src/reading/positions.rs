@@ -1,18 +1,19 @@
 //! Coalescing coordinator and revocation fencing for durable saved reading positions.
-//! Storage SQL lives in `catch_up_store`; catch-up intervals live in `catch_up`.
+//! Storage SQL lives in `catch_up_position_store`; catch-up intervals live in `catch_up`.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 
 use papo_api::Uuid;
 use tokio::sync::oneshot;
 
-use super::position_publish::{clone_error, publish_positions};
+use super::position_publish::{PositionUpdate, publish_positions};
 use crate::{
     ClientError, Generation, HistoryClosedReason, HistoryError, ReadingError,
-    catch_up::ReadingPosition, session::SessionInner,
+    catch_up::ReadingPosition, catch_up_position_store::PendingPositionCommit,
+    session::SessionInner,
 };
 
 struct PendingChannelWrite {
@@ -22,13 +23,25 @@ struct PendingChannelWrite {
     waiters: Vec<oneshot::Sender<Result<(), ReadingError>>>,
 }
 
+#[derive(Clone, Copy)]
+struct ChannelRevocation {
+    generation: Generation,
+    reason: HistoryClosedReason,
+}
+
+#[derive(Clone, Copy)]
+struct RevocationEpoch {
+    epoch: u64,
+    reason: HistoryClosedReason,
+}
+
 #[derive(Default)]
 struct State {
     flushing: bool,
     closed: bool,
     pending: BTreeMap<Uuid, PendingChannelWrite>,
-    revocation_epochs: BTreeMap<Uuid, u64>,
-    revoked: BTreeMap<Uuid, (Generation, HistoryClosedReason)>,
+    revocation_epochs: BTreeMap<Uuid, RevocationEpoch>,
+    revoked: BTreeMap<Uuid, ChannelRevocation>,
 }
 
 /// Coordinates rapid saved reading position writes so bursts coalesce onto one `synchronous=FULL`
@@ -52,19 +65,22 @@ impl PositionCoordinator {
         if state.closed {
             return Some(HistoryClosedReason::AccountClosed);
         }
-        let current_epoch = state.revocation_epochs.get(&channel).copied().unwrap_or(0);
+        let current = state.revocation_epochs.get(&channel).copied();
+        let current_epoch = current.map_or(0, |entry| entry.epoch);
         if current_epoch != expected_epoch {
             return Some(
                 state
                     .revoked
                     .get(&channel)
-                    .map_or(HistoryClosedReason::ChannelRemoved, |(_, r)| *r),
+                    .map(|entry| entry.reason)
+                    .or_else(|| current.map(|entry| entry.reason))
+                    .unwrap_or(HistoryClosedReason::ChannelRemoved),
             );
         }
-        if let Some((revoked_gen, reason)) = state.revoked.get(&channel)
-            && *revoked_gen == generation
+        if let Some(entry) = state.revoked.get(&channel)
+            && entry.generation == generation
         {
-            return Some(*reason);
+            return Some(entry.reason);
         }
         None
     }
@@ -84,8 +100,8 @@ impl PositionCoordinator {
         state
             .revoked
             .get(&channel)
-            .filter(|(revoked_gen, _)| *revoked_gen == generation)
-            .map(|(_, reason)| *reason)
+            .filter(|entry| entry.generation == generation)
+            .map(|entry| entry.reason)
     }
 
     pub fn revoke(&self, channels: &[Uuid], generation: Generation, reason: HistoryClosedReason) {
@@ -96,17 +112,41 @@ impl PositionCoordinator {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for &channel in channels {
-                let epoch = state.revocation_epochs.entry(channel).or_insert(0);
-                *epoch = epoch.saturating_add(1);
-                state.revoked.insert(channel, (generation, reason));
+                let next_epoch = state
+                    .revocation_epochs
+                    .get(&channel)
+                    .map_or(0, |entry| entry.epoch)
+                    .saturating_add(1);
+                state.revocation_epochs.insert(
+                    channel,
+                    RevocationEpoch {
+                        epoch: next_epoch,
+                        reason,
+                    },
+                );
+                state
+                    .revoked
+                    .insert(channel, ChannelRevocation { generation, reason });
                 if let Some(entry) = state.pending.remove(&channel) {
                     waiters.extend(entry.waiters);
                 }
             }
         }
-        for waiter in waiters {
-            let _ = waiter.send(Err(ReadingError::History(HistoryError::Closed(reason))));
+        if !waiters.is_empty() {
+            fail_waiters(waiters, || {
+                ReadingError::History(HistoryError::Closed(reason))
+            });
         }
+    }
+
+    pub fn clear_revocations(&self, visible: &BTreeSet<Uuid>, generation: Generation) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .revoked
+            .retain(|channel, entry| entry.generation != generation || !visible.contains(channel));
     }
 
     pub fn close(&self) {
@@ -121,8 +161,8 @@ impl PositionCoordinator {
                 waiters.extend(entry.waiters);
             }
         }
-        for waiter in waiters {
-            let _ = waiter.send(Err(ReadingError::Session(ClientError::Closed)));
+        if !waiters.is_empty() {
+            fail_waiters(waiters, || ReadingError::Session(ClientError::Closed));
         }
     }
 
@@ -134,6 +174,8 @@ impl PositionCoordinator {
         generation: Generation,
         position: Option<ReadingPosition>,
     ) -> Result<(), ReadingError> {
+        // Validate generation before locking `self.state` to preserve `epochs -> state` order.
+        session.epochs.validate(generation)?;
         let (rx, start_flusher) = {
             let mut state = self
                 .state
@@ -142,13 +184,15 @@ impl PositionCoordinator {
             if state.closed {
                 return Err(ReadingError::Session(ClientError::Closed));
             }
-            session.epochs.validate(generation)?;
-            if let Some((revoked_gen, reason)) = state.revoked.get(&channel)
-                && *revoked_gen == generation
+            if let Some(entry) = state.revoked.get(&channel)
+                && entry.generation == generation
             {
-                return Err(ReadingError::History(HistoryError::Closed(*reason)));
+                return Err(ReadingError::History(HistoryError::Closed(entry.reason)));
             }
-            let epoch = state.revocation_epochs.get(&channel).copied().unwrap_or(0);
+            let epoch = state
+                .revocation_epochs
+                .get(&channel)
+                .map_or(0, |entry| entry.epoch);
             let (tx, rx) = oneshot::channel();
             let entry = state
                 .pending
@@ -165,8 +209,8 @@ impl PositionCoordinator {
             // Superseded unstarted updates keep waiting for the later FULL commit.
             if generation > entry.generation {
                 let expired = std::mem::take(&mut entry.waiters);
-                for waiter in expired {
-                    let _ = waiter.send(Err(ReadingError::Session(ClientError::Superseded)));
+                if !expired.is_empty() {
+                    fail_waiters(expired, || ReadingError::Session(ClientError::Superseded));
                 }
                 entry.generation = generation;
             }
@@ -206,7 +250,7 @@ fn spawn_flusher(client: crate::ClientHandle, session: Arc<SessionInner>) {
                 std::mem::take(&mut state.pending)
             };
             if cancel.is_cancelled() {
-                notify_all(batch_map, &Err(ReadingError::Session(ClientError::Closed)));
+                fail_all_waiters(batch_map, || ReadingError::Session(ClientError::Closed));
                 session
                     .reading
                     .positions
@@ -238,9 +282,17 @@ async fn flush_generation_batches(
         let mut updates = Vec::with_capacity(entries.len());
         let mut waiters_by_channel = Vec::with_capacity(entries.len());
         for (channel, entry) in entries {
-            to_commit.push((channel, entry.revocation_epoch, entry.position));
-            updates.push((channel, entry.position));
-            waiters_by_channel.push((channel, entry.waiters));
+            to_commit.push(PendingPositionCommit {
+                channel,
+                revocation_epoch: entry.revocation_epoch,
+                position: entry.position,
+            });
+            updates.push(PositionUpdate {
+                channel,
+                position: entry.position,
+                expected_epoch: Some(entry.revocation_epoch),
+            });
+            waiters_by_channel.push((channel, entry.revocation_epoch, entry.waiters));
         }
         let result = client
             .inner
@@ -251,21 +303,21 @@ async fn flush_generation_batches(
             Ok(rejected) => {
                 let mut accepted = Vec::new();
                 let mut accepted_waiters = Vec::new();
-                for (update, (channel, waiters)) in updates.into_iter().zip(waiters_by_channel) {
+                for (update, (channel, revocation_epoch, waiters)) in
+                    updates.into_iter().zip(waiters_by_channel)
+                {
                     if let Some(reason) = rejected.get(&channel).copied() {
-                        for waiter in waiters {
-                            let _ = waiter
-                                .send(Err(ReadingError::History(HistoryError::Closed(reason))));
-                        }
-                    } else if let Some(reason) = session
-                        .reading
-                        .positions
-                        .revoked_reason(channel, generation)
-                    {
-                        for waiter in waiters {
-                            let _ = waiter
-                                .send(Err(ReadingError::History(HistoryError::Closed(reason))));
-                        }
+                        fail_waiters(waiters, || {
+                            ReadingError::History(HistoryError::Closed(reason))
+                        });
+                    } else if let Some(reason) = session.reading.positions.check_writable(
+                        channel,
+                        generation,
+                        revocation_epoch,
+                    ) {
+                        fail_waiters(waiters, || {
+                            ReadingError::History(HistoryError::Closed(reason))
+                        });
                     } else {
                         accepted.push(update);
                         accepted_waiters.push(waiters);
@@ -279,18 +331,17 @@ async fn flush_generation_batches(
                 }
             }
             Err(error) => {
-                for (channel, waiters) in waiters_by_channel {
-                    let per_channel_err = if let Some(reason) = session
-                        .reading
-                        .positions
-                        .revoked_reason(channel, generation)
-                    {
-                        ReadingError::History(HistoryError::Closed(reason))
+                for (channel, revocation_epoch, waiters) in waiters_by_channel {
+                    if let Some(reason) = session.reading.positions.check_writable(
+                        channel,
+                        generation,
+                        revocation_epoch,
+                    ) {
+                        fail_waiters(waiters, || {
+                            ReadingError::History(HistoryError::Closed(reason))
+                        });
                     } else {
-                        clone_error(&error)
-                    };
-                    for waiter in waiters {
-                        let _ = waiter.send(Err(clone_error(&per_channel_err)));
+                        fail_waiters(waiters, || error.clone().into());
                     }
                 }
             }
@@ -298,28 +349,24 @@ async fn flush_generation_batches(
     }
 }
 
-impl PositionCoordinator {
-    pub(super) fn revoked_reason(
-        &self,
-        channel: Uuid,
-        generation: Generation,
-    ) -> Option<HistoryClosedReason> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state
-            .revoked
-            .get(&channel)
-            .filter(|(g, _)| *g == generation)
-            .map(|(_, r)| *r)
+fn fail_waiters(
+    waiters: Vec<oneshot::Sender<Result<(), ReadingError>>>,
+    mut make_error: impl FnMut() -> ReadingError,
+) {
+    for waiter in waiters {
+        let _ = waiter.send(Err(make_error()));
     }
 }
 
-fn notify_all(batch_map: BTreeMap<Uuid, PendingChannelWrite>, result: &Result<(), ReadingError>) {
+fn fail_all_waiters(
+    batch_map: BTreeMap<Uuid, PendingChannelWrite>,
+    mut make_error: impl FnMut() -> ReadingError,
+) {
     for (_, entry) in batch_map {
-        for waiter in entry.waiters {
-            let _ = waiter.send(result.as_ref().map(|&()| ()).map_err(clone_error));
-        }
+        fail_waiters(entry.waiters, &mut make_error);
     }
 }
+
+#[cfg(test)]
+#[path = "positions_tests.rs"]
+mod tests;

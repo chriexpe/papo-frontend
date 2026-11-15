@@ -1,7 +1,10 @@
 //! Cache-based ordered unread counts; unknown prefixes/gaps remain lower bounds, never inferred completeness.
 
 use super::{ReadPoint, ReadState, ReadingError, UnreadCount};
-use crate::HistorySnapshot;
+use crate::{
+    HistorySnapshot,
+    catch_up_index::{first_after, resolve_point_in_snapshot},
+};
 
 pub(super) fn update(
     state: &mut ReadState,
@@ -10,10 +13,10 @@ pub(super) fn update(
 ) -> Result<(), ReadingError> {
     let point = state
         .point()
-        .map(|point| crate::catch_up::resolve_point_in_snapshot(snapshot, point))
+        .map(|point| resolve_point_in_snapshot(snapshot, point))
         .transpose()?;
     let low = match point {
-        Some(point) => crate::catch_up::first_after(&snapshot.messages, point)?,
+        Some(point) => first_after(&snapshot.messages, point)?,
         None => 0,
     };
     let mut count =

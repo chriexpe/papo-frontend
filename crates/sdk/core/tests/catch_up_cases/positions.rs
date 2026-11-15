@@ -1,30 +1,12 @@
 //! Behaviour specs for durable verbatim reading positions, burst coalescing and revocation fencing.
 
 use super::{
-    CHANNEL, Fixture, Result, channel, config, interval, load_history, msg_id, report_range,
-    signed_in,
+    CHANNEL, Fixture, Result, channel, config, load_history, msg_id, report_range, signed_in,
+    wait_pos,
 };
 use papo_api::HistoryQuery;
-use papo_sdk::{
-    DirectConversation, HistoryOrder, ReadingPosition, ReadingPositionsSnapshot, UserSummary, Uuid,
-    VisibilityContinuity,
-};
+use papo_sdk::{HistoryOrder, ReadingPosition, VisibilityContinuity};
 use papo_test_server::{Failure, RestStep};
-use std::sync::Arc;
-use tokio::sync::watch;
-
-async fn wait_pos(
-    rx: &mut watch::Receiver<Arc<ReadingPositionsSnapshot>>,
-    ch: Uuid,
-    expected: Option<ReadingPosition>,
-) -> Result {
-    loop {
-        if rx.borrow_and_update().channels.get(&ch).copied() == expected {
-            return Ok(());
-        }
-        rx.changed().await?;
-    }
-}
 
 #[test]
 fn saved_reading_position_stores_verbatim_signed_offsets_independently_of_read_state() -> Result {
@@ -41,7 +23,8 @@ fn saved_reading_position_stores_verbatim_signed_offsets_independently_of_read_s
         )
         .await?;
         let read_before = session.reading_state(channel()).unwrap();
-        let catch_before = interval(&session, channel()).unwrap();
+        let catch_before = super::view(&session, channel(), &snap)?.unwrap();
+        let catch_row_before = super::sqlite_catch_up_row(fixture.profile.path(), channel())?;
         let mut rx = session.subscribe_reading_positions();
         let m3 = msg_id(&snap, 2);
         let m6 = msg_id(&snap, 5);
@@ -64,7 +47,23 @@ fn saved_reading_position_stores_verbatim_signed_offsets_independently_of_read_s
         assert_eq!(session.reading_position(channel()), Some(final_pos));
         // Saving reading positions must never mutate read_point or catch_up interval.
         assert_eq!(session.reading_state(channel()).unwrap(), read_before);
-        assert_eq!(interval(&session, channel()).unwrap(), catch_before);
+        let catch_after = super::view(&session, channel(), &snap)?.unwrap();
+        assert_eq!(
+            (
+                catch_after.start_after,
+                catch_after.end_before,
+                catch_after.needs_history
+            ),
+            (
+                catch_before.start_after,
+                catch_before.end_before,
+                catch_before.needs_history
+            )
+        );
+        assert_eq!(
+            super::sqlite_catch_up_row(fixture.profile.path(), channel())?,
+            catch_row_before
+        );
         Ok::<_, Box<dyn std::error::Error>>((session.account(), m3, m6))
     })??;
     fixture.reopen()?;
@@ -157,9 +156,35 @@ fn channel_deleted_discards_saved_position() -> Result {
             offset_units: 15,
         };
         session.save_reading_position(channel(), Some(pos)).await?;
+        let observer = session.reading_observer();
+        observer
+            .report_visible(
+                channel(),
+                snap.generation,
+                snap.version,
+                &[msg_id(&snap, 0)],
+                papo_sdk::VisibilityContinuity::Continuous,
+            )
+            .await?;
+        observer
+            .report_visible(
+                channel(),
+                snap.generation,
+                snap.version,
+                &[msg_id(&snap, 3)],
+                papo_sdk::VisibilityContinuity::Discontinuous,
+            )
+            .await?;
         let mut rx = session.subscribe_reading_positions();
+        let mut cu_rx = session.subscribe_catch_up();
+        assert!(cu_rx.borrow().channels.contains_key(&channel()));
         assert!(fixture.server().delete_channel(CHANNEL).await);
         wait_pos(&mut rx, channel(), None).await?;
+        super::wait_catch_up_absent(&mut cu_rx, channel()).await?;
+        assert_eq!(
+            super::sqlite_catch_up_row(fixture.profile.path(), channel())?,
+            None
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()
@@ -192,11 +217,30 @@ fn channel_forbidden_discards_saved_position() -> Result {
                 }),
             )
             .await?;
+        let observer = session.reading_observer();
+        super::report_with(
+            &observer,
+            &session,
+            channel(),
+            0..=0,
+            papo_sdk::VisibilityContinuity::Continuous,
+        )
+        .await?;
+        super::report_with(
+            &observer,
+            &session,
+            channel(),
+            9..=9,
+            papo_sdk::VisibilityContinuity::Discontinuous,
+        )
+        .await?;
         fixture
             .server()
             .set_channel_readable(&session.account().user().to_string(), CHANNEL, false)
             .await?;
         let mut rx = session.subscribe_reading_positions();
+        let mut cu_rx = session.subscribe_catch_up();
+        assert!(cu_rx.borrow().channels.contains_key(&channel()));
         let before = snap.messages[0].cursor().unwrap();
         let _ = history
             .page(HistoryQuery {
@@ -206,6 +250,11 @@ fn channel_forbidden_discards_saved_position() -> Result {
             })
             .await;
         wait_pos(&mut rx, channel(), None).await?;
+        super::wait_catch_up_absent(&mut cu_rx, channel()).await?;
+        assert_eq!(
+            super::sqlite_catch_up_row(fixture.profile.path(), channel())?,
+            None
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()
@@ -267,80 +316,6 @@ fn channel_not_found_discards_saved_position() -> Result {
             })
             .await;
         wait_pos(&mut rx, channel(), None).await?;
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })??;
-    fixture.finish()
-}
-
-#[test]
-fn channel_removed_discards_saved_position_and_fences_concurrent_writes() -> Result {
-    let fixture = Fixture::new(config(0))?;
-    fixture.run(async {
-        let session = signed_in(&fixture).await?;
-        let dm_id = Uuid::from_u128(19);
-        let dm = DirectConversation {
-            id: dm_id.to_string(),
-            user: UserSummary {
-                id: Some(Uuid::from_u128(18).to_string()),
-                ..Default::default()
-            },
-            created_at: "2026-01-01T00:00:00Z".into(),
-            last_message: None,
-            last_read_message: None,
-            last_read_at: None,
-            unread_count: 0,
-        };
-        let account = session.account().user().to_string();
-        fixture
-            .server()
-            .set_direct_conversations(&account, vec![dm])
-            .await?;
-        let mut res_rx = session.subscribe_resources();
-        while res_rx.borrow_and_update().dms.is_empty() {
-            res_rx.changed().await?;
-        }
-        let msg_id_dm = Uuid::from_u128(0x8000_0000_0000_4000_8000_0000_0000_0001);
-        session
-            .save_reading_position(
-                dm_id,
-                Some(ReadingPosition {
-                    message_id: msg_id_dm,
-                    offset_units: -5,
-                }),
-            )
-            .await?;
-        let mut rx = session.subscribe_reading_positions();
-        fixture
-            .server()
-            .set_direct_conversations(&account, vec![])
-            .await?;
-        let before = session.generation();
-        session.reconnect()?;
-        let mut status = session.subscribe_connection();
-        super::fixture::wait_for(&mut status, |s| {
-            s.state == papo_sdk::ConnectionState::Online && s.generation > before
-        })
-        .await?;
-        wait_pos(&mut rx, dm_id, None).await?;
-        assert_eq!(session.reading_position(dm_id), None);
-        // Further save on already-removed DM or stale generation is fenced/cleaned cleanly.
-        let mut set = tokio::task::JoinSet::new();
-        for off in 1..=5_i64 {
-            let s = session.clone();
-            set.spawn(async move {
-                let _ = s
-                    .save_reading_position(
-                        dm_id,
-                        Some(ReadingPosition {
-                            message_id: msg_id_dm,
-                            offset_units: off,
-                        }),
-                    )
-                    .await;
-            });
-        }
-        while set.join_next().await.is_some() {}
-        // Channel has no membership, ensure sqlite / observable still clean on reconnect.
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()

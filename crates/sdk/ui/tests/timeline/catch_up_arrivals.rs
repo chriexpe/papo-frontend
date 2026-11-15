@@ -102,7 +102,7 @@ fn behind_head_live_arrivals_queue_own_messages_deletes_and_two_stop_navigation(
         let s = wait_overlay(&mut overlay, |st| st.arrivals.count == 0).await?;
         assert!(s.arrivals.oldest_unseen.is_none());
         assert!(s.arrivals.live_head.is_none());
-        assert!(s.catch_up.available, "older catch-up must remain intact");
+        assert!(s.catch_up.is_some(), "older catch-up must remain intact");
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()
@@ -257,7 +257,9 @@ fn catch_up_boundary_moves_position_saves_and_arrivals_emit_zero_item_diffs() ->
         )
         .await?;
         wait_overlay(&mut overlay_sub, |st| {
-            st.catch_up.start_after_id == Some(all_ids[2])
+            st.catch_up
+                .as_ref()
+                .is_some_and(|catch| catch.start_after_id == Some(all_ids[2]))
         })
         .await?;
 
@@ -284,7 +286,7 @@ fn catch_up_boundary_moves_position_saves_and_arrivals_emit_zero_item_diffs() ->
         fixture.server().publish_message(m11).await?;
         wait_overlay(&mut overlay_sub, |st| st.arrivals.count >= 1).await?;
         focused.clear_catch_up().await?;
-        wait_overlay(&mut overlay_sub, |st| !st.catch_up.available).await?;
+        wait_overlay(&mut overlay_sub, |st| st.catch_up.is_none()).await?;
 
         // None of those operations may emit non-empty TimelineItem diffs on `Timeline::subscribe()`.
         while let Some(Some(event)) = items_sub.stream.next().now_or_never() {

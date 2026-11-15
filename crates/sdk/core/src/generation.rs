@@ -35,6 +35,23 @@ pub struct Generated<T> {
     pub value: T,
 }
 
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+pub(crate) enum EpochError {
+    #[error("client or session closed")]
+    Closed,
+    #[error("session generation superseded")]
+    Superseded,
+}
+
+impl From<EpochError> for ClientError {
+    fn from(error: EpochError) -> Self {
+        match error {
+            EpochError::Closed => Self::Closed,
+            EpochError::Superseded => Self::Superseded,
+        }
+    }
+}
+
 pub(crate) struct Epochs {
     next: Arc<AtomicU64>,
     root: CancellationToken,
@@ -89,18 +106,22 @@ impl Epochs {
         Ok(current.clone())
     }
 
-    pub fn validate(&self, generation: Generation) -> Result<(), ClientError> {
+    pub fn validate_epoch(&self, generation: Generation) -> Result<(), EpochError> {
         let current = self
             .current
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.root.is_cancelled() {
-            Err(ClientError::Closed)
+            Err(EpochError::Closed)
         } else if current.generation != generation || current.cancel.is_cancelled() {
-            Err(ClientError::Superseded)
+            Err(EpochError::Superseded)
         } else {
             Ok(())
         }
+    }
+
+    pub fn validate(&self, generation: Generation) -> Result<(), ClientError> {
+        self.validate_epoch(generation).map_err(Into::into)
     }
 
     /// The check and publication are indivisible with respect to epoch replacement.

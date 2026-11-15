@@ -9,12 +9,32 @@ use std::{
 use papo_api::Uuid;
 
 use crate::{
-    CatchUpSnapshot, ClientError, ClientHandle, Generation, HistoryClosedReason, HistorySnapshot,
-    ReadingSnapshot, Session,
-    catch_up::SnapshotIndex,
-    reading::{counts, position_publish},
+    ClientError, ClientHandle, Generation, HistoryClosedReason, HistorySnapshot, ReadingSnapshot,
+    Session,
+    catch_up::{AscSuccessors, CatchUpState, SnapshotIndex},
+    catch_up_store::CatchUpCommit,
+    reading::{
+        counts,
+        position_publish::{self, PositionUpdate},
+    },
     session::SessionInner,
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReconcileKey {
+    generation: Generation,
+    snapshot_version: u64,
+    asc_version: u64,
+    catch_up_revision: Option<u64>,
+}
+
+struct ReconcileCandidate<'a> {
+    channel: Uuid,
+    snapshot: &'a Arc<HistorySnapshot>,
+    current: CatchUpState,
+    asc: AscSuccessors,
+    key: ReconcileKey,
+}
 
 pub(crate) async fn hydrate_from_storage(
     client: &ClientHandle,
@@ -26,7 +46,7 @@ pub(crate) async fn hydrate_from_storage(
         .registry
         .load_read_points(session.account)
         .await?;
-    let (catch_up_map, position_map) = client
+    let loaded = client
         .inner
         .registry
         .load_catch_up_and_positions(session.account)
@@ -51,20 +71,18 @@ pub(crate) async fn hydrate_from_storage(
         }
         session.reading.publish(session, reading)?;
     }
-    if !catch_up_map.is_empty() {
-        session.reading.publish_catch_up(
-            session,
-            CatchUpSnapshot {
-                generation,
-                version: 0,
-                channels: catch_up_map,
-            },
-        )?;
-    }
-    if !position_map.is_empty() {
-        let updates: Vec<_> = position_map
+    session
+        .reading
+        .hydrate_catch_up(session, generation, loaded.catch_up)?;
+    if !loaded.positions.is_empty() {
+        let updates: Vec<_> = loaded
+            .positions
             .into_iter()
-            .map(|(channel, pos)| (channel, Some(pos)))
+            .map(|(channel, position)| PositionUpdate {
+                channel,
+                position: Some(position),
+                expected_epoch: Some(0),
+            })
             .collect();
         position_publish::publish_positions(session, generation, updates);
     }
@@ -86,10 +104,13 @@ pub(crate) async fn revoke_channels(
         .positions
         .revoke(channels, generation, reason);
     position_publish::remove_from_image(session, channels, generation);
+    session
+        .reading
+        .remove_catch_up_channels(session, generation, channels);
     client
         .inner
         .registry
-        .delete_saved_positions(session.account, channels.to_vec())
+        .delete_channel_reading_state(session.account, channels.to_vec())
         .await?;
     Ok(())
 }
@@ -100,26 +121,32 @@ pub(crate) async fn reconcile_removed_channels(
     generation: Generation,
     visible: &BTreeSet<Uuid>,
 ) -> Result<(), ClientError> {
-    let stale: Vec<Uuid> = session
-        .reading
-        .position_image
-        .borrow()
-        .channels
-        .keys()
-        .copied()
-        .filter(|id| !visible.contains(id))
-        .collect();
+    let mut stale_set = BTreeSet::new();
+    for channel in session.reading.position_image.borrow().channels.keys() {
+        if !visible.contains(channel) {
+            stale_set.insert(*channel);
+        }
+    }
+    for channel in session.reading.catch_up_image.borrow().channels.keys() {
+        if !visible.contains(channel) {
+            stale_set.insert(*channel);
+        }
+    }
+    let stale: Vec<Uuid> = stale_set.into_iter().collect();
     if !stale.is_empty() {
         session
             .reading
             .positions
             .revoke(&stale, generation, HistoryClosedReason::ChannelRemoved);
         position_publish::remove_from_image(session, &stale, generation);
+        session
+            .reading
+            .remove_catch_up_channels(session, generation, &stale);
     }
     let deleted = client
         .inner
         .registry
-        .retain_saved_positions(session.account, visible.clone())
+        .retain_channel_reading_state(session.account, visible.clone())
         .await?;
     if !deleted.is_empty() {
         session
@@ -127,6 +154,9 @@ pub(crate) async fn reconcile_removed_channels(
             .positions
             .revoke(&deleted, generation, HistoryClosedReason::ChannelRemoved);
         position_publish::remove_from_image(session, &deleted, generation);
+        session
+            .reading
+            .remove_catch_up_channels(session, generation, &deleted);
     }
     Ok(())
 }
@@ -136,86 +166,46 @@ pub(crate) async fn reconcile_catch_up_snapshots(
     generation: Generation,
     snapshots: &[(Uuid, Arc<HistorySnapshot>)],
 ) -> Result<(), ClientError> {
-    let (old_gen, candidates) = {
-        let catch_up_image = session.inner.reading.catch_up_image.borrow();
-        let old_gen = catch_up_image.generation;
-        let catch_up_version = catch_up_image.version;
-        let cached_keys = session
-            .inner
-            .reading
-            .reconcile_keys
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut candidates = Vec::new();
-        for (channel, snapshot) in snapshots {
-            if snapshot.generation != generation {
-                continue;
-            }
-            let Some(current) = catch_up_image.channels.get(channel) else {
-                continue;
-            };
-            if current.interval.is_none() {
-                continue;
-            }
-            let (asc, asc_version) = session
-                .inner
-                .reading
-                .asc_successors_with_version(generation, *channel);
-            let key = (generation, snapshot.version, asc_version, catch_up_version);
-            if cached_keys.get(channel) == Some(&key) {
-                continue;
-            }
-            candidates.push((*channel, snapshot, current.clone(), asc, key));
-        }
-        (old_gen, candidates)
-    };
+    let (old_gen, candidates) = collect_reconcile_candidates(session, generation, snapshots);
     if old_gen == generation && candidates.is_empty() {
         return Ok(());
     }
+    let mut commits = Vec::new();
     let mut updates = Vec::new();
     let mut verified_keys = Vec::new();
-    for (channel, snapshot, mut next, asc, key) in candidates {
-        let index = SnapshotIndex::build(snapshot, session.account().user(), &asc)
-            .map_err(|_| ClientError::ResourceData)?;
-        if next
+    for mut candidate in candidates {
+        let index =
+            SnapshotIndex::build(candidate.snapshot, session.account().user(), &candidate.asc)
+                .map_err(|_| ClientError::ResourceData)?;
+        if candidate
+            .current
             .reconcile_snapshot(&index)
             .map_err(|_| ClientError::ResourceData)?
         {
-            updates.push((channel, next));
+            commits.push(CatchUpCommit {
+                channel: candidate.channel,
+                state: candidate.current.clone(),
+            });
+            updates.push((candidate.channel, candidate.current));
         } else {
-            verified_keys.push((channel, key));
+            verified_keys.push((candidate.channel, candidate.key));
         }
     }
-    if !updates.is_empty() {
+    if !commits.is_empty() {
         session
             .client
             .inner
             .registry
-            .commit_catch_up_batch(Arc::clone(&session.inner), generation, updates.clone())
-            .await
-            .map_err(ClientError::from)?;
+            .commit_catch_up_batch(Arc::clone(&session.inner), generation, commits)
+            .await?;
         session.inner.epochs.validate(generation)?;
-        let mut catch_up_image = (**session.inner.reading.catch_up_image.borrow()).clone();
-        catch_up_image.generation = generation;
-        for (channel, next) in updates {
-            if next.seen_to.is_none() && next.interval.is_none() {
-                catch_up_image.channels.remove(&channel);
-            } else {
-                catch_up_image.channels.insert(channel, next);
-            }
-        }
-        session
-            .inner
-            .reading
-            .publish_catch_up(&session.inner, catch_up_image)?;
-    } else if old_gen != generation {
-        let mut catch_up_image = (**session.inner.reading.catch_up_image.borrow()).clone();
-        catch_up_image.generation = generation;
-        session
-            .inner
-            .reading
-            .publish_catch_up(&session.inner, catch_up_image)?;
     }
+    session.inner.reading.apply_catch_up_updates(
+        &session.inner,
+        generation,
+        updates,
+        old_gen != generation,
+    )?;
     if !verified_keys.is_empty() {
         let mut keys = session
             .inner
@@ -228,4 +218,60 @@ pub(crate) async fn reconcile_catch_up_snapshots(
         }
     }
     Ok(())
+}
+
+fn collect_reconcile_candidates<'a>(
+    session: &Session,
+    generation: Generation,
+    snapshots: &'a [(Uuid, Arc<HistorySnapshot>)],
+) -> (Generation, Vec<ReconcileCandidate<'a>>) {
+    let catch_up_image = session.inner.reading.catch_up_image.borrow();
+    let old_gen = catch_up_image.generation;
+    let channels: Vec<Uuid> = snapshots
+        .iter()
+        .filter(|(_, snap)| snap.generation == generation)
+        .map(|(ch, _)| *ch)
+        .collect();
+    let active_states: BTreeMap<Uuid, CatchUpState> = session
+        .inner
+        .reading
+        .active_catch_up_intervals(&channels)
+        .into_iter()
+        .collect();
+    let cached_keys = session
+        .inner
+        .reading
+        .reconcile_keys
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut candidates = Vec::new();
+    for (channel, snapshot) in snapshots {
+        if snapshot.generation != generation {
+            continue;
+        }
+        let Some(current) = active_states.get(channel) else {
+            continue;
+        };
+        let asc = session
+            .inner
+            .reading
+            .asc_successors_with_version(generation, *channel);
+        let key = ReconcileKey {
+            generation,
+            snapshot_version: snapshot.version,
+            asc_version: asc.version,
+            catch_up_revision: catch_up_image.channels.get(channel).copied(),
+        };
+        if cached_keys.get(channel) == Some(&key) {
+            continue;
+        }
+        candidates.push(ReconcileCandidate {
+            channel: *channel,
+            snapshot,
+            current: current.clone(),
+            asc: asc.successors,
+            key,
+        });
+    }
+    (old_gen, candidates)
 }

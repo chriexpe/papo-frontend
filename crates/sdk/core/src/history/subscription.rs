@@ -130,6 +130,22 @@ impl super::HistoryHandle {
         Ok((subscription.snapshot, points, point))
     }
 
+    pub(crate) fn ensure_reading_writable(
+        &self,
+        generation: Generation,
+    ) -> Result<(), HistoryError> {
+        if let Some(reason) = self
+            .session
+            .inner
+            .reading
+            .positions
+            .check_current_channel(self.channel.id, generation)
+        {
+            return Err(HistoryError::Closed(reason));
+        }
+        Ok(())
+    }
+
     /// Linearize a queued visible report with this exact channel incarnation's accepted
     /// publication. The callback must be short, synchronous and contain no commit/fsync;
     /// the FULL writer acknowledges only after its later SQLite commit succeeds.

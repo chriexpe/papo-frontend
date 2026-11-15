@@ -9,8 +9,8 @@ use crate::{
     HistorySnapshot, ReadPoint, ReadingError, catch_up::ReadSpan, catch_up_spans::span_contains,
 };
 
-/// Proven successor `(after_anchor -> first_returned)` returned by an `Asc` page query.
-pub(crate) type AscSuccessors = BTreeMap<ReadPoint, Option<ReadPoint>>;
+/// Proven successor `(after_anchor_id -> first_returned)` returned by an `Asc` page query.
+pub(crate) type AscSuccessors = BTreeMap<Uuid, Option<ReadPoint>>;
 
 pub(crate) struct ProvenChunk {
     pub first: ReadPoint,
@@ -115,13 +115,7 @@ impl<'a> SnapshotIndex<'a> {
     ) -> Result<bool, ReadingError> {
         let mut cursor = start;
         for _ in 0..=self.asc_successors.len() {
-            let next = self.asc_successors.get(&cursor).copied().or_else(|| {
-                self.asc_successors
-                    .iter()
-                    .find(|(k, _)| k.message_id == cursor.message_id)
-                    .map(|(_, v)| *v)
-            });
-            let Some(next) = next else {
+            let Some(&next) = self.asc_successors.get(&cursor.message_id) else {
                 return Ok(false);
             };
             match next {
@@ -235,12 +229,56 @@ pub(crate) fn first_after(
     partition_point_messages(messages, |point| point <= target)
 }
 
-pub(crate) fn is_foreign_message(message: &Message, self_user: Uuid) -> bool {
+/// Returns `true` when `message` was authored by a user other than `self_user`
+/// (including unparsed or absent author metadata).
+#[must_use]
+pub fn is_foreign_message(message: &Message, self_user: Uuid) -> bool {
     message
         .author_id
         .as_deref()
         .and_then(|id| Uuid::parse_str(id).ok())
         != Some(self_user)
+}
+
+impl HistorySnapshot {
+    /// Returns the index of the first message whose `ReadPoint` is `>= target`.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` if a compared message lacks a valid cursor.
+    pub fn lower_bound(&self, target: ReadPoint) -> Result<usize, ReadingError> {
+        lower_bound_ge(&self.messages, target)
+    }
+
+    /// Returns the index of the first message whose `ReadPoint` is `> target`.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` if a compared message lacks a valid cursor.
+    pub fn first_index_after(&self, target: ReadPoint) -> Result<usize, ReadingError> {
+        first_after(&self.messages, target)
+    }
+
+    /// Resolves `point` (including legacy millisecond-truncated server read marks) against this snapshot.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` if a compared message lacks a valid cursor.
+    pub fn resolve_read_point(&self, point: ReadPoint) -> Result<ReadPoint, ReadingError> {
+        resolve_point_in_snapshot(self, point)
+    }
+
+    /// Returns the canonical wire `HistoryCursor` for `point` if retained in this snapshot.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` if a compared message lacks a valid cursor.
+    pub fn message_cursor_at(
+        &self,
+        point: ReadPoint,
+    ) -> Result<Option<HistoryCursor>, ReadingError> {
+        let resolved = self.resolve_read_point(point)?;
+        let idx = self.lower_bound(resolved)?;
+        let Some(message) = self.messages.get(idx) else {
+            return Ok(None);
+        };
+        if ReadPoint::message(message)? == resolved {
+            return Ok(message.cursor());
+        }
+        Ok(None)
+    }
 }
 
 pub(crate) fn resolve_point_in_snapshot(

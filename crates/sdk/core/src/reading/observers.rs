@@ -6,7 +6,8 @@ use std::sync::{Arc, Weak, atomic::Ordering};
 use papo_api::Uuid;
 
 use crate::{
-    Generation, ReadPoint, ReadingError, Session, VisibilityContinuity, session::SessionInner,
+    Generation, ReadingError, Session, VisibilityContinuity, catch_up::VisibleBounds,
+    session::SessionInner,
 };
 
 struct ObserverSlot {
@@ -86,7 +87,7 @@ impl super::Reading {
         &self,
         observer_id: u64,
         channel: Uuid,
-    ) -> Option<(ReadPoint, ReadPoint)> {
+    ) -> Option<VisibleBounds> {
         self.observers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -98,7 +99,7 @@ impl super::Reading {
         &self,
         observer_id: u64,
         channel: Uuid,
-        bounds: (ReadPoint, ReadPoint),
+        bounds: VisibleBounds,
     ) {
         self.observers
             .lock()

@@ -147,8 +147,9 @@ async fn mutations(
         .take(5)
         .filter_map(|message| message.id.as_deref()?.parse::<Uuid>().ok())
         .collect();
+    let observer = session.reading_observer();
     let started = Instant::now();
-    session
+    observer
         .report_visible(
             channel,
             raw.generation,

@@ -48,6 +48,7 @@ pub use outgoing::{
 };
 pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
 mod catch_up;
+mod catch_up_cleanup;
 mod catch_up_index;
 mod catch_up_position_store;
 mod catch_up_spans;
@@ -58,9 +59,9 @@ mod profiles;
 mod read_points;
 mod reading;
 pub use catch_up::{
-    CatchUpInterval, CatchUpSnapshot, CatchUpState, CatchUpView, ReadSpan, ReadingPosition,
-    ReadingPositionsSnapshot, VisibilityContinuity,
+    CatchUpSnapshot, CatchUpView, ReadingPosition, ReadingPositionsSnapshot, VisibilityContinuity,
 };
+pub use catch_up_index::is_foreign_message;
 pub use reading::{
     ReadPoint, ReadState, ReadingError, ReadingObserver, ReadingSnapshot, UnreadCount,
 };

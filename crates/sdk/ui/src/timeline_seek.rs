@@ -3,12 +3,13 @@
 
 use std::sync::Arc;
 
-use chrono::SecondsFormat;
-use papo_sdk::{HistoryCursor, HistoryOrder, HistoryQuery, HistorySnapshot, ReadPoint, Uuid};
+use papo_sdk::{HistoryCursor, HistoryOrder, HistoryQuery, Uuid};
 use tokio::sync::watch;
 
 use super::{Timeline, TimelineConfig, TimelineError};
 use crate::timeline::Owner;
+
+const MAX_CATCH_UP_SEEK_PAGES: usize = 512;
 
 struct SeekCancel(watch::Sender<bool>);
 
@@ -27,7 +28,7 @@ impl Drop for SeekingGuard {
     fn drop(&mut self) {
         self.owner
             .reading_lock()
-            .set_seeking(&self.owner.session, self.channel, -1);
+            .end_seeking(&self.owner.session, self.channel);
     }
 }
 
@@ -62,15 +63,14 @@ impl CatchUpSeek {
         let channel = owner.history.channel();
         let mut cursor_override: Option<HistoryCursor> = None;
         let mut initialized_cursor = false;
-        for _ in 0..512 {
+        for _ in 0..MAX_CATCH_UP_SEEK_PAGES {
             if *cancel_rx.borrow() {
                 return Err(TimelineError::Cancelled);
             }
             let raw = owner.history.subscribe().await?.snapshot;
-            let view = owner.session.catch_up_view(channel, &raw)?;
-            if !view.has_catch_up {
+            let Some(view) = owner.session.catch_up_view(channel, &raw)? else {
                 return Err(TimelineError::FocusMissing);
-            }
+            };
             if !view.needs_history
                 && let Some(target_cursor) = view.start_cursor
             {
@@ -84,10 +84,13 @@ impl CatchUpSeek {
                 .await;
             }
             if !initialized_cursor {
-                cursor_override = view
-                    .start_after
-                    .map(|pt| point_to_cursor(&raw, pt))
-                    .transpose()?;
+                cursor_override = match view.start_after {
+                    Some(pt) => Some(match raw.message_cursor_at(pt)? {
+                        Some(cursor) => cursor,
+                        None => pt.to_cursor()?,
+                    }),
+                    None => None,
+                };
                 initialized_cursor = true;
             }
             let query = HistoryQuery {
@@ -103,7 +106,9 @@ impl CatchUpSeek {
             owner.refresh_reading()?;
             if page.messages.is_empty() || !page.has_more {
                 let latest = owner.history.subscribe().await?.snapshot;
-                let latest_view = owner.session.catch_up_view(channel, &latest)?;
+                let Some(latest_view) = owner.session.catch_up_view(channel, &latest)? else {
+                    return Err(TimelineError::FocusMissing);
+                };
                 if let Some(target_cursor) = latest_view.start_cursor {
                     return open_focused_cancellable(
                         &owner,
@@ -144,22 +149,6 @@ async fn open_focused_cancellable(
     }
 }
 
-fn point_to_cursor(
-    raw: &HistorySnapshot,
-    point: ReadPoint,
-) -> Result<HistoryCursor, TimelineError> {
-    if let Some(cursor) = crate::timeline_arrivals::find_message_cursor(raw, point)? {
-        return Ok(cursor);
-    }
-    let created = chrono::DateTime::from_timestamp_micros(point.created_at_us)
-        .ok_or(TimelineError::InvalidCursor)?
-        .to_rfc3339_opts(SecondsFormat::Micros, true);
-    Ok(HistoryCursor {
-        created_at: created,
-        id: point.message_id.to_string(),
-    })
-}
-
 impl Timeline {
     /// Starts hourglass navigation toward the current catch-up interval's canonical start target.
     /// Dropping or calling `.cancel()` cancels pending pagination without erasing the interval.
@@ -173,10 +162,10 @@ impl Timeline {
         {
             let mut overlay = self.inner.reading_lock();
             overlay.refresh(&self.inner.session, channel)?;
-            if !overlay.state.catch_up.available {
+            if overlay.state.catch_up.is_none() {
                 return Err(TimelineError::FocusMissing);
             }
-            overlay.set_seeking(&self.inner.session, channel, 1);
+            overlay.begin_seeking(&self.inner.session, channel);
         }
         let (cancel_tx, cancel_rx) = watch::channel(false);
         Ok(CatchUpSeek {

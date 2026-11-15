@@ -1,86 +1,16 @@
-//! Account-scoped catch-up visibility reporting, view resolution and snapshot publication.
-//! Per-window observer lifecycle lives in `reading::observers`; core interval math lives in `catch_up`.
+//! Account-scoped catch-up visibility reporting, clear operations and view resolution.
+//! In-memory state tracking lives in `reading::catch_up_state`; interval math lives in `catch_up`.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use papo_api::Uuid;
 
 use crate::{
-    CatchUpSnapshot, CatchUpView, ClientError, Generation, HistorySnapshot, ReadPoint,
-    ReadingError, Session, VisibilityContinuity, catch_up::SnapshotIndex, reading::counts,
-    reading::upload, session::SessionInner,
+    CatchUpView, Generation, HistorySnapshot, ReadPoint, ReadingError, Session,
+    VisibilityContinuity,
+    catch_up::{CatchUpState, SnapshotIndex, VisibleBounds},
+    reading::{counts, upload},
 };
-
-impl super::Reading {
-    pub fn publish_catch_up(
-        &self,
-        session: &SessionInner,
-        mut image: CatchUpSnapshot,
-    ) -> Result<(), ClientError> {
-        session.epochs.apply(image.generation, || {
-            image.version = self
-                .catch_up_image
-                .borrow()
-                .version
-                .checked_add(1)
-                .ok_or(ClientError::Closed)?;
-            self.catch_up_image.send_replace(Arc::new(image));
-            Ok(())
-        })?
-    }
-
-    pub(crate) fn record_asc_successor(
-        &self,
-        channel: Uuid,
-        generation: Generation,
-        after: ReadPoint,
-        first_returned: Option<ReadPoint>,
-    ) {
-        let mut guard = self
-            .asc_successors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (asc_version, map) = match &mut *guard {
-            Some((current_gen, asc_version, map)) if *current_gen == generation => {
-                (asc_version, map)
-            }
-            slot => {
-                *slot = Some((generation, 0, BTreeMap::new()));
-                let (_, asc_version, map) = slot.as_mut().expect("just assigned");
-                (asc_version, map)
-            }
-        };
-        *asc_version = asc_version.saturating_add(1);
-        map.entry(channel)
-            .or_default()
-            .insert(after, first_returned);
-    }
-
-    pub(crate) fn asc_successors_for(
-        &self,
-        generation: Generation,
-        channel: Uuid,
-    ) -> crate::catch_up::AscSuccessors {
-        self.asc_successors_with_version(generation, channel).0
-    }
-
-    pub(crate) fn asc_successors_with_version(
-        &self,
-        generation: Generation,
-        channel: Uuid,
-    ) -> (crate::catch_up::AscSuccessors, u64) {
-        let guard = self
-            .asc_successors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match &*guard {
-            Some((current_gen, asc_version, map)) if *current_gen == generation => {
-                (map.get(&channel).cloned().unwrap_or_default(), *asc_version)
-            }
-            _ => (BTreeMap::new(), 0),
-        }
-    }
-}
 
 pub(super) async fn report_current(
     session: &Session,
@@ -116,17 +46,13 @@ pub(super) async fn report_current(
     let mut next_catch_up = session
         .inner
         .reading
-        .catch_up_image
-        .borrow()
-        .channels
-        .get(&channel)
-        .cloned()
+        .catch_up_state_for(channel)
         .unwrap_or_default();
     let last_visible = session
         .inner
         .reading
         .observer_last_visible(observer_id, channel);
-    let (catch_up_changed, next_last_visible) = next_catch_up.observe_visible(
+    let observation = next_catch_up.observe_visible(
         &index,
         prev_acknowledged,
         last_visible,
@@ -134,8 +60,8 @@ pub(super) async fn report_current(
         continuity,
     )?;
 
-    if new_local.is_none() && !catch_up_changed {
-        if let Some(vis) = next_last_visible {
+    if new_local.is_none() && !observation.changed {
+        if let Some(vis) = observation.next_bounds {
             session
                 .inner
                 .reading
@@ -152,7 +78,7 @@ pub(super) async fn report_current(
             generation,
             history_version,
             new_local,
-            catch_up_changed.then(|| next_catch_up.clone()),
+            observation.changed.then(|| next_catch_up.clone()),
         )
         .await?;
     session.inner.epochs.validate(generation)?;
@@ -163,8 +89,8 @@ pub(super) async fn report_current(
         channel,
         generation,
         snapshot: &snapshot,
-        next_last_visible,
-        catch_up_changed,
+        next_last_visible: observation.next_bounds,
+        catch_up_changed: observation.changed,
         next_catch_up,
         new_local,
     })
@@ -177,9 +103,9 @@ struct ReportedPublish<'a> {
     channel: Uuid,
     generation: Generation,
     snapshot: &'a HistorySnapshot,
-    next_last_visible: Option<(ReadPoint, ReadPoint)>,
+    next_last_visible: Option<VisibleBounds>,
     catch_up_changed: bool,
-    next_catch_up: crate::CatchUpState,
+    next_catch_up: CatchUpState,
     new_local: Option<ReadPoint>,
 }
 
@@ -191,17 +117,12 @@ async fn publish_reported(p: ReportedPublish<'_>) -> Result<(), ReadingError> {
             .set_observer_last_visible(p.observer_id, p.channel, vis);
     }
     if p.catch_up_changed {
-        let mut catch_up_image = (**p.session.inner.reading.catch_up_image.borrow()).clone();
-        catch_up_image.generation = p.generation;
-        if p.next_catch_up.seen_to.is_none() && p.next_catch_up.interval.is_none() {
-            catch_up_image.channels.remove(&p.channel);
-        } else {
-            catch_up_image.channels.insert(p.channel, p.next_catch_up);
-        }
-        p.session
-            .inner
-            .reading
-            .publish_catch_up(&p.session.inner, catch_up_image)?;
+        p.session.inner.reading.apply_catch_up_updates(
+            &p.session.inner,
+            p.generation,
+            vec![(p.channel, p.next_catch_up)],
+            false,
+        )?;
     }
     if let Some(local) = p.new_local {
         let mut image = (**p.session.inner.reading.image.borrow()).clone();
@@ -251,15 +172,7 @@ pub(super) async fn clear_catch_up_inner(
     {
         return Err(ReadingError::History(crate::HistoryError::Closed(reason)));
     }
-    let Some(mut next) = session
-        .inner
-        .reading
-        .catch_up_image
-        .borrow()
-        .channels
-        .get(&channel)
-        .cloned()
-    else {
+    let Some(mut next) = session.inner.reading.catch_up_state_for(channel) else {
         return Ok(());
     };
     let read_head = session
@@ -290,17 +203,12 @@ pub(super) async fn clear_catch_up_inner(
         )
         .await?;
     session.inner.epochs.validate(generation)?;
-    let mut catch_up_image = (**session.inner.reading.catch_up_image.borrow()).clone();
-    catch_up_image.generation = generation;
-    if next.seen_to.is_none() && next.interval.is_none() {
-        catch_up_image.channels.remove(&channel);
-    } else {
-        catch_up_image.channels.insert(channel, next);
-    }
-    session
-        .inner
-        .reading
-        .publish_catch_up(&session.inner, catch_up_image)?;
+    session.inner.reading.apply_catch_up_updates(
+        &session.inner,
+        generation,
+        vec![(channel, next)],
+        false,
+    )?;
     Ok(())
 }
 
@@ -308,18 +216,14 @@ pub(super) fn resolve_view(
     session: &Session,
     channel: Uuid,
     snapshot: &HistorySnapshot,
-) -> Result<CatchUpView, ReadingError> {
+) -> Result<Option<CatchUpView>, ReadingError> {
     let Some(state) = session
         .inner
         .reading
-        .catch_up_image
-        .borrow()
-        .channels
-        .get(&channel)
+        .catch_up_state_for(channel)
         .filter(|state| state.interval.is_some())
-        .cloned()
     else {
-        return Ok(CatchUpView::default());
+        return Ok(None);
     };
     let asc = session
         .inner

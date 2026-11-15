@@ -1,6 +1,7 @@
 //! Account-owned ordered read state; history owns coverage and UI owns viewport/window selection.
 
 pub(crate) mod catch_up_ops;
+mod catch_up_state;
 pub(crate) mod catch_up_sync;
 mod counts;
 mod observers;
@@ -15,11 +16,11 @@ mod upload;
 pub use observers::ReadingObserver;
 
 use crate::{
-    CatchUpSnapshot, CatchUpState, CatchUpView, ClientError, Generation, HistoryError,
-    HistorySnapshot, ReadingPosition, ReadingPositionsSnapshot, Session, StorageError,
-    VisibilityContinuity,
+    CatchUpSnapshot, CatchUpView, ClientError, Generation, HistoryError, HistorySnapshot,
+    ReadingPosition, ReadingPositionsSnapshot, Session, StorageError, VisibilityContinuity,
+    catch_up::{CatchUpStore, VisibleBounds},
 };
-use papo_api::{Uuid, wire::Message};
+use papo_api::{HistoryCursor, Uuid, wire::Message};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
 
@@ -39,9 +40,37 @@ pub struct ReadPoint {
     pub message_id: Uuid,
 }
 impl ReadPoint {
-    pub(crate) fn message(message: &Message) -> Result<Self, ReadingError> {
+    /// Parses the microsecond chronological cursor from a canonical history `Message`.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` when `created_at` or `id` is absent or invalid.
+    pub fn from_message(message: &Message) -> Result<Self, ReadingError> {
         Self::parse(message.created_at.as_deref(), message.id.as_deref())
     }
+
+    /// Parses a wire `HistoryCursor` into a microsecond `ReadPoint`.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` when timestamp precision exceeds microseconds or ID fails UUID parsing.
+    pub fn from_cursor(cursor: &HistoryCursor) -> Result<Self, ReadingError> {
+        Self::parse(Some(&cursor.created_at), Some(&cursor.id))
+    }
+
+    /// Formats this point as a microsecond RFC 3339 `HistoryCursor`.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` if `created_at_us` is outside valid UTC timestamp range.
+    pub fn to_cursor(&self) -> Result<HistoryCursor, ReadingError> {
+        let created_at = chrono::DateTime::from_timestamp_micros(self.created_at_us)
+            .ok_or(ReadingError::InvalidPoint)?
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        Ok(HistoryCursor {
+            created_at,
+            id: self.message_id.to_string(),
+        })
+    }
+
+    pub(crate) fn message(message: &Message) -> Result<Self, ReadingError> {
+        Self::from_message(message)
+    }
+
     pub(crate) fn parse(created_at: Option<&str>, id: Option<&str>) -> Result<Self, ReadingError> {
         let at =
             chrono::DateTime::parse_from_rfc3339(created_at.ok_or(ReadingError::InvalidPoint)?)
@@ -128,17 +157,12 @@ pub enum ReadingError {
     Session(#[from] ClientError),
 }
 
-pub(crate) type ObserverVisibilityMap = BTreeMap<u64, BTreeMap<Uuid, (ReadPoint, ReadPoint)>>;
-pub(crate) type AscSuccessorsState = (
-    Generation,
-    u64,
-    BTreeMap<Uuid, crate::catch_up::AscSuccessors>,
-);
-pub(crate) type ReconcileKeyMap = BTreeMap<Uuid, (Generation, u64, u64, u64)>;
+pub(crate) type ObserverVisibilityMap = BTreeMap<u64, BTreeMap<Uuid, VisibleBounds>>;
 
 pub(crate) struct Reading {
     pub serial: Mutex<()>,
     pub image: Arc<crate::observable::StateCell<Arc<ReadingSnapshot>>>,
+    pub catch_up_states: std::sync::Mutex<CatchUpStore>,
     pub catch_up_image: Arc<crate::observable::StateCell<Arc<crate::CatchUpSnapshot>>>,
     pub position_image: Arc<crate::observable::StateCell<Arc<crate::ReadingPositionsSnapshot>>>,
     pub started: std::sync::atomic::AtomicBool,
@@ -148,8 +172,8 @@ pub(crate) struct Reading {
     pub connection: Mutex<Option<(Generation, crate::reconcile::ResourceConnection)>>,
     pub observers: std::sync::Mutex<ObserverVisibilityMap>,
     pub next_observer: std::sync::atomic::AtomicU64,
-    pub asc_successors: std::sync::Mutex<Option<AscSuccessorsState>>,
-    pub reconcile_keys: std::sync::Mutex<ReconcileKeyMap>,
+    pub asc_successors: std::sync::Mutex<Option<catch_up_state::AscSuccessorsState>>,
+    pub reconcile_keys: std::sync::Mutex<BTreeMap<Uuid, catch_up_sync::ReconcileKey>>,
     pub positions: Arc<positions::PositionCoordinator>,
 }
 impl Reading {
@@ -161,6 +185,7 @@ impl Reading {
                 version: 0,
                 channels: BTreeMap::new(),
             })),
+            catch_up_states: std::sync::Mutex::new(CatchUpStore::default()),
             catch_up_image: crate::observable::StateCell::new(Arc::new(CatchUpSnapshot {
                 generation,
                 version: 0,
@@ -235,32 +260,23 @@ impl Session {
         ReadingObserver::new(self.clone())
     }
 
-    /// Atomically subscribes to durable per-channel catch-up state.
+    /// Atomically subscribes to catch-up revision watermarks across accessible channels.
+    /// Resolve detailed boundaries via `Session::catch_up_view`. Closes on sign-out, removal,
+    /// replacement or shutdown.
     #[must_use]
     pub fn subscribe_catch_up(&self) -> watch::Receiver<Arc<CatchUpSnapshot>> {
         self.inner.reading.catch_up_image.subscribe()
     }
 
-    /// Returns this account's last published catch-up state for one channel, if any.
-    #[must_use]
-    pub fn catch_up_state(&self, channel: Uuid) -> Option<CatchUpState> {
-        self.inner
-            .reading
-            .catch_up_image
-            .borrow()
-            .channels
-            .get(&channel)
-            .cloned()
-    }
-
-    /// Resolves hourglass availability and display boundary IDs for `channel` against `snapshot`.
+    /// Resolves catch-up markers and start-target readiness against `snapshot`, returning `None`
+    /// when `channel` has no active catch-up interval or all skipped foreign messages are read.
     /// # Errors
     /// Returns `ReadingError::InvalidPoint` if a cached message lacks valid chronological metadata.
     pub fn catch_up_view(
         &self,
         channel: Uuid,
         snapshot: &HistorySnapshot,
-    ) -> Result<CatchUpView, ReadingError> {
+    ) -> Result<Option<CatchUpView>, ReadingError> {
         catch_up_ops::resolve_view(self, channel, snapshot)
     }
 
@@ -327,23 +343,6 @@ impl Session {
             })
             .await
             .map_err(ReadingError::from)?
-    }
-
-    /// Reports only IDs actually visible in a canonical history snapshot, paired with scroll continuity.
-    /// Success acknowledges the local point and any catch-up interval transition only after a
-    /// synchronous=FULL commit; reaching a focused window's end never implicitly reports the live head.
-    /// # Errors
-    /// Returns history version/closure, invalid report, generation or durable storage errors.
-    pub async fn report_visible(
-        &self,
-        channel: Uuid,
-        generation: Generation,
-        history_version: u64,
-        ids: &[Uuid],
-        continuity: VisibilityContinuity,
-    ) -> Result<(), ReadingError> {
-        self.report_with_observer(0, channel, generation, history_version, ids, continuity)
-            .await
     }
 
     pub(super) async fn report_with_observer(

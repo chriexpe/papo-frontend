@@ -172,7 +172,8 @@ fn record_asc_proof(
         return Ok(());
     };
     let after = crate::ReadPoint::parse(Some(&cursor.created_at), Some(&cursor.id))
-        .map_err(|_| HistoryError::InvalidPage)?;
+        .map_err(|_| HistoryError::InvalidPage)?
+        .message_id;
     let first = points
         .first()
         .map(|point| crate::ReadPoint::parse(Some(&point.created_at), Some(&point.id)))
@@ -276,30 +277,22 @@ async fn rejection(
     let _state = handle.channel.state.lock().await;
     // Loss of access ends capabilities even when persisting the revocation fails.
     handle.channel.close(reason);
-    if let Err(error) = connection
+    let cache_result = connection
         .cache
         .history_revoke(*handle.channel.id.as_bytes(), generation)
-        .await
-    {
-        let _ = crate::reading::catch_up_sync::revoke_channels(
-            &handle.session.client,
-            &handle.session.inner,
-            &[handle.channel.id],
-            generation,
-            reason,
-        )
         .await;
-        return error.into();
-    }
-    if let Err(error) = crate::reading::catch_up_sync::revoke_channels(
+    let revoke_result = crate::reading::catch_up_sync::revoke_channels(
         &handle.session.client,
         &handle.session.inner,
         &[handle.channel.id],
         generation,
         reason,
     )
-    .await
-    {
+    .await;
+    if let Err(error) = cache_result {
+        return error.into();
+    }
+    if let Err(error) = revoke_result {
         return error.into();
     }
     HistoryError::Closed(reason)

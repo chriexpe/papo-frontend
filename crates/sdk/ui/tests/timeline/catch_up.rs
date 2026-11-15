@@ -151,16 +151,16 @@ fn catch_up_loads_the_missing_prefix_and_never_navigates_to_the_read_anchor() ->
         .await?;
 
         let state = live.reading_state()?;
-        assert!(state.catch_up.available);
-        assert_eq!(state.catch_up.start_after_id, Some(m1_uuid));
-        assert!(state.catch_up.needs_history);
-        assert_eq!(state.catch_up.start_target_id, None);
+        let catch_up = state.catch_up.as_ref().expect("active catch-up interval");
+        assert_eq!(catch_up.start_after_id, Some(m1_uuid));
+        assert!(catch_up.needs_history);
+        assert_eq!(catch_up.start_target_id, None);
 
         // Even if the old read anchor m1 is deleted on the server before seeking,
         // hourglass pagination starts strictly after m1's key and focuses m2 (never m1).
         assert!(fixture.server().delete_message(&m1_id).await?);
         let seek = live.seek_catch_up(cfg)?;
-        assert!(live.reading_state()?.catch_up.seeking);
+        assert!(live.reading_state()?.catch_up.as_ref().unwrap().seeking);
         let focused = seek.finish().await?;
         let focused_sub = focused.subscribe()?;
         let focused_ids = ids(&focused_sub);
@@ -168,8 +168,12 @@ fn catch_up_loads_the_missing_prefix_and_never_navigates_to_the_read_anchor() ->
         assert!(!focused_ids.contains(&m1_uuid));
 
         let settled = live.reading_state()?;
-        assert!(!settled.catch_up.seeking);
-        assert_eq!(settled.catch_up.start_target_id, Some(m2_uuid));
+        let settled_catch = settled
+            .catch_up
+            .as_ref()
+            .expect("settled catch-up interval");
+        assert!(!settled_catch.seeking);
+        assert_eq!(settled_catch.start_target_id, Some(m2_uuid));
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()
@@ -215,7 +219,7 @@ fn leaving_a_catch_up_seek_cancels_future_pagination_without_erasing_the_block()
         let path = format!("/channels/{CHANNEL}/messages");
         let mut hold = fixture.server().hold_next_rest("GET", &path).await?;
         let seek = live.seek_catch_up(cfg.clone())?;
-        assert!(live.reading_state()?.catch_up.seeking);
+        assert!(live.reading_state()?.catch_up.as_ref().unwrap().seeking);
 
         let before_count = fixture.server().read_request_counts().await.history_pages;
         tokio::select! {
@@ -239,8 +243,11 @@ fn leaving_a_catch_up_seek_cancels_future_pagination_without_erasing_the_block()
         );
 
         let state_after_cancel = live.reading_state()?;
-        assert!(!state_after_cancel.catch_up.seeking);
-        assert!(state_after_cancel.catch_up.available);
+        let catch_after_cancel = state_after_cancel
+            .catch_up
+            .as_ref()
+            .expect("catch-up interval must remain after cancel");
+        assert!(!catch_after_cancel.seeking);
 
         // Calling `.cancel()` explicitly before `.finish()` also returns `TimelineError::Cancelled` without erasing catch-up.
         let seek2 = live.seek_catch_up(cfg)?;
@@ -250,8 +257,11 @@ fn leaving_a_catch_up_seek_cancels_future_pagination_without_erasing_the_block()
             Err(TimelineError::Cancelled)
         ));
         let state_after_explicit = live.reading_state()?;
-        assert!(!state_after_explicit.catch_up.seeking);
-        assert!(state_after_explicit.catch_up.available);
+        let catch_after_explicit = state_after_explicit
+            .catch_up
+            .as_ref()
+            .expect("catch-up interval must remain after explicit cancel");
+        assert!(!catch_after_explicit.seeking);
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()

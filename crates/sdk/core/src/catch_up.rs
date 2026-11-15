@@ -1,14 +1,13 @@
-//! Catch-up interval domain logic, point resolution and saved reading position types.
-//! Storage durability lives in `catch_up_store`; snapshot indexing and span coalescing live in `catch_up_index`.
+//! Catch-up interval domain state machine, snapshot revisions, views and saved position types.
+//! Durability lives in `catch_up_store` and `catch_up_position_store`; snapshot indexing and
+//! millisecond point resolution live in `catch_up_index`; span coalescing lives in `catch_up_spans`.
 
 use std::collections::BTreeMap;
 
 use papo_api::{HistoryCursor, Uuid};
 use serde::{Deserialize, Serialize};
 
-pub(crate) use crate::catch_up_index::{
-    AscSuccessors, SnapshotIndex, first_after, resolve_point_in_snapshot,
-};
+pub(crate) use crate::catch_up_index::{AscSuccessors, SnapshotIndex};
 use crate::catch_up_spans::contiguous_segments;
 use crate::{Generation, ReadPoint, ReadingError};
 
@@ -18,6 +17,19 @@ mod span_tests;
 #[cfg(test)]
 #[path = "catch_up_tests.rs"]
 mod tests;
+
+/// Inclusive oldest/newest visible bounds recorded by a single observer frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct VisibleBounds {
+    pub min: ReadPoint,
+    pub max: ReadPoint,
+}
+
+/// Outcome of folding one observer frame into a channel's catch-up state.
+pub(crate) struct VisibleObservation {
+    pub changed: bool,
+    pub next_bounds: Option<VisibleBounds>,
+}
 
 /// Whether a visible-range report continues monotonically from the caller's preceding viewport
 /// or represents an initial frame / discontinuous jump.
@@ -32,7 +44,7 @@ pub enum VisibilityContinuity {
 
 /// Closed inclusive chronological range `[start, end]` observed inside an active catch-up interval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadSpan {
+pub(crate) struct ReadSpan {
     /// Oldest boundary in this observed span, inclusive.
     pub start: ReadPoint,
     /// Newest boundary in this observed span, inclusive.
@@ -51,7 +63,7 @@ impl ReadSpan {
 
 /// One skipped unread interval `(start_after, end_before)` independent of the channel read point.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CatchUpInterval {
+pub(crate) struct CatchUpInterval {
     /// Exclusive lower bound: messages at or before this point are already caught up.
     pub start_after: Option<ReadPoint>,
     /// Exclusive upper bound: destination-exposed and bottom-retracted messages at or above this point.
@@ -62,33 +74,101 @@ pub struct CatchUpInterval {
 
 /// Durable catch-up state for one `(account, channel)`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CatchUpState {
+pub(crate) struct CatchUpState {
     /// Highest chronological point exposed on this channel, used as the lower anchor on future skips.
     pub seen_to: Option<ReadPoint>,
     /// Active skipped catch-up interval, if any unread gap remains open.
     pub interval: Option<CatchUpInterval>,
 }
 
-/// Generation-stamped catch-up state for one signed-in account.
+impl CatchUpState {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.seen_to.is_none() && self.interval.is_none()
+    }
+}
+
+/// Account-owned in-memory store tracking raw catch-up state and per-channel revisions.
+#[derive(Default)]
+pub(crate) struct CatchUpStore {
+    states: BTreeMap<Uuid, CatchUpState>,
+    revisions: BTreeMap<Uuid, u64>,
+    next_revision: u64,
+}
+
+impl CatchUpStore {
+    pub fn hydrate(&mut self, loaded: BTreeMap<Uuid, CatchUpState>) -> BTreeMap<Uuid, u64> {
+        self.states.clear();
+        self.revisions.clear();
+        for (channel, state) in loaded {
+            if state.is_empty() {
+                continue;
+            }
+            self.next_revision = self.next_revision.saturating_add(1);
+            self.states.insert(channel, state);
+            self.revisions.insert(channel, self.next_revision);
+        }
+        self.revisions.clone()
+    }
+
+    pub fn get(&self, channel: Uuid) -> Option<CatchUpState> {
+        self.states.get(&channel).cloned()
+    }
+
+    pub fn interval_channels(&self, channels: &[Uuid]) -> Vec<(Uuid, CatchUpState)> {
+        channels
+            .iter()
+            .filter_map(|ch| {
+                self.states
+                    .get(ch)
+                    .filter(|s| s.interval.is_some())
+                    .map(|s| (*ch, s.clone()))
+            })
+            .collect()
+    }
+
+    pub fn apply(&mut self, updates: Vec<(Uuid, CatchUpState)>) -> BTreeMap<Uuid, u64> {
+        for (channel, next) in updates {
+            if next.is_empty() {
+                self.states.remove(&channel);
+                self.revisions.remove(&channel);
+            } else {
+                self.next_revision = self.next_revision.saturating_add(1);
+                self.states.insert(channel, next);
+                self.revisions.insert(channel, self.next_revision);
+            }
+        }
+        self.revisions.clone()
+    }
+
+    pub fn remove_channels(&mut self, channels: &[Uuid]) -> (bool, BTreeMap<Uuid, u64>) {
+        let mut changed = false;
+        for channel in channels {
+            changed |= self.states.remove(channel).is_some();
+            changed |= self.revisions.remove(channel).is_some();
+        }
+        (changed, self.revisions.clone())
+    }
+}
+
+/// Generation-stamped catch-up revision watermark for one signed-in account.
+/// Detailed interval math remains inside `papo-sdk`; resolve views via `Session::catch_up_view`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatchUpSnapshot {
     /// Connection epoch that produced or validated this snapshot.
     pub generation: Generation,
     /// Monotonic publication version within this session.
     pub version: u64,
-    /// Channels with tracked catch-up state.
-    pub channels: BTreeMap<Uuid, CatchUpState>,
+    /// Monotonic catch-up revision per channel that has tracked catch-up state.
+    pub channels: BTreeMap<Uuid, u64>,
 }
 
-/// Resolved boundary markers and availability for one channel's active catch-up interval.
-#[derive(Clone, Default, PartialEq, Eq)]
+/// Resolved boundary markers for one channel's active catch-up interval.
+#[derive(Clone, PartialEq, Eq)]
 pub struct CatchUpView {
-    /// True when an active catch-up interval exists.
-    pub has_catch_up: bool,
     /// Exclusive start point (`interval.start_after`), if present.
     pub start_after: Option<ReadPoint>,
-    /// Exclusive end point (`interval.end_before`), if active.
-    pub end_before: Option<ReadPoint>,
+    /// Exclusive end point (`interval.end_before`).
+    pub end_before: ReadPoint,
     /// First unread foreign message ID in the interval once loaded and contiguous after `start_after`.
     /// Matches the visible start marker so hourglass navigation never lands on the already-read anchor.
     pub start_target: Option<Uuid>,
@@ -101,7 +181,6 @@ pub struct CatchUpView {
 impl std::fmt::Debug for CatchUpView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CatchUpView")
-            .field("has_catch_up", &self.has_catch_up)
             .field("start_after", &self.start_after)
             .field("end_before", &self.end_before)
             .field("start_target", &self.start_target)
@@ -133,17 +212,19 @@ pub struct ReadingPositionsSnapshot {
 
 impl CatchUpState {
     /// Observe one non-empty set of visible points in `index` and update `seen_to` + `interval`.
-    /// Returns `(changed, new_last_visible)`.
     pub(crate) fn observe_visible(
         &mut self,
         index: &SnapshotIndex<'_>,
         prev_acknowledged_head: Option<ReadPoint>,
-        last_visible: Option<(ReadPoint, ReadPoint)>,
+        last_visible: Option<VisibleBounds>,
         visible: &[ReadPoint],
         continuity: VisibilityContinuity,
-    ) -> Result<(bool, Option<(ReadPoint, ReadPoint)>), ReadingError> {
+    ) -> Result<VisibleObservation, ReadingError> {
         if visible.is_empty() {
-            return Ok((false, last_visible));
+            return Ok(VisibleObservation {
+                changed: false,
+                next_bounds: last_visible,
+            });
         }
         let before = self.clone();
         self.normalize_points(index)?;
@@ -161,10 +242,10 @@ impl CatchUpState {
         let prev_head = self.seen_to.into_iter().chain(resolved_prev).max();
 
         let contiguous_scroll = if continuity == VisibilityContinuity::Continuous
-            && let Some((prev_lo, prev_hi)) = last_visible
+            && let Some(prev) = last_visible
         {
-            let prev_lo = index.resolve(prev_lo)?;
-            let prev_hi = index.resolve(prev_hi)?;
+            let prev_lo = index.resolve(prev.min)?;
+            let prev_hi = index.resolve(prev.max)?;
             if vis_hi >= prev_hi {
                 (prev_lo <= vis_hi && prev_hi >= vis_lo)
                     || index.is_contiguous(Some(prev_hi), vis_lo)?
@@ -193,10 +274,10 @@ impl CatchUpState {
 
         let mut spans = contiguous_segments(index, &sorted)?;
         if continuity == VisibilityContinuity::Continuous
-            && let Some((prev_lo, prev_hi)) = last_visible
+            && let Some(prev) = last_visible
         {
-            let prev_lo = index.resolve(prev_lo)?;
-            let prev_hi = index.resolve(prev_hi)?;
+            let prev_lo = index.resolve(prev.min)?;
+            let prev_hi = index.resolve(prev.max)?;
             if vis_lo > prev_hi && index.is_contiguous(Some(prev_hi), vis_lo)? {
                 spans.push(ReadSpan::normalized(prev_hi, vis_lo));
             } else if vis_hi < prev_lo && index.is_contiguous(Some(vis_hi), prev_lo)? {
@@ -212,8 +293,13 @@ impl CatchUpState {
         }
 
         self.seen_to = Some(self.seen_to.map_or(vis_hi, |s| s.max(vis_hi)));
-        let changed = *self != before;
-        Ok((changed, Some((vis_lo, vis_hi))))
+        Ok(VisibleObservation {
+            changed: *self != before,
+            next_bounds: Some(VisibleBounds {
+                min: vis_lo,
+                max: vis_hi,
+            }),
+        })
     }
 
     /// Re-evaluate an active interval against new canonical history, closing if zero unseen foreign rows remain.
@@ -243,14 +329,17 @@ impl CatchUpState {
     }
 
     /// Resolve display boundaries and hourglass seek readiness against `index`.
-    pub(crate) fn view(&self, index: &SnapshotIndex<'_>) -> Result<CatchUpView, ReadingError> {
+    pub(crate) fn view(
+        &self,
+        index: &SnapshotIndex<'_>,
+    ) -> Result<Option<CatchUpView>, ReadingError> {
         let Some(interval) = &self.interval else {
-            return Ok(CatchUpView::default());
+            return Ok(None);
         };
         let start_after = interval.start_after.map(|p| index.resolve(p)).transpose()?;
         let end_before = index.resolve(interval.end_before)?;
         if start_after.is_some_and(|s| s >= end_before) {
-            return Ok(CatchUpView::default());
+            return Ok(None);
         }
         let first_unread =
             index.first_unseen_foreign(start_after, end_before, &interval.covered_spans)?;
@@ -263,18 +352,17 @@ impl CatchUpState {
                 }
             } else {
                 if index.is_contiguous(start_after, end_before)? {
-                    return Ok(CatchUpView::default());
+                    return Ok(None);
                 }
                 (None, None, true)
             };
-        Ok(CatchUpView {
-            has_catch_up: true,
+        Ok(Some(CatchUpView {
             start_after,
-            end_before: Some(end_before),
+            end_before,
             start_target,
             start_cursor,
             needs_history,
-        })
+        }))
     }
 
     fn normalize_points(&mut self, index: &SnapshotIndex<'_>) -> Result<(), ReadingError> {

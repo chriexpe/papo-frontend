@@ -63,9 +63,10 @@ fn id(snapshot: &HistorySnapshot, index: usize) -> Uuid {
 async fn report(session: &Session, snapshot: &HistorySnapshot, index: usize) -> Result {
     let visible = id(snapshot, index);
     let history = session.history(channel()).await?;
+    let observer = session.reading_observer();
     for _ in 0..10 {
         let current = history.subscribe().await?.snapshot;
-        match session
+        match observer
             .report_visible(
                 channel(),
                 current.generation,
@@ -113,8 +114,9 @@ fn fetches_and_stale_or_detached_reports_never_acknowledge_channel() -> Result {
         fixture.server().seed_history(seed).await?;
         let snapshot = history(&session).await?;
         assert!(snapshot.version > old.version);
+        let observer = session.reading_observer();
         assert!(
-            session
+            observer
                 .report_visible(
                     channel(),
                     old.generation,
@@ -126,7 +128,7 @@ fn fetches_and_stale_or_detached_reports_never_acknowledge_channel() -> Result {
                 .is_err()
         );
         assert!(
-            session
+            observer
                 .report_visible(
                     channel(),
                     snapshot.generation,
@@ -145,7 +147,7 @@ fn fetches_and_stale_or_detached_reports_never_acknowledge_channel() -> Result {
         })
         .await?;
         assert!(
-            session
+            observer
                 .report_visible(
                     channel(),
                     snapshot.generation,

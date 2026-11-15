@@ -5,31 +5,29 @@ use std::{pin::Pin, sync::Arc};
 
 use futures_util::{Stream, stream};
 use papo_sdk::{
-    CatchUpSnapshot, CatchUpState, Generation, HistoryClosedReason, HistorySnapshot, HistoryUpdate,
-    ReadPoint, Session, Uuid,
+    CatchUpSnapshot, Generation, HistoryClosedReason, HistorySnapshot, HistoryUpdate, ReadPoint,
+    Session, Uuid,
 };
 use tokio::sync::watch;
 
 use super::{
     Timeline, TimelineError,
     timeline_arrivals::{
-        TimelineArrivals, compute_arrivals, cursor_point, initial_live_tail, is_live_complete,
-        resolve_in_snapshot, tail_before_live_arrivals, tail_before_point,
+        TimelineArrivals, compute_arrivals, initial_live_tail, is_live_complete,
+        tail_before_live_arrivals, tail_before_point,
     },
 };
 
-/// Catch-up interval boundaries and hourglass readiness for one timeline window.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Active catch-up interval boundaries and hourglass readiness for one timeline window.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimelineCatchUp {
-    /// True when an active skipped catch-up interval exists on this channel.
-    pub available: bool,
     /// Exclusive start anchor (`start_after`) message ID, if known.
     pub start_after_id: Option<Uuid>,
     /// First unread foreign message ID inside the interval once contiguous after `start_after`.
     /// Matches hourglass navigation; never the old read anchor.
     pub start_target_id: Option<Uuid>,
-    /// Exclusive end boundary (`end_before`) message ID, when active.
-    pub end_before_id: Option<Uuid>,
+    /// Exclusive end boundary (`end_before`) message ID.
+    pub end_before_id: Uuid,
     /// True when an unloaded prefix after `start_after` requires ascending pagination.
     pub needs_history: bool,
     /// True while a `CatchUpSeek` prefix resolution is actively running.
@@ -43,8 +41,8 @@ pub struct TimelineReadingState {
     pub version: u64,
     /// Connection generation of the underlying history snapshot.
     pub generation: Generation,
-    /// Current catch-up boundaries and hourglass availability.
-    pub catch_up: TimelineCatchUp,
+    /// Active catch-up boundaries and hourglass state, if a skipped catch-up interval exists.
+    pub catch_up: Option<TimelineCatchUp>,
     /// Behind-head live arrivals state.
     pub arrivals: TimelineArrivals,
 }
@@ -75,7 +73,7 @@ struct OverlayKey {
     raw_generation: Generation,
     raw_version: u64,
     catch_generation: Generation,
-    catch_state: Option<CatchUpState>,
+    catch_revision: Option<u64>,
     window_seen_to: Option<ReadPoint>,
     live_baseline_captured: bool,
     seeking: bool,
@@ -94,7 +92,7 @@ impl OverlayKey {
             raw_generation: raw.generation,
             raw_version: raw.version,
             catch_generation: catch_snap.generation,
-            catch_state: catch_snap.channels.get(&channel).cloned(),
+            catch_revision: catch_snap.channels.get(&channel).copied(),
             window_seen_to,
             live_baseline_captured,
             seeking,
@@ -158,7 +156,7 @@ impl ReadingOverlay {
     }
 
     pub fn refresh(&mut self, session: &Session, channel: Uuid) -> Result<(), TimelineError> {
-        self.pull_updates(session, channel)?;
+        self.pull_updates()?;
         let catch_snap = self.catch_up.borrow_and_update().clone();
         self.publish_next(session, channel, &catch_snap)
     }
@@ -169,9 +167,9 @@ impl ReadingOverlay {
         channel: Uuid,
         exposed: Option<ReadPoint>,
     ) -> Result<(), TimelineError> {
-        self.pull_updates(session, channel)?;
+        self.pull_updates()?;
         if let Some(point) = exposed {
-            let resolved = resolve_in_snapshot(&self.raw, point)?;
+            let resolved = self.raw.resolve_read_point(point)?;
             if Some(resolved) > self.window_seen_to {
                 self.window_seen_to = Some(resolved);
             }
@@ -180,7 +178,7 @@ impl ReadingOverlay {
         self.publish_next(session, channel, &catch_snap)
     }
 
-    fn pull_updates(&mut self, _session: &Session, _channel: Uuid) -> Result<(), TimelineError> {
+    fn pull_updates(&mut self) -> Result<(), TimelineError> {
         if let Some(reason) = self.closed {
             return Err(TimelineError::Closed(reason));
         }
@@ -203,7 +201,7 @@ impl ReadingOverlay {
             if !self.raw.server_live_complete
                 && let Some(cursor) = &self.raw.live_arrival_start
             {
-                self.pending_rest_fill = Some(cursor_point(cursor)?);
+                self.pending_rest_fill = Some(ReadPoint::from_cursor(cursor)?);
             }
         } else if let Some(floor) = self.pending_rest_fill {
             let tail = tail_before_point(&self.raw, floor)?;
@@ -262,12 +260,17 @@ impl ReadingOverlay {
         Ok(())
     }
 
-    pub fn set_seeking(&mut self, session: &Session, channel: Uuid, delta: isize) {
-        if delta >= 0 {
-            self.seeking_count = self.seeking_count.saturating_add(delta.cast_unsigned());
-        } else {
-            self.seeking_count = self.seeking_count.saturating_sub(delta.unsigned_abs());
-        }
+    pub fn begin_seeking(&mut self, session: &Session, channel: Uuid) {
+        self.seeking_count = self.seeking_count.saturating_add(1);
+        self.publish_seeking_change(session, channel);
+    }
+
+    pub fn end_seeking(&mut self, session: &Session, channel: Uuid) {
+        self.seeking_count = self.seeking_count.saturating_sub(1);
+        self.publish_seeking_change(session, channel);
+    }
+
+    fn publish_seeking_change(&mut self, session: &Session, channel: Uuid) {
         if self.closed.is_some() {
             return;
         }
@@ -291,15 +294,15 @@ fn project_reading_state(
     seeking: bool,
     version: u64,
 ) -> Result<TimelineReadingState, TimelineError> {
-    let view = session.catch_up_view(channel, raw)?;
-    let catch_up = TimelineCatchUp {
-        available: view.has_catch_up,
-        start_after_id: view.start_after.map(|p| p.message_id),
-        start_target_id: view.start_target,
-        end_before_id: view.end_before.map(|p| p.message_id),
-        needs_history: view.needs_history,
-        seeking,
-    };
+    let catch_up = session
+        .catch_up_view(channel, raw)?
+        .map(|view| TimelineCatchUp {
+            start_after_id: view.start_after.map(|p| p.message_id),
+            start_target_id: view.start_target,
+            end_before_id: view.end_before.message_id,
+            needs_history: view.needs_history,
+            seeking,
+        });
     let arrivals = compute_arrivals(session.account().user(), raw, window_seen_to)?;
     Ok(TimelineReadingState {
         version,

@@ -43,6 +43,7 @@ async fn exercise(client: &Client, server: &TestServer, count: usize) -> Result 
         .ok_or("missing oldest id")?
         .parse()?;
     session
+        .reading_observer()
         .report_visible(
             channel,
             initial.generation,
@@ -64,7 +65,7 @@ async fn exercise(client: &Client, server: &TestServer, count: usize) -> Result 
     )
     .await?;
     let state = live.reading_state()?;
-    assert!(state.catch_up.available);
+    assert!(state.catch_up.is_some());
     fixture::report(&session, "skip_30_catch_up", count, started).await?;
 
     let _ = live.paginate(TimelineDirection::Older).await?;
@@ -97,7 +98,7 @@ async fn exercise(client: &Client, server: &TestServer, count: usize) -> Result 
     let started = Instant::now();
     let overlay = focused.reading_state()?;
     assert_eq!(overlay.arrivals.count, 1);
-    assert!(overlay.catch_up.available);
+    assert!(overlay.catch_up.is_some());
     fixture::report(&session, "arrival_overlay", count, started).await?;
     Ok(())
 }

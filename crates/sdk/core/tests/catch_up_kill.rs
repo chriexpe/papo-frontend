@@ -85,8 +85,9 @@ fn run_kill_mode(mode: &str) -> Result {
         let secret = f.store.snapshot(key).ok_or("missing stored secret")?;
         let id_at = |i: usize| snap.messages[i].id.clone().unwrap();
         if mode == "clear_ack" {
+            let observer = session.reading_observer();
             let ids = [id_at(0).parse()?];
-            session
+            observer
                 .report_visible(
                     channel(),
                     snap.generation,
@@ -96,7 +97,7 @@ fn run_kill_mode(mode: &str) -> Result {
                 )
                 .await?;
             let tail = [id_at(8).parse()?, id_at(9).parse()?];
-            session
+            observer
                 .report_visible(
                     channel(),
                     snap.generation,
@@ -171,11 +172,19 @@ fn verify_after_kill(
     f.reopen()?;
     f.run(async {
         let session = f.client().handle().session(account)?;
+        fixture::online(&session).await?;
+        let history = session.history(channel()).await?;
+        history
+            .page(HistoryQuery {
+                limit: Some(20),
+                ..HistoryQuery::default()
+            })
+            .await?;
+        let snap = history.subscribe().await?.snapshot;
         match mode {
             "catch_up_ack" => {
                 let gap = session
-                    .catch_up_state(channel())
-                    .and_then(|s| s.interval)
+                    .catch_up_view(channel(), &snap)?
                     .expect("acknowledged catch-up interval must survive SIGKILL");
                 assert_eq!(
                     gap.start_after.unwrap().message_id,
@@ -184,10 +193,7 @@ fn verify_after_kill(
             }
             "clear_ack" => {
                 assert!(
-                    session
-                        .catch_up_state(channel())
-                        .and_then(|s| s.interval)
-                        .is_none(),
+                    session.catch_up_view(channel(), &snap)?.is_none(),
                     "cleared catch-up interval must remain deleted after SIGKILL"
                 );
             }
@@ -257,7 +263,8 @@ fn catch_up_kill_child() {
             let snap = history.subscribe().await.unwrap().snapshot;
             match mode.as_str() {
                 "catch_up_ack" => {
-                    session
+                    let observer = session.reading_observer();
+                    observer
                         .report_visible(
                             channel(),
                             snap.generation,
@@ -267,7 +274,7 @@ fn catch_up_kill_child() {
                         )
                         .await
                         .unwrap();
-                    session
+                    observer
                         .report_visible(
                             channel(),
                             snap.generation,

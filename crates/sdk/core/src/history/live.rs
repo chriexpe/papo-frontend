@@ -123,9 +123,13 @@ async fn select(
     if let Some(id) = channel_id {
         let id = Uuid::from_bytes(Model::id(id)?);
         if matches!(event, KnownEvent::ChannelDelete(_)) {
-            // Close before revoking: a reader that sees the revoked row must also see why.
-            if let Some(channel) = session.history.channels.lock().await.get(&id) {
-                channel.close(HistoryClosedReason::ChannelDeleted);
+            session.history.verified.write().await.remove(&id);
+            {
+                let mut channels = session.history.channels.lock().await;
+                if let Some(channel) = channels.get(&id) {
+                    channel.close(HistoryClosedReason::ChannelDeleted);
+                }
+                channels.retain(|_, channel| channel.check().is_ok());
             }
             connection
                 .cache
@@ -139,7 +143,6 @@ async fn select(
                 HistoryClosedReason::ChannelDeleted,
             )
             .await?;
-            session.history.verified.write().await.remove(&id);
             return Ok(Vec::new());
         }
         if !session.history.verified.read().await.contains(&id) {

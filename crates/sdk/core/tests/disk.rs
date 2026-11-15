@@ -82,6 +82,7 @@ fn physical_budget_evicts_oldest_prefixes_publishes_gaps_and_keeps_exact_refetch
         assert!(page.messages.iter().all(|message| message.id != first.id));
         assert!(matches!(
             session
+                .reading_observer()
                 .report_visible(
                     channel,
                     before.generation,

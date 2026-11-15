@@ -106,7 +106,10 @@ impl Registry {
         let lease = Arc::clone(&self.lease);
         let rows = self.readers.query(self.path.clone(), move |tx| {
             let _lease = lease;
-            tx.prepare("SELECT channel_id,local_point,uploaded_point FROM read_points WHERE server_id=?1 AND user_id=?2 AND EXISTS(SELECT 1 FROM accounts WHERE server_id=?1 AND user_id=?2 AND hidden=0)")?
+            if !crate::registry::account_is_visible(tx, account)? {
+                return Ok(Vec::new());
+            }
+            tx.prepare("SELECT channel_id,local_point,uploaded_point FROM read_points WHERE server_id=?1 AND user_id=?2")?
                 .query_map(params![account.server().as_bytes(), account.user().as_bytes()], |row| Ok((row.get::<_,Vec<u8>>(0)?, row.get::<_,Option<Vec<u8>>>(1)?, row.get::<_,Option<Vec<u8>>>(2)?)))?
                 .collect::<Result<Vec<_>,_>>()
         }).await?;
@@ -140,7 +143,8 @@ impl Registry {
         self.writer
             .write(move |tx| {
                 session.epochs.apply(generation, || {
-                    advance_local(tx, session.account, channel, point, &bytes)
+                    require_visible_account(tx, session.account)?;
+                    advance_local_checked(tx, session.account, channel, point, &bytes)
                 })?
             })
             .await
@@ -158,14 +162,15 @@ impl Registry {
         self.writer.write(move |tx| {
             session.epochs.apply(generation, || {
                 let account = session.account;
-                let changed = tx.execute("INSERT INTO read_points(server_id,user_id,channel_id,uploaded_point) SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM accounts WHERE server_id=?1 AND user_id=?2 AND hidden=0) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET uploaded_point=excluded.uploaded_point",params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes(), bytes])?;
-                if changed != 1 { return Err(ReadWriteError::Session(ClientError::Closed)); }
+                require_visible_account(tx, account)?;
+                tx.execute("INSERT INTO read_points(server_id,user_id,channel_id,uploaded_point) VALUES(?1,?2,?3,?4) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET uploaded_point=excluded.uploaded_point",params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes(), bytes])?;
                 Ok::<_,ReadWriteError>(())
             })?
         }).await.map_err(ClientError::from)
     }
 }
 
+/// Caller must validate account visibility once per transaction via `registry::visible_account`.
 pub(crate) fn advance_local_in_tx(
     tx: &rusqlite::Transaction<'_>,
     account: AccountId,
@@ -173,10 +178,20 @@ pub(crate) fn advance_local_in_tx(
     point: ReadPoint,
 ) -> Result<(), crate::ReadingError> {
     let bytes = serde_json::to_vec(&point).map_err(|_| StorageError::InvalidState)?;
-    advance_local(tx, account, channel, point, &bytes).map_err(crate::ReadingError::from)
+    advance_local_checked(tx, account, channel, point, &bytes).map_err(crate::ReadingError::from)
 }
 
-fn advance_local(
+fn require_visible_account(
+    tx: &rusqlite::Transaction<'_>,
+    account: AccountId,
+) -> Result<(), ReadWriteError> {
+    crate::registry::visible_account(tx, account).map_err(|error| match error {
+        StorageError::NotFound => ReadWriteError::Session(ClientError::Closed),
+        other => ReadWriteError::Storage(other),
+    })
+}
+
+fn advance_local_checked(
     tx: &rusqlite::Transaction<'_>,
     account: AccountId,
     channel: Uuid,
@@ -191,10 +206,7 @@ fn advance_local(
     if current.is_some_and(|current| current >= point) {
         return Ok(());
     }
-    let changed = tx.execute("INSERT INTO read_points(server_id,user_id,channel_id,local_point) SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM accounts WHERE server_id=?1 AND user_id=?2 AND hidden=0) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET local_point=excluded.local_point",params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes(), bytes])?;
-    if changed != 1 {
-        return Err(ReadWriteError::Session(ClientError::Closed));
-    }
+    tx.execute("INSERT INTO read_points(server_id,user_id,channel_id,local_point) VALUES(?1,?2,?3,?4) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET local_point=excluded.local_point",params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes(), bytes])?;
     Ok(())
 }
 

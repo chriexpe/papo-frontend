@@ -1,19 +1,34 @@
-//! Durable synchronous=FULL SQLite persistence for catch-up intervals and saved reading positions.
-//! Catch-up interval math lives in `catch_up`; coalescing and revocation coordination live in `reading`.
+//! Durable synchronous=FULL SQLite persistence for catch-up intervals and unified reading
+//! hydration.
+//! Saved reading position writes live in `catch_up_position_store`; revoked/removed channel
+//! cleanup lives in `catch_up_cleanup`; coalescing and revocation coordination live in `reading`.
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use papo_api::Uuid;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Transaction, params};
 
 use crate::{
     AccountId, ClientError, Generation, HistoryError, HistoryHandle, ReadPoint, ReadingError,
     Registry, StorageError,
     catch_up::{CatchUpInterval, CatchUpState, ReadSpan, ReadingPosition},
+    registry::{account_is_visible, visible_account},
     session::SessionInner,
 };
 
-const VISIBLE_ACCOUNT_SQL: &str = "EXISTS(SELECT 1 FROM accounts a JOIN servers s ON s.id=a.server_id WHERE a.server_id=?1 AND a.user_id=?2 AND a.hidden=0 AND s.hidden=0)";
+#[cfg(test)]
+#[path = "catch_up_store_tests.rs"]
+mod tests;
+
+pub(crate) struct CatchUpCommit {
+    pub channel: Uuid,
+    pub state: CatchUpState,
+}
+
+pub(crate) struct LoadedReadingMeta {
+    pub catch_up: BTreeMap<Uuid, CatchUpState>,
+    pub positions: BTreeMap<Uuid, ReadingPosition>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CatchUpWriteError {
@@ -50,18 +65,15 @@ impl From<CatchUpWriteError> for ReadingError {
     }
 }
 
-pub(crate) fn visible_account(
-    tx: &Transaction<'_>,
-    account: AccountId,
-) -> Result<(), StorageError> {
-    let ok = tx
-        .query_row(
-            "SELECT 1 FROM accounts a JOIN servers s ON s.id=a.server_id WHERE a.server_id=?1 AND a.user_id=?2 AND a.hidden=0 AND s.hidden=0",
-            params![account.server().as_bytes(), account.user().as_bytes()],
-            |_| Ok(()),
-        )
-        .optional()?;
-    ok.ok_or(StorageError::NotFound)
+impl From<CatchUpWriteError> for ClientError {
+    fn from(error: CatchUpWriteError) -> Self {
+        match error {
+            CatchUpWriteError::Session(error) => error,
+            CatchUpWriteError::History(error) => error.into(),
+            CatchUpWriteError::Storage(error) => error.into(),
+            CatchUpWriteError::Reading(_) => Self::ResourceData,
+        }
+    }
 }
 
 fn decode_point(bytes: Option<Vec<u8>>) -> Result<Option<ReadPoint>, StorageError> {
@@ -100,13 +112,13 @@ fn encode_spans(spans: &[ReadSpan]) -> Result<Option<Vec<u8>>, StorageError> {
     }
 }
 
+/// Caller must validate `visible_account(tx, account)?` once before calling inside a writer transaction.
 pub(crate) fn upsert_catch_up_tx(
     tx: &Transaction<'_>,
     account: AccountId,
     channel: Uuid,
     state: &CatchUpState,
 ) -> Result<(), StorageError> {
-    visible_account(tx, account)?;
     if state.seen_to.is_none() && state.interval.is_none() {
         tx.execute(
             "DELETE FROM catch_up_intervals WHERE server_id=?1 AND user_id=?2 AND channel_id=?3",
@@ -127,9 +139,9 @@ pub(crate) fn upsert_catch_up_tx(
         ),
         None => (None, None, None),
     };
-    let changed = tx.execute(
+    tx.execute(
         "INSERT INTO catch_up_intervals(server_id,user_id,channel_id,seen_to,start_after,end_before,covered_spans) \
-         SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS(SELECT 1 FROM accounts a JOIN servers s ON s.id=a.server_id WHERE a.server_id=?1 AND a.user_id=?2 AND a.hidden=0 AND s.hidden=0) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7) \
          ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET \
          seen_to=excluded.seen_to, start_after=excluded.start_after, end_before=excluded.end_before, covered_spans=excluded.covered_spans",
         params![
@@ -142,9 +154,6 @@ pub(crate) fn upsert_catch_up_tx(
             covered_spans,
         ],
     )?;
-    if changed == 0 {
-        return Err(StorageError::NotFound);
-    }
     Ok(())
 }
 
@@ -152,24 +161,20 @@ impl Registry {
     pub(crate) async fn load_catch_up_and_positions(
         &self,
         account: AccountId,
-    ) -> Result<
-        (
-            BTreeMap<Uuid, CatchUpState>,
-            BTreeMap<Uuid, ReadingPosition>,
-        ),
-        StorageError,
-    > {
+    ) -> Result<LoadedReadingMeta, StorageError> {
         let lease = Arc::clone(&self.lease);
         let path = self.path.clone();
         let (catch_rows, pos_rows) = self
             .readers
             .query(path, move |tx| {
                 let _lease = lease;
-                let catch_sql = format!(
-                    "SELECT channel_id,seen_to,start_after,end_before,covered_spans FROM catch_up_intervals WHERE server_id=?1 AND user_id=?2 AND {VISIBLE_ACCOUNT_SQL}"
-                );
+                if !account_is_visible(tx, account)? {
+                    return Ok((Vec::new(), Vec::new()));
+                }
                 let catch_rows = tx
-                    .prepare(&catch_sql)?
+                    .prepare(
+                        "SELECT channel_id,seen_to,start_after,end_before,covered_spans FROM catch_up_intervals WHERE server_id=?1 AND user_id=?2",
+                    )?
                     .query_map(
                         params![account.server().as_bytes(), account.user().as_bytes()],
                         |row| {
@@ -183,11 +188,10 @@ impl Registry {
                         },
                     )?
                     .collect::<Result<Vec<_>, _>>()?;
-                let pos_sql = format!(
-                    "SELECT channel_id,message_id,offset_units FROM saved_reading_positions WHERE server_id=?1 AND user_id=?2 AND {VISIBLE_ACCOUNT_SQL}"
-                );
                 let pos_rows = tx
-                    .prepare(&pos_sql)?
+                    .prepare(
+                        "SELECT channel_id,message_id,offset_units FROM saved_reading_positions WHERE server_id=?1 AND user_id=?2",
+                    )?
                     .query_map(
                         params![account.server().as_bytes(), account.user().as_bytes()],
                         |row| {
@@ -235,7 +239,10 @@ impl Registry {
                 },
             );
         }
-        Ok((catch_up, positions))
+        Ok(LoadedReadingMeta {
+            catch_up,
+            positions,
+        })
     }
 
     pub(crate) async fn commit_visible_read_and_catch_up(
@@ -251,6 +258,7 @@ impl Registry {
         self.writer
             .write(move |tx| -> Result<(), CatchUpWriteError> {
                 history.with_current_snapshot(generation, version, || ())?;
+                history.ensure_reading_writable(generation)?;
                 visible_account(tx, account)?;
                 if let Some(point) = local_point {
                     crate::read_points::advance_local_in_tx(tx, account, channel, point)?;
@@ -294,8 +302,8 @@ impl Registry {
         &self,
         session: Arc<SessionInner>,
         generation: Generation,
-        updates: Vec<(Uuid, CatchUpState)>,
-    ) -> Result<(), ReadingError> {
+        updates: Vec<CatchUpCommit>,
+    ) -> Result<(), ClientError> {
         if updates.is_empty() {
             return Ok(());
         }
@@ -304,72 +312,19 @@ impl Registry {
             .write(move |tx| -> Result<(), CatchUpWriteError> {
                 session.epochs.validate(generation)?;
                 visible_account(tx, account)?;
-                for (channel, next_state) in updates {
+                for commit in updates {
                     if let Some(reason) = session
                         .reading
                         .positions
-                        .check_current_channel(channel, generation)
+                        .check_current_channel(commit.channel, generation)
                     {
                         return Err(HistoryError::Closed(reason).into());
                     }
-                    upsert_catch_up_tx(tx, account, channel, &next_state)?;
+                    upsert_catch_up_tx(tx, account, commit.channel, &commit.state)?;
                 }
                 Ok(())
             })
             .await
-            .map_err(ReadingError::from)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::decode_spans;
-    use crate::{ReadPoint, StorageError, Uuid, catch_up::ReadSpan};
-
-    fn pt(us: i64, id: u128) -> ReadPoint {
-        ReadPoint {
-            created_at_us: us,
-            message_id: Uuid::from_u128(id),
-        }
-    }
-
-    #[test]
-    fn decode_spans_rejects_corrupted_inverted_overlapping_or_unsorted_rows() {
-        let valid = serde_json::to_vec(&vec![
-            ReadSpan::normalized(pt(10, 1), pt(20, 2)),
-            ReadSpan::normalized(pt(30, 3), pt(40, 4)),
-        ])
-        .unwrap();
-        assert_eq!(decode_spans(Some(valid)).unwrap().len(), 2);
-
-        let inverted = serde_json::to_vec(&vec![ReadSpan {
-            start: pt(20, 2),
-            end: pt(10, 1),
-        }])
-        .unwrap();
-        assert!(matches!(
-            decode_spans(Some(inverted)),
-            Err(StorageError::InvalidState)
-        ));
-
-        let overlapping = serde_json::to_vec(&vec![
-            ReadSpan::normalized(pt(10, 1), pt(25, 2)),
-            ReadSpan::normalized(pt(25, 2), pt(40, 4)),
-        ])
-        .unwrap();
-        assert!(matches!(
-            decode_spans(Some(overlapping)),
-            Err(StorageError::InvalidState)
-        ));
-
-        let unsorted = serde_json::to_vec(&vec![
-            ReadSpan::normalized(pt(30, 3), pt(40, 4)),
-            ReadSpan::normalized(pt(10, 1), pt(20, 2)),
-        ])
-        .unwrap();
-        assert!(matches!(
-            decode_spans(Some(unsorted)),
-            Err(StorageError::InvalidState)
-        ));
+            .map_err(ClientError::from)
     }
 }

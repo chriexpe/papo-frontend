@@ -9,14 +9,16 @@ mod intervals;
 mod positions;
 #[path = "catch_up_cases/reconcile_and_accounts.rs"]
 mod reconcile_and_accounts;
+#[path = "catch_up_cases/revocation_and_regrant.rs"]
+mod revocation_and_regrant;
 #[path = "catch_up_cases/sparse_visibility.rs"]
 mod sparse_visibility;
 
 use fixture::{Fixture, Result, login, register};
 use papo_api::{HistoryQuery, Uuid, wire::Message};
 use papo_sdk::{
-    CatchUpInterval, ConnectionState, HistoryError, HistorySnapshot, ReadPoint, ReadState,
-    ReadingError, Session, UnixMicros, VisibilityContinuity,
+    ConnectionState, HistoryError, HistorySnapshot, ReadPoint, ReadState, ReadingError, Session,
+    UnixMicros, VisibilityContinuity,
 };
 use papo_test_server::{Config, HistorySeed};
 use std::sync::Arc;
@@ -162,8 +164,55 @@ pub(crate) async fn report_with(
     Err("canonical history did not stabilize".into())
 }
 
-pub(crate) fn interval(session: &Session, ch: Uuid) -> Option<CatchUpInterval> {
-    session.catch_up_state(ch).and_then(|state| state.interval)
+pub(crate) fn view(
+    session: &Session,
+    ch: Uuid,
+    snap: &HistorySnapshot,
+) -> Result<Option<papo_sdk::CatchUpView>> {
+    Ok(session.catch_up_view(ch, snap)?)
+}
+
+pub(crate) async fn wait_catch_up_absent(
+    rx: &mut tokio::sync::watch::Receiver<std::sync::Arc<papo_sdk::CatchUpSnapshot>>,
+    ch: Uuid,
+) -> Result {
+    loop {
+        if !rx.borrow_and_update().channels.contains_key(&ch) {
+            return Ok(());
+        }
+        rx.changed().await?;
+    }
+}
+
+pub(crate) async fn wait_pos(
+    rx: &mut watch::Receiver<Arc<papo_sdk::ReadingPositionsSnapshot>>,
+    ch: Uuid,
+    expected: Option<papo_sdk::ReadingPosition>,
+) -> Result {
+    loop {
+        if rx.borrow_and_update().channels.get(&ch).copied() == expected {
+            return Ok(());
+        }
+        rx.changed().await?;
+    }
+}
+
+pub(crate) fn sqlite_catch_up_row(
+    profile_dir: &std::path::Path,
+    ch: Uuid,
+) -> Result<Option<(Option<ReadPoint>, bool)>> {
+    let db = rusqlite::Connection::open(profile_dir.join("state.sqlite"))?;
+    let mut stmt = db.prepare(
+        "SELECT seen_to, end_before FROM catch_up_intervals WHERE channel_id = ?1 LIMIT 1",
+    )?;
+    let mut rows = stmt.query([ch.as_bytes().as_slice()])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let seen_bytes: Option<Vec<u8>> = row.get(0)?;
+    let end_bytes: Option<Vec<u8>> = row.get(1)?;
+    let seen_to = seen_bytes.map(|b| serde_json::from_slice(&b)).transpose()?;
+    Ok(Some((seen_to, end_bytes.is_some())))
 }
 
 pub(crate) async fn wait_online(session: &Session) -> Result {

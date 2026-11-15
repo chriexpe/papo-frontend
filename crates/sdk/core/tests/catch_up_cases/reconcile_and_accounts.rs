@@ -1,8 +1,8 @@
 //! Behaviour specs for remote reconciliation, offline restart, legacy ms anchors, deleted anchors and account isolation.
 
 use super::{
-    AUTHOR, CHANNEL, FIRST, Fixture, Result, channel, config, interval, load_history, msg_id,
-    msg_point, report_range, signed_in, signed_in_as,
+    AUTHOR, CHANNEL, FIRST, Fixture, Result, channel, config, load_history, msg_id, msg_point,
+    report_range, signed_in, signed_in_as, sqlite_catch_up_row, view,
 };
 use papo_api::HistoryQuery;
 use papo_sdk::{ConnectionState, HistoryOrder, ReadingPosition, UnreadCount, VisibilityContinuity};
@@ -23,7 +23,7 @@ fn remote_read_clears_badge_while_preserving_local_catch_up() -> Result {
             VisibilityContinuity::Discontinuous,
         )
         .await?;
-        assert!(interval(&session, channel()).is_some());
+        assert!(view(&session, channel(), &snap)?.is_some());
         // Another device acknowledges m10 via server read mark + reconnect reconciliation.
         assert!(
             fixture
@@ -51,7 +51,8 @@ fn remote_read_clears_badge_while_preserving_local_catch_up() -> Result {
         assert_eq!(read.unread_count, UnreadCount::Exact(0));
         assert_eq!(read.uploaded_point.unwrap().message_id, msg_id(&snap, 9));
         // Local catch-up [m2..=m4] MUST survive remote head acknowledgement!
-        let gap = interval(&session, channel()).expect("remote read must preserve local catch-up");
+        let gap =
+            view(&session, channel(), &snap)?.expect("remote read must preserve local catch-up");
         assert_eq!(gap.start_after, Some(msg_point(&snap, 0)));
         assert_eq!(gap.end_before, msg_point(&snap, 4));
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -91,12 +92,12 @@ fn restart_restores_catch_up_and_head_independently_online_and_offline() -> Resu
     fixture.reopen()?;
     fixture.run(async {
         let session = fixture.client().handle().session(account)?;
-        let gap = interval(&session, channel()).unwrap();
+        let gap = view(&session, channel(), &snap)?.unwrap();
         assert_eq!(gap.start_after, Some(msg_point(&snap, 0)));
         assert_eq!(gap.end_before, msg_point(&snap, 8));
         assert_eq!(
-            session.catch_up_state(channel()).unwrap().seen_to,
-            Some(msg_point(&snap, 9))
+            sqlite_catch_up_row(fixture.profile.path(), channel())?,
+            Some((Some(msg_point(&snap, 9)), true))
         );
         assert_eq!(
             session.reading_position(channel()),
@@ -128,7 +129,14 @@ impl OfflineCheck for Fixture {
         self.run(async {
             self.server().set_gateway_accepting(false).await;
             let session = self.client().handle().session(account)?;
-            let gap = interval(&session, channel()).unwrap();
+            assert!(
+                session
+                    .subscribe_catch_up()
+                    .borrow()
+                    .channels
+                    .contains_key(&channel())
+            );
+            let gap = view(&session, channel(), snap)?.unwrap();
             assert_eq!(gap.start_after, Some(msg_point(snap, 0)));
             assert_eq!(gap.end_before, msg_point(snap, 8));
             self.server().set_gateway_accepting(true).await;
@@ -162,10 +170,11 @@ fn account_isolation_and_removal_delete_catch_up_and_saved_positions() -> Result
                 }),
             )
             .await?;
-        assert!(interval(&alpha, channel()).is_some());
+        assert!(view(&alpha, channel(), &snap)?.is_some());
 
         let beta = signed_in_as(&fixture, "beta").await?;
-        assert!(beta.catch_up_state(channel()).is_none());
+        assert!(beta.subscribe_catch_up().borrow().channels.is_empty());
+        assert!(view(&beta, channel(), &snap)?.is_none());
         assert_eq!(beta.reading_position(channel()), None);
         beta.save_reading_position(
             channel(),
@@ -264,7 +273,7 @@ fn legacy_millisecond_anchor_and_deleted_anchor_advance_without_reopening_read_r
             VisibilityContinuity::Discontinuous,
         )
         .await?;
-        let gap = interval(&session, channel()).unwrap();
+        let gap = view(&session, channel(), &snap)?.unwrap();
         assert_eq!(gap.start_after.unwrap().message_id, msg_id(&snap, 0));
 
         // Now delete the anchor m1 on the server and reopen with a fresh partial tail/Asc fetch.
@@ -298,7 +307,73 @@ fn legacy_millisecond_anchor_and_deleted_anchor_advance_without_reopening_read_r
         assert_eq!(snap.messages.len(), 7);
         report_range(&session, channel(), 0..=3, VisibilityContinuity::Continuous).await?;
         report_range(&session, channel(), 4..=6, VisibilityContinuity::Continuous).await?;
-        assert!(interval(&session, channel()).is_none());
+        assert!(view(&session, channel(), &snap)?.is_none());
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}
+
+#[test]
+fn channel_removal_on_reconnect_deletes_catch_up_intervals_from_memory_and_sqlite() -> Result {
+    let mut fixture = Fixture::new(config(10))?;
+    let account = fixture.run(async {
+        let session = signed_in(&fixture).await?;
+        let snap = load_history(&session, channel()).await?;
+        report_range(&session, channel(), 0..=0, VisibilityContinuity::Continuous).await?;
+        report_range(
+            &session,
+            channel(),
+            8..=9,
+            VisibilityContinuity::Discontinuous,
+        )
+        .await?;
+        assert!(
+            session
+                .subscribe_catch_up()
+                .borrow()
+                .channels
+                .contains_key(&channel())
+        );
+        assert!(view(&session, channel(), &snap)?.is_some());
+        Ok::<_, Box<dyn std::error::Error>>(session.account())
+    })??;
+    fixture.reopen()?;
+    fixture.run(async {
+        let session = fixture.client().handle().session(account)?;
+        assert!(
+            session
+                .subscribe_catch_up()
+                .borrow()
+                .channels
+                .contains_key(&channel())
+        );
+        assert!(sqlite_catch_up_row(fixture.profile.path(), channel())?.is_some());
+        // Remove the channel server-side while offline so no ChannelDelete event arrives;
+        // reconnect reconciliation must purge catch_up_intervals too.
+        assert!(fixture.server().delete_channel(CHANNEL).await);
+        let mut cu_rx = session.subscribe_catch_up();
+        super::fixture::online(&session).await?;
+        super::wait_catch_up_absent(&mut cu_rx, channel()).await?;
+        assert_eq!(
+            sqlite_catch_up_row(fixture.profile.path(), channel())?,
+            None
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.reopen()?;
+    fixture.run(async {
+        let session = fixture.client().handle().session(account)?;
+        assert!(
+            !session
+                .subscribe_catch_up()
+                .borrow()
+                .channels
+                .contains_key(&channel())
+        );
+        assert_eq!(
+            sqlite_catch_up_row(fixture.profile.path(), channel())?,
+            None
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()
