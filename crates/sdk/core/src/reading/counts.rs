@@ -12,15 +12,10 @@ pub(super) fn update(
         .point()
         .map(|point| crate::catch_up::resolve_point_in_snapshot(snapshot, point))
         .transpose()?;
-    let (mut low, mut high) = (0, snapshot.messages.len());
-    while low < high {
-        let middle = low + (high - low) / 2;
-        if Some(ReadPoint::message(&snapshot.messages[middle])?) <= point {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
+    let low = match point {
+        Some(point) => crate::catch_up::first_after(&snapshot.messages, point)?,
+        None => 0,
+    };
     let mut count =
         u64::try_from(snapshot.messages.len() - low).map_err(|_| ReadingError::InvalidPoint)?;
     let first = snapshot

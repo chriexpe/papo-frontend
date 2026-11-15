@@ -27,22 +27,7 @@ async fn exercise(client: &Client, server: &TestServer, count: usize) -> Result 
     let channel = fixture::seed(0, count).channel_id.parse()?;
     let history = session.history(channel).await?;
     let started = Instant::now();
-    let mut cursor = None;
-    loop {
-        let page = history
-            .page(HistoryQuery {
-                cursor: cursor.as_ref(),
-                limit: Some(100),
-                ..HistoryQuery::default()
-            })
-            .await?;
-        cursor = page.next_cursor;
-        if !page.has_more {
-            break;
-        }
-    }
-    let initial = history.subscribe().await?.snapshot;
-    assert_eq!(initial.messages.len(), count);
+    let initial = fixture::hydrate(&history, count).await?;
     fixture::report(&session, "hydrate", count, started).await?;
     let config = TimelineConfig {
         page_size: 30,

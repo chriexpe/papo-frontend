@@ -6,13 +6,16 @@ use std::{pin::Pin, sync::Arc};
 use futures_util::{Stream, stream};
 use papo_sdk::{
     CatchUpSnapshot, CatchUpState, Generation, HistoryClosedReason, HistorySnapshot, HistoryUpdate,
-    ReadPoint, ReadState, ReadingSnapshot, Session, Uuid,
+    ReadPoint, Session, Uuid,
 };
 use tokio::sync::watch;
 
 use super::{
     Timeline, TimelineError,
-    timeline_arrivals::{TimelineArrivals, compute_arrivals},
+    timeline_arrivals::{
+        TimelineArrivals, compute_arrivals, cursor_point, initial_live_tail, is_live_complete,
+        resolve_in_snapshot, tail_before_live_arrivals, tail_before_point,
+    },
 };
 
 /// Catch-up interval boundaries and hourglass readiness for one timeline window.
@@ -71,28 +74,29 @@ pub struct TimelineReadingSubscription {
 struct OverlayKey {
     raw_generation: Generation,
     raw_version: u64,
-    read_generation: Generation,
-    read_state: Option<ReadState>,
     catch_generation: Generation,
     catch_state: Option<CatchUpState>,
+    window_seen_to: Option<ReadPoint>,
+    live_baseline_captured: bool,
     seeking: bool,
 }
 
 impl OverlayKey {
     fn capture(
         raw: &HistorySnapshot,
-        read_snap: &ReadingSnapshot,
         catch_snap: &CatchUpSnapshot,
         channel: Uuid,
+        window_seen_to: Option<ReadPoint>,
+        live_baseline_captured: bool,
         seeking: bool,
     ) -> Self {
         Self {
             raw_generation: raw.generation,
             raw_version: raw.version,
-            read_generation: read_snap.generation,
-            read_state: read_snap.channels.get(&channel).cloned(),
             catch_generation: catch_snap.generation,
             catch_state: catch_snap.channels.get(&channel).cloned(),
+            window_seen_to,
+            live_baseline_captured,
             seeking,
         }
     }
@@ -100,10 +104,11 @@ impl OverlayKey {
 
 pub(super) struct ReadingOverlay {
     pub history: watch::Receiver<HistoryUpdate>,
-    pub reading: watch::Receiver<Arc<ReadingSnapshot>>,
     pub catch_up: watch::Receiver<Arc<CatchUpSnapshot>>,
     raw: Arc<HistorySnapshot>,
-    initial_tail: Option<ReadPoint>,
+    window_seen_to: Option<ReadPoint>,
+    live_baseline_captured: bool,
+    pending_rest_fill: Option<ReadPoint>,
     seeking_count: usize,
     last_key: OverlayKey,
     pub state: TimelineReadingState,
@@ -117,31 +122,33 @@ impl ReadingOverlay {
         channel: Uuid,
         raw: Arc<HistorySnapshot>,
         mut history: watch::Receiver<HistoryUpdate>,
-        mut reading: watch::Receiver<Arc<ReadingSnapshot>>,
         mut catch_up: watch::Receiver<Arc<CatchUpSnapshot>>,
-        initial_tail: Option<ReadPoint>,
     ) -> Result<Self, TimelineError> {
         let _ = history.borrow_and_update();
-        let read_snap = reading.borrow_and_update().clone();
         let catch_snap = catch_up.borrow_and_update().clone();
-        let last_key = OverlayKey::capture(&raw, &read_snap, &catch_snap, channel, false);
-        let initial = project_reading_state(
-            session,
-            channel,
+        let live_baseline_captured = is_live_complete(&raw);
+        let window_seen_to = if live_baseline_captured {
+            initial_live_tail(&raw)?
+        } else {
+            None
+        };
+        let last_key = OverlayKey::capture(
             &raw,
-            read_snap.channels.get(&channel),
-            catch_snap.channels.get(&channel),
-            initial_tail,
+            &catch_snap,
+            channel,
+            window_seen_to,
+            live_baseline_captured,
             false,
-            1,
-        )?;
+        );
+        let initial = project_reading_state(session, channel, &raw, window_seen_to, false, 1)?;
         let tx = watch::channel(TimelineReadingEvent::Update(initial.clone())).0;
         Ok(Self {
             history,
-            reading,
             catch_up,
             raw,
-            initial_tail,
+            window_seen_to,
+            live_baseline_captured,
+            pending_rest_fill: None,
             seeking_count: 0,
             last_key,
             state: initial,
@@ -151,6 +158,29 @@ impl ReadingOverlay {
     }
 
     pub fn refresh(&mut self, session: &Session, channel: Uuid) -> Result<(), TimelineError> {
+        self.pull_updates(session, channel)?;
+        let catch_snap = self.catch_up.borrow_and_update().clone();
+        self.publish_next(session, channel, &catch_snap)
+    }
+
+    pub fn record_exposed(
+        &mut self,
+        session: &Session,
+        channel: Uuid,
+        exposed: Option<ReadPoint>,
+    ) -> Result<(), TimelineError> {
+        self.pull_updates(session, channel)?;
+        if let Some(point) = exposed {
+            let resolved = resolve_in_snapshot(&self.raw, point)?;
+            if Some(resolved) > self.window_seen_to {
+                self.window_seen_to = Some(resolved);
+            }
+        }
+        let catch_snap = self.catch_up.borrow_and_update().clone();
+        self.publish_next(session, channel, &catch_snap)
+    }
+
+    fn pull_updates(&mut self, _session: &Session, _channel: Uuid) -> Result<(), TimelineError> {
         if let Some(reason) = self.closed {
             return Err(TimelineError::Closed(reason));
         }
@@ -163,24 +193,44 @@ impl ReadingOverlay {
             }
             _ => return Err(TimelineError::InvalidCursor),
         };
-        let read_snap = self.reading.borrow_and_update().clone();
-        let catch_snap = self.catch_up.borrow_and_update().clone();
         self.raw = next_raw;
-        self.publish_next(session, channel, &read_snap, &catch_snap)
+        if !self.live_baseline_captured && is_live_complete(&self.raw) {
+            self.live_baseline_captured = true;
+            let tail = tail_before_live_arrivals(&self.raw)?;
+            if tail > self.window_seen_to {
+                self.window_seen_to = tail;
+            }
+            if !self.raw.server_live_complete
+                && let Some(cursor) = &self.raw.live_arrival_start
+            {
+                self.pending_rest_fill = Some(cursor_point(cursor)?);
+            }
+        } else if let Some(floor) = self.pending_rest_fill {
+            let tail = tail_before_point(&self.raw, floor)?;
+            if tail > self.window_seen_to {
+                self.window_seen_to = tail;
+            }
+            if self.raw.server_live_complete
+                || self.window_seen_to.is_some_and(|seen| seen >= floor)
+            {
+                self.pending_rest_fill = None;
+            }
+        }
+        Ok(())
     }
 
     fn publish_next(
         &mut self,
         session: &Session,
         channel: Uuid,
-        read_snap: &ReadingSnapshot,
         catch_snap: &CatchUpSnapshot,
     ) -> Result<(), TimelineError> {
         let key = OverlayKey::capture(
             &self.raw,
-            read_snap,
             catch_snap,
             channel,
+            self.window_seen_to,
+            self.live_baseline_captured,
             self.seeking_count > 0,
         );
         if key == self.last_key {
@@ -190,9 +240,7 @@ impl ReadingOverlay {
             session,
             channel,
             &self.raw,
-            read_snap.channels.get(&channel),
-            catch_snap.channels.get(&channel),
-            self.initial_tail,
+            self.window_seen_to,
             self.seeking_count > 0,
             self.state.version,
         )?;
@@ -223,9 +271,8 @@ impl ReadingOverlay {
         if self.closed.is_some() {
             return;
         }
-        let read_snap = self.reading.borrow_and_update().clone();
         let catch_snap = self.catch_up.borrow_and_update().clone();
-        let _ = self.publish_next(session, channel, &read_snap, &catch_snap);
+        let _ = self.publish_next(session, channel, &catch_snap);
     }
 
     pub fn close(&mut self, reason: HistoryClosedReason) {
@@ -236,14 +283,11 @@ impl ReadingOverlay {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn project_reading_state(
     session: &Session,
     channel: Uuid,
     raw: &HistorySnapshot,
-    read_state: Option<&ReadState>,
-    catch_state: Option<&CatchUpState>,
-    initial_tail: Option<ReadPoint>,
+    window_seen_to: Option<ReadPoint>,
     seeking: bool,
     version: u64,
 ) -> Result<TimelineReadingState, TimelineError> {
@@ -256,13 +300,7 @@ fn project_reading_state(
         needs_history: view.needs_history,
         seeking,
     };
-    let arrivals = compute_arrivals(
-        session.account().user(),
-        raw,
-        read_state,
-        catch_state,
-        initial_tail,
-    )?;
+    let arrivals = compute_arrivals(session.account().user(), raw, window_seen_to)?;
     Ok(TimelineReadingState {
         version,
         generation: raw.generation,
@@ -283,44 +321,41 @@ impl Timeline {
         let mut events = overlay.tx.subscribe();
         let _ = events.borrow_and_update();
         let history = overlay.history.clone();
-        let reading = overlay.reading.clone();
         let catch_up = overlay.catch_up.clone();
         let owner = Arc::clone(&self.inner);
         let stream = stream::unfold(
-            (owner, events, history, reading, catch_up, false),
-            |(owner, mut events, mut history, mut reading, mut catch_up, terminated)| async move {
+            (owner, events, history, catch_up, false),
+            |(owner, mut events, mut history, mut catch_up, terminated)| async move {
                 if terminated {
                     return None;
                 }
                 loop {
                     tokio::select! {
+                        biased;
                         changed = events.changed() => {
                             if changed.is_err() {
                                 return None;
                             }
                             let event = events.borrow_and_update().clone();
                             let ended = matches!(event, TimelineReadingEvent::Closed(_));
-                            return Some((event, (owner, events, history, reading, catch_up, ended)));
+                            return Some((event, (owner, events, history, catch_up, ended)));
                         }
                         res = history.changed() => {
                             if res.is_err() {
                                 owner.reading_lock().close(HistoryClosedReason::AccountClosed);
-                            } else {
-                                owner.refresh_reading();
-                            }
-                        }
-                        res = reading.changed() => {
-                            if res.is_err() {
-                                owner.reading_lock().close(HistoryClosedReason::AccountClosed);
-                            } else {
-                                owner.refresh_reading();
+                            } else if let Err(err) = owner.refresh_reading()
+                                && !matches!(err, TimelineError::Closed(_))
+                            {
+                                return None;
                             }
                         }
                         res = catch_up.changed() => {
                             if res.is_err() {
                                 owner.reading_lock().close(HistoryClosedReason::AccountClosed);
-                            } else {
-                                owner.refresh_reading();
+                            } else if let Err(err) = owner.refresh_reading()
+                                && !matches!(err, TimelineError::Closed(_))
+                            {
+                                return None;
                             }
                         }
                     }
@@ -350,7 +385,7 @@ impl Timeline {
             .session
             .clear_catch_up(self.inner.history.channel())
             .await?;
-        self.inner.refresh_reading();
+        self.inner.refresh_reading()?;
         Ok(())
     }
 }

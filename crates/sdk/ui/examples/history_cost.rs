@@ -1,6 +1,6 @@
 //! Headless public SDK/UI fixtures with deterministic work budgets and advisory durations.
 //! Run `cargo run -p papo-sdk-ui --example history_cost -- history 10000`;
-//! scenarios are history/disk (10000/100000 rows), residency (500 channels), reconnect (100 channels).
+//! scenarios are history/overlay/disk (10000/100000 rows), residency (500 channels), reconnect (100 channels).
 //! JSON Lines omit content, IDs, credentials and addresses. Byte estimates are not process RSS.
 
 #[path = "history_cost/disk.rs"]
@@ -9,6 +9,8 @@ mod disk;
 mod fixture;
 #[path = "history_cost/history.rs"]
 mod history;
+#[path = "history_cost/overlay.rs"]
+mod overlay;
 #[path = "history_cost/reconnect.rs"]
 mod reconnect;
 #[path = "history_cost/residency.rs"]
@@ -51,6 +53,7 @@ fn run() -> Result {
         tokio::time::timeout(Duration::from_secs(240), async {
             match scenario.as_str() {
                 "history" => history::run(&client, count).await,
+                "overlay" => overlay::run(&client, count).await,
                 "residency" => residency::run(&client, 500).await,
                 "reconnect" => reconnect::run(&client, 100).await,
                 "disk" => disk::run(&client, count).await,

@@ -9,6 +9,8 @@ mod intervals;
 mod positions;
 #[path = "catch_up_cases/reconcile_and_accounts.rs"]
 mod reconcile_and_accounts;
+#[path = "catch_up_cases/sparse_visibility.rs"]
+mod sparse_visibility;
 
 use fixture::{Fixture, Result, login, register};
 use papo_api::{HistoryQuery, Uuid, wire::Message};

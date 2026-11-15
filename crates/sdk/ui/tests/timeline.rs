@@ -6,6 +6,8 @@ mod cancellation;
 mod catch_up;
 #[path = "timeline/catch_up_arrivals.rs"]
 mod catch_up_arrivals;
+#[path = "timeline/catch_up_arrivals_live.rs"]
+mod catch_up_arrivals_live;
 #[path = "timeline/lifecycle.rs"]
 mod lifecycle;
 #[path = "timeline/outgoing.rs"]

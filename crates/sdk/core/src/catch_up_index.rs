@@ -1,23 +1,16 @@
-//! Chronological snapshot indexing, asc-page continuity proofs and interval span coalescing.
-//! Domain model and public catch-up types belong to `catch_up`.
+//! Chronological snapshot indexing, binary-search lookups and `Asc` page continuity proofs.
+//! Domain model lives in `catch_up`; viewport span extraction and coalescing live in `catch_up_spans`.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use papo_api::{HistoryCursor, Uuid, wire::Message};
 
 use crate::{
-    HistorySnapshot, ReadPoint, ReadingError,
-    catch_up::{CatchUpInterval, ReadSpan},
+    HistorySnapshot, ReadPoint, ReadingError, catch_up::ReadSpan, catch_up_spans::span_contains,
 };
 
 /// Proven successor `(after_anchor -> first_returned)` returned by an `Asc` page query.
 pub(crate) type AscSuccessors = BTreeMap<ReadPoint, Option<ReadPoint>>;
-
-pub(crate) struct SnapshotEntry {
-    pub point: ReadPoint,
-    pub foreign: bool,
-    pub cursor: Option<HistoryCursor>,
-}
 
 pub(crate) struct ProvenChunk {
     pub first: ReadPoint,
@@ -25,33 +18,20 @@ pub(crate) struct ProvenChunk {
     pub oldest_complete: bool,
 }
 
-/// Pre-indexed chronological view of a `HistorySnapshot` for deterministic boundary math.
+/// Borrowed chronological view of a `HistorySnapshot` using `O(log N)` binary searches instead of full copies.
 pub(crate) struct SnapshotIndex<'a> {
-    pub entries: Vec<SnapshotEntry>,
-    pub by_id: BTreeMap<Uuid, ReadPoint>,
+    pub snapshot: &'a HistorySnapshot,
+    pub self_user: Uuid,
     pub chunks: Vec<ProvenChunk>,
-    pub empty_complete: bool,
     pub asc_successors: &'a AscSuccessors,
 }
 
 impl<'a> SnapshotIndex<'a> {
     pub fn build(
-        snapshot: &HistorySnapshot,
+        snapshot: &'a HistorySnapshot,
         self_user: Uuid,
         asc_successors: &'a AscSuccessors,
     ) -> Result<Self, ReadingError> {
-        let mut entries = Vec::with_capacity(snapshot.messages.len());
-        let mut by_id = BTreeMap::new();
-        for message in &snapshot.messages {
-            let point = ReadPoint::message(message)?;
-            let foreign = is_foreign_message(message, self_user);
-            by_id.insert(point.message_id, point);
-            entries.push(SnapshotEntry {
-                point,
-                foreign,
-                cursor: message.cursor(),
-            });
-        }
         let mut chunks = Vec::with_capacity(snapshot.chunks.len());
         for chunk in &snapshot.chunks {
             let first = ReadPoint::parse(Some(&chunk.first.created_at), Some(&chunk.first.id))?;
@@ -63,50 +43,76 @@ impl<'a> SnapshotIndex<'a> {
             });
         }
         Ok(Self {
-            entries,
-            by_id,
+            snapshot,
+            self_user,
             chunks,
-            empty_complete: snapshot.empty_complete,
             asc_successors,
         })
     }
 
-    pub fn resolve(&self, point: ReadPoint) -> ReadPoint {
-        self.by_id.get(&point.message_id).copied().unwrap_or(point)
+    pub fn resolve(&self, point: ReadPoint) -> Result<ReadPoint, ReadingError> {
+        resolve_point_in_snapshot(self.snapshot, point)
+    }
+
+    pub fn exact_index(&self, point: ReadPoint) -> Result<Option<usize>, ReadingError> {
+        let idx = lower_bound_ge(&self.snapshot.messages, point)?;
+        match self.snapshot.messages.get(idx) {
+            Some(message) if ReadPoint::message(message)? == point => Ok(Some(idx)),
+            _ => Ok(None),
+        }
+    }
+
+    /// True when any retained message sits strictly in `(a, b)`.
+    pub fn has_entry_between(&self, a: ReadPoint, b: ReadPoint) -> Result<bool, ReadingError> {
+        if a >= b {
+            return Ok(false);
+        }
+        let next_idx = first_after(&self.snapshot.messages, a)?;
+        Ok(match self.snapshot.messages.get(next_idx) {
+            Some(message) => ReadPoint::message(message)? < b,
+            None => false,
+        })
     }
 
     /// True when the snapshot and `Asc` page proofs guarantee zero unseen messages strictly in `(a, b)`.
-    pub fn is_contiguous(&self, a: Option<ReadPoint>, b: ReadPoint) -> bool {
+    pub fn is_contiguous(&self, a: Option<ReadPoint>, b: ReadPoint) -> Result<bool, ReadingError> {
         if let Some(a) = a
             && a >= b
         {
-            return true;
+            return Ok(true);
         }
-        if self.empty_complete {
-            return true;
+        if self.snapshot.empty_complete {
+            return Ok(true);
         }
         if let Some(a) = a
-            && self.proven_asc_reaches(a, b)
+            && self.proven_asc_reaches(a, b)?
         {
-            return true;
+            return Ok(true);
         }
-        self.chunks.iter().any(|chunk| {
-            let upper_ok = b <= chunk.last;
-            if !upper_ok {
-                return false;
+        for chunk in &self.chunks {
+            if b > chunk.last {
+                continue;
             }
-            match a {
+            let reaches = match a {
                 None => chunk.oldest_complete,
                 Some(a) => {
                     chunk.first <= a
                         || (chunk.oldest_complete && b <= chunk.last)
-                        || self.proven_asc_reaches(a, chunk.first)
+                        || self.proven_asc_reaches(a, chunk.first)?
                 }
+            };
+            if reaches {
+                return Ok(true);
             }
-        })
+        }
+        Ok(false)
     }
 
-    fn proven_asc_reaches(&self, start: ReadPoint, target: ReadPoint) -> bool {
+    fn proven_asc_reaches(
+        &self,
+        start: ReadPoint,
+        target: ReadPoint,
+    ) -> Result<bool, ReadingError> {
         let mut cursor = start;
         for _ in 0..=self.asc_successors.len() {
             let next = self.asc_successors.get(&cursor).copied().or_else(|| {
@@ -116,25 +122,25 @@ impl<'a> SnapshotIndex<'a> {
                     .map(|(_, v)| *v)
             });
             let Some(next) = next else {
-                return false;
+                return Ok(false);
             };
             match next {
                 None => {
                     // An empty `Asc(cursor)` response only proves zero messages existed > cursor
                     // while no loaded entry now sits between `cursor` and `target`.
-                    let next_idx = self.entries.partition_point(|entry| entry.point <= cursor);
-                    return self
-                        .entries
-                        .get(next_idx)
-                        .is_none_or(|entry| entry.point > target);
+                    let next_idx = first_after(&self.snapshot.messages, cursor)?;
+                    return Ok(match self.snapshot.messages.get(next_idx) {
+                        Some(message) => ReadPoint::message(message)? > target,
+                        None => true,
+                    });
                 }
-                Some(q) if q >= target => return true,
-                Some(q) if self.chunks_cover_pair(q, target) => return true,
+                Some(q) if q >= target => return Ok(true),
+                Some(q) if self.chunks_cover_pair(q, target) => return Ok(true),
                 Some(q) if q > cursor => cursor = q,
-                Some(_) => return false,
+                Some(_) => return Ok(false),
             }
         }
-        false
+        Ok(false)
     }
 
     fn chunks_cover_pair(&self, a: ReadPoint, b: ReadPoint) -> bool {
@@ -143,37 +149,90 @@ impl<'a> SnapshotIndex<'a> {
             .any(|chunk| chunk.first <= a && b <= chunk.last)
     }
 
+    /// Returns the first retained foreign message strictly in `(a, b)` outside `covered_spans`.
+    pub fn first_unseen_foreign(
+        &self,
+        a: Option<ReadPoint>,
+        b: ReadPoint,
+        covered_spans: &[ReadSpan],
+    ) -> Result<Option<(ReadPoint, Option<HistoryCursor>)>, ReadingError> {
+        if a.is_some_and(|a| a >= b) {
+            return Ok(None);
+        }
+        let mut idx = match a {
+            Some(a) => first_after(&self.snapshot.messages, a)?,
+            None => 0,
+        };
+        let end_idx = lower_bound_ge(&self.snapshot.messages, b)?;
+        debug_assert!(covered_spans.windows(2).all(|w| w[0].end < w[1].start));
+        while idx < end_idx {
+            let message = &self.snapshot.messages[idx];
+            let point = ReadPoint::message(message)?;
+            let span_idx = covered_spans.partition_point(|span| span.end < point);
+            if let Some(&span) = covered_spans.get(span_idx)
+                && span_contains(span, point)
+            {
+                let jumped = first_after(&self.snapshot.messages, span.end)?;
+                idx = jumped.max(idx + 1);
+                continue;
+            }
+            if is_foreign_message(message, self.self_user) {
+                return Ok(Some((point, message.cursor())));
+            }
+            idx += 1;
+        }
+        Ok(None)
+    }
+
     /// True when `(a, b)` is proven contiguous AND contains no foreign message outside `covered_spans`.
     pub fn no_unseen_foreign(
         &self,
         a: Option<ReadPoint>,
         b: ReadPoint,
         covered_spans: &[ReadSpan],
-    ) -> bool {
+    ) -> Result<bool, ReadingError> {
         if let Some(a) = a
             && a >= b
         {
-            return true;
+            return Ok(true);
         }
-        if !self.is_contiguous(a, b) {
-            return false;
+        if !self.is_contiguous(a, b)? {
+            return Ok(false);
         }
-        let start_idx = match a {
-            Some(a) => self.entries.partition_point(|entry| entry.point <= a),
-            None => 0,
-        };
-        let end_idx = self.entries.partition_point(|entry| entry.point < b);
-        for entry in &self.entries[start_idx..end_idx] {
-            if entry.foreign
-                && !covered_spans
-                    .iter()
-                    .any(|span| span_contains(*span, entry.point))
-            {
-                return false;
-            }
-        }
-        true
+        Ok(self.first_unseen_foreign(a, b, covered_spans)?.is_none())
     }
+}
+
+fn partition_point_messages(
+    messages: &imbl::Vector<Arc<Message>>,
+    mut pred: impl FnMut(ReadPoint) -> bool,
+) -> Result<usize, ReadingError> {
+    let mut low = 0;
+    let mut high = messages.len();
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let point = ReadPoint::message(&messages[mid])?;
+        if pred(point) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    Ok(low)
+}
+
+pub(crate) fn lower_bound_ge(
+    messages: &imbl::Vector<Arc<Message>>,
+    target: ReadPoint,
+) -> Result<usize, ReadingError> {
+    partition_point_messages(messages, |point| point < target)
+}
+
+pub(crate) fn first_after(
+    messages: &imbl::Vector<Arc<Message>>,
+    target: ReadPoint,
+) -> Result<usize, ReadingError> {
+    partition_point_messages(messages, |point| point <= target)
 }
 
 pub(crate) fn is_foreign_message(message: &Message, self_user: Uuid) -> bool {
@@ -188,114 +247,31 @@ pub(crate) fn resolve_point_in_snapshot(
     snapshot: &HistorySnapshot,
     point: ReadPoint,
 ) -> Result<ReadPoint, ReadingError> {
-    let target = point.message_id.to_string();
-    for message in &snapshot.messages {
-        if message.id.as_deref() == Some(target.as_str()) {
-            return ReadPoint::message(message);
+    let idx = lower_bound_ge(&snapshot.messages, point)?;
+    if let Some(message) = snapshot.messages.get(idx) {
+        let candidate = ReadPoint::message(message)?;
+        if candidate == point {
+            return Ok(candidate);
+        }
+    }
+    // Legacy server read marks carry millisecond precision; search only that 2 ms window.
+    if !snapshot.tombstones.contains(&point.message_id) && point.created_at_us % 1_000 == 0 {
+        let low_key = ReadPoint {
+            created_at_us: point.created_at_us.saturating_sub(1_000),
+            message_id: Uuid::nil(),
+        };
+        let high_us = point.created_at_us.saturating_add(1_000);
+        let mut cursor = lower_bound_ge(&snapshot.messages, low_key)?;
+        while let Some(message) = snapshot.messages.get(cursor) {
+            let candidate = ReadPoint::message(message)?;
+            if candidate.created_at_us > high_us {
+                break;
+            }
+            if candidate.message_id == point.message_id {
+                return Ok(candidate);
+            }
+            cursor += 1;
         }
     }
     Ok(point)
-}
-
-pub(crate) fn span_contains(span: ReadSpan, point: ReadPoint) -> bool {
-    span.start <= point && point <= span.end
-}
-
-pub(crate) fn contiguous_segments(
-    index: &SnapshotIndex<'_>,
-    sorted: &[ReadPoint],
-) -> Vec<ReadSpan> {
-    let mut spans = Vec::new();
-    let Some(&first) = sorted.first() else {
-        return spans;
-    };
-    let mut seg_start = first;
-    let mut seg_end = first;
-    for &point in &sorted[1..] {
-        if index.is_contiguous(Some(seg_end), point) {
-            seg_end = point;
-        } else {
-            spans.push(ReadSpan::normalized(seg_start, seg_end));
-            seg_start = point;
-            seg_end = point;
-        }
-    }
-    spans.push(ReadSpan::normalized(seg_start, seg_end));
-    spans
-}
-
-impl CatchUpInterval {
-    pub(crate) fn apply_span(&mut self, index: &SnapshotIndex<'_>, span: ReadSpan) {
-        if self
-            .start_after
-            .is_some_and(|start_after| span.end <= start_after)
-            || span.start >= self.end_before
-        {
-            return;
-        }
-        self.covered_spans.push(span);
-        self.coalesce(index);
-    }
-
-    pub(crate) fn coalesce(&mut self, index: &SnapshotIndex<'_>) {
-        if !self.covered_spans.is_empty() {
-            self.covered_spans
-                .sort_by_key(|span| (span.start, span.end));
-            let mut merged: Vec<ReadSpan> = Vec::with_capacity(self.covered_spans.len());
-            for span in self.covered_spans.drain(..) {
-                if let Some(last) = merged.last_mut()
-                    && (span.start <= last.end
-                        || index.no_unseen_foreign(Some(last.end), span.start, &[]))
-                {
-                    if span.start < last.start {
-                        last.start = span.start;
-                    }
-                    if span.end > last.end {
-                        last.end = span.end;
-                    }
-                } else {
-                    merged.push(span);
-                }
-            }
-            self.covered_spans = merged;
-        }
-
-        let mut remaining = Vec::with_capacity(self.covered_spans.len());
-        for span in self.covered_spans.drain(..) {
-            let touches_start = match self.start_after {
-                Some(s) => span.start <= s || index.no_unseen_foreign(Some(s), span.start, &[]),
-                None => index.no_unseen_foreign(None, span.start, &[]),
-            };
-            if touches_start {
-                let candidate = span.end.min(self.end_before);
-                self.start_after = Some(self.start_after.map_or(candidate, |s| s.max(candidate)));
-            } else {
-                remaining.push(span);
-            }
-        }
-        self.covered_spans = remaining;
-
-        while let Some(&last) = self.covered_spans.last() {
-            let touches_end = last.end >= self.end_before
-                || index.no_unseen_foreign(Some(last.end), self.end_before, &[]);
-            if !touches_end {
-                break;
-            }
-            self.covered_spans.pop();
-            if last.start < self.end_before {
-                self.end_before = last.start;
-            }
-        }
-
-        self.covered_spans.retain(|span| {
-            span.end < self.end_before
-                && self.start_after.is_none_or(|s| span.end > s)
-                && span.start < self.end_before
-        });
-    }
-
-    pub(crate) fn is_closed(&self, index: &SnapshotIndex<'_>) -> bool {
-        self.start_after.is_some_and(|s| s >= self.end_before)
-            || index.no_unseen_foreign(self.start_after, self.end_before, &self.covered_spans)
-    }
 }

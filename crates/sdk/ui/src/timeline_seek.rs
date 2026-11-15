@@ -100,7 +100,7 @@ impl CatchUpSeek {
                 _ = cancel_rx.wait_for(|&c| c) => return Err(TimelineError::Cancelled),
                 res = owner.history.page(query) => res?,
             };
-            owner.refresh_reading();
+            owner.refresh_reading()?;
             if page.messages.is_empty() || !page.has_more {
                 let latest = owner.history.subscribe().await?.snapshot;
                 let latest_view = owner.session.catch_up_view(channel, &latest)?;
@@ -148,20 +148,15 @@ fn point_to_cursor(
     raw: &HistorySnapshot,
     point: ReadPoint,
 ) -> Result<HistoryCursor, TimelineError> {
-    let id_str = point.message_id.to_string();
-    for msg in &raw.messages {
-        if msg.id.as_deref() == Some(id_str.as_str())
-            && let Some(cursor) = msg.cursor()
-        {
-            return Ok(cursor);
-        }
+    if let Some(cursor) = crate::timeline_arrivals::find_message_cursor(raw, point)? {
+        return Ok(cursor);
     }
     let created = chrono::DateTime::from_timestamp_micros(point.created_at_us)
         .ok_or(TimelineError::InvalidCursor)?
         .to_rfc3339_opts(SecondsFormat::Micros, true);
     Ok(HistoryCursor {
         created_at: created,
-        id: id_str,
+        id: point.message_id.to_string(),
     })
 }
 

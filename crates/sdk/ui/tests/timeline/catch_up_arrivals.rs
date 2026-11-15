@@ -3,8 +3,8 @@
 use super::catch_up::{extra_message, reconnect_online, report_visible_current, wait_overlay};
 use super::support::{CHANNEL, Fixture, Result, channel, config, ids, until};
 use futures_util::{FutureExt, StreamExt};
-use papo_sdk::{ReadingPosition, Uuid, VisibilityContinuity};
-use papo_sdk_ui::{Timeline, TimelineEvent};
+use papo_sdk::{ReadingPosition, UnreadCount, Uuid, VisibilityContinuity};
+use papo_sdk_ui::{Timeline, TimelineDirection, TimelineEvent};
 
 #[test]
 fn behind_head_live_arrivals_queue_own_messages_deletes_and_two_stop_navigation() -> Result {
@@ -14,7 +14,6 @@ fn behind_head_live_arrivals_queue_own_messages_deletes_and_two_stop_navigation(
         let mut cfg = config();
         cfg.page_size = 10;
         let live = Timeline::live(session.clone(), channel(), cfg.clone()).await?;
-        let mut live_sub = live.subscribe()?;
         // Mark m1 read, then jump to [m9..=m10] -> catch-up [m2..=m8], local_point = m10.
         report_visible_current(&live, |v| vec![v[0]], VisibilityContinuity::Continuous).await?;
         report_visible_current(
@@ -78,19 +77,150 @@ fn behind_head_live_arrivals_queue_own_messages_deletes_and_two_stop_navigation(
 
         let m13_uuid: Uuid = m13_id.parse()?;
         let m14_uuid: Uuid = m14_id.parse()?;
-        until(&mut live_sub, |s| ids(s).contains(&m14_uuid)).await?;
-        report_visible_current(&live, |_| vec![m13_uuid], VisibilityContinuity::Continuous).await?;
+        // Page the behind-head window forward so it can inspect both arrivals cleanly (without marking read).
+        page_until(&focused, m14_uuid).await?;
+        assert_eq!(focused.reading_state()?.arrivals.count, 2);
+
+        report_visible_current(
+            &focused,
+            |_| vec![m13_uuid],
+            VisibilityContinuity::Discontinuous,
+        )
+        .await?;
         let s = wait_overlay(&mut overlay, |st| st.arrivals.count == 1).await?;
         assert_eq!(
             s.arrivals.oldest_unseen.as_ref().map(|c| c.id.as_str()),
             Some(m14_id.as_str())
         );
 
-        report_visible_current(&live, |_| vec![m14_uuid], VisibilityContinuity::Continuous).await?;
+        report_visible_current(
+            &focused,
+            |_| vec![m14_uuid],
+            VisibilityContinuity::Continuous,
+        )
+        .await?;
         let s = wait_overlay(&mut overlay, |st| st.arrivals.count == 0).await?;
         assert!(s.arrivals.oldest_unseen.is_none());
         assert!(s.arrivals.live_head.is_none());
         assert!(s.catch_up.available, "older catch-up must remain intact");
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}
+
+async fn page_until(timeline: &Timeline, target: Uuid) -> Result {
+    let mut sub = timeline.subscribe()?;
+    while !ids(&sub).contains(&target) {
+        let _ = timeline.paginate(TimelineDirection::Newer).await?;
+        sub = timeline.subscribe()?;
+    }
+    Ok(())
+}
+
+fn arrival_cursor_ids(state: &papo_sdk_ui::TimelineReadingState) -> (Option<&str>, Option<&str>) {
+    (
+        state.arrivals.oldest_unseen.as_ref().map(|c| c.id.as_str()),
+        state.arrivals.live_head.as_ref().map(|c| c.id.as_str()),
+    )
+}
+
+#[test]
+fn two_windows_isolate_down_arrow_arrivals_while_sharing_account_unread_badge() -> Result {
+    let fixture = Fixture::new(10, vec![])?;
+    fixture.run(async {
+        let session = fixture.signed_in("ui-two-wins").await?;
+        let mut live_cfg = config();
+        live_cfg.page_size = 5;
+        let live = Timeline::live(session.clone(), channel(), live_cfg).await?;
+        let mut live_sub = live.subscribe()?;
+        report_visible_current(
+            &live,
+            |v| vec![*v.last().unwrap()],
+            VisibilityContinuity::Continuous,
+        )
+        .await?;
+
+        let m3_cursor = fixture.messages[2].cursor().unwrap();
+        let focused = Timeline::focused(session.clone(), channel(), m3_cursor, config()).await?;
+        let mut live_overlay = live.subscribe_reading()?;
+        let mut focus_overlay = focused.subscribe_reading()?;
+        let mut account_read = session.subscribe_reading();
+
+        let author = fixture.messages[0].author_id.as_deref().unwrap().to_owned();
+        let m11 = extra_message(31, &author, "2026-01-01T02:00:00.000011Z");
+        let m12 = extra_message(32, &author, "2026-01-01T02:00:00.000012Z");
+        let m13 = extra_message(33, &author, "2026-01-01T02:00:00.000013Z");
+        let (m11_id, m12_id, m13_id) = (
+            m11.id.clone().unwrap(),
+            m12.id.clone().unwrap(),
+            m13.id.clone().unwrap(),
+        );
+        let (m11_u, m12_u, m13_u): (Uuid, Uuid, Uuid) =
+            (m11_id.parse()?, m12_id.parse()?, m13_id.parse()?);
+        for msg in [m11, m12, m13] {
+            fixture.server().publish_message(msg).await?;
+        }
+
+        let s_live = wait_overlay(&mut live_overlay, |st| st.arrivals.count == 3).await?;
+        let s_focus = wait_overlay(&mut focus_overlay, |st| st.arrivals.count == 3).await?;
+        assert_eq!(
+            arrival_cursor_ids(&s_live),
+            (Some(m11_id.as_str()), Some(m13_id.as_str()))
+        );
+        assert_eq!(
+            arrival_cursor_ids(&s_focus),
+            (Some(m11_id.as_str()), Some(m13_id.as_str()))
+        );
+        account_read
+            .wait_for(|snap| {
+                snap.channels
+                    .get(&channel())
+                    .is_some_and(|st| st.unread_count == UnreadCount::Exact(3))
+            })
+            .await?;
+        assert_eq!(
+            session.reading_state(channel()).unwrap().unread_count,
+            UnreadCount::Exact(3)
+        );
+
+        // Window B (`live`) reports all three -> clears B's arrivals and the account badge,
+        // while Window A (`focused`) keeps its 3-item down-arrow queue until A exposes them.
+        until(&mut live_sub, |s| ids(s).contains(&m13_u)).await?;
+        report_visible_current(
+            &live,
+            |_| vec![m11_u, m12_u, m13_u],
+            VisibilityContinuity::Continuous,
+        )
+        .await?;
+        let s_live = wait_overlay(&mut live_overlay, |st| st.arrivals.count == 0).await?;
+        assert_eq!(arrival_cursor_ids(&s_live), (None, None));
+        assert_eq!(
+            session.reading_state(channel()).unwrap().unread_count,
+            UnreadCount::Exact(0)
+        );
+
+        let focus_state = focused.reading_state()?;
+        assert_eq!(focus_state.arrivals.count, 3);
+        assert_eq!(
+            arrival_cursor_ids(&focus_state),
+            (Some(m11_id.as_str()), Some(m13_id.as_str()))
+        );
+
+        page_until(&focused, m13_u).await?;
+        report_visible_current(&focused, |_| vec![m11_u], VisibilityContinuity::Continuous).await?;
+        let s_focus = wait_overlay(&mut focus_overlay, |st| st.arrivals.count == 2).await?;
+        assert_eq!(
+            arrival_cursor_ids(&s_focus),
+            (Some(m12_id.as_str()), Some(m13_id.as_str()))
+        );
+        report_visible_current(
+            &focused,
+            |_| vec![m12_u, m13_u],
+            VisibilityContinuity::Continuous,
+        )
+        .await?;
+        let s_focus = wait_overlay(&mut focus_overlay, |st| st.arrivals.count == 0).await?;
+        assert_eq!(arrival_cursor_ids(&s_focus), (None, None));
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()

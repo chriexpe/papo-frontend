@@ -210,6 +210,7 @@ impl Model {
         let Some(cursor) = &ticket.cursor else {
             self.chunks.clear();
             self.empty_generation = ticket.generation;
+            self.server_live_generation = ticket.generation;
             if let (Some((_, first_id)), Some((_, last_id))) =
                 (self.order.first_key_value(), self.order.last_key_value())
             {
@@ -241,6 +242,7 @@ impl Model {
                     HistoryOrder::Asc => {
                         chunk.newest_complete = true;
                         chunk.live_generation = ticket.generation;
+                        self.server_live_generation = ticket.generation;
                     }
                 }
             }
@@ -274,6 +276,7 @@ impl Model {
         };
         if joined.newest_complete {
             joined.live_generation = ticket.generation;
+            self.server_live_generation = ticket.generation;
         }
         let anchor = ticket.cursor.as_ref().map(Point::key).transpose()?;
         let mut retained = Vec::new();

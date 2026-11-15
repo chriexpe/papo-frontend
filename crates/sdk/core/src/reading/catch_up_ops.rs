@@ -100,20 +100,24 @@ pub(super) async fn report_current(
     if visible_points.is_empty() {
         return Ok(());
     }
-    let mut image = (**session.inner.reading.image.borrow()).clone();
-    image.generation = generation;
-    let state = image.channels.entry(channel).or_default();
-    let prev_acknowledged = state.point();
-    let new_local = point.filter(|&p| Some(p) > state.local_point);
+    let (prev_acknowledged, new_local) = {
+        let borrowed = session.inner.reading.image.borrow();
+        let prev_state = borrowed.channels.get(&channel);
+        let prev_acknowledged = prev_state.and_then(super::ReadState::point);
+        let prev_local = prev_state.and_then(|s| s.local_point);
+        (prev_acknowledged, point.filter(|&p| Some(p) > prev_local))
+    };
 
     let asc = session
         .inner
         .reading
         .asc_successors_for(generation, channel);
     let index = SnapshotIndex::build(&snapshot, session.account().user(), &asc)?;
-    let mut catch_up_image = (**session.inner.reading.catch_up_image.borrow()).clone();
-    catch_up_image.generation = generation;
-    let mut next_catch_up = catch_up_image
+    let mut next_catch_up = session
+        .inner
+        .reading
+        .catch_up_image
+        .borrow()
         .channels
         .get(&channel)
         .cloned()
@@ -128,7 +132,7 @@ pub(super) async fn report_current(
         last_visible,
         &visible_points,
         continuity,
-    );
+    )?;
 
     if new_local.is_none() && !catch_up_changed {
         if let Some(vis) = next_last_visible {
@@ -157,13 +161,12 @@ pub(super) async fn report_current(
         session,
         observer_id,
         channel,
+        generation,
         snapshot: &snapshot,
         next_last_visible,
         catch_up_changed,
         next_catch_up,
-        catch_up_image,
         new_local,
-        image,
     })
     .await
 }
@@ -172,16 +175,15 @@ struct ReportedPublish<'a> {
     session: &'a Session,
     observer_id: u64,
     channel: Uuid,
+    generation: Generation,
     snapshot: &'a HistorySnapshot,
     next_last_visible: Option<(ReadPoint, ReadPoint)>,
     catch_up_changed: bool,
     next_catch_up: crate::CatchUpState,
-    catch_up_image: CatchUpSnapshot,
     new_local: Option<ReadPoint>,
-    image: super::ReadingSnapshot,
 }
 
-async fn publish_reported(mut p: ReportedPublish<'_>) -> Result<(), ReadingError> {
+async fn publish_reported(p: ReportedPublish<'_>) -> Result<(), ReadingError> {
     if let Some(vis) = p.next_last_visible {
         p.session
             .inner
@@ -189,18 +191,22 @@ async fn publish_reported(mut p: ReportedPublish<'_>) -> Result<(), ReadingError
             .set_observer_last_visible(p.observer_id, p.channel, vis);
     }
     if p.catch_up_changed {
+        let mut catch_up_image = (**p.session.inner.reading.catch_up_image.borrow()).clone();
+        catch_up_image.generation = p.generation;
         if p.next_catch_up.seen_to.is_none() && p.next_catch_up.interval.is_none() {
-            p.catch_up_image.channels.remove(&p.channel);
+            catch_up_image.channels.remove(&p.channel);
         } else {
-            p.catch_up_image.channels.insert(p.channel, p.next_catch_up);
+            catch_up_image.channels.insert(p.channel, p.next_catch_up);
         }
         p.session
             .inner
             .reading
-            .publish_catch_up(&p.session.inner, p.catch_up_image)?;
+            .publish_catch_up(&p.session.inner, catch_up_image)?;
     }
     if let Some(local) = p.new_local {
-        let state = p.image.channels.entry(p.channel).or_default();
+        let mut image = (**p.session.inner.reading.image.borrow()).clone();
+        image.generation = p.generation;
+        let state = image.channels.entry(p.channel).or_default();
         state.local_point = Some(local);
         counts::update(
             state,
@@ -224,7 +230,7 @@ async fn publish_reported(mut p: ReportedPublish<'_>) -> Result<(), ReadingError
         {
             counts::unresolved(state);
         }
-        p.session.inner.reading.publish(&p.session.inner, p.image)?;
+        p.session.inner.reading.publish(&p.session.inner, image)?;
         upload::schedule(p.session, p.channel).await;
     }
     Ok(())
@@ -245,9 +251,15 @@ pub(super) async fn clear_catch_up_inner(
     {
         return Err(ReadingError::History(crate::HistoryError::Closed(reason)));
     }
-    let mut catch_up_image = (**session.inner.reading.catch_up_image.borrow()).clone();
-    catch_up_image.generation = generation;
-    let Some(mut next) = catch_up_image.channels.get(&channel).cloned() else {
+    let Some(mut next) = session
+        .inner
+        .reading
+        .catch_up_image
+        .borrow()
+        .channels
+        .get(&channel)
+        .cloned()
+    else {
         return Ok(());
     };
     let read_head = session
@@ -278,6 +290,8 @@ pub(super) async fn clear_catch_up_inner(
         )
         .await?;
     session.inner.epochs.validate(generation)?;
+    let mut catch_up_image = (**session.inner.reading.catch_up_image.borrow()).clone();
+    catch_up_image.generation = generation;
     if next.seen_to.is_none() && next.interval.is_none() {
         catch_up_image.channels.remove(&channel);
     } else {
@@ -312,5 +326,5 @@ pub(super) fn resolve_view(
         .reading
         .asc_successors_for(snapshot.generation, channel);
     let index = SnapshotIndex::build(snapshot, session.account().user(), &asc)?;
-    Ok(state.view(&index))
+    state.view(&index)
 }

@@ -136,44 +136,54 @@ pub(crate) async fn reconcile_catch_up_snapshots(
     generation: Generation,
     snapshots: &[(Uuid, Arc<HistorySnapshot>)],
 ) -> Result<(), ClientError> {
-    let mut catch_up_image = (**session.inner.reading.catch_up_image.borrow()).clone();
-    let old_gen = catch_up_image.generation;
-    let catch_up_version = catch_up_image.version;
-    catch_up_image.generation = generation;
-    let cached_keys = session
-        .inner
-        .reading
-        .reconcile_keys
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    let mut updates = Vec::new();
-    let mut verified_keys = Vec::new();
-    for (channel, snapshot) in snapshots {
-        if snapshot.generation != generation {
-            continue;
-        }
-        let Some(current) = catch_up_image.channels.get(channel) else {
-            continue;
-        };
-        if current.interval.is_none() {
-            continue;
-        }
-        let (asc, asc_version) = session
+    let (old_gen, candidates) = {
+        let catch_up_image = session.inner.reading.catch_up_image.borrow();
+        let old_gen = catch_up_image.generation;
+        let catch_up_version = catch_up_image.version;
+        let cached_keys = session
             .inner
             .reading
-            .asc_successors_with_version(generation, *channel);
-        let key = (generation, snapshot.version, asc_version, catch_up_version);
-        if cached_keys.get(channel) == Some(&key) {
-            continue;
+            .reconcile_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut candidates = Vec::new();
+        for (channel, snapshot) in snapshots {
+            if snapshot.generation != generation {
+                continue;
+            }
+            let Some(current) = catch_up_image.channels.get(channel) else {
+                continue;
+            };
+            if current.interval.is_none() {
+                continue;
+            }
+            let (asc, asc_version) = session
+                .inner
+                .reading
+                .asc_successors_with_version(generation, *channel);
+            let key = (generation, snapshot.version, asc_version, catch_up_version);
+            if cached_keys.get(channel) == Some(&key) {
+                continue;
+            }
+            candidates.push((*channel, snapshot, current.clone(), asc, key));
         }
+        (old_gen, candidates)
+    };
+    if old_gen == generation && candidates.is_empty() {
+        return Ok(());
+    }
+    let mut updates = Vec::new();
+    let mut verified_keys = Vec::new();
+    for (channel, snapshot, mut next, asc, key) in candidates {
         let index = SnapshotIndex::build(snapshot, session.account().user(), &asc)
             .map_err(|_| ClientError::ResourceData)?;
-        let mut next = current.clone();
-        if next.reconcile_snapshot(&index) {
-            updates.push((*channel, next));
+        if next
+            .reconcile_snapshot(&index)
+            .map_err(|_| ClientError::ResourceData)?
+        {
+            updates.push((channel, next));
         } else {
-            verified_keys.push((*channel, key));
+            verified_keys.push((channel, key));
         }
     }
     if !updates.is_empty() {
@@ -185,6 +195,8 @@ pub(crate) async fn reconcile_catch_up_snapshots(
             .await
             .map_err(ClientError::from)?;
         session.inner.epochs.validate(generation)?;
+        let mut catch_up_image = (**session.inner.reading.catch_up_image.borrow()).clone();
+        catch_up_image.generation = generation;
         for (channel, next) in updates {
             if next.seen_to.is_none() && next.interval.is_none() {
                 catch_up_image.channels.remove(&channel);
@@ -197,6 +209,8 @@ pub(crate) async fn reconcile_catch_up_snapshots(
             .reading
             .publish_catch_up(&session.inner, catch_up_image)?;
     } else if old_gen != generation {
+        let mut catch_up_image = (**session.inner.reading.catch_up_image.borrow()).clone();
+        catch_up_image.generation = generation;
         session
             .inner
             .reading

@@ -77,10 +77,17 @@ fn encode_point(point: Option<&ReadPoint>) -> Result<Option<Vec<u8>>, StorageErr
 }
 
 fn decode_spans(bytes: Option<Vec<u8>>) -> Result<Vec<ReadSpan>, StorageError> {
-    match bytes {
-        Some(raw) => serde_json::from_slice(&raw).map_err(|_| StorageError::InvalidState),
-        None => Ok(Vec::new()),
+    let Some(raw) = bytes else {
+        return Ok(Vec::new());
+    };
+    let spans: Vec<ReadSpan> =
+        serde_json::from_slice(&raw).map_err(|_| StorageError::InvalidState)?;
+    if spans.iter().any(|span| span.start > span.end)
+        || spans.windows(2).any(|pair| pair[0].end >= pair[1].start)
+    {
+        return Err(StorageError::InvalidState);
     }
+    Ok(spans)
 }
 
 fn encode_spans(spans: &[ReadSpan]) -> Result<Option<Vec<u8>>, StorageError> {
@@ -311,5 +318,58 @@ impl Registry {
             })
             .await
             .map_err(ReadingError::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_spans;
+    use crate::{ReadPoint, StorageError, Uuid, catch_up::ReadSpan};
+
+    fn pt(us: i64, id: u128) -> ReadPoint {
+        ReadPoint {
+            created_at_us: us,
+            message_id: Uuid::from_u128(id),
+        }
+    }
+
+    #[test]
+    fn decode_spans_rejects_corrupted_inverted_overlapping_or_unsorted_rows() {
+        let valid = serde_json::to_vec(&vec![
+            ReadSpan::normalized(pt(10, 1), pt(20, 2)),
+            ReadSpan::normalized(pt(30, 3), pt(40, 4)),
+        ])
+        .unwrap();
+        assert_eq!(decode_spans(Some(valid)).unwrap().len(), 2);
+
+        let inverted = serde_json::to_vec(&vec![ReadSpan {
+            start: pt(20, 2),
+            end: pt(10, 1),
+        }])
+        .unwrap();
+        assert!(matches!(
+            decode_spans(Some(inverted)),
+            Err(StorageError::InvalidState)
+        ));
+
+        let overlapping = serde_json::to_vec(&vec![
+            ReadSpan::normalized(pt(10, 1), pt(25, 2)),
+            ReadSpan::normalized(pt(25, 2), pt(40, 4)),
+        ])
+        .unwrap();
+        assert!(matches!(
+            decode_spans(Some(overlapping)),
+            Err(StorageError::InvalidState)
+        ));
+
+        let unsorted = serde_json::to_vec(&vec![
+            ReadSpan::normalized(pt(30, 3), pt(40, 4)),
+            ReadSpan::normalized(pt(10, 1), pt(20, 2)),
+        ])
+        .unwrap();
+        assert!(matches!(
+            decode_spans(Some(unsorted)),
+            Err(StorageError::InvalidState)
+        ));
     }
 }

@@ -50,6 +50,7 @@ pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
 mod catch_up;
 mod catch_up_index;
 mod catch_up_position_store;
+mod catch_up_spans;
 mod catch_up_store;
 pub mod permissions;
 mod private_fs;

@@ -45,6 +45,10 @@ pub struct HistorySnapshot {
     pub gaps: Vec<HistoryGap>,
     /// A server response proved the entire channel empty in this snapshot's generation.
     pub empty_complete: bool,
+    /// Newest-edge completeness was proven by a REST page or empty check in `generation`.
+    pub server_live_complete: bool,
+    /// Earliest live-edge message cursor added via live admission in `generation`, if any.
+    pub live_arrival_start: Option<HistoryCursor>,
 }
 
 /// A bounded raw history delivery. Every data delivery is a complete replacement, not a delta.

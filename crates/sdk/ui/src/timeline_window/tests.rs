@@ -19,6 +19,8 @@ fn snapshot(messages: Vec<Arc<Message>>) -> HistorySnapshot {
         chunks: vec![],
         gaps: vec![],
         empty_complete: false,
+        server_live_complete: false,
+        live_arrival_start: None,
     }
 }
 fn bounds(raw: &HistorySnapshot, live: bool) -> Bounds {

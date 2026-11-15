@@ -71,8 +71,8 @@ impl Model {
             && newest.live_generation == generation
             && key > newest.last.key()?
         {
-            newest.last = point;
-            return Ok(());
+            newest.last = point.clone();
+            return self.record_live_arrival(generation, &point);
         }
         let newest = self
             .chunks
@@ -91,6 +91,9 @@ impl Model {
         if oldest && let Some(chunk) = self.chunks.first_mut() {
             chunk.oldest_complete = false;
         }
+        if newest && generation != 0 {
+            self.record_live_arrival(generation, &point)?;
+        }
         self.chunks.push(Chunk {
             id: key.id,
             first: point.clone(),
@@ -101,6 +104,22 @@ impl Model {
             live_generation: if newest { generation } else { 0 },
         });
         self.chunks.sort_by_key(|chunk| chunk.first.key().ok());
+        Ok(())
+    }
+
+    fn record_live_arrival(&mut self, generation: u64, point: &Point) -> Result<(), HistoryError> {
+        if self.live_arrival_generation != generation {
+            self.live_arrival_generation = generation;
+            self.live_arrival_floor = Some(point.clone());
+            return Ok(());
+        }
+        if let Some(floor) = &self.live_arrival_floor {
+            if point.key()? < floor.key()? {
+                self.live_arrival_floor = Some(point.clone());
+            }
+        } else {
+            self.live_arrival_floor = Some(point.clone());
+        }
         Ok(())
     }
 }

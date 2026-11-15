@@ -7,9 +7,10 @@ use papo_api::{HistoryCursor, Uuid};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use crate::catch_up_index::{
-    AscSuccessors, SnapshotIndex, contiguous_segments, resolve_point_in_snapshot,
+    AscSuccessors, SnapshotIndex, first_after, resolve_point_in_snapshot,
 };
-use crate::{Generation, ReadPoint, catch_up_index::span_contains};
+use crate::catch_up_spans::contiguous_segments;
+use crate::{Generation, ReadPoint, ReadingError};
 
 #[cfg(test)]
 #[path = "catch_up_span_tests.rs"]
@@ -140,35 +141,40 @@ impl CatchUpState {
         last_visible: Option<(ReadPoint, ReadPoint)>,
         visible: &[ReadPoint],
         continuity: VisibilityContinuity,
-    ) -> (bool, Option<(ReadPoint, ReadPoint)>) {
+    ) -> Result<(bool, Option<(ReadPoint, ReadPoint)>), ReadingError> {
         if visible.is_empty() {
-            return (false, last_visible);
+            return Ok((false, last_visible));
         }
         let before = self.clone();
-        self.normalize_points(index);
-        let mut sorted: Vec<ReadPoint> = visible.iter().map(|&p| index.resolve(p)).collect();
+        self.normalize_points(index)?;
+        let mut sorted = Vec::with_capacity(visible.len());
+        for &p in visible {
+            sorted.push(index.resolve(p)?);
+        }
         sorted.sort();
         sorted.dedup();
         let vis_lo = *sorted.first().expect("checked non-empty");
         let vis_hi = *sorted.last().expect("checked non-empty");
-        let prev_head = self
-            .seen_to
-            .into_iter()
-            .chain(prev_acknowledged_head.map(|p| index.resolve(p)))
-            .max();
+        let resolved_prev = prev_acknowledged_head
+            .map(|p| index.resolve(p))
+            .transpose()?;
+        let prev_head = self.seen_to.into_iter().chain(resolved_prev).max();
 
-        let contiguous_scroll = continuity == VisibilityContinuity::Continuous
-            && last_visible.is_some_and(|(prev_lo, prev_hi)| {
-                let prev_lo = index.resolve(prev_lo);
-                let prev_hi = index.resolve(prev_hi);
-                if vis_hi >= prev_hi {
-                    index.is_contiguous(Some(prev_hi), vis_lo)
-                        || (prev_lo <= vis_hi && prev_hi >= vis_lo)
-                } else {
-                    index.is_contiguous(Some(vis_hi), prev_lo)
-                        || (vis_lo <= prev_hi && vis_hi >= prev_lo)
-                }
-            });
+        let contiguous_scroll = if continuity == VisibilityContinuity::Continuous
+            && let Some((prev_lo, prev_hi)) = last_visible
+        {
+            let prev_lo = index.resolve(prev_lo)?;
+            let prev_hi = index.resolve(prev_hi)?;
+            if vis_hi >= prev_hi {
+                (prev_lo <= vis_hi && prev_hi >= vis_lo)
+                    || index.is_contiguous(Some(prev_hi), vis_lo)?
+            } else {
+                (vis_lo <= prev_hi && vis_hi >= prev_lo)
+                    || index.is_contiguous(Some(vis_hi), prev_lo)?
+            }
+        } else {
+            false
+        };
 
         // A jump or initial report past `prev_head` opens/replaces an interval iff unread or unknown
         // foreign content actually sits strictly between `prev_head` and `vis_lo`.
@@ -176,7 +182,7 @@ impl CatchUpState {
             && vis_hi > head
             && !contiguous_scroll
             && vis_lo > head
-            && !index.no_unseen_foreign(Some(head), vis_lo, &[])
+            && !index.no_unseen_foreign(Some(head), vis_lo, &[])?
         {
             self.interval = Some(CatchUpInterval {
                 start_after: Some(head),
@@ -185,44 +191,45 @@ impl CatchUpState {
             });
         }
 
-        let mut spans = contiguous_segments(index, &sorted);
+        let mut spans = contiguous_segments(index, &sorted)?;
         if continuity == VisibilityContinuity::Continuous
             && let Some((prev_lo, prev_hi)) = last_visible
         {
-            let prev_lo = index.resolve(prev_lo);
-            let prev_hi = index.resolve(prev_hi);
-            if vis_lo > prev_hi && index.is_contiguous(Some(prev_hi), vis_lo) {
+            let prev_lo = index.resolve(prev_lo)?;
+            let prev_hi = index.resolve(prev_hi)?;
+            if vis_lo > prev_hi && index.is_contiguous(Some(prev_hi), vis_lo)? {
                 spans.push(ReadSpan::normalized(prev_hi, vis_lo));
-            } else if vis_hi < prev_lo && index.is_contiguous(Some(vis_hi), prev_lo) {
+            } else if vis_hi < prev_lo && index.is_contiguous(Some(vis_hi), prev_lo)? {
                 spans.push(ReadSpan::normalized(vis_hi, prev_lo));
             }
         }
 
         if let Some(interval) = &mut self.interval {
-            for span in spans {
-                interval.apply_span(index, span);
-            }
-            if interval.is_closed(index) {
+            interval.apply_spans(index, &spans)?;
+            if interval.is_closed(index)? {
                 self.interval = None;
             }
         }
 
         self.seen_to = Some(self.seen_to.map_or(vis_hi, |s| s.max(vis_hi)));
         let changed = *self != before;
-        (changed, Some((vis_lo, vis_hi)))
+        Ok((changed, Some((vis_lo, vis_hi))))
     }
 
     /// Re-evaluate an active interval against new canonical history, closing if zero unseen foreign rows remain.
-    pub(crate) fn reconcile_snapshot(&mut self, index: &SnapshotIndex<'_>) -> bool {
+    pub(crate) fn reconcile_snapshot(
+        &mut self,
+        index: &SnapshotIndex<'_>,
+    ) -> Result<bool, ReadingError> {
         let before = self.clone();
-        self.normalize_points(index);
+        self.normalize_points(index)?;
         if let Some(interval) = &mut self.interval {
-            interval.coalesce(index);
-            if interval.is_closed(index) {
+            interval.coalesce(index)?;
+            if interval.is_closed(index)? {
                 self.interval = None;
             }
         }
-        *self != before
+        Ok(*self != before)
     }
 
     /// Delete any active catch-up interval while optionally advancing `seen_to` to `head`.
@@ -236,59 +243,50 @@ impl CatchUpState {
     }
 
     /// Resolve display boundaries and hourglass seek readiness against `index`.
-    #[must_use]
-    pub(crate) fn view(&self, index: &SnapshotIndex<'_>) -> CatchUpView {
+    pub(crate) fn view(&self, index: &SnapshotIndex<'_>) -> Result<CatchUpView, ReadingError> {
         let Some(interval) = &self.interval else {
-            return CatchUpView::default();
+            return Ok(CatchUpView::default());
         };
-        let start_after = interval.start_after.map(|p| index.resolve(p));
-        let end_before = index.resolve(interval.end_before);
-        if start_after.is_some_and(|s| s >= end_before)
-            || index.no_unseen_foreign(start_after, end_before, &interval.covered_spans)
-        {
-            return CatchUpView::default();
+        let start_after = interval.start_after.map(|p| index.resolve(p)).transpose()?;
+        let end_before = index.resolve(interval.end_before)?;
+        if start_after.is_some_and(|s| s >= end_before) {
+            return Ok(CatchUpView::default());
         }
-        let start_idx = match start_after {
-            Some(s) => index.entries.partition_point(|entry| entry.point <= s),
-            None => 0,
-        };
-        let end_idx = index
-            .entries
-            .partition_point(|entry| entry.point < end_before);
-        let first_unread = index.entries[start_idx..end_idx].iter().find(|entry| {
-            entry.foreign
-                && !interval
-                    .covered_spans
-                    .iter()
-                    .any(|span| span_contains(*span, entry.point))
-        });
-        let (start_target, start_cursor, needs_history) = match first_unread {
-            Some(entry)
-                if index.no_unseen_foreign(start_after, entry.point, &interval.covered_spans) =>
-            {
-                (Some(entry.point.message_id), entry.cursor.clone(), false)
-            }
-            _ => (None, None, true),
-        };
-        CatchUpView {
+        let first_unread =
+            index.first_unseen_foreign(start_after, end_before, &interval.covered_spans)?;
+        let (start_target, start_cursor, needs_history) =
+            if let Some((point, cursor)) = first_unread {
+                if index.is_contiguous(start_after, point)? {
+                    (Some(point.message_id), cursor, false)
+                } else {
+                    (None, None, true)
+                }
+            } else {
+                if index.is_contiguous(start_after, end_before)? {
+                    return Ok(CatchUpView::default());
+                }
+                (None, None, true)
+            };
+        Ok(CatchUpView {
             has_catch_up: true,
             start_after,
             end_before: Some(end_before),
             start_target,
             start_cursor,
             needs_history,
-        }
+        })
     }
 
-    fn normalize_points(&mut self, index: &SnapshotIndex<'_>) {
-        self.seen_to = self.seen_to.map(|p| index.resolve(p));
+    fn normalize_points(&mut self, index: &SnapshotIndex<'_>) -> Result<(), ReadingError> {
+        self.seen_to = self.seen_to.map(|p| index.resolve(p)).transpose()?;
         if let Some(interval) = &mut self.interval {
-            interval.start_after = interval.start_after.map(|p| index.resolve(p));
-            interval.end_before = index.resolve(interval.end_before);
+            interval.start_after = interval.start_after.map(|p| index.resolve(p)).transpose()?;
+            interval.end_before = index.resolve(interval.end_before)?;
             for span in &mut interval.covered_spans {
-                span.start = index.resolve(span.start);
-                span.end = index.resolve(span.end);
+                span.start = index.resolve(span.start)?;
+                span.end = index.resolve(span.end)?;
             }
         }
+        Ok(())
     }
 }

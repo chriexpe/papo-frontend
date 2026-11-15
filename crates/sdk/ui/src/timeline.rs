@@ -160,9 +160,17 @@ impl Owner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(crate) fn refresh_reading(&self) {
+    pub(crate) fn refresh_reading(&self) -> Result<(), TimelineError> {
         let mut overlay = self.reading_lock();
-        let _ = overlay.refresh(&self.session, self.history.channel());
+        overlay.refresh(&self.session, self.history.channel())
+    }
+
+    pub(crate) fn record_exposed_and_refresh(
+        &self,
+        exposed: Option<papo_sdk::ReadPoint>,
+    ) -> Result<(), TimelineError> {
+        let mut overlay = self.reading_lock();
+        overlay.record_exposed(&self.session, self.history.channel(), exposed)
     }
 }
 
@@ -253,15 +261,12 @@ impl Timeline {
             );
         }
         state.refresh(&config)?;
-        let initial_tail = crate::timeline_arrivals::initial_live_tail(&state.raw)?;
         let reading_overlay = crate::timeline_reading::ReadingOverlay::new(
             &session,
             channel,
             Arc::clone(&state.raw),
             state.history.clone(),
-            reading,
             catch_up,
-            initial_tail,
         )?;
         Ok(Self {
             inner: Arc::new(Owner {
@@ -287,21 +292,34 @@ impl Timeline {
         ids: &[Uuid],
         continuity: papo_sdk::VisibilityContinuity,
     ) -> Result<(), TimelineError> {
-        let history_version = {
+        let (history_version, max_reported) = {
             let mut state = self.inner.lock();
             state.refresh(&self.inner.config)?;
             if state.publisher.version != version || state.publisher.generation != generation {
                 return Err(TimelineError::StaleSnapshot);
             }
-            let all_visible = ids.iter().all(|id| {
-                state.publisher.items.iter().any(|item| {
-                    matches!(item.as_ref(), TimelineItem::Message { id: current, .. } if current == id)
-                })
-            });
-            if !all_visible {
-                return Err(TimelineError::StaleSnapshot);
+            let mut max_reported: Option<papo_sdk::ReadPoint> = None;
+            for id in ids {
+                let Some(message) =
+                    state
+                        .publisher
+                        .items
+                        .iter()
+                        .find_map(|item| match item.as_ref() {
+                            TimelineItem::Message {
+                                id: current,
+                                message,
+                            } if current == id => Some(message),
+                            _ => None,
+                        })
+                else {
+                    return Err(TimelineError::StaleSnapshot);
+                };
+                if let Some(point) = crate::timeline_arrivals::message_point(message)? {
+                    max_reported = Some(max_reported.map_or(point, |current| current.max(point)));
+                }
             }
-            state.raw.version
+            (state.raw.version, max_reported)
         };
         self.inner
             .observer
@@ -314,7 +332,7 @@ impl Timeline {
             )
             .await?;
         self.inner.lock().refresh(&self.inner.config)?;
-        self.inner.refresh_reading();
+        self.inner.record_exposed_and_refresh(max_reported)?;
         Ok(())
     }
 }

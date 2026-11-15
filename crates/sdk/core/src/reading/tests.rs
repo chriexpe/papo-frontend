@@ -40,6 +40,8 @@ fn snapshot(start: u128, end: u128) -> HistorySnapshot {
         }],
         gaps: Vec::new(),
         empty_complete: false,
+        server_live_complete: true,
+        live_arrival_start: None,
     }
 }
 fn actual_point(index: u128) -> ReadPoint {

@@ -51,6 +51,8 @@ pub(super) fn snapshot(start: u128, end: u128, authors: impl Fn(u128) -> Uuid) -
         }],
         gaps: Vec::new(),
         empty_complete: false,
+        server_live_complete: true,
+        live_arrival_start: None,
     }
 }
 
@@ -67,24 +69,23 @@ fn reading_through_the_gap_retires_the_hourglass() {
         seen_to: Some(actual_pt(2)),
         interval: None,
     };
-    let (_, last) = state.observe_visible(
-        &index,
-        None,
-        None,
-        &[actual_pt(9), actual_pt(10)],
-        VisibilityContinuity::Discontinuous,
-    );
-    assert!(state.view(&index).has_catch_up);
-    assert_eq!(state.view(&index).start_target, Some(msg_id(3)));
-    let _ = state.observe_visible(
-        &index,
-        None,
-        last,
-        &[actual_pt(3), actual_pt(8)],
-        VisibilityContinuity::Continuous,
-    );
+    let (_, last) = state
+        .observe_visible(
+            &index,
+            None,
+            None,
+            &[actual_pt(9), actual_pt(10)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
+    assert!(state.view(&index).unwrap().has_catch_up);
+    assert_eq!(state.view(&index).unwrap().start_target, Some(msg_id(3)));
+    let frame: Vec<_> = (3..=8).map(actual_pt).collect();
+    let _ = state
+        .observe_visible(&index, None, last, &frame, VisibilityContinuity::Continuous)
+        .unwrap();
     // Reading [3..=8] closes (after 2, before 9).
-    let view = state.view(&index);
+    let view = state.view(&index).unwrap();
     assert!(!view.has_catch_up);
     assert!(state.interval.is_none());
 }
@@ -103,21 +104,25 @@ fn continuous_scrolling_covers_rows_between_frames() {
         }),
     };
     // Frame 1 at [3, 4], flick-scroll continuously to Frame 2 at [7, 8] -> [3..=8] all covered.
-    let (_, last) = state.observe_visible(
-        &index,
-        None,
-        None,
-        &[actual_pt(3), actual_pt(4)],
-        VisibilityContinuity::Discontinuous,
-    );
-    assert_eq!(state.view(&index).start_target, Some(msg_id(5)));
-    state.observe_visible(
-        &index,
-        None,
-        last,
-        &[actual_pt(7), actual_pt(8)],
-        VisibilityContinuity::Continuous,
-    );
+    let (_, last) = state
+        .observe_visible(
+            &index,
+            None,
+            None,
+            &[actual_pt(3), actual_pt(4)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
+    assert_eq!(state.view(&index).unwrap().start_target, Some(msg_id(5)));
+    state
+        .observe_visible(
+            &index,
+            None,
+            last,
+            &[actual_pt(7), actual_pt(8)],
+            VisibilityContinuity::Continuous,
+        )
+        .unwrap();
     assert!(state.interval.is_none());
 }
 
@@ -134,20 +139,24 @@ fn a_jump_does_not_cover_what_it_flew_over() {
             covered_spans: Vec::new(),
         }),
     };
-    let (_, last) = state.observe_visible(
-        &index,
-        None,
-        None,
-        &[actual_pt(9), actual_pt(10)],
-        VisibilityContinuity::Discontinuous,
-    );
-    let _ = state.observe_visible(
-        &index,
-        None,
-        last,
-        &[actual_pt(5), actual_pt(6)],
-        VisibilityContinuity::Discontinuous,
-    );
+    let (_, last) = state
+        .observe_visible(
+            &index,
+            None,
+            None,
+            &[actual_pt(9), actual_pt(10)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
+    let _ = state
+        .observe_visible(
+            &index,
+            None,
+            last,
+            &[actual_pt(5), actual_pt(6)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
     let interval = state.interval.as_ref().unwrap();
     assert_eq!(interval.start_after, Some(actual_pt(2)));
     assert_eq!(interval.end_before, actual_pt(9));
@@ -176,25 +185,29 @@ fn a_batch_of_arrivals_at_the_bottom_and_own_messages_leave_no_hourglass() {
         interval: None,
     };
     // Own messages 3 & 4 skipped when jumping to [5, 6] -> no foreign message skipped.
-    state.observe_visible(
-        &index,
-        None,
-        None,
-        &[actual_pt(5), actual_pt(6)],
-        VisibilityContinuity::Discontinuous,
-    );
+    state
+        .observe_visible(
+            &index,
+            None,
+            None,
+            &[actual_pt(5), actual_pt(6)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
     assert!(state.interval.is_none());
 
     // Arrival batch [7, 8] completely visible -> still no interval.
     let snap2 = snapshot(1, 8, |_| peer_user());
     let index2 = SnapshotIndex::build(&snap2, self_user(), &asc).unwrap();
-    state.observe_visible(
-        &index2,
-        None,
-        None,
-        &[actual_pt(7), actual_pt(8)],
-        VisibilityContinuity::Discontinuous,
-    );
+    state
+        .observe_visible(
+            &index2,
+            None,
+            None,
+            &[actual_pt(7), actual_pt(8)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
     assert!(state.interval.is_none());
 }
 
@@ -207,46 +220,54 @@ fn hourglass_range_shrinks_from_top_and_bottom_and_meets_in_middle() {
         seen_to: Some(actual_pt(2)),
         interval: None,
     };
-    let (_, bottom_last) = state.observe_visible(
-        &index,
-        None,
-        None,
-        &[actual_pt(9), actual_pt(10)],
-        VisibilityContinuity::Discontinuous,
-    );
+    let (_, bottom_last) = state
+        .observe_visible(
+            &index,
+            None,
+            None,
+            &[actual_pt(9), actual_pt(10)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
     // Scroll up continuously from bottom -> [7, 8] retracts end_before to 7.
-    state.observe_visible(
-        &index,
-        None,
-        bottom_last,
-        &[actual_pt(7), actual_pt(8)],
-        VisibilityContinuity::Continuous,
-    );
+    state
+        .observe_visible(
+            &index,
+            None,
+            bottom_last,
+            &[actual_pt(7), actual_pt(8)],
+            VisibilityContinuity::Continuous,
+        )
+        .unwrap();
     assert_eq!(state.interval.as_ref().unwrap().end_before, actual_pt(7));
 
     // Jump to hourglass start [3, 4] -> start_after advances to 4; bottom progress (7) survives.
-    let (_, top_last) = state.observe_visible(
-        &index,
-        None,
-        bottom_last,
-        &[actual_pt(3), actual_pt(4)],
-        VisibilityContinuity::Discontinuous,
-    );
+    let (_, top_last) = state
+        .observe_visible(
+            &index,
+            None,
+            bottom_last,
+            &[actual_pt(3), actual_pt(4)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
     assert_eq!(
         state.interval.as_ref().unwrap().start_after,
         Some(actual_pt(4))
     );
     assert_eq!(state.interval.as_ref().unwrap().end_before, actual_pt(7));
-    assert_eq!(state.view(&index).start_target, Some(msg_id(5)));
+    assert_eq!(state.view(&index).unwrap().start_target, Some(msg_id(5)));
 
     // Reading middle [5, 6] meets retracted end_before 7 -> interval closes.
-    state.observe_visible(
-        &index,
-        None,
-        top_last,
-        &[actual_pt(5), actual_pt(6)],
-        VisibilityContinuity::Continuous,
-    );
+    state
+        .observe_visible(
+            &index,
+            None,
+            top_last,
+            &[actual_pt(5), actual_pt(6)],
+            VisibilityContinuity::Continuous,
+        )
+        .unwrap();
     assert!(state.interval.is_none());
 }
 
@@ -295,15 +316,17 @@ fn unloaded_gap_and_deleted_or_millisecond_anchors_behave_soundly() {
             covered_spans: Vec::new(),
         }),
     };
-    state.observe_visible(
-        &index,
-        None,
-        None,
-        &[actual_pt(5), actual_pt(6)],
-        VisibilityContinuity::Discontinuous,
-    );
+    state
+        .observe_visible(
+            &index,
+            None,
+            None,
+            &[actual_pt(5), actual_pt(6)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
     assert!(state.interval.is_some());
-    assert_eq!(state.view(&index).start_target, Some(msg_id(3)));
+    assert_eq!(state.view(&index).unwrap().start_target, Some(msg_id(3)));
 
     // Legacy millisecond truncated anchor for msg 3 (.000Z while message has .000003Z).
     let ms_truncated = ReadPoint {
@@ -318,7 +341,7 @@ fn unloaded_gap_and_deleted_or_millisecond_anchors_behave_soundly() {
             covered_spans: Vec::new(),
         }),
     };
-    let ms_view = ms_state.view(&index);
+    let ms_view = ms_state.view(&index).unwrap();
     // Start target must NOT reopen already-read msg 3; prefix after 3 has gap [4], so needs_history is true.
     assert_eq!(ms_view.start_target, None);
     assert!(ms_view.needs_history);
@@ -337,16 +360,21 @@ fn unloaded_gap_and_deleted_or_millisecond_anchors_behave_soundly() {
             covered_spans: Vec::new(),
         }),
     };
-    del_state.observe_visible(
-        &del_index,
-        None,
-        None,
-        &[actual_pt(3), actual_pt(4)],
-        VisibilityContinuity::Discontinuous,
-    );
+    del_state
+        .observe_visible(
+            &del_index,
+            None,
+            None,
+            &[actual_pt(3), actual_pt(4)],
+            VisibilityContinuity::Discontinuous,
+        )
+        .unwrap();
     assert_eq!(
         del_state.interval.as_ref().unwrap().start_after,
         Some(actual_pt(4))
     );
-    assert_eq!(del_state.view(&del_index).start_target, Some(msg_id(5)));
+    assert_eq!(
+        del_state.view(&del_index).unwrap().start_target,
+        Some(msg_id(5))
+    );
 }
