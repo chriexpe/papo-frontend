@@ -74,9 +74,7 @@ pub(super) fn contains_channel(resources: &ResourceSnapshot, channel: Uuid) -> b
             .any(|d| d.id.parse().ok() == Some(channel))
 }
 pub(super) fn mentions(content: &str, user: Uuid) -> bool {
-    content
-        .to_ascii_lowercase()
-        .contains(&format!("@mention(<@{user}>)"))
+    crate::mentions::contains_user_mention(content, user)
 }
 pub(super) fn decide(
     session: &Session,

@@ -13,7 +13,9 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 eyeball-im = "=0.9.1"
 futures-util = "0.3"
 imbl = "=7.0.2"
+pulldown-cmark = { version = "0.13", default-features = false }
 tokio = { version = "1", features = ["sync", "macros"] }
+url = "2.5"
 
 [dev-dependencies]
 # Reuse the locked HTTP client only for the isolated production-Go permission oracle.

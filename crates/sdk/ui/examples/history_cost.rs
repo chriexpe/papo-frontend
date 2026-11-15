@@ -3,6 +3,8 @@
 //! scenarios are history/overlay/disk (10000/100000 rows), residency (500 channels), reconnect (100 channels).
 //! JSON Lines omit content, IDs, credentials and addresses. Byte estimates are not process RSS.
 
+#[path = "history_cost/content.rs"]
+mod content;
 #[path = "history_cost/disk.rs"]
 mod disk;
 #[path = "history_cost/fixture.rs"]
@@ -57,6 +59,7 @@ fn run() -> Result {
                 "residency" => residency::run(&client, 500).await,
                 "reconnect" => reconnect::run(&client, 100).await,
                 "disk" => disk::run(&client, count).await,
+                "content" => content::run(&client, count).await,
                 _ => Err("unknown fixture scenario".into()),
             }
         })

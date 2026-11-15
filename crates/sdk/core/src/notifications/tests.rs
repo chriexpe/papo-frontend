@@ -380,3 +380,21 @@ fn submicrosecond_inbox_cursor_is_rejected_like_history() {
     assert!(matches!(cursor.key(), Err(NotificationError::InvalidData)));
     assert!(crate::MessageKey::parse(&cursor.created_at, &cursor.id).is_err());
 }
+
+#[test]
+fn policy_mentions_uses_context_free_canonical_token_matcher() {
+    let target = Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
+    let other = Uuid::from_u128(2);
+    assert!(policy::mentions(
+        "look `@mention(<@00000000-0000-4000-8000-000000000001>)`",
+        target
+    ));
+    assert!(policy::mentions(
+        "```rust\n// @MENTION(<@00000000-0000-4000-8000-000000000001>)\n```",
+        target
+    ));
+    assert!(!policy::mentions(
+        "plain @mention(<@00000000-0000-4000-8000-000000000001>) without closing",
+        other
+    ));
+}

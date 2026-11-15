@@ -2,8 +2,8 @@
 
 use imbl::Vector;
 use papo_sdk::{
-    HistoryClosedReason, HistoryCursor, HistorySnapshot, HistorySubscription, HistoryUpdate,
-    Message, ReadingSnapshot, Uuid,
+    AccountId, HistoryClosedReason, HistoryCursor, HistorySnapshot, HistorySubscription,
+    HistoryUpdate, Message, ReadingSnapshot, Uuid,
 };
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -29,6 +29,7 @@ pub(super) struct WindowState {
     pub newer_cursor: Option<HistoryCursor>,
     pub loading: [bool; 2],
     pub publisher: Publisher<Arc<TimelineItem>, papo_sdk::Generation, HistoryClosedReason>,
+    account: Option<AccountId>,
     channel: Uuid,
     reading_version: u64,
     closed: Option<HistoryClosedReason>,
@@ -40,6 +41,7 @@ impl WindowState {
         reading: watch::Receiver<Arc<ReadingSnapshot>>,
         messages: Vec<Arc<Message>>,
         live: bool,
+        account: Option<AccountId>,
         channel: Uuid,
         config: &TimelineConfig,
     ) -> Result<Self, TimelineError> {
@@ -71,6 +73,7 @@ impl WindowState {
             history: subscription.updates,
             reading_version,
             reading,
+            account,
             channel,
             older_cursor: None,
             newer_cursor: None,
@@ -102,13 +105,14 @@ impl WindowState {
         let read = (reading.generation == self.raw.generation)
             .then(|| reading.channels.get(&self.channel))
             .flatten();
-        let mut items = timeline_window::project(
+        let mut items = timeline_window::project_with_cache(
             &self.raw,
             &self.bounds,
             read,
             self.loading,
             config.offset_provider.as_ref(),
             &self.publisher.items,
+            self.account.map(|account| (account, self.channel)),
         )?;
         if self.bounds.live
             && let Some(outgoing) = &self.outgoing

@@ -253,6 +253,7 @@ impl Timeline {
             reading.clone(),
             messages,
             focus.is_none(),
+            Some(session.account()),
             channel,
             &config,
         )?;
@@ -314,6 +315,7 @@ impl Timeline {
                             TimelineItem::Message {
                                 id: current,
                                 message,
+                                ..
                             } if current == id => Some(message),
                             _ => None,
                         })
