@@ -12,11 +12,7 @@ use proptest::{
     test_runner::{Config, RngAlgorithm, TestRng, TestRunner},
 };
 
-use super::{
-    merge::Ticket,
-    model::Model,
-    ordering::{Key, Point},
-};
+use super::{merge::Ticket, message_key::MessageKey, model::Model, ordering::Point};
 
 const CHANNEL: u128 = 800_000;
 const AT: &str = "2026-01-01T00:00:00.123456Z";
@@ -53,7 +49,7 @@ fn ticket(
 }
 
 fn page(
-    server: &BTreeMap<Key, Message>,
+    server: &BTreeMap<MessageKey, Message>,
     cursor: Option<&Point>,
     direction: HistoryOrder,
     limit: usize,
@@ -86,7 +82,7 @@ fn live(message: &Message) -> KnownEvent {
     }))
 }
 
-fn invariants(model: &Model, server: &BTreeMap<Key, Message>, generation: u64) {
+fn invariants(model: &Model, server: &BTreeMap<MessageKey, Message>, generation: u64) {
     for pair in model.chunks.windows(2) {
         assert!(pair[0].last.key().unwrap() < pair[1].first.key().unwrap());
     }
@@ -114,7 +110,8 @@ fn invariants(model: &Model, server: &BTreeMap<Key, Message>, generation: u64) {
     for chunk in &model.chunks {
         let first = chunk.first.key().unwrap();
         let last = chunk.last.key().unwrap();
-        if chunk.generation == generation {
+        // An anchor-only chunk's boundary is its unproven anchor, not a held message.
+        if chunk.generation == generation && !chunk.is_anchor_only() {
             let cached: Vec<_> = model
                 .order
                 .range(first..=last)

@@ -5,6 +5,7 @@ use papo_api::{HistoryOrder, wire::Message};
 use super::{
     HistoryError,
     merge::Ticket,
+    message_key::MessageKey,
     model::{Chunk, Model},
     ordering::Point,
 };
@@ -24,7 +25,7 @@ impl Model {
                 .as_deref()
                 .ok_or(HistoryError::InvalidPage)?,
         )?;
-        if let Some(entry) = self.entries.get(&key.id) {
+        if let Some(entry) = self.entries.get(&key.id_bytes()) {
             if entry.deleted || entry.timeline {
                 return Ok(());
             }
@@ -38,14 +39,14 @@ impl Model {
         }
         if let Some(entry) = self
             .entries
-            .get_mut(&key.id)
+            .get_mut(&key.id_bytes())
             .filter(|entry| entry.message.is_some())
         {
             // A fetched pin can precede its journaled creation event; promotion keeps its richer payload.
             entry.timeline = true;
             entry.revision = revision;
-            self.order.insert(key, key.id);
-            self.dirty.insert(key.id);
+            self.order.insert(key, key.id_bytes());
+            self.dirty.insert(key.id_bytes());
         } else {
             let ticket = Ticket {
                 channel,
@@ -56,6 +57,9 @@ impl Model {
                 limit: 1,
             };
             self.merge_message(message, &point, &ticket, revision)?;
+        }
+        if self.hold_anchor(&point, key) {
+            return Ok(());
         }
         // An insertion inside an existing run changes no interval boundary. In particular,
         // UUID order at an equal timestamp never proves an unknown earlier interval.
@@ -71,6 +75,15 @@ impl Model {
             && newest.live_generation == generation
             && key > newest.last.key()?
         {
+            if newest.is_anchor_only() {
+                newest.first = point.clone();
+            }
+            // The run now reaches the arrival; an anchor it has passed proves nothing more.
+            if let Some(anchor) = &newest.newest_anchor
+                && anchor.key()? <= key
+            {
+                newest.newest_anchor = None;
+            }
             newest.last = point.clone();
             return self.record_live_arrival(generation, &point);
         }
@@ -95,16 +108,37 @@ impl Model {
             self.record_live_arrival(generation, &point)?;
         }
         self.chunks.push(Chunk {
-            id: key.id,
+            id: key.id_bytes(),
             first: point.clone(),
             last: point,
             oldest_complete: empty_proven,
             newest_complete: newest && generation != 0,
             generation,
             live_generation: if newest { generation } else { 0 },
+            oldest_anchor: None,
+            newest_anchor: None,
         });
         self.chunks.sort_by_key(|chunk| chunk.first.key().ok());
         Ok(())
+    }
+
+    /// A message at an anchor-only run's cursor makes that cursor a held boundary. The run
+    /// keeps only what stays justified: an empty `Asc` proof `(X, ∞)` becomes `[X, ∞)` in its
+    /// live generation, an empty `Desc` proof `(-∞, X)` becomes `(-∞, X]`. Returns whether a
+    /// run was converted.
+    fn hold_anchor(&mut self, point: &Point, key: MessageKey) -> bool {
+        let Some(chunk) = self.chunks.iter_mut().find(|chunk| {
+            chunk.first == chunk.last
+                && chunk.first.key().is_ok_and(|first| first == key)
+                && chunk.is_anchor_only()
+        }) else {
+            return false;
+        };
+        chunk.first = point.clone();
+        chunk.last = point.clone();
+        chunk.oldest_anchor = None;
+        chunk.newest_anchor = None;
+        true
     }
 
     fn record_live_arrival(&mut self, generation: u64, point: &Point) -> Result<(), HistoryError> {

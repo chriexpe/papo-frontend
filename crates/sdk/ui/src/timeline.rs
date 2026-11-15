@@ -92,6 +92,11 @@ impl From<ReadingError> for TimelineError {
         Self::Reading(error)
     }
 }
+impl From<papo_sdk::InvalidMessageKey> for TimelineError {
+    fn from(_: papo_sdk::InvalidMessageKey) -> Self {
+        Self::InvalidCursor
+    }
+}
 
 /// A complete window transition. Apply every diff in order before recording its version/generation.
 #[derive(Clone)]
@@ -167,7 +172,7 @@ impl Owner {
 
     pub(crate) fn record_exposed_and_refresh(
         &self,
-        exposed: Option<papo_sdk::ReadPoint>,
+        exposed: Option<papo_sdk::MessageKey>,
     ) -> Result<(), TimelineError> {
         let mut overlay = self.reading_lock();
         overlay.record_exposed(&self.session, self.history.channel(), exposed)
@@ -209,7 +214,7 @@ impl Timeline {
             return Err(TimelineError::InvalidConfig);
         }
         if let Some(cursor) = &focus {
-            crate::timeline_window::key(cursor)?;
+            papo_sdk::MessageKey::from_cursor(cursor)?;
         }
         let history = session.history(channel).await?;
         let first = history
@@ -298,7 +303,7 @@ impl Timeline {
             if state.publisher.version != version || state.publisher.generation != generation {
                 return Err(TimelineError::StaleSnapshot);
             }
-            let mut max_reported: Option<papo_sdk::ReadPoint> = None;
+            let mut max_reported: Option<papo_sdk::MessageKey> = None;
             for id in ids {
                 let Some(message) =
                     state
@@ -315,7 +320,7 @@ impl Timeline {
                 else {
                     return Err(TimelineError::StaleSnapshot);
                 };
-                let point = papo_sdk::ReadPoint::from_message(message)?;
+                let point = papo_sdk::MessageKey::from_message(message)?;
                 max_reported = Some(max_reported.map_or(point, |current| current.max(point)));
             }
             (state.raw.version, max_reported)

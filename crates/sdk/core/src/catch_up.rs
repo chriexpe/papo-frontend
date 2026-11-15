@@ -1,15 +1,15 @@
 //! Catch-up interval domain state machine, snapshot revisions, views and saved position types.
-//! Durability lives in `catch_up_store` and `catch_up_position_store`; snapshot indexing and
-//! millisecond point resolution live in `catch_up_index`; span coalescing lives in `catch_up_spans`.
+//! Durability lives in `catch_up_store` and `catch_up_position_store`; completeness and point
+//! resolution come from history through `catch_up_history`; span coalescing lives in `catch_up_spans`.
 
 use std::collections::BTreeMap;
 
 use papo_api::{HistoryCursor, Uuid};
 use serde::{Deserialize, Serialize};
 
-pub(crate) use crate::catch_up_index::{AscSuccessors, SnapshotIndex};
+pub(crate) use crate::catch_up_history::CatchUpHistory;
 use crate::catch_up_spans::contiguous_segments;
-use crate::{Generation, ReadPoint, ReadingError};
+use crate::{Generation, MessageKey, ReadingError};
 
 #[cfg(test)]
 #[path = "catch_up_span_tests.rs"]
@@ -21,8 +21,8 @@ mod tests;
 /// Inclusive oldest/newest visible bounds recorded by a single observer frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct VisibleBounds {
-    pub min: ReadPoint,
-    pub max: ReadPoint,
+    pub min: MessageKey,
+    pub max: MessageKey,
 }
 
 /// Outcome of folding one observer frame into a channel's catch-up state.
@@ -46,13 +46,13 @@ pub enum VisibilityContinuity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ReadSpan {
     /// Oldest boundary in this observed span, inclusive.
-    pub start: ReadPoint,
+    pub start: MessageKey,
     /// Newest boundary in this observed span, inclusive.
-    pub end: ReadPoint,
+    pub end: MessageKey,
 }
 
 impl ReadSpan {
-    pub(crate) fn normalized(a: ReadPoint, b: ReadPoint) -> Self {
+    pub(crate) fn normalized(a: MessageKey, b: MessageKey) -> Self {
         if a <= b {
             Self { start: a, end: b }
         } else {
@@ -65,9 +65,9 @@ impl ReadSpan {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CatchUpInterval {
     /// Exclusive lower bound: messages at or before this point are already caught up.
-    pub start_after: Option<ReadPoint>,
+    pub start_after: Option<MessageKey>,
     /// Exclusive upper bound: destination-exposed and bottom-retracted messages at or above this point.
-    pub end_before: ReadPoint,
+    pub end_before: MessageKey,
     /// Non-overlapping interior spans already observed via discontinuous context views.
     pub covered_spans: Vec<ReadSpan>,
 }
@@ -76,7 +76,7 @@ pub(crate) struct CatchUpInterval {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CatchUpState {
     /// Highest chronological point exposed on this channel, used as the lower anchor on future skips.
-    pub seen_to: Option<ReadPoint>,
+    pub seen_to: Option<MessageKey>,
     /// Active skipped catch-up interval, if any unread gap remains open.
     pub interval: Option<CatchUpInterval>,
 }
@@ -166,9 +166,9 @@ pub struct CatchUpSnapshot {
 #[derive(Clone, PartialEq, Eq)]
 pub struct CatchUpView {
     /// Exclusive start point (`interval.start_after`), if present.
-    pub start_after: Option<ReadPoint>,
+    pub start_after: Option<MessageKey>,
     /// Exclusive end point (`interval.end_before`).
-    pub end_before: ReadPoint,
+    pub end_before: MessageKey,
     /// First unread foreign message ID in the interval once loaded and contiguous after `start_after`.
     /// Matches the visible start marker so hourglass navigation never lands on the already-read anchor.
     pub start_target: Option<Uuid>,
@@ -214,10 +214,10 @@ impl CatchUpState {
     /// Observe one non-empty set of visible points in `index` and update `seen_to` + `interval`.
     pub(crate) fn observe_visible(
         &mut self,
-        index: &SnapshotIndex<'_>,
-        prev_acknowledged_head: Option<ReadPoint>,
+        index: &CatchUpHistory<'_>,
+        prev_acknowledged_head: Option<MessageKey>,
         last_visible: Option<VisibleBounds>,
-        visible: &[ReadPoint],
+        visible: &[MessageKey],
         continuity: VisibilityContinuity,
     ) -> Result<VisibleObservation, ReadingError> {
         if visible.is_empty() {
@@ -247,11 +247,9 @@ impl CatchUpState {
             let prev_lo = index.resolve(prev.min)?;
             let prev_hi = index.resolve(prev.max)?;
             if vis_hi >= prev_hi {
-                (prev_lo <= vis_hi && prev_hi >= vis_lo)
-                    || index.is_contiguous(Some(prev_hi), vis_lo)?
+                (prev_lo <= vis_hi && prev_hi >= vis_lo) || index.is_complete(Some(prev_hi), vis_lo)
             } else {
-                (vis_lo <= prev_hi && vis_hi >= prev_lo)
-                    || index.is_contiguous(Some(vis_hi), prev_lo)?
+                (vis_lo <= prev_hi && vis_hi >= prev_lo) || index.is_complete(Some(vis_hi), prev_lo)
             }
         } else {
             false
@@ -278,9 +276,9 @@ impl CatchUpState {
         {
             let prev_lo = index.resolve(prev.min)?;
             let prev_hi = index.resolve(prev.max)?;
-            if vis_lo > prev_hi && index.is_contiguous(Some(prev_hi), vis_lo)? {
+            if vis_lo > prev_hi && index.is_complete(Some(prev_hi), vis_lo) {
                 spans.push(ReadSpan::normalized(prev_hi, vis_lo));
-            } else if vis_hi < prev_lo && index.is_contiguous(Some(vis_hi), prev_lo)? {
+            } else if vis_hi < prev_lo && index.is_complete(Some(vis_hi), prev_lo) {
                 spans.push(ReadSpan::normalized(vis_hi, prev_lo));
             }
         }
@@ -305,7 +303,7 @@ impl CatchUpState {
     /// Re-evaluate an active interval against new canonical history, closing if zero unseen foreign rows remain.
     pub(crate) fn reconcile_snapshot(
         &mut self,
-        index: &SnapshotIndex<'_>,
+        index: &CatchUpHistory<'_>,
     ) -> Result<bool, ReadingError> {
         let before = self.clone();
         self.normalize_points(index)?;
@@ -319,7 +317,7 @@ impl CatchUpState {
     }
 
     /// Delete any active catch-up interval while optionally advancing `seen_to` to `head`.
-    pub(crate) fn clear(&mut self, head: Option<ReadPoint>) -> bool {
+    pub(crate) fn clear(&mut self, head: Option<MessageKey>) -> bool {
         let before = self.clone();
         self.interval = None;
         if let Some(head) = head {
@@ -331,7 +329,7 @@ impl CatchUpState {
     /// Resolve display boundaries and hourglass seek readiness against `index`.
     pub(crate) fn view(
         &self,
-        index: &SnapshotIndex<'_>,
+        index: &CatchUpHistory<'_>,
     ) -> Result<Option<CatchUpView>, ReadingError> {
         let Some(interval) = &self.interval else {
             return Ok(None);
@@ -345,13 +343,13 @@ impl CatchUpState {
             index.first_unseen_foreign(start_after, end_before, &interval.covered_spans)?;
         let (start_target, start_cursor, needs_history) =
             if let Some((point, cursor)) = first_unread {
-                if index.is_contiguous(start_after, point)? {
+                if index.is_complete(start_after, point) {
                     (Some(point.message_id), cursor, false)
                 } else {
                     (None, None, true)
                 }
             } else {
-                if index.is_contiguous(start_after, end_before)? {
+                if index.is_complete(start_after, end_before) {
                     return Ok(None);
                 }
                 (None, None, true)
@@ -365,7 +363,7 @@ impl CatchUpState {
         }))
     }
 
-    fn normalize_points(&mut self, index: &SnapshotIndex<'_>) -> Result<(), ReadingError> {
+    fn normalize_points(&mut self, index: &CatchUpHistory<'_>) -> Result<(), ReadingError> {
         self.seen_to = self.seen_to.map(|p| index.resolve(p)).transpose()?;
         if let Some(interval) = &mut self.interval {
             interval.start_after = interval.start_after.map(|p| index.resolve(p)).transpose()?;

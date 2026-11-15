@@ -1,11 +1,11 @@
 //! Deterministic specifications for ordered reading and incomplete cached coverage; no legacy catch-up state.
 
 use super::*;
-use crate::{HistoryChunk, HistorySnapshot};
+use crate::{HistoryChunk, HistorySnapshot, Message};
 use papo_api::HistoryCursor;
 
-fn point(index: u128) -> ReadPoint {
-    ReadPoint {
+fn point(index: u128) -> MessageKey {
+    MessageKey {
         created_at_us: i64::try_from(index).unwrap(),
         message_id: Uuid::from_u128(index),
     }
@@ -37,6 +37,8 @@ fn snapshot(start: u128, end: u128) -> HistorySnapshot {
             newest_complete: true,
             generation: Some(Generation(1)),
             live_generation: Some(Generation(1)),
+            oldest_anchor: None,
+            newest_anchor: None,
         }],
         gaps: Vec::new(),
         empty_complete: false,
@@ -44,27 +46,27 @@ fn snapshot(start: u128, end: u128) -> HistorySnapshot {
         live_arrival_start: None,
     }
 }
-fn actual_point(index: u128) -> ReadPoint {
-    ReadPoint::parse(Some(&cursor(index).created_at), Some(&cursor(index).id)).unwrap()
+fn actual_point(index: u128) -> MessageKey {
+    MessageKey::parse(&cursor(index).created_at, &cursor(index).id).unwrap()
 }
 
 #[test]
 fn full_microsecond_precision_and_uuid_tiebreaker_survive_round_trip() {
-    let point = ReadPoint::parse(
-        Some("2026-01-01T00:00:00.123456Z"),
-        Some(&Uuid::from_u128(7).to_string()),
+    let point = MessageKey::parse(
+        "2026-01-01T00:00:00.123456Z",
+        &Uuid::from_u128(7).to_string(),
     )
     .unwrap();
     let bytes = serde_json::to_vec(&point).unwrap();
-    assert_eq!(serde_json::from_slice::<ReadPoint>(&bytes).unwrap(), point);
+    assert_eq!(serde_json::from_slice::<MessageKey>(&bytes).unwrap(), point);
     assert!(
-        ReadPoint {
+        MessageKey {
             message_id: Uuid::from_u128(8),
             ..point
         } > point
     );
     assert!(
-        ReadPoint {
+        MessageKey {
             created_at_us: point.created_at_us + 1,
             message_id: Uuid::nil()
         } > point
@@ -73,13 +75,7 @@ fn full_microsecond_precision_and_uuid_tiebreaker_survive_round_trip() {
 
 #[test]
 fn non_backend_nanosecond_precision_is_rejected_not_rounded() {
-    assert!(
-        ReadPoint::parse(
-            Some("2026-01-01T00:00:00.123456789Z"),
-            Some(&Uuid::nil().to_string())
-        )
-        .is_err()
-    );
+    assert!(MessageKey::parse("2026-01-01T00:00:00.123456789Z", &Uuid::nil().to_string()).is_err());
 }
 
 #[test]
@@ -114,7 +110,10 @@ fn point_older_than_retained_history_is_a_lower_bound() {
         local_point: Some(actual_point(1)),
         ..ReadState::default()
     };
-    counts::update(&mut state, &snapshot(4, 10), None).unwrap();
+    // Retention evicted everything before 4, so nothing proves the channel's start any more.
+    let mut retained = snapshot(4, 10);
+    retained.chunks[0].oldest_complete = false;
+    counts::update(&mut state, &retained, None).unwrap();
     assert_eq!(state.unread_count, UnreadCount::AtLeast(7));
 }
 
@@ -128,7 +127,7 @@ fn unknown_middle_is_never_an_exact_unread_count() {
     history.chunks[0].oldest_complete = false;
     history.chunks.insert(0, older);
     history.messages.retain(|message| {
-        let point = ReadPoint::message(message).unwrap();
+        let point = MessageKey::from_message(message).unwrap();
         point <= actual_point(3) || point >= actual_point(8)
     });
     let mut state = ReadState {

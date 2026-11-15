@@ -88,3 +88,12 @@ fn exact_tuple_orders_equivalent_offsets_and_preserves_wire_strings() {
     assert!(cursor_key(&a).unwrap() < cursor_key(&b).unwrap());
     assert_eq!(a.created_at, "2026-01-01T01:00:00.123456+01:00");
 }
+#[test]
+fn submicrosecond_search_cursor_is_rejected_like_history() {
+    let cursor = SearchCursor {
+        created_at: "2026-01-01T00:00:00.123456789Z".into(),
+        id: Uuid::from_u128(1).to_string(),
+    };
+    assert!(matches!(cursor_key(&cursor), Err(SearchError::InvalidData)));
+    assert!(crate::MessageKey::parse(&cursor.created_at, &cursor.id).is_err());
+}

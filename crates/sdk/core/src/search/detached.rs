@@ -183,10 +183,7 @@ fn validate_page(
     messages: &[Message],
 ) -> Result<(), SearchError> {
     let key = |cursor: &HistoryCursor| {
-        super::cursor_key(&super::SearchCursor {
-            created_at: cursor.created_at.clone(),
-            id: cursor.id.clone(),
-        })
+        crate::MessageKey::from_cursor(cursor).map_err(|_| SearchError::InvalidData)
     };
     let mut previous = cursor.map(key).transpose()?;
     for message in messages {
@@ -198,12 +195,10 @@ fn validate_page(
         if previous.is_some_and(|previous| current >= previous) {
             return Err(SearchError::InvalidData);
         }
-        if current.1 == target.message
+        if current.message_id == target.message
             && current
-                != super::cursor_key(&super::SearchCursor {
-                    created_at: target.created_at.clone(),
-                    id: target.message.to_string(),
-                })?
+                != crate::MessageKey::parse(&target.created_at, &target.message.to_string())
+                    .map_err(|_| SearchError::InvalidData)?
         {
             return Err(SearchError::InvalidData);
         }

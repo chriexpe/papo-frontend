@@ -1,19 +1,19 @@
 //! Viewport span extraction and `CatchUpInterval` boundary coalescing.
-//! Snapshot binary search and continuity proofs live in `catch_up_index`.
+//! Completeness and point resolution come from history through `catch_up_history`.
 
 use crate::{
-    ReadPoint, ReadingError,
+    MessageKey, ReadingError,
     catch_up::{CatchUpInterval, ReadSpan},
-    catch_up_index::SnapshotIndex,
+    catch_up_history::CatchUpHistory,
 };
 
-pub(crate) fn span_contains(span: ReadSpan, point: ReadPoint) -> bool {
+pub(crate) fn span_contains(span: ReadSpan, point: MessageKey) -> bool {
     span.start <= point && point <= span.end
 }
 
 pub(crate) fn contiguous_segments(
-    index: &SnapshotIndex<'_>,
-    sorted: &[ReadPoint],
+    index: &CatchUpHistory<'_>,
+    sorted: &[MessageKey],
 ) -> Result<Vec<ReadSpan>, ReadingError> {
     let mut spans = Vec::new();
     let Some(&first) = sorted.first() else {
@@ -21,24 +21,24 @@ pub(crate) fn contiguous_segments(
     };
     let mut seg_start = first;
     let mut seg_end = first;
-    let mut seg_end_idx = index.exact_index(first)?;
+    let mut seg_end_idx = index.index_of(first)?;
     for &point in &sorted[1..] {
         let next_idx = match seg_end_idx {
             Some(idx) => {
                 let candidate = idx + 1;
                 match index.snapshot.messages.get(candidate) {
-                    Some(message) if ReadPoint::message(message)? == point => Some(candidate),
-                    _ => index.exact_index(point)?,
+                    Some(message) if MessageKey::from_message(message)? == point => Some(candidate),
+                    _ => index.index_of(point)?,
                 }
             }
-            None => index.exact_index(point)?,
+            None => index.index_of(point)?,
         };
         // Contiguous history alone does not expose omitted interior rows inside a loaded chunk.
         let no_omitted_rows = match (seg_end_idx, next_idx) {
             (Some(a), Some(b)) => b == a + 1,
             _ => !index.has_entry_between(seg_end, point)?,
         };
-        if no_omitted_rows && index.is_contiguous(Some(seg_end), point)? {
+        if no_omitted_rows && index.is_complete(Some(seg_end), point) {
             seg_end = point;
         } else {
             spans.push(ReadSpan::normalized(seg_start, seg_end));
@@ -54,7 +54,7 @@ pub(crate) fn contiguous_segments(
 impl CatchUpInterval {
     pub(crate) fn apply_spans(
         &mut self,
-        index: &SnapshotIndex<'_>,
+        index: &CatchUpHistory<'_>,
         spans: &[ReadSpan],
     ) -> Result<(), ReadingError> {
         let mut added = false;
@@ -75,7 +75,7 @@ impl CatchUpInterval {
         Ok(())
     }
 
-    pub(crate) fn coalesce(&mut self, index: &SnapshotIndex<'_>) -> Result<(), ReadingError> {
+    pub(crate) fn coalesce(&mut self, index: &CatchUpHistory<'_>) -> Result<(), ReadingError> {
         if !self.covered_spans.is_empty() {
             self.covered_spans
                 .sort_by_key(|span| (span.start, span.end));
@@ -133,7 +133,7 @@ impl CatchUpInterval {
         Ok(())
     }
 
-    pub(crate) fn is_closed(&self, index: &SnapshotIndex<'_>) -> Result<bool, ReadingError> {
+    pub(crate) fn is_closed(&self, index: &CatchUpHistory<'_>) -> Result<bool, ReadingError> {
         Ok(self.start_after.is_some_and(|s| s >= self.end_before)
             || index.no_unseen_foreign(self.start_after, self.end_before, &self.covered_spans)?)
     }

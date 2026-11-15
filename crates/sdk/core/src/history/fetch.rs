@@ -115,9 +115,6 @@ pub(super) async fn server_page(
         state.reset();
         return Err(error);
     }
-    if ticket.order == HistoryOrder::Asc {
-        record_asc_proof(handle, &ticket, generation, &points)?;
-    }
     handle
         .session
         .inner
@@ -131,7 +128,7 @@ pub(super) async fn server_page(
             state
                 .model
                 .entries
-                .get(&key.id)?
+                .get(&key.id_bytes())?
                 .message
                 .clone()
                 .map(Arc::new)
@@ -160,31 +157,6 @@ pub(super) async fn server_page(
         },
         oldest_requested,
     ))
-}
-
-fn record_asc_proof(
-    handle: &HistoryHandle,
-    ticket: &Ticket,
-    generation: Generation,
-    points: &[Point],
-) -> Result<(), HistoryError> {
-    let Some(cursor) = ticket.cursor.as_ref() else {
-        return Ok(());
-    };
-    let after = crate::ReadPoint::parse(Some(&cursor.created_at), Some(&cursor.id))
-        .map_err(|_| HistoryError::InvalidPage)?
-        .message_id;
-    let first = points
-        .first()
-        .map(|point| crate::ReadPoint::parse(Some(&point.created_at), Some(&point.id)))
-        .transpose()
-        .map_err(|_| HistoryError::InvalidPage)?;
-    handle
-        .session
-        .inner
-        .reading
-        .record_asc_successor(handle.channel.id, generation, after, first);
-    Ok(())
 }
 
 pub(super) async fn pins(

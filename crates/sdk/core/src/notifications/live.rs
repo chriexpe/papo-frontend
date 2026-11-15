@@ -99,6 +99,7 @@ async fn process(
 ) -> Result<(), NotificationError> {
     let candidate = match event.value {
         Event::Known(KnownEvent::Message(message)) => {
+            let point = crate::MessageKey::parse(&message.created_at, &message.id)?;
             let candidate = Candidate {
                 channel: super::id(Some(&message.channel_id))?,
                 message: super::id(Some(&message.id))?,
@@ -107,11 +108,8 @@ async fn process(
                 content: message.content,
                 read: false,
                 trigger_revision: None,
-                observed_at_us: parse_time(&message.created_at)?,
-                message_point: Some(crate::ReadPoint {
-                    created_at_us: parse_time(&message.created_at)?,
-                    message_id: super::id(Some(&message.id))?,
-                }),
+                observed_at_us: point.created_at_us,
+                message_point: Some(point),
             };
             if recent.len() == 1024 {
                 recent.pop_front();
@@ -175,7 +173,7 @@ pub(crate) fn record_candidate(
         triggered: true,
         read: record.read != Some(false),
         trigger_revision: None,
-        observed_at_us: parse_time(
+        observed_at_us: crate::parse_message_timestamp_us(
             record
                 .created_at
                 .as_deref()
@@ -271,10 +269,4 @@ pub(crate) fn handoff(
             .try_send(delivery)
             .map_err(|_| NotificationError::Overflow)
     })?
-}
-
-fn parse_time(raw: &str) -> Result<i64, NotificationError> {
-    chrono::DateTime::parse_from_rfc3339(raw)
-        .map(|date| date.timestamp_micros())
-        .map_err(|_| NotificationError::InvalidData)
 }

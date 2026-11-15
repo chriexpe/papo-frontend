@@ -16,6 +16,8 @@ fn visible_gap_between_rows_does_not_mark_hole_read() {
             newest_complete: false,
             generation: Some(Generation(1)),
             live_generation: None,
+            oldest_anchor: None,
+            newest_anchor: None,
         },
         HistoryChunk {
             first: cursor(8),
@@ -24,14 +26,15 @@ fn visible_gap_between_rows_does_not_mark_hole_read() {
             newest_complete: true,
             generation: Some(Generation(1)),
             live_generation: Some(Generation(1)),
+            oldest_anchor: None,
+            newest_anchor: None,
         },
     ];
     snap.messages.retain(|m| {
-        let p = ReadPoint::message(m).unwrap();
+        let p = MessageKey::from_message(m).unwrap();
         p <= actual_pt(3) || p >= actual_pt(8)
     });
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
     let mut state = CatchUpState {
         seen_to: Some(actual_pt(10)),
         interval: Some(CatchUpInterval {
@@ -61,8 +64,7 @@ fn visible_gap_between_rows_does_not_mark_hole_read() {
 #[test]
 fn sparse_discontinuous_report_in_loaded_chunk_leaves_interior_in_catch_up() {
     let snap = snapshot(1, 10, |_| peer_user());
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
 
     // Boundary sparse report [2, 8] against active interval covering 2..=8 must keep 3..=7 unread.
     let mut state = CatchUpState {
@@ -96,8 +98,7 @@ fn sparse_discontinuous_report_in_loaded_chunk_leaves_interior_in_catch_up() {
 #[test]
 fn sparse_interior_and_own_reports_keep_only_foreign_holes_in_catch_up() {
     let snap = snapshot(1, 10, |_| peer_user());
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
 
     // Interior sparse report [3, 7] inside (after 1, before 9) must keep 2, 4..=6 and 8 unread.
     let mut interior_state = CatchUpState {
@@ -154,7 +155,7 @@ fn sparse_interior_and_own_reports_keep_only_foreign_holes_in_catch_up() {
             peer_user()
         }
     });
-    let own_index = SnapshotIndex::build(&own_mid, self_user(), &asc).unwrap();
+    let own_index = CatchUpHistory::new(&own_mid, self_user()).unwrap();
     let mut own_state = CatchUpState {
         seen_to: Some(actual_pt(10)),
         interval: Some(CatchUpInterval {
@@ -190,8 +191,7 @@ fn viewport_sequence_matches_naive_unread_set_reduction_including_upward_catch_u
         20,
         |i| if i % 5 == 0 { self_user() } else { peer_user() },
     );
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
     let mut state = CatchUpState {
         seen_to: Some(actual_pt(2)),
         interval: None,
@@ -246,20 +246,23 @@ fn viewport_sequence_matches_naive_unread_set_reduction_including_upward_catch_u
 }
 
 #[test]
-fn empty_asc_successor_does_not_bridge_later_detached_chunk() {
+fn stale_or_anchored_tail_proofs_bridge_only_what_they_prove() {
     let mut snap = snapshot(1, 10, |_| peer_user());
     snap.messages.retain(|m| {
-        let p = ReadPoint::message(m).unwrap();
+        let p = MessageKey::from_message(m).unwrap();
         p == actual_pt(1) || p >= actual_pt(8)
     });
+    // An empty `Asc(1)` page from an earlier generation proves nothing about the later run.
     snap.chunks = vec![
         HistoryChunk {
             first: cursor(1),
             last: cursor(1),
             oldest_complete: true,
-            newest_complete: false,
+            newest_complete: true,
             generation: Some(Generation(1)),
             live_generation: None,
+            oldest_anchor: None,
+            newest_anchor: None,
         },
         HistoryChunk {
             first: cursor(8),
@@ -268,37 +271,29 @@ fn empty_asc_successor_does_not_bridge_later_detached_chunk() {
             newest_complete: true,
             generation: Some(Generation(1)),
             live_generation: Some(Generation(1)),
+            oldest_anchor: None,
+            newest_anchor: None,
         },
     ];
-    let mut asc = AscSuccessors::new();
-    asc.insert(msg_id(1), None);
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
-    assert!(
-        !index
-            .is_contiguous(Some(actual_pt(1)), actual_pt(9))
-            .unwrap()
-    );
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
+    assert!(!index.is_complete(Some(actual_pt(1)), actual_pt(9)));
 
-    // Only when no loaded entry exists after `cursor` (e.g., tail deleted after `cursor`)
-    // can an empty `Asc(cursor)` proof confirm an empty `(cursor, deleted_end]` interval.
+    // An empty `Asc(1)` page in this generation, after the tail was deleted, makes the run
+    // holding 1 live-complete and so proves the deleted tail `(1, 3]` empty.
     let mut empty_tail = snapshot(1, 3, |_| peer_user());
     empty_tail
         .messages
-        .retain(|m| ReadPoint::message(m).unwrap() == actual_pt(1));
-    empty_tail.chunks.clear();
-    let tail_index = SnapshotIndex::build(&empty_tail, self_user(), &asc).unwrap();
-    assert!(
-        tail_index
-            .is_contiguous(Some(actual_pt(1)), actual_pt(3))
-            .unwrap()
-    );
+        .retain(|m| MessageKey::from_message(m).unwrap() == actual_pt(1));
+    empty_tail.chunks[0].last = cursor(1);
+    let tail_index = CatchUpHistory::new(&empty_tail, self_user()).unwrap();
+    assert!(tail_index.is_complete(Some(actual_pt(1)), actual_pt(3)));
 }
 
 #[test]
 fn continuous_scroll_bridges_only_seam_not_internal_chunk_gap() {
     let mut snap = snapshot(1, 10, |_| peer_user());
     snap.messages.retain(|m| {
-        let p = ReadPoint::message(m).unwrap();
+        let p = MessageKey::from_message(m).unwrap();
         p <= actual_pt(3) || p >= actual_pt(8)
     });
     snap.chunks = vec![
@@ -309,6 +304,8 @@ fn continuous_scroll_bridges_only_seam_not_internal_chunk_gap() {
             newest_complete: false,
             generation: Some(Generation(1)),
             live_generation: None,
+            oldest_anchor: None,
+            newest_anchor: None,
         },
         HistoryChunk {
             first: cursor(8),
@@ -317,10 +314,11 @@ fn continuous_scroll_bridges_only_seam_not_internal_chunk_gap() {
             newest_complete: true,
             generation: Some(Generation(1)),
             live_generation: Some(Generation(1)),
+            oldest_anchor: None,
+            newest_anchor: None,
         },
     ];
-    let asc = AscSuccessors::new();
-    let index = SnapshotIndex::build(&snap, self_user(), &asc).unwrap();
+    let index = CatchUpHistory::new(&snap, self_user()).unwrap();
     let mut state = CatchUpState {
         seen_to: Some(actual_pt(10)),
         interval: Some(CatchUpInterval {

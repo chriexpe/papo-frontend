@@ -1,11 +1,11 @@
 //! Bounded canonical message-time evidence for notification retention; never grants history coverage or reads.
 use super::NotificationError;
-use crate::{Generation, HistoryCursor, HistoryQuery, ReadPoint, Session, Uuid};
+use crate::{Generation, HistoryCursor, HistoryQuery, MessageKey, Session, Uuid};
 use std::collections::BTreeMap;
 
 #[derive(Default)]
 struct ChannelPoints {
-    points: BTreeMap<Uuid, ReadPoint>,
+    points: BTreeMap<Uuid, MessageKey>,
     cursor: Option<HistoryCursor>,
     target: Option<Uuid>,
     complete: bool,
@@ -16,12 +16,12 @@ pub(crate) struct CanonicalPoints {
     state: ChannelPoints,
 }
 pub(crate) enum Resolution {
-    Found(ReadPoint),
+    Found(MessageKey),
     Pending,
     Absent,
 }
 impl Resolution {
-    pub fn point(self) -> Option<ReadPoint> {
+    pub fn point(self) -> Option<MessageKey> {
         match self {
             Self::Found(point) => Some(point),
             Self::Pending | Self::Absent => None,
@@ -81,7 +81,7 @@ impl CanonicalPoints {
             let mut previous = state
                 .cursor
                 .as_ref()
-                .map(|cursor| ReadPoint::parse(Some(&cursor.created_at), Some(&cursor.id)))
+                .map(|cursor| MessageKey::parse(&cursor.created_at, &cursor.id))
                 .transpose()
                 .map_err(|_| NotificationError::InvalidData)?;
             let mut points = BTreeMap::new();
@@ -89,8 +89,8 @@ impl CanonicalPoints {
                 if message.channel_id.as_deref().and_then(|id| id.parse().ok()) != Some(channel) {
                     return Err(NotificationError::InvalidData);
                 }
-                let point =
-                    ReadPoint::message(message).map_err(|_| NotificationError::InvalidData)?;
+                let point = MessageKey::from_message(message)
+                    .map_err(|_| NotificationError::InvalidData)?;
                 if previous.is_some_and(|previous| point >= previous) {
                     return Err(NotificationError::InvalidData);
                 }

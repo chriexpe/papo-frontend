@@ -1,7 +1,8 @@
 //! Server read-mark extraction and deleted-anchor newest-page resolution.
 //! Coalescing resource installs and cache unread refreshes live in `reading::reconcile`.
 
-use super::{ReadPoint, ReadState};
+use super::ReadState;
+use crate::MessageKey;
 use crate::{
     ClientError, ResourceSnapshot, Session, read_points::ServerReadPoint,
     reconcile::ResourceConnection,
@@ -11,7 +12,7 @@ use papo_api::{HistoryQuery, Uuid, wire::ChannelLastMessage};
 pub(super) struct Mark {
     pub(super) channel: Uuid,
     pub(super) server: Option<ServerReadPoint>,
-    pub(super) head: Option<ReadPoint>,
+    pub(super) head: Option<MessageKey>,
 }
 
 pub(super) fn marks(snapshot: &ResourceSnapshot) -> Result<Vec<Mark>, ClientError> {
@@ -56,9 +57,11 @@ pub(super) fn marks(snapshot: &ResourceSnapshot) -> Result<Vec<Mark>, ClientErro
         .collect()
 }
 
-pub(super) fn head_point(head: &ChannelLastMessage) -> Result<ReadPoint, ClientError> {
-    ReadPoint::parse(head.created_at.as_deref(), head.id.as_deref())
-        .map_err(|_| ClientError::ResourceData)
+pub(super) fn head_point(head: &ChannelLastMessage) -> Result<MessageKey, ClientError> {
+    let (Some(created_at), Some(id)) = (head.created_at.as_deref(), head.id.as_deref()) else {
+        return Err(ClientError::ResourceData);
+    };
+    MessageKey::parse(created_at, id).map_err(|_| ClientError::ResourceData)
 }
 
 /// A deleted anchor with a previously resolved key stays ordered. The pinned protocol
@@ -71,8 +74,8 @@ pub(super) async fn resolve(
     channel: Uuid,
     server: &ServerReadPoint,
     state: &ReadState,
-    head: Option<ReadPoint>,
-) -> Result<Option<ReadPoint>, ClientError> {
+    head: Option<MessageKey>,
+) -> Result<Option<MessageKey>, ClientError> {
     for point in [state.local_point, state.uploaded_point, head]
         .into_iter()
         .flatten()
@@ -84,7 +87,7 @@ pub(super) async fn resolve(
     let history = session.history(channel).await?;
     let cached = history.subscribe().await?.snapshot;
     for message in &cached.messages {
-        let point = ReadPoint::message(message).map_err(|_| ClientError::ResourceData)?;
+        let point = MessageKey::from_message(message).map_err(|_| ClientError::ResourceData)?;
         if point.message_id == server.message_id {
             return Ok(Some(point));
         }
@@ -118,7 +121,7 @@ pub(super) async fn resolve(
         {
             return Err(ClientError::ResourceData);
         }
-        let point = ReadPoint::message(&message).map_err(|_| ClientError::ResourceData)?;
+        let point = MessageKey::from_message(&message).map_err(|_| ClientError::ResourceData)?;
         if point.message_id == server.message_id {
             return Ok(Some(point));
         }

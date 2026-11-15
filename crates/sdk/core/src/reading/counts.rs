@@ -1,43 +1,38 @@
-//! Cache-based ordered unread counts; unknown prefixes/gaps remain lower bounds, never inferred completeness.
+//! Cache-based ordered unread counts from history's coverage queries; an unknown range keeps
+//! the count a lower bound, never an inferred exact total.
 
-use super::{ReadPoint, ReadState, ReadingError, UnreadCount};
-use crate::{
-    HistorySnapshot,
-    catch_up_index::{first_after, resolve_point_in_snapshot},
-};
+use super::{ReadState, ReadingError, UnreadCount};
+use crate::{HistorySnapshot, MessageKey};
 
 pub(super) fn update(
     state: &mut ReadState,
     snapshot: &HistorySnapshot,
-    server_head: Option<ReadPoint>,
+    server_head: Option<MessageKey>,
 ) -> Result<(), ReadingError> {
+    let coverage = snapshot.coverage()?;
     let point = state
         .point()
-        .map(|point| resolve_point_in_snapshot(snapshot, point))
+        .map(|point| coverage.resolve(point).map(|resolved| resolved.key))
         .transpose()?;
-    let low = match point {
-        Some(point) => first_after(&snapshot.messages, point)?,
-        None => 0,
-    };
-    let mut count =
-        u64::try_from(snapshot.messages.len() - low).map_err(|_| ReadingError::InvalidPoint)?;
+    let unread = coverage.range(point, None)?;
+    let mut count = u64::try_from(unread.messages.len()).map_err(|_| ReadingError::InvalidPoint)?;
     let first = snapshot
         .messages
-        .get(low)
-        .map(|message| ReadPoint::message(message))
+        .get(unread.messages.start)
+        .map(|message| MessageKey::from_message(message))
         .transpose()?
         .map(|point| point.message_id);
     let cached_head = snapshot
         .messages
         .last()
-        .map(|message| ReadPoint::message(message))
+        .map(|message| MessageKey::from_message(message))
         .transpose()?;
     // Metadata names a real additional message, but never proves the unknown middle complete.
     if server_head.is_some_and(|head| Some(head) > point && Some(head) > cached_head) {
         count += 1;
     }
-    let exact = complete_after(snapshot, point)?
-        && server_head.is_none_or(|head| Some(head) <= cached_head.max(point));
+    let exact =
+        unread.complete && server_head.is_none_or(|head| Some(head) <= cached_head.max(point));
     state.unread_count = if exact {
         UnreadCount::Exact(count)
     } else {
@@ -52,27 +47,4 @@ pub(super) fn unresolved(state: &mut ReadState) {
     // bound or first-unread claim is justified until its ordering key is resolved.
     state.unread_count = UnreadCount::AtLeast(0);
     state.first_unread = None;
-}
-
-fn complete_after(
-    snapshot: &HistorySnapshot,
-    point: Option<ReadPoint>,
-) -> Result<bool, ReadingError> {
-    if snapshot.empty_complete {
-        return Ok(true);
-    }
-    let Some(last) = snapshot.chunks.last() else {
-        return Ok(false);
-    };
-    if !last.newest_complete || last.live_generation != Some(snapshot.generation) {
-        return Ok(false);
-    }
-    // The run containing an already-deleted anchor still proves its successor ordering.
-    // A cursor older than cached history is explicitly unknown, even if all retained rows fit.
-    let first = ReadPoint::parse(Some(&last.first.created_at), Some(&last.first.id))?;
-    let end = ReadPoint::parse(Some(&last.last.created_at), Some(&last.last.id))?;
-    Ok(match point {
-        Some(point) => point >= first && point <= end,
-        None => snapshot.chunks.len() == 1 && last.oldest_complete,
-    })
 }

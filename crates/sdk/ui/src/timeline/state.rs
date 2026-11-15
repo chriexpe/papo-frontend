@@ -85,7 +85,7 @@ impl WindowState {
     }
 
     pub fn include(&mut self, cursor: &HistoryCursor) -> Result<(), TimelineError> {
-        let point = timeline_window::key(cursor)?;
+        let point = papo_sdk::MessageKey::from_cursor(cursor)?;
         if self.bounds.lower.is_none_or(|old| point < old) {
             self.bounds.lower = Some(point);
             self.older_cursor = Some(cursor.clone());
@@ -190,7 +190,7 @@ impl WindowState {
                 .and_then(|message| message.cursor())
         {
             self.newer_cursor = Some(cursor.clone());
-            self.bounds.upper = Some(timeline_window::key(&cursor)?);
+            self.bounds.upper = Some(papo_sdk::MessageKey::from_cursor(&cursor)?);
         }
         self.reproject(config, reset)
     }

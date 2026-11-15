@@ -85,10 +85,7 @@ impl CatchUpSeek {
             }
             if !initialized_cursor {
                 cursor_override = match view.start_after {
-                    Some(pt) => Some(match raw.message_cursor_at(pt)? {
-                        Some(cursor) => cursor,
-                        None => pt.to_cursor()?,
-                    }),
+                    Some(point) => Some(start_cursor(&raw, point)?),
                     None => None,
                 };
                 initialized_cursor = true;
@@ -127,6 +124,23 @@ impl CatchUpSeek {
             cursor_override = page.next_cursor;
         }
         Err(TimelineError::FocusMissing)
+    }
+}
+
+/// The held message's exact server cursor when the start is held, otherwise one rebuilt from
+/// its key (a deleted or evicted anchor still pages from the right place).
+fn start_cursor(
+    raw: &papo_sdk::HistorySnapshot,
+    point: papo_sdk::MessageKey,
+) -> Result<HistoryCursor, TimelineError> {
+    let held = raw
+        .coverage()?
+        .resolve(point)?
+        .index
+        .and_then(|index| raw.messages[index].cursor());
+    match held {
+        Some(cursor) => Ok(cursor),
+        None => Ok(point.to_cursor()?),
     }
 }
 

@@ -1,11 +1,17 @@
 //! Account/channel history paging and proven continuity; Timeline windows, items and read state live above it.
 
+mod authorship;
 mod channel;
+mod chunk_join;
+mod coverage;
+#[cfg(test)]
+mod coverage_tests;
 mod diagnostics;
 mod fetch;
 pub(crate) mod live;
 mod live_edge;
 mod merge;
+mod message_key;
 mod model;
 mod mutations;
 pub(crate) mod operation_receipts;
@@ -19,6 +25,7 @@ pub(crate) mod reconnect;
 mod reconnect_tests;
 mod residency;
 pub(crate) mod retention;
+mod snapshot_query;
 mod subscription;
 #[cfg(test)]
 mod subscription_handle_tests;
@@ -32,9 +39,12 @@ use crate::{CacheError, ClientError, Generation};
 use papo_api::{HistoryCursor, HistoryOrder, wire::Message};
 use std::sync::Arc;
 
+pub use authorship::authored_by_other;
 pub use channel::HistoryHandle;
 pub(crate) use channel::HistoryStore;
 pub use diagnostics::{HistoryBudget, HistoryDiagnostics, HistoryWork};
+pub use message_key::{InvalidMessageKey, MessageKey, parse_message_timestamp_us};
+pub use snapshot_query::{HistoryCoverage, HistoryRange, ResolvedKey};
 pub use subscription::{HistoryChunk, HistorySnapshot, HistorySubscription, HistoryUpdate};
 
 /// Why a history handle can no longer access its channel.
@@ -75,6 +85,12 @@ pub enum HistoryError {
     /// Session generation, transport or lifecycle failed.
     #[error(transparent)]
     Session(ClientError),
+}
+
+impl From<InvalidMessageKey> for HistoryError {
+    fn from(_: InvalidMessageKey) -> Self {
+        Self::InvalidPage
+    }
 }
 
 impl From<ClientError> for HistoryError {

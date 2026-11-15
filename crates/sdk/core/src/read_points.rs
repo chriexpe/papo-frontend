@@ -1,8 +1,7 @@
 //! FULL-writer ordered read-point persistence; resolution, retries and unread policy belong to reading.
 
 use crate::{
-    AccountId, ClientError, Generation, Registry, StorageError, reading::ReadPoint,
-    session::SessionInner,
+    AccountId, ClientError, Generation, MessageKey, Registry, StorageError, session::SessionInner,
 };
 use papo_api::Uuid;
 use rusqlite::{OptionalExtension, params};
@@ -42,12 +41,12 @@ pub(crate) struct UploadedPoint {
     #[serde(default)]
     pub created_at_us: Option<i64>,
     #[serde(default)]
-    pub known_point: Option<ReadPoint>,
+    pub known_point: Option<MessageKey>,
 }
 impl UploadedPoint {
-    pub fn point(&self) -> Option<ReadPoint> {
+    pub fn point(&self) -> Option<MessageKey> {
         self.created_at_us
-            .map(|created_at_us| ReadPoint {
+            .map(|created_at_us| MessageKey {
                 created_at_us,
                 message_id: self.server.message_id,
             })
@@ -56,7 +55,7 @@ impl UploadedPoint {
 }
 
 pub(crate) struct StoredPoints {
-    pub local: Option<ReadPoint>,
+    pub local: Option<MessageKey>,
     pub uploaded: Option<UploadedPoint>,
 }
 
@@ -137,7 +136,7 @@ impl Registry {
         session: Arc<SessionInner>,
         channel: Uuid,
         generation: Generation,
-        point: ReadPoint,
+        point: MessageKey,
     ) -> Result<(), ClientError> {
         let bytes = serde_json::to_vec(&point).map_err(|_| StorageError::InvalidState)?;
         self.writer
@@ -175,7 +174,7 @@ pub(crate) fn advance_local_in_tx(
     tx: &rusqlite::Transaction<'_>,
     account: AccountId,
     channel: Uuid,
-    point: ReadPoint,
+    point: MessageKey,
 ) -> Result<(), crate::ReadingError> {
     let bytes = serde_json::to_vec(&point).map_err(|_| StorageError::InvalidState)?;
     advance_local_checked(tx, account, channel, point, &bytes).map_err(crate::ReadingError::from)
@@ -195,11 +194,11 @@ fn advance_local_checked(
     tx: &rusqlite::Transaction<'_>,
     account: AccountId,
     channel: Uuid,
-    point: ReadPoint,
+    point: MessageKey,
     bytes: &[u8],
 ) -> Result<(), ReadWriteError> {
     let current: Option<Option<Vec<u8>>> = tx.query_row("SELECT local_point FROM read_points WHERE server_id=?1 AND user_id=?2 AND channel_id=?3", params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes()], |row| row.get(0)).optional()?;
-    let current: Option<ReadPoint> = current
+    let current: Option<MessageKey> = current
         .flatten()
         .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| StorageError::InvalidState))
         .transpose()?;
