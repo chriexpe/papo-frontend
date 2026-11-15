@@ -23,9 +23,13 @@ pub(crate) async fn restore(
         client.inner.pool.root.child_token(),
         AuthState::NeedsServer,
     );
+    let secret_result = client.inner.secrets.read(inner.key, &inner.root).await;
+    if let Ok(Some(_)) = &secret_result {
+        crate::reading::catch_up_sync::hydrate_from_storage(client, &inner).await?;
+    }
     client.inner.pool.insert(Arc::clone(&inner)).await;
     let result = async {
-        let Some(secret) = client.inner.secrets.read(inner.key, &inner.root).await? else {
+        let Some(secret) = secret_result? else {
             return Ok(false);
         };
         let rest = client

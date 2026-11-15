@@ -42,7 +42,7 @@ pub(crate) async fn resources(
         .copied()
         .chain(channels.keys().filter(|id| !visible.contains(id)).copied())
         .collect();
-    for id in revoked {
+    for &id in &revoked {
         if let Some(channel) = channels.get(&id) {
             channel.close(HistoryClosedReason::ChannelRemoved);
         }
@@ -59,6 +59,18 @@ pub(crate) async fn resources(
         rest: connection.rest.clone(),
         generation: snapshot.generation,
     });
+    drop(channels);
+    if !revoked.is_empty() {
+        let revoked_ids: Vec<_> = revoked.into_iter().collect();
+        crate::reading::catch_up_sync::revoke_channels(
+            &connection.client,
+            session,
+            &revoked_ids,
+            snapshot.generation,
+            HistoryClosedReason::ChannelRemoved,
+        )
+        .await?;
+    }
     Ok(())
 }
 

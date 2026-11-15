@@ -205,7 +205,12 @@ async fn report(window: &Timeline) -> Result<papo_sdk::ReadPoint> {
             })
             .ok_or("empty visible range")?;
         match window
-            .report_visible(snapshot.version, snapshot.generation, &ids)
+            .report_visible(
+                snapshot.version,
+                snapshot.generation,
+                &ids,
+                papo_sdk_ui::VisibilityContinuity::Continuous,
+            )
             .await
         {
             Ok(()) => {

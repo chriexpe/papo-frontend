@@ -128,26 +128,6 @@ impl Registry {
             .collect()
     }
 
-    pub(crate) async fn advance_visible_read(
-        &self,
-        history: crate::HistoryHandle,
-        generation: Generation,
-        version: u64,
-        point: ReadPoint,
-    ) -> Result<(), crate::ReadingError> {
-        let bytes = serde_json::to_vec(&point).map_err(|_| StorageError::InvalidState)?;
-        let account = history.account();
-        let channel = history.channel();
-        self.writer
-            .write(move |tx| {
-                history.with_current_snapshot(generation, version, || {
-                    advance_local(tx, account, channel, point, &bytes)
-                })?
-            })
-            .await
-            .map_err(crate::ReadingError::from)
-    }
-
     #[cfg(test)]
     pub(crate) async fn advance_local_read(
         &self,
@@ -184,6 +164,16 @@ impl Registry {
             })?
         }).await.map_err(ClientError::from)
     }
+}
+
+pub(crate) fn advance_local_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    account: AccountId,
+    channel: Uuid,
+    point: ReadPoint,
+) -> Result<(), crate::ReadingError> {
+    let bytes = serde_json::to_vec(&point).map_err(|_| StorageError::InvalidState)?;
+    advance_local(tx, account, channel, point, &bytes).map_err(crate::ReadingError::from)
 }
 
 fn advance_local(

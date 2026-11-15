@@ -86,7 +86,8 @@ fn physical_budget_evicts_oldest_prefixes_publishes_gaps_and_keeps_exact_refetch
                     channel,
                     before.generation,
                     before.version,
-                    &[before.messages[0].id.as_deref().unwrap().parse()?]
+                    &[before.messages[0].id.as_deref().unwrap().parse()?],
+                    papo_sdk::VisibilityContinuity::Continuous,
                 )
                 .await,
             Err(ReadingError::History(HistoryError::StaleSnapshot))

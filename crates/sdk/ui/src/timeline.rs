@@ -64,10 +64,12 @@ pub enum TimelineError {
     FocusMissing,
     /// Lifecycle revocation is terminal for this window.
     Closed(HistoryClosedReason),
-    /// The publication version cannot advance safely.
+    /// Publication version cannot advance safely.
     VersionExhausted,
     /// A page in this direction is already in flight.
     Busy,
+    /// An in-flight hourglass seek was cancelled cleanly.
+    Cancelled,
 }
 impl std::fmt::Display for TimelineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -131,14 +133,16 @@ pub struct TimelineSubscription {
 /// All handles for an account/channel read the same canonical SDK state.
 #[derive(Clone)]
 pub struct Timeline {
-    inner: Arc<Owner>,
+    pub(crate) inner: Arc<Owner>,
 }
 
-struct Owner {
-    session: Session,
-    history: HistoryHandle,
+pub(crate) struct Owner {
+    pub(crate) session: Session,
+    pub(crate) history: HistoryHandle,
     config: TimelineConfig,
+    observer: papo_sdk::ReadingObserver,
     state: Mutex<WindowState>,
+    reading: Mutex<crate::timeline_reading::ReadingOverlay>,
 }
 
 impl Owner {
@@ -146,6 +150,19 @@ impl Owner {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn reading_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, crate::timeline_reading::ReadingOverlay> {
+        self.reading
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn refresh_reading(&self) {
+        let mut overlay = self.reading_lock();
+        let _ = overlay.refresh(&self.session, self.history.channel());
     }
 }
 
@@ -216,9 +233,11 @@ impl Timeline {
         }
         let subscription = history.subscribe().await?;
         let reading = session.subscribe_reading();
+        let catch_up = session.subscribe_catch_up();
+        let observer = session.reading_observer();
         let mut state = WindowState::new(
             subscription,
-            reading,
+            reading.clone(),
             messages,
             focus.is_none(),
             channel,
@@ -234,18 +253,30 @@ impl Timeline {
             );
         }
         state.refresh(&config)?;
+        let initial_tail = crate::timeline_arrivals::initial_live_tail(&state.raw)?;
+        let reading_overlay = crate::timeline_reading::ReadingOverlay::new(
+            &session,
+            channel,
+            Arc::clone(&state.raw),
+            state.history.clone(),
+            reading,
+            catch_up,
+            initial_tail,
+        )?;
         Ok(Self {
             inner: Arc::new(Owner {
                 session,
                 history,
                 config,
+                observer,
                 state: Mutex::new(state),
+                reading: Mutex::new(reading_overlay),
             }),
         })
     }
 
-    /// Report only message IDs actually visible in this exact window baseline. Clients must not
-    /// call while backgrounded or covered. An old window/core version or generation is rejected.
+    /// Report only message IDs actually visible in this exact window baseline, paired with scroll
+    /// continuity. Clients must not call while backgrounded or covered.
     /// The SDK acknowledges only after its FULL durable commit; this never marks unseen rows read.
     /// # Errors
     /// Returns stale view stamps, invalid visible IDs, lifecycle or durable reading failures.
@@ -254,6 +285,7 @@ impl Timeline {
         version: u64,
         generation: Generation,
         ids: &[Uuid],
+        continuity: papo_sdk::VisibilityContinuity,
     ) -> Result<(), TimelineError> {
         let history_version = {
             let mut state = self.inner.lock();
@@ -272,15 +304,17 @@ impl Timeline {
             state.raw.version
         };
         self.inner
-            .session
+            .observer
             .report_visible(
                 self.inner.history.channel(),
                 generation,
                 history_version,
                 ids,
+                continuity,
             )
             .await?;
         self.inner.lock().refresh(&self.inner.config)?;
+        self.inner.refresh_reading();
         Ok(())
     }
 }

@@ -2,6 +2,10 @@
 
 #[path = "timeline/cancellation.rs"]
 mod cancellation;
+#[path = "timeline/catch_up.rs"]
+mod catch_up;
+#[path = "timeline/catch_up_arrivals.rs"]
+mod catch_up_arrivals;
 #[path = "timeline/lifecycle.rs"]
 mod lifecycle;
 #[path = "timeline/outgoing.rs"]
@@ -162,13 +166,24 @@ fn public_visible_reports_reject_old_canonical_and_window_versions_without_advan
         .await?;
         assert!(matches!(
             session
-                .report_visible(channel(), raw.generation, raw.version, &[id])
+                .report_visible(
+                    channel(),
+                    raw.generation,
+                    raw.version,
+                    &[id],
+                    papo_sdk::VisibilityContinuity::Continuous,
+                )
                 .await,
             Err(ReadingError::History(HistoryError::StaleSnapshot))
         ));
         assert!(matches!(
             timeline
-                .report_visible(old_window_version, baseline.generation, &[id])
+                .report_visible(
+                    old_window_version,
+                    baseline.generation,
+                    &[id],
+                    papo_sdk_ui::VisibilityContinuity::Continuous,
+                )
                 .await,
             Err(TimelineError::StaleSnapshot)
         ));
@@ -176,7 +191,12 @@ fn public_visible_reports_reject_old_canonical_and_window_versions_without_advan
         timeline.paginate(TimelineDirection::Older).await?;
         assert!(matches!(
             timeline
-                .report_visible(before_page.version, before_page.generation, &[id])
+                .report_visible(
+                    before_page.version,
+                    before_page.generation,
+                    &[id],
+                    papo_sdk_ui::VisibilityContinuity::Continuous,
+                )
                 .await,
             Err(TimelineError::StaleSnapshot)
         ));

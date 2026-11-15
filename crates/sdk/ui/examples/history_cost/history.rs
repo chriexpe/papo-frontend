@@ -164,7 +164,13 @@ async fn mutations(
         .collect();
     let started = Instant::now();
     session
-        .report_visible(channel, raw.generation, raw.version, &visible)
+        .report_visible(
+            channel,
+            raw.generation,
+            raw.version,
+            &visible,
+            papo_sdk::VisibilityContinuity::Continuous,
+        )
         .await?;
     fixture::report(session, "visible", count, started).await?;
     let cursor = raw.messages[count / 2]

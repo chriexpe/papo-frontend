@@ -1,13 +1,17 @@
 //! Server-mark resolution and coalesced cache-driven unread refresh; fetches never acknowledge reads.
 
-use super::{ReadPoint, ReadState, ReadingError, UnreadCount, counts, upload};
+use super::{
+    ReadPoint, ReadState, ReadingError, UnreadCount, counts,
+    reconcile_marks::{Mark, marks, resolve},
+    upload,
+};
 use crate::{
     ClientError, ResourceSnapshot, Session,
     read_points::{ServerReadPoint, UploadedPoint},
     reconcile::ResourceConnection,
     session::SessionInner,
 };
-use papo_api::{HistoryQuery, Uuid, wire::ChannelLastMessage};
+use papo_api::Uuid;
 use std::{
     collections::BTreeMap,
     sync::{Arc, atomic::Ordering},
@@ -25,6 +29,36 @@ pub(crate) async fn resources(
     start(&handle);
     let serial = session.reading.serial.lock().await;
     session.epochs.validate(snapshot.generation)?;
+    let (image, heads, unresolved) = build_channel_image(&handle, connection, snapshot).await?;
+    if snapshot.server.is_some() {
+        let visible: std::collections::BTreeSet<Uuid> = image.channels.keys().copied().collect();
+        super::catch_up_sync::reconcile_removed_channels(
+            &connection.client,
+            session,
+            snapshot.generation,
+            &visible,
+        )
+        .await?;
+    }
+    install_resources(session, connection, image, heads, unresolved).await?;
+    drop(serial);
+    refresh(&handle).await?;
+    resume_uploads(&handle).await;
+    Ok(())
+}
+
+type ChannelImageParts = (
+    super::ReadingSnapshot,
+    BTreeMap<Uuid, ReadPoint>,
+    BTreeMap<Uuid, ServerReadPoint>,
+);
+
+async fn build_channel_image(
+    handle: &Session,
+    connection: &ResourceConnection,
+    snapshot: &ResourceSnapshot,
+) -> Result<ChannelImageParts, ClientError> {
+    let session = &handle.inner;
     let stored = connection
         .client
         .inner
@@ -71,7 +105,7 @@ pub(crate) async fn resources(
                 None
             } else {
                 resolve(
-                    &handle,
+                    handle,
                     connection,
                     snapshot.generation,
                     channel,
@@ -85,7 +119,7 @@ pub(crate) async fn resources(
                 unresolved.insert(channel, server.clone());
             }
             save_resolved(
-                &handle,
+                handle,
                 snapshot.generation,
                 channel,
                 server,
@@ -108,11 +142,7 @@ pub(crate) async fn resources(
         channels.insert(channel, state);
     }
     image.channels = channels;
-    install_resources(session, connection, image, heads, unresolved).await?;
-    drop(serial);
-    refresh(&handle).await?;
-    resume_uploads(&handle).await;
-    Ok(())
+    Ok((image, heads, unresolved))
 }
 
 async fn resume_uploads(handle: &Session) {
@@ -175,124 +205,6 @@ async fn install_resources(
     session.reading.publish(session, image)
 }
 
-struct Mark {
-    channel: Uuid,
-    server: Option<ServerReadPoint>,
-    head: Option<ReadPoint>,
-}
-
-fn marks(snapshot: &ResourceSnapshot) -> Result<Vec<Mark>, ClientError> {
-    snapshot
-        .channels
-        .iter()
-        .map(|channel| {
-            (
-                channel.id.as_deref(),
-                channel.last_read_message.as_deref(),
-                channel.last_read_at.as_deref(),
-                channel.last_message.as_ref(),
-            )
-        })
-        .chain(snapshot.dms.iter().map(|dm| {
-            (
-                Some(dm.id.as_str()),
-                dm.last_read_message.as_deref(),
-                dm.last_read_at.as_deref(),
-                dm.last_message.as_ref(),
-            )
-        }))
-        .map(|(channel, message, recorded_at, head)| {
-            let channel = channel
-                .ok_or(ClientError::ResourceData)?
-                .parse()
-                .map_err(|_| ClientError::ResourceData)?;
-            let server = message
-                .map(|message| {
-                    Ok::<_, ClientError>(ServerReadPoint {
-                        message_id: message.parse().map_err(|_| ClientError::ResourceData)?,
-                        recorded_at: recorded_at.map(str::to_owned),
-                    })
-                })
-                .transpose()?;
-            Ok(Mark {
-                channel,
-                server,
-                head: head.map(head_point).transpose()?,
-            })
-        })
-        .collect()
-}
-
-pub(super) fn head_point(head: &ChannelLastMessage) -> Result<ReadPoint, ClientError> {
-    ReadPoint::parse(head.created_at.as_deref(), head.id.as_deref())
-        .map_err(|_| ClientError::ResourceData)
-}
-
-/// A deleted anchor with a previously resolved key stays ordered. The pinned protocol
-/// has no lookup-by-id endpoint: at most one newest-page read is attempted when absent.
-/// Failure to find it is unknown, never a fabricated ordering from `recorded_at`.
-pub(super) async fn resolve(
-    session: &Session,
-    connection: &ResourceConnection,
-    generation: crate::Generation,
-    channel: Uuid,
-    server: &ServerReadPoint,
-    state: &ReadState,
-    head: Option<ReadPoint>,
-) -> Result<Option<ReadPoint>, ClientError> {
-    for point in [state.local_point, state.uploaded_point, head]
-        .into_iter()
-        .flatten()
-    {
-        if point.message_id == server.message_id {
-            return Ok(Some(point));
-        }
-    }
-    let history = session.history(channel).await?;
-    let cached = history.subscribe().await?.snapshot;
-    for message in &cached.messages {
-        let point = ReadPoint::message(message).map_err(|_| ClientError::ResourceData)?;
-        if point.message_id == server.message_id {
-            return Ok(Some(point));
-        }
-    }
-    let page = connection
-        .client
-        .inner
-        .request(connection.rest.messages(
-            channel,
-            &HistoryQuery {
-                limit: Some(100),
-                ..HistoryQuery::default()
-            },
-        ))
-        .await?;
-    session.inner.epochs.validate(generation)?;
-    if page
-        .channel_id
-        .as_deref()
-        .and_then(|id| id.parse::<Uuid>().ok())
-        != Some(channel)
-    {
-        return Err(ClientError::ResourceData);
-    }
-    for message in page.messages.unwrap_or_default() {
-        if message
-            .channel_id
-            .as_deref()
-            .and_then(|id| id.parse::<Uuid>().ok())
-            != Some(channel)
-        {
-            return Err(ClientError::ResourceData);
-        }
-        let point = ReadPoint::message(&message).map_err(|_| ClientError::ResourceData)?;
-        if point.message_id == server.message_id {
-            return Ok(Some(point));
-        }
-    }
-    Ok(None)
-}
-
 fn start(session: &Session) {
     if session.inner.reading.started.swap(true, Ordering::AcqRel) {
         return;
@@ -322,7 +234,7 @@ fn start(session: &Session) {
 }
 
 pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
-    let _serial = session.inner.reading.serial.lock().await;
+    let serial = session.inner.reading.serial.lock().await;
     let generation = session.generation();
     session.inner.epochs.validate(generation)?;
     let snapshots = session.inner.history.snapshots().await;
@@ -332,12 +244,12 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
     let old_generation = image.generation;
     image.generation = generation;
     let previous = image.channels.clone();
-    for (channel, snapshot) in snapshots {
+    for (channel, snapshot) in &snapshots {
         if snapshot.generation != generation {
             continue;
         }
-        if let Some(state) = image.channels.get_mut(&channel) {
-            if let Some(server) = unresolved.get(&channel) {
+        if let Some(state) = image.channels.get_mut(channel) {
+            if let Some(server) = unresolved.get(channel) {
                 let point = snapshot
                     .messages
                     .iter()
@@ -354,7 +266,7 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
                         .registry
                         .save_uploaded_read(
                             Arc::clone(&session.inner),
-                            channel,
+                            *channel,
                             generation,
                             UploadedPoint {
                                 server: server.clone(),
@@ -365,19 +277,22 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
                         .await?;
                     session.inner.epochs.validate(generation)?;
                     state.uploaded_point = state.uploaded_point.max(Some(point));
-                    unresolved.remove(&channel);
+                    unresolved.remove(channel);
                 }
             }
-            counts::update(state, &snapshot, heads.get(&channel).copied())
+            counts::update(state, snapshot, heads.get(channel).copied())
                 .map_err(|_| ClientError::ResourceData)?;
-            if unresolved.contains_key(&channel) {
+            if unresolved.contains_key(channel) {
                 counts::unresolved(state);
             }
         }
     }
+    drop((heads, unresolved));
     if previous != image.channels || old_generation != generation {
         session.inner.reading.publish(&session.inner, image)?;
     }
+    super::catch_up_sync::reconcile_catch_up_snapshots(session, generation, &snapshots).await?;
+    drop(serial);
     session
         .inner
         .history

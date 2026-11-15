@@ -1,12 +1,24 @@
 //! Account-owned ordered read state; history owns coverage and UI owns viewport/window selection.
 
+pub(crate) mod catch_up_ops;
+pub(crate) mod catch_up_sync;
 mod counts;
+mod observers;
+pub(crate) mod position_publish;
+pub(crate) mod positions;
 pub(crate) mod reconcile;
+pub(crate) mod reconcile_marks;
 #[cfg(test)]
 mod tests;
 mod upload;
 
-use crate::{ClientError, Generation, HistoryError, Session, StorageError};
+pub use observers::ReadingObserver;
+
+use crate::{
+    CatchUpSnapshot, CatchUpState, CatchUpView, ClientError, Generation, HistoryError,
+    HistorySnapshot, ReadingPosition, ReadingPositionsSnapshot, Session, StorageError,
+    VisibilityContinuity,
+};
 use papo_api::{Uuid, wire::Message};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
@@ -116,14 +128,29 @@ pub enum ReadingError {
     Session(#[from] ClientError),
 }
 
+pub(crate) type ObserverVisibilityMap = BTreeMap<u64, BTreeMap<Uuid, (ReadPoint, ReadPoint)>>;
+pub(crate) type AscSuccessorsState = (
+    Generation,
+    u64,
+    BTreeMap<Uuid, crate::catch_up::AscSuccessors>,
+);
+pub(crate) type ReconcileKeyMap = BTreeMap<Uuid, (Generation, u64, u64, u64)>;
+
 pub(crate) struct Reading {
     pub serial: Mutex<()>,
     pub image: Arc<crate::observable::StateCell<Arc<ReadingSnapshot>>>,
+    pub catch_up_image: Arc<crate::observable::StateCell<Arc<crate::CatchUpSnapshot>>>,
+    pub position_image: Arc<crate::observable::StateCell<Arc<crate::ReadingPositionsSnapshot>>>,
     pub started: std::sync::atomic::AtomicBool,
     pub uploads: Mutex<BTreeMap<Uuid, Arc<tokio::sync::Notify>>>,
     pub heads: Mutex<BTreeMap<Uuid, ReadPoint>>,
     pub unresolved: Mutex<BTreeMap<Uuid, crate::ServerReadPoint>>,
     pub connection: Mutex<Option<(Generation, crate::reconcile::ResourceConnection)>>,
+    pub observers: std::sync::Mutex<ObserverVisibilityMap>,
+    pub next_observer: std::sync::atomic::AtomicU64,
+    pub asc_successors: std::sync::Mutex<Option<AscSuccessorsState>>,
+    pub reconcile_keys: std::sync::Mutex<ReconcileKeyMap>,
+    pub positions: Arc<positions::PositionCoordinator>,
 }
 impl Reading {
     pub fn new(generation: Generation) -> Self {
@@ -134,13 +161,36 @@ impl Reading {
                 version: 0,
                 channels: BTreeMap::new(),
             })),
+            catch_up_image: crate::observable::StateCell::new(Arc::new(CatchUpSnapshot {
+                generation,
+                version: 0,
+                channels: BTreeMap::new(),
+            })),
+            position_image: crate::observable::StateCell::new(Arc::new(ReadingPositionsSnapshot {
+                generation,
+                version: 0,
+                channels: BTreeMap::new(),
+            })),
             started: std::sync::atomic::AtomicBool::new(false),
             uploads: Mutex::new(BTreeMap::new()),
             heads: Mutex::new(BTreeMap::new()),
             unresolved: Mutex::new(BTreeMap::new()),
             connection: Mutex::new(None),
+            observers: std::sync::Mutex::new(BTreeMap::new()),
+            next_observer: std::sync::atomic::AtomicU64::new(1),
+            asc_successors: std::sync::Mutex::new(None),
+            reconcile_keys: std::sync::Mutex::new(BTreeMap::new()),
+            positions: Arc::new(positions::PositionCoordinator::default()),
         }
     }
+
+    pub fn close(&self) {
+        self.image.close();
+        self.catch_up_image.close();
+        self.position_image.close();
+        self.positions.close();
+    }
+
     pub fn publish(
         &self,
         session: &crate::session::SessionInner,
@@ -179,11 +229,109 @@ impl Session {
             .cloned()
     }
 
-    /// Reports only IDs actually visible in a canonical history snapshot. Callers also
-    /// validate their own window version and only report while unobscured/foreground.
-    /// An old generation/version or any detached/nonmember ID rejects the whole report.
-    /// Success acknowledges the local point only after a synchronous=FULL commit;
-    /// fetching or reaching a focused window's end never implicitly reports the live head.
+    /// Creates a per-window visibility observer isolating scroll continuity across concurrent windows.
+    #[must_use]
+    pub fn reading_observer(&self) -> ReadingObserver {
+        ReadingObserver::new(self.clone())
+    }
+
+    /// Atomically subscribes to durable per-channel catch-up state.
+    #[must_use]
+    pub fn subscribe_catch_up(&self) -> watch::Receiver<Arc<CatchUpSnapshot>> {
+        self.inner.reading.catch_up_image.subscribe()
+    }
+
+    /// Returns this account's last published catch-up state for one channel, if any.
+    #[must_use]
+    pub fn catch_up_state(&self, channel: Uuid) -> Option<CatchUpState> {
+        self.inner
+            .reading
+            .catch_up_image
+            .borrow()
+            .channels
+            .get(&channel)
+            .cloned()
+    }
+
+    /// Resolves hourglass availability and display boundary IDs for `channel` against `snapshot`.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` if a cached message lacks valid chronological metadata.
+    pub fn catch_up_view(
+        &self,
+        channel: Uuid,
+        snapshot: &HistorySnapshot,
+    ) -> Result<CatchUpView, ReadingError> {
+        catch_up_ops::resolve_view(self, channel, snapshot)
+    }
+
+    /// Atomically subscribes to durable saved reading positions for all accessible channels.
+    #[must_use]
+    pub fn subscribe_reading_positions(&self) -> watch::Receiver<Arc<ReadingPositionsSnapshot>> {
+        self.inner.reading.position_image.subscribe()
+    }
+
+    /// Returns the last committed reading position for `channel`, if one exists.
+    #[must_use]
+    pub fn reading_position(&self, channel: Uuid) -> Option<ReadingPosition> {
+        self.inner
+            .reading
+            .position_image
+            .borrow()
+            .channels
+            .get(&channel)
+            .copied()
+    }
+
+    /// Durably saves or clears a client reading position (`offset_units` relative to `message_id`).
+    /// Coalesces rapid bursts and acknowledges only after a `synchronous=FULL` commit.
+    /// # Errors
+    /// Returns storage errors, session closure/supersession or history closure when revoked.
+    pub async fn save_reading_position(
+        &self,
+        channel: Uuid,
+        position: Option<ReadingPosition>,
+    ) -> Result<(), ReadingError> {
+        let session = self.clone();
+        let token = self.inner.tasks.token();
+        self.client
+            .dispatch(async move {
+                let _token = token;
+                let generation = session.generation();
+                Ok(session
+                    .inner
+                    .reading
+                    .positions
+                    .save(
+                        &session.client,
+                        &session.inner,
+                        channel,
+                        generation,
+                        position,
+                    )
+                    .await)
+            })
+            .await
+            .map_err(ReadingError::from)?
+    }
+
+    /// Deliberately clears the active catch-up interval for `channel` with a `synchronous=FULL` commit.
+    /// # Errors
+    /// Returns storage, generation, revocation or session errors.
+    pub async fn clear_catch_up(&self, channel: Uuid) -> Result<(), ReadingError> {
+        let session = self.clone();
+        let token = self.inner.tasks.token();
+        self.client
+            .dispatch(async move {
+                let _token = token;
+                Ok(catch_up_ops::clear_catch_up_inner(&session, channel).await)
+            })
+            .await
+            .map_err(ReadingError::from)?
+    }
+
+    /// Reports only IDs actually visible in a canonical history snapshot, paired with scroll continuity.
+    /// Success acknowledges the local point and any catch-up interval transition only after a
+    /// synchronous=FULL commit; reaching a focused window's end never implicitly reports the live head.
     /// # Errors
     /// Returns history version/closure, invalid report, generation or durable storage errors.
     pub async fn report_visible(
@@ -192,6 +340,20 @@ impl Session {
         generation: Generation,
         history_version: u64,
         ids: &[Uuid],
+        continuity: VisibilityContinuity,
+    ) -> Result<(), ReadingError> {
+        self.report_with_observer(0, channel, generation, history_version, ids, continuity)
+            .await
+    }
+
+    pub(super) async fn report_with_observer(
+        &self,
+        observer_id: u64,
+        channel: Uuid,
+        generation: Generation,
+        history_version: u64,
+        ids: &[Uuid],
+        continuity: VisibilityContinuity,
     ) -> Result<(), ReadingError> {
         let session = self.clone();
         let ids = ids.to_vec();
@@ -199,60 +361,18 @@ impl Session {
         self.client
             .dispatch(async move {
                 let _token = token;
-                Ok(session
-                    .report_current(channel, generation, history_version, &ids)
-                    .await)
+                Ok(catch_up_ops::report_current(
+                    &session,
+                    observer_id,
+                    channel,
+                    generation,
+                    history_version,
+                    &ids,
+                    continuity,
+                )
+                .await)
             })
             .await
             .map_err(ReadingError::from)?
-    }
-
-    async fn report_current(
-        &self,
-        channel: Uuid,
-        generation: Generation,
-        history_version: u64,
-        ids: &[Uuid],
-    ) -> Result<(), ReadingError> {
-        let _serial = self.inner.reading.serial.lock().await;
-        self.inner.epochs.validate(generation)?;
-        let history = self.history(channel).await?;
-        let (snapshot, point) = history
-            .visible_snapshot(generation, history_version, ids)
-            .await?;
-        let Some(point) = point else {
-            return Ok(());
-        };
-        let mut image = (**self.inner.reading.image.borrow()).clone();
-        image.generation = generation;
-        let state = image.channels.entry(channel).or_default();
-        if Some(point) <= state.local_point {
-            return Ok(());
-        }
-        self.client
-            .inner
-            .registry
-            .advance_visible_read(history, generation, history_version, point)
-            .await?;
-        self.inner.epochs.validate(generation)?;
-        state.local_point = Some(point);
-        counts::update(
-            state,
-            &snapshot,
-            self.inner.reading.heads.lock().await.get(&channel).copied(),
-        )?;
-        if self
-            .inner
-            .reading
-            .unresolved
-            .lock()
-            .await
-            .contains_key(&channel)
-        {
-            counts::unresolved(state);
-        }
-        self.inner.reading.publish(&self.inner, image)?;
-        upload::schedule(self, channel).await;
-        Ok(())
     }
 }

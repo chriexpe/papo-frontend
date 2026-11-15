@@ -138,11 +138,12 @@ fn queued_visible_report_rejects_a_newer_same_generation_publication_before_sql_
             let point = crate::ReadPoint::message(&snapshot.messages[0]).unwrap();
             let registry = client.handle().inner.registry.clone();
             let (release, blocked) = block_full_writer(&client).await;
-            let mut report = Box::pin(registry.advance_visible_read(
+            let mut report = Box::pin(registry.commit_visible_read_and_catch_up(
                 handle.clone(),
                 snapshot.generation,
                 snapshot.version,
-                point,
+                Some(point),
+                None,
             ));
             std::future::poll_fn(|cx| {
                 assert!(std::future::Future::poll(report.as_mut(), cx).is_pending());
@@ -182,11 +183,12 @@ fn queued_visible_report_rejects_revocation_of_its_original_channel_before_sql_m
             let point = crate::ReadPoint::message(&snapshot.messages[0]).unwrap();
             let registry = client.handle().inner.registry.clone();
             let (release, blocked) = block_full_writer(&client).await;
-            let mut report = Box::pin(registry.advance_visible_read(
+            let mut report = Box::pin(registry.commit_visible_read_and_catch_up(
                 handle.clone(),
                 snapshot.generation,
                 snapshot.version,
-                point,
+                Some(point),
+                None,
             ));
             std::future::poll_fn(|cx| {
                 assert!(std::future::Future::poll(report.as_mut(), cx).is_pending());
@@ -243,11 +245,12 @@ fn queued_visible_report_rejects_a_replaced_account_generation_before_sql_mutati
             let point = crate::ReadPoint::message(&snapshot.messages[0]).unwrap();
             let registry = client.handle().inner.registry.clone();
             let (release, blocked) = block_full_writer(&client).await;
-            let mut report = Box::pin(registry.advance_visible_read(
+            let mut report = Box::pin(registry.commit_visible_read_and_catch_up(
                 handle.clone(),
                 snapshot.generation,
                 snapshot.version,
-                point,
+                Some(point),
+                None,
             ));
             std::future::poll_fn(|cx| {
                 assert!(std::future::Future::poll(report.as_mut(), cx).is_pending());

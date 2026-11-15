@@ -8,7 +8,10 @@ pub(super) fn update(
     snapshot: &HistorySnapshot,
     server_head: Option<ReadPoint>,
 ) -> Result<(), ReadingError> {
-    let point = state.point();
+    let point = state
+        .point()
+        .map(|point| crate::catch_up::resolve_point_in_snapshot(snapshot, point))
+        .transpose()?;
     let (mut low, mut high) = (0, snapshot.messages.len());
     while low < high {
         let middle = low + (high - low) / 2;

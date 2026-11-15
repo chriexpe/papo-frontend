@@ -127,6 +127,8 @@ fn removal_cleans_only_its_account_and_generations_are_never_reused() {
             for id in [first,other] {
                 tx.execute("INSERT INTO drafts(server_id,user_id,channel_id,text,mentions,updated_at_us) VALUES(?1,?2,zeroblob(16),'',x'',1)",rusqlite::params![id.server().as_bytes(),id.user().as_bytes()])?;
                 tx.execute("INSERT INTO read_points(server_id,user_id,channel_id) VALUES(?1,?2,zeroblob(16))",rusqlite::params![id.server().as_bytes(),id.user().as_bytes()])?;
+                tx.execute("INSERT INTO catch_up_intervals(server_id,user_id,channel_id) VALUES(?1,?2,zeroblob(16))",rusqlite::params![id.server().as_bytes(),id.user().as_bytes()])?;
+                tx.execute("INSERT INTO saved_reading_positions(server_id,user_id,channel_id,message_id,offset_units) VALUES(?1,?2,zeroblob(16),zeroblob(16),42)",rusqlite::params![id.server().as_bytes(),id.user().as_bytes()])?;
                 tx.execute("INSERT INTO notification_ledger(server_id,user_id,message_id,delivered_at_us) VALUES(?1,?2,zeroblob(16),1)",rusqlite::params![id.server().as_bytes(),id.user().as_bytes()])?;
             }
             Ok(())
@@ -140,9 +142,9 @@ fn removal_cleans_only_its_account_and_generations_are_never_reused() {
         let new=registry.add_account(first,None,None,false,UnixMicros(2)).await.unwrap();
         assert!(new.get()>old.get());
         let counts=registry.readers.query(registry.path.clone(),|tx| {
-            ["drafts","read_points","notification_ledger"].into_iter().map(|table|tx.query_row(&format!("SELECT count(*) FROM {table}"),[],|row|row.get::<_,i64>(0))).collect::<Result<Vec<_>,_>>()
+            ["drafts","read_points","catch_up_intervals","saved_reading_positions","notification_ledger"].into_iter().map(|table|tx.query_row(&format!("SELECT count(*) FROM {table}"),[],|row|row.get::<_,i64>(0))).collect::<Result<Vec<_>,_>>()
         }).await.unwrap();
-        assert_eq!(counts,[1,1,1]);
+        assert_eq!(counts,[1,1,1,1,1]);
     });
     assert!(!first_cache.exists());
     assert!(other_cache.exists());

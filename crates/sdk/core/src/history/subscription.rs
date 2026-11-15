@@ -94,11 +94,19 @@ impl super::HistoryHandle {
         generation: Generation,
         version: u64,
         ids: &[Uuid],
-    ) -> Result<(Arc<HistorySnapshot>, Option<crate::ReadPoint>), crate::ReadingError> {
+    ) -> Result<
+        (
+            Arc<HistorySnapshot>,
+            Vec<crate::ReadPoint>,
+            Option<crate::ReadPoint>,
+        ),
+        crate::ReadingError,
+    > {
         let state = self.channel.state.lock().await;
         self.check(generation)?;
         let subscription = self.channel.subscribe()?;
         self.with_current_snapshot(generation, version, || ())?;
+        let mut points = Vec::with_capacity(ids.len());
         let mut point = None;
         for id in ids {
             let entry = state
@@ -111,9 +119,11 @@ impl super::HistoryHandle {
                 .message
                 .as_ref()
                 .ok_or(crate::ReadingError::InvalidReport)?;
-            point = point.max(Some(crate::ReadPoint::message(message)?));
+            let resolved = crate::ReadPoint::message(message)?;
+            points.push(resolved);
+            point = point.max(Some(resolved));
         }
-        Ok((subscription.snapshot, point))
+        Ok((subscription.snapshot, points, point))
     }
 
     /// Linearize a queued visible report with this exact channel incarnation's accepted

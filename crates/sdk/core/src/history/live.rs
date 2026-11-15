@@ -131,6 +131,14 @@ async fn select(
                 .cache
                 .history_revoke(*id.as_bytes(), generation)
                 .await?;
+            crate::reading::catch_up_sync::revoke_channels(
+                &connection.client,
+                session,
+                &[id],
+                generation,
+                HistoryClosedReason::ChannelDeleted,
+            )
+            .await?;
             session.history.verified.write().await.remove(&id);
             return Ok(Vec::new());
         }

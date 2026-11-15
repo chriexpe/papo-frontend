@@ -265,7 +265,8 @@ impl Model {
             id: first.key()?.id,
             first,
             last,
-            oldest_complete: ticket.order == HistoryOrder::Desc && !has_more,
+            oldest_complete: (ticket.order == HistoryOrder::Desc && !has_more)
+                || (ticket.order == HistoryOrder::Asc && ticket.cursor.is_none()),
             newest_complete: (ticket.order == HistoryOrder::Desc && ticket.cursor.is_none())
                 || (ticket.order == HistoryOrder::Asc && !has_more),
             generation: ticket.generation,

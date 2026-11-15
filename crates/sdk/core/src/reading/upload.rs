@@ -1,6 +1,6 @@
 //! Debounced per-channel read uploads; durable points survive cancellation and only current completions are adopted.
 
-use super::{ReadPoint, counts, reconcile};
+use super::{ReadPoint, counts, reconcile_marks};
 use crate::{
     ClientError, ConnectionState, Session,
     read_points::{ServerReadPoint, UploadedPoint},
@@ -139,8 +139,8 @@ async fn once(
             recorded_at,
         };
         let state = session.reading_state(channel).unwrap_or_default();
-        let head = head.as_ref().map(reconcile::head_point).transpose()?;
-        match reconcile::resolve(
+        let head = head.as_ref().map(reconcile_marks::head_point).transpose()?;
+        match reconcile_marks::resolve(
             session,
             &connection,
             generation,

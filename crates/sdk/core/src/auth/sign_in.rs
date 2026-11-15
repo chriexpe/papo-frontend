@@ -228,6 +228,7 @@ async fn install(
     );
     let epoch = inner.epochs.current();
     let task = inner.tasks.token();
+    crate::reading::catch_up_sync::hydrate_from_storage(client, &inner).await?;
     client.inner.pool.insert(Arc::clone(&inner)).await;
     client.inner.publish_registry().await?;
     drop(guard);
