@@ -94,6 +94,8 @@ impl RemovalJobs {
                     "operations",
                     "drafts",
                     "read_points",
+                    "catch_up_intervals",
+                    "saved_reading_positions",
                     "notification_ledger",
                     "notification_state",
                     "expression_favorites",

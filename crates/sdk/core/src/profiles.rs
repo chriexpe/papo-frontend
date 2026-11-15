@@ -51,10 +51,8 @@ impl Session {
         users: Vec<String>,
     ) -> Result<Generated<Vec<UserProfile>>, ClientError> {
         let secret = self
-            .client
             .inner
-            .secrets
-            .read(self.inner.key, &epoch.cancel)
+            .read_secret(&self.client.inner.secrets, &epoch.cancel)
             .await?
             .ok_or(ClientError::SignedOut)?;
         let rest = self

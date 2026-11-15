@@ -72,11 +72,13 @@ fn raw_watch_pins_history_and_evicted_channel_revocation_cannot_restore_old_rows
         );
         assert!(matches!(
             session
+                .reading_observer()
                 .report_visible(
                     channel,
                     old_snapshot.generation,
                     old_snapshot.version,
-                    &[old_snapshot.messages[0].id.as_deref().unwrap().parse()?]
+                    &[old_snapshot.messages[0].id.as_deref().unwrap().parse()?],
+                    papo_sdk::VisibilityContinuity::Continuous,
                 )
                 .await,
             Err(papo_sdk::ReadingError::History(HistoryError::StaleSnapshot))

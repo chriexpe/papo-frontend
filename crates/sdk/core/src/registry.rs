@@ -201,9 +201,25 @@ pub(crate) fn visible_server(
     .ok_or(StorageError::NotFound)
 }
 
+pub(crate) fn account_is_visible(
+    tx: &rusqlite::Transaction<'_>,
+    id: AccountId,
+) -> rusqlite::Result<bool> {
+    Ok(tx
+        .query_row(
+            "SELECT 1 FROM accounts a JOIN servers s ON s.id=a.server_id WHERE a.server_id=?1 AND a.user_id=?2 AND a.hidden=0 AND s.hidden=0",
+            params![id.server().as_bytes(), id.user().as_bytes()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 pub(crate) fn visible_account(
     tx: &rusqlite::Transaction<'_>,
     id: AccountId,
 ) -> Result<(), StorageError> {
-    tx.query_row("SELECT 1 FROM accounts a JOIN servers s ON s.id=a.server_id WHERE a.server_id=?1 AND a.user_id=?2 AND a.hidden=0 AND s.hidden=0",params![id.server().as_bytes(),id.user().as_bytes()],|_|Ok(())).optional()?.ok_or(StorageError::NotFound)
+    account_is_visible(tx, id)?
+        .then_some(())
+        .ok_or(StorageError::NotFound)
 }

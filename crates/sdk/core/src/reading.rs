@@ -1,13 +1,26 @@
 //! Account-owned ordered read state; history owns coverage and UI owns viewport/window selection.
 
+pub(crate) mod catch_up_ops;
+mod catch_up_state;
+pub(crate) mod catch_up_sync;
 mod counts;
+mod observers;
+pub(crate) mod position_publish;
+pub(crate) mod positions;
 pub(crate) mod reconcile;
+pub(crate) mod reconcile_marks;
 #[cfg(test)]
 mod tests;
 mod upload;
 
-use crate::{ClientError, Generation, HistoryError, Session, StorageError};
-use papo_api::{Uuid, wire::Message};
+pub use observers::ReadingObserver;
+
+use crate::{
+    CatchUpSnapshot, CatchUpView, ClientError, Generation, HistoryError, HistorySnapshot,
+    ReadingPosition, ReadingPositionsSnapshot, Session, StorageError, VisibilityContinuity,
+    catch_up::{CatchUpStore, VisibleBounds},
+};
+use papo_api::{HistoryCursor, Uuid, wire::Message};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
 
@@ -27,9 +40,37 @@ pub struct ReadPoint {
     pub message_id: Uuid,
 }
 impl ReadPoint {
-    pub(crate) fn message(message: &Message) -> Result<Self, ReadingError> {
+    /// Parses the microsecond chronological cursor from a canonical history `Message`.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` when `created_at` or `id` is absent or invalid.
+    pub fn from_message(message: &Message) -> Result<Self, ReadingError> {
         Self::parse(message.created_at.as_deref(), message.id.as_deref())
     }
+
+    /// Parses a wire `HistoryCursor` into a microsecond `ReadPoint`.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` when timestamp precision exceeds microseconds or ID fails UUID parsing.
+    pub fn from_cursor(cursor: &HistoryCursor) -> Result<Self, ReadingError> {
+        Self::parse(Some(&cursor.created_at), Some(&cursor.id))
+    }
+
+    /// Formats this point as a microsecond RFC 3339 `HistoryCursor`.
+    /// # Errors
+    /// Returns `ReadingError::InvalidPoint` if `created_at_us` is outside valid UTC timestamp range.
+    pub fn to_cursor(&self) -> Result<HistoryCursor, ReadingError> {
+        let created_at = chrono::DateTime::from_timestamp_micros(self.created_at_us)
+            .ok_or(ReadingError::InvalidPoint)?
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        Ok(HistoryCursor {
+            created_at,
+            id: self.message_id.to_string(),
+        })
+    }
+
+    pub(crate) fn message(message: &Message) -> Result<Self, ReadingError> {
+        Self::from_message(message)
+    }
+
     pub(crate) fn parse(created_at: Option<&str>, id: Option<&str>) -> Result<Self, ReadingError> {
         let at =
             chrono::DateTime::parse_from_rfc3339(created_at.ok_or(ReadingError::InvalidPoint)?)
@@ -116,14 +157,24 @@ pub enum ReadingError {
     Session(#[from] ClientError),
 }
 
+pub(crate) type ObserverVisibilityMap = BTreeMap<u64, BTreeMap<Uuid, VisibleBounds>>;
+
 pub(crate) struct Reading {
     pub serial: Mutex<()>,
     pub image: Arc<crate::observable::StateCell<Arc<ReadingSnapshot>>>,
+    pub catch_up_states: std::sync::Mutex<CatchUpStore>,
+    pub catch_up_image: Arc<crate::observable::StateCell<Arc<crate::CatchUpSnapshot>>>,
+    pub position_image: Arc<crate::observable::StateCell<Arc<crate::ReadingPositionsSnapshot>>>,
     pub started: std::sync::atomic::AtomicBool,
     pub uploads: Mutex<BTreeMap<Uuid, Arc<tokio::sync::Notify>>>,
     pub heads: Mutex<BTreeMap<Uuid, ReadPoint>>,
     pub unresolved: Mutex<BTreeMap<Uuid, crate::ServerReadPoint>>,
     pub connection: Mutex<Option<(Generation, crate::reconcile::ResourceConnection)>>,
+    pub observers: std::sync::Mutex<ObserverVisibilityMap>,
+    pub next_observer: std::sync::atomic::AtomicU64,
+    pub asc_successors: std::sync::Mutex<Option<catch_up_state::AscSuccessorsState>>,
+    pub reconcile_keys: std::sync::Mutex<BTreeMap<Uuid, catch_up_sync::ReconcileKey>>,
+    pub positions: Arc<positions::PositionCoordinator>,
 }
 impl Reading {
     pub fn new(generation: Generation) -> Self {
@@ -134,13 +185,37 @@ impl Reading {
                 version: 0,
                 channels: BTreeMap::new(),
             })),
+            catch_up_states: std::sync::Mutex::new(CatchUpStore::default()),
+            catch_up_image: crate::observable::StateCell::new(Arc::new(CatchUpSnapshot {
+                generation,
+                version: 0,
+                channels: BTreeMap::new(),
+            })),
+            position_image: crate::observable::StateCell::new(Arc::new(ReadingPositionsSnapshot {
+                generation,
+                version: 0,
+                channels: BTreeMap::new(),
+            })),
             started: std::sync::atomic::AtomicBool::new(false),
             uploads: Mutex::new(BTreeMap::new()),
             heads: Mutex::new(BTreeMap::new()),
             unresolved: Mutex::new(BTreeMap::new()),
             connection: Mutex::new(None),
+            observers: std::sync::Mutex::new(BTreeMap::new()),
+            next_observer: std::sync::atomic::AtomicU64::new(1),
+            asc_successors: std::sync::Mutex::new(None),
+            reconcile_keys: std::sync::Mutex::new(BTreeMap::new()),
+            positions: Arc::new(positions::PositionCoordinator::default()),
         }
     }
+
+    pub fn close(&self) {
+        self.image.close();
+        self.catch_up_image.close();
+        self.position_image.close();
+        self.positions.close();
+    }
+
     pub fn publish(
         &self,
         session: &crate::session::SessionInner,
@@ -179,19 +254,105 @@ impl Session {
             .cloned()
     }
 
-    /// Reports only IDs actually visible in a canonical history snapshot. Callers also
-    /// validate their own window version and only report while unobscured/foreground.
-    /// An old generation/version or any detached/nonmember ID rejects the whole report.
-    /// Success acknowledges the local point only after a synchronous=FULL commit;
-    /// fetching or reaching a focused window's end never implicitly reports the live head.
+    /// Creates a per-window visibility observer isolating scroll continuity across concurrent windows.
+    #[must_use]
+    pub fn reading_observer(&self) -> ReadingObserver {
+        ReadingObserver::new(self.clone())
+    }
+
+    /// Atomically subscribes to catch-up revision watermarks across accessible channels.
+    /// Resolve detailed boundaries via `Session::catch_up_view`. Closes on sign-out, removal,
+    /// replacement or shutdown.
+    #[must_use]
+    pub fn subscribe_catch_up(&self) -> watch::Receiver<Arc<CatchUpSnapshot>> {
+        self.inner.reading.catch_up_image.subscribe()
+    }
+
+    /// Resolves catch-up markers and start-target readiness against `snapshot`, returning `None`
+    /// when `channel` has no active catch-up interval or all skipped foreign messages are read.
     /// # Errors
-    /// Returns history version/closure, invalid report, generation or durable storage errors.
-    pub async fn report_visible(
+    /// Returns `ReadingError::InvalidPoint` if a cached message lacks valid chronological metadata.
+    pub fn catch_up_view(
         &self,
+        channel: Uuid,
+        snapshot: &HistorySnapshot,
+    ) -> Result<Option<CatchUpView>, ReadingError> {
+        catch_up_ops::resolve_view(self, channel, snapshot)
+    }
+
+    /// Atomically subscribes to durable saved reading positions for all accessible channels.
+    #[must_use]
+    pub fn subscribe_reading_positions(&self) -> watch::Receiver<Arc<ReadingPositionsSnapshot>> {
+        self.inner.reading.position_image.subscribe()
+    }
+
+    /// Returns the last committed reading position for `channel`, if one exists.
+    #[must_use]
+    pub fn reading_position(&self, channel: Uuid) -> Option<ReadingPosition> {
+        self.inner
+            .reading
+            .position_image
+            .borrow()
+            .channels
+            .get(&channel)
+            .copied()
+    }
+
+    /// Durably saves or clears a client reading position (`offset_units` relative to `message_id`).
+    /// Coalesces rapid bursts and acknowledges only after a `synchronous=FULL` commit.
+    /// # Errors
+    /// Returns storage errors, session closure/supersession or history closure when revoked.
+    pub async fn save_reading_position(
+        &self,
+        channel: Uuid,
+        position: Option<ReadingPosition>,
+    ) -> Result<(), ReadingError> {
+        let session = self.clone();
+        let token = self.inner.tasks.token();
+        self.client
+            .dispatch(async move {
+                let _token = token;
+                let generation = session.generation();
+                Ok(session
+                    .inner
+                    .reading
+                    .positions
+                    .save(
+                        &session.client,
+                        &session.inner,
+                        channel,
+                        generation,
+                        position,
+                    )
+                    .await)
+            })
+            .await
+            .map_err(ReadingError::from)?
+    }
+
+    /// Deliberately clears the active catch-up interval for `channel` with a `synchronous=FULL` commit.
+    /// # Errors
+    /// Returns storage, generation, revocation or session errors.
+    pub async fn clear_catch_up(&self, channel: Uuid) -> Result<(), ReadingError> {
+        let session = self.clone();
+        let token = self.inner.tasks.token();
+        self.client
+            .dispatch(async move {
+                let _token = token;
+                Ok(catch_up_ops::clear_catch_up_inner(&session, channel).await)
+            })
+            .await
+            .map_err(ReadingError::from)?
+    }
+
+    pub(super) async fn report_with_observer(
+        &self,
+        observer_id: u64,
         channel: Uuid,
         generation: Generation,
         history_version: u64,
         ids: &[Uuid],
+        continuity: VisibilityContinuity,
     ) -> Result<(), ReadingError> {
         let session = self.clone();
         let ids = ids.to_vec();
@@ -199,60 +360,18 @@ impl Session {
         self.client
             .dispatch(async move {
                 let _token = token;
-                Ok(session
-                    .report_current(channel, generation, history_version, &ids)
-                    .await)
+                Ok(catch_up_ops::report_current(
+                    &session,
+                    observer_id,
+                    channel,
+                    generation,
+                    history_version,
+                    &ids,
+                    continuity,
+                )
+                .await)
             })
             .await
             .map_err(ReadingError::from)?
-    }
-
-    async fn report_current(
-        &self,
-        channel: Uuid,
-        generation: Generation,
-        history_version: u64,
-        ids: &[Uuid],
-    ) -> Result<(), ReadingError> {
-        let _serial = self.inner.reading.serial.lock().await;
-        self.inner.epochs.validate(generation)?;
-        let history = self.history(channel).await?;
-        let (snapshot, point) = history
-            .visible_snapshot(generation, history_version, ids)
-            .await?;
-        let Some(point) = point else {
-            return Ok(());
-        };
-        let mut image = (**self.inner.reading.image.borrow()).clone();
-        image.generation = generation;
-        let state = image.channels.entry(channel).or_default();
-        if Some(point) <= state.local_point {
-            return Ok(());
-        }
-        self.client
-            .inner
-            .registry
-            .advance_visible_read(history, generation, history_version, point)
-            .await?;
-        self.inner.epochs.validate(generation)?;
-        state.local_point = Some(point);
-        counts::update(
-            state,
-            &snapshot,
-            self.inner.reading.heads.lock().await.get(&channel).copied(),
-        )?;
-        if self
-            .inner
-            .reading
-            .unresolved
-            .lock()
-            .await
-            .contains_key(&channel)
-        {
-            counts::unresolved(state);
-        }
-        self.inner.reading.publish(&self.inner, image)?;
-        upload::schedule(self, channel).await;
-        Ok(())
     }
 }

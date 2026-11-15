@@ -55,6 +55,20 @@ impl HistoryStore {
     }
     pub(super) async fn channel(&self, id: Uuid) -> Arc<Channel> {
         let mut channels = self.channels.lock().await;
+        self.channel_locked(&mut channels, id)
+    }
+    pub(super) async fn verified_channel(&self, id: Uuid) -> Result<Arc<Channel>, HistoryError> {
+        let mut channels = self.channels.lock().await;
+        if !self.verified.read().await.contains(&id) {
+            return Err(HistoryError::Unverified);
+        }
+        Ok(self.channel_locked(&mut channels, id))
+    }
+    fn channel_locked(
+        &self,
+        channels: &mut BTreeMap<Uuid, Arc<Channel>>,
+        id: Uuid,
+    ) -> Arc<Channel> {
         Arc::clone(channels.entry(id).or_insert_with(|| {
             Arc::new(Channel::new(
                 id,
@@ -145,16 +159,13 @@ impl Session {
                     let epoch = session.inner.epochs.current();
                     session.inner.epochs.validate(epoch.generation)?;
                     let store = &session.inner.history;
-                    if !store.verified.read().await.contains(&channel) {
-                        return Err(HistoryError::Unverified);
-                    }
                     let connection = store
                         .connection
                         .read()
                         .await
                         .clone()
                         .ok_or(HistoryError::Unverified)?;
-                    let channel = store.channel(channel).await;
+                    let channel = store.verified_channel(channel).await?;
                     channel.last_access.store(
                         store.access.fetch_add(1, Ordering::Relaxed),
                         Ordering::Relaxed,

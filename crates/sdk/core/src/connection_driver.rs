@@ -64,11 +64,8 @@ impl Connector for ApiConnector {
         epoch: &'a Epoch,
     ) -> IoFuture<'a, Box<dyn Socket>> {
         Box::pin(async move {
-            let secret = self
-                .0
-                .inner
-                .secrets
-                .read(session.key, &epoch.cancel)
+            let secret = session
+                .read_secret(&self.0.inner.secrets, &epoch.cancel)
                 .await?
                 .ok_or(ClientError::SignedOut)?;
             session.epochs.validate(epoch.generation)?;
@@ -144,7 +141,7 @@ pub(crate) async fn drive(
 ) {
     let mut attempt = 0_u32;
     loop {
-        if session.root.is_cancelled() {
+        if session.root.is_cancelled() || session.driver_cancel.is_cancelled() {
             return;
         }
         let epoch = session.epochs.current();
@@ -165,6 +162,7 @@ pub(crate) async fn drive(
         let connected = tokio::select! {
             biased;
             () = session.root.cancelled() => return,
+            () = session.driver_cancel.cancelled() => return,
             () = epoch.cancel.cancelled() => continue,
             result = connector.connect(session, &epoch) => result,
         };
@@ -181,7 +179,11 @@ pub(crate) async fn drive(
                     session.auth.send_replace(AuthState::Ready)
                 });
                 attempt = 0;
-                pump(session, &epoch, socket.as_mut()).await
+                tokio::select! {
+                    biased;
+                    () = session.driver_cancel.cancelled() => return,
+                    result = pump(session, &epoch, socket.as_mut()) => result,
+                }
             }
             Err(error) => Some(error),
         };
@@ -206,35 +208,47 @@ pub(crate) async fn drive(
             tokio::select! {
                 biased;
                 () = session.root.cancelled() => return,
+                () = session.driver_cancel.cancelled() => return,
                 () = epoch.cancel.cancelled() => continue,
             }
         }
-        let Ok(next) = session.epochs.advance() else {
+        if !wait_backoff(config, session, &mut attempt).await {
             return;
-        };
-        if session
-            .history
-            .generation_changed(next.generation)
-            .await
-            .is_err()
-        {
-            continue;
         }
-        let retry_at =
-            tokio::time::Instant::now() + config.backoff.delay(attempt, config.jitter.as_ref());
-        attempt = attempt.saturating_add(1);
-        if session
-            .status(next.generation, ConnectionState::Backoff { retry_at })
-            .is_err()
-        {
-            continue;
-        }
-        tokio::select! {
-            biased;
-            () = session.root.cancelled() => return,
-            () = next.cancel.cancelled() => {},
-            () = tokio::time::sleep_until(retry_at) => {},
-        }
+    }
+}
+
+async fn wait_backoff(
+    config: &crate::ClientConfig,
+    session: &SessionInner,
+    attempt: &mut u32,
+) -> bool {
+    let Ok(next) = session.epochs.advance() else {
+        return false;
+    };
+    if session
+        .history
+        .generation_changed(next.generation)
+        .await
+        .is_err()
+    {
+        return true;
+    }
+    let retry_at =
+        tokio::time::Instant::now() + config.backoff.delay(*attempt, config.jitter.as_ref());
+    *attempt = attempt.saturating_add(1);
+    if session
+        .status(next.generation, ConnectionState::Backoff { retry_at })
+        .is_err()
+    {
+        return true;
+    }
+    tokio::select! {
+        biased;
+        () = session.root.cancelled() => false,
+        () = session.driver_cancel.cancelled() => false,
+        () = next.cancel.cancelled() => true,
+        () = tokio::time::sleep_until(retry_at) => true,
     }
 }
 

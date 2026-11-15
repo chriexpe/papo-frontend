@@ -45,6 +45,10 @@ pub struct HistorySnapshot {
     pub gaps: Vec<HistoryGap>,
     /// A server response proved the entire channel empty in this snapshot's generation.
     pub empty_complete: bool,
+    /// Newest-edge completeness was proven by a REST page or empty check in `generation`.
+    pub server_live_complete: bool,
+    /// Earliest live-edge message cursor added via live admission in `generation`, if any.
+    pub live_arrival_start: Option<HistoryCursor>,
 }
 
 /// A bounded raw history delivery. Every data delivery is a complete replacement, not a delta.
@@ -94,11 +98,19 @@ impl super::HistoryHandle {
         generation: Generation,
         version: u64,
         ids: &[Uuid],
-    ) -> Result<(Arc<HistorySnapshot>, Option<crate::ReadPoint>), crate::ReadingError> {
+    ) -> Result<
+        (
+            Arc<HistorySnapshot>,
+            Vec<crate::ReadPoint>,
+            Option<crate::ReadPoint>,
+        ),
+        crate::ReadingError,
+    > {
         let state = self.channel.state.lock().await;
         self.check(generation)?;
         let subscription = self.channel.subscribe()?;
         self.with_current_snapshot(generation, version, || ())?;
+        let mut points = Vec::with_capacity(ids.len());
         let mut point = None;
         for id in ids {
             let entry = state
@@ -111,9 +123,27 @@ impl super::HistoryHandle {
                 .message
                 .as_ref()
                 .ok_or(crate::ReadingError::InvalidReport)?;
-            point = point.max(Some(crate::ReadPoint::message(message)?));
+            let resolved = crate::ReadPoint::message(message)?;
+            points.push(resolved);
+            point = point.max(Some(resolved));
         }
-        Ok((subscription.snapshot, point))
+        Ok((subscription.snapshot, points, point))
+    }
+
+    pub(crate) fn ensure_reading_writable(
+        &self,
+        generation: Generation,
+    ) -> Result<(), HistoryError> {
+        if let Some(reason) = self
+            .session
+            .inner
+            .reading
+            .positions
+            .check_current_channel(self.channel.id, generation)
+        {
+            return Err(HistoryError::Closed(reason));
+        }
+        Ok(())
     }
 
     /// Linearize a queued visible report with this exact channel incarnation's accepted

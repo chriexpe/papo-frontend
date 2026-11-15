@@ -1,23 +1,24 @@
 //! Cache-based ordered unread counts; unknown prefixes/gaps remain lower bounds, never inferred completeness.
 
 use super::{ReadPoint, ReadState, ReadingError, UnreadCount};
-use crate::HistorySnapshot;
+use crate::{
+    HistorySnapshot,
+    catch_up_index::{first_after, resolve_point_in_snapshot},
+};
 
 pub(super) fn update(
     state: &mut ReadState,
     snapshot: &HistorySnapshot,
     server_head: Option<ReadPoint>,
 ) -> Result<(), ReadingError> {
-    let point = state.point();
-    let (mut low, mut high) = (0, snapshot.messages.len());
-    while low < high {
-        let middle = low + (high - low) / 2;
-        if Some(ReadPoint::message(&snapshot.messages[middle])?) <= point {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
+    let point = state
+        .point()
+        .map(|point| resolve_point_in_snapshot(snapshot, point))
+        .transpose()?;
+    let low = match point {
+        Some(point) => first_after(&snapshot.messages, point)?,
+        None => 0,
+    };
     let mut count =
         u64::try_from(snapshot.messages.len() - low).map_err(|_| ReadingError::InvalidPoint)?;
     let first = snapshot

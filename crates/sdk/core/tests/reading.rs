@@ -63,10 +63,17 @@ fn id(snapshot: &HistorySnapshot, index: usize) -> Uuid {
 async fn report(session: &Session, snapshot: &HistorySnapshot, index: usize) -> Result {
     let visible = id(snapshot, index);
     let history = session.history(channel()).await?;
+    let observer = session.reading_observer();
     for _ in 0..10 {
         let current = history.subscribe().await?.snapshot;
-        match session
-            .report_visible(channel(), current.generation, current.version, &[visible])
+        match observer
+            .report_visible(
+                channel(),
+                current.generation,
+                current.version,
+                &[visible],
+                papo_sdk::VisibilityContinuity::Continuous,
+            )
             .await
         {
             Ok(()) => return Ok(()),
@@ -107,19 +114,27 @@ fn fetches_and_stale_or_detached_reports_never_acknowledge_channel() -> Result {
         fixture.server().seed_history(seed).await?;
         let snapshot = history(&session).await?;
         assert!(snapshot.version > old.version);
+        let observer = session.reading_observer();
         assert!(
-            session
-                .report_visible(channel(), old.generation, old.version, &[id(&snapshot, 9)])
+            observer
+                .report_visible(
+                    channel(),
+                    old.generation,
+                    old.version,
+                    &[id(&snapshot, 9)],
+                    papo_sdk::VisibilityContinuity::Continuous,
+                )
                 .await
                 .is_err()
         );
         assert!(
-            session
+            observer
                 .report_visible(
                     channel(),
                     snapshot.generation,
                     snapshot.version,
-                    &[Uuid::from_u128(999)]
+                    &[Uuid::from_u128(999)],
+                    papo_sdk::VisibilityContinuity::Continuous,
                 )
                 .await
                 .is_err()
@@ -132,12 +147,13 @@ fn fetches_and_stale_or_detached_reports_never_acknowledge_channel() -> Result {
         })
         .await?;
         assert!(
-            session
+            observer
                 .report_visible(
                     channel(),
                     snapshot.generation,
                     snapshot.version,
-                    &[id(&snapshot, 9)]
+                    &[id(&snapshot, 9)],
+                    papo_sdk::VisibilityContinuity::Continuous,
                 )
                 .await
                 .is_err()

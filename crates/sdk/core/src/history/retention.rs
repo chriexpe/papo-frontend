@@ -58,6 +58,11 @@ impl Model {
             }
         }
         self.empty_generation = 0;
+        if self.chunks.is_empty() {
+            self.server_live_generation = 0;
+            self.live_arrival_generation = 0;
+            self.live_arrival_floor = None;
+        }
         Ok(deleted)
     }
 }

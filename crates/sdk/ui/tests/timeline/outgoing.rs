@@ -40,7 +40,12 @@ fn live_echoes_are_shared_stable_unread_excluded_and_replace_only_confirmed_serv
         assert!(echo(&second.items, local).is_some());
         assert!(matches!(
             timeline
-                .report_visible(stream.version, stream.generation, &[local])
+                .report_visible(
+                    stream.version,
+                    stream.generation,
+                    &[local],
+                    papo_sdk_ui::VisibilityContinuity::Continuous,
+                )
                 .await,
             Err(TimelineError::StaleSnapshot)
         ));

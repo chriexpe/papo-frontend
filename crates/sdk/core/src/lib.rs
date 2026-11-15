@@ -47,12 +47,24 @@ pub use outgoing::{
     RetryDecision,
 };
 pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
+mod catch_up;
+mod catch_up_cleanup;
+mod catch_up_index;
+mod catch_up_position_store;
+mod catch_up_spans;
+mod catch_up_store;
 pub mod permissions;
 mod private_fs;
 mod profiles;
 mod read_points;
 mod reading;
-pub use reading::{ReadPoint, ReadState, ReadingError, ReadingSnapshot, UnreadCount};
+pub use catch_up::{
+    CatchUpSnapshot, CatchUpView, ReadingPosition, ReadingPositionsSnapshot, VisibilityContinuity,
+};
+pub use catch_up_index::is_foreign_message;
+pub use reading::{
+    ReadPoint, ReadState, ReadingError, ReadingObserver, ReadingSnapshot, UnreadCount,
+};
 mod reconcile;
 mod reconcile_event;
 mod reconcile_fetch;

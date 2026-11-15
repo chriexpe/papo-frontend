@@ -191,7 +191,14 @@ fn pending_receipt(deleted: bool) -> Result {
         db.execute_batch("DROP TRIGGER fail_receipt;")?;
         drop(db);
         assert!(matches!(
-            timeline.report_visible(stream.version, stream.generation, &[local()]).await,
+            timeline
+                .report_visible(
+                    stream.version,
+                    stream.generation,
+                    &[local()],
+                    papo_sdk_ui::VisibilityContinuity::Continuous,
+                )
+                .await,
             Err(papo_sdk_ui::TimelineError::StaleSnapshot)
         ));
         assert!(matches!(

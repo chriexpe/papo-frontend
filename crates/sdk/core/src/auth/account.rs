@@ -28,11 +28,10 @@ impl AuthService {
                 }
                 this.validate(Some(epoch))?;
                 let snapshot = rest.credential_snapshot()?;
-                this.client
+                session
                     .inner
-                    .secrets
-                    .write(
-                        session.inner.key,
+                    .write_secret(
+                        &this.client.inner.secrets,
                         SecretValue::new(snapshot.expose_bytes().to_vec()),
                         &epoch.cancel,
                     )
@@ -65,16 +64,16 @@ impl AuthService {
         let result = self
             .run(|this, epoch| async move {
                 let session = this.session.as_ref().ok_or(ClientError::SignedOut)?;
+                session.inner.driver_cancel.cancel();
                 let push = crate::notifications::push::unregister_known(session).await;
                 let remote = match this.transport(epoch.as_ref()).await {
                     Ok(rest) => this.client.inner.request(rest.logout()).await,
                     Err(error) => Err(error),
                 };
                 this.validate(epoch.as_ref())?;
-                this.client
+                session
                     .inner
-                    .secrets
-                    .delete(session.inner.key, &session.inner.root)
+                    .delete_secret(&this.client.inner.secrets, &session.inner.root)
                     .await?;
                 this.publish(epoch.as_ref(), AuthState::SignedOut)?;
                 match push {

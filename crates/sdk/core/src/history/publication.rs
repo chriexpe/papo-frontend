@@ -112,6 +112,16 @@ impl Publication {
             gaps,
             empty_complete: state.model.order.is_empty()
                 && state.model.empty_generation == generation.get(),
+            server_live_complete: state.model.server_live_generation == generation.get(),
+            live_arrival_start: (state.model.live_arrival_generation == generation.get())
+                .then(|| {
+                    state
+                        .model
+                        .live_arrival_floor
+                        .as_ref()
+                        .map(super::ordering::Point::cursor)
+                })
+                .flatten(),
         });
         self.revision = state.model.revision;
         self.incarnation = Some((state.cache_instance, state.set_id));
@@ -286,6 +296,8 @@ impl Publication {
             version: self.next_version(Some(previous.version))?,
             generation,
             empty_complete: false,
+            server_live_complete: false,
+            live_arrival_start: None,
             ..(**previous).clone()
         });
         self.snapshot = Some(Arc::clone(&snapshot));

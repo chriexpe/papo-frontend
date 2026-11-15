@@ -75,6 +75,9 @@ pub(super) struct Model {
     pub chunks: Vec<Chunk>,
     pub revision: u64,
     pub empty_generation: u64,
+    pub server_live_generation: u64,
+    pub live_arrival_generation: u64,
+    pub live_arrival_floor: Option<Point>,
     pub dirty: BTreeSet<[u8; 16]>,
     pub deletions: BTreeMap<[u8; 16], Vec<[u8; 16]>>,
 }

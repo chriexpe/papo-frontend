@@ -241,3 +241,42 @@ async fn auth_registration_after_shutdown_cannot_leave_a_subscription_open() {
     pool.register_auth(session().account.server(), &state);
     assert!(subscription.changed().await.is_err());
 }
+
+#[tokio::test(start_paused = true)]
+async fn session_secret_serialization_avoids_busy_races_across_readers_and_logout_delete() {
+    let inner = session();
+    let store = Arc::new(ScriptedSecretStore::default());
+    let secrets = Arc::new(SecretStoreBoundary::new(
+        store.clone(),
+        Duration::from_secs(60),
+    ));
+    secrets
+        .activate(inner.account, inner.key.generation())
+        .unwrap();
+    inner
+        .write_secret(&secrets, SecretValue::new(b"token".to_vec()), &inner.root)
+        .await
+        .unwrap();
+    store.push(Operation::Read, Behavior::Delay(Duration::from_secs(1)));
+    let reader_inner = Arc::clone(&inner);
+    let reader_secrets = Arc::clone(&secrets);
+    let epoch = inner.epochs.current();
+    let reader = tokio::spawn(async move {
+        reader_inner
+            .read_secret(&reader_secrets, &epoch.cancel)
+            .await
+    });
+    tokio::task::yield_now().await;
+    let deleter_inner = Arc::clone(&inner);
+    let deleter_secrets = Arc::clone(&secrets);
+    let deleter = tokio::spawn(async move {
+        deleter_inner
+            .delete_secret(&deleter_secrets, &deleter_inner.root)
+            .await
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(reader.await.unwrap().unwrap().is_some());
+    deleter.await.unwrap().unwrap();
+    assert!(store.snapshot(inner.key).is_none());
+}

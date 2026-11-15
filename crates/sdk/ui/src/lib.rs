@@ -36,14 +36,24 @@ mod list_subscription;
 mod registry_projection;
 mod server_list;
 mod timeline;
+mod timeline_arrivals;
 mod timeline_item;
+mod timeline_reading;
+mod timeline_seek;
 mod timeline_window;
 
+pub use papo_sdk::VisibilityContinuity;
 pub use timeline::{
     Timeline, TimelineConfig, TimelineError, TimelineEvent, TimelinePage, TimelineStream,
     TimelineSubscription, TimelineUpdate,
 };
+pub use timeline_arrivals::TimelineArrivals;
 pub use timeline_item::{TimelineDirection, TimelineItem, UtcOffset, UtcOffsetProvider};
+pub use timeline_reading::{
+    TimelineCatchUp, TimelineReadingEvent, TimelineReadingState, TimelineReadingStream,
+    TimelineReadingSubscription,
+};
+pub use timeline_seek::CatchUpSeek;
 
 pub use channel_list::{
     ChannelListItem, ChannelListService, ChannelListStream, ChannelListSubscription,

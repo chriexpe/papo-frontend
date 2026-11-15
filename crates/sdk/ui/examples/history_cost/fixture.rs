@@ -1,11 +1,11 @@
 //! Synthetic loopback fixture admission and count-only reporting; SDK policy remains in production services.
 
 use papo_sdk::{
-    Client, ConnectionState, LoginRequest, RegisterRequest, Session, SessionEvents, UnixMicros,
-    Uuid,
+    Client, ConnectionState, HistoryHandle, HistoryQuery, HistorySnapshot, LoginRequest,
+    RegisterRequest, Session, SessionEvents, UnixMicros, Uuid,
 };
 use papo_test_server::{HistorySeed, TestServer};
-use std::{error::Error, time::Instant};
+use std::{error::Error, sync::Arc, time::Instant};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
@@ -82,6 +82,26 @@ pub async fn report(session: &Session, scenario: &str, rows: usize, started: Ins
     });
     println!("{}", serde_json::to_string(&record)?);
     Ok(())
+}
+
+pub async fn hydrate(history: &HistoryHandle, count: usize) -> Result<Arc<HistorySnapshot>> {
+    let mut cursor = None;
+    loop {
+        let page = history
+            .page(HistoryQuery {
+                cursor: cursor.as_ref(),
+                limit: Some(100),
+                ..HistoryQuery::default()
+            })
+            .await?;
+        cursor = page.next_cursor;
+        if !page.has_more {
+            break;
+        }
+    }
+    let snapshot = history.subscribe().await?.snapshot;
+    assert_eq!(snapshot.messages.len(), count);
+    Ok(snapshot)
 }
 
 fn peak_rss_bytes() -> Option<u64> {

@@ -223,5 +223,19 @@ fn reconnect_overlap_removes_old_gap_items_without_replacing_unchanged_message_a
     for view in &mut fixture.views {
         view.checkpoint();
     }
+    // Behind-head live arrivals on a focused window never produce non-empty item diffs.
+    let mut focused = Consumer::new(&mut fixture.views[1].state, 8);
+    for _ in 0..3 {
+        fixture.source.arrival();
+        fixture.publish(1);
+    }
+    while let Some(Some(event)) = focused.receiver.next().now_or_never() {
+        if let Event::Update { diffs, .. } = event {
+            assert!(
+                diffs.is_empty(),
+                "focused window must emit zero item diffs for behind-head arrivals"
+            );
+        }
+    }
     fixture.close();
 }
