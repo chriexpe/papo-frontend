@@ -30,11 +30,19 @@ pub(crate) fn remember(
             .as_ref()
             .is_none_or(|current| current.generation != generation || version >= current.version)
         {
+            let changed = cached.as_ref().is_none_or(|current| {
+                current.generation != generation
+                    || current.config.enabled != config.enabled
+                    || current.config.mentions != config.mentions
+            });
             *cached = Some(BackendPolicy {
                 generation,
                 version,
                 config,
             });
+            if changed {
+                session.notifications.policy_changes.send_replace(());
+            }
         }
     })?;
     Ok(())

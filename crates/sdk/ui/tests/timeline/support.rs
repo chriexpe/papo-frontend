@@ -5,7 +5,8 @@ use std::{error::Error, future::Future, sync::Arc, time::Duration};
 use futures_util::{FutureExt, StreamExt};
 use papo_sdk::{
     AuthService, Backoff, Client, ClientConfig, ConnectionState, DataRoot, Jitter, LoginRequest,
-    Message, RegisterRequest, Session, UnixMicros, Uuid, secret::test_store::ScriptedSecretStore,
+    Message, RegisterRequest, ServerId, Session, UnixMicros, Uuid,
+    secret::test_store::ScriptedSecretStore,
 };
 use papo_sdk_ui::{TimelineEvent, TimelineItem, TimelineSubscription};
 use papo_test_server::{Config, HistorySeed, RestStep, TestServer};
@@ -104,11 +105,17 @@ impl Fixture {
     }
 
     pub async fn signed_in(&self, username: &str) -> Result<Session> {
-        let handle = self.client().handle();
-        let server = handle
+        let server = self
+            .client()
+            .handle()
             .add_server(&self.server().base_url(), UnixMicros(0))
             .await?;
-        let auth = handle.auth(server)?;
+        self.signed_in_on(server, username).await
+    }
+
+    /// Registers another account on a server that is already added to the client.
+    pub async fn signed_in_on(&self, server: ServerId, username: &str) -> Result<Session> {
+        let auth = self.client().handle().auth(server)?;
         auth.register(RegisterRequest {
             username: username.into(),
             password: password(),

@@ -125,7 +125,9 @@ async fn publish_reported(p: ReportedPublish<'_>) -> Result<(), ReadingError> {
         image.generation = p.generation;
         let state = image.channels.entry(p.channel).or_default();
         state.local_point = Some(local);
-        counts::update(
+        counts::update_for(
+            p.session,
+            p.channel,
             state,
             p.snapshot,
             p.session
@@ -136,7 +138,8 @@ async fn publish_reported(p: ReportedPublish<'_>) -> Result<(), ReadingError> {
                 .await
                 .get(&p.channel)
                 .copied(),
-        )?;
+        )
+        .await?;
         if p.session
             .inner
             .reading

@@ -25,6 +25,10 @@ pub use direct_messages::{
     DirectMessageId, DirectMessageItem, DirectMessageService, DirectMessageSubscription,
     DirectMessageUpdate,
 };
+mod badge_projection;
+mod badge_subscription;
+mod badges;
+pub use badges::{BadgeSnapshot, BadgeSubscription, BadgeTotals, BadgeUpdate};
 mod channel_list;
 mod channel_projection;
 mod channel_reading;

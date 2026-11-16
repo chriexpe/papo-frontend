@@ -60,6 +60,7 @@ pub(crate) async fn hydrate_from_storage(
                 local_point: points.local,
                 uploaded_point: points.uploaded.and_then(|u| u.point()),
                 unread_count: super::UnreadCount::AtLeast(0),
+                mention_count: super::UnreadCount::AtLeast(0),
                 first_unread: None,
             };
             if state.point().is_none() {

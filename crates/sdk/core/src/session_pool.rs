@@ -16,6 +16,7 @@ pub(crate) struct SessionPool {
     pub root: CancellationToken,
     pub next: Arc<AtomicU64>,
     sessions: Mutex<HashMap<AccountId, Arc<SessionInner>>>,
+    changes: tokio::sync::watch::Sender<u64>,
     caches: Mutex<Option<crate::AccountCaches>>,
     media: Mutex<Option<crate::media::MediaStore>>,
     retired: Mutex<HashMap<AccountId, u64>>,
@@ -34,6 +35,7 @@ impl SessionPool {
             root: CancellationToken::new(),
             next: Arc::new(AtomicU64::new(1)),
             sessions: Mutex::new(HashMap::new()),
+            changes: tokio::sync::watch::channel(0).0,
             caches: Mutex::new(None),
             media: Mutex::new(None),
             retired: Mutex::new(HashMap::new()),
@@ -61,6 +63,14 @@ impl SessionPool {
             .get(&account)
             .cloned()
     }
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+    fn publish_change(&self) {
+        self.changes.send_modify(|revision| {
+            *revision = revision.wrapping_add(1);
+        });
+    }
     pub(crate) fn lifecycle(&self, account: AccountId) -> Arc<tokio::sync::RwLock<()>> {
         Arc::clone(
             self.lifecycle
@@ -76,6 +86,7 @@ impl SessionPool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(session.account, session);
+        self.publish_change();
     }
     pub fn register_auth(
         &self,
@@ -153,6 +164,7 @@ impl SessionPool {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&account);
         if let Some(session) = session {
+            self.publish_change();
             session.stop().await;
         }
     }
@@ -173,6 +185,7 @@ impl SessionPool {
             }
         };
         if let Some(session) = removed {
+            self.publish_change();
             self.retired
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -189,11 +202,15 @@ impl SessionPool {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+        self.publish_change();
         for session in sessions.into_values() {
             session.stop().await;
         }
     }
 }
+#[cfg(test)]
+mod tests;
+
 impl RemovalHooks for SessionPool {
     fn stop_session(&self, account: AccountId) -> RemovalFuture<'_> {
         Box::pin(async move {

@@ -121,3 +121,34 @@ fn coalesced_reading_versions_remain_coherent_without_replacing_other_channels()
     );
     assert!(Arc::ptr_eq(&unchanged, &subscription.snapshot[1]));
 }
+
+#[test]
+fn mention_change_only_replaces_the_affected_channel_item() {
+    let generation = Generation::for_test(1);
+    let baseline = reading(0, generation, 4);
+    let (sender, receiver) = watch::channel(Arc::clone(&baseline));
+    let mut subscription = subscribe(metadata(generation), receiver);
+    let unchanged = Arc::clone(&subscription.snapshot[1]);
+    let mut changed = (*baseline).clone();
+    changed.version = 1;
+    changed
+        .channels
+        .get_mut(&Uuid::from_u128(1))
+        .unwrap()
+        .mention_count = UnreadCount::AtLeast(2);
+    sender.send_replace(Arc::new(changed));
+    let update = subscription.stream.next().now_or_never().unwrap().unwrap();
+    assert!(matches!(
+        update.diffs.as_slice(),
+        [eyeball_im::VectorDiff::Set { index: 0, .. }]
+    ));
+    for diff in update.diffs {
+        diff.apply(&mut subscription.snapshot);
+    }
+    assert_eq!(
+        subscription.snapshot[0].mention_count(),
+        Some(UnreadCount::AtLeast(2))
+    );
+    assert!(Arc::ptr_eq(&unchanged, &subscription.snapshot[1]));
+    assert!(subscription.stream.next().now_or_never().is_none());
+}

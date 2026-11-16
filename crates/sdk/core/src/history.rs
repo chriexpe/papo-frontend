@@ -151,3 +151,6 @@ pub struct HistoryPage {
     /// An explicit unknown boundary encountered after these messages, if any.
     pub gap: Option<HistoryGap>,
 }
+
+#[cfg(test)]
+mod badge_tests;

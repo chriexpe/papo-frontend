@@ -118,6 +118,16 @@ impl ServerListService {
         registry_projection::subscribe(self.handle.subscribe_registry())
     }
 
+    /// Captures account/server channel badges and a unified DM badge, then watches changes.
+    ///
+    /// Uses existing sessions only. Unavailable sessions report unknown, never zero.
+    /// Registry selection and session lifecycle changes automatically rebind the sources;
+    /// notification delivery suppression never affects these aggregates.
+    #[must_use]
+    pub fn subscribe_badges(&self) -> crate::badges::BadgeSubscription {
+        crate::badge_subscription::subscribe(self.handle.clone())
+    }
+
     /// Subscribes atomically to one server's visible accounts and active flags.
     ///
     /// Unknown/removed servers have an empty list. Source version gaps still reset

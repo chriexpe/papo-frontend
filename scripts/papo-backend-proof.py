@@ -52,6 +52,7 @@ with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
             subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--test', 'session12_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)
             subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk-ui', '--test', 'permission_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)
             subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--test', 'session13_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)
+            subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--test', 'session13_badges_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)
             env.pop('PAPO_SERVER_PASSWORD', None)
             env.update(PAPO_ADDRESS=address, PAPO_USERNAME='cursorproof', PAPO_PASSWORD=env['PAPO_PROOF_PASSWORD'],
                        PAPO_LOOPBACK_HTTP='1', PAPO_EVENT_LIMIT='1')

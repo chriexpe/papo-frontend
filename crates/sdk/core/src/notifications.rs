@@ -1,22 +1,25 @@
 //! Shared notification policy and FULL claims across live, push and background; platforms own banner presentation.
 
 pub(crate) mod backend;
+pub(crate) mod classification;
 pub(crate) mod context;
 pub(crate) mod inbox;
 pub(crate) mod ledger;
 pub(crate) mod live;
-mod policy;
+pub(crate) mod policy;
 pub(crate) mod push;
 mod triggers;
 pub use inbox::{InboxCursor, InboxPage, NotificationRecord};
 pub use policy::{ChannelNotificationMode, NotificationSettings};
 pub use push::{PushDevice, PushRegistration};
+#[cfg(test)]
+mod backend_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod crash;
 #[cfg(test)]
 mod retention_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::{AccountId, ClientError, Generation, Session, Uuid};
 use std::{
@@ -103,6 +106,8 @@ pub(crate) struct Notifications {
     pub push_closing: AtomicBool,
     pub inbox_revision: AtomicU64,
     pub backend: Mutex<Option<backend::BackendPolicy>>,
+    pub policy_changes: watch::Sender<()>,
+    pub classification: Mutex<classification::ClassificationCache>,
     pub canonical_points: tokio::sync::Mutex<context::CanonicalPoints>,
     pub poll_serial: tokio::sync::Mutex<()>,
     pub serial: tokio::sync::Mutex<()>,
@@ -119,6 +124,8 @@ impl Default for Notifications {
             push_closing: AtomicBool::new(false),
             inbox_revision: AtomicU64::new(0),
             backend: Mutex::default(),
+            policy_changes: watch::channel(()).0,
+            classification: Mutex::default(),
             canonical_points: tokio::sync::Mutex::default(),
             poll_serial: tokio::sync::Mutex::new(()),
             serial: tokio::sync::Mutex::new(()),
@@ -229,7 +236,48 @@ impl NotificationService {
             .client
             .dispatch(async move {
                 let _serial = session.inner.notifications.serial.lock().await;
-                Ok(ledger::save_settings(&session, settings).await)
+                Ok(async {
+                    let _resources = session.inner.resource_serial.lock().await;
+                    let reading = session.inner.reading.serial.lock().await;
+                    let previous = ledger::settings(&session).await?;
+                    let affected = {
+                        let resources = session.inner.resources.borrow();
+                        let backend = session
+                            .inner
+                            .notifications
+                            .backend
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .as_ref()
+                            .filter(|policy| policy.generation == session.generation())
+                            .map(|policy| policy.config.clone())
+                            .unwrap_or_default();
+                        session
+                            .inner
+                            .reading
+                            .image
+                            .borrow()
+                            .channels
+                            .keys()
+                            .copied()
+                            .filter(|channel| {
+                                policy::allows(&resources, &previous, &backend, *channel, true)
+                                    != policy::allows(
+                                        &resources, &settings, &backend, *channel, true,
+                                    )
+                            })
+                            .collect::<BTreeSet<_>>()
+                    };
+                    // A refresh cannot mix pre-commit and post-commit settings across channels.
+                    ledger::save_settings(&session, settings).await?;
+                    drop(reading);
+                    if !affected.is_empty() {
+                        crate::reading::reconcile::refresh_selected(&session, Some(&affected))
+                            .await?;
+                    }
+                    Ok::<(), NotificationError>(())
+                }
+                .await)
             })
             .await?
     }

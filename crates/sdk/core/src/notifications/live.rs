@@ -99,18 +99,7 @@ async fn process(
 ) -> Result<(), NotificationError> {
     let candidate = match event.value {
         Event::Known(KnownEvent::Message(message)) => {
-            let point = crate::MessageKey::parse(&message.created_at, &message.id)?;
-            let candidate = Candidate {
-                channel: super::id(Some(&message.channel_id))?,
-                message: super::id(Some(&message.id))?,
-                author: message.author_id.parse().ok(),
-                triggered: policy::mentions(&message.content, session.account().user()),
-                content: message.content,
-                read: false,
-                trigger_revision: None,
-                observed_at_us: point.created_at_us,
-                message_point: Some(point),
-            };
+            let candidate = message_candidate(session, *message).await?;
             if recent.len() == 1024 {
                 recent.pop_front();
             }
@@ -162,6 +151,81 @@ async fn process(
     }
     Ok(())
 }
+async fn message_candidate(
+    session: &Session,
+    message: papo_api::gateway::MessageEvent,
+) -> Result<Candidate, NotificationError> {
+    let point = crate::MessageKey::parse(&message.created_at, &message.id)?;
+    let channel = super::id(Some(&message.channel_id))?;
+    let mut messages = imbl::Vector::new();
+    if let Some(reply) = message.reply_to.as_deref().and_then(|id| id.parse().ok()) {
+        let cached = session
+            .inner
+            .notifications
+            .classification
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reply_message(channel, reply);
+        let parent = if cached.is_some() {
+            cached
+        } else {
+            session
+                .inner
+                .history
+                .snapshots()
+                .await
+                .into_iter()
+                .find(|(id, _)| *id == channel)
+                .and_then(|(_, snapshot)| {
+                    snapshot
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|held| {
+                            held.id.as_deref().and_then(|id| id.parse().ok()) == Some(reply)
+                        })
+                        .cloned()
+                })
+        };
+        if let Some(parent) = parent {
+            messages.push_back(parent);
+        }
+    }
+    let current = std::sync::Arc::new(papo_api::wire::Message {
+        id: Some(message.id.clone()),
+        channel_id: Some(message.channel_id.clone()),
+        author_id: Some(message.author_id.clone()),
+        content: Some(message.content.clone()),
+        created_at: Some(message.created_at.clone()),
+        reply_to: message.reply_to.clone(),
+        webhook_id: message.webhook_id.clone(),
+        ..Default::default()
+    });
+    messages.push_back(current);
+    let index = messages.len() - 1;
+    let resources = std::sync::Arc::clone(&session.inner.resources.borrow());
+    let triggered = super::classification::ClassificationCache::default().classify_range(
+        channel,
+        &messages,
+        &[],
+        session.account().user(),
+        &resources,
+        index..index + 1,
+    )[0]
+    .triggered;
+    Ok(Candidate {
+        channel,
+        message: super::id(Some(&message.id))?,
+        author: message.author_id.parse().ok(),
+        triggered,
+        content: message.content,
+        read: false,
+        trigger_revision: None,
+        observed_at_us: point.created_at_us,
+        message_point: Some(point),
+    })
+}
+
 pub(crate) fn record_candidate(
     record: &papo_api::wire::Notification,
 ) -> Result<Candidate, NotificationError> {
@@ -240,7 +304,7 @@ pub(super) async fn deliver_at(
     );
     // Suppressed eligible candidates also consume the identity: unmuting cannot replay them later.
     // A non-triggering ordinary message must leave room for a later authoritative reply event.
-    if !policy::eligible(resources, &settings, &candidate) {
+    if !policy::claimable(resources, &settings, &candidate) {
         return Ok(None);
     }
     if !ledger::claim_candidate(

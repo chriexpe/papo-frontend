@@ -1,5 +1,7 @@
 //! Public Timeline behavior over real loopback TCP; deterministic projection properties live in unit tests.
 
+#[path = "timeline/badges.rs"]
+mod badges;
 #[path = "timeline/cancellation.rs"]
 mod cancellation;
 #[path = "timeline/catch_up.rs"]

@@ -101,7 +101,27 @@ async fn replay(
                     crate::history::reconnect::resources(session, connection, &snapshot).await?;
                     crate::reading::reconcile::resources(session, connection, &snapshot).await?;
                 }
-                session.publish_resources(snapshot)?;
+                session.publish_resources(snapshot.clone())?;
+                // Role, membership and ownership changes can invalidate broadcast authority.
+                if changed.iter().any(|resource| {
+                    !matches!(
+                        resource,
+                        crate::CacheResource::Channels | crate::CacheResource::Dms
+                    )
+                }) {
+                    let affected = session
+                        .notifications
+                        .classification
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .broadcast_channels();
+                    crate::reading::reconcile::refresh_with_resources(
+                        &connection.client.session(session.account)?,
+                        &snapshot,
+                        Some(&affected),
+                    )
+                    .await?;
+                }
             }
             session.epochs.apply(epoch.generation, || {
                 let _ = session.events.send(Generated {

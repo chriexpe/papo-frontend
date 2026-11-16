@@ -36,6 +36,15 @@ pub struct ChannelListItem {
     pub unread: Option<papo_sdk::ReadState>,
 }
 
+impl ChannelListItem {
+    /// Eligible unread mention/reply/DM triggers from the SDK's committed reading projection.
+    /// `None` means this generation has no verified reading state yet.
+    #[must_use]
+    pub fn mention_count(&self) -> Option<papo_sdk::UnreadCount> {
+        self.unread.as_ref().map(|state| state.mention_count)
+    }
+}
+
 /// One complete resource publication projected onto channel metadata.
 ///
 /// Apply `diffs` in order as one batch, then advance both version and generation.

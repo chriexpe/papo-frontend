@@ -1,220 +1,19 @@
 //! Server-mark resolution and coalesced cache-driven unread refresh; fetches never acknowledge reads.
 
-use super::{
-    ReadState, UnreadCount, counts,
-    reconcile_marks::{Mark, marks, resolve},
-    upload,
-};
-use crate::{
-    ClientError, MessageKey, ResourceSnapshot, Session,
-    read_points::{ServerReadPoint, UploadedPoint},
-    reconcile::ResourceConnection,
-    session::SessionInner,
-};
+use super::{UnreadCount, counts};
+use crate::{ClientError, MessageKey, ResourceSnapshot, Session, read_points::UploadedPoint};
 use papo_api::Uuid;
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, atomic::Ordering},
-};
+use std::sync::{Arc, atomic::Ordering};
 
-pub(crate) async fn resources(
-    session: &SessionInner,
-    connection: &ResourceConnection,
-    snapshot: &ResourceSnapshot,
-) -> Result<(), ClientError> {
-    let handle = connection.client.session(session.account)?;
-    if !std::ptr::eq(Arc::as_ptr(&handle.inner), session) {
-        return Err(ClientError::Superseded);
-    }
-    start(&handle);
-    let serial = session.reading.serial.lock().await;
-    session.epochs.validate(snapshot.generation)?;
-    let (image, heads, unresolved) = build_channel_image(&handle, connection, snapshot).await?;
-    if snapshot.server.is_some() {
-        let visible: std::collections::BTreeSet<Uuid> = image.channels.keys().copied().collect();
-        super::catch_up_sync::reconcile_removed_channels(
-            &connection.client,
-            session,
-            snapshot.generation,
-            &visible,
-        )
-        .await?;
-        session
-            .reading
-            .positions
-            .clear_revocations(&visible, snapshot.generation);
-    }
-    install_resources(session, connection, image, heads, unresolved).await?;
-    drop(serial);
-    refresh(&handle).await?;
-    resume_uploads(&handle).await;
-    Ok(())
-}
+pub(crate) use super::reconcile_resources::resources;
 
-type ChannelImageParts = (
-    super::ReadingSnapshot,
-    BTreeMap<Uuid, MessageKey>,
-    BTreeMap<Uuid, ServerReadPoint>,
-);
-
-async fn build_channel_image(
-    handle: &Session,
-    connection: &ResourceConnection,
-    snapshot: &ResourceSnapshot,
-) -> Result<ChannelImageParts, ClientError> {
-    let session = &handle.inner;
-    let stored = connection
-        .client
-        .inner
-        .registry
-        .load_read_points(session.account)
-        .await?;
-    let mut image = (**session.reading.image.borrow()).clone();
-    let same_generation = image.generation == snapshot.generation;
-    let previously_unresolved = session.reading.unresolved.lock().await.clone();
-    image.generation = snapshot.generation;
-    let mut heads = BTreeMap::new();
-    let mut unresolved = BTreeMap::new();
-    let mut channels = BTreeMap::new();
-    for Mark {
-        channel,
-        server,
-        head,
-    } in marks(snapshot)?
-    {
-        let previous = stored.get(&channel);
-        let mut state = image.channels.remove(&channel).unwrap_or_default();
-        state.local_point = state
-            .local_point
-            .max(previous.and_then(|points| points.local));
-        state.uploaded_point = state.uploaded_point.max(
-            previous
-                .and_then(|points| points.uploaded.as_ref())
-                .and_then(UploadedPoint::point),
-        );
-        if let Some(head) = head {
-            heads.insert(channel, head);
-        }
-        if let Some(server) = server {
-            let saved = previous.and_then(|points| points.uploaded.as_ref());
-            let point = if let Some(point) = saved
-                .filter(|saved| saved.server.message_id == server.message_id)
-                .and_then(|saved| saved.created_at_us)
-            {
-                Some(MessageKey {
-                    created_at_us: point,
-                    message_id: server.message_id,
-                })
-            } else if same_generation && previously_unresolved.get(&channel) == Some(&server) {
-                None
-            } else {
-                resolve(
-                    handle,
-                    connection,
-                    snapshot.generation,
-                    channel,
-                    &server,
-                    &state,
-                    heads.get(&channel).copied(),
-                )
-                .await?
-            };
-            if point.is_none() {
-                unresolved.insert(channel, server.clone());
-            }
-            save_resolved(
-                handle,
-                snapshot.generation,
-                channel,
-                server,
-                point,
-                &state,
-                saved,
-            )
-            .await?;
-            state.uploaded_point = state.uploaded_point.max(point);
-        }
-        state.unread_count = UnreadCount::AtLeast(u64::from(
-            heads
-                .get(&channel)
-                .is_some_and(|head| Some(*head) > state.point()),
-        ));
-        state.first_unread = None;
-        if unresolved.contains_key(&channel) {
-            counts::unresolved(&mut state);
-        }
-        channels.insert(channel, state);
-    }
-    image.channels = channels;
-    Ok((image, heads, unresolved))
-}
-
-async fn resume_uploads(handle: &Session) {
-    let pending: Vec<_> = handle
-        .inner
-        .reading
-        .image
-        .borrow()
-        .channels
-        .iter()
-        .filter_map(|(id, state)| state.pending().map(|_| *id))
-        .collect();
-    for channel in pending {
-        upload::schedule(handle, channel).await;
-    }
-}
-
-async fn save_resolved(
-    handle: &Session,
-    generation: crate::Generation,
-    channel: Uuid,
-    server: ServerReadPoint,
-    point: Option<MessageKey>,
-    state: &ReadState,
-    saved: Option<&UploadedPoint>,
-) -> Result<(), ClientError> {
-    let uploaded = UploadedPoint {
-        server,
-        created_at_us: point.map(|point| point.created_at_us),
-        known_point: state.uploaded_point.max(point),
-    };
-    if saved != Some(&uploaded) {
-        handle
-            .client
-            .inner
-            .registry
-            .save_uploaded_read(Arc::clone(&handle.inner), channel, generation, uploaded)
-            .await?;
-    }
-    Ok(())
-}
-
-async fn install_resources(
-    session: &SessionInner,
-    connection: &ResourceConnection,
-    image: super::ReadingSnapshot,
-    heads: BTreeMap<Uuid, MessageKey>,
-    unresolved: BTreeMap<Uuid, ServerReadPoint>,
-) -> Result<(), ClientError> {
-    {
-        let mut stored_heads = session.reading.heads.lock().await;
-        let mut stored_unresolved = session.reading.unresolved.lock().await;
-        let mut stored_connection = session.reading.connection.lock().await;
-        session.epochs.apply(image.generation, || {
-            *stored_heads = heads;
-            *stored_unresolved = unresolved;
-            *stored_connection = Some((image.generation, connection.clone()));
-        })?;
-    }
-    session.reading.publish(session, image)
-}
-
-fn start(session: &Session) {
+pub(super) fn start(session: &Session) {
     if session.inner.reading.started.swap(true, Ordering::AcqRel) {
         return;
     }
     let mut changes = session.inner.history.subscribe_changes();
     let mut connection = session.subscribe_connection();
+    let mut policy = session.inner.notifications.policy_changes.subscribe();
     let session = session.clone();
     let token = session.inner.tasks.token();
     let runtime = session.client.inner.runtime.clone();
@@ -229,6 +28,7 @@ fn start(session: &Session) {
                 _ = maintenance.tick() => {},
                 result = changes.changed() => if result.is_err() { return; },
                 result = connection.changed() => if result.is_err() { return; },
+                result = policy.changed() => if result.is_err() { return; },
             }
             if let Err(ClientError::Closed) = refresh(&session).await {
                 return;
@@ -238,9 +38,41 @@ fn start(session: &Session) {
 }
 
 pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
+    refresh_selected(session, None).await
+}
+
+pub(crate) async fn refresh_selected(
+    session: &Session,
+    selected: Option<&std::collections::BTreeSet<Uuid>>,
+) -> Result<(), ClientError> {
+    refresh_inner(session, selected, None).await
+}
+
+pub(crate) async fn refresh_with_resources(
+    session: &Session,
+    resources: &ResourceSnapshot,
+    selected: Option<&std::collections::BTreeSet<Uuid>>,
+) -> Result<(), ClientError> {
+    refresh_inner(session, selected, Some(resources)).await
+}
+
+async fn refresh_inner(
+    session: &Session,
+    selected: Option<&std::collections::BTreeSet<Uuid>>,
+    resources: Option<&ResourceSnapshot>,
+) -> Result<(), ClientError> {
     let serial = session.inner.reading.serial.lock().await;
     let generation = session.generation();
     session.inner.epochs.validate(generation)?;
+    // Loaded under `reading.serial` on purpose: `set_settings` commits new settings while holding
+    // it, so a refresh never publishes counts computed from settings older than a commit it waited
+    // for. The read goes through the reader pool, not the write path.
+    let mut policy = counts::Policy::load(session)
+        .await
+        .map_err(|_| ClientError::ResourceData)?;
+    if let Some(resources) = resources {
+        policy = policy.with_resources(resources);
+    }
     let snapshots = session.inner.history.snapshots().await;
     let heads = session.inner.reading.heads.lock().await;
     let mut unresolved = session.inner.reading.unresolved.lock().await;
@@ -248,8 +80,14 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
     let old_generation = image.generation;
     image.generation = generation;
     let previous = image.channels.clone();
+    crate::notifications::classification::ClassificationCache::retain(
+        &session.inner.notifications.classification,
+        &image.channels.keys().copied().collect(),
+    );
     for (channel, snapshot) in &snapshots {
-        if snapshot.generation != generation {
+        if selected.is_some_and(|selected| !selected.contains(channel))
+            || snapshot.generation != generation
+        {
             continue;
         }
         if let Some(state) = image.channels.get_mut(channel) {
@@ -284,13 +122,21 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
                     unresolved.remove(channel);
                 }
             }
-            counts::update(state, snapshot, heads.get(channel).copied())
+            policy
+                .update(
+                    session,
+                    *channel,
+                    state,
+                    snapshot,
+                    heads.get(channel).copied(),
+                )
                 .map_err(|_| ClientError::ResourceData)?;
             if unresolved.contains_key(channel) {
                 counts::unresolved(state);
             }
         }
     }
+    update_uncached_counts(&mut image, &policy, selected, &snapshots, generation);
     drop((heads, unresolved));
     if previous != image.channels || old_generation != generation {
         session.inner.reading.publish(&session.inner, image)?;
@@ -303,4 +149,25 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
         .trim(session.client.inner.config.history)
         .await;
     Ok(())
+}
+
+fn update_uncached_counts(
+    image: &mut super::ReadingSnapshot,
+    policy: &counts::Policy,
+    selected: Option<&std::collections::BTreeSet<Uuid>>,
+    snapshots: &[(Uuid, Arc<crate::HistorySnapshot>)],
+    generation: crate::Generation,
+) {
+    for (channel, state) in &mut image.channels {
+        if selected.is_none_or(|selected| selected.contains(channel)) {
+            if !policy.eligible(*channel) {
+                state.mention_count = UnreadCount::Exact(0);
+            } else if !snapshots
+                .iter()
+                .any(|(id, snapshot)| id == channel && snapshot.generation == generation)
+            {
+                state.mention_count = UnreadCount::AtLeast(0);
+            }
+        }
+    }
 }

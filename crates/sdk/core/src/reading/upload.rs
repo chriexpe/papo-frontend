@@ -282,7 +282,9 @@ async fn confirm(
         .into_iter()
         .find(|(id, _)| *id == channel)
     {
-        counts::update(
+        counts::update_for(
+            session,
+            channel,
             state,
             &snapshot,
             session
@@ -294,6 +296,7 @@ async fn confirm(
                 .get(&channel)
                 .copied(),
         )
+        .await
         .map_err(|_| ClientError::ResourceData)?;
     }
     {

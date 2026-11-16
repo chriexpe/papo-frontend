@@ -60,6 +60,47 @@ presentation or tap navigation; fetching/tapping does not acknowledge a read.
 Only explicit `mark_read` calls or existing channel read reporting acknowledge
 backend state. A stale notification read returning 404 is accepted.
 
+## Unread and mention badges
+
+`ReadState::mention_count` counts eligible unread trigger messages, not delivered
+notifications or token occurrences. Multiple triggers in one message count once.
+Triggers are direct mentions, replies to the account, authorized everyone mentions,
+and non-self DMs. The pinned backend has no role-mention syntax. Mention scanning
+is context-free, including code spans/blocks; rendering follows Markdown context.
+
+Classification is cached independently of settings. The same eligibility policy
+filters badges and notifications: account switches, channel modes and device mutes
+apply before counting. Foreground visibility, delivery claims, previews and sound
+never suppress badges. Settings recounts use committed device policy and retained
+history without fetching history. A read report advances the effective read point
+and updates the count through the same coverage query as ordinary unread totals.
+Incomplete coverage or unresolved classification yields `UnreadCount::AtLeast`,
+never an invented exact total. A disabled channel has an exact zero mention badge.
+
+Coverage decides exactness. Rows that arrive over the live gateway cannot prove the
+rows before them complete, so in a history no REST page has proven (opening a
+subscription alone fetches nothing) counts that include them stay `AtLeast`. A history
+paged from the newest end, with fewer rows than requested, proves its coverage and
+counts exactly, and live rows that then extend it keep the count exact. Only unread rows that can trigger (a mention marker or a reply; every
+non-self row in a DM) hold cached facts. A channel with no unread rows, or whose
+mentions are not counted, holds none, so reading or muting a channel pins no history.
+A change to the backend's `enabled` or `mentions` switch, to device settings, or to
+retained history recounts at once; the one-second maintenance tick covers the rest.
+
+`ChannelListItem::mention_count()` exposes the SDK count when generation-matching
+reading state exists. `ServerListService::subscribe_badges()` provides separate
+channel totals for each account and each server's active account, plus unified DM
+totals across visible accounts. Missing/closed/unreconciled sessions are unknown,
+not zero. `has_unread` is also unknown when only a zero lower bound is available.
+The aggregate stream publishes only changed values and rebinds on registry and
+session-lifecycle changes; it does not republish channel items.
+
+No channel or mention aggregate exists in the pinned backend. Its DM unread count
+uses `created_at > last_read_at`, where `last_read_at` is the acknowledgment wall
+clock, not the SDK's effective local/uploaded message key. It cannot replace the
+SDK cursor-based count without changing its meaning. Inbox totals and truncated
+notification previews likewise cannot substitute for full-message classification.
+
 ## Background lifecycle
 
 `ClientHandle::background_sync(deadline)` and its explicit-cancellation variant

@@ -16,7 +16,7 @@ pub enum ChannelNotificationMode {
     All,
 }
 /// Durable device policy, isolated per authenticated account.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -84,10 +84,6 @@ pub(super) fn decide(
     candidate: &Candidate,
     resources: &ResourceSnapshot,
 ) -> Option<NotificationDelivery> {
-    let dm = resources
-        .dms
-        .iter()
-        .any(|d| d.id.parse().ok() == Some(candidate.channel));
     let read_locally = session
         .reading_state(candidate.channel)
         .is_some_and(|state| {
@@ -97,14 +93,17 @@ pub(super) fn decide(
                 .is_some_and(|message| point.is_some_and(|point| message <= point))
                 || point.is_some_and(|point| point.message_id == candidate.message)
         });
-    if read_locally
-        || resources.generation != generation
-        || !contains_channel(resources, candidate.channel)
-        || candidate.read
+    if resources.generation != generation
         || candidate.author == Some(session.account().user())
-        || !settings.enabled
-        || backend.enabled == Some(false)
-        || settings.muted.contains(&candidate.channel)
+        || !allows(
+            resources,
+            settings,
+            backend,
+            candidate.channel,
+            candidate.triggered,
+        )
+        || read_locally
+        || candidate.read
         || session
             .inner
             .notifications
@@ -112,36 +111,6 @@ pub(super) fn decide(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&candidate.channel)
-    {
-        return None;
-    }
-    let backend_mode = resources
-        .channels
-        .iter()
-        .find(|c| c.id.as_deref().and_then(|s| s.parse().ok()) == Some(candidate.channel))
-        .and_then(|c| c.notification_settings.as_deref())
-        .unwrap_or("only_mentions");
-    if backend_mode == "off" {
-        return None;
-    }
-    let mode = settings
-        .channels
-        .get(&candidate.channel)
-        .copied()
-        .unwrap_or(if backend_mode == "all" {
-            ChannelNotificationMode::All
-        } else {
-            ChannelNotificationMode::Mentions
-        });
-    if mode == ChannelNotificationMode::Off {
-        return None;
-    }
-    if dm {
-        if !settings.direct_messages {
-            return None;
-        }
-    } else if mode != ChannelNotificationMode::All
-        && (!candidate.triggered || !settings.mentions || backend.mentions == Some(false))
     {
         return None;
     }
@@ -158,26 +127,70 @@ pub(super) fn decide(
     })
 }
 
-/// Eligibility is shared with claim admission, independently of suppression.
-pub(super) fn eligible(
+/// Shared eligibility; read state, visibility, previews and claims are deliberately absent.
+pub(crate) fn allows(
+    resources: &ResourceSnapshot,
+    settings: &NotificationSettings,
+    backend: &papo_api::wire::Notifications,
+    channel: Uuid,
+    triggered: bool,
+) -> bool {
+    if !contains_channel(resources, channel)
+        || !settings.enabled
+        || backend.enabled == Some(false)
+        || settings.muted.contains(&channel)
+    {
+        return false;
+    }
+    let backend_mode = resources
+        .channels
+        .iter()
+        .find(|c| c.id.as_deref().and_then(|id| id.parse().ok()) == Some(channel))
+        .and_then(|c| c.notification_settings.as_deref())
+        .unwrap_or("only_mentions");
+    if backend_mode == "off" {
+        return false;
+    }
+    let mode = settings
+        .channels
+        .get(&channel)
+        .copied()
+        .unwrap_or(if backend_mode == "all" {
+            ChannelNotificationMode::All
+        } else {
+            ChannelNotificationMode::Mentions
+        });
+    if mode == ChannelNotificationMode::Off {
+        return false;
+    }
+    if resources
+        .dms
+        .iter()
+        .any(|dm| dm.id.parse().ok() == Some(channel))
+    {
+        return settings.direct_messages;
+    }
+    mode == ChannelNotificationMode::All
+        || (triggered && settings.mentions && backend.mentions != Some(false))
+}
+
+/// Delivery ledger admission, not settings eligibility. Suppressed triggers consume identity.
+pub(super) fn claimable(
     resources: &ResourceSnapshot,
     settings: &NotificationSettings,
     candidate: &Candidate,
 ) -> bool {
-    if candidate.triggered
+    candidate.triggered
         || resources
             .dms
             .iter()
             .any(|dm| dm.id.parse().ok() == Some(candidate.channel))
-    {
-        return true;
-    }
-    match settings.channels.get(&candidate.channel) {
-        Some(ChannelNotificationMode::All) => true,
-        Some(ChannelNotificationMode::Mentions | ChannelNotificationMode::Off) => false,
-        None => resources.channels.iter().any(|channel| {
-            channel.id.as_deref().and_then(|id| id.parse().ok()) == Some(candidate.channel)
-                && channel.notification_settings.as_deref() == Some("all")
-        }),
-    }
+        || match settings.channels.get(&candidate.channel) {
+            Some(ChannelNotificationMode::All) => true,
+            Some(ChannelNotificationMode::Mentions | ChannelNotificationMode::Off) => false,
+            None => resources.channels.iter().any(|channel| {
+                channel.id.as_deref().and_then(|id| id.parse().ok()) == Some(candidate.channel)
+                    && channel.notification_settings.as_deref() == Some("all")
+            }),
+        }
 }

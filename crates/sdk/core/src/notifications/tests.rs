@@ -8,7 +8,7 @@ use crate::{
 };
 use std::sync::Arc;
 
-pub(super) fn fixture(path: &std::path::Path) -> (Client, Session) {
+pub(crate) fn fixture(path: &std::path::Path) -> (Client, Session) {
     let client = Client::open(
         DataRoot::new(path),
         Arc::new(ScriptedSecretStore::default()),

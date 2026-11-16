@@ -9,6 +9,7 @@ pub(crate) mod position_publish;
 pub(crate) mod positions;
 pub(crate) mod reconcile;
 pub(crate) mod reconcile_marks;
+mod reconcile_resources;
 #[cfg(test)]
 mod tests;
 mod upload;
@@ -49,6 +50,8 @@ pub struct ReadState {
     pub uploaded_point: Option<MessageKey>,
     /// Unread messages after the greater of local and uploaded points.
     pub unread_count: UnreadCount,
+    /// Eligible classified triggers after the read point; gaps retain a lower bound.
+    pub mention_count: UnreadCount,
     /// First cached unread message, not a claim that an unknown prefix is complete.
     pub first_unread: Option<Uuid>,
 }

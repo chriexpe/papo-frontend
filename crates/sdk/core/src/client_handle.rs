@@ -177,6 +177,15 @@ impl ClientHandle {
             client: self.clone(),
         })
     }
+    /// Subscribes to account sessions opening, closing or being replaced.
+    ///
+    /// The revision is a coalescing wake-up signal, not a registry version. Capture
+    /// this watch before querying `session` to avoid missing a lifecycle change.
+    /// Session capabilities remain account-scoped and are obtained with `session`.
+    #[must_use]
+    pub fn subscribe_sessions(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.pool.subscribe()
+    }
     pub(crate) async fn restore_accounts(&self) -> Result<(), ClientError> {
         let snapshot = Arc::clone(&self.inner.registry_rx.borrow());
         for account in &snapshot.accounts {
