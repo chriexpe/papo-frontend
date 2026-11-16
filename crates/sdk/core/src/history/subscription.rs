@@ -213,6 +213,17 @@ impl super::channel::HistoryStore {
         self.changes.subscribe()
     }
 
+    /// The resident snapshot of one channel, without touching any other channel.
+    pub(crate) async fn snapshot(&self, channel: Uuid) -> Option<Arc<HistorySnapshot>> {
+        self.channels
+            .lock()
+            .await
+            .get(&channel)?
+            .subscribe()
+            .ok()
+            .map(|subscription| subscription.snapshot)
+    }
+
     pub(crate) async fn snapshots(&self) -> Vec<(Uuid, Arc<HistorySnapshot>)> {
         self.channels
             .lock()

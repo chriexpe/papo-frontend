@@ -47,3 +47,19 @@ pub(crate) fn remember(
     })?;
     Ok(())
 }
+
+/// The backend notification switches cached for `generation`, or the defaults when none are.
+pub(crate) fn current(
+    session: &SessionInner,
+    generation: Generation,
+) -> papo_api::wire::Notifications {
+    let cached = session
+        .notifications
+        .backend
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match cached.as_ref() {
+        Some(policy) if policy.generation == generation => policy.config.clone(),
+        _ => papo_api::wire::Notifications::default(),
+    }
+}

@@ -37,16 +37,7 @@ impl Policy {
             .await
             .map_err(|_| crate::ClientError::ResourceData)?;
         let resources = std::sync::Arc::clone(&session.inner.resources.borrow());
-        let backend = session
-            .inner
-            .notifications
-            .backend
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .filter(|policy| policy.generation == session.generation())
-            .map(|policy| policy.config.clone())
-            .unwrap_or_default();
+        let backend = crate::notifications::backend::current(&session.inner, session.generation());
         Ok(Self {
             settings,
             resources,

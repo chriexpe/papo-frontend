@@ -54,7 +54,9 @@ fn run() -> Result {
     let result = client.block_on(async {
         tokio::time::timeout(Duration::from_secs(240), async {
             match scenario.as_str() {
-                "history" => history::run(&client, count).await,
+                "history" => history::run(&client, count, history::Content::Empty).await,
+                "dense" => history::run(&client, count, history::Content::OrdinaryAtSigns).await,
+                "everyone" => history::run(&client, count, history::Content::Everyone).await,
                 "overlay" => overlay::run(&client, count).await,
                 "residency" => residency::run(&client, 500).await,
                 "reconnect" => reconnect::run(&client, 100).await,

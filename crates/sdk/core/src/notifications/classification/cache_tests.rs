@@ -1,174 +1,8 @@
-//! Reply-parent evidence lifetime and release of facts for read or ineligible channels.
+//! Facts lifetime and release, tally agreement with per-row classification, and cache installs.
 
 use super::tests::{messages, resources};
 use super::*;
 use crate::Generation;
-
-fn padded_history_with_orphan_reply(user: Uuid, orphan_parent: Uuid) -> imbl::Vector<Arc<Message>> {
-    let mut messages = messages(user);
-    Arc::make_mut(&mut messages[2]).reply_to = Some(orphan_parent.to_string());
-    // Beyond imbl's inline capacity, so that snapshot identity is observable.
-    messages.extend((100..120).map(|id| {
-        Arc::new(Message {
-            id: Some(Uuid::from_u128(id).to_string()),
-            author_id: Some(Uuid::from_u128(4).to_string()),
-            ..Default::default()
-        })
-    }));
-    messages
-}
-
-fn gap(id: u128) -> HistoryGap {
-    HistoryGap {
-        cursor: papo_api::HistoryCursor {
-            created_at: "2026-01-01T00:00:00Z".into(),
-            id: Uuid::from_u128(id).to_string(),
-        },
-        order: papo_api::HistoryOrder::Desc,
-    }
-}
-
-fn newest_edge_gap(id: u128) -> HistoryGap {
-    HistoryGap {
-        order: papo_api::HistoryOrder::Asc,
-        ..gap(id)
-    }
-}
-
-#[test]
-fn a_moving_newest_edge_gap_never_rescans_but_an_interior_gap_does() {
-    let user = Uuid::from_u128(1);
-    let channel = Uuid::from_u128(2);
-    let mut messages = padded_history_with_orphan_reply(user, Uuid::from_u128(99));
-    let mut cache = ClassificationCache::default();
-    let examined = |cache: &ClassificationCache| cache.channels[&channel].parents.rows_examined;
-    let append = |messages: &mut imbl::Vector<Arc<Message>>, id: u128| {
-        messages.push_back(Arc::new(Message {
-            id: Some(Uuid::from_u128(id).to_string()),
-            author_id: Some(Uuid::from_u128(4).to_string()),
-            ..Default::default()
-        }));
-    };
-
-    let gaps = [gap(1), newest_edge_gap(7)];
-    cache.classify_range(channel, &messages, &gaps, user, &resources(), 2..3);
-    let first_search = examined(&cache);
-    assert_eq!(first_search, messages.len());
-
-    // A live append moves only the newest-edge cursor.
-    append(&mut messages, 500);
-    let moved = [gap(1), newest_edge_gap(8)];
-    cache.classify_range(channel, &messages, &moved, user, &resources(), 2..3);
-    assert_eq!(examined(&cache), first_search, "tail movement is no news");
-
-    // An interior gap changing may have supplied an older row.
-    append(&mut messages, 501);
-    let filled = [gap(2), newest_edge_gap(8)];
-    cache.classify_range(channel, &messages, &filled, user, &resources(), 2..3);
-    assert_eq!(examined(&cache), first_search + messages.len());
-
-    // With no newest-edge gap, a lone gap that fills downward still counts.
-    append(&mut messages, 502);
-    let lone = [gap(3)];
-    cache.classify_range(channel, &messages, &lone, user, &resources(), 2..3);
-    assert_eq!(examined(&cache), first_search + 2 * messages.len() - 1);
-}
-
-#[test]
-fn a_missing_parent_is_searched_again_only_after_a_backfill_or_gap_change() {
-    let user = Uuid::from_u128(1);
-    let channel = Uuid::from_u128(2);
-    let absent = Uuid::from_u128(99);
-    let mut messages = padded_history_with_orphan_reply(user, absent);
-    let mut cache = ClassificationCache::default();
-    let examined = |cache: &ClassificationCache| cache.channels[&channel].parents.rows_examined;
-
-    let result = cache.classify_range(channel, &messages, &[], user, &resources(), 2..3);
-    assert!(!result[0].triggered && !result[0].complete);
-    assert_eq!(examined(&cache), messages.len());
-
-    cache.classify_range(channel, &messages, &[], user, &resources(), 2..3);
-    assert_eq!(examined(&cache), messages.len(), "same snapshot");
-
-    messages.push_back(Arc::new(Message {
-        id: Some(Uuid::from_u128(200).to_string()),
-        author_id: Some(Uuid::from_u128(4).to_string()),
-        ..Default::default()
-    }));
-    Arc::make_mut(&mut messages[10]).content = Some("edited".into());
-    let result = cache.classify_range(channel, &messages, &[], user, &resources(), 2..3);
-    assert!(!result[0].complete);
-    assert_eq!(examined(&cache), 25, "live append and edit: no new search");
-
-    // A gap fill supplies rows inside the window and changes the gap set with them.
-    let before = examined(&cache);
-    messages.insert(
-        12,
-        Arc::new(Message {
-            id: Some(Uuid::from_u128(201).to_string()),
-            author_id: Some(Uuid::from_u128(4).to_string()),
-            ..Default::default()
-        }),
-    );
-    let gaps = [gap(7)];
-    let result = cache.classify_range(channel, &messages, &gaps, user, &resources(), 2..3);
-    assert!(!result[0].complete);
-    assert_eq!(
-        examined(&cache),
-        before + messages.len(),
-        "gap change: searched"
-    );
-
-    messages.push_front(Arc::new(Message {
-        id: Some(absent.to_string()),
-        author_id: Some(user.to_string()),
-        ..Default::default()
-    }));
-    let result = cache.classify_range(channel, &messages, &gaps, user, &resources(), 3..4);
-    assert!(
-        result[0].triggered && result[0].complete,
-        "backfilled parent resolves"
-    );
-}
-
-#[test]
-fn a_found_parent_survives_replacement_and_evidence_follows_the_unread_replies() {
-    let user = Uuid::from_u128(1);
-    let channel = Uuid::from_u128(2);
-    let parent = Uuid::from_u128(118);
-    let mut messages = padded_history_with_orphan_reply(user, parent);
-    Arc::make_mut(&mut messages[23]).author_id = Some(user.to_string());
-    let mut cache = ClassificationCache::default();
-    assert!(cache.classify_range(channel, &messages, &[], user, &resources(), 2..3)[0].triggered);
-    let examined = cache.channels[&channel].parents.rows_examined;
-    assert!(
-        examined <= 2,
-        "a recent parent is found from the newest row"
-    );
-
-    Arc::make_mut(&mut messages[2]).content = Some("edited".into());
-    messages.push_back(Arc::clone(&messages[4]));
-    assert!(cache.classify_range(channel, &messages, &[], user, &resources(), 2..3)[0].triggered);
-    assert_eq!(cache.channels[&channel].parents.rows_examined, examined);
-
-    // A backfill changes the first row and the gap set; evidence for a found parent must stay.
-    messages.push_front(Arc::new(Message {
-        id: Some(Uuid::from_u128(300).to_string()),
-        author_id: Some(Uuid::from_u128(4).to_string()),
-        ..Default::default()
-    }));
-    let gaps = [gap(7)];
-    let reply = cache.classify_range(channel, &messages, &gaps, user, &resources(), 3..4);
-    assert!(reply[0].triggered && reply[0].complete);
-    assert_eq!(cache.channels[&channel].parents.rows_examined, examined);
-
-    cache.classify_range(channel, &messages, &gaps, user, &resources(), 4..5);
-    assert_eq!(
-        cache.channels[&channel].parents.len(),
-        0,
-        "reply left the range"
-    );
-}
 
 fn snapshot(messages: imbl::Vector<Arc<Message>>) -> HistorySnapshot {
     HistorySnapshot {
@@ -217,7 +51,8 @@ fn a_read_or_ineligible_channel_releases_its_facts() {
 fn the_tally_over_candidates_agrees_with_per_row_classification() {
     let user = Uuid::from_u128(1);
     let channel = Uuid::from_u128(2);
-    let mut messages = padded_history_with_orphan_reply(user, Uuid::from_u128(10));
+    let mut messages = messages(user);
+    Arc::make_mut(&mut messages[2]).reply_to = Some(Uuid::from_u128(10).to_string());
     messages.push_back(Arc::new(Message {
         id: Some(Uuid::from_u128(400).to_string()),
         author_id: Some(Uuid::from_u128(4).to_string()),
@@ -247,19 +82,12 @@ fn the_tally_over_candidates_agrees_with_per_row_classification() {
         let rows = ClassificationCache::default().classify_range(
             channel,
             &messages,
-            &[],
             user,
             &resources,
             range.clone(),
         );
-        let tally = ClassificationCache::default().tally_range(
-            channel,
-            &messages,
-            &[],
-            user,
-            &resources,
-            range,
-        );
+        let tally =
+            ClassificationCache::default().tally_range(channel, &messages, user, &resources, range);
         assert_eq!(
             tally.triggered,
             rows.iter().filter(|row| row.triggered).count() as u64
@@ -275,7 +103,7 @@ fn a_resource_change_recounts_cached_rows_without_reclassifying_them() {
     let messages = messages(user);
     let mut cache = ClassificationCache::default();
     let known = |cache: &mut ClassificationCache, resources: &ResourceSnapshot| {
-        let tally = cache.tally_range(channel, &messages, &[], user, resources, 0..messages.len());
+        let tally = cache.tally_range(channel, &messages, user, resources, 0..messages.len());
         (tally.triggered, tally.complete)
     };
     let with_owner = known(&mut cache, &resources());
@@ -353,4 +181,83 @@ fn a_computation_installs_only_over_the_entry_it_started_from() {
         facts()
     ));
     assert!(Arc::ptr_eq(&held(&shared).unwrap(), &winner));
+}
+
+fn plain_row(id: u128, content: &str) -> Arc<Message> {
+    Arc::new(Message {
+        id: Some(Uuid::from_u128(id).to_string()),
+        author_id: Some(Uuid::from_u128(4).to_string()),
+        content: Some(content.into()),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn a_history_full_of_ordinary_at_signs_holds_no_records_and_counts_exactly() {
+    let user = Uuid::from_u128(1);
+    let channel = Uuid::from_u128(2);
+    let mut messages: imbl::Vector<_> = (1_000..6_000)
+        .map(|id| plain_row(id, "mail me at someone@example.com or ping @team"))
+        .collect();
+    messages.push_back(plain_row(
+        9_000,
+        &crate::mentions::encode_user_mention(user),
+    ));
+    let mut cache = ClassificationCache::default();
+
+    let tally = cache.tally_range(channel, &messages, user, &resources(), 0..messages.len());
+    assert_eq!((tally.triggered, tally.complete), (1, true));
+    let facts = &cache.channels[&channel];
+    assert_eq!(facts.records.len(), 1, "only the real mention is a record");
+    assert_eq!(facts.classified_revisions, 1);
+    assert!(!facts.has_broadcast);
+}
+
+#[test]
+fn the_cache_pins_only_trigger_rows_never_the_history_it_was_given() {
+    let user = Uuid::from_u128(1);
+    let channel = Uuid::from_u128(2);
+    let mention = crate::mentions::encode_user_mention(user);
+    let rows: Vec<Arc<Message>> = (0..1_000)
+        .map(|id| {
+            plain_row(
+                100 + id,
+                if id % 400 == 0 {
+                    &mention
+                } else {
+                    "plain words"
+                },
+            )
+        })
+        .collect();
+    let weak: Vec<_> = rows.iter().map(Arc::downgrade).collect();
+    let mut cache = ClassificationCache::default();
+    let messages: imbl::Vector<_> = rows.into_iter().collect();
+    assert_eq!(
+        cache
+            .tally_range(channel, &messages, user, &resources(), 0..messages.len())
+            .triggered,
+        3
+    );
+
+    // The history is trimmed away: only the rows that count as mentions may stay reachable.
+    drop(messages);
+    let alive = weak.iter().filter(|row| row.upgrade().is_some()).count();
+    assert_eq!(alive, 3);
+}
+
+#[test]
+fn facts_are_released_for_channels_without_resident_history() {
+    let user = Uuid::from_u128(1);
+    let (kept, trimmed) = (Uuid::from_u128(2), Uuid::from_u128(3));
+    let snapshot = snapshot(messages(user));
+    let shared = std::sync::Mutex::new(ClassificationCache::default());
+    for channel in [kept, trimmed] {
+        ClassificationCache::project(&shared, channel, &snapshot, user, &resources(), 3..5);
+    }
+    assert_eq!(shared.lock().unwrap().channels.len(), 2);
+
+    ClassificationCache::retain(&shared, &BTreeSet::from([kept]));
+    let held: Vec<_> = shared.lock().unwrap().channels.keys().copied().collect();
+    assert_eq!(held, [kept]);
 }

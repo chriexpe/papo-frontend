@@ -2,8 +2,8 @@
 //! unread reply answers and when a negative finding stops being trustworthy; trigger rules
 //! stay with the classifier.
 
-use crate::{HistoryGap, Uuid};
-use papo_api::{HistoryOrder, wire::Message};
+use crate::Uuid;
+use papo_api::wire::Message;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -20,51 +20,51 @@ pub(super) enum Parent {
     Absent,
 }
 
-/// The history shape an `Absent` verdict was proven against.
+/// The history shape an `Absent` verdict was proven against: the IDs at both ends and the length.
 ///
 /// History is ascending by `(created_at_us, UUID)` and a parent precedes its reply, so a missing
-/// parent can only arrive through a backfill before the first row or a fill of a known gap.
-/// Live appends, edits, reactions and deletions cannot supply it. A parent that arrives any other
-/// way (for example a late row with a skewed clock) leaves the reply incomplete, which keeps the
-/// count a lower bound: the failure is never a wrong exact count.
+/// parent can only arrive in front of the first row or somewhere before the last one. Appends at
+/// the tail cannot supply it. A backfill changes the first row; an insertion anywhere before the
+/// last row moves it to a later index (or removes it from the old one), so the row recorded as
+/// last no longer sits at its recorded position. Only the tail may therefore grow without
+/// discarding the verdict. Changes that cancel out (an insertion and a removal in one
+/// publication) can keep a stale verdict, which leaves the reply incomplete: the count stays a
+/// lower bound and is never a wrong exact count.
 ///
-/// The basis is compared when the evidence is next prepared, not when the gaps change. It leaves
-/// out the newest-edge gap: the last gap, when it fills upward, sits at the cached tail and moves
-/// with every live append, and what it would supply is newer than every cached row.
+/// Holds IDs, not rows, so the evidence pins no message payload.
 #[derive(Clone, Default)]
 struct AbsenceBasis {
-    first: Option<Arc<Message>>,
-    gaps: Vec<HistoryGap>,
+    first: Option<Uuid>,
+    last: Option<Uuid>,
+    len: usize,
 }
 
-/// Gaps that can still hold an older row: all but a newest-edge gap that fills upward.
-fn interior(gaps: &[HistoryGap]) -> &[HistoryGap] {
-    match gaps.split_last() {
-        Some((newest, rest)) if newest.order == HistoryOrder::Asc => rest,
-        _ => gaps,
-    }
+fn id_at(messages: &imbl::Vector<Arc<Message>>, index: usize) -> Option<Uuid> {
+    messages
+        .get(index)
+        .and_then(|message| message.id.as_deref()?.parse().ok())
 }
 
 impl AbsenceBasis {
-    fn of(messages: &imbl::Vector<Arc<Message>>, gaps: &[HistoryGap]) -> Self {
+    fn of(messages: &imbl::Vector<Arc<Message>>) -> Self {
         Self {
-            first: messages.front().cloned(),
-            gaps: interior(gaps).to_vec(),
+            first: id_at(messages, 0),
+            last: messages
+                .len()
+                .checked_sub(1)
+                .and_then(|last| id_at(messages, last)),
+            len: messages.len(),
         }
     }
 
-    fn still_holds(&self, messages: &imbl::Vector<Arc<Message>>, gaps: &[HistoryGap]) -> bool {
-        let same_first = match (&self.first, messages.front()) {
-            (Some(known), Some(current)) => Arc::ptr_eq(known, current),
-            (None, None) => true,
-            _ => false,
+    fn still_holds(&self, messages: &imbl::Vector<Arc<Message>>) -> bool {
+        let Some(last_index) = self.len.checked_sub(1) else {
+            return messages.is_empty();
         };
-        let gaps = interior(gaps);
-        same_first
-            && self.gaps.len() == gaps.len()
-            && self.gaps.iter().zip(gaps).all(|(known, current)| {
-                known.cursor == current.cursor && known.order == current.order
-            })
+        self.first.is_some()
+            && self.last.is_some()
+            && id_at(messages, 0) == self.first
+            && id_at(messages, last_index) == self.last
     }
 }
 
@@ -91,17 +91,12 @@ impl ParentEvidence {
     /// Keeps exactly the evidence for `wanted`, searching `messages` once for parents that have
     /// none. The scan runs from the newest row and stops as soon as every searched parent is
     /// found, so history is walked in full only for a parent that is not retained.
-    pub fn refresh(
-        &mut self,
-        messages: &imbl::Vector<Arc<Message>>,
-        gaps: &[HistoryGap],
-        wanted: &BTreeSet<Uuid>,
-    ) {
-        if !self.absence_basis.still_holds(messages, gaps) {
+    pub fn refresh(&mut self, messages: &imbl::Vector<Arc<Message>>, wanted: &BTreeSet<Uuid>) {
+        if !self.absence_basis.still_holds(messages) {
             self.parents
                 .retain(|_, parent| !matches!(parent, Parent::Absent));
-            self.absence_basis = AbsenceBasis::of(messages, gaps);
         }
+        self.absence_basis = AbsenceBasis::of(messages);
         self.parents.retain(|id, _| wanted.contains(id));
         let mut searching: BTreeSet<Uuid> = wanted
             .iter()

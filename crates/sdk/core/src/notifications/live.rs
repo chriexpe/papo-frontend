@@ -158,7 +158,11 @@ async fn message_candidate(
     let point = crate::MessageKey::parse(&message.created_at, &message.id)?;
     let channel = super::id(Some(&message.channel_id))?;
     let mut messages = imbl::Vector::new();
-    if let Some(reply) = message.reply_to.as_deref().and_then(|id| id.parse().ok()) {
+    if let Some((text, reply)) = message
+        .reply_to
+        .as_deref()
+        .and_then(|text| Some((text, text.parse().ok()?)))
+    {
         let cached = session
             .inner
             .notifications
@@ -166,26 +170,27 @@ async fn message_candidate(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .reply_message(channel, reply);
-        let parent = if cached.is_some() {
-            cached
-        } else {
-            session
+        let parent = match cached {
+            Some(parent) => Some(parent),
+            // The cache holds only other people's trigger rows, so a reply to the account's own
+            // message always lands here: look in this channel's history alone, without parsing.
+            None => session
                 .inner
                 .history
-                .snapshots()
+                .snapshot(channel)
                 .await
-                .into_iter()
-                .find(|(id, _)| *id == channel)
-                .and_then(|(_, snapshot)| {
+                .and_then(|snapshot| {
                     snapshot
                         .messages
                         .iter()
                         .rev()
                         .find(|held| {
-                            held.id.as_deref().and_then(|id| id.parse().ok()) == Some(reply)
+                            held.id
+                                .as_deref()
+                                .is_some_and(|id| id.eq_ignore_ascii_case(text))
                         })
                         .cloned()
-                })
+                }),
         };
         if let Some(parent) = parent {
             messages.push_back(parent);
@@ -207,7 +212,6 @@ async fn message_candidate(
     let triggered = super::classification::ClassificationCache::default().classify_range(
         channel,
         &messages,
-        &[],
         session.account().user(),
         &resources,
         index..index + 1,

@@ -6,15 +6,47 @@ use papo_sdk_ui::{Timeline, TimelineConfig, TimelineItem};
 use papo_test_server::{Config, TestServer};
 use std::{sync::Arc, time::Instant};
 
-pub async fn run(client: &Client, count: usize) -> Result {
+/// What every seeded row says. Ordinary text keeps the recipe's empty rows.
+#[derive(Clone, Copy)]
+pub enum Content {
+    /// The recipe's own rows: no content at all.
+    Empty,
+    /// An `@` in every row that mentions no one: the mention prefilter passes, no row triggers.
+    OrdinaryAtSigns,
+    /// An `@everyone` in every row from an author with no permission: every row is a candidate.
+    Everyone,
+}
+
+pub async fn run(client: &Client, count: usize, content: Content) -> Result {
     if !(100..=100_000).contains(&count) {
         return Err("unsupported fixture row count".into());
     }
-    let server = TestServer::start(Config {
-        history: vec![fixture::seed(0, count)],
-        ..Config::default()
-    })
-    .await?;
+    let server = match content {
+        Content::Empty => {
+            TestServer::start(Config {
+                history: vec![fixture::seed(0, count)],
+                ..Config::default()
+            })
+            .await?
+        }
+        Content::OrdinaryAtSigns | Content::Everyone => {
+            let channel = fixture::seed(0, 0);
+            let server = TestServer::start(Config {
+                history: vec![channel.clone()],
+                ..Config::default()
+            })
+            .await?;
+            let mut rows = fixture::seed(0, count).messages()?;
+            for row in &mut rows {
+                row.content = Some(match content {
+                    Content::Everyone => "@everyone read this".to_owned(),
+                    _ => "mail me at someone@example.com or ping @team".to_owned(),
+                });
+            }
+            server.seed_messages(&channel.channel_id, rows).await?;
+            server
+        }
+    };
     let result = exercise(client, &server, count).await;
     let stopped = server.shutdown().await;
     result?;

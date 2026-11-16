@@ -81,9 +81,14 @@ Coverage decides exactness. Rows that arrive over the live gateway cannot prove 
 rows before them complete, so in a history no REST page has proven (opening a
 subscription alone fetches nothing) counts that include them stay `AtLeast`. A history
 paged from the newest end, with fewer rows than requested, proves its coverage and
-counts exactly, and live rows that then extend it keep the count exact. Only unread rows that can trigger (a mention marker or a reply; every
-non-self row in a DM) hold cached facts. A channel with no unread rows, or whose
-mentions are not counted, holds none, so reading or muting a channel pins no history.
+counts exactly, and live rows that then extend it keep the count exact. Cached
+facts exist only for unread rows from someone else that mention the account, use
+`@everyone` or reply (an `@` in ordinary text or an e-mail address is not a fact);
+a direct conversation needs none, since every non-self row triggers. The cache keeps
+no history vector, and a channel with no unread rows, whose mentions are not counted,
+or whose history is no longer resident holds nothing, so reading, muting or trimming a
+channel pins no history. A missing reply parent is searched again after a backfill or
+an insertion before the last known row; appends at the tail never repeat the search.
 A change to the backend's `enabled` or `mentions` switch, to device settings, or to
 retained history recounts at once; the one-second maintenance tick covers the rest.
 

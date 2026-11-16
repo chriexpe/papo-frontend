@@ -147,7 +147,7 @@ fn direct_conversations_count_foreign_messages_without_holding_facts() {
     assert_eq!(classified.iter().filter(|value| value.triggered).count(), 4);
     assert!(classified.iter().all(|value| value.complete));
     assert!(first.channels.is_empty(), "a DM needs no facts");
-    let out_of_range = first.classify_range(channel, &messages, &[], user, &resources, 4..7);
+    let out_of_range = first.classify_range(channel, &messages, user, &resources, 4..7);
     assert!(out_of_range[1..].iter().all(|value| !value.complete));
 
     resources.dms = Arc::default();
@@ -180,7 +180,7 @@ fn empty_and_small_no_reply_ranges_never_prepare_the_retained_prefix() {
             Arc::new(Message {
                 id: Some(Uuid::from_u128(id).to_string()),
                 author_id: Some(Uuid::from_u128(4).to_string()),
-                content: Some("ping @nobody".into()),
+                content: Some(crate::mentions::encode_user_mention(user)),
                 ..Default::default()
             })
         })
@@ -189,7 +189,7 @@ fn empty_and_small_no_reply_ranges_never_prepare_the_retained_prefix() {
     let end = messages.len();
     assert!(
         cache
-            .classify_range(channel, &messages, &[], user, &resources(), end..end)
+            .classify_range(channel, &messages, user, &resources(), end..end)
             .is_empty()
     );
     let facts = &cache.channels[&channel];
@@ -202,7 +202,7 @@ fn empty_and_small_no_reply_ranges_never_prepare_the_retained_prefix() {
         ),
         (0, 0, 0, 0)
     );
-    cache.classify_range(channel, &messages, &[], user, &resources(), end - 2..end);
+    cache.classify_range(channel, &messages, user, &resources(), end - 2..end);
     let facts = Arc::clone(&cache.channels[&channel]);
     assert_eq!(
         (
@@ -213,12 +213,15 @@ fn empty_and_small_no_reply_ranges_never_prepare_the_retained_prefix() {
         ),
         (2, 0, 2, 0)
     );
-    cache.classify_range(channel, &messages, &[], user, &resources(), end - 2..end);
-    assert!(Arc::ptr_eq(&facts, &cache.channels[&channel]));
-    cache.classify_range(channel, &messages, &[], user, &resources(), end - 1..end);
+    cache.classify_range(channel, &messages, user, &resources(), end - 2..end);
+    assert_eq!(
+        cache.channels[&channel].classified_revisions, 2,
+        "unchanged rows keep their facts"
+    );
+    cache.classify_range(channel, &messages, user, &resources(), end - 1..end);
     assert_eq!(cache.channels[&channel].records.len(), 1);
     assert_eq!(cache.channels[&channel].classified_revisions, 2);
-    cache.classify_range(channel, &messages, &[], user, &resources(), end - 3..end);
+    cache.classify_range(channel, &messages, user, &resources(), end - 3..end);
     assert_eq!(cache.channels[&channel].records.len(), 3);
     assert_eq!(cache.channels[&channel].parents.rows_examined, 0);
 }
@@ -242,7 +245,7 @@ fn rows_without_a_mention_marker_or_reply_build_no_facts_and_only_count_in_direc
     let len = messages.len();
     let mut cache = ClassificationCache::default();
 
-    let channel_rows = cache.classify_range(channel, &messages, &[], user, &resources(), 0..len);
+    let channel_rows = cache.classify_range(channel, &messages, user, &resources(), 0..len);
     let triggered: Vec<_> = (0..len)
         .filter(|index| channel_rows[*index].triggered)
         .collect();
@@ -264,7 +267,7 @@ fn rows_without_a_mention_marker_or_reply_build_no_facts_and_only_count_in_direc
         ..Default::default()
     }]
     .into();
-    let dm_rows = cache.classify_range(channel, &messages, &[], user, &direct, 0..len);
+    let dm_rows = cache.classify_range(channel, &messages, user, &direct, 0..len);
     assert_eq!(dm_rows.iter().filter(|row| row.triggered).count(), len - 1);
     assert!(!dm_rows[50].triggered, "own message never counts");
     assert!(dm_rows.iter().all(|row| row.complete));

@@ -80,9 +80,15 @@ async fn refresh_inner(
     let old_generation = image.generation;
     image.generation = generation;
     let previous = image.channels.clone();
+    // Facts are kept only for channels whose history is still resident: a trimmed channel keeps
+    // its last counts but must not keep its unread rows reachable through the cache.
     crate::notifications::classification::ClassificationCache::retain(
         &session.inner.notifications.classification,
-        &image.channels.keys().copied().collect(),
+        &snapshots
+            .iter()
+            .filter(|(_, snapshot)| snapshot.generation == generation)
+            .map(|(channel, _)| *channel)
+            .collect(),
     );
     for (channel, snapshot) in &snapshots {
         if selected.is_some_and(|selected| !selected.contains(channel))

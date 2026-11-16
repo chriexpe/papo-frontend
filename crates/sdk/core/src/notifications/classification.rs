@@ -3,7 +3,7 @@
 mod parents;
 mod rules;
 
-use crate::{HistoryGap, HistorySnapshot, ResourceSnapshot, Uuid, authored_by_other};
+use crate::{HistorySnapshot, ResourceSnapshot, Uuid, authored_by_other};
 use papo_api::wire::Message;
 use parents::{Parent, ParentEvidence};
 use std::{
@@ -67,8 +67,6 @@ impl Tally {
 
 #[derive(Clone, Default)]
 struct ChannelFacts {
-    messages: imbl::Vector<Arc<Message>>,
-    range: std::ops::Range<usize>,
     #[cfg(test)]
     classified_revisions: usize,
     has_broadcast: bool,
@@ -79,10 +77,11 @@ struct ChannelFacts {
     parents: ParentEvidence,
 }
 
-/// Account-owned. A channel with unread rows that count mentions holds one clone of its history
-/// vector plus facts for the unread rows that can trigger. A channel with no unread rows, one whose
-/// mentions are not counted, and every direct conversation holds nothing; settings never
-/// invalidate a held entry.
+/// Account-owned. A channel with unread rows that count mentions holds facts for exactly the unread
+/// rows that can trigger, and no history vector, so it never keeps a trimmed history reachable
+/// beyond those rows. A channel with no unread rows, one whose mentions are not counted, one with
+/// no resident history, and every direct conversation holds nothing; settings never invalidate a
+/// held entry.
 #[derive(Default)]
 pub(crate) struct ClassificationCache {
     channels: BTreeMap<Uuid, Arc<ChannelFacts>>,
@@ -111,14 +110,7 @@ impl ClassificationCache {
         let mut local = Self {
             channels: BTreeMap::from([(channel, previous.clone().unwrap_or_default())]),
         };
-        let result = local.tally_range(
-            channel,
-            &snapshot.messages,
-            &snapshot.gaps,
-            user,
-            resources,
-            range,
-        );
+        let result = local.tally_range(channel, &snapshot.messages, user, resources, range);
         if let Some(facts) = local.channels.remove(&channel) {
             Self::install(shared, channel, previous.as_ref(), facts);
         }
@@ -209,7 +201,7 @@ impl ClassificationCache {
         user: Uuid,
         resources: &ResourceSnapshot,
     ) -> Vec<Classification> {
-        self.classify_range(channel, messages, &[], user, resources, 0..messages.len())
+        self.classify_range(channel, messages, user, resources, 0..messages.len())
     }
 
     /// Counts triggers in `range`. Outside a direct conversation only rows that can trigger
@@ -218,15 +210,14 @@ impl ClassificationCache {
         &mut self,
         channel: Uuid,
         messages: &imbl::Vector<Arc<Message>>,
-        gaps: &[HistoryGap],
         user: Uuid,
         resources: &ResourceSnapshot,
         range: std::ops::Range<usize>,
     ) -> Tally {
         if is_direct(resources, channel) {
-            return Tally::of(self.classify_range(channel, messages, gaps, user, resources, range));
+            return Tally::of(self.classify_range(channel, messages, user, resources, range));
         }
-        let cache = self.prepared(channel, messages, gaps, user, range);
+        let cache = self.prepared(channel, messages, user, range);
         let mut tally = Tally::EMPTY;
         tally.complete = !cache.unresolved_rows;
         for facts in cache.records.values() {
@@ -241,20 +232,17 @@ impl ClassificationCache {
         tally
     }
 
+    /// Brings the channel's facts in line with `range`. Rows whose revision is unchanged keep
+    /// their facts, so a refresh costs a scan of the range, not a reclassification.
     fn prepared(
         &mut self,
         channel: Uuid,
         messages: &imbl::Vector<Arc<Message>>,
-        gaps: &[HistoryGap],
         user: Uuid,
         range: std::ops::Range<usize>,
     ) -> &ChannelFacts {
         let cache = self.channels.entry(channel).or_default();
-        // Identity is a cheap proof of an unchanged snapshot. A false negative (imbl keeps tiny
-        // vectors inline, so they never compare equal) only costs a rebuild of a few rows.
-        if !cache.messages.ptr_eq(messages) || cache.range != range {
-            Arc::make_mut(cache).prepare(messages, gaps, user, range);
-        }
+        Arc::make_mut(cache).prepare(messages, user, range);
         cache
     }
 
@@ -262,7 +250,6 @@ impl ClassificationCache {
         &mut self,
         channel: Uuid,
         messages: &imbl::Vector<Arc<Message>>,
-        gaps: &[HistoryGap],
         user: Uuid,
         resources: &ResourceSnapshot,
         range: std::ops::Range<usize>,
@@ -278,7 +265,7 @@ impl ClassificationCache {
                 })
                 .collect();
         }
-        let cache = self.prepared(channel, messages, gaps, user, range.clone());
+        let cache = self.prepared(channel, messages, user, range.clone());
         range
             .map(|index| {
                 let Some(message) = rows.get(index) else {
@@ -287,15 +274,21 @@ impl ClassificationCache {
                 if !can_trigger(message) || !authored_by_other(message, user) {
                     return Classification::NONE;
                 }
-                let Some(facts) = message
+                let stored = message
                     .id
                     .as_deref()
                     .and_then(|id| id.parse().ok())
-                    .and_then(|id| cache.records.get(&id))
-                else {
-                    return Classification::INCOMPLETE;
-                };
-                rules::classify_candidate(message, facts, &cache.parents, user, resources)
+                    .and_then(|id| cache.records.get(&id));
+                match stored {
+                    Some(facts) => {
+                        rules::classify_candidate(message, facts, &cache.parents, user, resources)
+                    }
+                    // Not stored: either nothing in the row can trigger, or it has no usable ID.
+                    None if Facts::new(message, user).triggers(message) => {
+                        Classification::INCOMPLETE
+                    }
+                    None => Classification::NONE,
+                }
             })
             .collect()
     }
@@ -304,7 +297,6 @@ impl ChannelFacts {
     fn prepare(
         &mut self,
         messages: &imbl::Vector<Arc<Message>>,
-        gaps: &[HistoryGap],
         user: Uuid,
         range: std::ops::Range<usize>,
     ) {
@@ -312,29 +304,34 @@ impl ChannelFacts {
         let mut reply_parents = BTreeSet::new();
         let mut unresolved_rows = range.end > messages.len();
         let mut rows = messages.focus();
-        for index in range.clone() {
+        for index in range {
             let Some(message) = rows.get(index) else {
                 continue;
             };
             if !can_trigger(message) || !authored_by_other(message, user) {
                 continue;
             }
-            let Some(id) = message.id.as_deref().and_then(|id| id.parse().ok()) else {
-                unresolved_rows = true;
-                continue;
-            };
-            let facts = match previous.remove(&id) {
+            let id: Option<Uuid> = message.id.as_deref().and_then(|id| id.parse().ok());
+            let facts = match id.and_then(|id| previous.remove(&id)) {
                 Some(mut facts) if same_revision(&facts.message, message) => {
                     facts.message = Arc::clone(message);
                     facts
                 }
                 _ => {
+                    let facts = Facts::new(message, user);
                     #[cfg(test)]
                     {
-                        self.classified_revisions += 1;
+                        self.classified_revisions += usize::from(facts.triggers(message));
                     }
-                    Facts::new(message, user)
+                    facts
                 }
+            };
+            if !facts.triggers(message) {
+                continue;
+            }
+            let Some(id) = id else {
+                unresolved_rows = true;
+                continue;
             };
             if !facts.direct
                 && let Some(reply) = message.reply_to.as_deref().and_then(|id| id.parse().ok())
@@ -344,9 +341,7 @@ impl ChannelFacts {
             self.records.insert(id, facts);
         }
         self.unresolved_rows = unresolved_rows;
-        self.parents.refresh(messages, gaps, &reply_parents);
-        self.messages = messages.clone();
-        self.range = range;
+        self.parents.refresh(messages, &reply_parents);
         self.has_broadcast = self.records.values().any(|facts| facts.everyone);
     }
 }
@@ -359,7 +354,8 @@ fn is_direct(resources: &ResourceSnapshot, channel: Uuid) -> bool {
 }
 
 /// A cheap necessary condition for any trigger outside a DM: both mention syntaxes contain `@`
-/// and a reply names a parent. Rows failing it need no author or ID parsing and no record.
+/// and a reply names a parent. Rows failing it need no author or ID parsing and no record. Rows
+/// passing it still need `Facts::triggers`: ordinary `@text` or an e-mail address holds no mention.
 fn can_trigger(message: &Message) -> bool {
     message.reply_to.is_some()
         || message
@@ -377,6 +373,12 @@ impl Facts {
             everyone: crate::mentions::contains_everyone_mention(content),
         }
     }
+
+    /// Whether the row can trigger at all: a mention of the account, an `@everyone` whose
+    /// authority resources decide later, or a reply whose parent evidence decides later.
+    fn triggers(&self, message: &Message) -> bool {
+        self.direct || self.everyone || message.reply_to.is_some()
+    }
 }
 fn same_revision(left: &Message, right: &Message) -> bool {
     left.content == right.content
@@ -388,5 +390,7 @@ fn same_revision(left: &Message, right: &Message) -> bool {
 
 #[cfg(test)]
 mod cache_tests;
+#[cfg(test)]
+mod parent_tests;
 #[cfg(test)]
 mod tests;

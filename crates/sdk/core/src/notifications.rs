@@ -242,16 +242,7 @@ impl NotificationService {
                     let previous = ledger::settings(&session).await?;
                     let affected = {
                         let resources = session.inner.resources.borrow();
-                        let backend = session
-                            .inner
-                            .notifications
-                            .backend
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_ref()
-                            .filter(|policy| policy.generation == session.generation())
-                            .map(|policy| policy.config.clone())
-                            .unwrap_or_default();
+                        let backend = backend::current(&session.inner, session.generation());
                         session
                             .inner
                             .reading
