@@ -171,6 +171,7 @@ impl Fixture {
                     reading.subscribe(),
                     initial,
                     live,
+                    None,
                     CHANNEL,
                     &config,
                 )
@@ -207,7 +208,7 @@ impl Fixture {
                         "unchanged projected items must keep identity"
                     );
                 }
-                if let TimelineItem::Message { id, message } = item.as_ref() {
+                if let TimelineItem::Message { id, message, .. } = item.as_ref() {
                     let canonical = view
                         .state
                         .raw

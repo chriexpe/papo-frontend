@@ -219,6 +219,7 @@ pub fn payload(subscription: &TimelineSubscription, id: Uuid) -> Option<&Arc<Mes
             TimelineItem::Message {
                 id: current,
                 message,
+                ..
             } if *current == id => Some(message),
             _ => None,
         })

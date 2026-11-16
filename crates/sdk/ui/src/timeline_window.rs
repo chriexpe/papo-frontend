@@ -2,12 +2,16 @@
 //! message order and read points.
 
 use imbl::Vector;
-use papo_sdk::{HistoryOrder, HistorySnapshot, MessageKey, ReadState};
+use papo_sdk::{
+    AccountId, HistoryGap, HistoryOrder, HistorySnapshot, Message, MessageKey, ReadState, Uuid,
+};
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
+    content_cache::{self, ContentCacheKey},
+    message_content::MessageContent,
     timeline::TimelineError,
-    timeline_item::{TimelineDirection, TimelineItem, UtcOffsetProvider},
+    timeline_item::{ItemIdentity, TimelineDirection, TimelineItem, UtcOffsetProvider},
 };
 
 /// Inclusive boundaries survive deletion of their boundary messages. A live window extends
@@ -25,7 +29,8 @@ impl Bounds {
     }
 }
 
-/// Projects only this window. Every retained item is looked up by identity, not list position.
+#[cfg(test)]
+/// Projects only this window without cross-window `MessageContent` sharing.
 pub(crate) fn project(
     raw: &HistorySnapshot,
     bounds: &Bounds,
@@ -33,6 +38,19 @@ pub(crate) fn project(
     loading: [bool; 2],
     offset: &dyn UtcOffsetProvider,
     previous: &Vector<Arc<TimelineItem>>,
+) -> Result<Vector<Arc<TimelineItem>>, TimelineError> {
+    project_with_cache(raw, bounds, read, loading, offset, previous, None)
+}
+
+/// Projects only this window, sharing parsed `MessageContent` `Arc`s within `(AccountId, channel)`.
+pub(crate) fn project_with_cache(
+    raw: &HistorySnapshot,
+    bounds: &Bounds,
+    read: Option<&ReadState>,
+    loading: [bool; 2],
+    offset: &dyn UtcOffsetProvider,
+    previous: &Vector<Arc<TimelineItem>>,
+    cache_scope: Option<(AccountId, Uuid)>,
 ) -> Result<Vector<Arc<TimelineItem>>, TimelineError> {
     let reusable: BTreeMap<_, _> = previous
         .iter()
@@ -96,9 +114,11 @@ pub(crate) fn project(
                 before: point.message_id,
             });
         }
+        let content = resolve_content(&reusable, cache_scope, point.message_id, message);
         values.push(TimelineItem::Message {
             id: point.message_id,
             message: Arc::clone(message),
+            content,
         });
         if let Some(boundaries) = gaps.remove(&point) {
             values.extend(
@@ -108,6 +128,25 @@ pub(crate) fn project(
             );
         }
     }
+    insert_deleted_gap_boundaries(&mut values, gaps);
+    if loading[1] {
+        values.push(TimelineItem::Loading(TimelineDirection::Newer));
+    }
+    Ok(values
+        .into_iter()
+        .map(|item| {
+            reusable
+                .get(&item.identity())
+                .filter(|old| old.as_ref() == &item)
+                .map_or_else(|| Arc::new(item), |old| Arc::clone(old))
+        })
+        .collect())
+}
+
+fn insert_deleted_gap_boundaries(
+    values: &mut Vec<TimelineItem>,
+    gaps: BTreeMap<MessageKey, Vec<&HistoryGap>>,
+) {
     // A deleted boundary is still a real gap, even if its cursor no longer has a message row.
     for (point, boundaries) in gaps {
         let index = values
@@ -123,18 +162,37 @@ pub(crate) fn project(
             values.insert(index, TimelineItem::Gap(gap.clone()));
         }
     }
-    if loading[1] {
-        values.push(TimelineItem::Loading(TimelineDirection::Newer));
+}
+
+fn resolve_content(
+    reusable: &BTreeMap<ItemIdentity, &Arc<TimelineItem>>,
+    cache_scope: Option<(AccountId, Uuid)>,
+    id: Uuid,
+    message: &Arc<Message>,
+) -> Arc<MessageContent> {
+    let key = cache_scope.map(|(account, channel)| ContentCacheKey {
+        account,
+        channel,
+        message: id,
+    });
+    if let Some(old_item) = reusable.get(&ItemIdentity::Message(id))
+        && let TimelineItem::Message {
+            message: old_message,
+            content: old_content,
+            ..
+        } = old_item.as_ref()
+    {
+        if Arc::ptr_eq(old_message, message) {
+            return Arc::clone(old_content);
+        }
+        if content_cache::same_revision(old_message, message) {
+            if let Some(key) = key {
+                content_cache::refresh_revision(key, message, old_content);
+            }
+            return Arc::clone(old_content);
+        }
     }
-    Ok(values
-        .into_iter()
-        .map(|item| {
-            reusable
-                .get(&item.identity())
-                .filter(|old| old.as_ref() == &item)
-                .map_or_else(|| Arc::new(item), |old| Arc::clone(old))
-        })
-        .collect())
+    content_cache::get_or_parse(key, message)
 }
 
 #[cfg(test)]

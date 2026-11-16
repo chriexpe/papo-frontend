@@ -8,6 +8,8 @@ mod catch_up;
 mod catch_up_arrivals;
 #[path = "timeline/catch_up_arrivals_live.rs"]
 mod catch_up_arrivals_live;
+#[path = "timeline/content.rs"]
+mod content;
 #[path = "timeline/lifecycle.rs"]
 mod lifecycle;
 #[path = "timeline/outgoing.rs"]

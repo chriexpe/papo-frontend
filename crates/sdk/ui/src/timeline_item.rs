@@ -1,5 +1,6 @@
 //! Timeline item identities and client-supplied date offsets; widgets and author grouping belong to clients.
 
+use crate::message_content::MessageContent;
 use papo_sdk::{HistoryGap, HistoryOrder, Message, Uuid};
 use std::sync::Arc;
 
@@ -54,7 +55,7 @@ impl TimelineDirection {
 }
 
 /// View-ready history and local echoes; author grouping, platform types and strings belong to clients.
-/// Unchanged items retain their `Arc`; messages retain the canonical SDK payload `Arc` too.
+/// Unchanged items retain their `Arc`; messages retain canonical SDK payload and parsed content `Arc`s.
 #[derive(Clone)]
 #[non_exhaustive]
 pub enum TimelineItem {
@@ -73,6 +74,8 @@ pub enum TimelineItem {
         id: Uuid,
         /// Canonical immutable payload, shared with every window on this channel.
         message: Arc<Message>,
+        /// Parsed message tree built once per `(content, edited_at)` revision and shared across windows.
+        content: Arc<MessageContent>,
     },
     /// Local civil day as signed days since 1970-01-01. `before` stabilizes repeated days across gaps.
     DateSeparator {
@@ -123,9 +126,18 @@ impl PartialEq for TimelineItem {
                     operation: y,
                 },
             ) => a == b && Arc::ptr_eq(x, y),
-            (Self::Message { id: a, message: x }, Self::Message { id: b, message: y }) => {
-                a == b && Arc::ptr_eq(x, y)
-            }
+            (
+                Self::Message {
+                    id: a,
+                    message: x,
+                    content: xc,
+                },
+                Self::Message {
+                    id: b,
+                    message: y,
+                    content: yc,
+                },
+            ) => a == b && Arc::ptr_eq(x, y) && Arc::ptr_eq(xc, yc),
             (
                 Self::DateSeparator { day: a, before: x },
                 Self::DateSeparator { day: b, before: y },

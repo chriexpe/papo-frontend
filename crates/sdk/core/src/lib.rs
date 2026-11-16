@@ -54,6 +54,12 @@ mod catch_up_history;
 mod catch_up_position_store;
 mod catch_up_spans;
 mod catch_up_store;
+pub mod mentions;
+pub use mentions::{
+    DecodedMentions, MentionBinding, MentionTarget, MentionToken, contains_everyone_mention,
+    contains_user_mention, decode_mentions_for_editing, encode_mentions_with_bindings,
+    encode_user_mention, extract_user_mentions, parse_user_mention, scan_mentions,
+};
 pub mod permissions;
 mod private_fs;
 mod profiles;
