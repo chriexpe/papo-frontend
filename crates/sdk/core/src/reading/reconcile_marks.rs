@@ -84,7 +84,8 @@ pub(super) async fn resolve(
     let history = session.history(channel).await?;
     let cached = history.subscribe().await?.snapshot;
     for message in &cached.messages {
-        let point = ReadPoint::message(message).map_err(|_| ClientError::ResourceData)?;
+        let point = crate::ChronologicalKey::from_message(message)
+            .map_err(|_| ClientError::ResourceData)?;
         if point.message_id == server.message_id {
             return Ok(Some(point));
         }
@@ -118,7 +119,8 @@ pub(super) async fn resolve(
         {
             return Err(ClientError::ResourceData);
         }
-        let point = ReadPoint::message(&message).map_err(|_| ClientError::ResourceData)?;
+        let point = crate::ChronologicalKey::from_message(&message)
+            .map_err(|_| ClientError::ResourceData)?;
         if point.message_id == server.message_id {
             return Ok(Some(point));
         }

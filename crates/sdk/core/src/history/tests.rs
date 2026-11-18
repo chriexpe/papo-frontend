@@ -347,5 +347,22 @@ fn random_pages_live_mutations_reconnects_and_evictions_preserve_proof() {
         .unwrap();
 }
 
+#[test]
+fn edit_timestamps_reject_sub_microsecond_digits() {
+    let mut model = Model::default();
+    let mut msg = message(1);
+    msg.edited_at = Some("2026-01-01T00:00:01.1234567Z".into());
+    let t = ticket(&model, None, HistoryOrder::Desc, 1, 10);
+    assert!(model.merge_page(&t, &[msg.clone()], false).is_err());
+
+    let edit_event = KnownEvent::MessageEdit(Box::new(MessageEditEvent {
+        id: msg.id.unwrap(),
+        channel_id: Uuid::from_u128(CHANNEL).to_string(),
+        content: "edited".into(),
+        edited_at: "2026-01-01T00:00:01.0000001Z".into(),
+    }));
+    assert!(model.event(&edit_event, 1).is_err());
+}
+
 #[path = "race_tests.rs"]
 mod races;

@@ -261,8 +261,7 @@ fn result_cursor(result: &SearchResult) -> Result<SearchCursor, SearchError> {
         id: result.id.clone().ok_or(SearchError::InvalidData)?,
     })
 }
-fn cursor_key(cursor: &SearchCursor) -> Result<(i64, Uuid), SearchError> {
-    let time = chrono::DateTime::parse_from_rfc3339(&cursor.created_at)
-        .map_err(|_| SearchError::InvalidData)?;
-    Ok((time.timestamp_micros(), parse_id(Some(&cursor.id))?))
+fn cursor_key(cursor: &SearchCursor) -> Result<crate::ChronologicalKey, SearchError> {
+    crate::ChronologicalKey::parse(Some(&cursor.created_at), Some(&cursor.id))
+        .map_err(|_| SearchError::InvalidData)
 }

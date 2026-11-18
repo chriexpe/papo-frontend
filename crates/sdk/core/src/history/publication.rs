@@ -2,16 +2,18 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use papo_api::{HistoryOrder, wire::Message};
+use papo_api::wire::Message;
 use tokio::sync::watch;
 
 use crate::{CacheError, Generation};
 
 use super::{
-    HistoryClosedReason, HistoryError, HistoryGap,
+    HistoryClosedReason, HistoryError,
     channel::Channel,
+    chunk_merge::{snapshot_chunks_and_gaps, snapshot_empty_anchor},
+    ordering::Point,
     persistence::State,
-    subscription::{HistoryChunk, HistorySnapshot, HistorySubscription, HistoryUpdate},
+    subscription::{HistorySnapshot, HistorySubscription, HistoryUpdate},
 };
 
 #[derive(Default)]
@@ -43,7 +45,11 @@ impl Publication {
             .map_or(Ok(()), |reason| Err(HistoryError::Closed(reason)))
     }
 
-    fn publish(&mut self, state: &State, generation: Generation) -> Result<(), HistoryError> {
+    pub(super) fn publish(
+        &mut self,
+        state: &State,
+        generation: Generation,
+    ) -> Result<(), HistoryError> {
         self.check()?;
         if self
             .snapshot
@@ -79,30 +85,14 @@ impl Publication {
             .publication_entries
             .fetch_add(ids.len() as u64, std::sync::atomic::Ordering::Relaxed);
         self.apply_changes(state, ids, same)?;
-        let mut chunks = Vec::with_capacity(state.model.chunks.len());
-        let mut gaps = Vec::new();
-        for chunk in &state.model.chunks {
-            chunks.push(HistoryChunk {
-                first: chunk.first.cursor(),
-                last: chunk.last.cursor(),
-                oldest_complete: chunk.oldest_complete,
-                newest_complete: chunk.newest_complete,
-                generation: (chunk.generation != 0).then_some(Generation(chunk.generation)),
-                live_generation: (chunk.live_generation != 0)
-                    .then_some(Generation(chunk.live_generation)),
-            });
-            for (complete, point, order) in [
-                (chunk.oldest_complete, &chunk.first, HistoryOrder::Desc),
-                (chunk.newest_complete, &chunk.last, HistoryOrder::Asc),
-            ] {
-                if !complete {
-                    gaps.push(HistoryGap {
-                        cursor: point.cursor(),
-                        order,
-                    });
-                }
-            }
-        }
+        let empty_before = snapshot_empty_anchor(state.model.empty_before.as_ref())?;
+        let empty_after = snapshot_empty_anchor(state.model.empty_after.as_ref())?;
+        let (chunks, gaps) = snapshot_chunks_and_gaps(
+            &state.model.chunks,
+            empty_before.as_ref(),
+            empty_after.as_ref(),
+            generation.get(),
+        );
         let snapshot = Arc::new(HistorySnapshot {
             version,
             generation,
@@ -114,14 +104,11 @@ impl Publication {
                 && state.model.empty_generation == generation.get(),
             server_live_complete: state.model.server_live_generation == generation.get(),
             live_arrival_start: (state.model.live_arrival_generation == generation.get())
-                .then(|| {
-                    state
-                        .model
-                        .live_arrival_floor
-                        .as_ref()
-                        .map(super::ordering::Point::cursor)
-                })
+                .then(|| state.model.live_arrival_floor.as_ref().map(Point::cursor))
                 .flatten(),
+            keys: Some(self.keys.clone()),
+            empty_before,
+            empty_after,
         });
         self.revision = state.model.revision;
         self.incarnation = Some((state.cache_instance, state.set_id));

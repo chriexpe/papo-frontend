@@ -1,7 +1,7 @@
 //! Authoritative paginated inbox and explicit read acknowledgments; hydration never generates platform alerts.
 
 use super::{NotificationError, NotificationService, id, policy};
-use crate::{Session, Uuid};
+use crate::Session;
 use papo_api::{
     Cursor, HistoryOrder,
     wire::{MarkNotificationsReadRequest, Notification},
@@ -29,10 +29,9 @@ impl InboxCursor {
         cursor.key()?;
         Ok(cursor)
     }
-    pub(crate) fn key(&self) -> Result<(i64, Uuid), NotificationError> {
-        let date = chrono::DateTime::parse_from_rfc3339(&self.created_at)
-            .map_err(|_| NotificationError::InvalidData)?;
-        Ok((date.timestamp_micros(), id(Some(&self.id))?))
+    pub(crate) fn key(&self) -> Result<crate::ChronologicalKey, NotificationError> {
+        crate::ChronologicalKey::parse(Some(&self.created_at), Some(&self.id))
+            .map_err(|_| NotificationError::InvalidData)
     }
 }
 /// Detached account-owned inbox row, without timeline coverage or implicit read acknowledgment.

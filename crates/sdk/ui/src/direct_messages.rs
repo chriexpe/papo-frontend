@@ -1,13 +1,12 @@
 //! Unified account-scoped direct-conversation metadata; mutations, notification policy and navigation live elsewhere.
 
-use chrono::DateTime;
 use eyeball_im::VectorDiff;
 use futures_util::{
     Stream, StreamExt,
     stream::{self, SelectAll},
 };
 use imbl::Vector;
-use papo_sdk::{AccountId, Generation, ResourceSnapshot, Session};
+use papo_sdk::{AccountId, ChronologicalKey, Generation, ResourceSnapshot, Session};
 use std::{collections::BTreeMap, pin::Pin, sync::Arc};
 
 /// Stable conversation identity includes account, even when servers reuse the same remote UUID.
@@ -142,7 +141,7 @@ fn project(
     previous: &Vector<Arc<DirectMessageItem>>,
 ) -> Vector<Arc<DirectMessageItem>> {
     let existing: BTreeMap<_, _> = previous.iter().map(|item| (&item.id, item)).collect();
-    let mut rows: Vec<_> = images
+    let mut rows: Vec<(DirectMessageItem, Option<i64>)> = images
         .iter()
         .flat_map(|(account, image)| {
             image.dms.iter().filter_map(move |dm| {
@@ -154,36 +153,47 @@ fn project(
                 {
                     return None;
                 }
-                Some(DirectMessageItem {
-                    id: DirectMessageId {
-                        account: *account,
-                        channel: dm.id.clone(),
+                let (activity_at, activity_us) = if let Some(msg_at) = dm
+                    .last_message
+                    .as_ref()
+                    .and_then(|message| message.created_at.as_ref())
+                {
+                    (
+                        msg_at.clone(),
+                        ChronologicalKey::parse_timestamp_us(msg_at).ok(),
+                    )
+                } else {
+                    (
+                        dm.created_at.clone(),
+                        chrono::DateTime::parse_from_rfc3339(&dm.created_at)
+                            .ok()
+                            .map(|time| time.timestamp_micros()),
+                    )
+                };
+                Some((
+                    DirectMessageItem {
+                        id: DirectMessageId {
+                            account: *account,
+                            channel: dm.id.clone(),
+                        },
+                        generation: image.generation,
+                        user,
+                        username: dm.user.username.clone(),
+                        nickname: dm.user.nickname.clone(),
+                        activity_at,
                     },
-                    generation: image.generation,
-                    user,
-                    username: dm.user.username.clone(),
-                    nickname: dm.user.nickname.clone(),
-                    activity_at: dm
-                        .last_message
-                        .as_ref()
-                        .and_then(|message| message.created_at.clone())
-                        .unwrap_or_else(|| dm.created_at.clone()),
-                })
+                    activity_us,
+                ))
             })
         })
         .collect();
-    rows.sort_by_cached_key(|row| {
-        (
-            std::cmp::Reverse(
-                DateTime::parse_from_rfc3339(&row.activity_at)
-                    .ok()
-                    .map(|time| time.timestamp_micros()),
-            ),
-            row.id.clone(),
-        )
+    rows.sort_by(|(a, a_us), (b, b_us)| {
+        std::cmp::Reverse(*a_us)
+            .cmp(&std::cmp::Reverse(*b_us))
+            .then_with(|| a.id.cmp(&b.id))
     });
     rows.into_iter()
-        .map(|item| {
+        .map(|(item, _)| {
             if let Some(old) = existing.get(&item.id)
                 && old.as_ref() == &item
             {

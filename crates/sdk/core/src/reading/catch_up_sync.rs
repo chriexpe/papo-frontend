@@ -11,7 +11,7 @@ use papo_api::Uuid;
 use crate::{
     ClientError, ClientHandle, Generation, HistoryClosedReason, HistorySnapshot, ReadingSnapshot,
     Session,
-    catch_up::{AscSuccessors, CatchUpState, SnapshotIndex},
+    catch_up::CatchUpState,
     catch_up_store::CatchUpCommit,
     reading::{
         counts,
@@ -24,7 +24,6 @@ use crate::{
 pub(crate) struct ReconcileKey {
     generation: Generation,
     snapshot_version: u64,
-    asc_version: u64,
     catch_up_revision: Option<u64>,
 }
 
@@ -32,7 +31,6 @@ struct ReconcileCandidate<'a> {
     channel: Uuid,
     snapshot: &'a Arc<HistorySnapshot>,
     current: CatchUpState,
-    asc: AscSuccessors,
     key: ReconcileKey,
 }
 
@@ -183,12 +181,9 @@ pub(crate) async fn reconcile_catch_up_snapshots(
     let mut updates = Vec::new();
     let mut verified_keys = Vec::new();
     for mut candidate in candidates {
-        let index =
-            SnapshotIndex::build(candidate.snapshot, session.account().user(), &candidate.asc)
-                .map_err(|_| ClientError::ResourceData)?;
         if candidate
             .current
-            .reconcile_snapshot(&index)
+            .reconcile_snapshot(candidate.snapshot, session.account().user())
             .map_err(|_| ClientError::ResourceData)?
         {
             commits.push(CatchUpCommit {
@@ -261,14 +256,9 @@ fn collect_reconcile_candidates<'a>(
         let Some(current) = active_states.get(channel) else {
             continue;
         };
-        let asc = session
-            .inner
-            .reading
-            .asc_successors_with_version(generation, *channel);
         let key = ReconcileKey {
             generation,
             snapshot_version: snapshot.version,
-            asc_version: asc.version,
             catch_up_revision: catch_up_image.channels.get(channel).copied(),
         };
         if cached_keys.get(channel) == Some(&key) {
@@ -278,7 +268,6 @@ fn collect_reconcile_candidates<'a>(
             channel: *channel,
             snapshot,
             current: current.clone(),
-            asc: asc.successors,
             key,
         });
     }

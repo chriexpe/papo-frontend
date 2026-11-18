@@ -51,6 +51,7 @@ impl Model {
             }
             self.chunks[0].first = point;
             self.chunks[0].oldest_complete = false;
+            self.chunks[0].oldest_anchor = None;
         } else {
             self.chunks.remove(0);
             if let Some(next) = self.chunks.first_mut() {
@@ -62,6 +63,8 @@ impl Model {
             self.server_live_generation = 0;
             self.live_arrival_generation = 0;
             self.live_arrival_floor = None;
+            self.empty_before = None;
+            self.empty_after = None;
         }
         Ok(deleted)
     }

@@ -370,3 +370,16 @@ fn delayed_live_candidate_is_suppressed_after_a_newer_local_read_point() {
     );
     client.shutdown().unwrap();
 }
+
+#[test]
+fn inbox_cursor_rejects_sub_microsecond_timestamp() {
+    let row = papo_api::wire::Notification {
+        id: Some(Uuid::from_u128(1).to_string()),
+        created_at: Some("2026-01-01T00:00:00.1234567Z".into()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        inbox::InboxCursor::from_record(&row),
+        Err(NotificationError::InvalidData)
+    ));
+}

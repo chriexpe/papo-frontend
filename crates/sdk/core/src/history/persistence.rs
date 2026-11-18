@@ -142,6 +142,8 @@ impl State {
             revision: self.model.revision,
             empty_generation: self.model.empty_generation,
             active_chunks: self.model.chunks.iter().map(|chunk| chunk.id).collect(),
+            empty_before: self.model.empty_before.clone(),
+            empty_after: self.model.empty_after.clone(),
         })?;
         let set_id = self.set_id.ok_or(CacheError::InvalidData)?;
         let row_count = upserts.len();
@@ -207,6 +209,8 @@ pub(super) fn decode(data: HistoryData) -> Result<State, HistoryError> {
             revision: 0,
             empty_generation: 0,
             active_chunks: Vec::new(),
+            empty_before: None,
+            empty_after: None,
         }
     } else {
         serde_json::from_slice::<Metadata>(&data.metadata).map_err(|_| CacheError::InvalidData)?
@@ -214,6 +218,14 @@ pub(super) fn decode(data: HistoryData) -> Result<State, HistoryError> {
     state.model.revision = metadata.revision;
     state.committed_revision = metadata.revision;
     state.model.empty_generation = metadata.empty_generation;
+    state.model.empty_before.clone_from(&metadata.empty_before);
+    state.model.empty_after.clone_from(&metadata.empty_after);
+    if let Some(anchor) = &state.model.empty_before {
+        anchor.point.key().map_err(|_| CacheError::InvalidData)?;
+    }
+    if let Some(anchor) = &state.model.empty_after {
+        anchor.point.key().map_err(|_| CacheError::InvalidData)?;
+    }
     let active_chunks: BTreeSet<_> = metadata.active_chunks.iter().copied().collect();
     if active_chunks.len() != metadata.active_chunks.len() {
         return Err(CacheError::InvalidData.into());
@@ -237,9 +249,7 @@ pub(super) fn decode(data: HistoryData) -> Result<State, HistoryError> {
                     }
                     let linked: LinkedChunk = serde_json::from_slice(&row.payload)
                         .map_err(|_| CacheError::InvalidData)?;
-                    if linked.chunk.id != row.id
-                        || linked.chunk.first.key()? > linked.chunk.last.key()?
-                    {
+                    if linked.chunk.id != row.id || linked.chunk.validate_invariants().is_err() {
                         return Err(CacheError::InvalidData.into());
                     }
                     state.model.chunks.push(linked.chunk);
@@ -290,11 +300,37 @@ fn restore(
         .chunks
         .sort_by_key(|chunk| chunk.first.key().ok());
     for pair in state.model.chunks.windows(2) {
-        if pair[0].last.key()? >= pair[1].first.key()? {
+        if pair[0].overlaps_entries(&pair[1])?
+            || (pair[0].generation != 0
+                && pair[1].generation != 0
+                && pair[0].touches_or_overlaps(&pair[1])?)
+        {
             return Err(CacheError::InvalidData.into());
         }
     }
     state.model.rebuild_order()?;
+    if let Some(anchor) = &state.model.empty_before {
+        let ak = anchor.point.key()?;
+        if state
+            .model
+            .order
+            .first_key_value()
+            .is_some_and(|(first, _)| *first < ak)
+        {
+            return Err(CacheError::InvalidData.into());
+        }
+    }
+    if let Some(anchor) = &state.model.empty_after {
+        let ak = anchor.point.key()?;
+        if state
+            .model
+            .order
+            .last_key_value()
+            .is_some_and(|(last, _)| *last > ak)
+        {
+            return Err(CacheError::InvalidData.into());
+        }
+    }
     let expected = layout(&state.model)?;
     // Markers in the same page commit hide obsolete rows even before physical reclamation.
     if expected
@@ -306,6 +342,12 @@ fn restore(
     state.layout = structural_layout(&state.model)?;
     // Connection epochs are process-local, so persisted numeric equality is never freshness evidence.
     state.model.empty_generation = 0;
+    if let Some(anchor) = &mut state.model.empty_before {
+        anchor.generation = 0;
+    }
+    if let Some(anchor) = &mut state.model.empty_after {
+        anchor.generation = 0;
+    }
     for entry in state.model.entries.values_mut() {
         entry.validated_generation = 0;
     }

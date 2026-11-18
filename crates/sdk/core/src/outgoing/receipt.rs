@@ -29,11 +29,7 @@ pub(super) fn message(
     )
     .chain(message.edited_at.as_deref())
     {
-        let time =
-            chrono::DateTime::parse_from_rfc3339(value).map_err(|_| papo_api::Error::Decode)?;
-        if time.timestamp_subsec_nanos() % 1000 != 0 {
-            return Err(papo_api::Error::Decode);
-        }
+        crate::ChronologicalKey::parse_timestamp_us(value).map_err(|_| papo_api::Error::Decode)?;
     }
     Ok(Outcome {
         projected: false,

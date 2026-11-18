@@ -175,7 +175,7 @@ pub(super) async fn restarted(client: &Client, checkpoint: Checkpoint) -> Result
     Ok(())
 }
 
-async fn report(window: &Timeline) -> Result<papo_sdk::ReadPoint> {
+async fn report(window: &Timeline) -> Result<papo_sdk::ChronologicalKey> {
     for _ in 0..32 {
         let snapshot = window.subscribe()?;
         let ids: Vec<_> = snapshot
@@ -193,14 +193,9 @@ async fn report(window: &Timeline) -> Result<papo_sdk::ReadPoint> {
             .iter()
             .rev()
             .find_map(|item| match item.as_ref() {
-                TimelineItem::Message { id, message } => message
-                    .created_at
-                    .as_ref()
-                    .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok())
-                    .map(|created| papo_sdk::ReadPoint {
-                        created_at_us: created.timestamp_micros(),
-                        message_id: *id,
-                    }),
+                TimelineItem::Message { message, .. } => {
+                    papo_sdk::ChronologicalKey::from_message(message).ok()
+                }
                 _ => None,
             })
             .ok_or("empty visible range")?;

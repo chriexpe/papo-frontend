@@ -5,9 +5,9 @@ use std::sync::Arc;
 use papo_api::{HistoryCursor, Uuid, wire::Message};
 use tokio::sync::watch;
 
-use crate::Generation;
+use crate::{ChronologicalKey, Generation};
 
-use super::{HistoryClosedReason, HistoryError, HistoryGap};
+use super::{HistoryClosedReason, HistoryError, HistoryGap, queries::HistoryEmptyAnchor};
 
 /// One proven chronological run, including boundaries whose messages may have been deleted.
 #[derive(Clone)]
@@ -16,6 +16,10 @@ pub struct HistoryChunk {
     pub first: HistoryCursor,
     /// Exact newest boundary, inclusive.
     pub last: HistoryCursor,
+    /// Proven excluded predecessor cursor immediately before `first` when `!oldest_complete`, if any.
+    pub oldest_anchor: Option<HistoryCursor>,
+    /// Proven excluded successor cursor immediately after `last` when `!newest_complete`, if any.
+    pub newest_anchor: Option<HistoryCursor>,
     /// No unknown messages precede this run in its validation generation.
     pub oldest_complete: bool,
     /// No unknown messages follow this run in its live-edge generation.
@@ -49,6 +53,42 @@ pub struct HistorySnapshot {
     pub server_live_complete: bool,
     /// Earliest live-edge message cursor added via live admission in `generation`, if any.
     pub live_arrival_start: Option<HistoryCursor>,
+    pub(crate) keys: Option<imbl::Vector<ChronologicalKey>>,
+    pub(crate) empty_before: Option<HistoryEmptyAnchor>,
+    pub(crate) empty_after: Option<HistoryEmptyAnchor>,
+}
+
+#[cfg(feature = "test-support")]
+impl HistorySnapshot {
+    /// Constructs a `HistorySnapshot` for out-of-crate tests.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_test(
+        version: u64,
+        generation: Generation,
+        messages: imbl::Vector<Arc<Message>>,
+        tombstones: imbl::HashSet<Uuid>,
+        chunks: Vec<HistoryChunk>,
+        gaps: Vec<HistoryGap>,
+        empty_complete: bool,
+        server_live_complete: bool,
+        live_arrival_start: Option<HistoryCursor>,
+    ) -> Self {
+        Self {
+            version,
+            generation,
+            messages,
+            tombstones,
+            chunks,
+            gaps,
+            empty_complete,
+            server_live_complete,
+            live_arrival_start,
+            keys: None,
+            empty_before: None,
+            empty_after: None,
+        }
+    }
 }
 
 /// A bounded raw history delivery. Every data delivery is a complete replacement, not a delta.
@@ -123,7 +163,7 @@ impl super::HistoryHandle {
                 .message
                 .as_ref()
                 .ok_or(crate::ReadingError::InvalidReport)?;
-            let resolved = crate::ReadPoint::message(message)?;
+            let resolved = ChronologicalKey::from_message(message)?;
             points.push(resolved);
             point = point.max(Some(resolved));
         }

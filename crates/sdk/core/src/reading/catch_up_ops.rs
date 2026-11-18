@@ -8,7 +8,7 @@ use papo_api::Uuid;
 use crate::{
     CatchUpView, Generation, HistorySnapshot, ReadPoint, ReadingError, Session,
     VisibilityContinuity,
-    catch_up::{CatchUpState, SnapshotIndex, VisibleBounds},
+    catch_up::{CatchUpState, VisibleBounds},
     reading::{counts, upload},
 };
 
@@ -38,11 +38,6 @@ pub(super) async fn report_current(
         (prev_acknowledged, point.filter(|&p| Some(p) > prev_local))
     };
 
-    let asc = session
-        .inner
-        .reading
-        .asc_successors_for(generation, channel);
-    let index = SnapshotIndex::build(&snapshot, session.account().user(), &asc)?;
     let mut next_catch_up = session
         .inner
         .reading
@@ -53,7 +48,8 @@ pub(super) async fn report_current(
         .reading
         .observer_last_visible(observer_id, channel);
     let observation = next_catch_up.observe_visible(
-        &index,
+        &snapshot,
+        session.account().user(),
         prev_acknowledged,
         last_visible,
         &visible_points,
@@ -225,10 +221,5 @@ pub(super) fn resolve_view(
     else {
         return Ok(None);
     };
-    let asc = session
-        .inner
-        .reading
-        .asc_successors_for(snapshot.generation, channel);
-    let index = SnapshotIndex::build(snapshot, session.account().user(), &asc)?;
-    state.view(&index)
+    state.view(snapshot, session.account().user())
 }

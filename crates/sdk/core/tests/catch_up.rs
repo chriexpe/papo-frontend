@@ -93,12 +93,7 @@ pub(crate) fn msg_id(snapshot: &HistorySnapshot, index: usize) -> Uuid {
 }
 
 pub(crate) fn msg_point(snapshot: &HistorySnapshot, index: usize) -> ReadPoint {
-    let msg = &snapshot.messages[index];
-    let at = chrono::DateTime::parse_from_rfc3339(msg.created_at.as_deref().unwrap()).unwrap();
-    ReadPoint {
-        created_at_us: at.timestamp_micros(),
-        message_id: msg.id.as_deref().unwrap().parse().unwrap(),
-    }
+    ReadPoint::from_message(&snapshot.messages[index]).unwrap()
 }
 
 pub(crate) fn synthetic_message(

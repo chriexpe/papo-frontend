@@ -81,7 +81,7 @@ impl CanonicalPoints {
             let mut previous = state
                 .cursor
                 .as_ref()
-                .map(|cursor| ReadPoint::parse(Some(&cursor.created_at), Some(&cursor.id)))
+                .map(crate::ChronologicalKey::from_cursor)
                 .transpose()
                 .map_err(|_| NotificationError::InvalidData)?;
             let mut points = BTreeMap::new();
@@ -89,8 +89,8 @@ impl CanonicalPoints {
                 if message.channel_id.as_deref().and_then(|id| id.parse().ok()) != Some(channel) {
                     return Err(NotificationError::InvalidData);
                 }
-                let point =
-                    ReadPoint::message(message).map_err(|_| NotificationError::InvalidData)?;
+                let point = crate::ChronologicalKey::from_message(message)
+                    .map_err(|_| NotificationError::InvalidData)?;
                 if previous.is_some_and(|previous| point >= previous) {
                     return Err(NotificationError::InvalidData);
                 }

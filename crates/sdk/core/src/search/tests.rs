@@ -87,4 +87,12 @@ fn exact_tuple_orders_equivalent_offsets_and_preserves_wire_strings() {
     };
     assert!(cursor_key(&a).unwrap() < cursor_key(&b).unwrap());
     assert_eq!(a.created_at, "2026-01-01T01:00:00.123456+01:00");
+    let sub_micro = SearchCursor {
+        created_at: "2026-01-01T00:00:00.1234567Z".into(),
+        id: Uuid::from_u128(3).to_string(),
+    };
+    assert!(matches!(
+        cursor_key(&sub_micro),
+        Err(SearchError::InvalidData)
+    ));
 }

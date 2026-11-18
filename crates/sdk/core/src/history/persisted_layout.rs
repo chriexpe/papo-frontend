@@ -2,7 +2,7 @@
 
 use super::{
     HistoryError,
-    model::{Chunk, Model},
+    model::{Chunk, EmptyAnchor, Model},
     ordering::Point,
 };
 use crate::{CacheError, account_cache::history::HistoryTable};
@@ -17,6 +17,10 @@ pub(super) struct Metadata {
     pub revision: u64,
     pub empty_generation: u64,
     pub active_chunks: Vec<[u8; 16]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_before: Option<EmptyAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_after: Option<EmptyAnchor>,
 }
 
 #[derive(Serialize, Deserialize)]

@@ -11,8 +11,13 @@ use super::{
     HistoryError,
     merge::Ticket,
     model::{Entry, Model},
-    ordering::{Point, timestamp_us},
+    ordering::Point,
 };
+
+// Message edit timestamps share the single strict microsecond RFC 3339 key parser.
+pub(super) fn edit_timestamp_us(value: &str) -> Result<i64, HistoryError> {
+    crate::ChronologicalKey::parse_timestamp_us(value).map_err(|_| HistoryError::InvalidPage)
+}
 
 impl Model {
     pub fn event(&mut self, event: &KnownEvent, generation: u64) -> Result<bool, HistoryError> {
@@ -97,7 +102,7 @@ impl Model {
         revision: u64,
     ) -> Result<bool, HistoryError> {
         let id = Self::id(&event.id)?;
-        let edited_at_us = timestamp_us(&event.edited_at)?;
+        let edited_at_us = edit_timestamp_us(&event.edited_at)?;
         let entry = self
             .entries
             .entry(id)
@@ -108,13 +113,13 @@ impl Model {
         let old = entry
             .edit
             .as_ref()
-            .map(|(at, _)| timestamp_us(at))
+            .map(|(at, _)| edit_timestamp_us(at))
             .transpose()?;
         let fetched = entry
             .message
             .as_ref()
             .and_then(|message| message.edited_at.as_deref())
-            .map(timestamp_us)
+            .map(edit_timestamp_us)
             .transpose()?;
         if old
             .into_iter()
@@ -185,17 +190,18 @@ impl Model {
             }
             let point = Point::from(&message.cursor().ok_or(HistoryError::InvalidPage)?);
             let key = point.key()?;
-            if !checked.insert(key.id)
+            let id = key.id_bytes();
+            if !checked.insert(id)
                 || self
                     .entries
-                    .get(&key.id)
+                    .get(&id)
                     .and_then(|entry| entry.point.as_ref())
                     .is_some_and(|old| old.key().ok() != Some(key))
             {
                 return Err(HistoryError::InvalidPage);
             }
             if let Some(edited_at) = &message.edited_at {
-                timestamp_us(edited_at)?;
+                edit_timestamp_us(edited_at)?;
             }
         }
         let revision = self.next_revision()?;
@@ -211,7 +217,7 @@ impl Model {
                 return Err(HistoryError::InvalidPage);
             }
             let point = Point::from(&message.cursor().ok_or(HistoryError::InvalidPage)?);
-            let id = point.key()?.id;
+            let id = point.id_bytes()?;
             if !pinned.insert(id) {
                 return Err(HistoryError::InvalidPage);
             }

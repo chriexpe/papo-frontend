@@ -52,6 +52,8 @@ impl Source {
                 Some(HistoryChunk {
                     first: group.first()?.cursor()?,
                     last: group.last()?.cursor()?,
+                    oldest_anchor: None,
+                    newest_anchor: None,
                     oldest_complete: index == 0,
                     newest_complete: index + 1 == groups.len(),
                     generation: Some(Generation::for_test(if index == 0 && groups.len() > 1 {
@@ -77,17 +79,17 @@ impl Source {
         } else {
             Vec::new()
         };
-        Arc::new(HistorySnapshot {
-            tombstones: imbl::HashSet::new(),
-            version: self.version,
+        Arc::new(HistorySnapshot::for_test(
+            self.version,
             generation,
-            messages: messages.into(),
+            messages.into(),
+            imbl::HashSet::new(),
             chunks,
             gaps,
-            empty_complete: self.messages.is_empty(),
-            server_live_complete: true,
-            live_arrival_start: None,
-        })
+            self.messages.is_empty(),
+            true,
+            None,
+        ))
     }
 
     pub(super) fn arrival(&mut self) {

@@ -1,4 +1,4 @@
-//! Checked page reconciliation and contiguous-run joining; events and persistence live elsewhere.
+//! Checked page validation and message mutation merging; chunk interval coverage lives in `coverage`.
 
 use std::collections::BTreeSet;
 
@@ -6,8 +6,10 @@ use papo_api::{HistoryOrder, wire::Message};
 
 use super::{
     HistoryError,
-    model::{Chunk, Entry, Model},
-    ordering::{Key, Point, timestamp_us},
+    chunk_merge::covered,
+    model::{Entry, Model},
+    mutations::edit_timestamp_us,
+    ordering::Point,
 };
 
 pub(super) struct Ticket {
@@ -53,7 +55,7 @@ impl Ticket {
                 return Err(HistoryError::InvalidPage);
             }
             if let Some(edited_at) = &message.edited_at {
-                timestamp_us(edited_at)?;
+                edit_timestamp_us(edited_at)?;
             }
             previous = Some(key);
             points.push(point);
@@ -75,7 +77,7 @@ impl Model {
             let key = point.key()?;
             if self
                 .entries
-                .get(&key.id)
+                .get(&key.id_bytes())
                 .and_then(|entry| entry.point.as_ref())
                 .is_some_and(|existing| existing.key().ok() != Some(key))
             {
@@ -85,7 +87,7 @@ impl Model {
         let revision = self.next_revision()?;
         let present: BTreeSet<_> = points
             .iter()
-            .map(|point| point.key().map(|key| key.id))
+            .map(Point::id_bytes)
             .collect::<Result<_, _>>()?;
         let cursor = ticket.cursor.as_ref().map(Point::key).transpose()?;
         let far = points.last().map(Point::key).transpose()?;
@@ -131,9 +133,10 @@ impl Model {
         revision: u64,
     ) -> Result<(), HistoryError> {
         let key = point.key()?;
+        let id = key.id_bytes();
         let entry = self
             .entries
-            .entry(key.id)
+            .entry(id)
             .or_insert_with(|| Entry::empty(revision));
         if entry.deleted {
             return Ok(());
@@ -150,12 +153,12 @@ impl Model {
             let old_edit = existing
                 .edited_at
                 .as_deref()
-                .map(timestamp_us)
+                .map(edit_timestamp_us)
                 .transpose()?;
             let new_edit = incoming
                 .edited_at
                 .as_deref()
-                .map(timestamp_us)
+                .map(edit_timestamp_us)
                 .transpose()?;
             if old_edit.is_some() && old_edit >= new_edit {
                 incoming.content.clone_from(&existing.content);
@@ -169,11 +172,11 @@ impl Model {
             }
         }
         if let Some((edited_at, content)) = &entry.edit {
-            let pending = timestamp_us(edited_at)?;
+            let pending = edit_timestamp_us(edited_at)?;
             let fetched = incoming
                 .edited_at
                 .as_deref()
-                .map(timestamp_us)
+                .map(edit_timestamp_us)
                 .transpose()?;
             if fetched.is_none_or(|fetched| pending > fetched) {
                 incoming.edited_at = Some(edited_at.clone());
@@ -198,145 +201,8 @@ impl Model {
         entry.timeline = true;
         entry.revision = revision;
         entry.validated_generation = ticket.generation;
-        self.order.insert(key, key.id);
-        self.dirty.insert(key.id);
+        self.order.insert(key, id);
+        self.dirty.insert(id);
         Ok(())
-    }
-
-    fn finish_empty(&mut self, ticket: &Ticket, has_more: bool) -> Result<(), HistoryError> {
-        if has_more {
-            return Err(HistoryError::InvalidPage);
-        }
-        let Some(cursor) = &ticket.cursor else {
-            self.chunks.clear();
-            self.empty_generation = ticket.generation;
-            self.server_live_generation = ticket.generation;
-            if let (Some((_, first_id)), Some((_, last_id))) =
-                (self.order.first_key_value(), self.order.last_key_value())
-            {
-                let first = self.entries[first_id]
-                    .point
-                    .clone()
-                    .ok_or(HistoryError::InvalidPage)?;
-                let last = self.entries[last_id]
-                    .point
-                    .clone()
-                    .ok_or(HistoryError::InvalidPage)?;
-                self.chunks.push(Chunk {
-                    id: *first_id,
-                    first,
-                    last,
-                    oldest_complete: true,
-                    newest_complete: true,
-                    generation: ticket.generation,
-                    live_generation: ticket.generation,
-                });
-            }
-            return Ok(());
-        };
-        let key = cursor.key()?;
-        for chunk in &mut self.chunks {
-            if chunk.contains(key)? {
-                match ticket.order {
-                    HistoryOrder::Desc => chunk.oldest_complete = true,
-                    HistoryOrder::Asc => {
-                        chunk.newest_complete = true;
-                        chunk.live_generation = ticket.generation;
-                        self.server_live_generation = ticket.generation;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn merge_coverage(
-        &mut self,
-        ticket: &Ticket,
-        points: &[Point],
-        has_more: bool,
-    ) -> Result<(), HistoryError> {
-        let (Some(first), Some(last)) = (points.first(), points.last()) else {
-            return Err(HistoryError::InvalidPage);
-        };
-        let (first, last) = match ticket.order {
-            HistoryOrder::Desc => (last.clone(), first.clone()),
-            HistoryOrder::Asc => (first.clone(), last.clone()),
-        };
-        let mut joined = Chunk {
-            id: first.key()?.id,
-            first,
-            last,
-            oldest_complete: (ticket.order == HistoryOrder::Desc && !has_more)
-                || (ticket.order == HistoryOrder::Asc && ticket.cursor.is_none()),
-            newest_complete: (ticket.order == HistoryOrder::Desc && ticket.cursor.is_none())
-                || (ticket.order == HistoryOrder::Asc && !has_more),
-            generation: ticket.generation,
-            live_generation: 0,
-        };
-        if joined.newest_complete {
-            joined.live_generation = ticket.generation;
-            self.server_live_generation = ticket.generation;
-        }
-        let anchor = ticket.cursor.as_ref().map(Point::key).transpose()?;
-        let mut retained = Vec::new();
-        for chunk in self.chunks.drain(..) {
-            let overlap = chunk.first.key()? <= joined.last.key()?
-                && joined.first.key()? <= chunk.last.key()?;
-            let attached = anchor.is_some_and(|anchor| chunk.contains(anchor).unwrap_or(false));
-            if !overlap && !attached {
-                retained.push(chunk);
-                continue;
-            }
-            let refreshed = covered(
-                chunk.first.key()?,
-                anchor,
-                points.last().map(Point::key).transpose()?,
-                ticket.order,
-                has_more,
-            ) && covered(
-                chunk.last.key()?,
-                anchor,
-                points.last().map(Point::key).transpose()?,
-                ticket.order,
-                has_more,
-            );
-            joined.id = joined.id.min(chunk.id);
-            if chunk.first.key()? < joined.first.key()? {
-                joined.first = chunk.first;
-            }
-            if chunk.last.key()? > joined.last.key()? {
-                joined.last = chunk.last;
-            }
-            joined.oldest_complete |= chunk.oldest_complete;
-            joined.newest_complete |= chunk.newest_complete;
-            joined.live_generation = joined.live_generation.max(chunk.live_generation);
-            if !refreshed {
-                joined.generation = joined.generation.min(chunk.generation);
-            }
-        }
-        retained.push(joined);
-        retained.sort_by_key(|chunk| chunk.first.key().ok());
-        self.chunks = retained;
-        Ok(())
-    }
-}
-
-fn covered(
-    key: Key,
-    cursor: Option<Key>,
-    far: Option<Key>,
-    order: HistoryOrder,
-    has_more: bool,
-) -> bool {
-    match order {
-        HistoryOrder::Desc => {
-            cursor.is_none_or(|cursor| key < cursor)
-                && (!has_more || far.is_some_and(|far| key >= far))
-        }
-        HistoryOrder::Asc => {
-            cursor.is_none_or(|cursor| key > cursor)
-                && (!has_more || far.is_some_and(|far| key <= far))
-        }
     }
 }

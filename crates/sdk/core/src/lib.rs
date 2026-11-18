@@ -31,8 +31,8 @@ pub use media::{
 mod history;
 pub use history::{
     HistoryBudget, HistoryChunk, HistoryClosedReason, HistoryDiagnostics, HistoryError, HistoryGap,
-    HistoryHandle, HistoryPage, HistorySnapshot, HistorySource, HistorySubscription, HistoryUpdate,
-    HistoryWork,
+    HistoryHandle, HistoryPage, HistoryRange, HistorySnapshot, HistorySource, HistorySubscription,
+    HistoryUpdate, HistoryWork, ResolvedPoint,
 };
 pub use papo_api::wire::Message;
 pub use papo_api::{HistoryCursor, HistoryOrder, HistoryQuery, Uuid};
@@ -49,10 +49,10 @@ pub use outgoing::{
 pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
 mod catch_up;
 mod catch_up_cleanup;
-mod catch_up_index;
 mod catch_up_position_store;
 mod catch_up_spans;
 mod catch_up_store;
+mod chronology;
 pub mod permissions;
 mod private_fs;
 mod profiles;
@@ -61,7 +61,7 @@ mod reading;
 pub use catch_up::{
     CatchUpSnapshot, CatchUpView, ReadingPosition, ReadingPositionsSnapshot, VisibilityContinuity,
 };
-pub use catch_up_index::is_foreign_message;
+pub use chronology::{ChronologicalKey, ChronologyError, is_foreign_message};
 pub use reading::{
     ReadPoint, ReadState, ReadingError, ReadingObserver, ReadingSnapshot, UnreadCount,
 };

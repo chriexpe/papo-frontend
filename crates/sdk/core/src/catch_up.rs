@@ -1,16 +1,18 @@
 //! Catch-up interval domain state machine, snapshot revisions, views and saved position types.
-//! Durability lives in `catch_up_store` and `catch_up_position_store`; snapshot indexing and
-//! millisecond point resolution live in `catch_up_index`; span coalescing lives in `catch_up_spans`.
+//! Durability lives in `catch_up_store` and `catch_up_position_store`; point resolution and
+//! range completeness live in `history::queries`; span coalescing lives in `catch_up_spans`.
 
 use std::collections::BTreeMap;
 
 use papo_api::{HistoryCursor, Uuid};
 use serde::{Deserialize, Serialize};
 
-pub(crate) use crate::catch_up_index::{AscSuccessors, SnapshotIndex};
-use crate::catch_up_spans::contiguous_segments;
-use crate::{Generation, ReadPoint, ReadingError};
+use crate::catch_up_spans::{contiguous_segments, first_unseen_foreign, no_unseen_foreign};
+use crate::{Generation, HistorySnapshot, ReadPoint, ReadingError};
 
+#[cfg(test)]
+#[path = "catch_up_gap_tests.rs"]
+mod gap_tests;
 #[cfg(test)]
 #[path = "catch_up_span_tests.rs"]
 mod span_tests;
@@ -211,10 +213,11 @@ pub struct ReadingPositionsSnapshot {
 }
 
 impl CatchUpState {
-    /// Observe one non-empty set of visible points in `index` and update `seen_to` + `interval`.
+    /// Observe one non-empty set of visible points in `snapshot` and update `seen_to` + `interval`.
     pub(crate) fn observe_visible(
         &mut self,
-        index: &SnapshotIndex<'_>,
+        snapshot: &HistorySnapshot,
+        self_user: Uuid,
         prev_acknowledged_head: Option<ReadPoint>,
         last_visible: Option<VisibleBounds>,
         visible: &[ReadPoint],
@@ -227,31 +230,31 @@ impl CatchUpState {
             });
         }
         let before = self.clone();
-        self.normalize_points(index)?;
+        self.normalize_points(snapshot)?;
         let mut sorted = Vec::with_capacity(visible.len());
         for &p in visible {
-            sorted.push(index.resolve(p)?);
+            sorted.push(snapshot.resolve(p)?.key);
         }
         sorted.sort();
         sorted.dedup();
         let vis_lo = *sorted.first().expect("checked non-empty");
         let vis_hi = *sorted.last().expect("checked non-empty");
         let resolved_prev = prev_acknowledged_head
-            .map(|p| index.resolve(p))
+            .map(|p| Ok::<_, ReadingError>(snapshot.resolve(p)?.key))
             .transpose()?;
         let prev_head = self.seen_to.into_iter().chain(resolved_prev).max();
 
         let contiguous_scroll = if continuity == VisibilityContinuity::Continuous
             && let Some(prev) = last_visible
         {
-            let prev_lo = index.resolve(prev.min)?;
-            let prev_hi = index.resolve(prev.max)?;
+            let prev_lo = snapshot.resolve(prev.min)?.key;
+            let prev_hi = snapshot.resolve(prev.max)?.key;
             if vis_hi >= prev_hi {
                 (prev_lo <= vis_hi && prev_hi >= vis_lo)
-                    || index.is_contiguous(Some(prev_hi), vis_lo)?
+                    || snapshot.range(Some(prev_hi), Some(vis_lo))?.complete
             } else {
                 (vis_lo <= prev_hi && vis_hi >= prev_lo)
-                    || index.is_contiguous(Some(vis_hi), prev_lo)?
+                    || snapshot.range(Some(vis_hi), Some(prev_lo))?.complete
             }
         } else {
             false
@@ -263,7 +266,7 @@ impl CatchUpState {
             && vis_hi > head
             && !contiguous_scroll
             && vis_lo > head
-            && !index.no_unseen_foreign(Some(head), vis_lo, &[])?
+            && !no_unseen_foreign(snapshot, self_user, Some(head), vis_lo, &[])?
         {
             self.interval = Some(CatchUpInterval {
                 start_after: Some(head),
@@ -272,22 +275,22 @@ impl CatchUpState {
             });
         }
 
-        let mut spans = contiguous_segments(index, &sorted)?;
+        let mut spans = contiguous_segments(snapshot, &sorted)?;
         if continuity == VisibilityContinuity::Continuous
             && let Some(prev) = last_visible
         {
-            let prev_lo = index.resolve(prev.min)?;
-            let prev_hi = index.resolve(prev.max)?;
-            if vis_lo > prev_hi && index.is_contiguous(Some(prev_hi), vis_lo)? {
+            let prev_lo = snapshot.resolve(prev.min)?.key;
+            let prev_hi = snapshot.resolve(prev.max)?.key;
+            if vis_lo > prev_hi && snapshot.range(Some(prev_hi), Some(vis_lo))?.complete {
                 spans.push(ReadSpan::normalized(prev_hi, vis_lo));
-            } else if vis_hi < prev_lo && index.is_contiguous(Some(vis_hi), prev_lo)? {
+            } else if vis_hi < prev_lo && snapshot.range(Some(vis_hi), Some(prev_lo))?.complete {
                 spans.push(ReadSpan::normalized(vis_hi, prev_lo));
             }
         }
 
         if let Some(interval) = &mut self.interval {
-            interval.apply_spans(index, &spans)?;
-            if interval.is_closed(index)? {
+            interval.apply_spans(snapshot, self_user, &spans)?;
+            if interval.is_closed(snapshot, self_user)? {
                 self.interval = None;
             }
         }
@@ -305,13 +308,14 @@ impl CatchUpState {
     /// Re-evaluate an active interval against new canonical history, closing if zero unseen foreign rows remain.
     pub(crate) fn reconcile_snapshot(
         &mut self,
-        index: &SnapshotIndex<'_>,
+        snapshot: &HistorySnapshot,
+        self_user: Uuid,
     ) -> Result<bool, ReadingError> {
         let before = self.clone();
-        self.normalize_points(index)?;
+        self.normalize_points(snapshot)?;
         if let Some(interval) = &mut self.interval {
-            interval.coalesce(index)?;
-            if interval.is_closed(index)? {
+            interval.coalesce(snapshot, self_user)?;
+            if interval.is_closed(snapshot, self_user)? {
                 self.interval = None;
             }
         }
@@ -328,30 +332,39 @@ impl CatchUpState {
         *self != before
     }
 
-    /// Resolve display boundaries and hourglass seek readiness against `index`.
+    /// Resolve display boundaries and hourglass seek readiness against `snapshot`.
     pub(crate) fn view(
         &self,
-        index: &SnapshotIndex<'_>,
+        snapshot: &HistorySnapshot,
+        self_user: Uuid,
     ) -> Result<Option<CatchUpView>, ReadingError> {
         let Some(interval) = &self.interval else {
             return Ok(None);
         };
-        let start_after = interval.start_after.map(|p| index.resolve(p)).transpose()?;
-        let end_before = index.resolve(interval.end_before)?;
+        let start_after = interval
+            .start_after
+            .map(|p| Ok::<_, ReadingError>(snapshot.resolve(p)?.key))
+            .transpose()?;
+        let end_before = snapshot.resolve(interval.end_before)?.key;
         if start_after.is_some_and(|s| s >= end_before) {
             return Ok(None);
         }
-        let first_unread =
-            index.first_unseen_foreign(start_after, end_before, &interval.covered_spans)?;
+        let first_unread = first_unseen_foreign(
+            snapshot,
+            self_user,
+            start_after,
+            end_before,
+            &interval.covered_spans,
+        )?;
         let (start_target, start_cursor, needs_history) =
             if let Some((point, cursor)) = first_unread {
-                if index.is_contiguous(start_after, point)? {
-                    (Some(point.message_id), cursor, false)
+                if snapshot.range(start_after, Some(point))?.complete {
+                    (Some(point.message_id), Some(cursor), false)
                 } else {
                     (None, None, true)
                 }
             } else {
-                if index.is_contiguous(start_after, end_before)? {
+                if snapshot.range(start_after, Some(end_before))?.complete {
                     return Ok(None);
                 }
                 (None, None, true)
@@ -365,14 +378,20 @@ impl CatchUpState {
         }))
     }
 
-    fn normalize_points(&mut self, index: &SnapshotIndex<'_>) -> Result<(), ReadingError> {
-        self.seen_to = self.seen_to.map(|p| index.resolve(p)).transpose()?;
+    fn normalize_points(&mut self, snapshot: &HistorySnapshot) -> Result<(), ReadingError> {
+        self.seen_to = self
+            .seen_to
+            .map(|p| Ok::<_, ReadingError>(snapshot.resolve(p)?.key))
+            .transpose()?;
         if let Some(interval) = &mut self.interval {
-            interval.start_after = interval.start_after.map(|p| index.resolve(p)).transpose()?;
-            interval.end_before = index.resolve(interval.end_before)?;
+            interval.start_after = interval
+                .start_after
+                .map(|p| Ok::<_, ReadingError>(snapshot.resolve(p)?.key))
+                .transpose()?;
+            interval.end_before = snapshot.resolve(interval.end_before)?.key;
             for span in &mut interval.covered_spans {
-                span.start = index.resolve(span.start)?;
-                span.end = index.resolve(span.end)?;
+                span.start = snapshot.resolve(span.start)?.key;
+                span.end = snapshot.resolve(span.end)?.key;
             }
         }
         Ok(())

@@ -1,7 +1,7 @@
 //! Exact window selection, historical UTC offsets and Arc identity without runtime or network.
 
 use super::*;
-use papo_sdk::{Generation, Message, ReadPoint, UnreadCount};
+use papo_sdk::{Generation, Message, UnreadCount, Uuid};
 
 fn message(id: u128, at: &str) -> Arc<Message> {
     Arc::new(Message {
@@ -11,28 +11,28 @@ fn message(id: u128, at: &str) -> Arc<Message> {
     })
 }
 fn snapshot(messages: Vec<Arc<Message>>) -> HistorySnapshot {
-    HistorySnapshot {
-        tombstones: imbl::HashSet::new(),
-        version: 1,
-        generation: Generation::for_test(1),
-        messages: messages.into(),
-        chunks: vec![],
-        gaps: vec![],
-        empty_complete: false,
-        server_live_complete: false,
-        live_arrival_start: None,
-    }
+    HistorySnapshot::for_test(
+        1,
+        Generation::for_test(1),
+        messages.into(),
+        imbl::HashSet::new(),
+        vec![],
+        vec![],
+        false,
+        false,
+        None,
+    )
 }
 fn bounds(raw: &HistorySnapshot, live: bool) -> Bounds {
     Bounds {
         lower: raw
             .messages
             .front()
-            .map(|message| key(&message.cursor().unwrap()).unwrap()),
+            .map(|message| ChronologicalKey::from_cursor(&message.cursor().unwrap()).unwrap()),
         upper: raw
             .messages
             .last()
-            .map(|message| key(&message.cursor().unwrap()).unwrap()),
+            .map(|message| ChronologicalKey::from_cursor(&message.cursor().unwrap()).unwrap()),
         live,
     }
 }
@@ -176,13 +176,13 @@ fn focused_end_is_not_live_head_and_deleting_boundary_does_not_shift_window() {
         message(3, "2026-01-01T00:00:03Z"),
     ]);
     let bounds = Bounds {
-        lower: Some(key(&raw.messages[0].cursor().unwrap()).unwrap()),
-        upper: Some(key(&raw.messages[1].cursor().unwrap()).unwrap()),
+        lower: Some(ChronologicalKey::from_cursor(&raw.messages[0].cursor().unwrap()).unwrap()),
+        upper: Some(ChronologicalKey::from_cursor(&raw.messages[1].cursor().unwrap()).unwrap()),
         live: false,
     };
     raw.messages.remove(0);
     let read = ReadState {
-        local_point: Some(ReadPoint {
+        local_point: Some(ChronologicalKey {
             created_at_us: 0,
             message_id: Uuid::nil(),
         }),
@@ -220,8 +220,12 @@ fn narrow_focused_window_selects_exact_equal_timestamp_bounds_from_large_history
             .collect(),
     );
     let bounds = Bounds {
-        lower: Some(key(&raw.messages[49_999].cursor().unwrap()).unwrap()),
-        upper: Some(key(&raw.messages[50_028].cursor().unwrap()).unwrap()),
+        lower: Some(
+            ChronologicalKey::from_cursor(&raw.messages[49_999].cursor().unwrap()).unwrap(),
+        ),
+        upper: Some(
+            ChronologicalKey::from_cursor(&raw.messages[50_028].cursor().unwrap()).unwrap(),
+        ),
         live: false,
     };
     let offsets = std::sync::atomic::AtomicUsize::new(0);
@@ -249,4 +253,33 @@ fn narrow_focused_window_selects_exact_equal_timestamp_bounds_from_large_history
         (50_000..50_030).map(Uuid::from_u128).collect::<Vec<_>>()
     );
     assert_eq!(offsets.load(std::sync::atomic::Ordering::Relaxed), 30);
+}
+
+#[test]
+fn sub_microsecond_timestamps_are_rejected_in_timeline_window() {
+    let valid = message(1, "2026-01-01T00:00:01.123456Z");
+    let invalid = message(2, "2026-01-01T00:00:02.1234567Z");
+    let cursor = invalid.cursor().unwrap();
+    assert!(matches!(
+        ChronologicalKey::from_cursor(&cursor),
+        Err(papo_sdk::ChronologyError::InvalidTimestamp)
+    ));
+    let raw = snapshot(vec![valid, invalid]);
+    let bounds = Bounds {
+        lower: Some(ChronologicalKey::from_cursor(&raw.messages[0].cursor().unwrap()).unwrap()),
+        upper: None,
+        live: true,
+    };
+    assert!(matches!(
+        project(
+            &raw,
+            &bounds,
+            None,
+            [false; 2],
+            &|_| crate::UtcOffset::default(),
+            &Vector::new(),
+        ),
+        Err(TimelineError::InvalidCursor
+            | TimelineError::History(papo_sdk::HistoryError::InvalidPage))
+    ));
 }

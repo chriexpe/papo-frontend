@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{HistoryChunk, HistorySnapshot};
-use papo_api::HistoryCursor;
+use papo_api::{HistoryCursor, wire::Message};
 
 fn point(index: u128) -> ReadPoint {
     ReadPoint {
@@ -35,11 +35,16 @@ fn snapshot(start: u128, end: u128) -> HistorySnapshot {
             last: cursor(end),
             oldest_complete: true,
             newest_complete: true,
+            oldest_anchor: None,
+            newest_anchor: None,
             generation: Some(Generation(1)),
             live_generation: Some(Generation(1)),
         }],
         gaps: Vec::new(),
+        keys: None,
         empty_complete: false,
+        empty_before: None,
+        empty_after: None,
         server_live_complete: true,
         live_arrival_start: None,
     }
@@ -110,11 +115,22 @@ fn contiguous_current_coverage_reports_exact_count_and_first_unread() {
 
 #[test]
 fn point_older_than_retained_history_is_a_lower_bound() {
+    // Only unretained older history (oldest_complete = false) forces a lower bound; when
+    // oldest_complete is true, nothing older exists so Exact(7) is proven.
+    let mut exact_state = ReadState {
+        local_point: Some(actual_point(1)),
+        ..ReadState::default()
+    };
+    counts::update(&mut exact_state, &snapshot(4, 10), None).unwrap();
+    assert_eq!(exact_state.unread_count, UnreadCount::Exact(7));
+
+    let mut unretained = snapshot(4, 10);
+    unretained.chunks[0].oldest_complete = false;
     let mut state = ReadState {
         local_point: Some(actual_point(1)),
         ..ReadState::default()
     };
-    counts::update(&mut state, &snapshot(4, 10), None).unwrap();
+    counts::update(&mut state, &unretained, None).unwrap();
     assert_eq!(state.unread_count, UnreadCount::AtLeast(7));
 }
 
@@ -128,7 +144,7 @@ fn unknown_middle_is_never_an_exact_unread_count() {
     history.chunks[0].oldest_complete = false;
     history.chunks.insert(0, older);
     history.messages.retain(|message| {
-        let point = ReadPoint::message(message).unwrap();
+        let point = ReadPoint::from_message(message).unwrap();
         point <= actual_point(3) || point >= actual_point(8)
     });
     let mut state = ReadState {

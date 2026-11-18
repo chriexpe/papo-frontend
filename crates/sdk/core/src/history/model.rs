@@ -1,16 +1,14 @@
 //! Canonical channel messages and proven ranges; network admission and persistence live separately.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ops::Bound::{Excluded, Included},
-};
+use std::collections::{BTreeMap, BTreeSet};
 
-use papo_api::{HistoryOrder, Uuid, wire::Message};
+use papo_api::{Uuid, wire::Message};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    HistoryError, HistoryGap,
+    HistoryError,
+    chunk_merge::{LowerBound, UpperBound, upper_reaches_lower},
     ordering::{Key, Point},
 };
 
@@ -52,10 +50,20 @@ impl Entry {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct EmptyAnchor {
+    pub point: Point,
+    pub generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Chunk {
     pub id: [u8; 16],
     pub first: Point,
     pub last: Point,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_anchor: Option<Point>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_anchor: Option<Point>,
     pub oldest_complete: bool,
     pub newest_complete: bool,
     pub generation: u64,
@@ -66,6 +74,80 @@ impl Chunk {
     pub fn contains(&self, key: Key) -> Result<bool, HistoryError> {
         Ok(self.first.key()? <= key && key <= self.last.key()?)
     }
+
+    pub fn lower_bound(&self) -> Result<LowerBound, HistoryError> {
+        if self.oldest_complete {
+            Ok(LowerBound::Unbounded)
+        } else if let Some(anchor) = &self.oldest_anchor {
+            Ok(LowerBound::Excluded(anchor.key()?))
+        } else {
+            Ok(LowerBound::Included(self.first.key()?))
+        }
+    }
+
+    pub fn upper_bound_in(&self, live_generation: Option<u64>) -> Result<UpperBound, HistoryError> {
+        let live_tail = self.newest_complete
+            && match live_generation {
+                Some(gen_id) => gen_id != 0 && self.live_generation == gen_id,
+                None => self.live_generation != 0,
+            };
+        if live_tail {
+            Ok(UpperBound::Unbounded)
+        } else if let Some(anchor) = &self.newest_anchor {
+            Ok(UpperBound::Excluded(anchor.key()?))
+        } else {
+            Ok(UpperBound::Included(self.last.key()?))
+        }
+    }
+
+    pub fn overlaps_entries(&self, other: &Self) -> Result<bool, HistoryError> {
+        Ok(self.first.key()? <= other.last.key()? && other.first.key()? <= self.last.key()?)
+    }
+
+    pub fn touches_or_overlaps_in(
+        &self,
+        other: &Self,
+        live_generation: Option<u64>,
+    ) -> Result<bool, HistoryError> {
+        Ok(
+            upper_reaches_lower(self.upper_bound_in(live_generation)?, other.lower_bound()?)
+                && upper_reaches_lower(other.upper_bound_in(live_generation)?, self.lower_bound()?),
+        )
+    }
+
+    pub fn touches_or_overlaps(&self, other: &Self) -> Result<bool, HistoryError> {
+        let same_live = (self.live_generation != 0
+            && self.live_generation == other.live_generation)
+            .then_some(self.live_generation);
+        // Never allow a stale `newest_complete` tail from an earlier epoch to bridge a gap.
+        let epoch = same_live.unwrap_or(0);
+        self.touches_or_overlaps_in(other, Some(epoch))
+    }
+
+    pub fn validate_invariants(&self) -> Result<(), HistoryError> {
+        let first = self.first.key()?;
+        let last = self.last.key()?;
+        if first > last {
+            return Err(HistoryError::InvalidPage);
+        }
+        if self.oldest_complete && self.oldest_anchor.is_some() {
+            return Err(HistoryError::InvalidPage);
+        }
+        if self.newest_complete && self.newest_anchor.is_some() {
+            return Err(HistoryError::InvalidPage);
+        }
+        if let Some(anchor) = &self.oldest_anchor
+            && anchor.key()? >= first
+        {
+            return Err(HistoryError::InvalidPage);
+        }
+        if let Some(anchor) = &self.newest_anchor
+            && anchor.key()? <= last
+        {
+            return Err(HistoryError::InvalidPage);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -75,18 +157,13 @@ pub(super) struct Model {
     pub chunks: Vec<Chunk>,
     pub revision: u64,
     pub empty_generation: u64,
+    pub empty_before: Option<EmptyAnchor>,
+    pub empty_after: Option<EmptyAnchor>,
     pub server_live_generation: u64,
     pub live_arrival_generation: u64,
     pub live_arrival_floor: Option<Point>,
     pub dirty: BTreeSet<[u8; 16]>,
     pub deletions: BTreeMap<[u8; 16], Vec<[u8; 16]>>,
-}
-
-pub(super) struct CachedPage {
-    pub messages: Vec<Message>,
-    pub has_more: bool,
-    pub gap: Option<HistoryGap>,
-    pub fresh: bool,
 }
 
 impl Model {
@@ -123,94 +200,12 @@ impl Model {
                     .as_ref()
                     .ok_or(HistoryError::InvalidPage)?
                     .key()?;
-                if key.id != *id || self.order.insert(key, *id).is_some() {
+                if key.id_bytes() != *id || self.order.insert(key, *id).is_some() {
                     return Err(HistoryError::InvalidPage);
                 }
             }
         }
         Ok(())
-    }
-
-    pub fn page(
-        &self,
-        cursor: Option<&Point>,
-        order: HistoryOrder,
-        limit: usize,
-        generation: u64,
-    ) -> Result<CachedPage, HistoryError> {
-        let boundary = cursor.map(Point::key).transpose()?;
-        let chunk = match boundary {
-            Some(key) => self
-                .chunks
-                .iter()
-                .find(|chunk| chunk.contains(key).unwrap_or(false)),
-            None if order == HistoryOrder::Desc => self.chunks.last(),
-            None => self.chunks.first(),
-        };
-        let Some(chunk) = chunk else {
-            return Ok(CachedPage {
-                messages: Vec::new(),
-                has_more: self.empty_generation != generation,
-                gap: cursor.map(|cursor| HistoryGap {
-                    cursor: cursor.cursor(),
-                    order,
-                }),
-                fresh: self.empty_generation == generation,
-            });
-        };
-        // A cursor in a hole must not jump directly to the next cached run.
-        let first = chunk.first.key()?;
-        let last = chunk.last.key()?;
-        let lower = match (order, boundary) {
-            (HistoryOrder::Asc, Some(key)) => Excluded(key),
-            _ => Included(first),
-        };
-        let upper = match (order, boundary) {
-            (HistoryOrder::Desc, Some(key)) => Excluded(key),
-            _ => Included(last),
-        };
-        let range = self.order.range((lower, upper));
-        let payload = |(_, id): (&Key, &[u8; 16])| self.entries.get(id)?.message.as_ref();
-        let candidates: Vec<_> = match order {
-            HistoryOrder::Desc => range.rev().filter_map(payload).take(limit + 1).collect(),
-            HistoryOrder::Asc => range.filter_map(payload).take(limit + 1).collect(),
-        };
-        let more_cached = candidates.len() > limit;
-        let complete = match order {
-            HistoryOrder::Desc => chunk.oldest_complete,
-            HistoryOrder::Asc => chunk.newest_complete,
-        };
-        let gap = (!more_cached && !complete).then(|| HistoryGap {
-            cursor: match order {
-                HistoryOrder::Desc => chunk.first.cursor(),
-                HistoryOrder::Asc => chunk.last.cursor(),
-            },
-            order,
-        });
-        let payloads_fresh = candidates.iter().take(limit).all(|message| {
-            message
-                .id
-                .as_deref()
-                .and_then(|id| Self::id(id).ok())
-                .and_then(|id| self.entries.get(&id))
-                .is_some_and(|entry| entry.validated_generation == generation)
-        });
-        let start_proven = boundary.is_some()
-            || match order {
-                HistoryOrder::Desc => chunk.newest_complete && chunk.live_generation == generation,
-                HistoryOrder::Asc => chunk.oldest_complete && chunk.generation == generation,
-            };
-        let terminal_proven = more_cached
-            || match order {
-                HistoryOrder::Desc => chunk.oldest_complete && chunk.generation == generation,
-                HistoryOrder::Asc => chunk.newest_complete && chunk.live_generation == generation,
-            };
-        Ok(CachedPage {
-            messages: candidates.into_iter().take(limit).cloned().collect(),
-            has_more: more_cached || !complete,
-            gap,
-            fresh: payloads_fresh && start_proven && terminal_proven,
-        })
     }
 
     pub fn id(value: &str) -> Result<[u8; 16], HistoryError> {

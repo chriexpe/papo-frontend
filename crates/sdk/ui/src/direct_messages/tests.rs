@@ -59,3 +59,47 @@ fn equal_remote_ids_remain_separate_and_activity_offsets_compare_as_instants() {
     assert_eq!(next[0].id.account, b);
     assert!(Arc::ptr_eq(&next[0], &rows[1]));
 }
+
+#[test]
+fn sub_microsecond_dm_creation_sorts_while_last_message_remains_strict() {
+    let a = AccountId::new(
+        ServerAddress::parse("https://example.invalid/a")
+            .unwrap()
+            .id(),
+        Uuid::from_u128(3),
+    );
+    let b = AccountId::new(
+        ServerAddress::parse("https://example.invalid/b")
+            .unwrap()
+            .id(),
+        Uuid::from_u128(3),
+    );
+    let c = AccountId::new(
+        ServerAddress::parse("https://example.invalid/c")
+            .unwrap()
+            .id(),
+        Uuid::from_u128(3),
+    );
+    let mut strict_invalid_msg = (*image(3, "2026-01-01T00:00:01Z")).clone();
+    let invalid_dm: DirectConversation = serde_json::from_value(serde_json::json!({
+        "id": Uuid::from_u128(1).to_string(),
+        "user": { "id": Uuid::from_u128(2).to_string() },
+        "created_at": "2026-01-01T00:00:01Z",
+        "unread_count": 0,
+        "last_message": { "created_at": "2026-01-01T00:00:05.1234567Z" }
+    }))
+    .unwrap();
+    strict_invalid_msg.dms = Arc::new(vec![invalid_dm]);
+    let images = BTreeMap::from([
+        (a, image(1, "2026-01-01T00:00:04.1234567Z")),
+        (b, image(2, "2026-01-01T00:00:02Z")),
+        (c, Arc::new(strict_invalid_msg)),
+    ]);
+    let rows = project(&images, &Vector::new());
+    // `a` (sub-microsecond dm.created_at) sorts newest, then `b` (valid), while `c`
+    // (sub-microsecond last_message.created_at) parses as `None` and sorts last.
+    assert_eq!(
+        rows.iter().map(|row| row.id.account).collect::<Vec<_>>(),
+        vec![a, b, c]
+    );
+}

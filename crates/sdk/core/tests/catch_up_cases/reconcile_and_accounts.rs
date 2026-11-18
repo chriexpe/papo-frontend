@@ -286,19 +286,21 @@ fn legacy_millisecond_anchor_and_deleted_anchor_advance_without_reopening_read_r
         super::wait_online(&session).await?;
         let history = session.history(channel()).await?;
         // Fetching Asc from start loads m2..=m5 after deleted m1 without wedging progress.
-        history
+        let first_page = history
             .page(HistoryQuery {
                 cursor: None,
                 order: HistoryOrder::Asc,
                 limit: Some(4),
             })
             .await?;
-        let first_page = history.subscribe().await?.snapshot;
         assert_ne!(first_page.messages[0].id.as_deref().unwrap(), FIRST);
-        let after = first_page.messages.last().unwrap().cursor().unwrap();
+        let after = first_page
+            .next_cursor
+            .as_ref()
+            .expect("first Asc page should have a cursor at m5");
         history
             .page(HistoryQuery {
-                cursor: Some(&after),
+                cursor: Some(after),
                 order: HistoryOrder::Asc,
                 limit: Some(10),
             })

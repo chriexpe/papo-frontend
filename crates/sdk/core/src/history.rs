@@ -1,7 +1,19 @@
 //! Account/channel history paging and proven continuity; Timeline windows, items and read state live above it.
 
+mod cached_page;
 mod channel;
+mod chunk_merge;
+mod coverage;
+#[cfg(test)]
+mod coverage_property_oracle;
+#[cfg(test)]
+mod coverage_property_tests;
+#[cfg(test)]
+mod coverage_revalidation_tests;
+#[cfg(test)]
+mod coverage_tests;
 mod diagnostics;
+mod empty_coverage;
 mod fetch;
 pub(crate) mod live;
 mod live_edge;
@@ -13,6 +25,7 @@ mod ordering;
 mod persisted_layout;
 mod persistence;
 mod publication;
+mod queries;
 mod receipt;
 pub(crate) mod reconnect;
 #[cfg(test)]
@@ -35,6 +48,9 @@ use std::sync::Arc;
 pub use channel::HistoryHandle;
 pub(crate) use channel::HistoryStore;
 pub use diagnostics::{HistoryBudget, HistoryDiagnostics, HistoryWork};
+#[cfg(test)]
+pub(crate) use queries::HistoryEmptyAnchor;
+pub use queries::{HistoryRange, ResolvedPoint};
 pub use subscription::{HistoryChunk, HistorySnapshot, HistorySubscription, HistoryUpdate};
 
 /// Why a history handle can no longer access its channel.
@@ -75,6 +91,12 @@ pub enum HistoryError {
     /// Session generation, transport or lifecycle failed.
     #[error(transparent)]
     Session(ClientError),
+}
+
+impl From<crate::ChronologyError> for HistoryError {
+    fn from(_: crate::ChronologyError) -> Self {
+        Self::InvalidPage
+    }
 }
 
 impl From<ClientError> for HistoryError {

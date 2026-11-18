@@ -16,17 +16,17 @@ fn initial_live_snapshot_includes_arrival_after_empty_page_without_waiting_for_a
             })
         })
         .collect();
-    let raw = Arc::new(HistorySnapshot {
-        tombstones: imbl::HashSet::new(),
-        version: 8,
+    let raw = Arc::new(HistorySnapshot::for_test(
+        8,
         generation,
-        messages: messages.into(),
-        chunks: vec![],
-        gaps: vec![],
-        empty_complete: false,
-        server_live_complete: false,
-        live_arrival_start: None,
-    });
+        messages.into(),
+        imbl::HashSet::new(),
+        vec![],
+        vec![],
+        false,
+        false,
+        None,
+    ));
     let (_history, mut updates) = watch::channel(HistoryUpdate::Reset(Arc::clone(&raw)));
     updates.mark_unchanged();
     let (_reading, reading) = watch::channel(Arc::new(ReadingSnapshot {

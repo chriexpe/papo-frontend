@@ -174,7 +174,7 @@ async fn refresh_channel(
         let (page, oldest) = super::fetch::server_page(&handle, connection, ticket).await?;
         let overlap = oldest
             .as_ref()
-            .map(|point| point.key().map(|key| old_newest.contains(&key.id)))
+            .map(|point| point.id_bytes().map(|id| old_newest.contains(&id)))
             .transpose()?
             .unwrap_or(false);
         if old_newest.is_empty() || overlap || !page.has_more || attempt == 3 {

@@ -16,77 +16,17 @@ mod upload;
 pub use observers::ReadingObserver;
 
 use crate::{
-    CatchUpSnapshot, CatchUpView, ClientError, Generation, HistoryError, HistorySnapshot,
-    ReadingPosition, ReadingPositionsSnapshot, Session, StorageError, VisibilityContinuity,
+    CatchUpSnapshot, CatchUpView, ChronologicalKey, ChronologyError, ClientError, Generation,
+    HistoryError, HistorySnapshot, ReadingPosition, ReadingPositionsSnapshot, Session,
+    StorageError, VisibilityContinuity,
     catch_up::{CatchUpStore, VisibleBounds},
 };
-use papo_api::{HistoryCursor, Uuid, wire::Message};
+use papo_api::Uuid;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
 
-/// Message-order cursor, never an acknowledgement timestamp. Ordering is PostgreSQL
-/// microseconds followed by the opaque UUID's bytes, exactly like history pagination.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
-pub struct ReadPoint {
-    /// Server message creation time in microseconds since Unix epoch.
-    pub created_at_us: i64,
-    /// Backend message UUID, used only as an equal-timestamp tiebreaker.
-    #[serde(
-        serialize_with = "crate::read_points::serialize_id",
-        deserialize_with = "crate::read_points::deserialize_id"
-    )]
-    pub message_id: Uuid,
-}
-impl ReadPoint {
-    /// Parses the microsecond chronological cursor from a canonical history `Message`.
-    /// # Errors
-    /// Returns `ReadingError::InvalidPoint` when `created_at` or `id` is absent or invalid.
-    pub fn from_message(message: &Message) -> Result<Self, ReadingError> {
-        Self::parse(message.created_at.as_deref(), message.id.as_deref())
-    }
-
-    /// Parses a wire `HistoryCursor` into a microsecond `ReadPoint`.
-    /// # Errors
-    /// Returns `ReadingError::InvalidPoint` when timestamp precision exceeds microseconds or ID fails UUID parsing.
-    pub fn from_cursor(cursor: &HistoryCursor) -> Result<Self, ReadingError> {
-        Self::parse(Some(&cursor.created_at), Some(&cursor.id))
-    }
-
-    /// Formats this point as a microsecond RFC 3339 `HistoryCursor`.
-    /// # Errors
-    /// Returns `ReadingError::InvalidPoint` if `created_at_us` is outside valid UTC timestamp range.
-    pub fn to_cursor(&self) -> Result<HistoryCursor, ReadingError> {
-        let created_at = chrono::DateTime::from_timestamp_micros(self.created_at_us)
-            .ok_or(ReadingError::InvalidPoint)?
-            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
-        Ok(HistoryCursor {
-            created_at,
-            id: self.message_id.to_string(),
-        })
-    }
-
-    pub(crate) fn message(message: &Message) -> Result<Self, ReadingError> {
-        Self::from_message(message)
-    }
-
-    pub(crate) fn parse(created_at: Option<&str>, id: Option<&str>) -> Result<Self, ReadingError> {
-        let at =
-            chrono::DateTime::parse_from_rfc3339(created_at.ok_or(ReadingError::InvalidPoint)?)
-                .map_err(|_| ReadingError::InvalidPoint)?;
-        if at.timestamp_subsec_nanos() % 1_000 != 0 {
-            return Err(ReadingError::InvalidPoint);
-        }
-        Ok(Self {
-            created_at_us: at.timestamp_micros(),
-            message_id: id
-                .ok_or(ReadingError::InvalidPoint)?
-                .parse()
-                .map_err(|_| ReadingError::InvalidPoint)?,
-        })
-    }
-}
+/// Message-order cursor, never an acknowledgement timestamp. Alias for `ChronologicalKey`.
+pub type ReadPoint = ChronologicalKey;
 
 /// Ordered unread count. Incomplete coverage never claims an exact total.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +96,11 @@ pub enum ReadingError {
     #[error(transparent)]
     Session(#[from] ClientError),
 }
+impl From<ChronologyError> for ReadingError {
+    fn from(_: ChronologyError) -> Self {
+        Self::InvalidPoint
+    }
+}
 
 pub(crate) type ObserverVisibilityMap = BTreeMap<u64, BTreeMap<Uuid, VisibleBounds>>;
 
@@ -172,7 +117,6 @@ pub(crate) struct Reading {
     pub connection: Mutex<Option<(Generation, crate::reconcile::ResourceConnection)>>,
     pub observers: std::sync::Mutex<ObserverVisibilityMap>,
     pub next_observer: std::sync::atomic::AtomicU64,
-    pub asc_successors: std::sync::Mutex<Option<catch_up_state::AscSuccessorsState>>,
     pub reconcile_keys: std::sync::Mutex<BTreeMap<Uuid, catch_up_sync::ReconcileKey>>,
     pub positions: Arc<positions::PositionCoordinator>,
 }
@@ -203,7 +147,6 @@ impl Reading {
             connection: Mutex::new(None),
             observers: std::sync::Mutex::new(BTreeMap::new()),
             next_observer: std::sync::atomic::AtomicU64::new(1),
-            asc_successors: std::sync::Mutex::new(None),
             reconcile_keys: std::sync::Mutex::new(BTreeMap::new()),
             positions: Arc::new(positions::PositionCoordinator::default()),
         }

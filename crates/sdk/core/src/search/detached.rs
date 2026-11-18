@@ -182,28 +182,27 @@ fn validate_page(
     cursor: Option<&HistoryCursor>,
     messages: &[Message],
 ) -> Result<(), SearchError> {
-    let key = |cursor: &HistoryCursor| {
-        super::cursor_key(&super::SearchCursor {
-            created_at: cursor.created_at.clone(),
-            id: cursor.id.clone(),
+    let mut previous = cursor
+        .map(|cursor| {
+            crate::ChronologicalKey::from_cursor(cursor).map_err(|_| SearchError::InvalidData)
         })
-    };
-    let mut previous = cursor.map(key).transpose()?;
+        .transpose()?;
     for message in messages {
         if message.channel_id.as_deref().and_then(|id| id.parse().ok()) != Some(target.channel) {
             return Err(SearchError::InvalidData);
         }
-        let cursor = message.cursor().ok_or(SearchError::InvalidData)?;
-        let current = key(&cursor)?;
+        let current =
+            crate::ChronologicalKey::from_message(message).map_err(|_| SearchError::InvalidData)?;
         if previous.is_some_and(|previous| current >= previous) {
             return Err(SearchError::InvalidData);
         }
-        if current.1 == target.message
+        if current.message_id == target.message
             && current
-                != super::cursor_key(&super::SearchCursor {
-                    created_at: target.created_at.clone(),
-                    id: target.message.to_string(),
-                })?
+                != crate::ChronologicalKey::parse(
+                    Some(&target.created_at),
+                    Some(&target.message.to_string()),
+                )
+                .map_err(|_| SearchError::InvalidData)?
         {
             return Err(SearchError::InvalidData);
         }

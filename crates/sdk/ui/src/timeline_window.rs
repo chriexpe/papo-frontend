@@ -1,7 +1,7 @@
 //! Independent timeline bounds and pure item projection; the SDK owns canonical history and read points.
 
 use imbl::Vector;
-use papo_sdk::{HistoryCursor, HistoryOrder, HistorySnapshot, ReadState, Uuid};
+use papo_sdk::{ChronologicalKey, HistoryOrder, HistorySnapshot, ReadState};
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
@@ -9,29 +9,16 @@ use crate::{
     timeline_item::{TimelineDirection, TimelineItem, UtcOffsetProvider},
 };
 
-pub(crate) type Key = (i64, Uuid);
-
-pub(crate) fn key(cursor: &HistoryCursor) -> Result<Key, TimelineError> {
-    let created_at_us = chrono::DateTime::parse_from_rfc3339(&cursor.created_at)
-        .map_err(|_| TimelineError::InvalidCursor)?
-        .timestamp_micros();
-    let id = cursor
-        .id
-        .parse()
-        .map_err(|_| TimelineError::InvalidCursor)?;
-    Ok((created_at_us, id))
-}
-
 /// Inclusive boundaries survive deletion of their boundary messages. A live window extends
 /// only its newest bound; a focused window never grows when another view paginates.
 pub(crate) struct Bounds {
-    pub lower: Option<Key>,
-    pub upper: Option<Key>,
+    pub lower: Option<ChronologicalKey>,
+    pub upper: Option<ChronologicalKey>,
     pub live: bool,
 }
 
 impl Bounds {
-    pub fn contains(&self, point: Key) -> bool {
+    pub fn contains(&self, point: ChronologicalKey) -> bool {
         self.lower.is_some_and(|lower| point >= lower)
             && (self.live || self.upper.is_some_and(|upper| point <= upper))
     }
@@ -51,9 +38,9 @@ pub(crate) fn project(
         .map(|item| (item.identity(), item))
         .collect();
     let mut values = Vec::new();
-    let mut gaps = BTreeMap::<Key, Vec<_>>::new();
+    let mut gaps = BTreeMap::<ChronologicalKey, Vec<_>>::new();
     for gap in &raw.gaps {
-        let point = key(&gap.cursor)?;
+        let point = ChronologicalKey::from_cursor(&gap.cursor)?;
         if bounds.contains(point) {
             gaps.entry(point).or_default().push(gap);
         }
@@ -62,15 +49,19 @@ pub(crate) fn project(
         values.push(TimelineItem::Loading(TimelineDirection::Older));
     }
     let mut previous_day = None;
-    let start = bound_index(&raw.messages, bounds.lower, false)?;
+    let start = match bounds.lower {
+        Some(lower) => raw.range(None, Some(lower))?.indices.end,
+        None => raw.messages.len(),
+    };
     let end = if bounds.live {
         raw.messages.len()
+    } else if let Some(upper) = bounds.upper {
+        raw.range(Some(upper), None)?.indices.start
     } else {
-        bound_index(&raw.messages, bounds.upper, true)?
+        0
     };
     for message in &raw.messages.skip(start.min(end)).take(end - start.min(end)) {
-        let cursor = message.cursor().ok_or(TimelineError::InvalidCursor)?;
-        let point = key(&cursor)?;
+        let point = ChronologicalKey::from_message(message.as_ref())?;
         if !bounds.contains(point) {
             continue;
         }
@@ -88,22 +79,24 @@ pub(crate) fn project(
                 gaps.entry(point).or_default().push(*gap);
             }
         }
-        let day = (i128::from(point.0)
-            + i128::from(offset.offset_at(point.0).seconds_east()) * 1_000_000)
+        let day = (i128::from(point.created_at_us)
+            + i128::from(offset.offset_at(point.created_at_us).seconds_east()) * 1_000_000)
             .div_euclid(86_400_000_000);
         let day = i64::try_from(day).map_err(|_| TimelineError::InvalidCursor)?;
         if previous_day != Some(day) {
             values.push(TimelineItem::DateSeparator {
                 day,
-                before: point.1,
+                before: point.message_id,
             });
             previous_day = Some(day);
         }
-        if read.and_then(|read| read.first_unread) == Some(point.1) {
-            values.push(TimelineItem::UnreadMarker { before: point.1 });
+        if read.and_then(|read| read.first_unread) == Some(point.message_id) {
+            values.push(TimelineItem::UnreadMarker {
+                before: point.message_id,
+            });
         }
         values.push(TimelineItem::Message {
-            id: point.1,
+            id: point.message_id,
             message: Arc::clone(message),
         });
         if let Some(boundaries) = gaps.remove(&point) {
@@ -119,10 +112,9 @@ pub(crate) fn project(
         let index = values
             .iter()
             .position(|item| match item {
-                TimelineItem::Message { message, .. } => message
-                    .cursor()
-                    .and_then(|cursor| key(&cursor).ok())
-                    .is_some_and(|current| current > point),
+                TimelineItem::Message { message, .. } => {
+                    ChronologicalKey::from_message(message).is_ok_and(|current| current > point)
+                }
                 _ => false,
             })
             .unwrap_or(values.len());
@@ -142,31 +134,6 @@ pub(crate) fn project(
                 .map_or_else(|| Arc::new(item), |old| Arc::clone(old))
         })
         .collect())
-}
-
-/// Binary search uses canonical ordering; no timestamp parsing outside the window except
-/// logarithmically many boundary probes. Deleted anchors remain inclusive key boundaries.
-fn bound_index(
-    messages: &imbl::Vector<Arc<papo_sdk::Message>>,
-    boundary: Option<Key>,
-    upper: bool,
-) -> Result<usize, TimelineError> {
-    let Some(boundary) = boundary else {
-        return Ok(if upper { 0 } else { messages.len() });
-    };
-    let (mut low, mut high) = (0, messages.len());
-    while low < high {
-        let middle = low + (high - low) / 2;
-        let point = key(&messages[middle]
-            .cursor()
-            .ok_or(TimelineError::InvalidCursor)?)?;
-        if point < boundary || (upper && point == boundary) {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
-    Ok(low)
 }
 
 #[cfg(test)]

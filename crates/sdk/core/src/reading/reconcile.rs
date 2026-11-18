@@ -254,15 +254,15 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
         }
         if let Some(state) = image.channels.get_mut(channel) {
             if let Some(server) = unresolved.get(channel) {
-                let point = snapshot
-                    .messages
-                    .iter()
-                    .map(|message| {
-                        ReadPoint::message(message).map_err(|_| ClientError::ResourceData)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .find(|point| point.message_id == server.message_id);
+                let mut point = None;
+                for message in &snapshot.messages {
+                    let candidate = crate::ChronologicalKey::from_message(message)
+                        .map_err(|_| ClientError::ResourceData)?;
+                    if candidate.message_id == server.message_id {
+                        point = Some(candidate);
+                        break;
+                    }
+                }
                 if let Some(point) = point {
                     session
                         .client
