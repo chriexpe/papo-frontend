@@ -55,6 +55,7 @@ fn cancelled_or_failed_revoke_stays_sealed_and_regrant_writes_the_marker_first()
                 &harness.session,
                 &harness.connection,
                 &denied,
+                super::evidence(&harness.session, super::Refetch::Complete).await,
             ));
             assert!(poll_once(&mut seal).is_pending());
             drop(seal);
@@ -78,9 +79,14 @@ fn cancelled_or_failed_revoke_stays_sealed_and_regrant_writes_the_marker_first()
                 .unwrap();
             let regrant = snapshot(generation, Evidence::Allowed);
             assert!(
-                Transition::begin(&harness.session, &harness.connection, &regrant)
-                    .await
-                    .is_err()
+                Transition::begin(
+                    &harness.session,
+                    &harness.connection,
+                    &regrant,
+                    super::evidence(&harness.session, super::Refetch::Complete).await
+                )
+                .await
+                .is_err()
             );
             assert!(matches!(
                 harness.session.history.verified_channel(RESTRICTED).await,
@@ -89,9 +95,14 @@ fn cancelled_or_failed_revoke_stays_sealed_and_regrant_writes_the_marker_first()
 
             // The next generation's regrant writes the marker first and gets a fresh set.
             let regrant = snapshot(next, Evidence::Allowed);
-            let access = Transition::begin(&harness.session, &harness.connection, &regrant)
-                .await
-                .unwrap();
+            let access = Transition::begin(
+                &harness.session,
+                &harness.connection,
+                &regrant,
+                super::evidence(&harness.session, super::Refetch::Complete).await,
+            )
+            .await
+            .unwrap();
             harness.connection.cache.replace(&regrant).await.unwrap();
             access
                 .finish(&harness.session, &harness.connection)
@@ -176,9 +187,14 @@ fn grant_never_admits_over_a_denial_that_lands_while_it_is_revoking() {
                 admissions.deny(OPEN, HistoryClosedReason::ChannelRemoved);
             }
             let regrant = snapshot(generation, Evidence::Allowed);
-            let access = Transition::begin(&harness.session, &harness.connection, &regrant)
-                .await
-                .unwrap();
+            let access = Transition::begin(
+                &harness.session,
+                &harness.connection,
+                &regrant,
+                super::evidence(&harness.session, super::Refetch::Complete).await,
+            )
+            .await
+            .unwrap();
             harness.connection.cache.replace(&regrant).await.unwrap();
 
             let cache = Arc::clone(&harness.connection.cache);
@@ -334,4 +350,157 @@ fn random_accepted_transitions_never_resurrect_a_denied_incarnation_or_set() {
             Ok(())
         })
         .unwrap();
+}
+
+#[test]
+fn completed_backend_denial_during_a_transition_is_not_reopened_by_its_older_evidence() {
+    let directory = tempfile::tempdir().unwrap();
+    let harness = Harness::open(&directory);
+    let generation = harness.generation;
+    harness
+        .client
+        .block_on(async {
+            harness
+                .accept(&snapshot(generation, Evidence::Allowed))
+                .await
+                .unwrap();
+            let old_set = harness.set(RESTRICTED).await;
+            let old = harness
+                .session
+                .history
+                .verified_channel(RESTRICTED)
+                .await
+                .unwrap();
+
+            // A producer starts fetching, then evaluates and writes evidence that still allows.
+            let fetched = super::evidence(&harness.session, super::Refetch::Complete).await;
+            let allowed = snapshot(generation, Evidence::Allowed);
+            let transition =
+                Transition::begin(&harness.session, &harness.connection, &allowed, fetched)
+                    .await
+                    .unwrap();
+            harness.connection.cache.replace(&allowed).await.unwrap();
+
+            // Meanwhile a history request is refused with 403 and its denial fully completes.
+            old.close(HistoryClosedReason::Forbidden);
+            super::deny(
+                &harness.session,
+                &harness.client.handle(),
+                &harness.connection.cache,
+                RESTRICTED,
+                HistoryClosedReason::Forbidden,
+                generation,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                harness.admission(RESTRICTED).await,
+                Some(Admission::Denied {
+                    reason: HistoryClosedReason::Forbidden,
+                    durable: true
+                })
+            );
+
+            // The older evidence finishes without reopening the channel.
+            transition
+                .finish(&harness.session, &harness.connection)
+                .await
+                .unwrap();
+            assert!(matches!(
+                harness.session.history.verified_channel(RESTRICTED).await,
+                Err(HistoryError::Closed(HistoryClosedReason::Forbidden))
+            ));
+
+            // Evidence fetched after the denial may regrant, on a fresh cache set.
+            harness
+                .accept(&snapshot(generation, Evidence::Allowed))
+                .await
+                .unwrap();
+            let regranted = harness
+                .session
+                .history
+                .verified_channel(RESTRICTED)
+                .await
+                .unwrap();
+            assert!(!Arc::ptr_eq(&old, &regranted));
+            assert_ne!(harness.set(RESTRICTED).await, old_set);
+        })
+        .unwrap();
+    harness.finish();
+}
+
+/// The durable boundary is the marker commit. A transition cancelled mid-revoke, with its
+/// connection generation replaced, still commits the marker, so a fresh session on the
+/// reopened SQLite cache cannot reuse the old set.
+#[test]
+fn cancelled_revoke_with_a_replaced_generation_still_commits_and_survives_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let harness = Harness::open(&directory);
+    let generation = harness.generation;
+    let old_set = harness
+        .client
+        .block_on(async {
+            harness
+                .accept(&snapshot(generation, Evidence::Allowed))
+                .await
+                .unwrap();
+            let old_set = harness.set(RESTRICTED).await;
+            let cache = Arc::clone(&harness.connection.cache);
+            let (entered, waiting) = tokio::sync::oneshot::channel();
+            let (release, blocked) = std::sync::mpsc::channel::<()>();
+            let stall = tokio::spawn(async move {
+                cache
+                    .history_transaction(generation, move |_| {
+                        entered.send(()).unwrap();
+                        blocked.recv().unwrap();
+                        Ok(())
+                    })
+                    .await
+            });
+            waiting.await.unwrap();
+            let denied = snapshot(generation, Evidence::Denied);
+            let mut seal = Box::pin(Transition::begin(
+                &harness.session,
+                &harness.connection,
+                &denied,
+                super::evidence(&harness.session, super::Refetch::Complete).await,
+            ));
+            assert!(poll_once(&mut seal).is_pending());
+            drop(seal);
+            let next = harness.session.epochs.advance().unwrap().generation;
+            release.send(()).unwrap();
+            stall.await.unwrap().unwrap();
+            // The writer is FIFO behind the fence: this returns after the detached marker.
+            harness
+                .connection
+                .cache
+                .history_transaction(next, |_| Ok(()))
+                .await
+                .unwrap();
+            // In memory the denial is still unconfirmed, so this session would retry it.
+            assert_eq!(
+                harness.admission(RESTRICTED).await,
+                Some(Admission::Denied {
+                    reason: HistoryClosedReason::PermissionDenied,
+                    durable: false
+                })
+            );
+            old_set
+        })
+        .unwrap();
+    harness.finish();
+
+    let reopened = Harness::open(&directory);
+    let generation = reopened.generation;
+    reopened
+        .client
+        .block_on(async {
+            reopened
+                .accept(&snapshot(generation, Evidence::Allowed))
+                .await
+                .unwrap();
+            assert_ne!(reopened.set(RESTRICTED).await, old_set);
+        })
+        .unwrap();
+    reopened.finish();
 }

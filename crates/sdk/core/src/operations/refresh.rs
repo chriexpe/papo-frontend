@@ -5,7 +5,7 @@ use super::RefreshFault;
 use crate::{
     CacheResource, ClientError, Session, Uuid,
     generation::Epoch,
-    history::access::{Transition, accepted, affects_read_access},
+    history::access::{self, Refetch, Transition, accepted, affects_read_access},
     resource_admission::Admission,
 };
 use papo_api::{
@@ -83,6 +83,8 @@ async fn refresh_current(
     } else {
         None
     };
+    // Taken before fetching: a denial recorded after this point is newer than this evidence.
+    let evidence = access::evidence(&session.inner, Refetch::Partial).await;
     let changed = fetch(session, epoch, rest, &mut snapshot, refresh).await?;
     if required_channel.is_some_and(|id| {
         !snapshot
@@ -98,19 +100,19 @@ async fn refresh_current(
         return Ok(Err(RefreshFault::ConcurrentChange));
     }
     let connection = connection(session, rest).await?;
-    let access = if affects_read_access(&changed) {
+    let transition = if affects_read_access(&changed) {
         // Before this generation's fetch is admitted, the base is the cache-loaded image and
         // admission is not yet decided; the pending fetch owns this change.
         if !accepted(&session.inner, epoch.generation).await {
             return Ok(Err(RefreshFault::ConcurrentChange));
         }
-        Some(Transition::begin(&session.inner, &connection, &snapshot).await?)
+        Some(Transition::begin(&session.inner, &connection, &snapshot, evidence).await?)
     } else {
         None
     };
     connection.cache.update(&snapshot, &changed).await?;
-    let admission_changed = match access {
-        Some(access) => access.finish(&session.inner, &connection).await?,
+    let admission_changed = match transition {
+        Some(transition) => transition.finish(&session.inner, &connection).await?,
         None => false,
     };
     if admission_changed

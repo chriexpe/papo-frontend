@@ -26,14 +26,77 @@ pub(in crate::history) enum Admission {
     },
 }
 
+/// When a producer started fetching its evidence, measured in denials recorded so far, and
+/// whether it refetched every access input or patched part of the previous image.
+/// A grant from that evidence may not reopen a channel denied after this point: the
+/// evidence predates the denial, whether or not the denial's marker is durable yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Evidence {
+    revision: u64,
+    complete: bool,
+}
+
+/// How much of a snapshot a producer refetched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refetch {
+    /// Every access input: server, channels, members, DMs and blocks (reconnect).
+    Complete,
+    /// Some inputs; the rest come from the previously admitted image.
+    Partial,
+}
+
+/// The last denial of one channel. A backend 403/404 is not explained by any resource the
+/// SDK holds, so only a complete refetch that started after it may clear it. A denial derived
+/// from accepted resources is already part of every later image, so any later evidence may.
+#[derive(Clone, Copy, Debug)]
+struct Denial {
+    revision: u64,
+    backend: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct Admissions {
     pub(super) channels: BTreeMap<Uuid, Admission>,
+    /// Count of denials recorded in this session; the clock `Evidence` is measured on.
+    revision: u64,
+    /// Each channel's last denial, kept until a grant clears it, even after the channel has
+    /// left the lists, so stale evidence cannot regrant a deleted channel either.
+    denied_at: BTreeMap<Uuid, Denial>,
 }
 
 impl Admissions {
     pub(in crate::history) fn get(&self, channel: Uuid) -> Option<Admission> {
         self.channels.get(&channel).copied()
+    }
+
+    pub(crate) const fn evidence(&self, refetch: Refetch) -> Evidence {
+        Evidence {
+            revision: self.revision,
+            complete: matches!(refetch, Refetch::Complete),
+        }
+    }
+
+    /// Whether `evidence` is fresh enough to clear this channel's last denial.
+    pub(super) fn may_grant(&self, channel: Uuid, evidence: Evidence) -> bool {
+        self.denied_at.get(&channel).is_none_or(|denial| {
+            denial.revision <= evidence.revision && (evidence.complete || !denial.backend)
+        })
+    }
+
+    pub(super) fn grant(&mut self, channel: Uuid) {
+        self.denied_at.remove(&channel);
+        self.channels.insert(channel, Admission::Allowed);
+    }
+
+    fn record_denial(&mut self, channel: Uuid, backend: bool) {
+        self.revision += 1;
+        self.denied_at.insert(
+            channel,
+            Denial {
+                revision: self.revision,
+                backend,
+            },
+        );
     }
 
     pub(crate) fn allowed(&self) -> BTreeSet<Uuid> {
@@ -107,6 +170,9 @@ impl Admissions {
                 },
             };
             if let Admission::Denied { reason, durable } = next {
+                if !matches!(current, Some(Admission::Denied { .. })) {
+                    self.record_denial(id, false);
+                }
                 if !durable {
                     sealed.denied.push((id, reason));
                 }
@@ -122,11 +188,19 @@ impl Admissions {
     }
 
     /// Mark one channel denied before its durable revoke, for a backend 403/404 or deletion.
+    /// Each denial is recorded afresh: only evidence fetched after it may regrant. A gateway
+    /// deletion is resource evidence (a later channel list shows any re-creation); a 403/404
+    /// is not, so only a complete refetch may clear it.
     pub(super) fn deny(&mut self, channel: Uuid, reason: HistoryClosedReason) {
+        let backend = matches!(
+            reason,
+            HistoryClosedReason::Forbidden | HistoryClosedReason::NotFound
+        );
         let reason = match self.get(channel) {
             Some(Admission::Denied { reason, .. }) => reason,
             _ => reason,
         };
+        self.record_denial(channel, backend);
         self.channels.insert(
             channel,
             Admission::Denied {

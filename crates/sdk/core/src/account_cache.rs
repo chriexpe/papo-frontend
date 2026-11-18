@@ -124,6 +124,7 @@ pub struct AccountCache {
     serial: Arc<Mutex<bool>>,
     generation: Arc<AtomicU64>,
     retention: std::sync::Mutex<HashMap<[u8; 16], Arc<AtomicU64>>>,
+    revokes: history::RevokeQueue,
 }
 
 impl AccountCaches {
@@ -175,6 +176,7 @@ impl AccountCaches {
                 serial: Arc::new(Mutex::new(false)),
                 generation: Arc::new(AtomicU64::new(0)),
                 retention: std::sync::Mutex::new(HashMap::new()),
+                revokes: history::RevokeQueue::default(),
             });
             if let Err(error) = cache.history_recover().await {
                 let _ = cache.writer.close().await;

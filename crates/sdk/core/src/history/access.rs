@@ -6,10 +6,13 @@
 //! while holding `resource_serial`, so producers never interleave. A 403/404 or deletion
 //! (`deny`) can land at any time; `grant` never admits over its unconfirmed marker.
 
+use std::sync::Arc;
+
 use papo_api::Uuid;
 
 use crate::{
-    AccountCache, CacheResource, ClientError, ClientHandle, Generation, ResourceSnapshot,
+    AccountCache, CacheError, CacheResource, ClientError, ClientHandle, Generation,
+    ResourceSnapshot,
     permissions::read_access::{ReadAccess, ReadDecisions},
     reconcile::ResourceConnection,
     session::SessionInner,
@@ -19,7 +22,7 @@ use super::HistoryClosedReason;
 
 mod admissions;
 use admissions::Admission;
-pub(crate) use admissions::Admissions;
+pub(crate) use admissions::{Admissions, Evidence, Refetch};
 
 /// Whether accepted changes to these resources can change a read decision: everything the
 /// evaluator reads (server owner, channels and overwrites, role assignments, DMs, blocks).
@@ -36,7 +39,13 @@ pub(crate) fn affects_read_access(changed: &[CacheResource]) -> bool {
 pub(crate) struct Transition {
     decisions: ReadDecisions,
     generation: Generation,
+    evidence: Evidence,
     sealed: bool,
+}
+
+/// Capture before a producer starts fetching the resources it will admit.
+pub(crate) async fn evidence(session: &SessionInner, refetch: Refetch) -> Evidence {
+    session.history.admission.read().await.evidence(refetch)
 }
 
 impl Transition {
@@ -47,6 +56,7 @@ impl Transition {
         session: &SessionInner,
         connection: &ResourceConnection,
         snapshot: &ResourceSnapshot,
+        evidence: Evidence,
     ) -> Result<Self, ClientError> {
         session.epochs.validate(snapshot.generation)?;
         let decisions = ReadDecisions::evaluate(snapshot, session.account.user())?;
@@ -54,6 +64,7 @@ impl Transition {
         Ok(Self {
             decisions,
             generation: snapshot.generation,
+            evidence,
             sealed,
         })
     }
@@ -66,7 +77,14 @@ impl Transition {
         session: &SessionInner,
         connection: &ResourceConnection,
     ) -> Result<bool, ClientError> {
-        let granted = grant(session, connection, &self.decisions, self.generation).await?;
+        let granted = grant(
+            session,
+            connection,
+            &self.decisions,
+            self.evidence,
+            self.generation,
+        )
+        .await?;
         *session.history.connection.write().await = Some(super::channel::CacheConnection {
             cache: std::sync::Arc::clone(&connection.cache),
             rest: connection.rest.clone(),
@@ -123,6 +141,7 @@ async fn grant(
     session: &SessionInner,
     connection: &ResourceConnection,
     decisions: &ReadDecisions,
+    evidence: Evidence,
     generation: Generation,
 ) -> Result<bool, ClientError> {
     session.epochs.validate(generation)?;
@@ -132,6 +151,7 @@ async fn grant(
         let admissions = store.admission.read().await;
         allowed
             .iter()
+            .filter(|id| admissions.may_grant(**id, evidence))
             .filter_map(|id| match admissions.get(*id) {
                 Some(Admission::Denied {
                     reason,
@@ -157,6 +177,11 @@ async fn grant(
         let mut channels = store.channels.lock().await;
         let mut admissions = store.admission.write().await;
         for id in allowed {
+            // Evidence fetched before a later denial (for example a 403 that completed while
+            // this producer was fetching or writing) cannot reopen the channel.
+            if !admissions.may_grant(id, evidence) {
+                continue;
+            }
             match admissions.get(id) {
                 // Already allowed; or a 403/404 or deletion that landed while this grant was
                 // revoking, with no confirmed marker yet: it stays denied until a later grant
@@ -172,7 +197,7 @@ async fn grant(
                 }
             }
             changed = true;
-            admissions.channels.insert(id, Admission::Allowed);
+            admissions.grant(id);
         }
         session.reading.positions.release(&resumed);
         for id in &resumed {
@@ -215,7 +240,7 @@ async fn resume(
 pub(super) async fn deny(
     session: &SessionInner,
     client: &ClientHandle,
-    cache: &AccountCache,
+    cache: &Arc<AccountCache>,
     channel: Uuid,
     reason: HistoryClosedReason,
     generation: Generation,
@@ -246,19 +271,44 @@ pub(super) async fn deny(
     .await
 }
 
-/// Hide each cache set (NORMAL), then delete reading state (FULL, one commit per reason),
-/// and only then record the denial as durable. The cache marker goes first because it is
-/// what stops a regrant from reusing the old set; a failure in either step leaves the
-/// denial unconfirmed, so the next transition retries both. Nothing here runs under the
-/// channel-map lock: the seal already excludes every admission for these channels.
+/// Make denials durable. The cache revoke marker comes first because it is what stops a
+/// regrant from reusing the old set: every channel's marker goes into one transaction that
+/// is submitted before anything is awaited and that no cancellation or generation change can
+/// stop. If that write fails, the account cache is discarded, which revokes every set. Then
+/// reading state is deleted (FULL, one commit per reason), and only after both steps is the
+/// denial recorded as durable; a failure leaves it unconfirmed, so the next transition
+/// retries both. Nothing here runs under the channel-map lock: the seal already excludes
+/// every admission for these channels.
+///
+/// The durable boundary is the marker commit. Before it, no accepted resource write,
+/// publication or transition completion that depends on the denial has happened, so a
+/// process that dies in that window leaves disk exactly as if the denial was never seen.
 async fn revoke(
     session: &SessionInner,
     client: &ClientHandle,
-    cache: &AccountCache,
+    cache: &Arc<AccountCache>,
     denied: &[(Uuid, HistoryClosedReason)],
     listed: impl Fn(Uuid) -> bool,
     generation: Generation,
 ) -> Result<(), ClientError> {
+    if denied.is_empty() {
+        return Ok(());
+    }
+    let markers = denied.iter().map(|(id, _)| *id.as_bytes()).collect();
+    let written = cache
+        .history_revoke_detached(markers)
+        .await
+        .unwrap_or(Err(CacheError::TaskStopped));
+    if let Err(error) = written {
+        if matches!(
+            error,
+            CacheError::Storage(_) | CacheError::InvalidData | CacheError::TaskStopped
+        ) {
+            // A cache that cannot record the marker is discarded instead: no old set survives.
+            client.inner.caches.invalidate(session.account).await?;
+        }
+        return Err(error.into());
+    }
     let mut by_reason: Vec<(HistoryClosedReason, Vec<Uuid>)> = Vec::new();
     for (id, reason) in denied {
         if let Some((_, ids)) = by_reason.iter_mut().find(|(known, _)| known == reason) {
@@ -268,11 +318,6 @@ async fn revoke(
         }
     }
     for (reason, channels) in by_reason {
-        for &channel in &channels {
-            cache
-                .history_revoke(*channel.as_bytes(), generation)
-                .await?;
-        }
         crate::reading::catch_up_sync::revoke_channels(
             client, session, &channels, generation, reason,
         )
@@ -297,6 +342,8 @@ pub(crate) async fn accepted(session: &SessionInner, generation: Generation) -> 
         .is_some_and(|connection| connection.generation == generation)
 }
 
+#[cfg(test)]
+mod freshness_tests;
 #[cfg(test)]
 mod sequence_tests;
 #[cfg(test)]

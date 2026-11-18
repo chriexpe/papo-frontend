@@ -4,7 +4,7 @@ use crate::{
     AccountCache, ClientError, ClientHandle, ConnectionState, Generated, ResourceSnapshot,
     connection_driver::Socket,
     generation::Epoch,
-    history::access::{Transition, accepted, affects_read_access},
+    history::access::{self, Refetch, Transition, accepted, affects_read_access},
     session::SessionInner,
 };
 use papo_api::{RestClient, gateway::Event};
@@ -37,11 +37,12 @@ pub(crate) async fn run(
     .await?;
     collect(session, epoch, socket, &mut journal, async {
         let _guard = session.resource_serial.lock().await;
+        let evidence = access::evidence(session, Refetch::Complete).await;
         let snapshot = crate::reconcile_fetch::fetch(connection, session, epoch).await?;
         session.epochs.validate(epoch.generation)?;
-        let access = Transition::begin(session, connection, &snapshot).await?;
+        let transition = Transition::begin(session, connection, &snapshot, evidence).await?;
         connection.cache.replace(&snapshot).await?;
-        access.finish(session, connection).await?;
+        transition.finish(session, connection).await?;
         crate::reading::reconcile::resources(session, connection, &snapshot).await?;
         crate::history::reconnect::refresh(session, connection, epoch.generation).await?;
         session.publish_resources(snapshot)
@@ -92,6 +93,7 @@ async fn replay(
             if !accepted_base {
                 snapshot = ResourceSnapshot::empty(epoch.generation);
             }
+            let evidence = access::evidence(session, Refetch::Partial).await;
             if let Some(changed) = crate::reconcile_event::apply(
                 crate::resource_admission::Admission::new(session),
                 connection,
@@ -104,14 +106,14 @@ async fn replay(
                 // A partial or cache-loaded image is no access evidence, and until this
                 // generation's fetch is admitted reading has no admission to follow.
                 let admitted = accepted_base && accepted(session, epoch.generation).await;
-                let access = if admitted && affects_read_access(&changed) {
-                    Some(Transition::begin(session, connection, &snapshot).await?)
+                let transition = if admitted && affects_read_access(&changed) {
+                    Some(Transition::begin(session, connection, &snapshot, evidence).await?)
                 } else {
                     None
                 };
                 connection.cache.update(&snapshot, &changed).await?;
-                let admission_changed = match access {
-                    Some(access) => access.finish(session, connection).await?,
+                let admission_changed = match transition {
+                    Some(transition) => transition.finish(session, connection).await?,
                     None => false,
                 };
                 if admitted

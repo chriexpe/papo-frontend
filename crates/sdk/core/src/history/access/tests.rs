@@ -146,7 +146,8 @@ impl Harness {
 
     /// One producer's accepted transition: seal, write resources, grant.
     pub async fn accept(&self, snapshot: &ResourceSnapshot) -> Result<bool, crate::ClientError> {
-        let access = Transition::begin(&self.session, &self.connection, snapshot).await?;
+        let evidence = super::evidence(&self.session, super::Refetch::Complete).await;
+        let access = Transition::begin(&self.session, &self.connection, snapshot, evidence).await?;
         self.connection.cache.replace(snapshot).await?;
         access.finish(&self.session, &self.connection).await
     }
@@ -212,6 +213,7 @@ fn stalled_revoke_keeps_the_seal_without_holding_unrelated_channels_behind_the_m
                 &harness.session,
                 &harness.connection,
                 &denied,
+                super::evidence(&harness.session, super::Refetch::Complete).await,
             ));
             assert!(poll_once(&mut seal).is_pending());
 
