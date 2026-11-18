@@ -1,7 +1,10 @@
-//! Targeted post-ack metadata refresh; never refetches the member roster or overwrites concurrent live state.
+//! Targeted post-ack metadata refresh; never refetches the member roster or overwrites
+//! concurrent live state. Wire validation belongs to `resource_admission`.
 
 use super::RefreshFault;
-use crate::{CacheResource, ClientError, Session, Uuid, generation::Epoch};
+use crate::{
+    CacheResource, ClientError, Session, Uuid, generation::Epoch, resource_admission::Admission,
+};
 use papo_api::{
     RestClient,
     gateway::{Event, KnownEvent, MessageDeleteEvent},
@@ -124,51 +127,29 @@ async fn fetch(
     refresh: Refresh,
 ) -> Result<Vec<CacheResource>, ClientError> {
     let client = &session.client.inner;
+    let admission = Admission::new(&session.inner);
     match refresh {
         Refresh::None | Refresh::Pins(_) | Refresh::Policy | Refresh::DeletedMessage { .. } => {
             Ok(Vec::new())
         }
         Refresh::Server => {
-            let mut server = client.request(rest.server()).await?;
-            if server
-                .id
-                .as_deref()
-                .and_then(|id| id.parse::<Uuid>().ok())
-                .is_none()
-            {
-                return Err(ClientError::ResourceData);
-            }
+            let mut server = admission.server(client.request(rest.server()).await?)?;
             server.icon_blob = None;
             snapshot.server = Some(Arc::new(server));
             Ok(vec![CacheResource::Server])
         }
         Refresh::Channels | Refresh::ChannelSettings(_) => {
-            snapshot.channels = client
-                .request(rest.channels())
-                .await?
-                .channels
-                .ok_or(ClientError::ResourceData)?
+            snapshot.channels = admission
+                .channels(client.request(rest.channels()).await?)?
                 .into();
-            unique_ids(
-                snapshot
-                    .channels
-                    .iter()
-                    .map(|channel| channel.id.as_deref()),
-            )?;
             Ok(vec![CacheResource::Channels])
         }
         Refresh::Roles | Refresh::RolesMembers(_) => {
-            snapshot.roles = client
-                .request(rest.roles())
-                .await?
-                .roles
-                .ok_or(ClientError::ResourceData)?
-                .into();
-            unique_ids(snapshot.roles.iter().map(|role| role.id.as_deref()))?;
+            snapshot.roles = admission.roles(client.request(rest.roles()).await?)?.into();
             super::role_projection::apply(snapshot);
             if let Refresh::RolesMembers(users) = refresh {
                 for batch in users.chunks(50) {
-                    members(session, rest, snapshot, batch).await?;
+                    members(session, admission, rest, snapshot, batch).await?;
                 }
             }
             Ok(vec![
@@ -182,16 +163,16 @@ async fn fetch(
         }
         Refresh::Social => {
             crate::scoped_request::refresh_policy(session, epoch, rest).await?;
-            snapshot.dms = client
-                .request(rest.direct_conversations())
-                .await?
-                .dms
-                .into();
-            snapshot.blocks = client.request(rest.blocked_users()).await?.users.into();
+            let dms = client.request(rest.direct_conversations()).await?;
+            let blocks = client.request(rest.blocked_users()).await?;
+            // Both lists are admitted before either replaces the image.
+            let dms = admission.dms(dms)?;
+            snapshot.blocks = admission.blocks(blocks)?.into();
+            snapshot.dms = dms.into();
             Ok(vec![CacheResource::Dms, CacheResource::Blocks])
         }
         Refresh::Member(user) => {
-            members(session, rest, snapshot, &[user]).await?;
+            members(session, admission, rest, snapshot, &[user]).await?;
             Ok(vec![
                 CacheResource::Members,
                 CacheResource::Profiles,
@@ -200,16 +181,13 @@ async fn fetch(
             ])
         }
         Refresh::Profile(user) => {
-            let mut profile = client.request(rest.profile(user)).await?;
-            if profile.id.as_deref().and_then(|id| id.parse().ok()) != Some(user) {
-                return Err(ClientError::ResourceData);
-            }
+            let mut profile = admission.profile(user, client.request(rest.profile(user)).await?)?;
             profile.avatar_blob = None;
             let id = user.to_string();
             let profiles = Arc::make_mut(&mut snapshot.profiles);
             profiles.retain(|value| value.id.as_deref() != Some(&id));
             profiles.push(profile);
-            members(session, rest, snapshot, &[user]).await?;
+            members(session, admission, rest, snapshot, &[user]).await?;
             Ok(vec![
                 CacheResource::Profiles,
                 CacheResource::Members,
@@ -222,6 +200,7 @@ async fn fetch(
 
 async fn members(
     session: &Session,
+    admission: Admission<'_>,
     rest: &RestClient,
     snapshot: &mut crate::ResourceSnapshot,
     users: &[Uuid],
@@ -233,13 +212,7 @@ async fn members(
         .inner
         .request(rest.user_summaries(&request))
         .await?;
-    let mut returned = std::collections::HashSet::new();
-    for member in &response {
-        let id = member.id.as_ref().ok_or(ClientError::ResourceData)?;
-        if !ids.contains(id) || !returned.insert(id) {
-            return Err(ClientError::ResourceData);
-        }
-    }
+    let response = admission.summaries(users, response)?;
     for profile in Arc::make_mut(&mut snapshot.profiles) {
         if let Some(summary) = response.iter().find(|member| member.id == profile.id) {
             profile.roles.clone_from(&summary.roles);
@@ -258,18 +231,5 @@ async fn members(
     let members = Arc::make_mut(&mut snapshot.members);
     members.retain(|member| !member.id.as_ref().is_some_and(|id| ids.contains(id)));
     members.extend(response);
-    Ok(())
-}
-
-fn unique_ids<'a>(ids: impl Iterator<Item = Option<&'a str>>) -> Result<(), ClientError> {
-    let mut seen = std::collections::HashSet::new();
-    for id in ids {
-        let id = id
-            .and_then(|id| id.parse::<Uuid>().ok())
-            .ok_or(ClientError::ResourceData)?;
-        if !seen.insert(id) {
-            return Err(ClientError::ResourceData);
-        }
-    }
     Ok(())
 }

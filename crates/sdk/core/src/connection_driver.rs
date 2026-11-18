@@ -168,7 +168,8 @@ pub(crate) async fn drive(
         };
         let failure = match connected {
             Ok(mut socket) => {
-                if socket.resources().is_none()
+                let reconciles = socket.resources().is_some();
+                if !reconciles
                     && session
                         .status(epoch.generation, ConnectionState::Online)
                         .is_err()
@@ -178,12 +179,21 @@ pub(crate) async fn drive(
                 let _ = session.epochs.apply(epoch.generation, || {
                     session.auth.send_replace(AuthState::Ready)
                 });
-                attempt = 0;
-                tokio::select! {
+                if !reconciles {
+                    attempt = 0;
+                }
+                let failure = tokio::select! {
                     biased;
                     () = session.driver_cancel.cancelled() => return,
                     result = pump(session, &epoch, socket.as_mut()) => result,
+                };
+                // A reconciling socket proves the connection only once reconcile reaches
+                // Online. A reply rejected before that keeps growing the delay, so a
+                // persistently malformed backend never retries at the initial interval.
+                if reconciles && reached_online(session, epoch.generation) {
+                    attempt = 0;
                 }
+                failure
             }
             Err(error) => Some(error),
         };
@@ -216,6 +226,17 @@ pub(crate) async fn drive(
             return;
         }
     }
+}
+
+/// Between the driver's `Connecting` and its next status, only reconcile writes one
+/// (session stop also does, but then the driver exits). So after the pump returns, the
+/// status still shows whether this generation got as far as Online.
+fn reached_online(session: &SessionInner, generation: crate::Generation) -> bool {
+    *session.connection.borrow()
+        == crate::ConnectionStatus {
+            generation,
+            state: ConnectionState::Online,
+        }
 }
 
 async fn wait_backoff(

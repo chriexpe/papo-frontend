@@ -87,8 +87,13 @@ async fn replay(
             if snapshot.generation != epoch.generation {
                 snapshot = ResourceSnapshot::empty(epoch.generation);
             }
-            if let Some(changed) =
-                crate::reconcile_event::apply(connection, &mut snapshot, &event).await?
+            if let Some(changed) = crate::reconcile_event::apply(
+                crate::resource_admission::Admission::new(session),
+                connection,
+                &mut snapshot,
+                &event,
+            )
+            .await?
             {
                 session.epochs.validate(epoch.generation)?;
                 connection.cache.update(&snapshot, &changed).await?;

@@ -36,6 +36,8 @@ pub(super) fn handle(
                 topic: body["topic"].as_str().map(str::to_owned),
                 parent_id: body["parent_id"].as_str().map(str::to_owned),
                 position: i64::try_from(state.resources.channels.len()).ok(),
+                // The pinned `GET /channels` always serializes an overwrite list.
+                permissions: Some(Vec::new()),
                 created_at: Some(CREATED_AT.into()),
                 ..Channel::default()
             };

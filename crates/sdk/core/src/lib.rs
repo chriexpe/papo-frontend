@@ -72,6 +72,8 @@ pub use reading::{ReadState, ReadingError, ReadingObserver, ReadingSnapshot, Unr
 mod reconcile;
 mod reconcile_event;
 mod reconcile_fetch;
+mod resource_admission;
+pub use resource_admission::{AdmissionDiagnostics, AdmissionFault, DroppedRow, ResourceRejection};
 mod resources;
 pub use account_cache::{AccountCache, AccountCaches, CacheError, CacheResource};
 pub use papo_api::wire::{

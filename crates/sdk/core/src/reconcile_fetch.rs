@@ -1,12 +1,19 @@
-//! Authoritative non-message REST replacement; journaling and publication belong to the connection pump.
+//! Authoritative non-message REST replacement; journaling and publication belong to the
+//! connection pump, and wire validation to `resource_admission`.
 
 use crate::{
-    ClientError, ResourceSnapshot, generation::Epoch, reconcile::ResourceConnection,
+    ClientError, ResourceSnapshot,
+    generation::Epoch,
+    reconcile::ResourceConnection,
+    resource_admission::{Admission, Roster, RosterPage},
     session::SessionInner,
 };
 use papo_api::{Cursor, HistoryOrder, wire::UserSummary};
-use std::collections::HashSet;
 
+/// Fetches every group and admits each one before any of them can replace the image.
+/// # Errors
+/// A rejected group fails the whole replacement with `ResourceRejected`; the caller keeps
+/// the last published snapshot and cache untouched.
 pub(crate) async fn fetch(
     connection: &ResourceConnection,
     session: &SessionInner,
@@ -14,64 +21,48 @@ pub(crate) async fn fetch(
 ) -> Result<ResourceSnapshot, ClientError> {
     let client = &connection.client.inner;
     let rest = &connection.rest;
+    let admission = Admission::new(session);
     let mut snapshot = ResourceSnapshot::empty(epoch.generation);
-    let mut server = client.request(rest.server()).await?;
+    let mut server = admission.server(client.request(rest.server()).await?)?;
     server.icon_blob = None;
     snapshot.server = Some(server.into());
-    snapshot.channels = client
-        .request(rest.channels())
-        .await?
-        .channels
-        .unwrap_or_default()
+    snapshot.channels = admission
+        .channels(client.request(rest.channels()).await?)?
         .into();
-    snapshot.roles = client
-        .request(rest.roles())
-        .await?
-        .roles
-        .unwrap_or_default()
+    snapshot.roles = admission.roles(client.request(rest.roles()).await?)?.into();
+    snapshot.members = members(connection, admission).await?.into();
+    snapshot.dms = admission
+        .dms(client.request(rest.direct_conversations()).await?)?
         .into();
-    snapshot.members = members(connection).await?.into();
-    snapshot.dms = client
-        .request(rest.direct_conversations())
-        .await?
-        .dms
+    snapshot.blocks = admission
+        .blocks(client.request(rest.blocked_users()).await?)?
         .into();
-    snapshot.blocks = client.request(rest.blocked_users()).await?.users.into();
     session.epochs.validate(epoch.generation)?;
     Ok(snapshot)
 }
 
-pub(crate) async fn members(
+async fn members(
     connection: &ResourceConnection,
+    admission: Admission<'_>,
 ) -> Result<Vec<UserSummary>, ClientError> {
-    let mut members = Vec::new();
-    let mut boundary: Option<(String, String)> = None;
-    let mut cursors = HashSet::new();
+    let mut roster = Roster::new(admission);
+    let mut boundary = None;
     loop {
-        let cursor = boundary.as_ref().map(|(since, id)| Cursor {
-            since,
-            last_id: Some(id),
-            order: Some(HistoryOrder::Asc),
-        });
+        let cursor = boundary
+            .as_ref()
+            .map(|(since, id): &(String, String)| Cursor {
+                since,
+                last_id: Some(id),
+                order: Some(HistoryOrder::Asc),
+            });
         let page = connection
             .client
             .inner
             .request(connection.rest.members(cursor.as_ref()))
             .await?;
-        let users = page.users.unwrap_or_default();
-        if page.has_more != Some(true) {
-            members.extend(users);
-            return Ok(members);
+        match roster.page(page)? {
+            RosterPage::More(next) => boundary = Some(next),
+            RosterPage::Complete(members) => return Ok(members),
         }
-        let last = users.last().ok_or(ClientError::ResourceData)?;
-        let next = (
-            last.created_at.clone().ok_or(ClientError::ResourceData)?,
-            last.id.clone().ok_or(ClientError::ResourceData)?,
-        );
-        if !cursors.insert(next.clone()) {
-            return Err(ClientError::ResourceData);
-        }
-        boundary = Some(next);
-        members.extend(users);
     }
 }

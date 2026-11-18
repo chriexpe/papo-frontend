@@ -162,6 +162,11 @@ fn account_resources_are_isolated_and_late_removed_response_cannot_recreate_cach
             .await;
         let dm = DirectConversation {
             id: Uuid::from_u128(89).to_string(),
+            // The backend always names the peer; an unattributable DM is not admitted.
+            user: UserSummary {
+                id: Some(Uuid::from_u128(90).to_string()),
+                ..UserSummary::default()
+            },
             ..DirectConversation::default()
         };
         server
