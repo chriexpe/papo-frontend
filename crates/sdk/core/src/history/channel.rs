@@ -1,7 +1,7 @@
 //! History-handle lifecycle and cache-first admission; fetching and reconnect replay live separately.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -31,7 +31,8 @@ pub(crate) struct HistoryStore {
     pub(super) access: std::sync::atomic::AtomicU64,
     pub(super) unscoped: Arc<super::unscoped::Journal>,
     pub(super) channels: Mutex<BTreeMap<Uuid, Arc<Channel>>>,
-    pub(super) verified: RwLock<BTreeSet<Uuid>>,
+    /// Lock order: `channels` before `admission`.
+    pub(crate) admission: RwLock<super::access::Admissions>,
     pub(super) connection: RwLock<Option<CacheConnection>>,
 }
 
@@ -42,7 +43,7 @@ impl Default for HistoryStore {
             access: std::sync::atomic::AtomicU64::new(0),
             unscoped: Arc::default(),
             channels: Mutex::default(),
-            verified: RwLock::default(),
+            admission: RwLock::default(),
             connection: RwLock::default(),
             changes: watch::channel(()).0,
         }
@@ -50,20 +51,51 @@ impl Default for HistoryStore {
 }
 
 impl HistoryStore {
-    pub(crate) async fn is_verified(&self, id: Uuid) -> bool {
-        self.verified.read().await.contains(&id)
-    }
     pub(super) async fn channel(&self, id: Uuid) -> Arc<Channel> {
         let mut channels = self.channels.lock().await;
         self.channel_locked(&mut channels, id)
     }
     pub(super) async fn verified_channel(&self, id: Uuid) -> Result<Arc<Channel>, HistoryError> {
         let mut channels = self.channels.lock().await;
-        if !self.verified.read().await.contains(&id) {
-            return Err(HistoryError::Unverified);
+        if let Some(refusal) = self.admission.read().await.refusal(id) {
+            return Err(refusal);
         }
         Ok(self.channel_locked(&mut channels, id))
     }
+    /// The incarnation live events update: allowed or quarantined, checked atomically with
+    /// the lookup so no Arc is created for a channel this session does not admit.
+    pub(super) async fn live_channel(&self, id: Uuid) -> Option<Arc<Channel>> {
+        let mut channels = self.channels.lock().await;
+        let refusal = self.admission.read().await.refusal(id);
+        match refusal {
+            None | Some(HistoryError::AccessUnknown) => {
+                Some(self.channel_locked(&mut channels, id))
+            }
+            Some(_) => None,
+        }
+    }
+
+    /// Every incarnation that live events without a channel ID may update.
+    pub(super) async fn live_channels(&self) -> Vec<Arc<Channel>> {
+        let channels = self.channels.lock().await;
+        let admission = self.admission.read().await;
+        channels
+            .iter()
+            .filter(|(id, _)| {
+                matches!(
+                    admission.refusal(**id),
+                    None | Some(HistoryError::AccessUnknown)
+                )
+            })
+            .map(|(_, channel)| Arc::clone(channel))
+            .collect()
+    }
+
+    /// An existing incarnation, never creating one.
+    pub(super) async fn existing(&self, id: Uuid) -> Option<Arc<Channel>> {
+        self.channels.lock().await.get(&id).cloned()
+    }
+
     fn channel_locked(
         &self,
         channels: &mut BTreeMap<Uuid, Arc<Channel>>,
@@ -120,6 +152,30 @@ impl Channel {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .check()
     }
+
+    pub fn is_closed(&self) -> bool {
+        self.publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_closed()
+    }
+
+    /// Suspend admission and delivery without closing; see `HistoryError::AccessUnknown`.
+    pub fn quarantine(&self) {
+        self.publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_quarantined(true);
+        self.changes.send_replace(());
+    }
+
+    pub fn release(&self) {
+        self.publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_quarantined(false);
+        self.changes.send_replace(());
+    }
 }
 
 /// Revocable raw-history access to one account/channel. Clones share data, not pagination cursors.
@@ -147,10 +203,13 @@ impl Drop for HistoryHandle {
 }
 
 impl Session {
-    /// Open this account's history after a fresh resource reconciliation verified the channel.
-    /// Opening restores only this channel's cache; it never authorizes cached permissions.
+    /// Open this account's history once accepted resource evidence in this session grants
+    /// `read_channel` (or DM access). Opening restores only this channel's cache; channel
+    /// metadata or cached permissions alone never authorize it.
     /// # Errors
-    /// Returns unverified/revoked channel, stale generation or sanitized cache failures.
+    /// Returns `Unverified` before any accepted grant, `AccessUnknown` while permission
+    /// evidence is incomplete, `Closed` after a denial, stale generation or sanitized cache
+    /// failures.
     pub async fn history(&self, channel: Uuid) -> Result<HistoryHandle, HistoryError> {
         let session = self.clone();
         self.client

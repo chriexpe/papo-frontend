@@ -143,14 +143,14 @@ impl super::HistoryHandle {
         &self,
         generation: Generation,
     ) -> Result<(), HistoryError> {
-        if let Some(reason) = self
+        if let Some(fence) = self
             .session
             .inner
             .reading
             .positions
             .check_current_channel(self.channel.id, generation)
         {
-            return Err(HistoryError::Closed(reason));
+            return Err(fence.into());
         }
         Ok(())
     }
@@ -240,8 +240,8 @@ impl super::channel::HistoryStore {
         let channels: Vec<_> = self.channels.lock().await.values().cloned().collect();
         for channel in channels {
             match channel.generation_changed(generation) {
-                Ok(()) | Err(HistoryError::Closed(_)) => {}
-                Err(error) => return Err(error),
+                Err(error) if !error.is_sealed() => return Err(error),
+                _ => {}
             }
         }
         Ok(())

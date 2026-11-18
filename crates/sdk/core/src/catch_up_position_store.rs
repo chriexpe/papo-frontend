@@ -8,9 +8,9 @@ use papo_api::Uuid;
 use rusqlite::{Transaction, params};
 
 use crate::{
-    AccountId, Generation, HistoryClosedReason, ReadingError, Registry, StorageError,
-    catch_up::ReadingPosition, generation::EpochError, registry::account_is_visible,
-    session::SessionInner, storage_worker::WorkerError,
+    AccountId, Generation, ReadingError, Registry, StorageError, catch_up::ReadingPosition,
+    generation::EpochError, registry::account_is_visible, session::SessionInner,
+    storage_worker::WorkerError,
 };
 
 pub(crate) struct PendingPositionCommit {
@@ -99,11 +99,14 @@ impl Registry {
         session: Arc<SessionInner>,
         generation: Generation,
         batch: Vec<PendingPositionCommit>,
-    ) -> Result<BTreeMap<Uuid, HistoryClosedReason>, PositionBatchError> {
+    ) -> Result<BTreeMap<Uuid, crate::reading::positions::ChannelFence>, PositionBatchError> {
         let account = session.account;
         self.writer
             .write(
-                move |tx| -> Result<BTreeMap<Uuid, HistoryClosedReason>, PositionBatchError> {
+                move |tx| -> Result<
+                    BTreeMap<Uuid, crate::reading::positions::ChannelFence>,
+                    PositionBatchError,
+                > {
                     session.epochs.validate_epoch(generation)?;
                     if !account_is_visible(tx, account)? {
                         return Err(PositionBatchError::AccountNotFound);

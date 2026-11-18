@@ -3,7 +3,10 @@
 
 use super::RefreshFault;
 use crate::{
-    CacheResource, ClientError, Session, Uuid, generation::Epoch, resource_admission::Admission,
+    CacheResource, ClientError, Session, Uuid,
+    generation::Epoch,
+    history::access::{Transition, accepted, affects_read_access},
+    resource_admission::Admission,
 };
 use papo_api::{
     RestClient,
@@ -80,10 +83,6 @@ async fn refresh_current(
     } else {
         None
     };
-    let revalidate_channels = matches!(
-        refresh,
-        Refresh::Channels | Refresh::ChannelSettings(_) | Refresh::Social
-    );
     let changed = fetch(session, epoch, rest, &mut snapshot, refresh).await?;
     if required_channel.is_some_and(|id| {
         !snapshot
@@ -99,9 +98,26 @@ async fn refresh_current(
         return Ok(Err(RefreshFault::ConcurrentChange));
     }
     let connection = connection(session, rest).await?;
+    let access = if affects_read_access(&changed) {
+        // Before this generation's fetch is admitted, the base is the cache-loaded image and
+        // admission is not yet decided; the pending fetch owns this change.
+        if !accepted(&session.inner, epoch.generation).await {
+            return Ok(Err(RefreshFault::ConcurrentChange));
+        }
+        Some(Transition::begin(&session.inner, &connection, &snapshot).await?)
+    } else {
+        None
+    };
     connection.cache.update(&snapshot, &changed).await?;
-    if revalidate_channels {
-        crate::history::reconnect::resources(&session.inner, &connection, &snapshot).await?;
+    let admission_changed = match access {
+        Some(access) => access.finish(&session.inner, &connection).await?,
+        None => false,
+    };
+    if admission_changed
+        || changed
+            .iter()
+            .any(|resource| matches!(resource, CacheResource::Channels | CacheResource::Dms))
+    {
         crate::reading::reconcile::resources(&session.inner, &connection, &snapshot).await?;
     }
     session.inner.publish_resources(snapshot)?;

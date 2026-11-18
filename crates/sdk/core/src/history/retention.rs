@@ -164,9 +164,18 @@ impl Retainer {
         if let Some(session) = session {
             let epoch = session.inner.epochs.current();
             session.inner.epochs.validate(epoch.generation)?;
-            let model = session.inner.history.channel(self.channel).await;
+            // Admission and lookup are atomic; a channel this session does not admit is never
+            // given an incarnation here, only its existing one (quarantined) is reused.
+            let history = &session.inner.history;
+            let (model, allowed) = match history.verified_channel(self.channel).await {
+                Ok(model) => (model, true),
+                Err(_) => match history.existing(self.channel).await {
+                    Some(model) => (model, false),
+                    None => return self.evict_cold().await,
+                },
+            };
             let mut state = model.state.lock().await;
-            if session.inner.history.is_verified(self.channel).await {
+            if allowed {
                 state
                     .ensure(&self.cache, *self.channel.as_bytes(), epoch.generation)
                     .await?;
@@ -189,13 +198,22 @@ impl Retainer {
                 .await?;
             state.retention_version = self.cache.retention_version(*self.channel.as_bytes());
             if changed {
-                session
+                let published = session
                     .inner
                     .epochs
-                    .apply(epoch.generation, || model.publish(&state, epoch.generation))??;
+                    .apply(epoch.generation, || model.publish(&state, epoch.generation))?;
+                // A sealed incarnation delivers nothing; its eviction is still durable.
+                match published {
+                    Err(error) if !error.is_sealed() => return Err(error),
+                    _ => {}
+                }
             }
             return Ok(changed.then_some(state.last_write_rows));
         }
+        self.evict_cold().await
+    }
+
+    async fn evict_cold(&mut self) -> Result<Option<usize>, HistoryError> {
         if self.cold.is_none() {
             self.cold = self.load().await?;
         }

@@ -124,53 +124,78 @@ pub fn channel_grants(
     user: Uuid,
     channel: &Channel,
 ) -> Result<ChannelGrants, PermissionDataError> {
-    if channel.r#type.as_deref() == Some("dm") {
-        return Err(PermissionDataError::Unavailable);
-    }
-    let user = user.to_string();
-    let server = snapshot
-        .server
-        .as_ref()
-        .ok_or(PermissionDataError::Unavailable)?;
-    if server.owner_id.as_deref() == Some(user.as_str()) {
-        return Ok(ChannelGrants {
-            read: true,
-            send: true,
-            delete_others: true,
-            voice: true,
-        });
-    }
-    let overwrites = channel
-        .permissions
-        .as_ref()
-        .ok_or(PermissionDataError::Unavailable)?;
-    if overwrites.is_empty() {
-        return Ok(ChannelGrants {
-            read: true,
-            send: true,
-            delete_others: false,
-            voice: true,
-        });
-    }
-    let assignments = assignments(snapshot, &user)?;
-    let mut grants = ChannelGrants::default();
-    for entry in overwrites {
-        let role = entry
-            .role_id
+    AccountEvidence::new(snapshot, user).channel_grants(channel)
+}
+
+/// One account's server-wide permission inputs, read once so many channels can be
+/// evaluated against the same snapshot. Errors surface only for channels that need them.
+pub(crate) struct AccountEvidence<'a> {
+    owner: Result<bool, PermissionDataError>,
+    assignments: Result<Vec<&'a String>, PermissionDataError>,
+}
+
+impl<'a> AccountEvidence<'a> {
+    pub(crate) fn new(snapshot: &'a ResourceSnapshot, user: Uuid) -> Self {
+        let user = user.to_string();
+        let owner = snapshot
+            .server
             .as_ref()
-            .ok_or(PermissionDataError::Unavailable)?;
-        if assignments.contains(&role) {
-            let p = entry
-                .permissions
-                .as_ref()
-                .ok_or(PermissionDataError::Unavailable)?;
-            grants.read |= p.read_channel.unwrap_or(false);
-            grants.send |= p.send_messages.unwrap_or(false);
-            grants.delete_others |= p.delete_messages.unwrap_or(false);
-            grants.voice |= p.connect_voice.unwrap_or(false);
+            .map(|server| server.owner_id.as_deref() == Some(user.as_str()))
+            .ok_or(PermissionDataError::Unavailable);
+        Self {
+            owner,
+            assignments: assignments(snapshot, &user),
         }
     }
-    Ok(grants)
+
+    /// The single ordinary-channel algorithm behind `channel_grants`.
+    pub(crate) fn channel_grants(
+        &self,
+        channel: &Channel,
+    ) -> Result<ChannelGrants, PermissionDataError> {
+        if channel.r#type.as_deref() == Some("dm") {
+            return Err(PermissionDataError::Unavailable);
+        }
+        if self.owner? {
+            return Ok(ChannelGrants {
+                read: true,
+                send: true,
+                delete_others: true,
+                voice: true,
+            });
+        }
+        let overwrites = channel
+            .permissions
+            .as_ref()
+            .ok_or(PermissionDataError::Unavailable)?;
+        if overwrites.is_empty() {
+            return Ok(ChannelGrants {
+                read: true,
+                send: true,
+                delete_others: false,
+                voice: true,
+            });
+        }
+        let assignments = self.assignments.as_ref().map_err(|error| *error)?;
+        let mut grants = ChannelGrants::default();
+        for entry in overwrites {
+            let role = entry
+                .role_id
+                .as_ref()
+                .ok_or(PermissionDataError::Unavailable)?;
+            if assignments.contains(&role) {
+                let p = entry
+                    .permissions
+                    .as_ref()
+                    .ok_or(PermissionDataError::Unavailable)?;
+                grants.read |= p.read_channel.unwrap_or(false);
+                grants.send |= p.send_messages.unwrap_or(false);
+                grants.delete_others |= p.delete_messages.unwrap_or(false);
+                grants.voice |= p.connect_voice.unwrap_or(false);
+            }
+        }
+        Ok(grants)
+    }
 }
 
 /// Uses explicit backend DM membership/block evidence. Owner privileges never enter this branch.
@@ -199,6 +224,8 @@ fn assignments<'a>(
         .map(|role| role.id.as_ref().ok_or(PermissionDataError::Unavailable))
         .collect()
 }
+
+pub(crate) mod read_access;
 
 #[cfg(test)]
 mod tests;

@@ -160,13 +160,13 @@ pub(super) async fn clear_catch_up_inner(
     let _serial = session.inner.reading.serial.lock().await;
     let generation = session.generation();
     session.inner.epochs.validate(generation)?;
-    if let Some(reason) = session
+    if let Some(fence) = session
         .inner
         .reading
         .positions
         .check_current_channel(channel, generation)
     {
-        return Err(ReadingError::History(crate::HistoryError::Closed(reason)));
+        return Err(ReadingError::History(fence.into()));
     }
     let Some(mut next) = session.inner.reading.catch_up_state_for(channel) else {
         return Ok(());

@@ -11,8 +11,8 @@ pub(crate) async fn refresh_pins(
 ) -> Result<(), HistoryError> {
     session.inner.epochs.validate(generation)?;
     let store = &session.inner.history;
-    if !store.verified.read().await.contains(&channel) {
-        return Err(HistoryError::Unverified);
+    if let Some(refusal) = store.admission.read().await.refusal(channel) {
+        return Err(refusal);
     }
     let connection = store
         .connection

@@ -36,6 +36,7 @@ pub(super) async fn page(
                 && !matches!(
                     error,
                     HistoryError::Closed(_)
+                        | HistoryError::AccessUnknown
                         | HistoryError::Session(ClientError::Superseded)
                         | HistoryError::Cache(
                             crate::CacheError::Superseded | crate::CacheError::Closed
@@ -247,24 +248,19 @@ async fn rejection(
         _ => return error.into(),
     };
     let _state = handle.channel.state.lock().await;
-    // Loss of access ends capabilities even when persisting the revocation fails.
+    // Loss of access ends capabilities even when persisting the revocation fails; the
+    // admission stays denied, so a later grant writes the marker before admitting anything.
     handle.channel.close(reason);
-    let cache_result = connection
-        .cache
-        .history_revoke(*handle.channel.id.as_bytes(), generation)
-        .await;
-    let revoke_result = crate::reading::catch_up_sync::revoke_channels(
-        &handle.session.client,
+    if let Err(error) = super::access::deny(
         &handle.session.inner,
-        &[handle.channel.id],
-        generation,
+        &handle.session.client,
+        &connection.cache,
+        handle.channel.id,
         reason,
+        generation,
     )
-    .await;
-    if let Err(error) = cache_result {
-        return error.into();
-    }
-    if let Err(error) = revoke_result {
+    .await
+    {
         return error.into();
     }
     HistoryError::Closed(reason)
