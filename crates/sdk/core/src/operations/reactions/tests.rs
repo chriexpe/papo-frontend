@@ -88,7 +88,7 @@ fn offline_session() -> (tempfile::TempDir, crate::Client, Session) {
             let credential_generation = handle
                 .inner
                 .registry
-                .add_account(account, None, None, true, UnixMicros(0))
+                .add_account(account, "fixture".into(), None, None, true, UnixMicros(0))
                 .await
                 .unwrap();
             let inner = SessionInner::new(

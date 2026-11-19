@@ -41,7 +41,7 @@ impl Fixture {
         runtime.block_on(writer.write(move|tx| {
             tx.execute("INSERT INTO servers VALUES(?1,'https://example.invalid',0,0,0)",[account.server().as_bytes()])?;
             for user in [account.user(),Uuid::from_u128(2)] {
-                tx.execute("INSERT INTO accounts(server_id,user_id,position,created_at_us) VALUES(?1,?2,0,0)",params![account.server().as_bytes(),user.as_bytes()])?;
+                tx.execute("INSERT INTO accounts(server_id,user_id,username,position,created_at_us) VALUES(?1,?2,'fixture',0,0)",params![account.server().as_bytes(),user.as_bytes()])?;
             }
             Ok::<_,StorageError>(())
         })).unwrap();

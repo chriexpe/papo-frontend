@@ -26,7 +26,7 @@ fn late_secret_delete_keeps_removal_pending_until_read_back_confirms_absence() {
             .await
             .unwrap();
         let generation = registry
-            .add_account(id, None, None, true, UnixMicros(1))
+            .add_account(id, "fixture".into(), None, None, true, UnixMicros(1))
             .await
             .unwrap();
         let key = SecretKey::new(id, generation);

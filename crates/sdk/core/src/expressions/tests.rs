@@ -37,7 +37,7 @@ fn recents_are_atomic_with_confirmation_and_isolated_by_account() {
         registry.add_server(server, UnixMicros(0)).await.unwrap();
         for id in [first, other] {
             registry
-                .add_account(id, None, None, false, UnixMicros(0))
+                .add_account(id, "fixture".into(), None, None, false, UnixMicros(0))
                 .await
                 .unwrap();
         }

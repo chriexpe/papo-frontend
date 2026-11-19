@@ -20,11 +20,11 @@ fn account_removal_is_hidden_durably_and_resumed_before_open_returns() {
             .await
             .unwrap();
         registry
-            .add_account(first, None, None, true, UnixMicros(1))
+            .add_account(first, "fixture".into(), None, None, true, UnixMicros(1))
             .await
             .unwrap();
         registry
-            .add_account(other, None, None, true, UnixMicros(1))
+            .add_account(other, "fixture".into(), None, None, true, UnixMicros(1))
             .await
             .unwrap();
         fixture
@@ -71,7 +71,7 @@ fn persistent_media_failure_retries_only_the_unfinished_step() {
             .await
             .unwrap();
         registry
-            .add_account(id, None, None, true, UnixMicros(1))
+            .add_account(id, "fixture".into(), None, None, true, UnixMicros(1))
             .await
             .unwrap();
         fixture
@@ -121,8 +121,8 @@ fn removal_cleans_only_its_account_and_generations_are_never_reused() {
     fixture.runtime().block_on(async {
         let registry=fixture.storage().registry();
         registry.add_server(server.clone(),UnixMicros(1)).await.unwrap();
-        let old=registry.add_account(first,None,None,true,UnixMicros(1)).await.unwrap();
-        registry.add_account(other,None,None,true,UnixMicros(1)).await.unwrap();
+        let old=registry.add_account(first,"fixture".into(), None,None,true,UnixMicros(1)).await.unwrap();
+        registry.add_account(other,"fixture".into(), None,None,true,UnixMicros(1)).await.unwrap();
         registry.writer.write(move |tx|->Result<(),StorageError> {
             for id in [first,other] {
                 tx.execute("INSERT INTO drafts(server_id,user_id,channel_id,text,mentions,updated_at_us) VALUES(?1,?2,zeroblob(16),'',x'',1)",rusqlite::params![id.server().as_bytes(),id.user().as_bytes()])?;
@@ -139,7 +139,7 @@ fn removal_cleans_only_its_account_and_generations_are_never_reused() {
         fixture.storage().removals().begin_account(first).await.unwrap();
         assert_eq!(fixture.storage().removals().resume().await.unwrap(), [] as [crate::removal::RemovalJob; 0]);
         assert!(fixture.secrets.snapshot(SecretKey::new(first,old)).is_none());
-        let new=registry.add_account(first,None,None,false,UnixMicros(2)).await.unwrap();
+        let new=registry.add_account(first,"fixture".into(), None,None,false,UnixMicros(2)).await.unwrap();
         assert!(new.get()>old.get());
         let counts=registry.readers.query(registry.path.clone(),|tx| {
             ["drafts","read_points","catch_up_intervals","saved_reading_positions","notification_ledger"].into_iter().map(|table|tx.query_row(&format!("SELECT count(*) FROM {table}"),[],|row|row.get::<_,i64>(0))).collect::<Result<Vec<_>,_>>()
@@ -160,7 +160,7 @@ fn failed_stop_keeps_the_job_and_prevents_secret_or_file_deletion() {
         let registry = fixture.storage().registry();
         registry.add_server(server, UnixMicros(1)).await.unwrap();
         registry
-            .add_account(id, None, None, true, UnixMicros(1))
+            .add_account(id, "fixture".into(), None, None, true, UnixMicros(1))
             .await
             .unwrap();
         fixture

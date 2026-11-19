@@ -75,7 +75,7 @@ async fn visible_snapshot(client: &Client, handle: &HistoryHandle) -> Arc<super:
                 [account.server().as_bytes()],
             )?;
             tx.execute(
-                "INSERT INTO accounts(server_id,user_id,position,created_at_us) VALUES(?1,?2,0,0)",
+                "INSERT INTO accounts(server_id,user_id,username,position,created_at_us) VALUES(?1,?2,'fixture',0,0)",
                 rusqlite::params![account.server().as_bytes(), account.user().as_bytes()],
             )?;
             Ok::<_, crate::StorageError>(())

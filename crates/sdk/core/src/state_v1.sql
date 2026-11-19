@@ -9,6 +9,7 @@ CREATE TABLE accounts (
     credential_generation INTEGER PRIMARY KEY AUTOINCREMENT,
     server_id BLOB NOT NULL REFERENCES servers(id),
     user_id BLOB NOT NULL CHECK(length(user_id)=16),
+    username TEXT NOT NULL,
     display_name TEXT,
     avatar_ref TEXT,
     position INTEGER NOT NULL,

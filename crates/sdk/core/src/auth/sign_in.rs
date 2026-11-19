@@ -96,6 +96,9 @@ impl AuthService {
                         .as_deref()
                         .and_then(|id| id.parse().ok())
                         .ok_or(ClientError::InvalidAuth)?;
+                    if identity.username.as_deref().is_none_or(str::is_empty) {
+                        return Err(ClientError::InvalidAuth);
+                    }
                     let account = AccountId::new(this.address.id(), user);
                     if this
                         .session
@@ -190,28 +193,7 @@ async fn install(
     {
         return Err(ClientError::NotFound);
     }
-    let saved = client
-        .inner
-        .registry
-        .accounts(verified.account.server())
-        .await?
-        .into_iter()
-        .find(|account| account.id == verified.account);
-    let generation = if let Some(saved) = saved {
-        saved.credential_generation
-    } else {
-        client
-            .inner
-            .registry
-            .add_account(
-                verified.account,
-                verified.identity.nickname.or(verified.identity.username),
-                None,
-                true,
-                created_at,
-            )
-            .await?
-    };
+    let generation = save_account(client, &verified, created_at).await?;
     client.inner.pool.stop(verified.account).await;
     client
         .inner
@@ -253,6 +235,49 @@ async fn install(
         inner,
         client: client.clone(),
     })
+}
+
+/// Saves the signed-in account with the names whoami reported, allocating its credential
+/// generation when the account is new. Every sign-in refreshes the names, so a rename on
+/// the server reaches a saved account.
+async fn save_account(
+    client: &crate::ClientHandle,
+    verified: &VerifiedLogin,
+    created_at: UnixMicros,
+) -> Result<crate::secret::CredentialGeneration, ClientError> {
+    let registry = &client.inner.registry;
+    let saved = registry
+        .accounts(verified.account.server())
+        .await?
+        .into_iter()
+        .find(|account| account.id == verified.account);
+    // `login` rejected a whoami without a username before getting here.
+    let username = verified
+        .identity
+        .username
+        .clone()
+        .ok_or(ClientError::InvalidAuth)?;
+    let display_name = verified
+        .identity
+        .nickname
+        .clone()
+        .or_else(|| Some(username.clone()));
+    if let Some(saved) = saved {
+        registry
+            .update_account_names(verified.account, username, display_name)
+            .await?;
+        return Ok(saved.credential_generation);
+    }
+    Ok(registry
+        .add_account(
+            verified.account,
+            username,
+            display_name,
+            None,
+            true,
+            created_at,
+        )
+        .await?)
 }
 
 /// A canceled/failed attempt cannot strand observers in `SigningIn`.
