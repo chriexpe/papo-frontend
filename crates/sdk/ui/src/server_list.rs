@@ -9,6 +9,7 @@ use papo_sdk::removal::RemovalJob;
 use papo_sdk::{
     AccountId, ClientError, ClientHandle, SavedAccount, SavedServer, ServerId, UnixMicros,
 };
+use papo_sdk::{AddedServer, ServerDiscovery};
 
 use crate::registry_projection;
 
@@ -151,8 +152,16 @@ impl ServerListService {
         &self,
         address: &str,
         added_at: UnixMicros,
-    ) -> Result<ServerId, ClientError> {
+    ) -> Result<AddedServer, ClientError> {
         self.handle.add_server(address, added_at).await
+    }
+
+    /// Delegates a probe of `/server` to SDK without saving anything.
+    ///
+    /// # Errors
+    /// Forwards SDK validation, probe and closed-client errors unchanged.
+    pub async fn discover(&self, address: &str) -> Result<ServerDiscovery, ClientError> {
+        self.handle.discover(address).await
     }
 
     /// Commits the requested complete server order through SDK.

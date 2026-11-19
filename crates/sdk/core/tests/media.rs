@@ -75,7 +75,8 @@ async fn accounts(f: &Fixture) -> Result<(Session, Session)> {
     let client = f.client().handle();
     let server = client
         .add_server(&f.server().base_url(), UnixMicros(0))
-        .await?;
+        .await?
+        .id;
     let auth = client.auth(server)?;
     register(&auth, "media-first").await?;
     let first = login(&auth, "media-first").await?;

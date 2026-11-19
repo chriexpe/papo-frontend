@@ -4,6 +4,7 @@ use crate::{
     AccountId, AuthService, ClientError, SavedAccount, SavedServer, ServerAddress, ServerId,
     Session, UnixMicros, client::ClientInner, removal::RemovalJob,
 };
+use crate::{AddedServer, ServerDiscovery};
 use std::{future::Future, sync::Arc};
 use tokio::sync::watch;
 
@@ -59,23 +60,25 @@ impl ClientHandle {
         }).await.map_err(|_| ClientError::Executor)?
     }
     /// Validates and probes `/server`, then acknowledges only after a FULL registry commit.
+    /// Returns the probe's discovery with the new identity; only the address is persisted.
     /// # Errors
     /// Returns validation, probe, duplicate/removal identity, or storage errors.
+    /// `DiscoveryFailure::classify` sorts probe failures.
     pub async fn add_server(
         &self,
         address: &str,
         added_at: UnixMicros,
-    ) -> Result<ServerId, ClientError> {
+    ) -> Result<AddedServer, ClientError> {
         let address = ServerAddress::parse(address)?;
         let this = self.clone();
         self.dispatch(async move {
             let rest = this.inner.transport(&address, None)?;
-            this.inner.request(rest.server()).await?;
+            let discovery = ServerDiscovery::from_wire(this.inner.request(rest.server()).await?);
             let _guard = this.inner.mutation.lock().await;
             let id = address.id();
             this.inner.registry.add_server(address, added_at).await?;
             this.inner.publish_registry().await?;
-            Ok(id)
+            Ok(AddedServer { id, discovery })
         })
         .await
     }

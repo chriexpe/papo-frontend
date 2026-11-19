@@ -59,7 +59,7 @@ pub(crate) async fn signed_in_as(fixture: &Fixture, username: &str) -> Result<Se
         .map(|s| s.address.id());
     let server = match existing {
         Some(id) => id,
-        None => handle.add_server(&base_url, UnixMicros(0)).await?,
+        None => handle.add_server(&base_url, UnixMicros(0)).await?.id,
     };
     let auth = handle.auth(server)?;
     register(&auth, username).await?;

@@ -25,7 +25,8 @@ async fn setup(f: &Fixture) -> Result<(Session, Session, Uuid)> {
     let client = f.client().handle();
     let server = client
         .add_server(&f.server().base_url(), UnixMicros(0))
-        .await?;
+        .await?
+        .id;
     let auth = client.auth(server)?;
     register(&auth, "notify-a").await?;
     let first = login(&auth, "notify-a").await?;

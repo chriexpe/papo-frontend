@@ -39,7 +39,7 @@ fn three_unread_channels_without_open_handles_reconnect_with_twelve_page_budget(
     })?;
     let account = fixture.run(async {
         let handle = fixture.client().handle();
-        let server = handle.add_server(&fixture.server().base_url(), UnixMicros(0)).await?;
+        let server = handle.add_server(&fixture.server().base_url(), UnixMicros(0)).await?.id;
         let auth = handle.auth(server)?;
         register(&auth, "reconnect-cost").await?;
         let session = login(&auth, "reconnect-cost").await?;

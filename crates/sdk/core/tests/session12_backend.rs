@@ -70,7 +70,7 @@ async fn prepare(
         .ok_or("channel")?
         .parse()?;
     let handle = client.handle();
-    let server = handle.add_server(address, UnixMicros(0)).await?;
+    let server = handle.add_server(address, UnixMicros(0)).await?.id;
     let auth = handle.auth(server)?;
     auth.register(RegisterRequest {
         username: "notifyproof".into(),

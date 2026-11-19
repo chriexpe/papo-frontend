@@ -64,7 +64,8 @@ impl<'a> Account<'a> {
         let handle = fixture.client().handle();
         let server_id = handle
             .add_server(&fixture.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server_id)?;
         register(&auth, username).await?;
         let session = login(&auth, username).await?;

@@ -19,7 +19,8 @@ fn account_removal_revokes_only_its_handles_and_server_removal_revokes_the_rest(
         let handle = fixture.client().handle();
         let server = handle
             .add_server(&fixture.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         register(&auth, "remove-one").await?;
         register(&auth, "remove-two").await?;
@@ -77,7 +78,8 @@ fn failed_secret_cleanup_stays_hidden_and_observable_across_retry_and_restart() 
         let handle = fixture.client().handle();
         let server = handle
             .add_server(&fixture.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         register(&auth, "retry-remove").await?;
         let session = login(&auth, "retry-remove").await?;

@@ -92,7 +92,8 @@ async fn observe(client: &Client, fixture: Option<&TestServer>) -> Result<()> {
     let handle = client.handle();
     let server = handle
         .add_server(&credentials.server, UnixMicros(0))
-        .await?;
+        .await?
+        .id;
     let auth = handle.auth(server)?;
     if let Some(server_password) = credentials.server_password {
         auth.server_login(LoginServerRequest { server_password })

@@ -106,7 +106,8 @@ fn cold_background_and_push_respect_durable_read_points_and_deliver_unread_count
                     let client = f.client().handle();
                     let server = client
                         .add_server(&f.server().base_url(), UnixMicros(0))
-                        .await?;
+                        .await?
+                        .id;
                     let auth = client.auth(server)?;
                     register(&auth, "cold-durable").await?;
                     // Hold initial foreground GET /channels so reading reconcile never runs.
@@ -177,7 +178,8 @@ fn cold_background_and_push_still_suppress_on_backend_inbox_read_flag() -> Resul
             let client = f.client().handle();
             let server = client
                 .add_server(&f.server().base_url(), UnixMicros(0))
-                .await?;
+                .await?
+                .id;
             let auth = client.auth(server)?;
             register(&auth, "cold-inbox-read").await?;
             let mut hold = f.server().hold_next_rest("GET", "/channels").await?;

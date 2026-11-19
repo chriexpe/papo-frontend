@@ -73,6 +73,7 @@ async fn account(f: &Fixture, username: &str) -> Result<Session> {
             client
                 .add_server(&f.server().base_url(), UnixMicros(0))
                 .await?
+                .id
         }
     };
     let auth = client.auth(server)?;

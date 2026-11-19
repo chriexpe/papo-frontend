@@ -126,7 +126,7 @@ fn sdk_typing_command_uses_session_gateway_and_live_generation() {
         .block_on(async {
             let address = std::env::var("PAPO_BACKEND_PROOF_ADDRESS").unwrap();
             let handle = client.handle();
-            let server = handle.add_server(&address, UnixMicros(0)).await.unwrap();
+            let server = handle.add_server(&address, UnixMicros(0)).await.unwrap().id;
             let session = handle
                 .auth(server)
                 .unwrap()
