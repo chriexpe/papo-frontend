@@ -283,12 +283,12 @@ impl Registry {
         self.writer
             .write(move |tx| -> Result<(), CatchUpWriteError> {
                 session.epochs.validate(generation)?;
-                if let Some(reason) = session
+                if let Some(fence) = session
                     .reading
                     .positions
                     .check_current_channel(channel, generation)
                 {
-                    return Err(HistoryError::Closed(reason).into());
+                    return Err(HistoryError::from(fence).into());
                 }
                 visible_account(tx, account)?;
                 upsert_catch_up_tx(tx, account, channel, &next_state)?;
@@ -313,12 +313,12 @@ impl Registry {
                 session.epochs.validate(generation)?;
                 visible_account(tx, account)?;
                 for commit in updates {
-                    if let Some(reason) = session
+                    if let Some(fence) = session
                         .reading
                         .positions
                         .check_current_channel(commit.channel, generation)
                     {
-                        return Err(HistoryError::Closed(reason).into());
+                        return Err(HistoryError::from(fence).into());
                     }
                     upsert_catch_up_tx(tx, account, commit.channel, &commit.state)?;
                 }

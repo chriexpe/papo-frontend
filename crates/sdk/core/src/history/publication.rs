@@ -17,6 +17,9 @@ use super::{
 #[derive(Default)]
 pub(super) struct Publication {
     pub closed: Option<HistoryClosedReason>,
+    /// Access is unknown: nothing is admitted or delivered, but the accepted snapshot and
+    /// cache incarnation are kept so a later grant resumes this same incarnation.
+    quarantined: bool,
     pub snapshot: Option<Arc<HistorySnapshot>>,
     incarnation: Option<(Option<u64>, Option<i64>)>,
     payloads: BTreeMap<[u8; 16], Payload>,
@@ -58,8 +61,13 @@ pub(super) fn published_chunk(chunk: &super::model::Chunk) -> HistoryChunk {
 
 impl Publication {
     pub fn check(&self) -> Result<(), HistoryError> {
-        self.closed
-            .map_or(Ok(()), |reason| Err(HistoryError::Closed(reason)))
+        if let Some(reason) = self.closed {
+            return Err(HistoryError::Closed(reason));
+        }
+        if self.quarantined {
+            return Err(HistoryError::AccessUnknown);
+        }
+        Ok(())
     }
 
     fn publish(&mut self, state: &State, generation: Generation) -> Result<(), HistoryError> {
@@ -321,6 +329,14 @@ impl Publication {
                 updates.send_replace(HistoryUpdate::Closed(reason));
             }
         }
+    }
+
+    pub const fn is_closed(&self) -> bool {
+        self.closed.is_some()
+    }
+
+    pub const fn set_quarantined(&mut self, quarantined: bool) {
+        self.quarantined = quarantined;
     }
 
     fn subscribe(&self) -> Result<HistorySubscription, HistoryError> {

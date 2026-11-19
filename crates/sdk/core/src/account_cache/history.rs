@@ -6,6 +6,17 @@ use crate::{Generation, storage_worker::WorkerError};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use tokio_util::sync::CancellationToken;
 
+/// Revokes waiting for the cache fence, in submission order.
+#[derive(Default)]
+pub(super) struct RevokeQueue {
+    pending: std::sync::Mutex<Vec<QueuedRevoke>>,
+}
+
+type QueuedRevoke = (
+    Vec<[u8; 16]>,
+    tokio::sync::oneshot::Sender<Result<(), CacheError>>,
+);
+
 impl AccountCache {
     /// Worker-unique database identity; numeric history-set IDs are only unique within this instance.
     pub(crate) fn history_instance(&self) -> u64 {
@@ -195,6 +206,7 @@ impl AccountCache {
 
     /// Hide history immediately in one cache transaction. Physical cleanup is separate;
     /// successful reauthorization always allocates a new incarnation after this marker.
+    #[cfg(test)]
     pub(crate) async fn history_revoke(
         &self,
         channel: [u8; 16],
@@ -202,6 +214,69 @@ impl AccountCache {
     ) -> Result<(), CacheError> {
         self.history_transaction(generation, move |transaction| revoke(transaction, channel))
             .await
+    }
+
+    /// Queue a revoke of these channels' current sets and return its outcome. The request is
+    /// queued synchronously, so dropping the receiver, cancelling the caller or replacing the
+    /// connection generation does not withdraw it. Queued revokes commit in submission order,
+    /// so an older, abandoned revoke can never land after a newer one and hide the fresh set
+    /// a regrant allocated in between. A revoke only removes visibility, so it needs no
+    /// generation fence; account identity is still verified on the writer.
+    pub(crate) fn history_revoke_detached(
+        self: &std::sync::Arc<Self>,
+        channels: Vec<[u8; 16]>,
+    ) -> tokio::sync::oneshot::Receiver<Result<(), CacheError>> {
+        let (done, outcome) = tokio::sync::oneshot::channel();
+        self.revokes
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((channels, done));
+        let cache = std::sync::Arc::clone(self);
+        tokio::spawn(async move { cache.drain_revokes().await });
+        outcome
+    }
+
+    /// Commit every queued revoke in one transaction under the fence. Whichever drain gets
+    /// the fence first takes the whole queue, preserving submission order.
+    async fn drain_revokes(&self) {
+        let fence = self.fence().await;
+        let pending = std::mem::take(
+            &mut *self
+                .revokes
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if pending.is_empty() {
+            return;
+        }
+        let result = match fence {
+            Ok(fence) => {
+                let context = self.context();
+                let account = context.account;
+                let channels: Vec<[u8; 16]> = pending
+                    .iter()
+                    .flat_map(|(channels, _)| channels.iter().copied())
+                    .collect();
+                let result = context
+                    .writer
+                    .cache_write(move |transaction| {
+                        super::history_rows::verify(transaction, account)?;
+                        for channel in channels {
+                            revoke(transaction, channel)?;
+                        }
+                        Ok(())
+                    })
+                    .await;
+                drop(fence);
+                result
+            }
+            Err(error) => Err(error),
+        };
+        for (_, done) in pending {
+            let _ = done.send(result.clone());
+        }
     }
 
     /// Validate a model's in-memory page against durable markers without loading payloads.

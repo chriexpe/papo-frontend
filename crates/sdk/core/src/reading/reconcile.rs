@@ -13,7 +13,7 @@ use crate::{
 };
 use papo_api::Uuid;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, atomic::Ordering},
 };
 
@@ -29,20 +29,34 @@ pub(crate) async fn resources(
     start(&handle);
     let serial = session.reading.serial.lock().await;
     session.epochs.validate(snapshot.generation)?;
-    let (image, heads, unresolved) = build_channel_image(&handle, connection, snapshot).await?;
+    // History owns admission; reading state follows it rather than the raw channel list.
+    let admitted = {
+        let admissions = session.history.admission.read().await;
+        Admitted {
+            allowed: admissions.allowed(),
+            quarantined: admissions.quarantined(),
+        }
+    };
+    let (image, heads, unresolved) =
+        build_channel_image(&handle, connection, snapshot, &admitted).await?;
     if snapshot.server.is_some() {
-        let visible: std::collections::BTreeSet<Uuid> = image.channels.keys().copied().collect();
+        // Quarantine keeps durable reading state for revalidation; only denial deletes it.
+        let retained: BTreeSet<Uuid> = admitted
+            .allowed
+            .union(&admitted.quarantined)
+            .copied()
+            .collect();
         super::catch_up_sync::reconcile_removed_channels(
             &connection.client,
             session,
             snapshot.generation,
-            &visible,
+            &retained,
         )
         .await?;
         session
             .reading
             .positions
-            .clear_revocations(&visible, snapshot.generation);
+            .clear_revocations(&admitted.allowed, snapshot.generation);
     }
     install_resources(session, connection, image, heads, unresolved).await?;
     drop(serial);
@@ -57,10 +71,16 @@ type ChannelImageParts = (
     BTreeMap<Uuid, ServerReadPoint>,
 );
 
+struct Admitted {
+    allowed: BTreeSet<Uuid>,
+    quarantined: BTreeSet<Uuid>,
+}
+
 async fn build_channel_image(
     handle: &Session,
     connection: &ResourceConnection,
     snapshot: &ResourceSnapshot,
+    admitted: &Admitted,
 ) -> Result<ChannelImageParts, ClientError> {
     let session = &handle.inner;
     let stored = connection
@@ -82,6 +102,16 @@ async fn build_channel_image(
         head,
     } in marks(snapshot)?
     {
+        if admitted.quarantined.contains(&channel) {
+            // Last-good state is kept as is; no server mark is resolved or saved for it.
+            if let Some(state) = image.channels.remove(&channel) {
+                channels.insert(channel, state);
+            }
+            continue;
+        }
+        if !admitted.allowed.contains(&channel) {
+            continue;
+        }
         let previous = stored.get(&channel);
         let mut state = image.channels.remove(&channel).unwrap_or_default();
         state.local_point = state

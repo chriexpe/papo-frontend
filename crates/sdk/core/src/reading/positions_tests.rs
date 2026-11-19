@@ -1,7 +1,7 @@
 //! Deterministic unit specs for reading-position coalescing and revocation-epoch fencing.
 //! Coordinator queueing and batch flushing live in `reading::positions`.
 
-use super::{PendingChannelWrite, PositionCoordinator};
+use super::{ChannelFence, PendingChannelWrite, PositionCoordinator};
 use crate::{
     Generation, HistoryClosedReason, HistoryError, ReadingError, catch_up::ReadingPosition,
 };
@@ -62,11 +62,11 @@ fn stale_revocation_epoch_remains_fenced_after_same_generation_regrant() {
     coordinator.revoke(&[channel], generation, HistoryClosedReason::ChannelDeleted);
     assert_eq!(
         coordinator.check_writable(channel, generation, 0),
-        Some(HistoryClosedReason::ChannelDeleted)
+        Some(ChannelFence::Closed(HistoryClosedReason::ChannelDeleted))
     );
     assert_eq!(
         coordinator.check_writable(channel, generation, 1),
-        Some(HistoryClosedReason::ChannelDeleted)
+        Some(ChannelFence::Closed(HistoryClosedReason::ChannelDeleted))
     );
 
     let visible = BTreeSet::from([channel]);
@@ -75,6 +75,6 @@ fn stale_revocation_epoch_remains_fenced_after_same_generation_regrant() {
     assert_eq!(coordinator.check_writable(channel, generation, 1), None);
     assert_eq!(
         coordinator.check_writable(channel, generation, 0),
-        Some(HistoryClosedReason::ChannelDeleted)
+        Some(ChannelFence::Closed(HistoryClosedReason::ChannelDeleted))
     );
 }

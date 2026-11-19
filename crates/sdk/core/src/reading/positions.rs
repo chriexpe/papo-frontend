@@ -16,6 +16,23 @@ use crate::{
     session::SessionInner,
 };
 
+/// Why reading work for a channel is refused. `Unknown` follows history quarantine and is
+/// lifted on the same epoch when access is granted again; `Closed` is a revocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChannelFence {
+    Closed(HistoryClosedReason),
+    Unknown,
+}
+
+impl From<ChannelFence> for HistoryError {
+    fn from(fence: ChannelFence) -> Self {
+        match fence {
+            ChannelFence::Closed(reason) => Self::Closed(reason),
+            ChannelFence::Unknown => Self::AccessUnknown,
+        }
+    }
+}
+
 struct PendingChannelWrite {
     generation: Generation,
     revocation_epoch: u64,
@@ -42,6 +59,7 @@ struct State {
     pending: BTreeMap<Uuid, PendingChannelWrite>,
     revocation_epochs: BTreeMap<Uuid, RevocationEpoch>,
     revoked: BTreeMap<Uuid, ChannelRevocation>,
+    quarantined: BTreeSet<Uuid>,
 }
 
 /// Coordinates rapid saved reading position writes so bursts coalesce onto one `synchronous=FULL`
@@ -51,57 +69,87 @@ pub(crate) struct PositionCoordinator {
     state: Mutex<State>,
 }
 
+impl State {
+    fn fence(&self, channel: Uuid, generation: Generation) -> Option<ChannelFence> {
+        if let Some(entry) = self.revoked.get(&channel)
+            && entry.generation == generation
+        {
+            return Some(ChannelFence::Closed(entry.reason));
+        }
+        self.quarantined
+            .contains(&channel)
+            .then_some(ChannelFence::Unknown)
+    }
+}
+
 impl PositionCoordinator {
     pub fn check_writable(
         &self,
         channel: Uuid,
         generation: Generation,
         expected_epoch: u64,
-    ) -> Option<HistoryClosedReason> {
+    ) -> Option<ChannelFence> {
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.closed {
-            return Some(HistoryClosedReason::AccountClosed);
+            return Some(ChannelFence::Closed(HistoryClosedReason::AccountClosed));
         }
         let current = state.revocation_epochs.get(&channel).copied();
         let current_epoch = current.map_or(0, |entry| entry.epoch);
         if current_epoch != expected_epoch {
-            return Some(
+            return Some(ChannelFence::Closed(
                 state
                     .revoked
                     .get(&channel)
                     .map(|entry| entry.reason)
                     .or_else(|| current.map(|entry| entry.reason))
                     .unwrap_or(HistoryClosedReason::ChannelRemoved),
-            );
+            ));
         }
-        if let Some(entry) = state.revoked.get(&channel)
-            && entry.generation == generation
-        {
-            return Some(entry.reason);
-        }
-        None
+        state.fence(channel, generation)
     }
 
     pub fn check_current_channel(
         &self,
         channel: Uuid,
         generation: Generation,
-    ) -> Option<HistoryClosedReason> {
+    ) -> Option<ChannelFence> {
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.closed {
-            return Some(HistoryClosedReason::AccountClosed);
+            return Some(ChannelFence::Closed(HistoryClosedReason::AccountClosed));
         }
-        state
-            .revoked
-            .get(&channel)
-            .filter(|entry| entry.generation == generation)
-            .map(|entry| entry.reason)
+        state.fence(channel, generation)
+    }
+
+    /// Refuse new and in-flight reading work while history access is unknown, without
+    /// bumping the revocation epoch: a later grant resumes the same position incarnation.
+    pub fn quarantine(&self, channels: &[Uuid]) {
+        if channels.is_empty() {
+            return;
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .quarantined
+            .extend(channels.iter().copied());
+    }
+
+    pub fn release(&self, channels: &[Uuid]) {
+        if channels.is_empty() {
+            return;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for channel in channels {
+            state.quarantined.remove(channel);
+        }
     }
 
     pub fn revoke(&self, channels: &[Uuid], generation: Generation, reason: HistoryClosedReason) {
@@ -127,6 +175,7 @@ impl PositionCoordinator {
                 state
                     .revoked
                     .insert(channel, ChannelRevocation { generation, reason });
+                state.quarantined.remove(&channel);
                 if let Some(entry) = state.pending.remove(&channel) {
                     waiters.extend(entry.waiters);
                 }
@@ -184,10 +233,8 @@ impl PositionCoordinator {
             if state.closed {
                 return Err(ReadingError::Session(ClientError::Closed));
             }
-            if let Some(entry) = state.revoked.get(&channel)
-                && entry.generation == generation
-            {
-                return Err(ReadingError::History(HistoryError::Closed(entry.reason)));
+            if let Some(fence) = state.fence(channel, generation) {
+                return Err(ReadingError::History(fence.into()));
             }
             let epoch = state
                 .revocation_epochs
@@ -306,18 +353,14 @@ async fn flush_generation_batches(
                 for (update, (channel, revocation_epoch, waiters)) in
                     updates.into_iter().zip(waiters_by_channel)
                 {
-                    if let Some(reason) = rejected.get(&channel).copied() {
-                        fail_waiters(waiters, || {
-                            ReadingError::History(HistoryError::Closed(reason))
-                        });
-                    } else if let Some(reason) = session.reading.positions.check_writable(
+                    if let Some(fence) = rejected.get(&channel).copied() {
+                        fail_waiters(waiters, || ReadingError::History(fence.into()));
+                    } else if let Some(fence) = session.reading.positions.check_writable(
                         channel,
                         generation,
                         revocation_epoch,
                     ) {
-                        fail_waiters(waiters, || {
-                            ReadingError::History(HistoryError::Closed(reason))
-                        });
+                        fail_waiters(waiters, || ReadingError::History(fence.into()));
                     } else {
                         accepted.push(update);
                         accepted_waiters.push(waiters);
@@ -332,14 +375,12 @@ async fn flush_generation_batches(
             }
             Err(error) => {
                 for (channel, revocation_epoch, waiters) in waiters_by_channel {
-                    if let Some(reason) = session.reading.positions.check_writable(
+                    if let Some(fence) = session.reading.positions.check_writable(
                         channel,
                         generation,
                         revocation_epoch,
                     ) {
-                        fail_waiters(waiters, || {
-                            ReadingError::History(HistoryError::Closed(reason))
-                        });
+                        fail_waiters(waiters, || ReadingError::History(fence.into()));
                     } else {
                         fail_waiters(waiters, || error.clone().into());
                     }

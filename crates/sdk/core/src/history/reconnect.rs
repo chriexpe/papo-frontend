@@ -1,4 +1,5 @@
-//! Open-channel reconnect overlap and fresh-list authorization; live events use the existing reconcile journal.
+//! Open-channel reconnect overlap; channel admission lives in `history::access` and live
+//! events use the existing reconcile journal.
 
 use std::{
     collections::BTreeSet,
@@ -8,71 +9,14 @@ use std::{
 use papo_api::{HistoryOrder, Uuid};
 
 use crate::{
-    ClientError, Generation, ResourceSnapshot, Session, reconcile::ResourceConnection,
-    session::SessionInner,
+    ClientError, Generation, Session, reconcile::ResourceConnection, session::SessionInner,
 };
 
 use super::{
-    HistoryClosedReason, HistoryError, HistoryHandle,
+    HistoryError, HistoryHandle,
     channel::{CacheConnection, Channel},
     merge::Ticket,
-    model::Model,
 };
-
-pub(crate) async fn resources(
-    session: &SessionInner,
-    connection: &ResourceConnection,
-    snapshot: &ResourceSnapshot,
-) -> Result<(), ClientError> {
-    session.epochs.validate(snapshot.generation)?;
-    let mut visible = BTreeSet::new();
-    for id in snapshot
-        .channels
-        .iter()
-        .filter_map(|channel| channel.id.as_deref())
-        .chain(snapshot.dms.iter().map(|channel| channel.id.as_str()))
-    {
-        visible.insert(Uuid::from_bytes(Model::id(id)?));
-    }
-    let store = &session.history;
-    let mut channels = store.channels.lock().await;
-    let previous = store.verified.read().await.clone();
-    let revoked: BTreeSet<_> = previous
-        .difference(&visible)
-        .copied()
-        .chain(channels.keys().filter(|id| !visible.contains(id)).copied())
-        .collect();
-    for &id in &revoked {
-        if let Some(channel) = channels.get(&id) {
-            channel.close(HistoryClosedReason::ChannelRemoved);
-        }
-        connection
-            .cache
-            .history_revoke(*id.as_bytes(), snapshot.generation)
-            .await?;
-    }
-    // A re-grant creates a new handle identity; the revoked Arc is never revived.
-    channels.retain(|_, channel| channel.check().is_ok());
-    *store.verified.write().await = visible;
-    *store.connection.write().await = Some(CacheConnection {
-        cache: Arc::clone(&connection.cache),
-        rest: connection.rest.clone(),
-        generation: snapshot.generation,
-    });
-    drop(channels);
-    if !revoked.is_empty() {
-        let revoked_ids: Vec<_> = revoked.into_iter().collect();
-        crate::reading::catch_up_sync::revoke_channels(
-            &connection.client,
-            session,
-            &revoked_ids,
-            snapshot.generation,
-            HistoryClosedReason::ChannelRemoved,
-        )
-        .await?;
-    }
-    Ok(())
-}
 
 pub(crate) async fn refresh(
     session: &SessionInner,
@@ -84,9 +28,9 @@ pub(crate) async fn refresh(
         return Err(ClientError::Superseded);
     }
     let unread = unread_channels(&session.reading).await;
-    let verified = session.history.verified.read().await.clone();
+    let allowed = session.history.admission.read().await.allowed();
     let mut selected = unread
-        .intersection(&verified)
+        .intersection(&allowed)
         .copied()
         .collect::<BTreeSet<_>>();
     {
@@ -115,8 +59,8 @@ pub(crate) async fn refresh(
             }))
         };
         match refresh_channel(&session_handle, channel, &cache_connection, generation).await {
-            Ok(()) | Err(HistoryError::Closed(_)) => {}
-            Err(error) => return Err(error.into()),
+            Err(error) if !error.is_sealed() => return Err(error.into()),
+            _ => {}
         }
     }
     Ok(())

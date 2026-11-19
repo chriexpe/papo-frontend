@@ -43,7 +43,7 @@ pub(crate) async fn apply(
     }
     let selected = select(session, connection, generation, event).await?;
     for channel in selected {
-        if channel.check().is_err() {
+        if channel.is_closed() {
             continue;
         }
         let mut state = channel.state.lock().await;
@@ -71,7 +71,7 @@ pub(crate) async fn apply(
         };
         if state.model.event(event, generation.get())? {
             session.epochs.validate(generation)?;
-            persist_and_publish(
+            let applied = persist_and_publish(
                 session,
                 &connection.cache,
                 &channel,
@@ -79,10 +79,15 @@ pub(crate) async fn apply(
                 &epoch,
                 generation,
             )
-            .await?;
+            .await;
+            // A seal that landed while this event was persisting stops only this channel.
+            if applied.is_err() && channel.check().is_err() {
+                continue;
+            }
+            applied?;
         }
         drop(state);
-        if refresh_pins {
+        if refresh_pins && channel.check().is_ok() {
             let session_handle = connection.client.session(session.account)?;
             if !std::ptr::eq(Arc::as_ptr(&session_handle.inner), session) {
                 return Err(ClientError::Superseded);
@@ -123,36 +128,29 @@ async fn select(
     if let Some(id) = channel_id {
         let id = Uuid::from_bytes(Model::id(id)?);
         if matches!(event, KnownEvent::ChannelDelete(_)) {
-            session.history.verified.write().await.remove(&id);
-            {
-                let mut channels = session.history.channels.lock().await;
-                if let Some(channel) = channels.get(&id) {
-                    channel.close(HistoryClosedReason::ChannelDeleted);
-                }
-                channels.retain(|_, channel| channel.check().is_ok());
+            if let Some(channel) = session.history.channels.lock().await.get(&id) {
+                channel.close(HistoryClosedReason::ChannelDeleted);
             }
-            connection
-                .cache
-                .history_revoke(*id.as_bytes(), generation)
-                .await?;
-            crate::reading::catch_up_sync::revoke_channels(
-                &connection.client,
+            super::access::deny(
                 session,
-                &[id],
-                generation,
+                &connection.client,
+                &connection.cache,
+                id,
                 HistoryClosedReason::ChannelDeleted,
+                generation,
             )
             .await?;
             return Ok(Vec::new());
         }
-        if !session.history.verified.read().await.contains(&id) {
-            return Ok(Vec::new());
+        // A quarantined channel keeps its model and cache current (nothing is delivered),
+        // so a later grant resumes without a hole in its live edge.
+        if let Some(channel) = session.history.live_channel(id).await {
+            selected.push(channel);
         }
-        selected.push(session.history.channel(id).await);
     } else {
         // The pinned backend omits channel IDs from reaction and pin events.
         // Only already-owned IDs may mutate a channel; in-flight pages replay the bounded journal.
-        selected.extend(session.history.channels.lock().await.values().cloned());
+        selected.extend(session.history.live_channels().await);
     }
     Ok(selected)
 }
@@ -195,11 +193,13 @@ async fn project_receipt(
             .as_deref()
             .ok_or(ClientError::ResourceData)?,
     )?);
-    if !session.inner.history.verified.read().await.contains(&id) {
-        return Err(ClientError::ResourceData);
-    }
     let cache = session.client.inner.caches.open(session.account()).await?;
-    let channel = session.inner.history.channel(id).await;
+    let channel = session
+        .inner
+        .history
+        .verified_channel(id)
+        .await
+        .map_err(|_| ClientError::ResourceData)?;
     channel.check()?;
     let mut state = channel.state.lock().await;
     session.inner.epochs.validate(generation)?;

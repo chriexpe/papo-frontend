@@ -1,5 +1,6 @@
 //! Account/channel history paging and proven continuity; Timeline windows, items and read state live above it.
 
+pub(crate) mod access;
 mod authorship;
 mod channel;
 mod chunk_join;
@@ -61,6 +62,9 @@ pub enum HistoryClosedReason {
     Forbidden,
     /// A history request returned HTTP 404.
     NotFound,
+    /// Accepted resources (roles, overwrites, owner, DM access or blocks) no longer grant
+    /// reading. This is the SDK's own evaluation, not a backend refusal.
+    PermissionDenied,
 }
 
 /// Sanitized history failures. No identifiers, content or cursor text appear in diagnostics.
@@ -73,6 +77,11 @@ pub enum HistoryError {
     /// No fresh channel-list reconciliation has authorized this channel yet.
     #[error("history channel has not been verified")]
     Unverified,
+    /// A permission change was observed but the evidence needed to decide read access is
+    /// missing or unattributable. Not terminal: the same handle and subscription resume
+    /// once accepted evidence grants access again, and close if it denies it.
+    #[error("history access is unknown until permissions are revalidated")]
+    AccessUnknown,
     /// The requested page violates ordering, identity, precision or progress requirements.
     #[error("invalid history page")]
     InvalidPage,
@@ -85,6 +94,14 @@ pub enum HistoryError {
     /// Session generation, transport or lifecycle failed.
     #[error(transparent)]
     Session(ClientError),
+}
+
+impl HistoryError {
+    /// The channel's access is closed or quarantined; work for it stops without failing
+    /// unrelated channels or the connection.
+    pub(crate) const fn is_sealed(&self) -> bool {
+        matches!(self, Self::Closed(_) | Self::AccessUnknown)
+    }
 }
 
 impl From<InvalidMessageKey> for HistoryError {
@@ -108,9 +125,10 @@ impl From<HistoryError> for ClientError {
             HistoryError::Session(error) => error,
             HistoryError::Cache(error) => Self::Cache(error),
             HistoryError::Closed(_) => Self::Closed,
-            HistoryError::Unverified | HistoryError::InvalidPage | HistoryError::StaleSnapshot => {
-                Self::ResourceData
-            }
+            HistoryError::Unverified
+            | HistoryError::AccessUnknown
+            | HistoryError::InvalidPage
+            | HistoryError::StaleSnapshot => Self::ResourceData,
         }
     }
 }

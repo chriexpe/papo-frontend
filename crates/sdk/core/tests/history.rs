@@ -18,6 +18,10 @@ mod held_page;
 mod held_pins;
 #[path = "history_cases/live.rs"]
 mod live;
+#[path = "history_cases/permission.rs"]
+mod permission;
+#[path = "history_cases/permission_lifecycle.rs"]
+mod permission_lifecycle;
 #[path = "history_cases/reconnect.rs"]
 mod reconnect;
 #[path = "history_cases/routing.rs"]
