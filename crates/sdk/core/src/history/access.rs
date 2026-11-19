@@ -22,7 +22,7 @@ use super::HistoryClosedReason;
 
 mod admissions;
 use admissions::Admission;
-pub(crate) use admissions::{Admissions, Evidence, Refetch};
+pub(crate) use admissions::{Admissions, ChannelAdmission, Evidence, Refetch};
 
 /// Whether accepted changes to these resources can change a read decision: everything the
 /// evaluator reads (server owner, channels and overwrites, role assignments, DMs, blocks).
@@ -118,6 +118,12 @@ async fn seal(
                 .reading
                 .positions
                 .revoke(&[*id], generation, *reason);
+        }
+        for (id, reason) in &sealed.retained_denied {
+            session
+                .reading
+                .positions
+                .retain_revoked(*id, generation, *reason);
         }
         sealed
     };

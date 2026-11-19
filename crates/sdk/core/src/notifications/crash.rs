@@ -1,14 +1,14 @@
 //! Actual process interruption after FULL claim and before platform handoff; no power-loss guarantee.
 
 use super::{
-    live,
+    deliver::{self, DeliveryOutcome},
+    policy::PolicyResources,
     tests::{candidate, fixture},
 };
 use std::os::unix::process::ExitStatusExt;
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Command, Stdio},
-    sync::Arc,
 };
 
 #[test]
@@ -20,14 +20,16 @@ fn notification_claim_child() {
     let (client, session) = fixture(std::path::Path::new(&path));
     client
         .block_on(async {
-            let resources = Arc::clone(&session.inner.resources.borrow());
-            let delivery =
-                live::deliver_at(&session, session.generation(), candidate(), &resources, 0)
+            let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
+            let DeliveryOutcome::Handled(Some(delivery)) =
+                deliver::deliver_at(&session, session.generation(), candidate(), &resources, 0)
                     .await
                     .unwrap()
-                    .unwrap();
+            else {
+                panic!("expected delivery");
+            };
             if std::env::var_os("PAPO_NOTIFICATION_AFTER_HANDOFF").is_some() {
-                live::handoff(&session, delivery).unwrap();
+                deliver::handoff(&session, delivery).unwrap();
             }
         })
         .unwrap();
@@ -80,13 +82,13 @@ fn sigkill_after_claim_before_or_after_handoff_never_duplicates_on_replay() {
         let (mut client, session) = fixture(directory.path());
         client
             .block_on(async {
-                let resources = Arc::clone(&session.inner.resources.borrow());
-                assert!(
-                    live::deliver_at(&session, session.generation(), candidate(), &resources, 0)
+                let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
+                assert!(matches!(
+                    deliver::deliver_at(&session, session.generation(), candidate(), &resources, 0)
                         .await
-                        .unwrap()
-                        .is_none()
-                );
+                        .unwrap(),
+                    DeliveryOutcome::Handled(None)
+                ));
             })
             .unwrap();
         client.shutdown().unwrap();

@@ -1,14 +1,19 @@
 //! Shared policy and FULL canonical identity checks without network access.
 
-use super::*;
+use super::{
+    deliver::{self, DeliveryOutcome},
+    policy::{PolicyResources, ResourceScope},
+    *,
+};
 use crate::{
     Client, ClientConfig, DataRoot, UnixMicros,
+    reading::evidence::ReadEvidence,
     secret::{SecretKey, test_store::ScriptedSecretStore},
     session::SessionInner,
 };
 use std::sync::Arc;
 
-pub(super) fn fixture(path: &std::path::Path) -> (Client, Session) {
+pub(crate) fn fixture(path: &std::path::Path) -> (Client, Session) {
     let client = Client::open(
         DataRoot::new(path),
         Arc::new(ScriptedSecretStore::default()),
@@ -89,6 +94,8 @@ fn own_visible_muted_disabled_and_non_triggered_candidates_are_suppressed() {
     let backend = papo_api::wire::Notifications::default();
     let mut settings = NotificationSettings::default();
     let mut item = candidate();
+    let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
+    assert_eq!(resources.scope(), ResourceScope::AdmittedSnapshot);
     assert!(
         policy::decide(
             &session,
@@ -96,7 +103,8 @@ fn own_visible_muted_disabled_and_non_triggered_candidates_are_suppressed() {
             &settings,
             &backend,
             &item,
-            &session.inner.resources.borrow()
+            &resources,
+            ReadEvidence::Unread
         )
         .unwrap()
         .preview
@@ -110,7 +118,8 @@ fn own_visible_muted_disabled_and_non_triggered_candidates_are_suppressed() {
             &settings,
             &backend,
             &item,
-            &session.inner.resources.borrow()
+            &resources,
+            ReadEvidence::Unread
         )
         .is_none()
     );
@@ -126,7 +135,8 @@ fn own_visible_muted_disabled_and_non_triggered_candidates_are_suppressed() {
             &settings,
             &backend,
             &item,
-            &session.inner.resources.borrow()
+            &resources,
+            ReadEvidence::Unread
         )
         .is_none()
     );
@@ -142,7 +152,8 @@ fn own_visible_muted_disabled_and_non_triggered_candidates_are_suppressed() {
             &settings,
             &backend,
             &item,
-            &session.inner.resources.borrow()
+            &resources,
+            ReadEvidence::Unread
         )
         .is_none()
     );
@@ -155,7 +166,8 @@ fn own_visible_muted_disabled_and_non_triggered_candidates_are_suppressed() {
             &settings,
             &backend,
             &item,
-            &session.inner.resources.borrow()
+            &resources,
+            ReadEvidence::Unread
         )
         .is_none()
     );
@@ -168,7 +180,8 @@ fn own_visible_muted_disabled_and_non_triggered_candidates_are_suppressed() {
             &settings,
             &backend,
             &item,
-            &session.inner.resources.borrow()
+            &resources,
+            ReadEvidence::Unread
         )
         .is_none()
     );
@@ -225,35 +238,24 @@ fn mute_changes_consume_suppressed_identity_and_stale_epochs_cannot_claim() {
                 .set_settings(settings)
                 .await
                 .unwrap();
-            assert!(
-                live::deliver_at(
-                    &session,
-                    session.generation(),
-                    candidate(),
-                    &Arc::clone(&session.inner.resources.borrow()),
-                    0
-                )
-                .await
-                .unwrap()
-                .is_none()
-            );
+            let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
+            assert!(matches!(
+                deliver::deliver_at(&session, session.generation(), candidate(), &resources, 0)
+                    .await
+                    .unwrap(),
+                DeliveryOutcome::Handled(None)
+            ));
             session
                 .notifications()
                 .set_settings(NotificationSettings::default())
                 .await
                 .unwrap();
-            assert!(
-                live::deliver_at(
-                    &session,
-                    session.generation(),
-                    candidate(),
-                    &Arc::clone(&session.inner.resources.borrow()),
-                    0
-                )
-                .await
-                .unwrap()
-                .is_none()
-            );
+            assert!(matches!(
+                deliver::deliver_at(&session, session.generation(), candidate(), &resources, 0)
+                    .await
+                    .unwrap(),
+                DeliveryOutcome::Handled(None)
+            ));
             let old = session.generation();
             session.inner.epochs.advance().unwrap();
             assert!(
@@ -278,21 +280,21 @@ fn pruned_identity_cannot_be_revived_by_an_old_gateway_candidate() {
     let (mut client, session) = fixture(dir.path());
     client
         .block_on(async {
-            let resources = Arc::clone(&session.inner.resources.borrow());
-            assert!(
-                live::deliver_at(&session, session.generation(), candidate(), &resources, 0)
+            let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
+            assert!(matches!(
+                deliver::deliver_at(&session, session.generation(), candidate(), &resources, 0)
                     .await
-                    .unwrap()
-                    .is_some()
-            );
+                    .unwrap(),
+                DeliveryOutcome::Handled(Some(_))
+            ));
             let now_us = 31 * 24 * 60 * 60 * 1_000_000_i64;
             assert!(
                 ledger::claim(&session, session.generation(), Uuid::from_u128(99), now_us)
                     .await
                     .unwrap()
             );
-            assert!(
-                live::deliver_at(
+            assert!(matches!(
+                deliver::deliver_at(
                     &session,
                     session.generation(),
                     candidate(),
@@ -300,9 +302,9 @@ fn pruned_identity_cannot_be_revived_by_an_old_gateway_candidate() {
                     now_us
                 )
                 .await
-                .unwrap()
-                .is_none()
-            );
+                .unwrap(),
+                DeliveryOutcome::Handled(None)
+            ));
         })
         .unwrap();
     client.shutdown().unwrap();
@@ -322,15 +324,15 @@ fn device_all_uses_shared_eligibility_and_own_message_never_alerts() {
                 .set_settings(settings)
                 .await
                 .unwrap();
-            let resources = Arc::clone(&session.inner.resources.borrow());
+            let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
             let mut item = candidate();
             item.triggered = false;
-            assert!(
-                live::deliver_at(&session, session.generation(), item, &resources, 0)
+            assert!(matches!(
+                deliver::deliver_at(&session, session.generation(), item, &resources, 0)
                     .await
-                    .unwrap()
-                    .is_some()
-            );
+                    .unwrap(),
+                DeliveryOutcome::Handled(Some(_))
+            ));
         })
         .unwrap();
     client.shutdown().unwrap();
@@ -340,34 +342,34 @@ fn device_all_uses_shared_eligibility_and_own_message_never_alerts() {
 fn delayed_live_candidate_is_suppressed_after_a_newer_local_read_point() {
     let directory = tempfile::tempdir().unwrap();
     let (mut client, session) = fixture(directory.path());
-    let mut image = (**session.inner.reading.image.borrow()).clone();
-    image.channels.insert(
-        candidate().channel,
-        crate::ReadState {
-            local_point: Some(crate::MessageKey {
-                created_at_us: 1,
-                message_id: Uuid::from_u128(99),
-            }),
-            ..crate::ReadState::default()
-        },
-    );
-    session.inner.reading.image.send_replace(Arc::new(image));
-    let mut item = candidate();
-    item.message_point = Some(crate::MessageKey {
-        created_at_us: 0,
-        message_id: item.message,
-    });
-    assert!(
-        policy::decide(
-            &session,
-            session.generation(),
-            &NotificationSettings::default(),
-            &papo_api::wire::Notifications::default(),
-            &item,
-            &session.inner.resources.borrow()
-        )
-        .is_none()
-    );
+    client
+        .block_on(async {
+            let mut image = (**session.inner.reading.image.borrow()).clone();
+            image.channels.insert(
+                candidate().channel,
+                crate::ReadState {
+                    local_point: Some(crate::MessageKey {
+                        created_at_us: 1,
+                        message_id: Uuid::from_u128(99),
+                    }),
+                    ..crate::ReadState::default()
+                },
+            );
+            session.inner.reading.image.send_replace(Arc::new(image));
+            let mut item = candidate();
+            item.message_point = Some(crate::MessageKey {
+                created_at_us: 0,
+                message_id: item.message,
+            });
+            let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
+            assert!(matches!(
+                deliver::deliver_at(&session, session.generation(), item, &resources, 0)
+                    .await
+                    .unwrap(),
+                DeliveryOutcome::Handled(None)
+            ));
+        })
+        .unwrap();
     client.shutdown().unwrap();
 }
 

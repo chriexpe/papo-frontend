@@ -2,10 +2,12 @@
 
 pub(crate) mod backend;
 pub(crate) mod context;
+pub(crate) mod deliver;
 pub(crate) mod inbox;
 pub(crate) mod ledger;
 pub(crate) mod live;
-mod policy;
+mod live_queue;
+pub(crate) mod policy;
 pub(crate) mod push;
 mod triggers;
 pub use inbox::{InboxCursor, InboxPage, NotificationRecord};
@@ -14,9 +16,13 @@ pub use push::{PushDevice, PushRegistration};
 #[cfg(all(test, target_os = "linux"))]
 mod crash;
 #[cfg(test)]
+mod delivery_race_tests;
+#[cfg(test)]
+mod read_evidence_tests;
+#[cfg(test)]
 mod retention_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::{AccountId, ClientError, Generation, Session, Uuid};
 use std::{
@@ -199,8 +205,17 @@ impl NotificationService {
             return Err(NotificationError::InvalidData);
         }
         self.session.inner.epochs.validate(target.generation)?;
-        let resources = self.session.inner.resources.borrow();
-        if resources.generation != target.generation
+        if crate::reading::evidence::channel_gate_sync(
+            &self.session.inner,
+            target.channel,
+            target.generation,
+        ) != crate::reading::evidence::ChannelGate::Proceed
+        {
+            return Err(NotificationError::InvalidData);
+        }
+        let resources =
+            policy::PolicyResources::from_snapshot(&self.session.inner.resources.borrow());
+        if resources.generation() != target.generation
             || !policy::contains_channel(&resources, target.channel)
         {
             return Err(NotificationError::InvalidData);

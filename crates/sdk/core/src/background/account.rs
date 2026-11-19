@@ -5,7 +5,7 @@ pub(super) async fn catch_up(
     session: &Session,
     deliveries: &mut Vec<crate::NotificationDelivery>,
 ) -> Result<BackgroundOutcome, crate::NotificationError> {
-    use crate::notifications::{inbox, ledger, live};
+    use crate::notifications::{deliver, inbox, ledger};
     let epoch = session.inner.epochs.current();
     let work = async {
         let _poll = session.inner.notifications.poll_serial.lock().await;
@@ -33,7 +33,7 @@ pub(super) async fn catch_up(
             .await?;
             for record in page.records {
                 let channel = crate::notifications::id(record.record.channel_id.as_deref())?;
-                let mut candidate = live::record_candidate(&record.record)?;
+                let mut candidate = deliver::record_candidate(&record.record)?;
                 let point = match points
                     .resolve(session, &rest, epoch.generation, channel, candidate.message)
                     .await
@@ -50,29 +50,33 @@ pub(super) async fn catch_up(
                     ))) => crate::notifications::context::Resolution::Absent,
                     Err(error) => return Err(error),
                 };
-                if matches!(point, crate::notifications::context::Resolution::Pending) {
-                    // Never acknowledge an inbox row whose canonical identity is still unresolved.
-                    return Ok(BackgroundOutcome::More);
-                }
-                if let Some(point) = point.point() {
-                    candidate.message_point = Some(point);
-                    candidate.observed_at_us = point.created_at_us;
-                    if let Some(delivery) = live::deliver_with_resources(
-                        session,
-                        epoch.generation,
-                        candidate,
-                        &resources,
-                    )
-                    .await?
-                    {
-                        deliveries.push(delivery);
+                match point {
+                    crate::notifications::context::Resolution::Pending => {
+                        // Never acknowledge an inbox row whose canonical identity is still unresolved.
+                        return Ok(BackgroundOutcome::More);
                     }
-                } else {
-                    session
-                        .inner
-                        .notifications
-                        .status
-                        .send_replace(crate::NotificationStatus::Fault);
+                    crate::notifications::context::Resolution::Found(point) => {
+                        candidate.message_point = Some(point);
+                        candidate.observed_at_us = point.created_at_us;
+                        match deliver::deliver_with_resources(
+                            session,
+                            epoch.generation,
+                            candidate,
+                            &resources,
+                        )
+                        .await?
+                        {
+                            deliver::DeliveryOutcome::Deferred => {
+                                // Never claim or advance past a candidate whose read evidence is not ready.
+                                return Ok(BackgroundOutcome::More);
+                            }
+                            deliver::DeliveryOutcome::Handled(Some(delivery)) => {
+                                deliveries.push(delivery);
+                            }
+                            deliver::DeliveryOutcome::Handled(None) => {}
+                        }
+                    }
+                    crate::notifications::context::Resolution::Absent => {}
                 }
                 boundary = inbox::InboxCursor::from_record(&record.record)?;
                 let _serial = session.inner.notifications.serial.lock().await;
@@ -119,24 +123,22 @@ async fn policy_resources(
     session: &Session,
     rest: &papo_api::RestClient,
     generation: crate::Generation,
-) -> Result<crate::ResourceSnapshot, crate::NotificationError> {
-    // Fetch only shared metadata, never a roster/history or native UI projection.
-    let channels = session
-        .client
-        .inner
-        .request(rest.channels())
-        .await?
-        .channels
-        .unwrap_or_default();
-    let dms = session
-        .client
-        .inner
-        .request(rest.direct_conversations())
-        .await?
-        .dms;
-    let mut resources = (**session.inner.resources.borrow()).clone();
-    resources.generation = generation;
-    resources.channels = channels.into();
-    resources.dms = dms.into();
-    Ok(resources)
+) -> Result<crate::notifications::policy::PolicyResources, crate::NotificationError> {
+    let admission = crate::resource_admission::Admission::new(&session.inner);
+    // Fetch only shared channel/DM metadata through wire resource admission; never fabricate a
+    // complete `ResourceSnapshot` when server, roles, members and blocks were not loaded.
+    let channels = admission
+        .channels(session.client.inner.request(rest.channels()).await?)
+        .map_err(ClientError::from)?;
+    let dms = admission
+        .dms(
+            session
+                .client
+                .inner
+                .request(rest.direct_conversations())
+                .await?,
+        )
+        .map_err(ClientError::from)?;
+    session.inner.epochs.validate(generation)?;
+    Ok(crate::notifications::policy::PolicyResources::channels_and_dms(generation, channels, dms))
 }

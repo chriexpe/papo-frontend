@@ -104,27 +104,10 @@ pub(super) async fn resolve(
         ))
         .await?;
     session.inner.epochs.validate(generation)?;
-    if page
-        .channel_id
-        .as_deref()
-        .and_then(|id| id.parse::<Uuid>().ok())
-        != Some(channel)
-    {
-        return Err(ClientError::ResourceData);
-    }
-    for message in page.messages.unwrap_or_default() {
-        if message
-            .channel_id
-            .as_deref()
-            .and_then(|id| id.parse::<Uuid>().ok())
-            != Some(channel)
-        {
-            return Err(ClientError::ResourceData);
-        }
-        let point = MessageKey::from_message(&message).map_err(|_| ClientError::ResourceData)?;
-        if point.message_id == server.message_id {
-            return Ok(Some(point));
-        }
-    }
-    Ok(None)
+    let validated = crate::history::validate_descending_page(channel, None, 100, &page)
+        .map_err(|_| ClientError::ResourceData)?;
+    Ok(validated
+        .points
+        .into_iter()
+        .find(|point| point.message_id == server.message_id))
 }

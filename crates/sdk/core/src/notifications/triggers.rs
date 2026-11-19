@@ -1,6 +1,6 @@
 //! Bounded generation-scoped inbox evidence reuse for live triggers; policy and delivery stay in live.
 
-use super::{NotificationError, inbox, live::record_candidate, policy::Candidate};
+use super::{NotificationError, deliver::record_candidate, inbox, policy::Candidate};
 use crate::{Generation, Session, Uuid};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -135,9 +135,11 @@ mod tests {
                     .notifications
                     .inbox_revision
                     .store(1, std::sync::atomic::Ordering::Release);
-                let resources = std::sync::Arc::clone(&session.inner.resources.borrow());
-                assert!(
-                    super::super::live::deliver_at(
+                let resources = super::super::policy::PolicyResources::from_snapshot(
+                    &session.inner.resources.borrow(),
+                );
+                assert!(matches!(
+                    super::super::deliver::deliver_at(
                         &session,
                         session.generation(),
                         candidate,
@@ -145,9 +147,9 @@ mod tests {
                         0
                     )
                     .await
-                    .unwrap()
-                    .is_none()
-                );
+                    .unwrap(),
+                    super::super::deliver::DeliveryOutcome::Handled(None)
+                ));
                 let connection =
                     rusqlite::Connection::open(directory.path().join("state.sqlite")).unwrap();
                 assert_eq!(

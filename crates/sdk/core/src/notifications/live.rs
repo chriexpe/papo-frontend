@@ -1,16 +1,27 @@
 //! Bounded live candidate ingestion; historical cache/reconnect pages never enter this producer.
 
 use super::{
-    NotificationError, NotificationStatus, ledger,
+    NotificationError, NotificationStatus,
+    deliver::{DeliveryOutcome, deliver, handoff},
+    live_queue::{
+        LivePoint, LiveState, MAX_LIVE_LOOKUP_TURNS, enqueue_deferred, enqueue_lookup,
+        resolve_live_point,
+    },
     policy::{self, Candidate},
 };
-use crate::{Generated, Session};
+use crate::{Generated, Generation, MessageKey, Session};
 use papo_api::gateway::{Event, KnownEvent};
-use std::collections::VecDeque;
+use tokio::time::Instant;
+
+enum LoopWork {
+    Event(Generated<Event>),
+    ResumeLookup,
+    RetryEvidence,
+}
 
 pub(crate) fn submit(
     session: &crate::session::SessionInner,
-    generation: crate::Generation,
+    generation: Generation,
     event: &Event,
 ) {
     if !matches!(
@@ -38,6 +49,7 @@ pub(crate) fn submit(
             .send_replace(NotificationStatus::Fault);
     }
 }
+
 pub(crate) fn start(session: Session) {
     let mut sender = session
         .inner
@@ -55,31 +67,80 @@ pub(crate) fn start(session: Session) {
     let runtime = session.client.inner.runtime.clone();
     runtime.spawn(async move {
         let _token = token;
-        let mut recent = VecDeque::<(crate::Generation, Candidate)>::new();
-        let mut triggers = super::triggers::TriggerEvidence::default();
+        let mut state = LiveState::new(&session);
         loop {
             // Evidence is shared only across an active event backlog, never across idle periods.
-            if rx.is_empty() {
-                triggers.clear();
+            if rx.is_empty() && state.lookup_queue.is_empty() {
+                state.triggers.clear();
             }
-            let event = tokio::select! {
-                biased;
-                () = session.inner.root.cancelled() => return,
-                event = rx.recv() => match event {
-                    Some(event) => event,
-                    None => return,
-                },
+            let wait_epoch = session.inner.epochs.current();
+            state.retain_generation(wait_epoch.generation);
+            let work = if state.lookup_should_preempt_events(Instant::now()) {
+                if session.inner.root.is_cancelled() {
+                    return;
+                }
+                LoopWork::ResumeLookup
+            } else {
+                let lookup_deadline = state.lookup_deadline();
+                tokio::select! {
+                    biased;
+                    () = session.inner.root.cancelled() => return,
+                    () = wait_epoch.cancel.cancelled(),
+                        if !state.evidence_queue.is_empty() || !state.lookup_queue.is_empty() =>
+                    {
+                        state.clear_deferred();
+                        continue;
+                    }
+                    // Drain ready deferred evidence ahead of new events so watch updates cannot be starved.
+                    changed = state.resources_rx.changed(), if !state.evidence_queue.is_empty() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        LoopWork::RetryEvidence
+                    }
+                    changed = state.reading_rx.changed(), if !state.evidence_queue.is_empty() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        LoopWork::RetryEvidence
+                    }
+                    event = rx.recv() => match event {
+                        Some(event) => {
+                            state.note_event_while_lookup_pending();
+                            LoopWork::Event(event)
+                        }
+                        None => return,
+                    },
+                    () = async {
+                        if let Some(deadline) = lookup_deadline {
+                            tokio::time::sleep_until(deadline).await;
+                        }
+                    }, if lookup_deadline.is_some() => LoopWork::ResumeLookup,
+                }
             };
             let epoch = session.inner.epochs.current();
-            if event.generation != epoch.generation {
-                continue;
-            }
-            recent.retain(|(generation, _)| *generation == epoch.generation);
-            let work = process(&session, event, &mut recent, &mut triggers);
-            let result = tokio::select! {
-                biased;
-                () = epoch.cancel.cancelled() => continue,
-                result = work => result,
+            state.retain_generation(epoch.generation);
+            let result = match work {
+                LoopWork::Event(event) => {
+                    if event.generation != epoch.generation {
+                        continue;
+                    }
+                    tokio::select! {
+                        biased;
+                        () = epoch.cancel.cancelled() => continue,
+                        result = process(&session, event, &mut state) => result,
+                    }
+                }
+                LoopWork::ResumeLookup => tokio::select! {
+                    biased;
+                    () = epoch.cancel.cancelled() => continue,
+                    result = resume_lookup(&session, epoch.generation, &mut state) => result,
+                },
+                LoopWork::RetryEvidence => tokio::select! {
+                    biased;
+                    () = epoch.cancel.cancelled() => continue,
+                    result = retry_evidence(&session, epoch.generation, &mut state) => result,
+                },
             };
             if result.is_err() {
                 session
@@ -91,15 +152,15 @@ pub(crate) fn start(session: Session) {
         }
     });
 }
+
 async fn process(
     session: &Session,
     event: Generated<Event>,
-    recent: &mut VecDeque<(crate::Generation, Candidate)>,
-    triggers: &mut super::triggers::TriggerEvidence,
+    state: &mut LiveState,
 ) -> Result<(), NotificationError> {
     let candidate = match event.value {
         Event::Known(KnownEvent::Message(message)) => {
-            let point = crate::MessageKey::parse(&message.created_at, &message.id)?;
+            let point = MessageKey::parse(&message.created_at, &message.id)?;
             let candidate = Candidate {
                 channel: super::id(Some(&message.channel_id))?,
                 message: super::id(Some(&message.id))?,
@@ -111,15 +172,18 @@ async fn process(
                 observed_at_us: point.created_at_us,
                 message_point: Some(point),
             };
-            if recent.len() == 1024 {
-                recent.pop_front();
+            if state.recent.len() == 1024 {
+                state.recent.pop_front();
             }
-            recent.push_back((event.generation, candidate.clone()));
+            state
+                .recent
+                .push_back((event.generation, candidate.clone()));
             candidate
         }
         Event::Known(KnownEvent::NewNotification(notification)) => {
             let message = super::id(Some(&notification.message_id))?;
-            let recent_candidate = recent
+            let recent_candidate = state
+                .recent
                 .iter()
                 .find(|(_, candidate)| candidate.message == message);
             if let Some((_, candidate)) =
@@ -127,7 +191,10 @@ async fn process(
             {
                 candidate.clone()
             } else {
-                let candidate = triggers.resolve(session, event.generation, message).await?;
+                let candidate = state
+                    .triggers
+                    .resolve(session, event.generation, message)
+                    .await?;
                 let Some(mut candidate) = candidate else {
                     return Ok(());
                 };
@@ -135,138 +202,157 @@ async fn process(
                     candidate.message_point = recent.message_point;
                 }
                 if candidate.message_point.is_none() {
-                    let epoch = session.inner.epochs.current();
-                    let rest = crate::scoped_request::authenticated(session, &epoch).await?;
-                    candidate.message_point = super::context::CanonicalPoints::default()
-                        .resolve(
-                            session,
-                            &rest,
+                    if !state.lookup_queue.is_empty() {
+                        // Finish the active target first so `CanonicalPoints` never ping-pongs.
+                        return enqueue_lookup(
+                            &mut state.lookup_queue,
                             event.generation,
-                            candidate.channel,
-                            candidate.message,
-                        )
-                        .await?
-                        .point();
+                            candidate,
+                            0,
+                            false,
+                        );
+                    }
+                    match resolve_live_point(
+                        session,
+                        &mut state.points,
+                        event.generation,
+                        candidate.channel,
+                        candidate.message,
+                    )
+                    .await?
+                    {
+                        LivePoint::Found(point) => {
+                            candidate.message_point = Some(point);
+                            candidate.observed_at_us = point.created_at_us;
+                        }
+                        LivePoint::Pending => {
+                            enqueue_lookup(
+                                &mut state.lookup_queue,
+                                event.generation,
+                                candidate,
+                                1,
+                                true,
+                            )?;
+                            state.note_lookup_turn(Instant::now());
+                            return Ok(());
+                        }
+                        LivePoint::Absent => return Ok(()),
+                    }
+                } else if let Some(point) = candidate.message_point {
+                    candidate.observed_at_us = point.created_at_us;
                 }
-                let Some(point) = candidate.message_point else {
-                    return Err(NotificationError::InvalidData);
-                };
-                candidate.observed_at_us = point.created_at_us;
                 candidate
             }
         }
         _ => return Ok(()),
     };
-    if let Some(delivery) = deliver(session, event.generation, candidate).await? {
-        handoff(session, delivery)?;
+    deliver_or_defer(session, event.generation, candidate, state).await
+}
+
+async fn resume_lookup(
+    session: &Session,
+    generation: Generation,
+    state: &mut LiveState,
+) -> Result<(), NotificationError> {
+    let Some(mut entry) = state.lookup_queue.pop_front() else {
+        state.note_lookup_turn(Instant::now());
+        return Ok(());
+    };
+    if entry.generation != generation {
+        state.note_lookup_turn(Instant::now());
+        return Ok(());
+    }
+    entry.turns = entry.turns.saturating_add(1);
+    let outcome = resolve_live_point(
+        session,
+        &mut state.points,
+        generation,
+        entry.candidate.channel,
+        entry.candidate.message,
+    )
+    .await;
+    match outcome {
+        Ok(LivePoint::Found(point)) => {
+            entry.candidate.message_point = Some(point);
+            entry.candidate.observed_at_us = point.created_at_us;
+            state.note_lookup_turn(Instant::now());
+            deliver_or_defer(session, generation, entry.candidate, state).await
+        }
+        Ok(LivePoint::Pending) => {
+            // Cap total bounded turns per live target so an arbitrarily deep message cannot
+            // generate an unbounded sequence of REST requests or starve later targets.
+            if entry.turns < MAX_LIVE_LOOKUP_TURNS {
+                enqueue_lookup(
+                    &mut state.lookup_queue,
+                    generation,
+                    entry.candidate,
+                    entry.turns,
+                    true,
+                )?;
+            }
+            state.note_lookup_turn(Instant::now());
+            Ok(())
+        }
+        Ok(LivePoint::Absent) => {
+            state.note_lookup_turn(Instant::now());
+            Ok(())
+        }
+        Err(error) => {
+            state.note_lookup_turn(Instant::now());
+            Err(error)
+        }
+    }
+}
+
+async fn retry_evidence(
+    session: &Session,
+    generation: Generation,
+    state: &mut LiveState,
+) -> Result<(), NotificationError> {
+    state.observe_watches();
+    let count = state.evidence_queue.len();
+    let mut first_error = None;
+    for _ in 0..count {
+        let Some((item_gen, candidate)) = state.evidence_queue.pop_front() else {
+            break;
+        };
+        if item_gen != generation {
+            continue;
+        }
+        let step = match deliver(session, generation, candidate.clone()).await {
+            Ok(DeliveryOutcome::Handled(Some(delivery))) => handoff(session, delivery),
+            Ok(DeliveryOutcome::Handled(None)) => Ok(()),
+            Ok(DeliveryOutcome::Deferred) => {
+                enqueue_deferred(&mut state.evidence_queue, generation, candidate, false)
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = step
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+async fn deliver_or_defer(
+    session: &Session,
+    generation: Generation,
+    candidate: Candidate,
+    state: &mut LiveState,
+) -> Result<(), NotificationError> {
+    // Only snapshot watches when `evidence_queue` is empty so pending wakeups for already-deferred
+    // candidates are never discarded by an unrelated live event.
+    if state.evidence_queue.is_empty() {
+        state.observe_watches();
+    }
+    match deliver(session, generation, candidate.clone()).await? {
+        DeliveryOutcome::Handled(Some(delivery)) => handoff(session, delivery)?,
+        DeliveryOutcome::Handled(None) => {}
+        DeliveryOutcome::Deferred => {
+            enqueue_deferred(&mut state.evidence_queue, generation, candidate, false)?;
+        }
     }
     Ok(())
-}
-pub(crate) fn record_candidate(
-    record: &papo_api::wire::Notification,
-) -> Result<Candidate, NotificationError> {
-    Ok(Candidate {
-        channel: super::id(record.channel_id.as_deref())?,
-        message: super::id(record.message_id.as_deref())?,
-        author: record.author_id.as_deref().and_then(|id| id.parse().ok()),
-        content: record.message_content.clone().unwrap_or_default(),
-        triggered: true,
-        read: record.read != Some(false),
-        trigger_revision: None,
-        observed_at_us: crate::parse_message_timestamp_us(
-            record
-                .created_at
-                .as_deref()
-                .ok_or(NotificationError::InvalidData)?,
-        )?,
-        message_point: None,
-    })
-}
-pub(crate) async fn deliver(
-    session: &Session,
-    generation: crate::Generation,
-    candidate: Candidate,
-) -> Result<Option<super::NotificationDelivery>, NotificationError> {
-    let resources = std::sync::Arc::clone(&session.inner.resources.borrow());
-    deliver_with_resources(session, generation, candidate, &resources).await
-}
-
-pub(crate) async fn deliver_with_resources(
-    session: &Session,
-    generation: crate::Generation,
-    candidate: Candidate,
-    resources: &crate::ResourceSnapshot,
-) -> Result<Option<super::NotificationDelivery>, NotificationError> {
-    deliver_at(session, generation, candidate, resources, super::now_us()?).await
-}
-
-pub(super) async fn deliver_at(
-    session: &Session,
-    generation: crate::Generation,
-    candidate: Candidate,
-    resources: &crate::ResourceSnapshot,
-    now_us: i64,
-) -> Result<Option<super::NotificationDelivery>, NotificationError> {
-    // The durable ledger has a 30-day retention window. This admission floor prevents
-    // replay of an older live/inbox candidate after its identity has been collected.
-    if candidate.observed_at_us < now_us.saturating_sub(30 * 24 * 60 * 60 * 1_000_000) {
-        return Ok(None);
-    }
-    let _serial = session.inner.notifications.serial.lock().await;
-    session.inner.epochs.validate(generation)?;
-    if candidate.trigger_revision.is_some_and(|revision| {
-        revision
-            != session
-                .inner
-                .notifications
-                .inbox_revision
-                .load(std::sync::atomic::Ordering::Acquire)
-    }) {
-        return Ok(None);
-    }
-    let backend = session
-        .inner
-        .notifications
-        .backend
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .filter(|policy| policy.generation == generation)
-        .map(|policy| policy.config.clone())
-        .ok_or(crate::ClientError::Superseded)?;
-    let settings = ledger::settings(session).await?;
-    let delivery = policy::decide(
-        session, generation, &settings, &backend, &candidate, resources,
-    );
-    // Suppressed eligible candidates also consume the identity: unmuting cannot replay them later.
-    // A non-triggering ordinary message must leave room for a later authoritative reply event.
-    if !policy::eligible(resources, &settings, &candidate) {
-        return Ok(None);
-    }
-    if !ledger::claim_candidate(
-        session,
-        generation,
-        candidate.message,
-        candidate.observed_at_us,
-        now_us,
-    )
-    .await?
-    {
-        return Ok(None);
-    }
-    session.inner.epochs.validate(generation)?;
-    Ok(delivery)
-}
-pub(crate) fn handoff(
-    session: &Session,
-    delivery: super::NotificationDelivery,
-) -> Result<(), NotificationError> {
-    session.inner.epochs.apply(delivery.target.generation, || {
-        session
-            .inner
-            .notifications
-            .deliveries
-            .try_send(delivery)
-            .map_err(|_| NotificationError::Overflow)
-    })?
 }
