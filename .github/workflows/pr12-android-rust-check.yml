@@ -40,7 +40,6 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: clippy
-      - uses: ./.github/actions/prepare-winit
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Ensure project NDK
@@ -80,7 +79,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: android-compose

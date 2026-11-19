@@ -29,12 +29,9 @@ jobs:
       - name: Dependências de sistema
         timeout-minutes: 15
         uses: ./.github/actions/install-linux-deps
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Test winit preparation
-        run: python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
       - run: cargo test --locked --workspace --exclude papo-desktop
 
   clippy:
@@ -48,7 +45,6 @@ jobs:
       - name: Dependências de sistema
         timeout-minutes: 15
         uses: ./.github/actions/install-linux-deps
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: clippy
@@ -68,7 +64,6 @@ jobs:
       - name: Dependências de sistema
         timeout-minutes: 15
         uses: ./.github/actions/install-linux-deps
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: clippy-stable
@@ -92,7 +87,6 @@ jobs:
       - name: Dependências de sistema
         timeout-minutes: 15
         uses: ./.github/actions/install-linux-deps
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
@@ -114,193 +108,10 @@ jobs:
           bash -n scripts/deps.sh
           bash -n scripts/ci-install-linux-deps.sh
           bash -n scripts/papo-desktop-check.sh
-          bash -n scripts/wpe-runtime.sh
-          bash -n packaging/macos/build-app.sh
-          python3 -m py_compile packaging/macos/bundle-gstreamer.py
 
-  # Build natively on an Apple Silicon runner. This is a compile/runtime
-  # bootstrap, not yet a signed .app or a distributable macOS release.
-  macos:
-    runs-on: macos-15
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
-          components: clippy
-      - uses: ./.github/actions/prepare-winit
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: macos-arm64
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install native GStreamer SDK
-        run: |
-          # Homebrew's current gstreamer formula bundles the former gst-* plugins.
-          brew install gstreamer libnice-gstreamer pkgconf
-          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix gstreamer)/lib/pkgconfig" >> "$GITHUB_ENV"
-          gst-inspect-1.0 webrtcbin
-          gst-inspect-1.0 nicesrc
-      - name: Check macOS code and tests for warnings
-        run: cargo clippy --locked --workspace --exclude papo-desktop --all-targets -- -D warnings
-      - name: Compile macOS desktop application and native WebKit bridge
-        run: cargo build --locked --bin papo
-      - name: Test WKWebView geometry contract
-        run: cargo test --locked --bin papo --lib point_conversion_is_scaled_once
-      - name: Test macOS launch-at-login plist
-        run: cargo test --locked --lib launchagent_escapes_paths_and_uses_array_arguments
-      - name: Check native media runtime without GUI hardware
-        run: |
-          ./target/debug/papo voice-check | tee voice-check.log
-          grep -q "GStreamer" voice-check.log
-      - name: Package self-contained Finder-launchable test app
-        run: |
-          version="$(grep -m1 '^version = "' Cargo.toml | cut -d '"' -f2)"
-          bash packaging/macos/build-app.sh target/debug/papo "$version" dist
-          file dist/Papo.app/Contents/MacOS/papo
-          test "$(lipo -archs dist/Papo.app/Contents/MacOS/papo)" = "arm64"
-          test -d dist/Papo.app/Contents/Frameworks
-          test -f dist/Papo.app/Contents/PlugIns/libgstnice.dylib
-          test -f dist/Papo.app/Contents/Helpers/gst-plugin-scanner
-          # Invalid nested folders under Contents/PlugIns break codesign.
-          test -z "$(find dist/Papo.app/Contents/PlugIns -mindepth 1 -maxdepth 1 -type d -print -quit)"
-          env GST_PLUGIN_PATH_1_0=/dev/null GST_PLUGIN_SYSTEM_PATH_1_0=/dev/null \
-            dist/Papo.app/Contents/MacOS/papo voice-check | tee packaged-voice-check.log
-          grep -q "GStreamer" packaged-voice-check.log
-          grep -Eq '\[ok\] +webrtcbin' packaged-voice-check.log
-          grep -Eq '\[ok\] +nicesrc' packaged-voice-check.log
-          grep -Eq '\[ok\] +osxaudiosrc' packaged-voice-check.log
-          (cd dist && ditto -c -k --sequesterRsrc --keepParent Papo.app Papo-macos-arm64-adhoc.zip)
-      - uses: actions/upload-artifact@v4
-        with:
-          name: papo-macos-arm64-adhoc
-          path: dist/Papo-macos-arm64-adhoc.zip
-          retention-days: 7
-          if-no-files-found: error
-
-  windows:
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
-          components: clippy
-      - uses: ./.github/actions/prepare-winit
-      - name: Test winit preparation on Windows
-        run: python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: windows
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install GStreamer SDK
-        shell: pwsh
-        run: |
-          # Chocolatey's community feed intermittently returns 504. Retry only the
-          # dependency download, and fail explicitly if every attempt fails.
-          $installed = $false
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            choco install gstreamer gstreamer-devel --version=1.26.9 -y --no-progress
-            if ($LASTEXITCODE -eq 0) {
-              $installed = $true
-              break
-            }
-            if ($attempt -lt 3) {
-              Write-Warning "GStreamer installation failed (attempt $attempt/3); retrying."
-              Start-Sleep -Seconds (10 * $attempt)
-            }
-          }
-          if (-not $installed) { throw "GStreamer SDK installation failed after 3 attempts" }
-          $candidates = @(
-            'C:\Program Files\gstreamer\1.0\msvc_x86_64',
-            'C:\gstreamer\1.0\msvc_x86_64'
-          )
-          $root = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $root) {
-            throw "GStreamer SDK not found in expected install locations"
-          }
-          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "GSTREAMER_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install innosetup -y --no-progress
-      - name: Check native Windows build
-        run: cargo clippy --locked --workspace --exclude papo-desktop --all-targets -- -D warnings
-      - uses: actions/cache@v4
-        with:
-          path: rsrpc-build
-          key: rsrpc-${{ runner.os }}-x86_64-${{ hashFiles('packaging/rsrpc/REVISION') }}
-
-      - name: Build rsRPC helper
-        shell: pwsh
-        run: |
-          if (-not (Test-Path rsrpc-build/bin/rsrpc.exe)) {
-            $revision = (Get-Content packaging/rsrpc/REVISION -Raw).Trim()
-            cargo install --locked --git https://github.com/pog5/rsrpc.git --rev $revision --root rsrpc-build rsrpc
-            if ($LASTEXITCODE -ne 0) { throw 'rsRPC build failed' }
-          }
-          Copy-Item rsrpc-build/bin/rsrpc.exe rsrpc.exe
-      - name: Build and smoke-test self-contained bundle
-        shell: pwsh
-        run: |
-          cargo build --locked
-          ./packaging/windows/bundle.ps1 `
-            -GStreamerRoot $env:GSTREAMER_ROOT `
-            -PapoExe target/debug/papo.exe `
-            -RsRpcExe rsrpc.exe `
-            -OutputDir papo-windows-smoke
-
-          $gstBin = Join-Path $env:GSTREAMER_ROOT 'bin'
-          $env:PATH = (($env:PATH -split ';') | Where-Object {
-            $_ -and $_.TrimEnd('\') -ne $gstBin.TrimEnd('\')
-          }) -join ';'
-
-          $check = & '.\papo-windows-smoke\papo.exe' voice-check 2>&1 | Out-String
-          Write-Host $check
-          if ($LASTEXITCODE -ne 0) {
-            throw "Bundled papo.exe voice-check failed with exit code $LASTEXITCODE"
-          }
-          if ($check -notmatch 'GStreamer') {
-            throw 'Bundled Papo did not initialize GStreamer'
-          }
-          if (-not (Test-Path '.\papo-windows-smoke\rsrpc.exe')) {
-            throw 'Bundled Windows artifact is missing rsrpc.exe'
-          }
-
-      - name: Compile Windows installer
-        shell: pwsh
-        run: |
-          ./packaging/windows/build-installer.ps1 `
-            -GStreamerRoot $env:GSTREAMER_ROOT `
-            -PapoExe target/debug/papo.exe `
-            -RsRpcExe rsrpc.exe `
-            -Version ci `
-            -OutputDir installer-out
-
-      - name: Upload Windows test artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: papo-windows-smoke
-          path: |
-            papo-windows-smoke
-            installer-out/Papo-ci-Setup.exe
-          if-no-files-found: error
-
-  metadata:
+  android-script:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Check portable Compose build entry point
         run: python3 -B -m unittest discover -s tests -p 'test_android_compose_script.py'
-      - name: Validar .desktop e AppStream
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            desktop-file-utils appstream
-          desktop-file-validate packaging/io.github.chriexpe.Papo.desktop
-          appstreamcli validate --no-net \
-            packaging/io.github.chriexpe.Papo.metainfo.xml

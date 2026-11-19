@@ -23,16 +23,6 @@ done
 
 cd "$(dirname "$0")/.."
 
-# The workspace's [patch] names the prepared winit source. Cargo cannot load
-# the workspace without it, even for a crate that does not use winit. The
-# script is idempotent and verifies the source's checksum. Windows runners
-# name the interpreter `python`, not `python3`.
-python=$(command -v python3 || command -v python) || {
-    echo "papo-desktop-check: Python 3 is needed for scripts/prepare-winit.py" >&2
-    exit 2
-}
-"$python" scripts/prepare-winit.py
-
 step() { printf '\n==> %s\n' "$*"; }
 
 step "format"

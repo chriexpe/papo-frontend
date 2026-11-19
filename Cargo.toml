@@ -1,11 +1,3 @@
-[package]
-name = "papo"
-version = "0.9.0"
-edition = "2024"
-rust-version = "1.99"
-description = "Cliente nativo do Papo — chat self-hosted"
-license = "AGPL-3.0-or-later"
-
 [workspace]
 members = [
     "crates/papo-core",
@@ -20,6 +12,12 @@ members = [
 ]
 resolver = "2"
 
+# The release version. Android's Gradle build and the release workflow read
+# the first `version = ` line of this file.
+[workspace.package]
+version = "0.9.0"
+rust-version = "1.99"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
@@ -31,161 +29,7 @@ pedantic = { level = "warn", priority = -1 }
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 
-# O Android carrega uma biblioteca, não executa um binário: o sistema abre a
-# Activity e ela faz `dlopen` no `.so`, que precisa exportar `android_main`.
-# Por isso o que existe de verdade é a biblioteca — o binário da área de
-# trabalho é uma casca fina por cima dela (`src/main.rs`).
-[lib]
-name = "papo"
-crate-type = ["lib", "cdylib"]
-path = "src/lib.rs"
-
-[[bin]]
-name = "papo"
-path = "src/main.rs"
-
-[dependencies]
-papo-core = { path = "crates/papo-core" }
-papo-call = { path = "crates/papo-call" }
-# As features de janela são por plataforma: Wayland/X11 só no Linux e
-# `android-game-activity` só no Android. Os dois back-ends de Activity do
-# eframe são exclusivos — nunca ligar os dois.
-eframe = { version = "0.36", default-features = false, features = [
-    "default_fonts",
-    "persistence",
-] }
-egui = "0.36"
-egui_extras = { version = "0.36", features = ["image", "svg"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
-
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
-reqwest = { version = "0.12", default-features = false, features = [
-    "json",
-    "rustls-tls",
-    "cookies",
-    "multipart",
-    "stream",
-    "blocking",
-] }
-tokio-tungstenite = { version = "0.27", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-futures-util = "0.3"
-
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-url = "2"
-anyhow = "1"
-thiserror = "2"
-log = "0.4"
-raw-window-handle = "0.6"
-egui-phosphor = { version = "0.14", features = ["regular"] }
-fontdb = { version = "0.23", default-features = false, features = ["fs"] }
-base64 = "0.22"
-swash = "0.2"
-unicode-segmentation = "1.13"
-ring = "0.17"
-
-# ---------------------------------------------------------------------------
-# Área de trabalho
-# ---------------------------------------------------------------------------
-# GStreamer, bandeja, menu global, diálogos do portal e as pastas do XDG só
-# existem aqui. No Android cada um desses tem um substituto em `stub/`.
-[target.'cfg(not(target_os = "android"))'.dependencies]
-eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
-arboard = { version = "3.6.1", features = ["wayland-data-control"] }
-env_logger = "0.11"
-directories = "6"
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
-gstreamer = "0.24"
-gstreamer-app = "0.24"
-gstreamer-video = "0.24"
-# Voz e vídeo: o webrtcbin faz ICE, DTLS-SRTP e o transporte; a sinalização
-# (oferta, resposta e candidatos) vai pelo mesmo WebSocket do resto.
-gstreamer-webrtc = "0.24"
-gstreamer-sdp = "0.24"
-# `v1_20` abre a API de extensão de cabeçalho RTP (o nível de voz, RFC 6464,
-# é o que diz ao servidor quem está falando). O elemento correspondente
-# também só existe do GStreamer 1.20 em diante.
-gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["signal"] }
-eframe = { version = "0.36", default-features = false, features = ["wayland", "x11"] }
-# O Mutter não desenha barra de título para clientes Wayland: sem as
-# decorações do próprio winit, a janela ficaria sem barra no GNOME.
-winit = { version = "=0.30.13", default-features = false, features = ["wayland-csd-adwaita"] }
-ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
-wayland-protocols = { version = "0.32", features = ["client"] }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
-zvariant = "5"
-wayland-client = "0.31"
-wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
-wayland-protocols-plasma = { version = "0.3", features = ["client"] }
-x11rb = { version = "0.13", default-features = false }
-# WPE WebKit is loaded from a staged runtime at run time; Papo does not link
-# GTK/WebKit at build time. The bridge ABI is the narrow Rust-facing contract.
-libloading = "0.8"
-libc = "0.2"
-
-# macOS uses POSIX signals for the rsRPC child process lifecycle.
-[target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2"
-
-# ---------------------------------------------------------------------------
-# Windows
-# ---------------------------------------------------------------------------
-[target.'cfg(target_os = "windows")'.dependencies]
-# Direct native WebView2 COM bindings. Papo owns the WebEmbed policy; Edge owns
-# the child HWND, browser rendering and pointer/keyboard interaction.
-webview2-com = "0.39.1"
-tray-icon = "0.25.1"
-windows = { version = "0.62", features = [
-    "Data_Xml_Dom",
-    "Foundation",
-    "UI_Notifications",
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_System_Com",
-    "Win32_System_Registry",
-    "Win32_System_WinRT",
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
-] }
-
-[target.'cfg(any(target_os = "windows", target_os = "android"))'.dependencies]
-semver = "1"
-
-# ---------------------------------------------------------------------------
-# Android
-# ---------------------------------------------------------------------------
-[target.'cfg(target_os = "android")'.dependencies]
-eframe = { version = "0.36", default-features = false, features = ["android-game-activity", "glow"] }
-# A mesma versão que o winit usa: o `AndroidApp` que chega no `android_main`
-# tem de ser o tipo do winit, não um homônimo de outra versão.
-android-activity = { version = "0.6", features = ["game-activity"] }
-# `println!` não vai a lugar nenhum no Android; o que se lê é o logcat.
-android_logger = "0.15"
-gstreamer = "0.24"
-gstreamer-app = "0.24"
-gstreamer-video = "0.24"
-# A call: o mesmo motor da área de trabalho, com as mesmas dependências.
-gstreamer-webrtc = "0.24"
-gstreamer-sdp = "0.24"
-gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
-# O texto do teclado chega da Activity como uma `String` do Java, e ler isso
-# pede o JNI. É a única coisa que falamos com o Java diretamente.
-jni = "0.21"
-
-[build-dependencies]
-cc = "1"
-embed-resource = "3"
-
-[package.metadata.patch]
-crates = ["winit"]
-
 [profile.release]
-# Binário de distribuição: um arquivo só, sem símbolos de depuração.
 lto = "thin"
 codegen-units = 1
 strip = true
@@ -195,14 +39,3 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
-
-
-# Papo needs a render-pass barrier for backend-neutral backdrop effects.
-# This is a narrow egui-wgpu 0.36.2 patch; keep it isolated so it can be
-# dropped as soon as the hook is available upstream.
-[patch.crates-io]
-egui-wgpu = { path = "vendor/egui-wgpu-papo" }
-egui-winit = { path = "vendor/egui-winit-papo" }
-# Native Wayland hide/remap for close-to-tray; upstream 0.30 ignores visibility.
-# Generated by scripts/prepare-winit.py.
-winit = { path = ".papo/patch/winit-0.30.13" }

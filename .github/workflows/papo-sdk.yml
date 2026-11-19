@@ -27,7 +27,6 @@ jobs:
         with:
           toolchain: 1.99.1
           components: clippy, rustfmt
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: sdk
@@ -92,7 +91,6 @@ jobs:
         with:
           toolchain: 1.99.1
           targets: x86_64-linux-android
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: sdk-emulator-proof
@@ -136,7 +134,6 @@ jobs:
           toolchain: 1.99.1
           targets: aarch64-linux-android
           components: clippy
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: sdk-android-arm64
@@ -198,7 +195,6 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: sdk-postgres-protocol

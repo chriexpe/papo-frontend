@@ -8,8 +8,6 @@ python_bin=python3
 if ! command -v "$python_bin" >/dev/null 2>&1; then
     python_bin=python
 fi
-# Cargo loads workspace patches even when selected SDK packages do not use them.
-"$python_bin" -B scripts/prepare-winit.py
 "$python_bin" -B -m unittest discover -s tests -p 'test_sdk_boundaries.py'
 "$python_bin" -B scripts/check-sdk-boundaries.py
 if [[ -n "${PAPO_BACKEND:-}" ]]; then

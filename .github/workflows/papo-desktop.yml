@@ -37,9 +37,6 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 15
         uses: ./.github/actions/install-linux-deps
-      # The check script prepares the winit patch itself; this sets up the
-      # Python it needs, as the other jobs do.
-      - uses: ./.github/actions/prepare-winit
       # Restore only: the job's caches (~3.4 GB) pushed the repository past
       # the 10 GB Actions quota and evicted the GStreamer SDK cache.
       - uses: Swatinem/rust-cache@v2
