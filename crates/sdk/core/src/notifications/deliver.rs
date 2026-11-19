@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     ClientError, Generation, HistoryClosedReason, HistoryError, ReadingError, Session,
-    reading::evidence::ReadEvidence,
+    reading::evidence::{ChannelGate, ReadEvidence, channel_gate, channel_gate_sync},
 };
 
 /// Result of evaluating one candidate against durable reading evidence, policy and the FULL ledger.
@@ -98,6 +98,11 @@ pub(super) async fn deliver_at(
     if !policy::eligible(resources, &settings, &candidate) {
         return Ok(DeliveryOutcome::Handled(None));
     }
+    // Backend-confirmed `read=true` independently proves suppression after canonical message
+    // identity is known, avoiding head-of-line deferral when the channel is quarantined.
+    if candidate.read {
+        return claim_eligible(session, generation, &candidate, now_us, None).await;
+    }
     let read_evidence = match crate::reading::evidence::message_read_evidence(
         session,
         generation,
@@ -141,19 +146,41 @@ async fn claim_eligible(
     now_us: i64,
     delivery: Option<NotificationDelivery>,
 ) -> Result<DeliveryOutcome, NotificationError> {
+    let will_deliver = delivery.is_some();
     // Suppressed eligible candidates also consume the identity: unmuting cannot replay them later.
-    if !ledger::claim_candidate(
+    match ledger::claim_candidate(
         session,
         generation,
+        candidate.channel,
         candidate.message,
         candidate.observed_at_us,
         now_us,
+        will_deliver,
     )
     .await?
     {
-        return Ok(DeliveryOutcome::Handled(None));
+        ledger::ClaimOutcome::Claimed => {}
+        ledger::ClaimOutcome::Duplicate | ledger::ClaimOutcome::SuppressedDenied => {
+            return Ok(DeliveryOutcome::Handled(None));
+        }
+        ledger::ClaimOutcome::Deferred => {
+            return Ok(DeliveryOutcome::Deferred);
+        }
     }
     session.inner.epochs.validate(generation)?;
+    // Re-check effective channel admission after the awaited FULL ledger commit so a same-
+    // generation revocation or quarantine cannot let an earlier delivery decision escape.
+    if will_deliver {
+        match channel_gate(&session.inner, candidate.channel, generation).await {
+            ChannelGate::Proceed => {}
+            ChannelGate::Denied(HistoryClosedReason::AccountClosed) => {
+                return Err(ClientError::Closed.into());
+            }
+            ChannelGate::Denied(_) | ChannelGate::Quarantined => {
+                return Ok(DeliveryOutcome::Handled(None));
+            }
+        }
+    }
     Ok(DeliveryOutcome::Handled(delivery))
 }
 
@@ -162,11 +189,21 @@ pub(crate) fn handoff(
     delivery: NotificationDelivery,
 ) -> Result<(), NotificationError> {
     session.inner.epochs.apply(delivery.target.generation, || {
-        session
-            .inner
-            .notifications
-            .deliveries
-            .try_send(delivery)
-            .map_err(|_| NotificationError::Overflow)
+        match channel_gate_sync(
+            &session.inner,
+            delivery.target.channel,
+            delivery.target.generation,
+        ) {
+            ChannelGate::Proceed => session
+                .inner
+                .notifications
+                .deliveries
+                .try_send(delivery)
+                .map_err(|_| NotificationError::Overflow),
+            ChannelGate::Denied(HistoryClosedReason::AccountClosed) => {
+                Err(ClientError::Closed.into())
+            }
+            ChannelGate::Denied(_) | ChannelGate::Quarantined => Ok(()),
+        }
     })?
 }

@@ -16,6 +16,8 @@ pub use push::{PushDevice, PushRegistration};
 #[cfg(all(test, target_os = "linux"))]
 mod crash;
 #[cfg(test)]
+mod delivery_race_tests;
+#[cfg(test)]
 mod read_evidence_tests;
 #[cfg(test)]
 mod retention_tests;
@@ -203,24 +205,11 @@ impl NotificationService {
             return Err(NotificationError::InvalidData);
         }
         self.session.inner.epochs.validate(target.generation)?;
-        if self
-            .session
-            .inner
-            .reading
-            .positions
-            .check_current_channel(target.channel, target.generation)
-            .is_some()
-        {
-            return Err(NotificationError::InvalidData);
-        }
-        if let Ok(admissions) = self.session.inner.history.admission.try_read()
-            && matches!(
-                admissions.channel(target.channel),
-                Some(
-                    crate::history::access::ChannelAdmission::Denied(_)
-                        | crate::history::access::ChannelAdmission::Quarantined
-                )
-            )
+        if crate::reading::evidence::channel_gate_sync(
+            &self.session.inner,
+            target.channel,
+            target.generation,
+        ) != crate::reading::evidence::ChannelGate::Proceed
         {
             return Err(NotificationError::InvalidData);
         }

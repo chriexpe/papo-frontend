@@ -21,13 +21,14 @@ pub(crate) enum ReadEvidence {
     NotReady,
 }
 
-enum ChannelGate {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChannelGate {
     Proceed,
     Quarantined,
     Denied(HistoryClosedReason),
 }
 
-async fn channel_gate(
+pub(crate) async fn channel_gate(
     session: &SessionInner,
     channel: Uuid,
     generation: Generation,
@@ -47,6 +48,40 @@ async fn channel_gate(
         };
     }
     if matches!(admission, Some(ChannelAdmission::Quarantined)) {
+        return ChannelGate::Quarantined;
+    }
+    ChannelGate::Proceed
+}
+
+/// Synchronous channel fence check for FULL writer closures, platform handoff, final background
+/// delivery filters and target validation. Reuses reading positions and history admission without
+/// introducing any notification-owned permission state.
+pub(crate) fn channel_gate_sync(
+    session: &SessionInner,
+    channel: Uuid,
+    generation: Generation,
+) -> ChannelGate {
+    if let Ok(admissions) = session.history.admission.try_read()
+        && let Some(ChannelAdmission::Denied(reason)) = admissions.channel(channel)
+    {
+        return ChannelGate::Denied(reason);
+    }
+    if let Some(fence) = session
+        .reading
+        .positions
+        .check_current_channel(channel, generation)
+    {
+        return match fence {
+            ChannelFence::Closed(reason) => ChannelGate::Denied(reason),
+            ChannelFence::Unknown => ChannelGate::Quarantined,
+        };
+    }
+    if let Ok(admissions) = session.history.admission.try_read()
+        && matches!(
+            admissions.channel(channel),
+            Some(ChannelAdmission::Quarantined)
+        )
+    {
         return ChannelGate::Quarantined;
     }
     ChannelGate::Proceed

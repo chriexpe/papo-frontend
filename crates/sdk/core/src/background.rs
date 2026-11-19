@@ -198,6 +198,11 @@ async fn run(
                     .epochs
                     .validate(delivery.target.generation)
                     .is_ok()
+                && crate::reading::evidence::channel_gate_sync(
+                    &session.inner,
+                    delivery.target.channel,
+                    delivery.target.generation,
+                ) == crate::reading::evidence::ChannelGate::Proceed
                 && !preemption.is_cancelled()
             {
                 report.deliveries.push(delivery);
@@ -216,6 +221,11 @@ async fn run(
                         .epochs
                         .validate(delivery.target.generation)
                         .is_ok()
+                        && crate::reading::evidence::channel_gate_sync(
+                            &session.inner,
+                            delivery.target.channel,
+                            delivery.target.generation,
+                        ) == crate::reading::evidence::ChannelGate::Proceed
                 })
     });
     Ok(report)

@@ -99,6 +99,20 @@ async fn save(
         })
         .await
 }
+/// Result of attempting a `synchronous=FULL` ledger claim while respecting channel admission fences.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClaimOutcome {
+    /// Identity was claimed and the channel stayed open for delivery (or delivery was already None).
+    Claimed,
+    /// Identity was already claimed or older than the retention floor.
+    Duplicate,
+    /// Channel became Denied before the FULL writer ran; eligible identity was claimed and
+    /// delivery must be suppressed.
+    SuppressedDenied,
+    /// Channel became Quarantined before the FULL writer ran; no ledger row was committed.
+    Deferred,
+}
+
 #[cfg(test)]
 pub(crate) async fn claim(
     session: &Session,
@@ -106,36 +120,72 @@ pub(crate) async fn claim(
     message: crate::Uuid,
     delivered_at_us: i64,
 ) -> Result<bool, NotificationError> {
-    claim_candidate(
-        session,
-        generation,
-        message,
-        delivered_at_us,
-        delivered_at_us,
-    )
-    .await
+    Ok(matches!(
+        claim_candidate(
+            session,
+            generation,
+            crate::Uuid::nil(),
+            message,
+            delivered_at_us,
+            delivered_at_us,
+            false,
+        )
+        .await?,
+        ClaimOutcome::Claimed
+    ))
 }
 
 pub(crate) async fn claim_candidate(
     session: &Session,
     generation: Generation,
+    channel: crate::Uuid,
     message: crate::Uuid,
     observed_at_us: i64,
     delivered_at_us: i64,
-) -> Result<bool, NotificationError> {
+    will_deliver: bool,
+) -> Result<ClaimOutcome, NotificationError> {
     let registry = session.client.inner.registry.clone();
     let session = session.clone();
     registry
         .writer
         .write(move |tx| {
             session.inner.epochs.apply(generation, || {
-                claim_transaction(
+                if will_deliver {
+                    match crate::reading::evidence::channel_gate_sync(
+                        &session.inner,
+                        channel,
+                        generation,
+                    ) {
+                        crate::reading::evidence::ChannelGate::Denied(
+                            crate::HistoryClosedReason::AccountClosed,
+                        ) => return Err(crate::ClientError::Closed.into()),
+                        crate::reading::evidence::ChannelGate::Denied(_) => {
+                            let _ = claim_transaction(
+                                tx,
+                                session.account(),
+                                message,
+                                observed_at_us,
+                                delivered_at_us,
+                            )?;
+                            return Ok(ClaimOutcome::SuppressedDenied);
+                        }
+                        crate::reading::evidence::ChannelGate::Quarantined => {
+                            return Ok(ClaimOutcome::Deferred);
+                        }
+                        crate::reading::evidence::ChannelGate::Proceed => {}
+                    }
+                }
+                if claim_transaction(
                     tx,
                     session.account(),
                     message,
                     observed_at_us,
                     delivered_at_us,
-                )
+                )? {
+                    Ok(ClaimOutcome::Claimed)
+                } else {
+                    Ok(ClaimOutcome::Duplicate)
+                }
             })?
         })
         .await

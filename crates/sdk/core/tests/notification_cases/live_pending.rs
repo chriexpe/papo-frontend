@@ -420,3 +420,136 @@ fn concurrent_buried_live_notifications_both_complete_without_ping_pong() -> Res
     })??;
     f.finish()
 }
+
+#[test]
+fn live_pending_makes_progress_under_continuous_event_backlog() -> Result {
+    let f = Fixture::new(papo_test_server::Config::default())?;
+    f.run(async {
+        let (first, second, channel) = setup(&f).await?;
+        let (at, notif) =
+            seed_buried_row(&f, &first, second.account().user(), channel, 501).await?;
+        let message_id = notif.message_id.clone().ok_or("message")?;
+        f.server()
+            .emit_user_event(
+                &first.account().user().to_string(),
+                KnownEvent::NewNotification(Box::new(NewNotificationEvent {
+                    id: notif.id.clone().ok_or("id")?,
+                    user_id: second.account().user().to_string(),
+                    message_id: message_id.clone(),
+                    message_content: notif.message_content.clone().unwrap_or_default(),
+                })),
+            )
+            .await?;
+
+        // Continuously feed ordinary messages into the live event queue while the buried
+        // lookup is pending; fair scheduling must still grant the lookup its continuation turn.
+        let recipient = first.account().user().to_string();
+        let author = second.account().user().to_string();
+        let channel_str = channel.to_string();
+        let notifications = first.notifications();
+        let delivery_fut = notifications.next_delivery();
+        tokio::pin!(delivery_fut);
+        let mut tick = tokio::time::interval(Duration::from_millis(2));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut seq = 0_u128;
+        let delivery = loop {
+            tokio::select! {
+                biased;
+                delivered = &mut delivery_fut => break delivered?,
+                () = tokio::time::sleep_until(deadline) => {
+                    return Err("buried lookup starved under continuous event backlog".into());
+                }
+                _ = tick.tick() => {
+                    seq += 1;
+                    f.server()
+                        .emit_user_event(
+                            &recipient,
+                            KnownEvent::Message(Box::new(MessageEvent {
+                                id: Uuid::from_u128(60_000 + seq).to_string(),
+                                channel_id: channel_str.clone(),
+                                author_id: author.clone(),
+                                content: "chatter".into(),
+                                created_at: at.clone(),
+                                ..Default::default()
+                            })),
+                        )
+                        .await?;
+                }
+            }
+        };
+        assert!(
+            seq >= 10,
+            "expected continuous event burst during lookup, emitted {seq}"
+        );
+        assert_eq!(delivery.target.message.to_string(), message_id);
+        assert_eq!(
+            *first.notifications().subscribe_status().borrow(),
+            NotificationStatus::Ready
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn deeply_buried_live_target_stops_at_bounded_turn_budget_without_fault() -> Result {
+    let f = Fixture::new(papo_test_server::Config::default())?;
+    f.run(async {
+        let (first, second, channel) = setup(&f).await?;
+        let (at, notif) =
+            seed_buried_row(&f, &first, second.account().user(), channel, 1_700).await?;
+        let message_id = notif.message_id.clone().ok_or("message")?;
+        let before = f.server().read_request_counts().await.history_pages;
+        f.server()
+            .emit_user_event(
+                &first.account().user().to_string(),
+                KnownEvent::NewNotification(Box::new(NewNotificationEvent {
+                    id: notif.id.clone().ok_or("id")?,
+                    user_id: second.account().user().to_string(),
+                    message_id,
+                    message_content: notif.message_content.clone().unwrap_or_default(),
+                })),
+            )
+            .await?;
+
+        // Four bounded 4-page turns = 16 pages max, then the live loop stops scanning this target.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while f.server().read_request_counts().await.history_pages - before < 16 {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            f.server().read_request_counts().await.history_pages - before,
+            16
+        );
+        assert_eq!(
+            *first.notifications().subscribe_status().borrow(),
+            NotificationStatus::Ready
+        );
+
+        // Live loop remains healthy and delivers subsequent mentions immediately.
+        let fresh_id = Uuid::from_u128(99_001);
+        f.server()
+            .emit_user_event(
+                &first.account().user().to_string(),
+                KnownEvent::Message(Box::new(MessageEvent {
+                    id: fresh_id.to_string(),
+                    channel_id: channel.to_string(),
+                    author_id: second.account().user().to_string(),
+                    content: format!("@mention(<@{}>)", first.account().user()),
+                    created_at: at,
+                    ..Default::default()
+                })),
+            )
+            .await?;
+        let delivered = tokio::time::timeout(
+            Duration::from_secs(5),
+            first.notifications().next_delivery(),
+        )
+        .await??;
+        assert_eq!(delivered.target.message, fresh_id);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}

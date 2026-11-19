@@ -3,11 +3,15 @@
 use super::{
     NotificationError, NotificationStatus,
     deliver::{DeliveryOutcome, deliver, handoff},
-    live_queue::{LivePoint, LiveState, enqueue_deferred, resolve_live_point},
+    live_queue::{
+        LivePoint, LiveState, MAX_LIVE_LOOKUP_TURNS, enqueue_deferred, enqueue_lookup,
+        resolve_live_point,
+    },
     policy::{self, Candidate},
 };
 use crate::{Generated, Generation, MessageKey, Session};
 use papo_api::gateway::{Event, KnownEvent};
+use tokio::time::Instant;
 
 enum LoopWork {
     Event(Generated<Event>),
@@ -71,12 +75,20 @@ pub(crate) fn start(session: Session) {
             }
             let wait_epoch = session.inner.epochs.current();
             state.retain_generation(wait_epoch.generation);
-            let work = if state.lookup_queue.is_empty() {
+            let work = if state.lookup_should_preempt_events(Instant::now()) {
+                if session.inner.root.is_cancelled() {
+                    return;
+                }
+                LoopWork::ResumeLookup
+            } else {
+                let lookup_deadline = state.lookup_deadline();
                 tokio::select! {
                     biased;
                     () = session.inner.root.cancelled() => return,
-                    () = wait_epoch.cancel.cancelled(), if !state.evidence_queue.is_empty() => {
-                        state.evidence_queue.clear();
+                    () = wait_epoch.cancel.cancelled(),
+                        if !state.evidence_queue.is_empty() || !state.lookup_queue.is_empty() =>
+                    {
+                        state.clear_deferred();
                         continue;
                     }
                     // Drain ready deferred evidence ahead of new events so watch updates cannot be starved.
@@ -93,21 +105,17 @@ pub(crate) fn start(session: Session) {
                         LoopWork::RetryEvidence
                     }
                     event = rx.recv() => match event {
-                        Some(event) => LoopWork::Event(event),
+                        Some(event) => {
+                            state.note_event_while_lookup_pending();
+                            LoopWork::Event(event)
+                        }
                         None => return,
                     },
-                }
-            } else {
-                if session.inner.root.is_cancelled() {
-                    return;
-                }
-                match rx.try_recv() {
-                    Ok(event) => LoopWork::Event(event),
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        tokio::task::yield_now().await;
-                        LoopWork::ResumeLookup
-                    }
+                    () = async {
+                        if let Some(deadline) = lookup_deadline {
+                            tokio::time::sleep_until(deadline).await;
+                        }
+                    }, if lookup_deadline.is_some() => LoopWork::ResumeLookup,
                 }
             };
             let epoch = session.inner.epochs.current();
@@ -196,10 +204,11 @@ async fn process(
                 if candidate.message_point.is_none() {
                     if !state.lookup_queue.is_empty() {
                         // Finish the active target first so `CanonicalPoints` never ping-pongs.
-                        return enqueue_deferred(
+                        return enqueue_lookup(
                             &mut state.lookup_queue,
                             event.generation,
                             candidate,
+                            0,
                             false,
                         );
                     }
@@ -217,12 +226,15 @@ async fn process(
                             candidate.observed_at_us = point.created_at_us;
                         }
                         LivePoint::Pending => {
-                            return enqueue_deferred(
+                            enqueue_lookup(
                                 &mut state.lookup_queue,
                                 event.generation,
                                 candidate,
+                                1,
                                 true,
-                            );
+                            )?;
+                            state.note_lookup_turn(Instant::now());
+                            return Ok(());
                         }
                         LivePoint::Absent => return Ok(()),
                     }
@@ -242,31 +254,53 @@ async fn resume_lookup(
     generation: Generation,
     state: &mut LiveState,
 ) -> Result<(), NotificationError> {
-    let Some((item_gen, mut candidate)) = state.lookup_queue.pop_front() else {
+    let Some(mut entry) = state.lookup_queue.pop_front() else {
+        state.note_lookup_turn(Instant::now());
         return Ok(());
     };
-    if item_gen != generation {
+    if entry.generation != generation {
+        state.note_lookup_turn(Instant::now());
         return Ok(());
     }
-    match resolve_live_point(
+    entry.turns = entry.turns.saturating_add(1);
+    let outcome = resolve_live_point(
         session,
         &mut state.points,
         generation,
-        candidate.channel,
-        candidate.message,
+        entry.candidate.channel,
+        entry.candidate.message,
     )
-    .await?
-    {
-        LivePoint::Found(point) => {
-            candidate.message_point = Some(point);
-            candidate.observed_at_us = point.created_at_us;
-            deliver_or_defer(session, generation, candidate, state).await
+    .await;
+    match outcome {
+        Ok(LivePoint::Found(point)) => {
+            entry.candidate.message_point = Some(point);
+            entry.candidate.observed_at_us = point.created_at_us;
+            state.note_lookup_turn(Instant::now());
+            deliver_or_defer(session, generation, entry.candidate, state).await
         }
-        LivePoint::Pending => {
-            // Keep the active target at the front so its cursor continues without thrashing.
-            enqueue_deferred(&mut state.lookup_queue, generation, candidate, true)
+        Ok(LivePoint::Pending) => {
+            // Cap total bounded turns per live target so an arbitrarily deep message cannot
+            // generate an unbounded sequence of REST requests or starve later targets.
+            if entry.turns < MAX_LIVE_LOOKUP_TURNS {
+                enqueue_lookup(
+                    &mut state.lookup_queue,
+                    generation,
+                    entry.candidate,
+                    entry.turns,
+                    true,
+                )?;
+            }
+            state.note_lookup_turn(Instant::now());
+            Ok(())
         }
-        LivePoint::Absent => Ok(()),
+        Ok(LivePoint::Absent) => {
+            state.note_lookup_turn(Instant::now());
+            Ok(())
+        }
+        Err(error) => {
+            state.note_lookup_turn(Instant::now());
+            Err(error)
+        }
     }
 }
 

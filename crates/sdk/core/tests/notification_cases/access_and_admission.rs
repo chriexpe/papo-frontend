@@ -428,6 +428,91 @@ fn quarantined_live_reply_upgrades_and_unrelated_event_does_not_swallow_wakeup()
 }
 
 #[test]
+fn quarantined_server_read_row_claims_without_blocking_healthy_channel_record() -> Result {
+    for push in [false, true] {
+        let f = Fixture::new(papo_test_server::Config::default())?;
+        f.run(async {
+            let (first, second, quarantined) = setup(&f).await?;
+            let healthy: Uuid = f
+                .server()
+                .create_channel("healthy")
+                .await?
+                .id
+                .ok_or("channel")?
+                .parse()?;
+            let mut resources = first.subscribe_resources();
+            while !resources
+                .borrow()
+                .channels
+                .iter()
+                .any(|c| c.id.as_deref().and_then(|id| id.parse().ok()) == Some(healthy))
+            {
+                resources.changed().await?;
+            }
+            let client = f.client().handle();
+            client.push_wake(first.account(), deadline()).await?;
+            quarantine_channel(&f, &first, second.account().user(), quarantined).await?;
+
+            // Place the quarantined read=true row ahead of an unread healthy-channel row in
+            // ascending inbox order: it must suppress & claim immediately, never head-of-line block.
+            let older = timestamp_offset(-4);
+            let newer = timestamp_offset(-2);
+            let mut read_quarantined = row(
+                1,
+                quarantined,
+                second.account().user(),
+                first.account().user(),
+                &older,
+            );
+            read_quarantined.read = Some(true);
+            let unread_healthy = row(
+                2,
+                healthy,
+                second.account().user(),
+                first.account().user(),
+                &newer,
+            );
+            f.server()
+                .set_notifications(
+                    first.account().user(),
+                    vec![read_quarantined, unread_healthy.clone()],
+                )
+                .await?;
+
+            let report = if push {
+                client.push_wake(first.account(), deadline()).await?
+            } else {
+                client.background_sync(deadline()).await?
+            };
+            assert_eq!(
+                report
+                    .accounts
+                    .iter()
+                    .find(|a| a.account == first.account())
+                    .ok_or("first")?
+                    .outcome,
+                BackgroundOutcome::Complete
+            );
+            assert_eq!(report.deliveries.len(), 1);
+            assert_eq!(report.deliveries[0].target.channel, healthy);
+            assert_eq!(
+                Some(report.deliveries[0].target.message.to_string()),
+                unread_healthy.message_id
+            );
+            assert_eq!(ledger_rows(&f)?, 2);
+
+            // Subsequent wake has nothing left to process.
+            let follow_up = client.push_wake(first.account(), deadline()).await?;
+            assert_eq!(follow_up.accounts[0].outcome, BackgroundOutcome::Complete);
+            assert!(follow_up.deliveries.is_empty());
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })??;
+        f.finish()?;
+    }
+    Ok(())
+}
+
+#[test]
 fn background_policy_resources_use_wire_admission_and_never_corrupt_session_resources() -> Result {
     let f = Fixture::new(papo_test_server::Config::default())?;
     f.run(async {
