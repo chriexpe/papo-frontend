@@ -2,7 +2,7 @@
 
 use super::{
     deliver::{self, DeliveryOutcome},
-    policy::{PolicyResources, ResourceScope},
+    policy::PolicyResources,
     *,
 };
 use crate::{
@@ -95,7 +95,6 @@ fn own_visible_muted_disabled_and_non_triggered_candidates_are_suppressed() {
     let mut settings = NotificationSettings::default();
     let mut item = candidate();
     let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
-    assert_eq!(resources.scope(), ResourceScope::AdmittedSnapshot);
     assert!(
         policy::decide(
             &session,

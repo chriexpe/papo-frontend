@@ -278,3 +278,59 @@ fn hidden_or_removed_account_in_sqlite_fails_closed_instead_of_reading_unread() 
         .unwrap();
     client.shutdown().unwrap();
 }
+
+#[test]
+fn channel_gate_sync_fails_closed_under_admission_write_contention() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, session) = fixture(dir.path());
+    client
+        .block_on(async {
+            let healthy = Uuid::from_u128(2);
+            let revoked = Uuid::from_u128(3);
+            let generation = session.generation();
+
+            assert_eq!(
+                channel_gate_sync(&session.inner, healthy, generation),
+                ChannelGate::Proceed
+            );
+            assert_eq!(
+                channel_gate(&session.inner, healthy, generation).await,
+                ChannelGate::Proceed
+            );
+
+            // Simulate an in-progress `seal` or `deny` holding `history.admission.write()`
+            // before `reading.positions` has been updated: sync callers must fail closed.
+            let write_guard = session.inner.history.admission.write().await;
+            assert_eq!(
+                channel_gate_sync(&session.inner, healthy, generation),
+                ChannelGate::Quarantined
+            );
+
+            // A revocation already recorded on `positions` still surfaces as Denied while busy.
+            session.inner.reading.positions.revoke(
+                &[revoked],
+                generation,
+                HistoryClosedReason::PermissionDenied,
+            );
+            assert_eq!(
+                channel_gate_sync(&session.inner, revoked, generation),
+                ChannelGate::Denied(HistoryClosedReason::PermissionDenied)
+            );
+
+            drop(write_guard);
+            assert_eq!(
+                channel_gate_sync(&session.inner, healthy, generation),
+                ChannelGate::Proceed
+            );
+            assert_eq!(
+                channel_gate_sync(&session.inner, revoked, generation),
+                ChannelGate::Denied(HistoryClosedReason::PermissionDenied)
+            );
+            assert_eq!(
+                channel_gate(&session.inner, revoked, generation).await,
+                ChannelGate::Denied(HistoryClosedReason::PermissionDenied)
+            );
+        })
+        .unwrap();
+    client.shutdown().unwrap();
+}

@@ -362,6 +362,9 @@ mod push_races;
 #[path = "notification_cases/access_and_admission.rs"]
 mod access_and_admission;
 
+#[path = "notification_cases/quarantine_liveness.rs"]
+mod quarantine_liveness;
+
 #[path = "notification_cases/continuation.rs"]
 mod continuation;
 

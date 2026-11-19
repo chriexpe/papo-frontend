@@ -3,7 +3,10 @@
 
 use super::{
     deliver::{self, DeliveryOutcome},
-    live_queue::{LOOKUP_TURN_INTERVAL, LiveState, MAX_EVENTS_BEFORE_LOOKUP, enqueue_lookup},
+    live_queue::{
+        DEFERRED_CAPACITY, LOOKUP_TURN_INTERVAL, LiveState, MAX_EVENTS_BEFORE_LOOKUP,
+        enqueue_deferred, enqueue_lookup,
+    },
     policy::PolicyResources,
     tests::{candidate, fixture},
 };
@@ -235,7 +238,13 @@ fn live_lookup_scheduler_preempts_after_event_burst_and_paces_turns() {
     assert!(!state.lookup_should_preempt_events(now));
     assert!(state.lookup_deadline().is_none());
 
-    enqueue_lookup(&mut state.lookup_queue, generation, candidate(), 1, true).unwrap();
+    assert!(!enqueue_lookup(
+        &mut state.lookup_queue,
+        generation,
+        candidate(),
+        1,
+        true
+    ));
     state.note_lookup_turn(now);
     assert_eq!(state.events_since_lookup, 0);
     assert_eq!(state.lookup_deadline(), Some(now + LOOKUP_TURN_INTERVAL));
@@ -264,4 +273,81 @@ fn live_lookup_scheduler_preempts_after_event_burst_and_paces_turns() {
     assert_eq!(state.events_since_lookup, 0);
 
     client.shutdown().unwrap();
+}
+
+#[test]
+fn full_deferred_and_lookup_queues_evict_oldest_without_faulting() {
+    let generation = crate::Generation(1);
+    let mut deferred = std::collections::VecDeque::new();
+    let mut lookups = std::collections::VecDeque::new();
+    for i in 0..DEFERRED_CAPACITY {
+        let mut item = candidate();
+        item.message = Uuid::from_u128(1_000 + i as u128);
+        assert!(!enqueue_deferred(&mut deferred, generation, item.clone()));
+        assert!(!enqueue_lookup(&mut lookups, generation, item, 0, false));
+    }
+    assert_eq!(deferred.len(), DEFERRED_CAPACITY);
+    assert_eq!(lookups.len(), DEFERRED_CAPACITY);
+
+    // Updating an already-queued message ID merges in place without evicting anything.
+    let mut existing = candidate();
+    existing.message = Uuid::from_u128(1_000);
+    assert!(!enqueue_deferred(
+        &mut deferred,
+        generation,
+        existing.clone()
+    ));
+    assert!(!enqueue_lookup(
+        &mut lookups,
+        generation,
+        existing,
+        0,
+        false
+    ));
+    assert_eq!(deferred.len(), DEFERRED_CAPACITY);
+    assert_eq!(lookups.len(), DEFERRED_CAPACITY);
+
+    // Overflow drops the oldest entry (1_000) and retains the newest entry without error.
+    let mut newest = candidate();
+    newest.message = Uuid::from_u128(2_000);
+    assert!(enqueue_deferred(&mut deferred, generation, newest.clone()));
+    assert!(enqueue_lookup(&mut lookups, generation, newest, 0, false));
+    assert_eq!(deferred.len(), DEFERRED_CAPACITY);
+    assert_eq!(lookups.len(), DEFERRED_CAPACITY);
+    assert_eq!(deferred.front().unwrap().1.message, Uuid::from_u128(1_001));
+    assert_eq!(deferred.back().unwrap().1.message, Uuid::from_u128(2_000));
+    assert_eq!(
+        lookups.front().unwrap().candidate.message,
+        Uuid::from_u128(1_001)
+    );
+    assert_eq!(
+        lookups.back().unwrap().candidate.message,
+        Uuid::from_u128(2_000)
+    );
+
+    // When the front lookup entry is already mid-scan (`turns > 0`), overflow preserves it and
+    // drops the oldest waiting entry (index 1) so `CanonicalPoints` does not thrash.
+    lookups.front_mut().unwrap().turns = 1;
+    let mut after_active = candidate();
+    after_active.message = Uuid::from_u128(2_001);
+    assert!(enqueue_lookup(
+        &mut lookups,
+        generation,
+        after_active,
+        0,
+        false
+    ));
+    assert_eq!(lookups.len(), DEFERRED_CAPACITY);
+    assert_eq!(
+        lookups.front().unwrap().candidate.message,
+        Uuid::from_u128(1_001)
+    );
+    assert_eq!(
+        lookups.get(1).unwrap().candidate.message,
+        Uuid::from_u128(1_003)
+    );
+    assert_eq!(
+        lookups.back().unwrap().candidate.message,
+        Uuid::from_u128(2_001)
+    );
 }

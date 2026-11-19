@@ -11,38 +11,18 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(test)]
-/// Provenance of channel/DM inputs supplied to notification policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ResourceScope {
-    /// Derived from the session's admitted `ResourceSnapshot`.
-    AdmittedSnapshot,
-    /// Fetched in background and admitted through `resource_admission` for channels and DMs only;
-    /// server, roles, members, profiles and blocks were not loaded.
-    ChannelsAndDmsOnly,
-}
-
 /// Admitted channel/DM metadata view consumed by notification policy.
-/// Never impersonates a complete `ResourceSnapshot`: unloaded resource groups remain absent.
-pub(crate) enum PolicyResources {
-    /// Derived from the session's admitted `ResourceSnapshot`.
-    AdmittedSnapshot {
-        generation: Generation,
-        channels: Arc<Vec<Channel>>,
-        dms: Arc<Vec<DirectConversation>>,
-    },
-    /// Fetched in background and admitted through `resource_admission` for channels and DMs only;
-    /// server, roles, members, profiles and blocks were not loaded.
-    ChannelsAndDmsOnly {
-        generation: Generation,
-        channels: Arc<Vec<Channel>>,
-        dms: Arc<Vec<DirectConversation>>,
-    },
+/// Never a complete `ResourceSnapshot`: only channel and DM lists are carried here, so unloaded
+/// resource groups (server, roles, members, profiles and blocks) remain structurally absent.
+pub(crate) struct PolicyResources {
+    generation: Generation,
+    channels: Arc<Vec<Channel>>,
+    dms: Arc<Vec<DirectConversation>>,
 }
 
 impl PolicyResources {
     pub(crate) fn from_snapshot(snapshot: &ResourceSnapshot) -> Self {
-        Self::AdmittedSnapshot {
+        Self {
             generation: snapshot.generation,
             channels: Arc::clone(&snapshot.channels),
             dms: Arc::clone(&snapshot.dms),
@@ -54,7 +34,7 @@ impl PolicyResources {
         channels: Vec<Channel>,
         dms: Vec<DirectConversation>,
     ) -> Self {
-        Self::ChannelsAndDmsOnly {
+        Self {
             generation,
             channels: Arc::new(channels),
             dms: Arc::new(dms),
@@ -62,32 +42,15 @@ impl PolicyResources {
     }
 
     pub(crate) const fn generation(&self) -> Generation {
-        match self {
-            Self::AdmittedSnapshot { generation, .. }
-            | Self::ChannelsAndDmsOnly { generation, .. } => *generation,
-        }
+        self.generation
     }
 
     pub(crate) fn channels(&self) -> &[Channel] {
-        match self {
-            Self::AdmittedSnapshot { channels, .. } | Self::ChannelsAndDmsOnly { channels, .. } => {
-                channels
-            }
-        }
+        &self.channels
     }
 
     pub(crate) fn dms(&self) -> &[DirectConversation] {
-        match self {
-            Self::AdmittedSnapshot { dms, .. } | Self::ChannelsAndDmsOnly { dms, .. } => dms,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn scope(&self) -> ResourceScope {
-        match self {
-            Self::AdmittedSnapshot { .. } => ResourceScope::AdmittedSnapshot,
-            Self::ChannelsAndDmsOnly { .. } => ResourceScope::ChannelsAndDmsOnly,
-        }
+        &self.dms
     }
 }
 

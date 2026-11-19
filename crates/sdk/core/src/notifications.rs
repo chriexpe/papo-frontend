@@ -81,6 +81,16 @@ pub enum NotificationStatus {
     Fault,
 }
 
+/// Account-scoped live notification queue diagnostics, free of IDs or message content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NotificationDiagnostics {
+    /// Oldest unclaimed deferred-evidence candidates dropped when the bounded queue filled.
+    pub deferred_evictions: u64,
+    /// Oldest unclaimed deferred-lookup candidates dropped when the bounded queue filled.
+    pub lookup_evictions: u64,
+}
+
 /// Account-scoped identity validated again immediately before client navigation/presentation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationTarget {
@@ -117,6 +127,8 @@ pub(crate) struct Notifications {
     pub receiver: tokio::sync::Mutex<mpsc::Receiver<NotificationDelivery>>,
     pub events: Mutex<Option<mpsc::Sender<crate::Generated<papo_api::gateway::Event>>>>,
     pub status: watch::Sender<NotificationStatus>,
+    pub deferred_evictions: AtomicU64,
+    pub lookup_evictions: AtomicU64,
 }
 impl Default for Notifications {
     fn default() -> Self {
@@ -133,6 +145,8 @@ impl Default for Notifications {
             receiver: tokio::sync::Mutex::new(receiver),
             events: Mutex::default(),
             status: watch::channel(NotificationStatus::Ready).0,
+            deferred_evictions: AtomicU64::new(0),
+            lookup_evictions: AtomicU64::new(0),
         }
     }
 }
@@ -156,6 +170,19 @@ impl NotificationService {
     #[must_use]
     pub fn subscribe_status(&self) -> watch::Receiver<NotificationStatus> {
         self.session.inner.notifications.status.subscribe()
+    }
+    /// Returns account-scoped live notification queue diagnostics without IDs or message content.
+    #[must_use]
+    pub fn diagnostics(&self) -> NotificationDiagnostics {
+        let notifications = &self.session.inner.notifications;
+        NotificationDiagnostics {
+            deferred_evictions: notifications
+                .deferred_evictions
+                .load(std::sync::atomic::Ordering::Relaxed),
+            lookup_evictions: notifications
+                .lookup_evictions
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
     }
     /// Supplies currently visible channels, without navigation/widget state. Empty means no suppression.
     /// # Errors

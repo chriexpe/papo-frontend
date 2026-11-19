@@ -130,50 +130,60 @@ fn merge_candidate(existing: &mut Candidate, candidate: Candidate) {
 
 /// Inserts a deferred evidence candidate while preserving boundedness and upgrading any earlier
 /// non-triggered copy of the same message (for example an authoritative reply arriving after
-/// its `Message` event while a channel is quarantined).
+/// its `Message` event while a channel is quarantined). Nothing in this queue was claimed, so
+/// when full the oldest entry is dropped instead of faulting; returns whether an entry was dropped.
 pub(super) fn enqueue_deferred(
     queue: &mut VecDeque<(Generation, Candidate)>,
     generation: Generation,
     candidate: Candidate,
-    front: bool,
-) -> Result<(), NotificationError> {
+) -> bool {
     if let Some((_, existing)) = queue
         .iter_mut()
         .find(|(item_gen, item)| *item_gen == generation && item.message == candidate.message)
     {
         merge_candidate(existing, candidate);
-        return Ok(());
+        return false;
     }
-    if queue.len() >= DEFERRED_CAPACITY {
-        return Err(NotificationError::Overflow);
-    }
-    if front {
-        queue.push_front((generation, candidate));
+    let evicted = if queue.len() >= DEFERRED_CAPACITY {
+        let _ = queue.pop_front();
+        true
     } else {
-        queue.push_back((generation, candidate));
-    }
-    Ok(())
+        false
+    };
+    queue.push_back((generation, candidate));
+    evicted
 }
 
 /// Inserts a deferred lookup candidate with its turn count, preserving boundedness and target
-/// continuity (front keeps the active target from thrashing `CanonicalPoints`).
+/// continuity (front keeps the active target from thrashing `CanonicalPoints`). Nothing in this
+/// queue was claimed, so when full the oldest entry is dropped instead of faulting; returns
+/// whether an entry was dropped.
 pub(super) fn enqueue_lookup(
     queue: &mut VecDeque<DeferredLookup>,
     generation: Generation,
     candidate: Candidate,
     turns: u8,
     front: bool,
-) -> Result<(), NotificationError> {
+) -> bool {
     if let Some(existing) = queue.iter_mut().find(|entry| {
         entry.generation == generation && entry.candidate.message == candidate.message
     }) {
         merge_candidate(&mut existing.candidate, candidate);
         existing.turns = existing.turns.max(turns);
-        return Ok(());
+        return false;
     }
-    if queue.len() >= DEFERRED_CAPACITY {
-        return Err(NotificationError::Overflow);
-    }
+    let evicted = if queue.len() >= DEFERRED_CAPACITY {
+        if !front && queue.front().is_some_and(|entry| entry.turns > 0) && queue.len() > 1 {
+            // Preserve the active multi-turn target at index 0 so `CanonicalPoints` keeps its
+            // continuation cursor; evict the oldest waiting unclaimed entry instead.
+            let _ = queue.remove(1);
+        } else {
+            let _ = queue.pop_front();
+        }
+        true
+    } else {
+        false
+    };
     let entry = DeferredLookup {
         generation,
         candidate,
@@ -184,7 +194,7 @@ pub(super) fn enqueue_lookup(
     } else {
         queue.push_back(entry);
     }
-    Ok(())
+    evicted
 }
 
 pub(super) async fn resolve_live_point(

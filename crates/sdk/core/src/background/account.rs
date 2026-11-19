@@ -1,11 +1,68 @@
 //! Per-account quiet baseline and exact inbox catch-up; scheduling/preemption live in the parent.
 use super::BackgroundOutcome;
 use crate::{ClientError, Session};
+enum RowOutcome {
+    Handled(Option<crate::NotificationDelivery>),
+    Deferred,
+    Pending,
+}
+
+async fn process_record(
+    session: &Session,
+    rest: &papo_api::RestClient,
+    generation: crate::Generation,
+    resources: &crate::notifications::policy::PolicyResources,
+    points: &mut crate::notifications::context::CanonicalPoints,
+    record: &papo_api::wire::Notification,
+) -> Result<RowOutcome, crate::NotificationError> {
+    use crate::notifications::{context::Resolution, deliver, ledger};
+    let channel = crate::notifications::id(record.channel_id.as_deref())?;
+    let mut candidate = deliver::record_candidate(record)?;
+    if ledger::is_claimed(session, generation, candidate.message).await? {
+        return Ok(RowOutcome::Handled(None));
+    }
+    if !candidate.read
+        && crate::reading::evidence::channel_gate(&session.inner, channel, generation).await
+            == crate::reading::evidence::ChannelGate::Quarantined
+    {
+        return Ok(RowOutcome::Deferred);
+    }
+    let point = match points
+        .resolve(session, rest, generation, channel, candidate.message)
+        .await
+    {
+        Ok(point) => point,
+        Err(crate::NotificationError::Session(ClientError::Api(
+            papo_api::Error::Http {
+                status: 403 | 404 | 410,
+            }
+            | papo_api::Error::Problem {
+                status: 403 | 404 | 410,
+                ..
+            },
+        ))) => Resolution::Absent,
+        Err(error) => return Err(error),
+    };
+    match point {
+        Resolution::Pending => Ok(RowOutcome::Pending),
+        Resolution::Absent => Ok(RowOutcome::Handled(None)),
+        Resolution::Found(point) => {
+            candidate.message_point = Some(point);
+            candidate.observed_at_us = point.created_at_us;
+            match deliver::deliver_with_resources(session, generation, candidate, resources).await?
+            {
+                deliver::DeliveryOutcome::Deferred => Ok(RowOutcome::Deferred),
+                deliver::DeliveryOutcome::Handled(delivery) => Ok(RowOutcome::Handled(delivery)),
+            }
+        }
+    }
+}
+
 pub(super) async fn catch_up(
     session: &Session,
     deliveries: &mut Vec<crate::NotificationDelivery>,
 ) -> Result<BackgroundOutcome, crate::NotificationError> {
-    use crate::notifications::{deliver, inbox, ledger};
+    use crate::notifications::{inbox, ledger};
     let epoch = session.inner.epochs.current();
     let work = async {
         let _poll = session.inner.notifications.poll_serial.lock().await;
@@ -21,6 +78,10 @@ pub(super) async fn catch_up(
             establish_baseline(session, &rest, epoch.generation).await?;
             return Ok(BackgroundOutcome::Complete);
         };
+        // Keep per-wake inbox traversal bounded to 4 pages even while a deferred row freezes the
+        // durable cursor. Skipping quarantined unread rows and already-claimed rows behind a
+        // frozen cursor avoids both redundant REST scans and clobbering `CanonicalPoints`.
+        let mut deferred = false;
         for _ in 0..4 {
             let cursor = (!boundary.created_at.is_empty()).then_some(&boundary);
             let page = inbox::page(
@@ -32,58 +93,41 @@ pub(super) async fn catch_up(
             )
             .await?;
             for record in page.records {
-                let channel = crate::notifications::id(record.record.channel_id.as_deref())?;
-                let mut candidate = deliver::record_candidate(&record.record)?;
-                let point = match points
-                    .resolve(session, &rest, epoch.generation, channel, candidate.message)
-                    .await
+                match process_record(
+                    session,
+                    &rest,
+                    epoch.generation,
+                    &resources,
+                    &mut points,
+                    &record.record,
+                )
+                .await?
                 {
-                    Ok(point) => point,
-                    Err(crate::NotificationError::Session(ClientError::Api(
-                        papo_api::Error::Http {
-                            status: 403 | 404 | 410,
-                        }
-                        | papo_api::Error::Problem {
-                            status: 403 | 404 | 410,
-                            ..
-                        },
-                    ))) => crate::notifications::context::Resolution::Absent,
-                    Err(error) => return Err(error),
-                };
-                match point {
-                    crate::notifications::context::Resolution::Pending => {
+                    RowOutcome::Pending => {
                         // Never acknowledge an inbox row whose canonical identity is still unresolved.
                         return Ok(BackgroundOutcome::More);
                     }
-                    crate::notifications::context::Resolution::Found(point) => {
-                        candidate.message_point = Some(point);
-                        candidate.observed_at_us = point.created_at_us;
-                        match deliver::deliver_with_resources(
-                            session,
-                            epoch.generation,
-                            candidate,
-                            &resources,
-                        )
-                        .await?
-                        {
-                            deliver::DeliveryOutcome::Deferred => {
-                                // Never claim or advance past a candidate whose read evidence is not ready.
-                                return Ok(BackgroundOutcome::More);
-                            }
-                            deliver::DeliveryOutcome::Handled(Some(delivery)) => {
-                                deliveries.push(delivery);
-                            }
-                            deliver::DeliveryOutcome::Handled(None) => {}
-                        }
+                    RowOutcome::Deferred => {
+                        // Keep processing later rows in this wake, but freeze the durable cursor
+                        // before the first deferred row so the next wake revisits it once
+                        // evidence loads (later claimed rows dedupe in the ledger).
+                        deferred = true;
                     }
-                    crate::notifications::context::Resolution::Absent => {}
+                    RowOutcome::Handled(Some(delivery)) => deliveries.push(delivery),
+                    RowOutcome::Handled(None) => {}
                 }
                 boundary = inbox::InboxCursor::from_record(&record.record)?;
-                let _serial = session.inner.notifications.serial.lock().await;
-                ledger::save_cursor(session, epoch.generation, boundary.clone()).await?;
+                if !deferred {
+                    let _serial = session.inner.notifications.serial.lock().await;
+                    ledger::save_cursor(session, epoch.generation, boundary.clone()).await?;
+                }
             }
             if page.next.is_none() {
-                return Ok(BackgroundOutcome::Complete);
+                return Ok(if deferred {
+                    BackgroundOutcome::More
+                } else {
+                    BackgroundOutcome::Complete
+                });
             }
         }
         Ok(BackgroundOutcome::More)
