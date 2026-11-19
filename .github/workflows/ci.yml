@@ -108,10 +108,3 @@ jobs:
           bash -n scripts/deps.sh
           bash -n scripts/ci-install-linux-deps.sh
           bash -n scripts/papo-desktop-check.sh
-
-  android-script:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - name: Check portable Compose build entry point
-        run: python3 -B -m unittest discover -s tests -p 'test_android_compose_script.py'

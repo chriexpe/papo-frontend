@@ -40,19 +40,11 @@ jobs:
         if: matrix.os == 'windows-2025'
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force target | Out-Null
-          $report = ./scripts/papo-sdk-acl-cost.ps1
-          $report
-          $report | Set-Content -Encoding utf8 target/papo-sdk-acl-cost.json
-      - uses: actions/upload-artifact@v4
-        if: matrix.os == 'windows-2025'
-        with:
-          name: sdk-windows-acl-cost
-          path: target/papo-sdk-acl-cost.json
-          if-no-files-found: error
+          ./scripts/papo-sdk-acl-cost.ps1
       - name: Check SDK boundaries, format, Clippy, docs, tests and build
         shell: bash
         run: bash scripts/papo-sdk-check.sh
+      # Each fixture asserts its own budgets; the reports matter only when one fails.
       - name: Prove headless history work and residency budgets
         if: matrix.os == 'ubuntu-24.04'
         shell: bash
@@ -68,7 +60,7 @@ jobs:
           cargo run --locked -p papo-sdk-ui --example history_cost -- content 100000 > target/papo-sdk-7c/content-100000.jsonl
           cargo run --locked -p papo-sdk --features test-support --example media_cost > target/papo-sdk-7c/media-hits.jsonl
       - uses: actions/upload-artifact@v4
-        if: always() && matrix.os == 'ubuntu-24.04'
+        if: failure() && matrix.os == 'ubuntu-24.04'
         with:
           name: sdk-history-cost
           path: target/papo-sdk-7c/*.jsonl
@@ -118,7 +110,7 @@ jobs:
           disable-animations: true
           script: bash scripts/papo-sdk-emulator-test.sh
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: failure()
         with:
           name: papo-sdk-instrumentation-results
           path: android/sdk-proof/build/reports/instrumentation.txt
@@ -149,11 +141,6 @@ jobs:
             -p papo-api -p papo-sdk -p papo-sdk-ui -p papo-ffi -p papo-test-server
           cargo ndk -t arm64-v8a --platform 31 clippy --locked \
             -p papo-api -p papo-sdk -p papo-sdk-ui -p papo-ffi -p papo-test-server --lib -- -D warnings
-      - uses: actions/upload-artifact@v4
-        with:
-          name: papo-sdk-android-arm64
-          path: target/aarch64-linux-android/debug/libpapo_ffi.so
-          if-no-files-found: error
 
   postgres-protocol:
     name: SDK (PostgreSQL protocol)
