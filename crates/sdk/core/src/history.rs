@@ -2,13 +2,22 @@
 
 pub(crate) mod access;
 mod authorship;
+#[cfg(test)]
+mod cache_fixture;
 mod channel;
+mod chunk_id;
+#[cfg(test)]
+mod chunk_identity_tests;
 mod chunk_join;
+#[cfg(test)]
+mod chunk_reuse_tests;
 mod coverage;
 #[cfg(test)]
 mod coverage_tests;
 mod diagnostics;
 mod fetch;
+#[cfg(test)]
+mod layout_version_tests;
 pub(crate) mod live;
 mod live_edge;
 mod merge;
@@ -88,6 +97,11 @@ pub enum HistoryError {
     /// A reported snapshot version is no longer current.
     #[error("history snapshot superseded")]
     StaleSnapshot,
+    /// The in-memory coverage layout broke an SDK invariant (for example two runs sharing one
+    /// identity) and nothing was written. This is an SDK defect, not cache corruption: the
+    /// stored history is unchanged and the account cache is never invalidated for it.
+    #[error("history layout invariant violated")]
+    Layout,
     /// Account-cache storage failed.
     #[error(transparent)]
     Cache(#[from] CacheError),
@@ -125,6 +139,7 @@ impl From<HistoryError> for ClientError {
             HistoryError::Session(error) => error,
             HistoryError::Cache(error) => Self::Cache(error),
             HistoryError::Closed(_) => Self::Closed,
+            HistoryError::Layout => Self::HistoryLayout,
             HistoryError::Unverified
             | HistoryError::AccessUnknown
             | HistoryError::InvalidPage

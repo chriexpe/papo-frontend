@@ -97,6 +97,7 @@ impl Model {
             .is_none_or(|chunk| chunk.first.key().is_ok_and(|first| key < first));
         let empty_proven =
             generation != 0 && self.chunks.is_empty() && self.empty_generation == generation;
+        let id = self.chunk_ids.allocate()?;
         if newest && let Some(chunk) = self.chunks.last_mut() {
             chunk.newest_complete = false;
             chunk.live_generation = 0;
@@ -108,7 +109,7 @@ impl Model {
             self.record_live_arrival(generation, &point)?;
         }
         self.chunks.push(Chunk {
-            id: key.id_bytes(),
+            id,
             first: point.clone(),
             last: point,
             oldest_complete: empty_proven,

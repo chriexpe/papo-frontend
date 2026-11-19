@@ -1,6 +1,12 @@
 //! Bounded oldest-prefix eviction and coverage changes; global victim ordering and physical accounting live above.
+//! Eviction moves a run's first boundary but never its identity, which is boundary-independent.
 
-use super::{HistoryError, model::Model, persisted_layout::structural_layout, persistence::State};
+use super::{
+    HistoryError,
+    model::Model,
+    persisted_layout::structural_layout,
+    persistence::{State, Stored},
+};
 use crate::{AccountCache, Session, account_cache::history::HistoryKey, generation::Epoch};
 use std::sync::Arc;
 #[cfg(test)]
@@ -229,14 +235,24 @@ impl Retainer {
             .await?;
         Ok(changed.then_some(state.last_write_rows))
     }
+    /// The channel's current set, or `None` when there is nothing to trim. A set in an older
+    /// layout holds nothing this build can trim; it is retired (only if still current), so
+    /// the channel's next authorized open rebuilds its history in a fresh set.
     async fn load(&self) -> Result<Option<State>, HistoryError> {
-        let Some(data) = self.cache.retention_data(*self.channel.as_bytes()).await? else {
+        let channel = *self.channel.as_bytes();
+        let Some(data) = self.cache.retention_data(channel).await? else {
             return Ok(None);
         };
-        Ok(Some(
-            tokio::task::spawn_blocking(move || super::persistence::decode(data))
-                .await
-                .map_err(|_| crate::ClientError::Executor)??,
-        ))
+        let set_id = data.set_id;
+        let stored = tokio::task::spawn_blocking(move || super::persistence::decode(data))
+            .await
+            .map_err(|_| crate::ClientError::Executor)??;
+        match stored {
+            Stored::Current(state) => Ok(Some(*state)),
+            Stored::Outdated => {
+                self.cache.retention_retire(channel, set_id).await?;
+                Ok(None)
+            }
+        }
     }
 }

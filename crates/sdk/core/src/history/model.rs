@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     HistoryError, HistoryGap,
+    chunk_id::{ChunkId, ChunkIds},
     coverage::{ChunkEvidence, Extent, live_edge_current},
     message_key::MessageKey,
     ordering::Point,
@@ -56,17 +57,18 @@ impl Entry {
 /// A proven run of messages. `first` and `last` are message boundaries (possibly deleted since);
 /// the anchors are excluded cursors the run is proven to reach (see `coverage`). A chunk made
 /// only of an anchor (an empty page from an unheld cursor) has `first == last == anchor`.
+/// `id` is allocated (see `chunk_id`) and stays the same while the boundaries move.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Chunk {
-    pub id: [u8; 16],
+    pub id: ChunkId,
     pub first: Point,
     pub last: Point,
     pub oldest_complete: bool,
     pub newest_complete: bool,
     pub generation: u64,
     pub live_generation: u64,
-    /// No message lies between this excluded cursor and `first`. Absent in rows written
-    /// before anchors existed, and skipped when absent so those rows re-encode identically.
+    /// No message lies between this excluded cursor and `first`. Skipped when absent, so an
+    /// unanchored chunk encodes without the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest_anchor: Option<Point>,
     /// No message lies between `last` and this excluded cursor.
@@ -120,6 +122,8 @@ pub(super) struct Model {
     pub entries: BTreeMap<[u8; 16], Entry>,
     pub order: BTreeMap<MessageKey, [u8; 16]>,
     pub chunks: Vec<Chunk>,
+    /// Issues every chunk identity of this history set; no two chunks share one.
+    pub chunk_ids: ChunkIds,
     pub revision: u64,
     pub empty_generation: u64,
     pub server_live_generation: u64,
@@ -137,7 +141,10 @@ pub(super) struct CachedPage {
 }
 
 impl Model {
+    /// Begins a mutation. Every mutation starts here and issues at most one chunk identity,
+    /// so one is confirmed available before anything changes.
     pub fn next_revision(&mut self) -> Result<u64, HistoryError> {
+        self.chunk_ids.ensure_available()?;
         self.revision = self
             .revision
             .checked_add(1)

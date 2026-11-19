@@ -201,3 +201,14 @@ async fn driver_cancel_stops_pending_connect_without_cancelling_session_root() {
     run.await;
     assert!(!session.root.is_cancelled());
 }
+
+#[test]
+fn a_history_layout_fault_never_invalidates_the_account_cache() {
+    let layout = ClientError::from(crate::HistoryError::Layout);
+    assert!(matches!(layout, ClientError::HistoryLayout));
+    assert!(!invalidates_account_cache(&layout));
+    // Corrupt stored data still does: that branch is unchanged.
+    assert!(invalidates_account_cache(&ClientError::Cache(
+        crate::CacheError::InvalidData
+    )));
+}

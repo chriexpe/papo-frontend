@@ -15,8 +15,8 @@ use papo_api::{
 use crate::Generation;
 
 use super::super::{
-    HistorySnapshot, merge::Ticket, message_key::MessageKey, model::Model, ordering::Point,
-    publication::published_chunk, snapshot_query::published_gaps,
+    HistorySnapshot, chunk_id::ChunkId, merge::Ticket, message_key::MessageKey, model::Model,
+    ordering::Point, publication::published_chunk, snapshot_query::published_gaps,
 };
 use super::oracle::{Fact, Oracle, Slots};
 
@@ -234,6 +234,10 @@ pub(super) struct Simulation {
     pub(super) server: BTreeMap<MessageKey, Message>,
     pub(super) generation: u64,
     pub(super) next_index: u128,
+    /// Every chunk identity observed so far, and those held at the last check: an identity
+    /// that disappeared is retired and must never come back.
+    pub(super) identities_seen: BTreeSet<ChunkId>,
+    pub(super) identities_held: BTreeSet<ChunkId>,
 }
 
 impl Simulation {
@@ -246,6 +250,8 @@ impl Simulation {
                 .collect(),
             generation: 1,
             next_index: INITIAL_MESSAGES,
+            identities_seen: BTreeSet::new(),
+            identities_held: BTreeSet::new(),
         }
     }
 
@@ -302,14 +308,15 @@ impl Simulation {
         if evicted.is_empty() {
             return;
         }
-        // Chunk IDs are not unique evidence (a refetched first message can reuse one), so runs
-        // are matched by their newest boundary: leading runs before the surviving oldest run
-        // were discarded whole, and that run lost its prefix if its first message moved.
+        // Identities stay with their run while its boundaries move, so the surviving oldest run
+        // is found by identity: leading runs before it were discarded whole, and it lost its
+        // prefix if its first message moved.
         let survivor = self.model.chunks.first().cloned();
         for chunk in &before {
             if let Some(survivor) = &survivor
-                && survivor.last == chunk.last
+                && survivor.id == chunk.id
             {
+                assert_eq!(survivor.last, chunk.last, "retention keeps the newest edge");
                 if survivor.first != chunk.first {
                     self.oracle.retain_from(key(&survivor.first));
                 }
@@ -348,7 +355,8 @@ impl Simulation {
         universe
     }
 
-    pub(super) fn check(&self) {
+    pub(super) fn check(&mut self) {
+        self.check_identities();
         check(
             &self.model,
             &self.oracle,

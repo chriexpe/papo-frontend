@@ -1,4 +1,4 @@
-//! Maintenance-only opaque history reads; reading these rows never creates session authority.
+//! Maintenance-only opaque history reads and writes; reading these rows never creates session authority.
 
 use super::{
     AccountCache, CacheError,
@@ -89,6 +89,50 @@ impl AccountCache {
             }
             drop(fence);
             result
+        })
+        .await
+        .map_err(|_| CacheError::TaskStopped)?
+    }
+    /// Hide `set_id` as a revoke would, but only while it is still the channel's current
+    /// set: an open that already replaced it keeps its replacement. The channel's next
+    /// authorized open allocates a fresh set, and the bounded purge reclaims the rows.
+    pub(crate) async fn retention_retire(
+        &self,
+        channel: [u8; 16],
+        set_id: i64,
+    ) -> Result<(), CacheError> {
+        let fence = self.fence().await?;
+        let context = self.context();
+        let retention = self.retention_clock(channel);
+        tokio::spawn(async move {
+            let account = context.account;
+            let result = context
+                .writer
+                .cache_write(move |tx| {
+                    super::history_rows::verify(tx, account)?;
+                    let current: Option<i64> = tx
+                        .query_row(
+                            "SELECT current_set FROM history_channels h
+                     JOIN history_sets s ON s.id=h.current_set
+                     WHERE h.channel_id=?1 AND s.revoked=0",
+                            [channel.as_slice()],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(WorkerError::from)?;
+                    let retire = current == Some(set_id);
+                    if retire {
+                        super::history::revoke(tx, channel)?;
+                    }
+                    Ok(retire)
+                })
+                .await;
+            // Only an actual retirement supersedes in-flight work on the channel.
+            if result == Ok(true) {
+                retention.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+            drop(fence);
+            result.map(drop)
         })
         .await
         .map_err(|_| CacheError::TaskStopped)?

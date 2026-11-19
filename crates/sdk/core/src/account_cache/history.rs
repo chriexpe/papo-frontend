@@ -421,7 +421,7 @@ pub(super) fn authorized(
     current(connection, channel)
 }
 
-fn revoke(transaction: &Transaction<'_>, channel: [u8; 16]) -> Result<(), CacheError> {
+pub(super) fn revoke(transaction: &Transaction<'_>, channel: [u8; 16]) -> Result<(), CacheError> {
     transaction.execute("UPDATE history_sets SET revoked=1 WHERE id=(SELECT current_set FROM history_channels WHERE channel_id=?1) AND revoked=0", [channel.as_slice()]).map_err(WorkerError::from)?;
     transaction.execute("UPDATE history_channels SET current_set=NULL WHERE channel_id=?1 AND current_set IS NOT NULL", [channel.as_slice()]).map_err(WorkerError::from)?;
     transaction.execute("DELETE FROM history_manifest WHERE channel_id=?1 AND revision=(SELECT history_revision FROM cache_metadata WHERE singleton=1)", [channel.as_slice()]).map_err(WorkerError::from)?;

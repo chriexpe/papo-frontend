@@ -40,6 +40,10 @@ pub enum ClientError {
     /// Reconcile could not keep up with the bounded event journal; a new generation is required.
     #[error("reconcile event journal overflow")]
     ReconcileOverflow,
+    /// A history layout broke an SDK invariant before anything was written. Distinct from
+    /// `Cache`: stored data is intact, so this never invalidates the account cache.
+    #[error("history layout invariant violated")]
+    HistoryLayout,
     /// Rebuildable account storage failed.
     #[error(transparent)]
     Cache(#[from] crate::CacheError),

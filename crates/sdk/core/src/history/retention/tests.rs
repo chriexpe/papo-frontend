@@ -36,8 +36,9 @@ fn model(count: u128) -> Model {
         model.entries.insert(id, entry);
         model.dirty.insert(id);
     }
+    let id = model.chunk_ids.allocate().unwrap();
     model.chunks.push(Chunk {
-        id: *Uuid::from_u128(1).as_bytes(),
+        id,
         first: point(1),
         last: point(count),
         oldest_complete: true,
@@ -56,8 +57,9 @@ fn prefix_retirement_is_bounded_and_does_not_cross_an_existing_gap() {
     let mut model = model(100);
     model.chunks[0].last = point(5);
     model.chunks[0].newest_complete = false;
+    let id = model.chunk_ids.allocate().unwrap();
     model.chunks.push(Chunk {
-        id: *Uuid::from_u128(11).as_bytes(),
+        id,
         first: point(11),
         last: point(100),
         oldest_complete: false,
@@ -146,7 +148,9 @@ fn physical_prefix_eviction_reloads_with_detached_pin_real_tombstone_and_exact_g
             .await
             .unwrap()
             .unwrap();
-        let restored = super::super::persistence::decode(loaded).unwrap();
+        let restored = super::super::persistence::decode(loaded)
+            .unwrap()
+            .expect_current();
         let pin = &restored.model.entries[Uuid::from_u128(1).as_bytes()];
         assert!(pin.pinned && !pin.timeline && pin.message.is_some());
         assert!(restored.model.entries[Uuid::from_u128(2).as_bytes()].deleted);
@@ -160,7 +164,9 @@ fn physical_prefix_eviction_reloads_with_detached_pin_real_tombstone_and_exact_g
             .await
             .unwrap()
             .unwrap();
-        let cold_restored = super::super::persistence::decode(data).unwrap();
+        let cold_restored = super::super::persistence::decode(data)
+            .unwrap()
+            .expect_current();
         assert_eq!(cold_restored.model.order.len(), 59);
         assert!(cold_restored.model.entries[Uuid::from_u128(1).as_bytes()].pinned);
         assert!(cold_restored.model.entries[Uuid::from_u128(2).as_bytes()].deleted);
