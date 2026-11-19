@@ -11,6 +11,7 @@ use super::{
 };
 use crate::{Generated, Generation, MessageKey, Session};
 use papo_api::gateway::{Event, KnownEvent};
+use std::sync::atomic::Ordering;
 use tokio::time::Instant;
 
 enum LoopWork {
@@ -204,13 +205,8 @@ async fn process(
                 if candidate.message_point.is_none() {
                     if !state.lookup_queue.is_empty() {
                         // Finish the active target first so `CanonicalPoints` never ping-pongs.
-                        return enqueue_lookup(
-                            &mut state.lookup_queue,
-                            event.generation,
-                            candidate,
-                            0,
-                            false,
-                        );
+                        queue_lookup(session, state, event.generation, candidate, 0, false);
+                        return Ok(());
                     }
                     match resolve_live_point(
                         session,
@@ -226,13 +222,7 @@ async fn process(
                             candidate.observed_at_us = point.created_at_us;
                         }
                         LivePoint::Pending => {
-                            enqueue_lookup(
-                                &mut state.lookup_queue,
-                                event.generation,
-                                candidate,
-                                1,
-                                true,
-                            )?;
+                            queue_lookup(session, state, event.generation, candidate, 1, true);
                             state.note_lookup_turn(Instant::now());
                             return Ok(());
                         }
@@ -282,13 +272,14 @@ async fn resume_lookup(
             // Cap total bounded turns per live target so an arbitrarily deep message cannot
             // generate an unbounded sequence of REST requests or starve later targets.
             if entry.turns < MAX_LIVE_LOOKUP_TURNS {
-                enqueue_lookup(
-                    &mut state.lookup_queue,
+                queue_lookup(
+                    session,
+                    state,
                     generation,
                     entry.candidate,
                     entry.turns,
                     true,
-                )?;
+                );
             }
             state.note_lookup_turn(Instant::now());
             Ok(())
@@ -323,7 +314,8 @@ async fn retry_evidence(
             Ok(DeliveryOutcome::Handled(Some(delivery))) => handoff(session, delivery),
             Ok(DeliveryOutcome::Handled(None)) => Ok(()),
             Ok(DeliveryOutcome::Deferred) => {
-                enqueue_deferred(&mut state.evidence_queue, generation, candidate, false)
+                queue_deferred(session, state, generation, candidate);
+                Ok(())
             }
             Err(error) => Err(error),
         };
@@ -351,8 +343,40 @@ async fn deliver_or_defer(
         DeliveryOutcome::Handled(Some(delivery)) => handoff(session, delivery)?,
         DeliveryOutcome::Handled(None) => {}
         DeliveryOutcome::Deferred => {
-            enqueue_deferred(&mut state.evidence_queue, generation, candidate, false)?;
+            queue_deferred(session, state, generation, candidate);
         }
     }
     Ok(())
+}
+
+fn queue_deferred(
+    session: &Session,
+    state: &mut LiveState,
+    generation: Generation,
+    candidate: Candidate,
+) {
+    if enqueue_deferred(&mut state.evidence_queue, generation, candidate) {
+        session
+            .inner
+            .notifications
+            .deferred_evictions
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn queue_lookup(
+    session: &Session,
+    state: &mut LiveState,
+    generation: Generation,
+    candidate: Candidate,
+    turns: u8,
+    front: bool,
+) {
+    if enqueue_lookup(&mut state.lookup_queue, generation, candidate, turns, front) {
+        session
+            .inner
+            .notifications
+            .lookup_evictions
+            .fetch_add(1, Ordering::Relaxed);
+    }
 }

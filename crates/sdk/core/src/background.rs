@@ -198,36 +198,42 @@ async fn run(
                     .epochs
                     .validate(delivery.target.generation)
                     .is_ok()
-                && crate::reading::evidence::channel_gate_sync(
+                && crate::reading::evidence::channel_gate(
                     &session.inner,
                     delivery.target.channel,
                     delivery.target.generation,
-                ) == crate::reading::evidence::ChannelGate::Proceed
+                )
+                .await
+                    == crate::reading::evidence::ChannelGate::Proceed
                 && !preemption.is_cancelled()
             {
                 report.deliveries.push(delivery);
             }
         }
     }
-    report.deliveries.retain(|delivery| {
-        !preemption.is_cancelled()
+    let mut kept = Vec::with_capacity(report.deliveries.len());
+    for delivery in report.deliveries {
+        if !preemption.is_cancelled()
             && !cancel.is_cancelled()
             && !dropped.is_cancelled()
-            && client
-                .session(delivery.target.account)
-                .is_ok_and(|session| {
-                    session
-                        .inner
-                        .epochs
-                        .validate(delivery.target.generation)
-                        .is_ok()
-                        && crate::reading::evidence::channel_gate_sync(
-                            &session.inner,
-                            delivery.target.channel,
-                            delivery.target.generation,
-                        ) == crate::reading::evidence::ChannelGate::Proceed
-                })
-    });
+            && let Ok(session) = client.session(delivery.target.account)
+            && session
+                .inner
+                .epochs
+                .validate(delivery.target.generation)
+                .is_ok()
+            && crate::reading::evidence::channel_gate(
+                &session.inner,
+                delivery.target.channel,
+                delivery.target.generation,
+            )
+            .await
+                == crate::reading::evidence::ChannelGate::Proceed
+        {
+            kept.push(delivery);
+        }
+    }
+    report.deliveries = kept;
     Ok(report)
 }
 

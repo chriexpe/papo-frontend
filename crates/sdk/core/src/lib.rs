@@ -84,9 +84,9 @@ pub use read_points::ServerReadPoint;
 pub use resources::ResourceSnapshot;
 mod notifications;
 pub use notifications::{
-    ChannelNotificationMode, InboxCursor, InboxPage, NotificationDelivery, NotificationError,
-    NotificationRecord, NotificationService, NotificationSettings, NotificationStatus,
-    NotificationTarget, PushDevice, PushRegistration,
+    ChannelNotificationMode, InboxCursor, InboxPage, NotificationDelivery, NotificationDiagnostics,
+    NotificationError, NotificationRecord, NotificationService, NotificationSettings,
+    NotificationStatus, NotificationTarget, PushDevice, PushRegistration,
 };
 mod scoped_request;
 mod search;

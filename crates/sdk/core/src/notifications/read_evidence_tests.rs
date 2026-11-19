@@ -3,7 +3,7 @@
 use super::{
     NotificationSettings,
     deliver::{self, DeliveryOutcome},
-    policy::{self, PolicyResources, ResourceScope},
+    policy::{self, PolicyResources},
     tests::{candidate, fixture},
 };
 use crate::{
@@ -337,7 +337,7 @@ fn missing_candidate_point_defers_when_ordered_read_point_exists_then_resolves()
 }
 
 #[test]
-fn denied_channel_suppresses_and_background_resources_carry_explicit_scope() {
+fn denied_channel_suppresses_with_background_channel_dm_resources() {
     let directory = tempfile::tempdir().unwrap();
     let (mut client, session) = fixture(directory.path());
     client
@@ -349,7 +349,8 @@ fn denied_channel_suppresses_and_background_resources_carry_explicit_scope() {
                 (*session.inner.resources.borrow().channels).clone(),
                 Vec::new(),
             );
-            assert_eq!(bg.scope(), ResourceScope::ChannelsAndDmsOnly);
+            assert_eq!(bg.generation(), generation);
+            assert!(!bg.channels().is_empty());
 
             session.inner.reading.positions.revoke(
                 &[item.channel],
@@ -397,13 +398,18 @@ fn ineligible_quarantined_message_does_not_defer_and_reply_upgrades_queued_entry
             // If an ambiguous channel+DM entry was already queued non-triggered, a matching
             // triggered reply must upgrade it rather than being dropped by message-ID dedupe.
             let mut queue = std::collections::VecDeque::new();
-            super::live_queue::enqueue_deferred(&mut queue, generation, ordinary.clone(), false)
-                .unwrap();
+            assert!(!super::live_queue::enqueue_deferred(
+                &mut queue,
+                generation,
+                ordinary.clone(),
+            ));
             let mut reply = candidate();
             reply.message = ordinary.message;
             reply.triggered = true;
             reply.message_point = None;
-            super::live_queue::enqueue_deferred(&mut queue, generation, reply, false).unwrap();
+            assert!(!super::live_queue::enqueue_deferred(
+                &mut queue, generation, reply,
+            ));
             assert_eq!(queue.len(), 1);
             assert!(queue[0].1.triggered);
             assert_eq!(queue[0].1.message_point, ordinary.message_point);

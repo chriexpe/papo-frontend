@@ -28,20 +28,14 @@ pub(crate) enum ChannelGate {
     Denied(HistoryClosedReason),
 }
 
-pub(crate) async fn channel_gate(
-    session: &SessionInner,
-    channel: Uuid,
-    generation: Generation,
+fn evaluate_channel_gate(
+    admission: Option<ChannelAdmission>,
+    fence: Option<ChannelFence>,
 ) -> ChannelGate {
-    let admission = session.history.admission.read().await.channel(channel);
     if let Some(ChannelAdmission::Denied(reason)) = admission {
         return ChannelGate::Denied(reason);
     }
-    if let Some(fence) = session
-        .reading
-        .positions
-        .check_current_channel(channel, generation)
-    {
+    if let Some(fence) = fence {
         return match fence {
             ChannelFence::Closed(reason) => ChannelGate::Denied(reason),
             ChannelFence::Unknown => ChannelGate::Quarantined,
@@ -53,38 +47,38 @@ pub(crate) async fn channel_gate(
     ChannelGate::Proceed
 }
 
+pub(crate) async fn channel_gate(
+    session: &SessionInner,
+    channel: Uuid,
+    generation: Generation,
+) -> ChannelGate {
+    let admission = session.history.admission.read().await.channel(channel);
+    let fence = session
+        .reading
+        .positions
+        .check_current_channel(channel, generation);
+    evaluate_channel_gate(admission, fence)
+}
+
 /// Synchronous channel fence check for FULL writer closures, platform handoff, final background
 /// delivery filters and target validation. Reuses reading positions and history admission without
-/// introducing any notification-owned permission state.
+/// introducing any notification-owned permission state; fails closed as `Quarantined` while the
+/// admission write lock is contended (for example during `seal` or `deny` before `positions`
+/// updates).
 pub(crate) fn channel_gate_sync(
     session: &SessionInner,
     channel: Uuid,
     generation: Generation,
 ) -> ChannelGate {
-    if let Ok(admissions) = session.history.admission.try_read()
-        && let Some(ChannelAdmission::Denied(reason)) = admissions.channel(channel)
-    {
-        return ChannelGate::Denied(reason);
-    }
-    if let Some(fence) = session
+    let admission = match session.history.admission.try_read() {
+        Ok(admissions) => admissions.channel(channel),
+        Err(_) => Some(ChannelAdmission::Quarantined),
+    };
+    let fence = session
         .reading
         .positions
-        .check_current_channel(channel, generation)
-    {
-        return match fence {
-            ChannelFence::Closed(reason) => ChannelGate::Denied(reason),
-            ChannelFence::Unknown => ChannelGate::Quarantined,
-        };
-    }
-    if let Ok(admissions) = session.history.admission.try_read()
-        && matches!(
-            admissions.channel(channel),
-            Some(ChannelAdmission::Quarantined)
-        )
-    {
-        return ChannelGate::Quarantined;
-    }
-    ChannelGate::Proceed
+        .check_current_channel(channel, generation);
+    evaluate_channel_gate(admission, fence)
 }
 
 /// Evaluates whether `message` in `channel` is read using durable local/uploaded/known points,

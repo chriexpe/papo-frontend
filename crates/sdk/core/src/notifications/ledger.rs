@@ -47,6 +47,43 @@ fn load_transaction(
         .transpose()?;
     Ok((settings, cursor))
 }
+pub(crate) async fn is_claimed(
+    session: &Session,
+    generation: Generation,
+    message: crate::Uuid,
+) -> Result<bool, NotificationError> {
+    let registry = session.client.inner.registry.clone();
+    let session = session.clone();
+    registry
+        .readers
+        .query(registry.path.clone(), move |tx| {
+            let _lease = registry.lease;
+            Ok(is_claimed_transaction(tx, &session, generation, message))
+        })
+        .await?
+}
+fn is_claimed_transaction(
+    tx: &Transaction<'_>,
+    session: &Session,
+    generation: Generation,
+    message: crate::Uuid,
+) -> Result<bool, NotificationError> {
+    session.inner.epochs.validate(generation)?;
+    let account = session.account();
+    visible_account(tx, account)?;
+    let found: Option<i64> = tx
+        .query_row(
+            "SELECT 1 FROM notification_ledger WHERE server_id=?1 AND user_id=?2 AND message_id=?3",
+            params![
+                account.server().as_bytes(),
+                account.user().as_bytes(),
+                message.as_bytes()
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
 pub(crate) async fn save_settings(
     session: &Session,
     settings: NotificationSettings,

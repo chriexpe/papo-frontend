@@ -14,7 +14,12 @@ use papo_sdk::{
 };
 use serde_json::json;
 
-async fn quarantine_channel(f: &Fixture, session: &Session, peer: Uuid, channel: Uuid) -> Result {
+pub(super) async fn quarantine_channel(
+    f: &Fixture,
+    session: &Session,
+    peer: Uuid,
+    channel: Uuid,
+) -> Result {
     // Listing the same UUID as both a channel and a DM yields `ReadAccess::Unknown`
     // (`Admission::Quarantined`) without modifying any permission algorithm.
     f.server()
@@ -47,7 +52,7 @@ async fn quarantine_channel(f: &Fixture, session: &Session, peer: Uuid, channel:
     Ok(())
 }
 
-async fn release_quarantine(f: &Fixture, session: &Session, channel: Uuid) -> Result {
+pub(super) async fn release_quarantine(f: &Fixture, session: &Session, channel: Uuid) -> Result {
     f.server()
         .set_direct_conversations(&session.account().user().to_string(), Vec::new())
         .await?;
