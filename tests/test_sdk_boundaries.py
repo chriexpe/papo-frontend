@@ -77,7 +77,7 @@ class DependencyTests(unittest.TestCase):
         self.assertTrue(CHECK.dependency_violations(metadata({"papo-sdk": [("uniffi", None)]})))
 
     def test_renamed_direct_and_transitive_sdk_test_dependencies_are_checked(self):
-        for target in ["gpui", "papo-core", "uniffi"]:
+        for target in ["rune", "rune-kit", "gpui", "papo-core", "uniffi"]:
             for edges in [
                 {"papo-sdk": [(target, "dev")]},
                 {"papo-sdk": [("helper", "dev")], "helper": [(target, None)]},
@@ -96,7 +96,7 @@ class DependencyTests(unittest.TestCase):
 
 class SourceTests(unittest.TestCase):
     def test_platform_types_and_macros_fail(self):
-        for source in ["use gpui::Entity;", "use uniffi::Object;", "tr!(\"Offline\")"]:
+        for source in ["use rune::El;", "use rune_i18n::I18n;", "use gpui::Entity;", "use uniffi::Object;", "tr!(\"Offline\")"]:
             with self.subTest(source=source):
                 self.assertTrue(CHECK.source_violations(source, "papo-sdk"))
 

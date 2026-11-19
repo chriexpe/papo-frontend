@@ -39,3 +39,18 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Rune's own patched copies of these crates. Cargo does not inherit a
+# dependency's [patch], so every app that builds Rune repeats Rune's table.
+# All of them, and papo-desktop's `rune` and `rune-i18n`, name the same
+# revision; a bump changes them together (Rune's root Cargo.toml at the new
+# revision lists what to patch). The revision is upstream `dev` plus the
+# fixes Papo needs before upstream lands them, on the `papo` branch of
+# chriexpe/rune; each fix's commit says when it can go.
+[patch.crates-io]
+winit = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+sctk-adwaita = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+parley_engine = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+wgpu-hal = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+accesskit_windows = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+accesskit_macos = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }

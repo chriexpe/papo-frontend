@@ -1,14 +1,24 @@
 name: papo-desktop
 
-# The desktop client is paused until its UI framework is chosen, so this check
-# runs only when the desktop crate or its check changes, or on request. The
-# workspace jobs exclude papo-desktop; run this before desktop work resumes.
+# The Rune desktop client is Linux-first: Windows and macOS join when the
+# client runs there. The workspace manifest is watched because Rune's crate
+# patches live in it.
 on:
   pull_request:
     paths:
       - crates/papo-desktop/**
       - scripts/papo-desktop-check.sh
       - .github/workflows/papo-desktop.yml
+      - Cargo.toml
+      - Cargo.lock
+  push:
+    branches: [main]
+    paths:
+      - crates/papo-desktop/**
+      - scripts/papo-desktop-check.sh
+      - .github/workflows/papo-desktop.yml
+      - Cargo.toml
+      - Cargo.lock
   workflow_dispatch:
 
 concurrency:
@@ -22,11 +32,7 @@ env:
 
 jobs:
   papo-desktop:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -34,15 +40,12 @@ jobs:
           toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
           components: clippy, rustfmt
       - name: Dependências de sistema
-        if: runner.os == 'Linux'
         timeout-minutes: 15
         uses: ./.github/actions/install-linux-deps
-      # Restore only: the job's caches (~3.4 GB) pushed the repository past
-      # the 10 GB Actions quota and evicted the GStreamer SDK cache.
       - uses: Swatinem/rust-cache@v2
         with:
           key: papo-desktop
-          save-if: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check papo-desktop
         shell: bash
         run: bash scripts/papo-desktop-check.sh
