@@ -12,10 +12,14 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) struct SessionPool {
     pub root: CancellationToken,
     pub next: Arc<AtomicU64>,
     sessions: Mutex<HashMap<AccountId, Arc<SessionInner>>>,
+    changes: tokio::sync::watch::Sender<()>,
     caches: Mutex<Option<crate::AccountCaches>>,
     media: Mutex<Option<crate::media::MediaStore>>,
     retired: Mutex<HashMap<AccountId, u64>>,
@@ -34,6 +38,7 @@ impl SessionPool {
             root: CancellationToken::new(),
             next: Arc::new(AtomicU64::new(1)),
             sessions: Mutex::new(HashMap::new()),
+            changes: tokio::sync::watch::channel(()).0,
             caches: Mutex::new(None),
             media: Mutex::new(None),
             retired: Mutex::new(HashMap::new()),
@@ -53,6 +58,9 @@ impl SessionPool {
             .media
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(media);
+    }
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changes.subscribe()
     }
     pub fn get(&self, account: AccountId) -> Option<Arc<SessionInner>> {
         self.sessions
@@ -76,6 +84,7 @@ impl SessionPool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(session.account, session);
+        self.changes.send_replace(());
     }
     pub fn register_auth(
         &self,
@@ -153,6 +162,7 @@ impl SessionPool {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&account);
         if let Some(session) = session {
+            self.changes.send_replace(());
             session.stop().await;
         }
     }
@@ -173,6 +183,7 @@ impl SessionPool {
             }
         };
         if let Some(session) = removed {
+            self.changes.send_replace(());
             self.retired
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -189,6 +200,7 @@ impl SessionPool {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+        self.changes.send_replace(());
         for session in sessions.into_values() {
             session.stop().await;
         }

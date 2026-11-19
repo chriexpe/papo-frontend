@@ -7,6 +7,7 @@ fn image(generation: u64, timestamp: &str) -> Arc<ResourceSnapshot> {
         generation: Generation::for_test(generation),
         server: None,
         channels: Arc::default(),
+        channel_census_complete: true,
         roles: Arc::default(),
         members: Arc::default(),
         profiles: Arc::default(),

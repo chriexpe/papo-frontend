@@ -6,6 +6,8 @@ pub use activity::{ActivitySnapshot, Presence, PresenceStatus, Typing};
 mod account;
 mod account_cache;
 mod auth;
+mod badges;
+pub use badges::{BadgesSnapshot, ChannelBadges};
 mod background;
 pub use background::{
     BackgroundAccountResult, BackgroundCancellation, BackgroundOutcome, BackgroundReport,

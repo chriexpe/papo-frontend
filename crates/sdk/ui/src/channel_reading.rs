@@ -1,12 +1,8 @@
-//! Read-state overlay for channel metadata; canonical read policy stays in the SDK.
+//! Read and badge overlays for channel metadata; canonical evidence and policy stay in the SDK.
 
-use futures_util::{
-    StreamExt,
-    future::{self, Either},
-    stream,
-};
+use futures_util::{StreamExt, stream};
 use imbl::Vector;
-use papo_sdk::ReadingSnapshot;
+use papo_sdk::{BadgesSnapshot, ReadingSnapshot};
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -18,6 +14,7 @@ use crate::{
 fn overlay(
     metadata: &Vector<Arc<ChannelListItem>>,
     reading: &ReadingSnapshot,
+    badges: &BadgesSnapshot,
     generation: papo_sdk::Generation,
     previous: &Vector<Arc<ChannelListItem>>,
 ) -> Vector<Arc<ChannelListItem>> {
@@ -33,17 +30,16 @@ fn overlay(
     metadata
         .iter()
         .map(|item| {
-            let unread = if reading.generation == generation {
-                item.id
-                    .as_deref()
-                    .and_then(|id| id.parse().ok())
-                    .and_then(|id| reading.channels.get(&id))
-                    .cloned()
-            } else {
-                None
-            };
+            let id = item.id.as_deref().and_then(|id| id.parse().ok());
             let mut value = item.as_ref().clone();
-            value.unread = unread;
+            value.unread = id
+                .filter(|_| reading.generation == generation)
+                .and_then(|id| reading.channels.get(&id))
+                .cloned();
+            value.badges = id
+                .filter(|_| badges.version != 0 && badges.generation == generation)
+                .and_then(|id| badges.channels.get(&id))
+                .cloned();
             if let Some(old) = by_id.get(&value.id.as_deref().unwrap_or_default())
                 && reusable
                 && old.as_ref() == &value
@@ -55,16 +51,19 @@ fn overlay(
         .collect()
 }
 
-/// Both source baselines are marked seen before registration. Updates after either capture
-/// remain pending in its source stream, so the list baseline cannot lose an intervening mark.
+/// Every source baseline is marked seen before registration. Later changes remain pending,
+/// so the list baseline cannot lose an intervening read mark or badge update.
 pub(crate) fn subscribe(
     metadata: ChannelListSubscription,
     mut reading: watch::Receiver<Arc<ReadingSnapshot>>,
+    mut badges: watch::Receiver<Arc<BadgesSnapshot>>,
 ) -> ChannelListSubscription {
     let baseline = Arc::clone(&reading.borrow_and_update());
+    let badge_baseline = Arc::clone(&badges.borrow_and_update());
     let snapshot = overlay(
         &metadata.snapshot,
         &baseline,
+        &badge_baseline,
         metadata.generation,
         &Vector::new(),
     );
@@ -76,25 +75,20 @@ pub(crate) fn subscribe(
         (
             metadata.stream,
             reading,
+            badges,
             metadata.snapshot,
             publisher,
             receiver,
         ),
-        |(mut metadata, mut reading, mut raw, mut publisher, mut receiver)| async move {
-            let wake = {
-                match future::select(Box::pin(metadata.next()), Box::pin(reading.changed())).await {
-                    Either::Left((update, pending)) => {
-                        drop(pending);
-                        Either::Left(update)
-                    }
-                    Either::Right((result, pending)) => {
-                        drop(pending);
-                        Either::Right(result)
-                    }
-                }
-            };
-            let reset = match wake {
-                Either::Left(Some(update)) => {
+        |(mut metadata, mut reading, mut badges, mut raw, mut publisher, mut receiver)| async move {
+            loop {
+                let update = tokio::select! {
+                    biased;
+                    update = metadata.next() => Some(update?),
+                    result = reading.changed() => { result.ok()?; None },
+                    result = badges.changed() => { result.ok()?; None },
+                };
+                let reset = if let Some(update) = update {
                     let reset = update.generation != publisher.generation
                         || update
                             .diffs
@@ -105,36 +99,46 @@ pub(crate) fn subscribe(
                         diff.apply(&mut raw);
                     }
                     reset
-                }
-                Either::Left(None) | Either::Right(Err(_)) => return None,
-                Either::Right(Ok(())) => false,
-            };
-            let current = Arc::clone(&reading.borrow_and_update());
-            let next = overlay(&raw, &current, publisher.generation, &publisher.items);
-            let version = publisher.version.checked_add(1)?;
-            let reset = reset
-                || !crate::channel_projection::unique_ids(
-                    raw.iter().map(|item| item.id.as_deref()),
+                } else {
+                    false
+                };
+                let current = Arc::clone(&reading.borrow_and_update());
+                let badge_image = Arc::clone(&badges.borrow_and_update());
+                let next = overlay(
+                    &raw,
+                    &current,
+                    &badge_image,
+                    publisher.generation,
+                    &publisher.items,
                 );
-            publisher.publish(version, publisher.generation, next, reset, |item| {
-                item.id.clone()
-            });
-            let Event::Update {
-                version,
-                generation,
-                diffs,
-            } = receiver.next().await?
-            else {
-                return None;
-            };
-            Some((
-                ChannelListUpdate {
+                let reset = reset
+                    || !crate::channel_projection::unique_ids(
+                        raw.iter().map(|item| item.id.as_deref()),
+                    );
+                if !reset && next == publisher.items {
+                    continue;
+                }
+                let version = publisher.version.checked_add(1)?;
+                publisher.publish(version, publisher.generation, next, reset, |item| {
+                    item.id.clone()
+                });
+                let Event::Update {
                     version,
                     generation,
                     diffs,
-                },
-                (metadata, reading, raw, publisher, receiver),
-            ))
+                } = receiver.next().await?
+                else {
+                    return None;
+                };
+                return Some((
+                    ChannelListUpdate {
+                        version,
+                        generation,
+                        diffs,
+                    },
+                    (metadata, reading, badges, raw, publisher, receiver),
+                ));
+            }
         },
     );
     ChannelListSubscription {

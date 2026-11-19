@@ -166,7 +166,10 @@ async fn process(
                 channel: super::id(Some(&message.channel_id))?,
                 message: super::id(Some(&message.id))?,
                 author: message.author_id.parse().ok(),
-                triggered: policy::mentions(&message.content, session.account().user()),
+                triggered: matches!(
+                    policy::classify_direct(&message.content, session.account().user()),
+                    policy::Classification::KnownTrigger(_)
+                ),
                 content: message.content,
                 read: false,
                 trigger_revision: None,

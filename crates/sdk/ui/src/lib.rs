@@ -36,7 +36,12 @@ mod content_cache;
 mod list_diff;
 mod list_subscription;
 mod registry_projection;
+mod server_badges;
 mod server_list;
+pub use server_badges::{
+    AccountBadges, BadgeAggregate, ServerBadgesSnapshot, ServerBadgesStream,
+    ServerBadgesSubscription, ServerBadgesUpdate,
+};
 mod timeline;
 mod timeline_arrivals;
 mod timeline_item;

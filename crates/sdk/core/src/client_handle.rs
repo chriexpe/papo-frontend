@@ -36,6 +36,14 @@ impl ClientHandle {
     pub fn subscribe_registry(&self) -> watch::Receiver<Arc<RegistrySnapshot>> {
         self.inner.registry_rx.clone()
     }
+    /// Subscribes before looking up account sessions to observe insertion, replacement and closure.
+    ///
+    /// This bounded wakeup carries no authority or identity. After each change, resolve the
+    /// required exact account through `session`; intermediate lifecycle changes may coalesce.
+    #[must_use]
+    pub fn subscribe_session_changes(&self) -> watch::Receiver<()> {
+        self.inner.pool.subscribe_changes()
+    }
     pub(crate) async fn dispatch<T: Send + 'static>(
         &self,
         work: impl Future<Output = Result<T, ClientError>> + Send + 'static,

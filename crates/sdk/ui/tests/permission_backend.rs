@@ -31,6 +31,7 @@ async fn capabilities_match_pinned_go_for_role_combinations_overrides_owner_and_
                 serde_json::from_value(case["server"].clone()).unwrap(),
             )),
             channels: Arc::new(vec![channel]),
+            channel_census_complete: true,
             roles: Arc::new(serde_json::from_value(case["roles"].clone()).unwrap()),
             members: Arc::new(vec![member]),
             profiles: Arc::default(),

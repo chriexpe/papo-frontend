@@ -34,6 +34,8 @@ pub struct ChannelListItem {
     pub created_at: Option<String>,
     /// SDK read-point/coverage projection. Absent until this generation has verified read state.
     pub unread: Option<papo_sdk::ReadState>,
+    /// Core-owned eligible mention count and unread evidence; absent before a matching image.
+    pub badges: Option<Arc<papo_sdk::ChannelBadges>>,
 }
 
 /// One complete resource publication projected onto channel metadata.
@@ -94,6 +96,7 @@ impl ChannelListService {
         crate::channel_reading::subscribe(
             channel_projection::subscribe(self.session.subscribe_resources()),
             self.session.subscribe_reading(),
+            self.session.subscribe_badges(),
         )
     }
 }

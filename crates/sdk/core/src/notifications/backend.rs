@@ -30,12 +30,29 @@ pub(crate) fn remember(
             .as_ref()
             .is_none_or(|current| current.generation != generation || version >= current.version)
         {
+            let changed = cached.as_ref().is_none_or(|current| {
+                current.generation != generation
+                    || effective_config(&current.config) != effective_config(&config)
+            });
             *cached = Some(BackendPolicy {
                 generation,
                 version,
                 config,
             });
+            drop(cached);
+            if changed {
+                session.notifications.policy_changes.send_replace(());
+            }
         }
     })?;
     Ok(())
+}
+
+fn effective_config(config: &Notifications) -> [bool; 4] {
+    [
+        config.enabled != Some(false),
+        config.mentions != Some(false),
+        config.message_preview != Some(false),
+        config.sound != Some(false),
+    ]
 }

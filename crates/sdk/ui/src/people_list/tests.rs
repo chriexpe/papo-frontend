@@ -17,6 +17,7 @@ fn image() -> ResourceSnapshot {
         generation: Generation::for_test(1),
         server: None,
         channels: Arc::default(),
+        channel_census_complete: true,
         roles: Arc::default(),
         members: Arc::default(),
         profiles: Arc::default(),

@@ -12,6 +12,9 @@ pub struct ResourceSnapshot {
     pub version: u64,
     /// Connection that requested the data. Older generations must not be applied.
     pub generation: Generation,
+    /// Both channel and DM lists came from a complete admitted replacement in this generation.
+    /// Cache-loaded display data cannot prove an empty channel census.
+    pub channel_census_complete: bool,
     /// Backend server metadata, absent before the first verified cache load or reconcile.
     pub server: Option<Arc<Server>>,
     /// All channels returned by the backend, in backend order; no client-side filtering.
@@ -32,6 +35,7 @@ impl ResourceSnapshot {
         Self {
             version: 0,
             generation,
+            channel_census_complete: false,
             server: None,
             channels: Arc::default(),
             roles: Arc::default(),

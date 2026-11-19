@@ -118,6 +118,15 @@ impl ServerListService {
         registry_projection::subscribe(self.handle.subscribe_registry())
     }
 
+    /// Observes account totals, active-account server totals and each account's DM subset.
+    ///
+    /// Missing, closed or initially unverified sessions report unknown. This pull-driven
+    /// stream publishes only changed aggregate values and preserves unchanged item `Arc`s.
+    #[must_use]
+    pub fn subscribe_badges(&self) -> crate::ServerBadgesSubscription {
+        crate::server_badges::subscribe(self.handle.clone())
+    }
+
     /// Subscribes atomically to one server's visible accounts and active flags.
     ///
     /// Unknown/removed servers have an empty list. Source version gaps still reset

@@ -95,7 +95,7 @@ pub(super) async fn deliver_at(
     let settings = ledger::settings(session).await?;
     // A non-triggering ordinary message can neither deliver nor claim, so it never needs
     // read-evidence lookup or deferral on a quarantined channel (leaving room for a later reply).
-    if !policy::eligible(resources, &settings, &candidate) {
+    if !policy::claim_eligible(resources, &settings, &candidate) {
         return Ok(DeliveryOutcome::Handled(None));
     }
     // Backend-confirmed `read=true` independently proves suppression after canonical message
