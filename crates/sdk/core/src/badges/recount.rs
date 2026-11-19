@@ -174,9 +174,7 @@ async fn build(
             .as_ref()
             .filter(|policy| policy.generation == generation);
         (
-            current
-                .map(|policy| policy.config.clone())
-                .unwrap_or_default(),
+            current.map_or_default(|policy| policy.config.clone()),
             current.is_some(),
         )
     };
