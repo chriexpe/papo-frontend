@@ -1,15 +1,16 @@
 //! The root view: the conversation surface with the composer pill.
 //!
-//! Owns only presentation state (the composer's edit buffer and focus). There
-//! is no server, account or message state yet; when there is, it comes from
-//! the SDK and is never copied here. Sending is not wired: the field keeps
-//! what is typed.
+//! Owns presentation state (the composer's edit buffer and focus) and the
+//! link to the SDK client once it opens. Server, account and message state
+//! come from the SDK and are never copied here; nothing reads them yet.
+//! Sending is not wired: the field keeps what is typed.
 
 use rune::{Cx, El, TextEdit, col, row, text_input};
 
 use crate::design::{
     COMPOSER_HEIGHT_PT, PILL_OUTLINE_PT, Palette, RADIUS_COMPOSER_PT, SPACE_LG_PT, TYPE_BODY, Theme,
 };
+use crate::sdk_bridge::{BridgeHost, OpenFailure, Sdk};
 use crate::strings;
 
 /// The element key of the composer's text field.
@@ -18,6 +19,25 @@ pub(crate) const COMPOSER_KEY: &str = "composer";
 /// The root view's state.
 pub(crate) struct Shell {
     composer: TextEdit,
+    sdk: SdkLink,
+}
+
+/// Where the SDK client stands, as the bridge last reported.
+pub(crate) enum SdkLink {
+    /// The bridge is still opening the client.
+    Opening,
+    /// The client is open.
+    #[expect(
+        dead_code,
+        reason = "the server step, the next slice, sends the first request"
+    )]
+    Open(Sdk<Shell>),
+    /// The client did not open.
+    #[expect(
+        dead_code,
+        reason = "the server step, the next slice, shows the failure"
+    )]
+    Failed(OpenFailure),
 }
 
 impl Default for Shell {
@@ -25,7 +45,20 @@ impl Default for Shell {
     fn default() -> Self {
         let mut composer = TextEdit::new("");
         composer.focused = true;
-        Shell { composer }
+        Shell {
+            composer,
+            sdk: SdkLink::Opening,
+        }
+    }
+}
+
+impl BridgeHost for Shell {
+    fn sdk_opened(&mut self, sdk: Sdk<Self>) {
+        self.sdk = SdkLink::Open(sdk);
+    }
+
+    fn sdk_failed(&mut self, failure: OpenFailure) {
+        self.sdk = SdkLink::Failed(failure);
     }
 }
 
