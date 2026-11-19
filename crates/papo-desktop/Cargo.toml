@@ -21,6 +21,12 @@ path = "src/main.rs"
 # the `papo` branch of chriexpe/rune.
 rune = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
 rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+papo-sdk = { path = "../sdk/core" }
+# Drives the SDK client's own runtime from the bridge thread; the locked version.
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
+# The OS keyring: the Secret Service on a Linux host, the Secret portal inside
+# Flatpak. Uses zbus 6, the version Rune already locks.
+oo7 = { version = "0.7.2", default-features = false, features = ["tokio", "native_crypto"] }
 log = "0.4"
 env_logger = "0.11"
 
@@ -29,6 +35,8 @@ rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce
 
 [dev-dependencies]
 serde_json = "1"
+papo-sdk = { path = "../sdk/core", features = ["test-support"] }
+tempfile = "3"
 
 [lints.rust]
 unsafe_code = "deny"

@@ -8,11 +8,25 @@
 //! The binary (`src/main.rs`) only calls [`run`].
 
 mod design;
+mod keyring;
+mod profile_dir;
+mod sdk_bridge;
 mod shell;
 mod strings;
 mod window;
 
-/// Starts the desktop client and blocks until its window closes.
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use papo_sdk::{ClientConfig, DataRoot};
+
+use crate::keyring::{Keyring, SecretService};
+use crate::sdk_bridge::{Bridge, BridgeHost, OpenFailure, Post, Profile};
+use crate::shell::Shell;
+
+/// Starts the desktop client and blocks until its window closes and the SDK
+/// has shut down.
 ///
 /// # Errors
 ///
@@ -22,8 +36,71 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     strings::use_system_language();
     rune::set_app_id(window::APP_ID);
-    rune::App::new(window::spec()).try_run()?;
+    // Rune ends the process the moment the app quits unless told otherwise;
+    // the exit fence below runs after the window is gone.
+    rune::orderly_exit();
+    let keyring = Arc::new(Keyring::start(SecretService::default)?);
+    let app = rune::App::new(window::spec());
+    let post = Arc::new(app.handle());
+    let bridge = Rc::new(RefCell::new(BridgeSlot::NotStarted));
+    let starter = Rc::clone(&bridge);
+    let secrets = Arc::clone(&keyring);
+    // Opening the profile reads SQLite and restores sessions, so it waits for
+    // the first frame. `on_ready` runs again when Wayland recreates the
+    // window; the bridge starts once.
+    let app = app.on_ready(move |_window| {
+        let mut slot = starter.borrow_mut();
+        if matches!(*slot, BridgeSlot::NotStarted) {
+            *slot = start_bridge(Arc::clone(&secrets), &post);
+        }
+    });
+    let result = app.try_run();
+    // The exit fence: the window is gone; shut the SDK down before the
+    // process ends, then the keyring it used.
+    if let BridgeSlot::Running(bridge) = bridge.replace(BridgeSlot::Unavailable) {
+        bridge.shutdown();
+    }
+    keyring.close();
+    result?;
     Ok(())
+}
+
+/// Whether the SDK bridge has started, once the first frame is ready.
+enum BridgeSlot {
+    NotStarted,
+    Running(Bridge),
+    /// It could not start, or the app is past its exit fence.
+    Unavailable,
+}
+
+/// Starts the SDK bridge on the user's profile. When it cannot, the shell
+/// hears so as if the client had failed to open; the window stays usable.
+fn start_bridge(secrets: Arc<Keyring>, post: &Arc<rune::AppHandle<Shell>>) -> BridgeSlot {
+    if let Some(bridge) = try_start_bridge(secrets, post) {
+        return BridgeSlot::Running(bridge);
+    }
+    post.post(Box::new(|shell: &mut Shell, _tx| {
+        shell.sdk_failed(OpenFailure::Failed);
+        true
+    }));
+    BridgeSlot::Unavailable
+}
+
+/// [`start_bridge`]'s work, logging why the bridge did not start.
+fn try_start_bridge(secrets: Arc<Keyring>, post: &Arc<rune::AppHandle<Shell>>) -> Option<Bridge> {
+    let Some(root) = profile_dir::profile_dir() else {
+        log::error!("no profile directory: neither XDG_DATA_HOME nor HOME is set");
+        return None;
+    };
+    let profile = Profile {
+        root: DataRoot::new(root),
+        secrets,
+        config: ClientConfig::default(),
+    };
+    let post: Arc<dyn Post<Shell>> = Arc::clone(post) as Arc<dyn Post<Shell>>;
+    Bridge::start(profile, post)
+        .inspect_err(|error| log::error!("the SDK bridge thread did not start: {error}"))
+        .ok()
 }
 
 /// The log filter when `RUST_LOG` is not set: Papo's own crates at `info`,
