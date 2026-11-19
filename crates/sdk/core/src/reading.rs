@@ -4,6 +4,7 @@ pub(crate) mod catch_up_ops;
 mod catch_up_state;
 pub(crate) mod catch_up_sync;
 mod counts;
+pub(crate) mod evidence;
 mod observers;
 pub(crate) mod position_publish;
 pub(crate) mod positions;

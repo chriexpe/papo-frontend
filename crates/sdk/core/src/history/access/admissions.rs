@@ -11,6 +11,14 @@ use crate::{
     permissions::read_access::{ReadAccess, ReadDecisions},
 };
 
+/// Read-only view of per-channel history admission for sibling owners such as reading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChannelAdmission {
+    Allowed,
+    Quarantined,
+    Denied(HistoryClosedReason),
+}
+
 /// What this session currently admits for one channel. A channel with no entry has never
 /// been admitted in this session and is `Unverified`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +75,15 @@ pub(crate) struct Admissions {
 impl Admissions {
     pub(in crate::history) fn get(&self, channel: Uuid) -> Option<Admission> {
         self.channels.get(&channel).copied()
+    }
+
+    pub(crate) fn channel(&self, channel: Uuid) -> Option<ChannelAdmission> {
+        match self.get(channel) {
+            Some(Admission::Allowed) => Some(ChannelAdmission::Allowed),
+            Some(Admission::Quarantined) => Some(ChannelAdmission::Quarantined),
+            Some(Admission::Denied { reason, .. }) => Some(ChannelAdmission::Denied(reason)),
+            None => None,
+        }
     }
 
     pub(crate) const fn evidence(&self, refetch: Refetch) -> Evidence {
@@ -173,7 +190,9 @@ impl Admissions {
                 if !matches!(current, Some(Admission::Denied { .. })) {
                     self.record_denial(id, false);
                 }
-                if !durable {
+                if durable {
+                    sealed.retained_denied.push((id, reason));
+                } else {
                     sealed.denied.push((id, reason));
                 }
                 if let Some(channel) = incarnations.get(&id) {
@@ -228,9 +247,11 @@ impl Admissions {
     }
 }
 
-/// Channels a seal stopped: newly quarantined, and denials whose marker is not yet durable.
+/// Channels a seal stopped: newly quarantined, denials whose marker is not yet durable,
+/// and already-durable denials whose generation fence must stay active on reading.
 #[derive(Default)]
 pub(super) struct Sealed {
     pub quarantined: Vec<Uuid>,
     pub denied: Vec<(Uuid, HistoryClosedReason)>,
+    pub retained_denied: Vec<(Uuid, HistoryClosedReason)>,
 }

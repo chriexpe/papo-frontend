@@ -115,19 +115,32 @@ impl Registry {
         rows.into_iter()
             .map(|(channel, local, uploaded)| {
                 let channel = Uuid::from_slice(&channel).map_err(|_| StorageError::InvalidState)?;
-                let local = local
-                    .map(|bytes| {
-                        serde_json::from_slice(&bytes).map_err(|_| StorageError::InvalidState)
-                    })
-                    .transpose()?;
-                let uploaded = uploaded
-                    .map(|bytes| {
-                        serde_json::from_slice(&bytes).map_err(|_| StorageError::InvalidState)
-                    })
-                    .transpose()?;
-                Ok((channel, StoredPoints { local, uploaded }))
+                Ok((channel, decode_stored_points(local, uploaded)?))
             })
             .collect()
+    }
+
+    /// Loads durable read points for one channel after verifying account visibility.
+    /// # Errors
+    /// Returns `ReadingError::Session(ClientError::Closed)` when the account is absent/removed,
+    /// or `ReadingError::Storage` on storage corruption.
+    pub(crate) async fn load_channel_read_points(
+        &self,
+        account: AccountId,
+        channel: Uuid,
+    ) -> Result<Option<StoredPoints>, crate::ReadingError> {
+        let lease = Arc::clone(&self.lease);
+        let row = self
+            .readers
+            .query(self.path.clone(), move |tx| {
+                let _lease = lease;
+                Ok(load_channel_tx(tx, account, channel))
+            })
+            .await
+            .map_err(StorageError::from)??;
+        row.map(|(local, uploaded)| decode_stored_points(local, uploaded))
+            .transpose()
+            .map_err(crate::ReadingError::from)
     }
 
     #[cfg(test)]
@@ -178,6 +191,46 @@ pub(crate) fn advance_local_in_tx(
 ) -> Result<(), crate::ReadingError> {
     let bytes = serde_json::to_vec(&point).map_err(|_| StorageError::InvalidState)?;
     advance_local_checked(tx, account, channel, point, &bytes).map_err(crate::ReadingError::from)
+}
+
+type RawStoredPoints = (Option<Vec<u8>>, Option<Vec<u8>>);
+
+fn load_channel_tx(
+    tx: &rusqlite::Transaction<'_>,
+    account: AccountId,
+    channel: Uuid,
+) -> Result<Option<RawStoredPoints>, ReadWriteError> {
+    require_visible_account(tx, account)?;
+    let row = tx
+        .query_row(
+            "SELECT local_point,uploaded_point FROM read_points WHERE server_id=?1 AND user_id=?2 AND channel_id=?3",
+            params![
+                account.server().as_bytes(),
+                account.user().as_bytes(),
+                channel.as_bytes()
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Option<Vec<u8>>>(0)?,
+                    row.get::<_, Option<Vec<u8>>>(1)?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+fn decode_stored_points(
+    local: Option<Vec<u8>>,
+    uploaded: Option<Vec<u8>>,
+) -> Result<StoredPoints, StorageError> {
+    let local = local
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| StorageError::InvalidState))
+        .transpose()?;
+    let uploaded = uploaded
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| StorageError::InvalidState))
+        .transpose()?;
+    Ok(StoredPoints { local, uploaded })
 }
 
 fn require_visible_account(

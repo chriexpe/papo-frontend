@@ -53,6 +53,7 @@ pub use authorship::authored_by_other;
 pub use channel::HistoryHandle;
 pub(crate) use channel::HistoryStore;
 pub use diagnostics::{HistoryBudget, HistoryDiagnostics, HistoryWork};
+pub(crate) use message_key::validate_descending_page;
 pub use message_key::{InvalidMessageKey, MessageKey, parse_message_timestamp_us};
 pub use snapshot_query::{HistoryCoverage, HistoryRange, ResolvedKey};
 pub use subscription::{HistoryChunk, HistorySnapshot, HistorySubscription, HistoryUpdate};

@@ -20,14 +20,6 @@ pub(crate) enum Resolution {
     Pending,
     Absent,
 }
-impl Resolution {
-    pub fn point(self) -> Option<MessageKey> {
-        match self {
-            Self::Found(point) => Some(point),
-            Self::Pending | Self::Absent => None,
-        }
-    }
-}
 impl CanonicalPoints {
     pub async fn resolve(
         &mut self,
@@ -66,49 +58,21 @@ impl CanonicalPoints {
                 ))
                 .await?;
             session.inner.epochs.validate(generation)?;
-            if response
-                .channel_id
-                .as_deref()
-                .and_then(|id| id.parse().ok())
-                != Some(channel)
-            {
-                return Err(NotificationError::InvalidData);
-            }
-            let messages = response.messages.unwrap_or_default();
-            if messages.len() > 100 {
-                return Err(NotificationError::InvalidData);
-            }
-            let mut previous = state
-                .cursor
-                .as_ref()
-                .map(|cursor| MessageKey::parse(&cursor.created_at, &cursor.id))
-                .transpose()
-                .map_err(|_| NotificationError::InvalidData)?;
+            let validated = crate::history::validate_descending_page(
+                channel,
+                state.cursor.as_ref(),
+                100,
+                &response,
+            )?;
             let mut points = BTreeMap::new();
-            for message in &messages {
-                if message.channel_id.as_deref().and_then(|id| id.parse().ok()) != Some(channel) {
-                    return Err(NotificationError::InvalidData);
-                }
-                let point = MessageKey::from_message(message)
-                    .map_err(|_| NotificationError::InvalidData)?;
-                if previous.is_some_and(|previous| point >= previous) {
-                    return Err(NotificationError::InvalidData);
-                }
-                previous = Some(point);
+            for point in validated.points {
                 points.insert(point.message_id, point);
             }
             // Keep only the current page. Progress uses the exact backend cursor, not cached rows.
             state.points = points;
             pages += 1;
-            state.complete = response.has_more != Some(true);
-            if !state.complete {
-                state.cursor = Some(
-                    messages
-                        .last()
-                        .and_then(crate::Message::cursor)
-                        .ok_or(NotificationError::InvalidData)?,
-                );
-            }
+            state.complete = validated.next_cursor.is_none();
+            state.cursor = validated.next_cursor;
         }
         Ok(match state.points.get(&message) {
             Some(point) => Resolution::Found(*point),

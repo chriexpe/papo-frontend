@@ -1,9 +1,95 @@
 //! Single notification decision for all producers; backend remains the authorization authority.
 
 use super::{NotificationDelivery, NotificationTarget};
-use crate::{ResourceSnapshot, Session, Uuid};
+use crate::{
+    Channel, Generation, ResourceSnapshot, Session, Uuid, reading::evidence::ReadEvidence,
+};
+use papo_api::wire::DirectConversation;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+#[cfg(test)]
+/// Provenance of channel/DM inputs supplied to notification policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResourceScope {
+    /// Derived from the session's admitted `ResourceSnapshot`.
+    AdmittedSnapshot,
+    /// Fetched in background and admitted through `resource_admission` for channels and DMs only;
+    /// server, roles, members, profiles and blocks were not loaded.
+    ChannelsAndDmsOnly,
+}
+
+/// Admitted channel/DM metadata view consumed by notification policy.
+/// Never impersonates a complete `ResourceSnapshot`: unloaded resource groups remain absent.
+pub(crate) enum PolicyResources {
+    /// Derived from the session's admitted `ResourceSnapshot`.
+    AdmittedSnapshot {
+        generation: Generation,
+        channels: Arc<Vec<Channel>>,
+        dms: Arc<Vec<DirectConversation>>,
+    },
+    /// Fetched in background and admitted through `resource_admission` for channels and DMs only;
+    /// server, roles, members, profiles and blocks were not loaded.
+    ChannelsAndDmsOnly {
+        generation: Generation,
+        channels: Arc<Vec<Channel>>,
+        dms: Arc<Vec<DirectConversation>>,
+    },
+}
+
+impl PolicyResources {
+    pub(crate) fn from_snapshot(snapshot: &ResourceSnapshot) -> Self {
+        Self::AdmittedSnapshot {
+            generation: snapshot.generation,
+            channels: Arc::clone(&snapshot.channels),
+            dms: Arc::clone(&snapshot.dms),
+        }
+    }
+
+    pub(crate) fn channels_and_dms(
+        generation: Generation,
+        channels: Vec<Channel>,
+        dms: Vec<DirectConversation>,
+    ) -> Self {
+        Self::ChannelsAndDmsOnly {
+            generation,
+            channels: Arc::new(channels),
+            dms: Arc::new(dms),
+        }
+    }
+
+    pub(crate) const fn generation(&self) -> Generation {
+        match self {
+            Self::AdmittedSnapshot { generation, .. }
+            | Self::ChannelsAndDmsOnly { generation, .. } => *generation,
+        }
+    }
+
+    pub(crate) fn channels(&self) -> &[Channel] {
+        match self {
+            Self::AdmittedSnapshot { channels, .. } | Self::ChannelsAndDmsOnly { channels, .. } => {
+                channels
+            }
+        }
+    }
+
+    pub(crate) fn dms(&self) -> &[DirectConversation] {
+        match self {
+            Self::AdmittedSnapshot { dms, .. } | Self::ChannelsAndDmsOnly { dms, .. } => dms,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn scope(&self) -> ResourceScope {
+        match self {
+            Self::AdmittedSnapshot { .. } => ResourceScope::AdmittedSnapshot,
+            Self::ChannelsAndDmsOnly { .. } => ResourceScope::ChannelsAndDmsOnly,
+        }
+    }
+}
 
 /// Effective per-channel SDK device override. Backend off always wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,13 +149,13 @@ pub(crate) struct Candidate {
     pub observed_at_us: i64,
     pub message_point: Option<crate::MessageKey>,
 }
-pub(super) fn contains_channel(resources: &ResourceSnapshot, channel: Uuid) -> bool {
+pub(super) fn contains_channel(resources: &PolicyResources, channel: Uuid) -> bool {
     resources
-        .channels
+        .channels()
         .iter()
         .any(|c| c.id.as_deref().and_then(|s| s.parse().ok()) == Some(channel))
         || resources
-            .dms
+            .dms()
             .iter()
             .any(|d| d.id.parse().ok() == Some(channel))
 }
@@ -82,23 +168,15 @@ pub(super) fn decide(
     settings: &NotificationSettings,
     backend: &papo_api::wire::Notifications,
     candidate: &Candidate,
-    resources: &ResourceSnapshot,
+    resources: &PolicyResources,
+    read_evidence: ReadEvidence,
 ) -> Option<NotificationDelivery> {
     let dm = resources
-        .dms
+        .dms()
         .iter()
         .any(|d| d.id.parse().ok() == Some(candidate.channel));
-    let read_locally = session
-        .reading_state(candidate.channel)
-        .is_some_and(|state| {
-            let point = state.local_point.max(state.uploaded_point);
-            candidate
-                .message_point
-                .is_some_and(|message| point.is_some_and(|point| message <= point))
-                || point.is_some_and(|point| point.message_id == candidate.message)
-        });
-    if read_locally
-        || resources.generation != generation
+    if read_evidence != ReadEvidence::Unread
+        || resources.generation() != generation
         || !contains_channel(resources, candidate.channel)
         || candidate.read
         || candidate.author == Some(session.account().user())
@@ -116,7 +194,7 @@ pub(super) fn decide(
         return None;
     }
     let backend_mode = resources
-        .channels
+        .channels()
         .iter()
         .find(|c| c.id.as_deref().and_then(|s| s.parse().ok()) == Some(candidate.channel))
         .and_then(|c| c.notification_settings.as_deref())
@@ -160,13 +238,13 @@ pub(super) fn decide(
 
 /// Eligibility is shared with claim admission, independently of suppression.
 pub(super) fn eligible(
-    resources: &ResourceSnapshot,
+    resources: &PolicyResources,
     settings: &NotificationSettings,
     candidate: &Candidate,
 ) -> bool {
     if candidate.triggered
         || resources
-            .dms
+            .dms()
             .iter()
             .any(|dm| dm.id.parse().ok() == Some(candidate.channel))
     {
@@ -175,7 +253,7 @@ pub(super) fn eligible(
     match settings.channels.get(&candidate.channel) {
         Some(ChannelNotificationMode::All) => true,
         Some(ChannelNotificationMode::Mentions | ChannelNotificationMode::Off) => false,
-        None => resources.channels.iter().any(|channel| {
+        None => resources.channels().iter().any(|channel| {
             channel.id.as_deref().and_then(|id| id.parse().ok()) == Some(candidate.channel)
                 && channel.notification_settings.as_deref() == Some("all")
         }),

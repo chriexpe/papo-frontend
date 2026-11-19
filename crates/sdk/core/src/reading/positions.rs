@@ -188,6 +188,23 @@ impl PositionCoordinator {
         }
     }
 
+    /// Keeps an already-durable denial fenced for `generation` without bumping `revocation_epochs`.
+    pub fn retain_revoked(
+        &self,
+        channel: Uuid,
+        generation: Generation,
+        reason: HistoryClosedReason,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .revoked
+            .insert(channel, ChannelRevocation { generation, reason });
+        state.quarantined.remove(&channel);
+    }
+
     pub fn clear_revocations(&self, visible: &BTreeSet<Uuid>, generation: Generation) {
         let mut state = self
             .state

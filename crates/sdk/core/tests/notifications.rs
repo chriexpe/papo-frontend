@@ -359,8 +359,17 @@ mod policy_cases;
 #[path = "notification_cases/push_races.rs"]
 mod push_races;
 
+#[path = "notification_cases/access_and_admission.rs"]
+mod access_and_admission;
+
 #[path = "notification_cases/continuation.rs"]
 mod continuation;
+
+#[path = "notification_cases/live_pending.rs"]
+mod live_pending;
+
+#[path = "notification_cases/read_evidence.rs"]
+mod read_evidence;
 
 #[path = "notification_cases/reliability.rs"]
 mod reliability;
