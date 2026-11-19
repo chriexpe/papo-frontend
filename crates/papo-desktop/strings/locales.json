@@ -1,0 +1,7 @@
+{
+  "layers": ["papo"],
+  "locales": [
+    { "id": "en-US", "tag": "en-US", "label": "English" },
+    { "id": "pt-BR", "tag": "pt-BR", "label": "Português (Brasil)" }
+  ]
+}

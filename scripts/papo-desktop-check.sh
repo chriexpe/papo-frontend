@@ -5,8 +5,8 @@
 #   scripts/papo-desktop-check.sh          papo-desktop only
 #   scripts/papo-desktop-check.sh --shared also the crates papo-desktop shares
 #                                          the workspace with; required when a
-#                                          change touches papo-core, papo-call
-#                                          or Cargo.lock
+#                                          change touches another crate, the
+#                                          workspace manifest or Cargo.lock
 #
 # Needs the system packages from scripts/deps.sh and the Rust toolchain from
 # rust-version in Cargo.toml.
@@ -38,9 +38,8 @@ step "tests"
 cargo test --locked -p papo-desktop
 
 if $shared; then
-    # What CI's workspace jobs run for the crates papo-desktop builds on and
-    # for the clients that share them. A change made for the desktop must
-    # leave Android and the egui client green.
+    # What CI's workspace jobs run for the other crates. A change made for
+    # the desktop must leave the SDK and Android green.
     step "shared crates: clippy"
     cargo clippy --locked --workspace --exclude papo-desktop --all-targets -- -D warnings
     step "shared crates: tests"

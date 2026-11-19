@@ -22,8 +22,8 @@ SDK_EDGES = {
 }
 PRODUCTION = {"papo-api", "papo-sdk", "papo-sdk-ui", "papo-ffi"}
 LEGACY = {"papo", "papo-core", "papo-android", "papo-desktop", "papo-call"}
-PLATFORM = re.compile(r"^(?:gpui(?:[-_].*)?|egui(?:[-_].*)?|eframe|uniffi(?:[-_].*)?|jni|android-activity)$")
-TYPE_REFERENCE = re.compile(r"\b(?:gpui(?:_\w+)?|egui(?:_\w+)?|eframe|uniffi(?:_\w+)?|androidx|compose)\s*::")
+PLATFORM = re.compile(r"^(?:rune(?:[-_].*)?|gpui(?:[-_].*)?|egui(?:[-_].*)?|eframe|uniffi(?:[-_].*)?|jni|android-activity)$")
+TYPE_REFERENCE = re.compile(r"\b(?:rune(?:_\w+)?|gpui(?:_\w+)?|egui(?:_\w+)?|eframe|uniffi(?:_\w+)?|androidx|compose)\s*::")
 UI_TEXT = re.compile(r"\b(?:tr|gettext|ngettext|localize|translate)\s*[!(]")
 STRING_ERROR = re.compile(
     r"\bResult\s*<[^;{}]*,\s*(?:String|&\s*'static\s+str)\s*>"

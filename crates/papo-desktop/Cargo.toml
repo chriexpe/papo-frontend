@@ -3,7 +3,7 @@ name = "papo-desktop"
 version = "0.9.0"
 edition = "2024"
 rust-version = "1.99"
-description = "Papo desktop client on GPUI Kit, built from scratch on papo-core"
+description = "Papo desktop client on Rune, built on the Papo SDK"
 license = "AGPL-3.0-or-later"
 publish = false
 
@@ -16,16 +16,19 @@ name = "papo-desktop"
 path = "src/main.rs"
 
 [dependencies]
-# GPUI Kit pins its own GPUI snapshot (gpui-pre =0.3.11) and, with
-# `gpui-fast`, swaps every layer to the GPUI Fast fork. It is the only GPUI
-# dependency: never add `gpui`, `gpui-pre` or `gpui-fast` directly. The exact
-# pin is deliberate: the Kit releases weekly and its API still moves.
-gpui-kit = { version = "=0.9.0", features = ["gpui-fast"] }
+# Rune is pre-release and moves daily. It is pinned to one revision, the
+# same as the workspace [patch] table: upstream `dev` plus Papo's fixes on
+# the `papo` branch of chriexpe/rune.
+rune = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
 log = "0.4"
 env_logger = "0.11"
 
+[build-dependencies]
+rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76", features = ["codegen"] }
+
 [dev-dependencies]
-gpui-kit = { version = "=0.9.0", features = ["gpui-fast", "test-support"] }
+serde_json = "1"
 
 [lints.rust]
 unsafe_code = "deny"

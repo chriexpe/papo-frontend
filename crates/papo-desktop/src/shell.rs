@@ -1,69 +1,65 @@
-//! The shell: the root view of the main window.
+//! The root view: the conversation surface with the composer pill.
 //!
-//! The shell will own the window's layout: which panes exist, where they
-//! sit and which one has focus. Today it only fills the window with the
-//! theme's background, so the bootstrap can be run, tested and measured
-//! before any screen exists.
-//!
-//! Rules:
-//! - The shell holds layout state only. Account, server and channel state
-//!   comes from `papo-core` through the projection layer; the shell never
-//!   copies it.
-//! - Colours come from the theme (`cx.theme()`), never from literals here.
-//!   Papo's own tokens will replace the Kit's defaults.
+//! Owns only presentation state (the composer's edit buffer and focus). There
+//! is no server, account or message state yet; when there is, it comes from
+//! the SDK and is never copied here. Sending is not wired: the field keeps
+//! what is typed.
 
-use gpui::{Context, InteractiveElement as _, IntoElement, Render, Styled as _, Window, div};
-use gpui_kit::TestSupportExt as _;
-use gpui_kit::component::ActiveTheme as _;
+use rune::{Cx, El, TextEdit, col, row, text_input};
 
-/// The root view of the main window.
-pub(crate) struct Shell;
+use crate::design::{
+    COMPOSER_HEIGHT_PT, PILL_OUTLINE_PT, Palette, RADIUS_COMPOSER_PT, SPACE_LG_PT, TYPE_BODY, Theme,
+};
+use crate::strings;
 
-impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        div()
-            .id("shell")
-            .test_support()
-            .size_full()
-            .bg(theme.background)
-            .text_color(theme.foreground)
+/// The element key of the composer's text field.
+pub(crate) const COMPOSER_KEY: &str = "composer";
+
+/// The root view's state.
+pub(crate) struct Shell {
+    composer: TextEdit,
+}
+
+impl Default for Shell {
+    /// The composer starts focused, so typing goes to it without a click.
+    fn default() -> Self {
+        let mut composer = TextEdit::new("");
+        composer.focused = true;
+        Shell { composer }
     }
+}
+
+/// Draws the shell. Pure: it reads state and the system's light or dark
+/// preference, and changes nothing.
+pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
+    let palette = Palette::new(Theme::following_system(cx.system_dark()));
+    let field = text_input(&shell.composer, TYPE_BODY)
+        .key(COMPOSER_KEY)
+        .label(strings::composer_label())
+        .single_line()
+        .grow(1.0)
+        .color(palette.text_primary)
+        .placeholder(strings::composer_placeholder(), palette.text_muted)
+        .caret(palette.accent, palette.text_selection)
+        .on_edit(|shell: &mut Shell| &mut shell.composer);
+    let pill = row()
+        .key("composer-pill")
+        .w_full()
+        .h(COMPOSER_HEIGHT_PT)
+        .px(SPACE_LG_PT)
+        .center_y()
+        .radius(RADIUS_COMPOSER_PT)
+        .fill(palette.surface_pill)
+        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .child(field);
+    col()
+        .w_full()
+        .h_full()
+        .justify_end()
+        .padding(SPACE_LG_PT)
+        .fill(palette.surface_content)
+        .child(pill)
 }
 
 #[cfg(test)]
-mod tests {
-    use gpui::{
-        AppContext as _, Bounds, Point, TestAppContext, WindowBounds, WindowOptions, px, size,
-    };
-    use gpui_kit::test::TestWindowExt as _;
-
-    use super::Shell;
-
-    #[gpui_kit::test]
-    fn shell_fills_the_window(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
-        let window_size = size(px(800.), px(600.));
-        let (window, _) = cx
-            .update(|cx| {
-                gpui_kit::open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(Bounds {
-                            origin: Point::default(),
-                            size: window_size,
-                        })),
-                        ..WindowOptions::default()
-                    },
-                    cx,
-                    |_, cx| cx.new(|_| Shell),
-                )
-            })
-            .unwrap();
-
-        cx.update_window(window, |_, window, cx| {
-            window.render_frame(cx);
-            assert_eq!(window.find("shell").bounds().size, window_size);
-        })
-        .unwrap();
-    }
-}
+mod tests;

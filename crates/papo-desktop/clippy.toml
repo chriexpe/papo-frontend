@@ -9,4 +9,4 @@ allow-panic-in-tests = true
 
 # Proper names that `doc_markdown` would otherwise want in backticks. ".."
 # keeps Clippy's default list.
-doc-valid-idents = ["GPUI", "WebSocket", "WebView", "WebView2", "WebKitGTK", "WKWebView", "GStreamer", "WebRTC", "UniFFI", "XWayland", ".."]
+doc-valid-idents = ["WebSocket", "WebView", "WebView2", "WebKitGTK", "WKWebView", "GStreamer", "WebRTC", "UniFFI", "XWayland", ".."]
