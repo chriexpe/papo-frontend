@@ -1,17 +1,22 @@
-//! The root view: the conversation surface with the composer pill.
+//! The root view: the app (the conversation surface with the composer pill),
+//! and the server and account screens in the host that fits: the whole window
+//! on first run or when no saved account can sign in, a popup over the app
+//! otherwise.
 //!
-//! Owns presentation state (the composer's edit buffer and focus) and the
-//! link to the SDK client once it opens. Server, account and message state
-//! come from the SDK and are never copied here; nothing reads them yet.
-//! Sending is not wired: the field keeps what is typed.
+//! Owns presentation state (the composer's edit buffer and focus, which
+//! screens are open, the "Connected to" pill) and the link to the SDK client.
+//! Server, account and message state come from the SDK and are never copied
+//! here: the account watch posts only what the shell decides with. Sending is
+//! not wired: the field keeps what is typed.
 
-use rune::{Cx, El, TextEdit, col, row, text_input};
+use std::sync::Arc;
 
-use crate::design::{
-    COMPOSER_HEIGHT_PT, PILL_OUTLINE_PT, Palette, RADIUS_COMPOSER_PT, SPACE_LG_PT, TYPE_BODY, Theme,
-};
-use crate::sdk_bridge::{BridgeHost, OpenFailure, Sdk};
-use crate::strings;
+use papo_sdk::{AccountId, AuthService};
+use rune::{ImageCache, TextEdit};
+
+use crate::account_watch::{self, Accounts};
+use crate::sdk_bridge::{BridgeHost, OpenFailure, RequestSlot, Sdk};
+use crate::sign_in::{self, Event, Fields, Host, SignIn};
 
 /// The element key of the composer's text field.
 pub(crate) const COMPOSER_KEY: &str = "composer";
@@ -19,80 +24,281 @@ pub(crate) const COMPOSER_KEY: &str = "composer";
 /// The root view's state.
 pub(crate) struct Shell {
     composer: TextEdit,
-    sdk: SdkLink,
+    sdk: Option<Sdk<Shell>>,
+    stage: Stage,
+    /// What the server and account screens hold. Kept outside the flow so a
+    /// field's editor always has its text; reset, wiping the passwords, each
+    /// time the screens close.
+    fields: Fields,
+    /// The flow's address probe and account requests; only the newest counts.
+    sign_in_requests: RequestSlot,
+    /// The renewing server's name and icon.
+    server_card_requests: RequestSlot,
+    /// Decodes server icons off the UI thread; set when the window starts.
+    images: Option<ImageCache>,
+    /// Held by each change to the server list the flow makes, and by each
+    /// probe, so a probe sees the removals sent before it.
+    registry_writes: Arc<tokio::sync::Mutex<()>>,
 }
 
-/// Where the SDK client stands, as the bridge last reported.
-pub(crate) enum SdkLink {
-    /// The bridge is still opening the client.
-    Opening,
-    /// The client is open.
-    #[expect(
-        dead_code,
-        reason = "the server step, the next slice, sends the first request"
-    )]
-    Open(Sdk<Shell>),
-    /// The client did not open.
-    #[expect(
-        dead_code,
-        reason = "the server step, the next slice, shows the failure"
-    )]
-    Failed(OpenFailure),
+/// Where the app stands.
+pub(crate) enum Stage {
+    /// The SDK has not opened, or has not said which accounts are saved.
+    Starting,
+    /// The SDK could not open; the app cannot work.
+    Unavailable(OpenFailure),
+    Running {
+        /// The accounts' summary, as the account watch last posted it.
+        accounts: Accounts,
+        /// The server and account screens, when open.
+        flow: Option<Box<SignIn>>,
+        /// The server just signed in to, for the "Connected to" pill.
+        connected: Option<String>,
+        /// Signed-out accounts whose sign-in screen was shown, so closing it
+        /// does not bring it straight back.
+        offered: Vec<AccountId>,
+    },
 }
 
 impl Default for Shell {
-    /// The composer starts focused, so typing goes to it without a click.
     fn default() -> Self {
-        let mut composer = TextEdit::new("");
-        composer.focused = true;
         Shell {
-            composer,
-            sdk: SdkLink::Opening,
+            composer: TextEdit::new(""),
+            sdk: None,
+            stage: Stage::Starting,
+            fields: Fields::default(),
+            sign_in_requests: RequestSlot::default(),
+            server_card_requests: RequestSlot::default(),
+            images: None,
+            registry_writes: Arc::default(),
         }
     }
 }
 
 impl BridgeHost for Shell {
     fn sdk_opened(&mut self, sdk: Sdk<Self>) {
-        self.sdk = SdkLink::Open(sdk);
+        sdk.watch(|client, updates| account_watch::run(client, updates, Shell::accounts_changed));
+        self.sdk = Some(sdk);
     }
 
     fn sdk_failed(&mut self, failure: OpenFailure) {
-        self.sdk = SdkLink::Failed(failure);
+        self.stage = Stage::Unavailable(failure);
     }
 }
 
-/// Draws the shell. Pure: it reads state and the system's light or dark
-/// preference, and changes nothing.
-pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
-    let palette = Palette::new(Theme::following_system(cx.system_dark()));
-    let field = text_input(&shell.composer, TYPE_BODY)
-        .key(COMPOSER_KEY)
-        .label(strings::composer_label())
-        .single_line()
-        .grow(1.0)
-        .color(palette.text_primary)
-        .placeholder(strings::composer_placeholder(), palette.text_muted)
-        .caret(palette.accent, palette.text_selection)
-        .on_edit(|shell: &mut Shell| &mut shell.composer);
-    let pill = row()
-        .key("composer-pill")
-        .w_full()
-        .h(COMPOSER_HEIGHT_PT)
-        .px(SPACE_LG_PT)
-        .center_y()
-        .radius(RADIUS_COMPOSER_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
-        .child(field);
-    col()
-        .w_full()
-        .h_full()
-        .justify_end()
-        .padding(SPACE_LG_PT)
-        .fill(palette.surface_content)
-        .child(pill)
+impl Shell {
+    /// Gives the shell the window's image decoder (`AppSpec::setup`).
+    pub(crate) fn set_image_cache(&mut self, images: ImageCache) {
+        self.images = Some(images);
+    }
+
+    /// Takes the account watch's summary, and opens the screens it calls for.
+    pub(crate) fn accounts_changed(&mut self, accounts: Accounts) -> bool {
+        match &mut self.stage {
+            Stage::Unavailable(_) => return false,
+            Stage::Starting => {
+                self.stage = Stage::Running {
+                    accounts,
+                    flow: None,
+                    connected: None,
+                    offered: Vec::new(),
+                };
+                self.composer.focused = true;
+            }
+            Stage::Running {
+                accounts: current,
+                offered,
+                ..
+            } => {
+                // An account that works again is offered again if it lapses.
+                offered.retain(|id| accounts.signed_out.iter().any(|out| out.id == *id));
+                *current = accounts;
+            }
+        }
+        let first_run = matches!(&self.stage, Stage::Running { accounts, flow: None, .. } if accounts.saved == 0);
+        if first_run {
+            let flow = SignIn::new(Host::Window, &mut self.fields);
+            self.open_sign_in(flow, None);
+        } else {
+            self.offer_sign_in_again();
+        }
+        true
+    }
+
+    /// With no screens open, signing in again for the first signed-out
+    /// account not offered yet. Never the first-run server step: right after
+    /// a sign-in the summary may not count the new account yet.
+    fn offer_sign_in_again(&mut self) {
+        let Stage::Running {
+            accounts,
+            flow: None,
+            offered,
+            ..
+        } = &mut self.stage
+        else {
+            return;
+        };
+        let host = if accounts.none_usable() {
+            Host::Window
+        } else {
+            Host::Popup
+        };
+        let pending = accounts
+            .signed_out
+            .iter()
+            .find(|account| !offered.contains(&account.id))
+            .cloned();
+        if let Some(account) = pending {
+            offered.push(account.id);
+            let (flow, discover) = SignIn::renewing(host, &account, &mut self.fields);
+            self.open_sign_in(flow, Some(discover));
+        }
+    }
+
+    /// Opens the add-server screen in the popup: the rail's +.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the rail's +, in the next slice, calls it")
+    )]
+    pub(crate) fn add_server(&mut self) {
+        if self.sign_in().is_none() && matches!(self.stage, Stage::Running { .. }) {
+            let flow = SignIn::new(Host::Popup, &mut self.fields);
+            self.open_sign_in(flow, None);
+        }
+    }
+
+    fn open_sign_in(&mut self, flow: SignIn, first: Option<sign_in::Effect>) {
+        let Stage::Running { flow: open, .. } = &mut self.stage else {
+            return;
+        };
+        *open = Some(Box::new(flow));
+        if let Some(effect) = first {
+            let mut effects = rune::machine::Effects::none();
+            effects.push(effect);
+            sign_in::run(self, effects);
+        }
+    }
+
+    /// The person closes the screens (✕, Escape). A server the flow leaves
+    /// without an account is removed.
+    pub(crate) fn close_sign_in(&mut self) {
+        let left = self.sign_in().and_then(SignIn::abandon);
+        if let Some(server) = left {
+            sign_in::remove_left_server(self, server);
+        }
+        self.end_sign_in();
+    }
+
+    /// Ends the flow: answers still on their way are dropped and the typed
+    /// passwords wiped. Then the next account waiting to sign in again, if
+    /// any, gets its screen.
+    pub(crate) fn end_sign_in(&mut self) {
+        let Stage::Running { flow, .. } = &mut self.stage else {
+            return;
+        };
+        if flow.take().is_none() {
+            return;
+        }
+        self.fields = Fields::default();
+        self.sign_in_requests.issue();
+        self.server_card_requests.issue();
+        self.composer.focused = true;
+        self.offer_sign_in_again();
+    }
+
+    /// Signed in: the screens close and the pill names the server.
+    pub(crate) fn finish_sign_in(&mut self, server: String) {
+        self.end_sign_in();
+        if let Stage::Running { connected, .. } = &mut self.stage {
+            *connected = Some(server);
+        }
+    }
+
+    fn dismiss_connected(&mut self) {
+        if let Stage::Running { connected, .. } = &mut self.stage {
+            *connected = None;
+        }
+    }
+
+    /// Steps the open flow with `event` and carries out what it asks.
+    /// Returns whether the view changed: false with no flow open.
+    pub(crate) fn sign_in_event(&mut self, event: Event) -> bool {
+        let Stage::Running {
+            flow: Some(flow), ..
+        } = &mut self.stage
+        else {
+            return false;
+        };
+        let effects = flow.step(&mut self.fields, event);
+        sign_in::run(self, effects);
+        true
+    }
+
+    pub(crate) fn sign_in(&self) -> Option<&SignIn> {
+        match &self.stage {
+            Stage::Running { flow, .. } => flow.as_deref(),
+            Stage::Starting | Stage::Unavailable(_) => None,
+        }
+    }
+
+    pub(crate) fn sign_in_fields_mut(&mut self) -> &mut Fields {
+        &mut self.fields
+    }
+
+    /// Keeps the sign-in handle a request fetched, for the steps after it.
+    pub(crate) fn keep_sign_in_auth(&mut self, auth: Option<AuthService>) {
+        if let (
+            Stage::Running {
+                flow: Some(flow), ..
+            },
+            Some(auth),
+        ) = (&mut self.stage, auth)
+        {
+            flow.auth = Some(auth);
+        }
+    }
+
+    /// Starts decoding the server's icon; it shows once decoded.
+    pub(crate) fn load_server_icon(&mut self, bytes: Vec<u8>) {
+        let Some(images) = &self.images else {
+            return;
+        };
+        let image = images.load(bytes);
+        if let Stage::Running {
+            flow: Some(flow), ..
+        } = &mut self.stage
+        {
+            flow.set_icon(image);
+        }
+    }
+
+    pub(crate) fn registry_writes(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.registry_writes)
+    }
+
+    pub(crate) fn sdk(&self) -> Option<&Sdk<Shell>> {
+        self.sdk.as_ref()
+    }
+
+    pub(crate) fn sign_in_requests(&self) -> &RequestSlot {
+        &self.sign_in_requests
+    }
+
+    pub(crate) fn sign_in_requests_mut(&mut self) -> &mut RequestSlot {
+        &mut self.sign_in_requests
+    }
+
+    pub(crate) fn server_card_requests(&self) -> &RequestSlot {
+        &self.server_card_requests
+    }
+
+    pub(crate) fn server_card_requests_mut(&mut self) -> &mut RequestSlot {
+        &mut self.server_card_requests
+    }
 }
 
 #[cfg(test)]
 mod tests;
+mod view;
+
+pub(crate) use view::view;

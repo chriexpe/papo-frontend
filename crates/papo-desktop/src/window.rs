@@ -19,6 +19,7 @@ const MIN_SIZE_PT: (f32, f32) = (360.0, 400.0);
 pub(crate) fn spec() -> AppSpec<Shell> {
     AppSpec {
         min_size: Some(MIN_SIZE_PT),
+        setup: Some(|shell, waker| shell.set_image_cache(rune::ImageCache::new(waker))),
         ..AppSpec::new(
             strings::window_title(),
             INITIAL_SIZE_PT,

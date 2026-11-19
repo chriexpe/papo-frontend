@@ -7,11 +7,13 @@
 //!
 //! The binary (`src/main.rs`) only calls [`run`].
 
+mod account_watch;
 mod design;
 mod keyring;
 mod profile_dir;
 mod sdk_bridge;
 mod shell;
+mod sign_in;
 mod strings;
 mod window;
 
