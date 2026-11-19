@@ -101,7 +101,7 @@ pub use search::{
 mod session;
 mod session_pool;
 
-pub use auth::{AuthService, AuthState};
+pub use auth::{AuthFailure, AuthService, AuthState};
 pub use client::{Client, ClientConfig};
 pub use client_error::ClientError;
 pub use client_handle::{ClientHandle, RegistrySnapshot};
