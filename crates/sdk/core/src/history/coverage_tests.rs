@@ -6,6 +6,7 @@
 //! (every message key plus a synthetic key between each pair), so the server's message list
 //! alone can never make a range complete. `simulation` drives the model and the oracle.
 
+mod identity;
 mod oracle;
 mod simulation;
 
@@ -33,7 +34,7 @@ fn coverage_is_sound_and_matches_accepted_evidence() {
         },
         TestRng::deterministic_rng(RngAlgorithm::ChaCha),
     );
-    let strategy = prop::collection::vec((0u8..9, any::<u8>(), any::<u8>(), 1usize..6), 1..64);
+    let strategy = prop::collection::vec((0u8..10, any::<u8>(), any::<u8>(), 1usize..6), 1..64);
     runner
         .run(&strategy, |operations| {
             let mut simulation = Simulation::new();
@@ -47,6 +48,7 @@ fn coverage_is_sound_and_matches_accepted_evidence() {
                     5 => simulation.delete(index),
                     6 => simulation.evict(),
                     7 => simulation.reconnect(u128::from(selector % 3)),
+                    8 => simulation.reload(),
                     _ => simulation.page(None, HistoryOrder::Desc, limit),
                 }
                 simulation.check();
@@ -218,7 +220,7 @@ fn persist_and_restore(model: super::model::Model, generation: u64) -> super::pe
             .await
             .unwrap()
             .unwrap();
-        super::persistence::decode(data).unwrap()
+        super::persistence::decode(data).unwrap().expect_current()
     })
 }
 
@@ -263,9 +265,9 @@ fn a_late_event_for_an_anchored_cursor_turns_the_anchor_into_a_held_boundary() {
 }
 
 #[test]
-fn rows_written_before_anchors_decode_without_one() {
+fn unanchored_chunks_encode_and_decode_without_anchor_fields() {
     let chunk = serde_json::to_value(super::model::Chunk {
-        id: [1; 16],
+        id: super::chunk_id::ChunkIds::default().allocate().unwrap(),
         first: message_point(1),
         last: message_point(2),
         oldest_complete: false,
@@ -276,7 +278,7 @@ fn rows_written_before_anchors_decode_without_one() {
         newest_anchor: None,
     })
     .unwrap();
-    // Unanchored chunks encode exactly as before, so restored layouts still compare equal.
+    // Absent anchors are not encoded, and a row without them decodes to unanchored.
     assert!(chunk.get("oldest_anchor").is_none() && chunk.get("newest_anchor").is_none());
     let decoded: super::model::Chunk = serde_json::from_value(chunk).unwrap();
     assert!(decoded.oldest_anchor.is_none() && decoded.newest_anchor.is_none());

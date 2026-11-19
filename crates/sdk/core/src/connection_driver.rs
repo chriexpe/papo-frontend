@@ -276,6 +276,20 @@ async fn wait_backoff(
 #[cfg(test)]
 mod tests;
 
+/// Whether a reconcile failure means the account cache itself cannot be trusted. Only
+/// storage-level faults do; a history layout invariant (`HistoryLayout`) is rejected before
+/// any write, so it leaves the cache intact and never discards it.
+fn invalidates_account_cache(error: &ClientError) -> bool {
+    matches!(
+        error,
+        ClientError::Cache(
+            crate::CacheError::Storage(_)
+                | crate::CacheError::InvalidData
+                | crate::CacheError::TaskStopped
+        )
+    )
+}
+
 /// Serves exactly one socket; returning a failure never reconnects inside the API layer.
 async fn pump(
     session: &SessionInner,
@@ -284,14 +298,8 @@ async fn pump(
 ) -> Option<ClientError> {
     if let Some(resources) = socket.resources() {
         let result = crate::reconcile::run(session, epoch, socket, &resources).await;
-        if matches!(
-            &result,
-            Err(ClientError::Cache(
-                crate::CacheError::Storage(_)
-                    | crate::CacheError::InvalidData
-                    | crate::CacheError::TaskStopped
-            ))
-        ) && session.epochs.validate(epoch.generation).is_ok()
+        if result.as_ref().is_err_and(invalidates_account_cache)
+            && session.epochs.validate(epoch.generation).is_ok()
             && let Err(error) = resources
                 .client
                 .inner

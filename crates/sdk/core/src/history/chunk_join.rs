@@ -41,7 +41,7 @@ impl Model {
                     .clone()
                     .ok_or(HistoryError::InvalidPage)?;
                 self.chunks.push(Chunk {
-                    id: *first_id,
+                    id: self.chunk_ids.allocate()?,
                     first,
                     last,
                     oldest_complete: true,
@@ -89,7 +89,7 @@ impl Model {
             self.server_live_generation = ticket.generation;
         }
         let proof = Chunk {
-            id: key.id_bytes(),
+            id: self.chunk_ids.allocate()?,
             first: cursor.clone(),
             last: cursor.clone(),
             oldest_complete: !ascending,
@@ -128,7 +128,7 @@ impl Model {
         // The page's cursor is recorded as an anchor on the side it was fetched from. When the
         // model holds that cursor, joining with its chunk replaces the anchor with a real edge.
         let page = Chunk {
-            id: first.key()?.id_bytes(),
+            id: self.chunk_ids.allocate()?,
             first,
             last,
             oldest_complete: if ascending {
@@ -252,8 +252,15 @@ impl Chunk {
     /// from members that have them. An anchor survives where it reaches past every member's
     /// boundary, independent of any generation's live edge; an anchor-only member's anchor
     /// bounds only its own side (an empty `Asc` page never proves anything below its cursor).
+    /// The union keeps the identity issued first among its members, so a run absorbing a newly
+    /// fetched page keeps its own; the other members' identities are retired, never reused.
     /// The caller sets the validation generation.
     pub fn union(members: Vec<Self>) -> Result<Self, HistoryError> {
+        let id = members
+            .iter()
+            .map(|member| member.id)
+            .min()
+            .ok_or(HistoryError::InvalidPage)?;
         let mut lower: Option<Edge> = None;
         let mut upper: Option<Edge> = None;
         for member in &members {
@@ -269,10 +276,8 @@ impl Chunk {
         let mut first: Option<(MessageKey, Point)> = None;
         let mut last: Option<(MessageKey, Point)> = None;
         let mut anchors = Vec::new();
-        let mut id = [u8::MAX; 16];
         let (mut oldest_complete, mut newest_complete, mut live_generation) = (false, false, 0);
         for member in members {
-            id = id.min(member.id);
             oldest_complete |= member.oldest_complete;
             newest_complete |= member.newest_complete;
             live_generation = live_generation.max(member.live_generation);

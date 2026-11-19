@@ -1,4 +1,5 @@
-//! Incremental model rows and atomic tombstone/coverage markers; cache owns revocation and physical purge.
+//! Incremental model rows and atomic tombstone/coverage markers, and the per-channel rebuild of
+//! a history set stored in an older layout; cache owns revocation and physical purge.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,12 +10,24 @@ use crate::{
 
 use super::{
     HistoryError,
+    chunk_id::ChunkIds,
     diagnostics::Counters,
     model::{Entry, Model},
     persisted_layout::{
-        Item, Layout, LinkedChunk, Metadata, encode, layout, partition, structural_layout,
+        Item, LAYOUT_VERSION, Layout, LinkedChunk, Metadata, encode, layout, partition,
+        stored_version, structural_layout,
     },
 };
+
+/// What a stored history set holds for this build.
+pub(super) enum Stored {
+    /// A set in the current layout, restored.
+    Current(Box<State>),
+    /// A set written in another layout version. It is rebuildable cache, never decoded and
+    /// never reported as corrupt: an open replaces it with an empty set and retention retires
+    /// it, for this channel only.
+    Outdated,
+}
 
 #[derive(Default)]
 pub(super) struct State {
@@ -61,18 +74,30 @@ impl State {
         {
             return Ok(());
         }
-        let set_id = cache.history_authorize(channel, generation, false).await?;
+        let mut set_id = cache.history_authorize(channel, generation, false).await?;
         if self.set_id != Some(set_id)
             || self.cache_instance != Some(instance)
             || self.authorized_generation != generation.get()
             || self.retention_version != retention_version
         {
+            // The set authorized above can be retired before this load (a cold retention
+            // pass on an outdated layout). That is a lost race, not corruption: the next
+            // attempt authorizes the channel's current set.
             let data = cache
                 .history_load(channel, generation)
                 .await?
-                .ok_or(CacheError::InvalidData)?;
+                .ok_or(CacheError::Superseded)?;
             let counters = std::sync::Arc::clone(&self.counters);
-            *self = decode(data)?;
+            *self = match decode(data)? {
+                Stored::Current(state) => *state,
+                Stored::Outdated => {
+                    // `fresh` revokes the channel's current set (the outdated one, under this
+                    // channel's state lock) in the same fenced transaction that allocates an
+                    // empty replacement; other channels are untouched.
+                    set_id = cache.history_authorize(channel, generation, true).await?;
+                    Self::default()
+                }
+            };
             self.counters = counters;
             self.counters
                 .cache_loads
@@ -111,7 +136,7 @@ impl State {
         }
         let mut sizes = Vec::new();
         for id in &self.model.dirty {
-            let entry = self.model.entries.get(id).ok_or(CacheError::InvalidData)?;
+            let entry = self.model.entries.get(id).ok_or(HistoryError::Layout)?;
             let payload = encode(entry)?;
             sizes.push((*id, payload.len()));
             if !entry.deleted {
@@ -120,7 +145,7 @@ impl State {
                         table: HistoryTable::Items,
                         id: *id,
                         payload: encode(&Item::Message {
-                            point: entry.point.clone().ok_or(CacheError::InvalidData)?,
+                            point: entry.point.clone().ok_or(HistoryError::Layout)?,
                         })?,
                     });
                 }
@@ -139,11 +164,13 @@ impl State {
             }
         }
         let metadata = encode(&Metadata {
+            layout: LAYOUT_VERSION,
             revision: self.model.revision,
             empty_generation: self.model.empty_generation,
+            chunk_high_water: self.model.chunk_ids.high_water(),
             active_chunks: self.model.chunks.iter().map(|chunk| chunk.id).collect(),
         })?;
-        let set_id = self.set_id.ok_or(CacheError::InvalidData)?;
+        let set_id = self.set_id.ok_or(HistoryError::Unverified)?;
         let row_count = upserts.len();
         let submitted_rows = row_count + self.physical_deletes.len() + 1;
         let written_bytes =
@@ -194,7 +221,20 @@ impl State {
     }
 }
 
-pub(super) fn decode(data: HistoryData) -> Result<State, HistoryError> {
+#[cfg(test)]
+impl Stored {
+    /// The restored state of a set in the current layout.
+    pub fn expect_current(self) -> State {
+        match self {
+            Self::Current(state) => *state,
+            Self::Outdated => panic!("history set stored in an outdated layout"),
+        }
+    }
+}
+
+/// Restores a stored set. Errors mean the stored bytes are inconsistent (`InvalidData`); a
+/// set from another layout version is `Stored::Outdated`, checked before anything else.
+pub(super) fn decode(data: HistoryData) -> Result<Stored, HistoryError> {
     let mut state = State {
         set_id: Some(data.set_id),
         ..State::default()
@@ -204,19 +244,29 @@ pub(super) fn decode(data: HistoryData) -> Result<State, HistoryError> {
             return Err(CacheError::InvalidData.into());
         }
         Metadata {
+            layout: LAYOUT_VERSION,
             revision: 0,
             empty_generation: 0,
+            chunk_high_water: 0,
             active_chunks: Vec::new(),
         }
     } else {
+        if stored_version(&data.metadata)? != LAYOUT_VERSION {
+            return Ok(Stored::Outdated);
+        }
         serde_json::from_slice::<Metadata>(&data.metadata).map_err(|_| CacheError::InvalidData)?
     };
     state.model.revision = metadata.revision;
     state.committed_revision = metadata.revision;
     state.model.empty_generation = metadata.empty_generation;
-    let active_chunks: BTreeSet<_> = metadata.active_chunks.iter().copied().collect();
-    if active_chunks.len() != metadata.active_chunks.len() {
-        return Err(CacheError::InvalidData.into());
+    state.model.chunk_ids = ChunkIds::resume(metadata.chunk_high_water);
+    // Each active identity appears once and was issued before the stored high-water mark,
+    // so allocation after reload can never issue it again.
+    let mut active_chunks = BTreeMap::new();
+    for id in &metadata.active_chunks {
+        if !state.model.chunk_ids.issued(*id) || active_chunks.insert(id.row_key(), *id).is_some() {
+            return Err(CacheError::InvalidData.into());
+        }
     }
     let mut stored_layout = BTreeMap::new();
     for row in data.rows {
@@ -232,12 +282,12 @@ pub(super) fn decode(data: HistoryData) -> Result<State, HistoryError> {
         } else {
             let index = match row.table {
                 HistoryTable::Chunks => {
-                    if !active_chunks.contains(&row.id) {
+                    let Some(id) = active_chunks.get(&row.id) else {
                         continue;
-                    }
+                    };
                     let linked: LinkedChunk = serde_json::from_slice(&row.payload)
                         .map_err(|_| CacheError::InvalidData)?;
-                    if linked.chunk.id != row.id
+                    if linked.chunk.id != *id
                         || linked.chunk.first.key()? > linked.chunk.last.key()?
                     {
                         return Err(CacheError::InvalidData.into());
@@ -262,7 +312,15 @@ pub(super) fn decode(data: HistoryData) -> Result<State, HistoryError> {
     if state.model.chunks.len() != active_chunks.len() {
         return Err(CacheError::InvalidData.into());
     }
-    restore(state, &metadata, &stored_layout)
+    restore(state, &metadata, &stored_layout).map(|state| Stored::Current(Box::new(state)))
+}
+
+/// A layout invariant broken by a model restored from disk means the stored rows disagree.
+fn stored_fault(error: HistoryError) -> HistoryError {
+    match error {
+        HistoryError::Layout => CacheError::InvalidData.into(),
+        error => error,
+    }
 }
 
 fn restore(
@@ -295,7 +353,7 @@ fn restore(
         }
     }
     state.model.rebuild_order()?;
-    let expected = layout(&state.model)?;
+    let expected = layout(&state.model).map_err(stored_fault)?;
     // Markers in the same page commit hide obsolete rows even before physical reclamation.
     if expected
         .iter()
@@ -303,7 +361,7 @@ fn restore(
     {
         return Err(CacheError::InvalidData.into());
     }
-    state.layout = structural_layout(&state.model)?;
+    state.layout = structural_layout(&state.model).map_err(stored_fault)?;
     // Connection epochs are process-local, so persisted numeric equality is never freshness evidence.
     state.model.empty_generation = 0;
     for entry in state.model.entries.values_mut() {
