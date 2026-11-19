@@ -19,7 +19,6 @@ class ComposeBuildScriptTests(unittest.TestCase):
         self.root = Path(temporary.name)
         (self.root / "scripts").mkdir()
         shutil.copyfile(SCRIPT, self.root / "scripts/android-compose.sh")
-        (self.root / "scripts/prepare-winit.py").write_text("pass\n")
         self.bin = self.root / "bin"
         self.bin.mkdir()
         # Deliberately exclude the host PATH: rg must not be required.

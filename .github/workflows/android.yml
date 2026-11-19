@@ -1,4 +1,4 @@
-name: pr12-android-rust-check
+name: android
 
 on:
   push:
@@ -40,7 +40,6 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: clippy
-      - uses: ./.github/actions/prepare-winit
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Ensure project NDK
@@ -80,7 +79,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: android-compose
@@ -100,7 +98,10 @@ jobs:
           PAPO_COMPOSE_REQUIRE_FIREBASE: ${{ secrets.PAPO_COMPOSE_FIREBASE_APP_ID != '' && '1' || '0' }}
           PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
         run: ./android/gradlew -p android :compose:assembleDebug :compose:lintDebug :compose:testDebugUnitTest -PpapoAbis=arm64-v8a,x86_64 --console=plain
-      - uses: actions/upload-artifact@v4
-        with:
-          name: papo-compose-debug
-          path: android/compose/build/outputs/apk/debug/compose-debug.apk
+
+  android-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check portable Compose build entry point
+        run: python3 -B -m unittest discover -s tests -p 'test_android_compose_script.py'

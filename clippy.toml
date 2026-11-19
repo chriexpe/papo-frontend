@@ -1,4 +1,4 @@
-# As funções de desenho carregam o contexto da interface (ui, tokens,
-# textos, estado, store) de mão em mão: sete argumentos é pouco para elas,
-# e agrupá-los numa struct só para calar o lint deixaria a chamada pior.
+# Workspace-wide Clippy settings (a crate with its own clippy.toml, such as
+# papo-desktop, does not inherit them). Some papo-core requests and SDK storage
+# calls take a row's whole identity and version as separate arguments.
 too-many-arguments-threshold = 9

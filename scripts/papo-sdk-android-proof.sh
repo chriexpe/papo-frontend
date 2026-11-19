@@ -9,7 +9,6 @@ if [[ $# != 2 ]]; then
 fi
 jni_directory="$1"
 kotlin_directory="$2"
-python3 -B scripts/prepare-winit.py
 cargo ndk -t x86_64 --platform 31 -o "$jni_directory" build --locked \
     -p papo-ffi --features integration-proof --lib
 cargo run --locked -p papo-ffi --features bindgen --bin papo-sdk-bindgen -- \

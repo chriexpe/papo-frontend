@@ -35,7 +35,6 @@ for target in "${targets[@]}"; do
         exit 1
     fi
 done
-python3 scripts/prepare-winit.py
 if [ "$variant" = Release ] && [ "$test_app" = 1 ]; then echo "Instrumentation tests use the debug variant" >&2;exit 2;fi
 tasks=(":compose:assemble$variant")
 if [ "$test_app" = 1 ]; then tasks+=(:compose:assembleDebugAndroidTest :compose:lintDebug); fi

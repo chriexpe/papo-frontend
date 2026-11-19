@@ -1,48 +1,38 @@
 # Papo
 
-Cliente nativo e multiplataforma para o [Papo](https://github.com/Papo-Chat/papo-backend), escrito em Rust com [egui](https://github.com/emilk/egui)/eframe.
+Clientes nativos para o [Papo](https://github.com/Papo-Chat/papo-backend), sem Electron: Android em Kotlin/Jetpack Compose e desktop em Rust com [Rune](https://github.com/anomalyco/rune), os dois sobre um SDK Rust comum.
 
-O Papo foi feito para manter a mesma experiência entre desktop e Android sem Electron, com suporte simultâneo a múltiplos servidores e integrações nativas de cada plataforma.
-
-> **Estado atual:** o cliente está próximo de feature-complete para o que o backend oferece hoje. Os principais recursos ainda pendentes são **rich presence** e **compartilhamento de tela**.
-
-## Destaques
-
-- múltiplos servidores conectados ao mesmo tempo, com cache local, reconexão e sincronização após períodos offline;
-- voz e vídeo por WebRTC/GStreamer;
-- mídia e previews ricos, incluindo players web nativos por plataforma;
-- interface e integrações nativas em Linux, Windows e Android.
+> **Estado atual:** o cliente desktop está sendo reconstruído do zero sobre o SDK e ainda não tem versão publicada. O cliente egui anterior foi aposentado; o último código dele está na etiqueta `egui-final`. O Android continua publicado.
 
 ## Plataformas
 
 | Plataforma | Arquitetura | Distribuição |
 | --- | --- | --- |
-| Linux | x86_64, aarch64 | Flatpak, .deb, tar.gz |
-| Windows | x86_64 | Setup.exe, ZIP portátil |
-| macOS (experimental) | Apple Silicon (aarch64) | Self-contained ad-hoc signed CI `.app` |
-| Android | arm64-v8a | APK assinado |
+| Android | arm64-v8a | APK assinado em [GitHub Releases](https://github.com/chriexpe/papo-frontend/releases) |
+| Linux | — | em desenvolvimento |
+| Windows, macOS | — | depois do Linux |
 
-No Windows, o Papo usa WebView2 e distribui seu próprio runtime do GStreamer. No Android, o cliente oficial usa Kotlin/Jetpack Compose e compartilha o núcleo Rust via UniFFI. Linux usa WPE WebKit para conteúdo web incorporado.
+## Arquitetura
 
-Windows e instalações Android via sideload têm atualização pelo próprio app usando GitHub Releases.
+| Caminho | O quê |
+| --- | --- |
+| `crates/sdk/` | SDK do cliente: `api` (REST e gateway), `core` (contas, sincronização, estado, cache), `ui` (listas e timelines para as interfaces), `ffi` (UniFFI), `test-server` |
+| `crates/papo-desktop/` | Cliente desktop |
+| `crates/papo-call/` | Chamadas WebRTC/GStreamer |
+| `crates/papo-core/`, `crates/papo-android/` | Núcleo antigo e sua ponte UniFFI, usados pelo Android até ele migrar para o SDK |
+| `android/compose/` | Cliente Android |
 
-macOS tem um `.app` experimental (assinatura ad-hoc, sem notarização) no CI para Apple Silicon, com GStreamer incluído no pacote e sem integrações completas de sistema. A versão web também não é suportada.
+## Desenvolvimento
 
-## Instalação
-
-Os pacotes prontos ficam em [GitHub Releases](https://github.com/chriexpe/papo-frontend/releases).
-
-Para rodar no Linux a partir do código-fonte:
+O projeto requer **Rust 1.99+**. As dependências de sistema (GStreamer e afins):
 
 ```bash
-git clone https://github.com/chriexpe/papo-frontend.git
-cd papo-frontend
 ./scripts/deps.sh --install
-python3 scripts/prepare-winit.py
-cargo run
+cargo test --locked --workspace --exclude papo-desktop
+cargo clippy --locked --workspace --exclude papo-desktop --all-targets -- -D warnings
 ```
 
-Para desenvolvimento no Android:
+Android:
 
 ```bash
 rustup target add aarch64-linux-android
@@ -60,31 +50,6 @@ PAPO_FIREBASE_SENDER_ID=…               # project_info.project_number
 ```
 
 Sem ela o APK sai sem FCM, e as notificações com o app fechado ficam com a verificação periódica do WorkManager.
-
-O projeto requer **Rust 1.99+**.
-
-A correção de visibilidade da janela no Wayland fica em um arquivo `.patch`.
-O preparo usa **Python 3.11+**, **Git** e a checksum-pinned crate archive; repita
-`python3 scripts/prepare-winit.py` após alterar o patch.
-No Windows, use `python` no lugar de `python3`.
-
-```bash
-cargo test --locked --workspace
-cargo clippy --locked --all-targets -- -D warnings
-```
-
-## Arquitetura
-
-A lógica compartilhada de API, sessões, sincronização, cache e runtime de rede vive em `crates/papo-core`. A UI desktop fica em Rust/egui e a UI Android em Kotlin/Jetpack Compose; mídia, chamadas, WebEmbed e integrações do sistema têm backends específicos por plataforma.
-
-O cliente Android oficial em Kotlin/Jetpack Compose está em `android/compose`,
-usando o mesmo `papo-core` via UniFFI, com bindings Kotlin gerados.
-O modo demonstração é explícito.
-
-## Em andamento
-
-- **Rich presence**
-- **Compartilhamento de tela**
 
 ## Licença
 

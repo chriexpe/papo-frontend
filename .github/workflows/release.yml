@@ -1,17 +1,12 @@
 name: release
 
-# Uma etiqueta `v*` gera os artefatos de desktop. Linux continua com os
-# formatos nativos/Flatpak; Windows sai como ZIP autocontido com o runtime do
-# GStreamer ao lado do executável.
+# A `v*` tag builds the signed Android APK and publishes it. Desktop packages
+# return with the Rune client's packaging slice. A manual run builds the APK
+# without publishing.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      android_only:
-        description: Build the signed Android APK only, without publishing a release
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -32,357 +27,6 @@ jobs:
             exit 1
           fi
 
-  build:
-    if: github.event_name != 'workflow_dispatch' || !inputs.android_only
-    needs: version
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: x86_64
-          - runner: ubuntu-24.04-arm
-            arch: aarch64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Dependências de sistema
-        run: |
-          sudo apt-get update
-          ./scripts/deps.sh --install
-      - uses: ./.github/actions/prepare-winit
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.arch }}
-
-
-      - run: cargo build --release --locked
-        env:
-          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
-
-      # rsRPC is built from the revision pinned in packaging/rsrpc/REVISION,
-      # so every artifact carries the same, source-matching helper.
-      - uses: actions/cache@v4
-        with:
-          path: rsrpc-build
-          key: rsrpc-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('packaging/rsrpc/REVISION') }}
-
-      - name: Build rsRPC helper
-        run: |
-          set -euo pipefail
-          [ -x rsrpc-build/bin/rsrpc ] || scripts/build-rsrpc.sh rsrpc-build
-          install -m755 rsrpc-build/bin/rsrpc rsrpc-helper
-
-      - name: Montar o tarball
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          [ -n "$version" ] || version=dev
-          name="papo-${version}-${{ matrix.arch }}-linux"
-          app=io.github.chriexpe.Papo
-
-          install -Dm755 target/release/papo "$name/bin/papo"
-          install -Dm755 rsrpc-helper "$name/libexec/papo/rsrpc"
-          install -Dm644 "packaging/$app.desktop" "$name/share/applications/$app.desktop"
-          install -Dm644 "packaging/$app.metainfo.xml" "$name/share/metainfo/$app.metainfo.xml"
-          for icon in assets/icons/*.png; do
-            size="$(basename "$icon" .png)"
-            install -Dm644 "$icon" \
-              "$name/share/icons/hicolor/${size}x${size}/apps/$app.png"
-          done
-          install -Dm644 LICENSE "$name/LICENSE"
-          install -Dm644 packaging/rsrpc/LICENSE "$name/share/doc/papo/RSRPC-LICENSE"
-          install -Dm644 packaging/rsrpc/NOTICE "$name/share/doc/papo/RSRPC-NOTICE"
-          install -Dm755 packaging/install.sh "$name/install.sh"
-          install -Dm755 scripts/deps.sh "$name/deps.sh"
-
-          tar -czf "$name.tar.gz" "$name"
-          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
-          echo "TARBALL=$name.tar.gz" >> "$GITHUB_ENV"
-
-      - name: Montar o .deb
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          [ -n "$version" ] || version=0.0.0
-          case "${{ matrix.arch }}" in
-            x86_64) debarch=amd64 ;;
-            aarch64) debarch=arm64 ;;
-          esac
-          packaging/deb/build.sh "$version" "$debarch" target/release/papo rsrpc-helper
-          # O lintian pega erro de empacotamento que o dpkg-deb deixa passar.
-          sudo apt-get install -y --no-install-recommends lintian
-          lintian --fail-on error,warning --suppress-tags \
-            no-manual-page,changelog-file-missing-in-native-package \
-            ./papo_*.deb || true
-          for deb in papo_*.deb; do sha256sum "$deb" > "$deb.sha256"; done
-
-      - name: Arch package (.pkg.tar.zst)
-        if: matrix.arch == 'x86_64'
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          [ -n "$version" ] || version=dev
-          bash packaging/arch/build.sh "$version" "${{ matrix.arch }}"
-
-      - name: AppImage including GStreamer plugins
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          [ -n "$version" ] || version=dev
-          bash packaging/appimage/build.sh "$version" "${{ matrix.arch }}" target/release/papo rsrpc-helper
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: papo-${{ matrix.arch }}
-          path: |
-            *.tar.gz
-            *.tar.gz.sha256
-            *.deb
-            *.deb.sha256
-            *.pkg.tar.zst
-            *.pkg.tar.zst.sha256
-            *.AppImage
-            *.AppImage.sha256
-
-  windows:
-    if: github.event_name != 'workflow_dispatch' || !inputs.android_only
-    needs: version
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: ./.github/actions/prepare-winit
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-windows
-
-      - name: Install GStreamer SDK/runtime
-        shell: pwsh
-        run: |
-          choco install gstreamer gstreamer-devel --version=1.26.9 -y --no-progress
-          $candidates = @(
-            'C:\Program Files\gstreamer\1.0\msvc_x86_64',
-            'C:\gstreamer\1.0\msvc_x86_64'
-          )
-          $root = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $root) {
-            throw "GStreamer SDK not found in expected install locations"
-          }
-          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "GSTREAMER_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install innosetup -y --no-progress
-
-      - name: Build
-        env:
-          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
-        run: cargo build --release --locked
-
-      - uses: actions/cache@v4
-        with:
-          path: rsrpc-build
-          key: rsrpc-${{ runner.os }}-x86_64-${{ hashFiles('packaging/rsrpc/REVISION') }}
-
-      - name: Build rsRPC helper
-        shell: pwsh
-        run: |
-          if (-not (Test-Path rsrpc-build/bin/rsrpc.exe)) {
-            $revision = (Get-Content packaging/rsrpc/REVISION -Raw).Trim()
-            cargo install --locked --git https://github.com/pog5/rsrpc.git --rev $revision --root rsrpc-build rsrpc
-            if ($LASTEXITCODE -ne 0) { throw 'rsRPC build failed' }
-          }
-          Copy-Item rsrpc-build/bin/rsrpc.exe rsrpc.exe
-
-      - name: Assemble self-contained bundle
-        shell: pwsh
-        run: |
-          $version = if ($env:GITHUB_REF_NAME -like 'v*') {
-            $env:GITHUB_REF_NAME.Substring(1)
-          } else {
-            'dev'
-          }
-          $name = "papo-$version-x86_64-windows"
-          ./packaging/windows/bundle.ps1 `
-            -GStreamerRoot $env:GSTREAMER_ROOT `
-            -PapoExe target/release/papo.exe `
-            -RsRpcExe rsrpc.exe `
-            -OutputDir $name
-
-          # Prove the copied runtime works without relying on GStreamer's bin
-          # being present in PATH. Device probes may report no CI hardware;
-          # initialization/plugin discovery itself must still succeed.
-          $oldPath = $env:PATH
-          $gstBin = Join-Path $env:GSTREAMER_ROOT 'bin'
-          $env:PATH = (($oldPath -split ';') | Where-Object {
-            $_ -and $_.TrimEnd('\') -ne $gstBin.TrimEnd('\')
-          }) -join ';'
-          $check = & ".\$name\papo.exe" voice-check 2>&1 | Out-String
-          Write-Host $check
-          if ($LASTEXITCODE -ne 0) {
-            throw "Bundled papo.exe voice-check failed with exit code $LASTEXITCODE"
-          }
-          if ($check -notmatch 'GStreamer') {
-            throw 'Bundled Papo did not initialize GStreamer'
-          }
-
-          Compress-Archive -Path $name -DestinationPath "$name.zip"
-          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" |
-            Set-Content "$name.zip.sha256"
-          "WINDOWS_ZIP=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Build installer
-        shell: pwsh
-        run: |
-          $version = if ($env:GITHUB_REF_NAME -like 'v*') {
-            $env:GITHUB_REF_NAME.Substring(1)
-          } else {
-            'dev'
-          }
-          ./packaging/windows/build-installer.ps1 `
-            -GStreamerRoot $env:GSTREAMER_ROOT `
-            -PapoExe target/release/papo.exe `
-            -RsRpcExe rsrpc.exe `
-            -Version $version `
-            -OutputDir installer-out
-          $setup = Get-ChildItem installer-out -Filter 'Papo-*-Setup.exe' -File |
-            Select-Object -First 1
-          if (-not $setup) {
-            throw 'Windows Setup executable not found'
-          }
-          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
-          "$hash  $($setup.Name)" | Set-Content "$($setup.FullName).sha256"
-          "WINDOWS_SETUP=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: papo-windows-x86_64
-          path: |
-            ${{ env.WINDOWS_ZIP }}
-            ${{ env.WINDOWS_ZIP }}.sha256
-            ${{ env.WINDOWS_SETUP }}
-            ${{ env.WINDOWS_SETUP }}.sha256
-
-  macos:
-    if: github.event_name != 'workflow_dispatch' || !inputs.android_only
-    needs: version
-    runs-on: macos-15
-    env:
-      CARGO_INCREMENTAL: "0"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: ./.github/actions/prepare-winit
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-macos-arm64
-      - name: Install native GStreamer SDK
-        run: |
-          brew install gstreamer libnice-gstreamer pkgconf
-          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix gstreamer)/lib/pkgconfig" >> "$GITHUB_ENV"
-          gst-inspect-1.0 webrtcbin
-          gst-inspect-1.0 nicesrc
-      - name: Build macOS release
-        env:
-          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
-        run: cargo build --release --locked --bin papo
-      - name: Package and smoke-test self-contained macOS app
-        run: |
-          set -euo pipefail
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
-          bash packaging/macos/build-app.sh target/release/papo "$version" dist
-          test "$(lipo -archs dist/Papo.app/Contents/MacOS/papo)" = "arm64"
-          test -f dist/Papo.app/Contents/PlugIns/libgstnice.dylib
-          test -f dist/Papo.app/Contents/Helpers/gst-plugin-scanner
-          env GST_PLUGIN_PATH_1_0=/dev/null GST_PLUGIN_SYSTEM_PATH_1_0=/dev/null \
-            dist/Papo.app/Contents/MacOS/papo voice-check | tee packaged-voice-check.log
-          grep -q "GStreamer" packaged-voice-check.log
-          grep -Eq '\[ok\] +webrtcbin' packaged-voice-check.log
-          grep -Eq '\[ok\] +nicesrc' packaged-voice-check.log
-          grep -Eq '\[ok\] +osxaudiosrc' packaged-voice-check.log
-          archive="papo-$version-arm64-macos-adhoc.zip"
-          (cd dist && ditto -c -k --sequesterRsrc --keepParent Papo.app "../$archive")
-          shasum -a 256 "$archive" > "$archive.sha256"
-          echo "MACOS_ZIP=$archive" >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: papo-macos-arm64
-          path: |
-            ${{ env.MACOS_ZIP }}
-            ${{ env.MACOS_ZIP }}.sha256
-          if-no-files-found: error
-
-  # O bundle Flatpak é o pacote que não depende do GStreamer do sistema: o
-  # runtime do freedesktop já o traz, e a extensão ffmpeg-full traz os codecs.
-  # A compilação roda no flatpak-builder, sem rede, a partir de
-  # packaging/cargo-sources.json.
-  flatpak:
-    if: github.event_name != 'workflow_dispatch' || !inputs.android_only
-    needs: version
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: x86_64
-          - runner: ubuntu-24.04-arm
-            arch: aarch64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Ferramentas
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder pkg-config libssl-dev
-
-      - name: Runtime e SDK
-        run: |
-          flatpak remote-add --user --if-not-exists flathub \
-            https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user -y --noninteractive flathub \
-            org.freedesktop.Platform//25.08 \
-            org.freedesktop.Sdk//25.08 \
-            org.freedesktop.Sdk.Extension.rust-stable//25.08
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: ./.github/actions/prepare-winit
-      - name: Fontes do cargo
-        run: ./scripts/flatpak-sources.sh
-
-      - name: Construir o Flatpak
-        env:
-          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          path = Path("packaging/io.github.chriexpe.Papo.yml")
-          key = os.environ.get("PAPO_GIPHY_API_KEY", "")
-          text = path.read_text()
-          text = text.replace("@PAPO_GIPHY_API_KEY@", key)
-          path.write_text(text)
-          PY
-          # O FUSE dos runners não coopera com o rofiles; sem ele a
-          # compilação corre em disco, que é o que interessa.
-          flatpak-builder --user --disable-rofiles-fuse --force-clean \
-            --state-dir=.flatpak-builder --repo=repo build-dir \
-            packaging/io.github.chriexpe.Papo.yml
-          version="${GITHUB_REF_NAME#v}"
-          [ -n "$version" ] || version=dev
-          flatpak build-bundle \
-            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
-            repo "papo-${version}-${{ matrix.arch }}.flatpak" \
-            io.github.chriexpe.Papo
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: papo-flatpak-${{ matrix.arch }}
-          path: '*.flatpak'
-
-
   android:
     needs: version
     runs-on: ubuntu-24.04
@@ -398,7 +42,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
-      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-android-arm64
@@ -442,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/android-compose.sh --arm64 --release
-          version="$(python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          version="$(python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')"
           apk="android/compose/build/outputs/apk/release/compose-release.apk"
           [ -f "$apk" ] || { echo "signed APK not produced" >&2; exit 1; }
           "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify "$apk"
@@ -471,7 +114,7 @@ jobs:
             ${{ env.ANDROID_APK }}.sha256
 
   publish:
-    needs: [build, windows, macos, flatpak, android]
+    needs: android
     runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -481,19 +124,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            *.tar.gz
-            *.tar.gz.sha256
-            *.deb
-            *.deb.sha256
-            *.pkg.tar.zst
-            *.pkg.tar.zst.sha256
-            *.AppImage
-            *.AppImage.sha256
-            *.flatpak
-            *.zip
-            *.zip.sha256
-            **/*-Setup.exe
-            **/*-Setup.exe.sha256
             *.apk
             *.apk.sha256
           generate_release_notes: true
