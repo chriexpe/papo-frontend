@@ -30,6 +30,16 @@ impl Jitter for NoJitter {
 
 impl Fixture {
     pub fn new(server_config: Config) -> Result<Self> {
+        Self::with_backoff(
+            server_config,
+            Backoff {
+                initial: Duration::from_secs(2),
+                maximum: Duration::from_secs(2),
+            },
+        )
+    }
+
+    pub fn with_backoff(server_config: Config, backoff: Backoff) -> Result<Self> {
         // Restart tests must retain the server while destroying the client runtime.
         // This runtime serves only the fixture; no SDK work is driven by it.
         let server_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -42,10 +52,7 @@ impl Fixture {
         let config = ClientConfig {
             insecure_loopback: true,
             jitter: Arc::new(NoJitter),
-            backoff: Backoff {
-                initial: Duration::from_secs(2),
-                maximum: Duration::from_secs(2),
-            },
+            backoff,
             ..ClientConfig::default()
         };
         let client = Client::open(DataRoot::new(profile.path()), store.clone(), config.clone())?;

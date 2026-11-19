@@ -30,6 +30,10 @@ pub enum ClientError {
     /// An authoritative resource lacked a required identity or pagination boundary.
     #[error("invalid resource response")]
     ResourceData,
+    /// An authoritative resource replacement failed admission. The group kept its last
+    /// admitted value; this is a wire fault and never invalidates cached data.
+    #[error(transparent)]
+    ResourceRejected(#[from] crate::ResourceRejection),
     /// A profile request exceeded the bounded 1000-ID admission limit.
     #[error("profile request limit exceeded")]
     ProfileLimit,

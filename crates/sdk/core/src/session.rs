@@ -33,6 +33,7 @@ pub(crate) struct SessionInner {
     pub auth_serial: tokio::sync::Mutex<()>,
     pub verified_rest: tokio::sync::Mutex<Option<(Generation, papo_api::RestClient)>>,
     pub resource_serial: tokio::sync::Mutex<()>,
+    pub admission: crate::resource_admission::Diagnostics,
     pub operations_serial: tokio::sync::Mutex<()>,
     pub history: crate::history::HistoryStore,
     pub reading: crate::reading::Reading,
@@ -78,6 +79,7 @@ impl SessionInner {
             auth_serial: tokio::sync::Mutex::new(()),
             verified_rest: tokio::sync::Mutex::new(None),
             resource_serial: tokio::sync::Mutex::new(()),
+            admission: crate::resource_admission::Diagnostics::default(),
             operations_serial: tokio::sync::Mutex::new(()),
             history: crate::history::HistoryStore::default(),
             reading: crate::reading::Reading::new(generation),
@@ -222,6 +224,12 @@ impl Session {
     #[must_use]
     pub fn subscribe_resources(&self) -> watch::Receiver<Arc<crate::ResourceSnapshot>> {
         self.inner.resources.subscribe()
+    }
+    /// Returns this session's resource-admission counts: rejected replacements, which
+    /// kept their last admitted value, and display-only rows dropped from admitted ones.
+    #[must_use]
+    pub fn resource_admission(&self) -> crate::AdmissionDiagnostics {
+        self.inner.admission.snapshot()
     }
     /// Requests a new connection generation, canceling old socket and REST work.
     /// # Errors

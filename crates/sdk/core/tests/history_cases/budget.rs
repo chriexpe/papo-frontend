@@ -108,6 +108,8 @@ fn raw_watch_pins_history_and_evicted_channel_revocation_cannot_restore_old_rows
                 name: Some("regranted".into()),
                 r#type: Some("text".into()),
                 position: Some(0),
+                // The pinned backend always serializes the list; absent is not open.
+                permissions: Some(Vec::new()),
                 ..Channel::default()
             })
             .await?;
