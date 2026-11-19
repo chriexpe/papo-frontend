@@ -87,7 +87,7 @@ fn presence_sync_replaces_memory_without_writing_presence_to_the_account_cache()
     fixture.run(async {
         let server = TestServer::start(Config::default()).await?;
         let handle = fixture.client.handle();
-        let server_id = handle.add_server(&server.base_url(), UnixMicros(0)).await?;
+        let server_id = handle.add_server(&server.base_url(), UnixMicros(0)).await?.id;
         let auth = handle.auth(server_id)?;
         register(&auth, "presence-cache").await?;
         let session = login(&auth, "presence-cache").await?;
@@ -144,7 +144,10 @@ fn account_resources_are_isolated_and_late_removed_response_cannot_recreate_cach
     fixture.run(async {
         let server = TestServer::start(Config::default()).await?;
         let handle = fixture.client.handle();
-        let server_id = handle.add_server(&server.base_url(), UnixMicros(0)).await?;
+        let server_id = handle
+            .add_server(&server.base_url(), UnixMicros(0))
+            .await?
+            .id;
         let auth = handle.auth(server_id)?;
         register(&auth, "cache-first").await?;
         register(&auth, "cache-second").await?;
@@ -219,7 +222,7 @@ fn reconnect_refreshes_server_read_point_without_touching_local_pending_bytes() 
         let channel = server.create_channel("read-mark-channel").await?;
         let channel_id = Uuid::parse_str(channel.id.as_deref().unwrap())?;
         let handle = fixture.client.handle();
-        let server_id = handle.add_server(&server.base_url(), UnixMicros(0)).await?;
+        let server_id = handle.add_server(&server.base_url(), UnixMicros(0)).await?.id;
         let auth = handle.auth(server_id)?;
         register(&auth, "read-point-user").await?;
         let session = login(&auth, "read-point-user").await?;

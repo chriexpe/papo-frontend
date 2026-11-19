@@ -6,6 +6,8 @@
 mod auth;
 #[path = "loopback/cache.rs"]
 mod cache;
+#[path = "loopback/discovery.rs"]
+mod discovery;
 mod fixture;
 #[path = "loopback/lifecycle.rs"]
 mod lifecycle;

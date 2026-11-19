@@ -25,7 +25,7 @@ fn reverse_blocks_and_hidden_dms_are_unavailable_after_actual_rest_reconciliatio
         let address = std::env::var("PAPO_BACKEND_PROOF_ADDRESS")?;
         let password = std::env::var("PAPO_PROOF_PASSWORD")?;
         let handle = client.handle();
-        let server = handle.add_server(&address, UnixMicros(0)).await?;
+        let server = handle.add_server(&address, UnixMicros(0)).await?.id;
         let auth = handle.auth(server)?;
         for username in ["dm-snapshot-a", "dm-snapshot-b"] {
             auth.register(RegisterRequest {

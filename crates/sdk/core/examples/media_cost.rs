@@ -72,7 +72,8 @@ async fn measure(client: &Client, server: &TestServer) -> Result {
     let saved = client
         .handle()
         .add_server(&server.base_url(), UnixMicros(0))
-        .await?;
+        .await?
+        .id;
     let sessions = [
         sign_in(client, saved, 0).await?,
         sign_in(client, saved, 1).await?,

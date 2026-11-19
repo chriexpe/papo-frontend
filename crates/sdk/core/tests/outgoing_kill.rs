@@ -87,7 +87,8 @@ fn prepare() -> Result<(Fixture, papo_sdk::SavedAccount, [String; 2], String)> {
         let handle = f.client().handle();
         let server = handle
             .add_server(&f.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         register(&auth, "killproof").await?;
         let a = f.server().create_channel("a").await?.id.unwrap();

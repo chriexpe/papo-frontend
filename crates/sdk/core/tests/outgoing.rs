@@ -22,7 +22,8 @@ async fn signed_in(f: &Fixture) -> Result<(Session, Uuid)> {
     let handle = f.client().handle();
     let server = handle
         .add_server(&f.server().base_url(), UnixMicros(0))
-        .await?;
+        .await?
+        .id;
     let auth = handle.auth(server)?;
     register(&auth, "outgoing").await?;
     let channel = f

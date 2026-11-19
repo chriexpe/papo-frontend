@@ -67,7 +67,8 @@ fn run_kill_mode(mode: &str) -> Result {
         let handle = f.client().handle();
         let server = handle
             .add_server(&f.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth: AuthService = handle.auth(server)?;
         register(&auth, "killcatch").await?;
         let session = login(&auth, "killcatch").await?;

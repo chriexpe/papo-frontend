@@ -21,7 +21,8 @@ async fn signed_in(fixture: &Fixture) -> Result<Session> {
     let handle = fixture.client().handle();
     let server = handle
         .add_server(&fixture.server().base_url(), UnixMicros(0))
-        .await?;
+        .await?
+        .id;
     let auth = handle.auth(server)?;
     register(&auth, "historybudget").await?;
     let session = login(&auth, "historybudget").await?;

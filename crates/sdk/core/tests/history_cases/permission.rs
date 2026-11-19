@@ -23,7 +23,7 @@ pub(super) async fn account(fixture: &Fixture, username: &str) -> Result<Session
     let handle = fixture.client().handle();
     let address = fixture.server().base_url();
     let server = match handle.add_server(&address, UnixMicros(0)).await {
-        Ok(server) => server,
+        Ok(added) => added.id,
         // A second account on the same server reuses its saved entry.
         Err(_) => handle
             .subscribe_registry()

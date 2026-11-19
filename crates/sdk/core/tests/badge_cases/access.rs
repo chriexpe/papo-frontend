@@ -246,7 +246,8 @@ fn held_cold_bootstrap_does_not_turn_empty_cached_census_into_complete_absence()
         let client = f.client().handle();
         let server = client
             .add_server(&f.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = client.auth(server)?;
         register(&auth, "badge-bootstrap").await?;
         let mut held = f.server().hold_next_rest("GET", "/channels").await?;

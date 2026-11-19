@@ -107,7 +107,8 @@ impl Fixture {
         let handle = self.client().handle();
         let server = handle
             .add_server(&self.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         auth.register(RegisterRequest {
             username: username.into(),

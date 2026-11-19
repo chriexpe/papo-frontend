@@ -19,7 +19,8 @@ fn private_server_gate_login_refresh_and_logout_follow_public_auth_states() -> R
         let handle = fixture.client().handle();
         let server = handle
             .add_server(&fixture.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         assert!(register(&auth, "private-user").await.is_err());
         assert_eq!(auth.state(), AuthState::NeedsServerPassword);
@@ -72,7 +73,8 @@ fn password_reset_is_single_use_and_replaces_the_accepted_password() -> Result {
         let handle = fixture.client().handle();
         let server = handle
             .add_server(&fixture.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         register(&auth, "reset-user").await?;
         let token = fixture
@@ -123,7 +125,8 @@ fn device_revocation_is_account_scoped_and_refresh_reports_expired_credentials()
         let handle = fixture.client().handle();
         let server = handle
             .add_server(&fixture.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         register(&auth, "device-one").await?;
         register(&auth, "device-two").await?;

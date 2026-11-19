@@ -12,7 +12,8 @@ fn socket_drop_reconnects_with_new_generation_and_filters_old_results_and_events
         let handle = fixture.client().handle();
         let server = handle
             .add_server(&fixture.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         register(&auth, "first-user").await?;
         let session = login(&auth, "first-user").await?;
@@ -50,7 +51,8 @@ fn stale_logout_after_replacement_cannot_stop_the_current_account_session() -> R
         let handle = fixture.client().handle();
         let server = handle
             .add_server(&fixture.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         register(&auth, "replace-user").await?;
         let old = login(&auth, "replace-user").await?;
@@ -91,7 +93,8 @@ fn explicit_shutdown_joins_and_reopen_restores_verified_credentials_without_logi
         let handle = fixture.client().handle();
         let server = handle
             .add_server(&fixture.server().base_url(), UnixMicros(0))
-            .await?;
+            .await?
+            .id;
         let auth = handle.auth(server)?;
         register(&auth, "restore-user").await?;
         let session = login(&auth, "restore-user").await?;

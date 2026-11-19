@@ -23,7 +23,10 @@ pub fn seed(index: usize, count: usize) -> HistorySeed {
 
 pub async fn sign_in(client: &Client, server: &TestServer) -> Result<Session> {
     let handle = client.handle();
-    let saved = handle.add_server(&server.base_url(), UnixMicros(0)).await?;
+    let saved = handle
+        .add_server(&server.base_url(), UnixMicros(0))
+        .await?
+        .id;
     let auth = handle.auth(saved)?;
     let password: String = (0_u8..32)
         .map(|n| char::from(b'A' + n % 26))

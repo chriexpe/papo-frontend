@@ -18,8 +18,10 @@ mod client_error;
 mod client_handle;
 mod connection;
 mod connection_driver;
+mod discovery;
 mod disk_budget;
 mod generation;
+pub use discovery::{AddedServer, DiscoveryFailure, MAX_ICON_BYTES, ServerDiscovery, ServerIcon};
 pub use disk_budget::{DiskBudget, DiskError, DiskFault, DiskReport, DiskStatus};
 mod expressions;
 pub use expressions::{

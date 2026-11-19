@@ -111,7 +111,7 @@ async fn sign_in(client: &Client, fixture: Option<&TestServer>) -> Result<(Sessi
         Uuid::parse_str(&env::var("PAPO_CHANNEL")?)?
     };
     let handle = client.handle();
-    let server = handle.add_server(&address, UnixMicros(0)).await?;
+    let server = handle.add_server(&address, UnixMicros(0)).await?.id;
     let auth = handle.auth(server)?;
     if fixture.is_none()
         && let Ok(server_password) = env::var("PAPO_SERVER_PASSWORD")

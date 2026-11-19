@@ -39,7 +39,11 @@ fn sdk_operations_follow_actual_pinned_backend_authorization_and_mutations() -> 
     )?;
     client.block_on(async {
         tokio::time::timeout(Duration::from_secs(90), async {
-            let server = client.handle().add_server(&address, UnixMicros(0)).await?;
+            let server = client
+                .handle()
+                .add_server(&address, UnixMicros(0))
+                .await?
+                .id;
             let owner = login(&client, server, &password, "cursorproof", false).await?;
             let member = login(&client, server, &password, "operationsproof", true).await?;
             let other = login(&client, server, &password, "operationsthird", true).await?;
