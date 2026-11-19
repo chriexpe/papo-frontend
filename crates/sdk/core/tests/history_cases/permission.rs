@@ -2,15 +2,17 @@
 //! denial, unknown evidence, warm offline and every resource producer.
 //! Fixture REST denial (`set_channel_readable`) is scripted separately; it is not the Go engine.
 
-use super::{CHANNEL, Fixture, Result, channel, disconnect, login, online, register, wait_event};
+use super::{
+    CHANNEL, Fixture, Result, channel, disconnect, login, online, register, wait_event, wait_for,
+};
 use papo_api::{
     HistoryQuery, Uuid,
     wire::{ChannelPermissionEntry, ChannelPermissions, RolePermissions},
 };
 use papo_sdk::{
-    Channel, HistoryClosedReason, HistoryError, HistoryHandle, HistorySource, HistoryUpdate,
-    ReadingError, ReadingPosition, Role, RoleSummary, Session, UnixMicros, UserProfile,
-    VisibilityContinuity, operations::MetadataScope,
+    CacheResource, Channel, ConnectionState, HistoryClosedReason, HistoryError, HistoryHandle,
+    HistorySource, HistoryUpdate, ReadingError, ReadingPosition, Role, RoleSummary, Session,
+    UnixMicros, UserProfile, VisibilityContinuity, operations::MetadataScope,
 };
 use papo_test_server::{Config, HistorySeed};
 
@@ -241,63 +243,67 @@ fn overwrite_denial_closes_old_new_offline_subscribed_and_reading_access() -> Re
 }
 
 #[test]
-fn unknown_overwrite_evidence_quarantines_and_resumes_the_same_cached_incarnation() -> Result {
+fn rejected_overwrite_reply_keeps_the_admitted_grant_and_cached_incarnation() -> Result {
     let fixture = Fixture::new(Config::default())?;
     fixture.run(async {
-        let session = account(&fixture, "access-unknown").await?;
-        prepare(&fixture, &[(&session, "access-unknown")]).await?;
+        let session = account(&fixture, "access-rejected").await?;
+        prepare(&fixture, &[(&session, "access-rejected")]).await?;
         let history = warm(&session).await?;
         let subscription = history.subscribe().await?;
-        let snapshot = subscription.snapshot.clone();
-        let visible = (
-            snapshot.generation,
-            snapshot.version,
-            snapshot.messages[0].id.as_deref().unwrap().parse()?,
-        );
-        let mut events = session.subscribe_events();
+        let before = *session.subscribe_connection().borrow();
+        let rejected = session.resource_admission().rejected_replacements;
+
+        // One listing with absent overwrites (absent is not `[]`) proves nothing: it is
+        // neither a grant nor a removal, so it must not reach the access transition.
         let mut incomplete = restricted("incomplete", true);
         incomplete.permissions = None;
-        fixture.server().set_channel(incomplete).await?;
-        wait_event(&mut events, "channel_update").await?;
+        fixture
+            .server()
+            .queue_operation_response(
+                "GET",
+                "/channels",
+                200,
+                serde_json::json!({ "channels": [incomplete] }),
+            )
+            .await?;
+        fixture
+            .server()
+            .set_channel(restricted("renamed", true))
+            .await?;
+        let mut status = session.subscribe_connection();
+        wait_for(&mut status, |status| {
+            status.state == ConnectionState::Online
+                && status.generation.get() > before.generation.get()
+        })
+        .await?;
+        let diagnostics = session.resource_admission();
+        assert!(diagnostics.rejected_replacements > rejected);
+        assert_eq!(
+            diagnostics.last_rejection.map(|rejection| rejection.group),
+            Some(CacheResource::Channels)
+        );
 
-        // Unknown is not a grant and not a removal: nothing new is delivered or admitted.
-        assert!(!subscription.updates.has_changed()?);
-        assert_refused(&session, &history, visible, &HistoryError::AccessUnknown).await?;
-        // A live message during quarantine still reaches the model and cache, undelivered.
-        fixture
-            .server()
-            .publish_message(papo_api::wire::Message {
-                id: Some("70000000-0000-4000-8000-000000000100".into()),
-                channel_id: Some(CHANNEL.into()),
-                author_id: Some(Uuid::nil().to_string()),
-                content: Some(String::new()),
-                created_at: Some("2026-01-01T00:00:01Z".into()),
-                ..papo_api::wire::Message::default()
-            })
-            .await?;
-        wait_event(&mut events, "message").await?;
-        assert!(!subscription.updates.has_changed()?);
-
-        // Any server fetch would now be refused, so a successful page proves the
-        // last-good cache was kept rather than refetched.
-        fixture
-            .server()
-            .set_channel_readable(&session.account().user().to_string(), CHANNEL, false)
-            .await?;
-        fixture
-            .server()
-            .set_channel(restricted("restored", true))
-            .await?;
-        wait_event(&mut events, "channel_update").await?;
-        let page = history.page(HistoryQuery::default()).await?;
-        assert_eq!(page.source, HistorySource::Cache);
-        assert_eq!(page.messages.len(), 13);
-        // The same subscription resumes with a full replacement that includes the message.
-        assert!(matches!(
+        // The reconnect's valid evidence regrants nothing new: the same incarnation, its
+        // subscription and its cache set stay in reach.
+        assert!(!matches!(
             &*subscription.updates.borrow(),
-            HistoryUpdate::Reset(snapshot) if snapshot.messages.len() == 13
+            HistoryUpdate::Closed(_)
         ));
-        assert_eq!(history.subscribe().await?.snapshot.messages.len(), 13);
+        assert_eq!(
+            history.page(HistoryQuery::default()).await?.messages.len(),
+            12
+        );
+        assert_eq!(
+            session
+                .history(channel())
+                .await?
+                .subscribe()
+                .await?
+                .snapshot
+                .messages
+                .len(),
+            12
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()
