@@ -1,7 +1,9 @@
 //! Admission of server metadata, channels with their overwrites, and role definitions;
 //! people, DMs and blocks live in the sibling `people` module.
 
-use super::{Admission, AdmissionFault, CHANNEL_LIST_CAP, ResourceRejection, parse_id};
+use super::{
+    Admission, AdmissionFault, LISTED_CHANNEL_TYPES, MAX_CHANNELS, ResourceRejection, parse_id,
+};
 use crate::{CacheResource, Uuid};
 use papo_api::wire::{
     Channel, ChannelList, ChannelPermissionEntry, Role, RoleListResponse, Server,
@@ -24,14 +26,14 @@ impl Admission<'_> {
 
     /// Admits the complete `GET /channels` replacement, including every nested overwrite.
     /// # Errors
-    /// Rejects `Channels` for an absent list, a list at the backend cap, or any
-    /// malformed channel or overwrite; no channel is ever dropped individually.
+    /// Rejects `Channels` for an absent list, a list longer than the backend maximum, or
+    /// any malformed channel or overwrite; no channel is ever dropped individually.
     pub fn channels(self, list: ChannelList) -> Result<Vec<Channel>, ResourceRejection> {
         let channels = list
             .channels
             .ok_or_else(|| self.reject(CacheResource::Channels, AdmissionFault::MissingList))?;
-        if channels.len() >= CHANNEL_LIST_CAP {
-            return Err(self.reject(CacheResource::Channels, AdmissionFault::Incomplete));
+        if channels.len() > MAX_CHANNELS {
+            return Err(self.reject(CacheResource::Channels, AdmissionFault::ExceedsLimit));
         }
         let mut seen = HashSet::with_capacity(channels.len());
         for channel in &channels {
@@ -73,8 +75,13 @@ fn channel_fault(channel: &Channel, seen: &mut HashSet<Uuid>) -> Option<Admissio
     if !seen.insert(id) {
         return Some(AdmissionFault::DuplicateId);
     }
-    if channel.r#type.as_deref().is_none_or(str::is_empty) {
+    let Some(kind) = channel.r#type.as_deref().filter(|kind| !kind.is_empty()) else {
         return Some(AdmissionFault::MissingField);
+    };
+    // The evaluator treats every non-DM type as an ordinary channel, so an unknown type
+    // with no overwrites would read as open.
+    if !LISTED_CHANNEL_TYPES.contains(&kind) {
+        return Some(AdmissionFault::UnsupportedValue);
     }
     // An absent overwrite list is unknown access; only an explicit `[]` means open.
     let Some(overwrites) = &channel.permissions else {

@@ -42,14 +42,13 @@ fn a_partial_roster_is_never_admitted() {
             rejected(CacheResource::Members, AdmissionFault::Incomplete)
         );
     }
-    let mut repeating = Roster::new(admission);
-    let first = page(Some(vec![member(OWN, &[])]), Some(true));
-    assert!(matches!(
-        repeating.page(first.clone()),
-        Ok(RosterPage::More(_))
-    ));
+    let mut unparseable_time = member(7, &[]);
+    unparseable_time.created_at = Some("yesterday".into());
+    let error = Roster::new(admission)
+        .page(page(Some(vec![unparseable_time]), Some(true)))
+        .rejected();
     assert_eq!(
-        repeating.page(first).rejected(),
+        error,
         rejected(CacheResource::Members, AdmissionFault::Incomplete)
     );
     // A complete roster that lost the account's own row was truncated somewhere.
@@ -57,6 +56,48 @@ fn a_partial_roster_is_never_admitted() {
         roster(&log, vec![member(7, &[])]).rejected(),
         rejected(CacheResource::Members, AdmissionFault::MissingOwnRow)
     );
+}
+
+fn at(value: u128, created_at: &str) -> UserSummary {
+    UserSummary {
+        created_at: Some(created_at.into()),
+        ..member(value, &[])
+    }
+}
+
+#[test]
+fn roster_cursors_must_strictly_advance_in_backend_order() {
+    let log = Diagnostics::default();
+    let admission = Admission::for_test(Uuid::from_u128(OWN), &log);
+    let first = "2026-01-01T00:00:00.5Z";
+    // A repeat, an earlier time, and an equal time with a smaller ID all fail to advance.
+    // The earlier time sorts after `first` as text, so a string comparison would miss it.
+    for (time, value) in [(first, 20), ("2026-01-01T00:00:00Z", 30), (first, 10)] {
+        let mut roster = Roster::new(admission);
+        let opening = page(Some(vec![at(20, first)]), Some(true));
+        assert!(matches!(roster.page(opening), Ok(RosterPage::More(_))));
+        let next = page(Some(vec![at(value, time)]), Some(true));
+        assert_eq!(
+            roster.page(next).rejected(),
+            rejected(CacheResource::Members, AdmissionFault::Incomplete),
+            "{time} {value}"
+        );
+    }
+    // Strictly later boundaries, by time or by ID at an equal time, complete normally.
+    let mut roster = Roster::new(admission);
+    let pages = [
+        page(Some(vec![at(20, first)]), Some(true)),
+        page(Some(vec![at(21, first)]), Some(true)),
+        page(Some(vec![at(5, "2026-01-01T00:00:00.500001Z")]), Some(true)),
+    ];
+    for next in pages {
+        assert!(matches!(roster.page(next), Ok(RosterPage::More(_))));
+    }
+    let last = page(Some(vec![member(OWN, &[])]), Some(false));
+    let Ok(RosterPage::Complete(users)) = roster.page(last) else {
+        panic!("an advancing roster completes");
+    };
+    assert_eq!(users.len(), 4);
 }
 
 #[test]

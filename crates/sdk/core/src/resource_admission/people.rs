@@ -24,7 +24,9 @@ pub(crate) enum RosterPage {
 pub(crate) struct Roster<'a> {
     admission: Admission<'a>,
     users: Vec<UserSummary>,
-    cursors: HashSet<PageCursor>,
+    /// The previous boundary as the backend orders it: `(created_at, id)`, with the
+    /// timestamp in microseconds and the UUID in byte order, like Postgres.
+    last: Option<(i64, Uuid)>,
 }
 
 impl<'a> Roster<'a> {
@@ -32,7 +34,7 @@ impl<'a> Roster<'a> {
         Self {
             admission,
             users: Vec::new(),
-            cursors: HashSet::new(),
+            last: None,
         }
     }
 
@@ -40,7 +42,8 @@ impl<'a> Roster<'a> {
     /// rejected rather than read as the end of the roster.
     /// # Errors
     /// Rejects `Members` for a missing list or flag, a "more" page without a usable
-    /// boundary, a repeated cursor, or a malformed complete roster.
+    /// boundary, a boundary that does not come strictly after the previous one, or a
+    /// malformed complete roster.
     pub fn page(&mut self, page: MemberListResponse) -> Result<RosterPage, ResourceRejection> {
         let reject = |fault| self.admission.reject(CacheResource::Members, fault);
         let users = page
@@ -57,20 +60,28 @@ impl<'a> Roster<'a> {
                 .members(users, Scope::Roster)
                 .map(RosterPage::Complete);
         }
-        let cursor = users
+        let (cursor, position) = users
             .last()
-            .and_then(|last| {
-                let created_at = last.created_at.clone()?;
-                parse_id(last.id.as_deref())?;
-                Some((created_at, last.id.clone()?))
-            })
+            .and_then(boundary)
             .ok_or_else(|| reject(AdmissionFault::Incomplete))?;
-        if !self.cursors.insert(cursor.clone()) {
+        // The backend pages by `(created_at, id) > cursor`; a boundary that does not move
+        // forward would repeat or skip rows, so the roster could never prove completion.
+        if self.last.is_some_and(|last| position <= last) {
             return Err(reject(AdmissionFault::Incomplete));
         }
+        self.last = Some(position);
         self.users.extend(users);
         Ok(RosterPage::More(cursor))
     }
+}
+
+/// The cursor text sent back to the backend, and its position in the backend's order.
+fn boundary(last: &UserSummary) -> Option<(PageCursor, (i64, Uuid))> {
+    let created_at = last.created_at.clone()?;
+    let raw_id = last.id.clone()?;
+    let id = parse_id(Some(&raw_id))?;
+    let created_at_us = crate::parse_message_timestamp_us(&created_at).ok()?;
+    Some(((created_at, raw_id), (created_at_us, id)))
 }
 
 /// Whether a member list must contain the account's own row.

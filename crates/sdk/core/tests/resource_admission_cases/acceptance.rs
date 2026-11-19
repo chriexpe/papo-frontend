@@ -314,3 +314,43 @@ fn a_malformed_label_in_a_summary_batch_is_dropped_on_gateway_and_operation() ->
     })??;
     fixture.finish()
 }
+
+#[test]
+fn a_full_server_of_500_channels_reconnects_and_refreshes_on_every_producer() -> Result {
+    let fixture = super::fixture()?;
+    fixture.run(async {
+        // The seeded history channel plus 499 more reach the backend's maximum; no list
+        // is scripted, so every producer reads the fixture's real 500-row list.
+        for index in 0..499 {
+            fixture
+                .server()
+                .create_channel(&format!("full-{index}"))
+                .await?;
+        }
+        let account = Account::start(&fixture, "adm-full").await?;
+        assert_eq!(account.snapshot().channels.len(), 500);
+        for producer in [Producer::Reconnect, Producer::Gateway, Producer::Operation] {
+            let before = account.status().generation;
+            let version = account.snapshot().version;
+            trigger(&account, producer).await?;
+            let online = online_at(&account.session, |status| match producer {
+                Producer::Reconnect => status.generation.get() > before.get(),
+                Producer::Gateway | Producer::Operation => status.generation == before,
+            })
+            .await?;
+            let snapshot = published(&account, |snapshot| {
+                // The producer's own publication, so the next one cannot overlap it.
+                snapshot.version > version && snapshot.generation == online.generation
+            })
+            .await?;
+            assert_eq!(snapshot.channels.len(), 500, "{producer:?}");
+            assert_eq!(
+                account.session.resource_admission().rejected_replacements,
+                0
+            );
+        }
+        assert_eq!(account.cached_messages().await?, SEEDED_MESSAGES);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}

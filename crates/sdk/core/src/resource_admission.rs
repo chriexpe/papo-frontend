@@ -15,11 +15,11 @@
 //! | Data | Class | Malformed |
 //! | --- | --- | --- |
 //! | server `id`; `owner_id` when present (null means no owner) | security | rejects Server |
-//! | `channels` list absent/null, or at the backend's 500-row cap | security | rejects Channels |
-//! | channel `id`, `type`, `permissions` (absent is not `[]`), duplicate channel | security | rejects Channels |
+//! | `channels` list absent/null, or longer than the backend's 500-channel maximum | security | rejects Channels |
+//! | channel `id`, `type` (`text`, `category` or `voice`), `permissions` (absent is not `[]`), duplicate channel | security | rejects Channels |
 //! | overwrite `role_id` (any UUID spelling, kept verbatim), `permissions.read_channel`, repeated key | security | rejects Channels |
 //! | `roles` list absent/null; role `id`, `permissions`; duplicate role | security | rejects Roles |
-//! | member page `users`, `has_more`, page boundary, repeated cursor | security | rejects Members |
+//! | member page `users`, `has_more`, page boundary, a cursor that does not strictly advance | security | rejects Members |
 //! | own member row: present in a complete roster, unique, `roles` present, role IDs | security | rejects Members |
 //! | summary batch: own row omitted, repeated or unrequested | security | rejects Members |
 //! | summary batch: another row unparseable, unrequested or repeated | display | row dropped |
@@ -40,6 +40,11 @@
 //! display only: the evaluator reads the account's own assignments, and role grants
 //! only add, so dropping someone else's data never widens this account's access.
 //!
+//! A database that holds more than 500 non-DM channels (only possible outside the
+//! backend's creation path) is listed as exactly 500 rows, indistinguishable from a full
+//! server. That is a limit of the backend's completeness contract, not something
+//! admission can detect.
+//!
 //! Validation here does not replace the account cache's encoder checks; those remain a
 //! disk-integrity guard and should never fire for admitted data.
 
@@ -53,9 +58,13 @@ use std::sync::Mutex;
 
 pub(crate) use people::{Roster, RosterPage};
 
-/// Rows the pinned backend returns at most from `GET /channels`; a list that reaches
-/// it cannot prove that an unlisted channel was removed.
-const CHANNEL_LIST_CAP: usize = 500;
+/// The pinned backend refuses to create a channel once a server has this many, and
+/// `GET /channels` returns at most this many rows. A list of exactly this length is a
+/// legitimate full server. A longer one cannot come from the backend.
+const MAX_CHANNELS: usize = 500;
+
+/// Channel types `GET /channels` can list at the pinned backend; DMs are excluded there.
+const LISTED_CHANNEL_TYPES: [&str; 3] = ["text", "category", "voice"];
 
 /// Why a wire response, or one of its rows, was not admitted. Carries no identifiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,9 +82,13 @@ pub enum AdmissionFault {
     UnexpectedId,
     /// The account's own row was absent from a complete roster.
     MissingOwnRow,
-    /// The list cannot prove it is complete: a page boundary did not advance, or the
-    /// list reached a backend row cap.
+    /// The list cannot prove it is complete: a page boundary did not advance.
     Incomplete,
+    /// A list was longer than the backend's own maximum.
+    ExceedsLimit,
+    /// A value outside the set the pinned backend can send, such as an unknown channel
+    /// type; it is never read as an ordinary, open channel.
+    UnsupportedValue,
 }
 
 /// An authoritative replacement that was not applied. The group keeps its last admitted

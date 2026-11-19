@@ -153,9 +153,15 @@ pub(super) fn all(account: &Account<'_>) -> Vec<Defect> {
 fn channel_defects() -> Vec<Defect> {
     let restrictive_bad_role = json!([{"role_id": "", "permissions": {"read_channel": false}}]);
     let unhyphenated_channel = CHANNEL.replace('-', "");
-    let full: Vec<_> = (0..500_u128)
+    // The backend refuses to create a 501st channel, so a longer list cannot be genuine.
+    let over: Vec<_> = (0..501_u128)
         .map(|index| channel(&Uuid::from_u128(0x5000 + index).to_string(), &json!([])))
         .collect();
+    let typed = |kind: &str| {
+        let mut row = channel(CHANNEL, &json!([]));
+        row["type"] = json!(kind);
+        json!({"channels": [row]})
+    };
     vec![
         channels("channels absent", json!({})),
         channels("channels null", json!({"channels": null})),
@@ -176,9 +182,11 @@ fn channel_defects() -> Vec<Defect> {
             json!({"channels": [channel(&unhyphenated_channel, &json!([]))]}),
         ),
         channels(
-            "channel list at the backend's 500-row cap",
-            json!({"channels": full}),
+            "more channels than the backend's 500-channel maximum",
+            json!({"channels": over}),
         ),
+        channels("unsupported channel type", typed("unexpected_type")),
+        channels("DM type in the channel list", typed("dm")),
         server(
             "server ID empty",
             json!({"id": "", "name": "fixture", "owner_id": null}),
@@ -236,6 +244,23 @@ fn people_defects(account: &Account<'_>) -> Vec<Defect> {
             "partial roster: complete page without the account",
             json!({"users": [], "has_more": false}),
         ),
+        Defect {
+            name: "roster cursor moving backwards",
+            group: CacheResource::Members,
+            reconnect: vec![
+                get(
+                    "/users",
+                    json!({"users": [with_roles(json!([]))], "has_more": true}),
+                ),
+                get(
+                    "/users",
+                    json!({"users": [{"id": Uuid::from_u128(34).to_string(), "roles": [],
+                        "created_at": "2025-01-01T00:00:00Z"}], "has_more": true}),
+                ),
+            ],
+            gateway: None,
+            operation: None,
+        },
     ]
 }
 

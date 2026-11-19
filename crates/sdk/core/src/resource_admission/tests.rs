@@ -261,31 +261,71 @@ fn channel_security_fields_must_be_present() {
 }
 
 #[test]
-fn a_channel_list_at_the_backend_cap_cannot_prove_removals() {
+fn a_full_server_of_500_channels_is_admitted_but_a_longer_list_is_not() {
     let log = Diagnostics::default();
+    // The pinned backend refuses to create a 501st channel, so 500 is a legitimate maximum.
     let full: Vec<_> = (0..500).map(|index| channel(1000 + index)).collect();
-    let below = full[..499].to_vec();
+    let mut over = full.clone();
+    over.push(channel(2000));
+    let admitted = channels(
+        &log,
+        ChannelList {
+            channels: Some(full),
+        },
+    )
+    .unwrap();
+    assert_eq!(admitted.len(), 500);
     assert_eq!(
         channels(
             &log,
             ChannelList {
-                channels: Some(full)
+                channels: Some(over)
             }
         )
         .rejected(),
-        rejected(CacheResource::Channels, AdmissionFault::Incomplete)
+        rejected(CacheResource::Channels, AdmissionFault::ExceedsLimit)
     );
-    assert_eq!(
-        channels(
-            &log,
-            ChannelList {
-                channels: Some(below)
-            }
-        )
-        .unwrap()
-        .len(),
-        499
-    );
+}
+
+#[test]
+fn an_unsupported_channel_type_is_rejected_because_the_evaluator_would_read_it_as_open() {
+    let log = Diagnostics::default();
+    for kind in ["unexpected_type", "dm", "Text"] {
+        let list = ChannelList {
+            channels: Some(vec![Channel {
+                r#type: Some(kind.into()),
+                ..channel(3)
+            }]),
+        };
+        assert_eq!(
+            channels(&log, list).rejected(),
+            rejected(CacheResource::Channels, AdmissionFault::UnsupportedValue),
+            "{kind}"
+        );
+    }
+    for kind in ["text", "category", "voice"] {
+        let list = ChannelList {
+            channels: Some(vec![Channel {
+                r#type: Some(kind.into()),
+                ..channel(3)
+            }]),
+        };
+        assert_eq!(channels(&log, list).unwrap().len(), 1, "{kind}");
+    }
+    // Why: with no overwrites, the existing evaluator grants read on any non-DM type.
+    let mut image = ResourceSnapshot::empty(Generation(1));
+    image.server = Some(Arc::new(Server {
+        id: id(1),
+        owner_id: id(2),
+        ..Server::default()
+    }));
+    image.members = Arc::new(vec![member(OWN, &[])]);
+    let unknown = Channel {
+        r#type: Some("unexpected_type".into()),
+        ..channel(3)
+    };
+    let grants = permissions::channel_grants(&image, Uuid::from_u128(OWN), &unknown).unwrap();
+    assert!(grants.read);
 }
 
 #[test]
