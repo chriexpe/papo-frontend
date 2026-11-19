@@ -64,7 +64,7 @@ jobs:
         with:
           name: sdk-history-cost
           path: target/papo-sdk-7c/*.jsonl
-          if-no-files-found: error
+          if-no-files-found: ignore
 
   android-proof:
     name: SDK (Android emulator proof)

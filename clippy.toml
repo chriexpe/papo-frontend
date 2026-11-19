@@ -1,0 +1,4 @@
+# Workspace-wide Clippy settings (a crate with its own clippy.toml, such as
+# papo-desktop, does not inherit them). Some papo-core requests and SDK storage
+# calls take a row's whole identity and version as separate arguments.
+too-many-arguments-threshold = 9
