@@ -199,3 +199,49 @@ fn failed_server_probe_is_not_committed_to_the_registry() -> Result {
     })??;
     fixture.finish()
 }
+
+#[test]
+fn every_sign_in_saves_the_names_the_server_reports_now() -> Result {
+    let fixture = Fixture::new(Config::default())?;
+    fixture.run(async {
+        let handle = fixture.client().handle();
+        let server = handle
+            .add_server(&fixture.server().base_url(), UnixMicros(0))
+            .await?
+            .id;
+        let auth = handle.auth(server)?;
+        register(&auth, "first-name").await?;
+        let session = login(&auth, "first-name").await?;
+        let account = session.account();
+        let saved = |handle: &papo_sdk::ClientHandle| {
+            handle
+                .subscribe_registry()
+                .borrow()
+                .accounts
+                .iter()
+                .find(|saved| saved.id == account)
+                .map(|saved| (saved.username.clone(), saved.display_name.clone()))
+        };
+        assert_eq!(
+            saved(&handle),
+            Some(("first-name".into(), Some("first-name".into())))
+        );
+
+        // The account is renamed and given a nickname on the server; the saved row is
+        // not new, so only the second sign-in can bring the new names in.
+        assert!(
+            fixture
+                .server()
+                .rename_user("first-name", "second-name", Some("Second"))
+                .await
+        );
+        let renamed = login(&handle.auth(server)?, "second-name").await?;
+        assert_eq!(renamed.account(), account, "the same account");
+        assert_eq!(
+            saved(&handle),
+            Some(("second-name".into(), Some("Second".into())))
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}

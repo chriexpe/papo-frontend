@@ -151,6 +151,21 @@ impl TestServer {
         self.state.lock().await.auth.issue_password_reset(username)
     }
 
+    /// Renames a registered fixture user and sets its nickname; `whoami` reports both from
+    /// then on. Returns false for an unknown user or a taken username.
+    pub async fn rename_user(
+        &self,
+        username: &str,
+        new_username: &str,
+        nickname: Option<&str>,
+    ) -> bool {
+        self.state
+            .lock()
+            .await
+            .auth
+            .rename_user(username, new_username, nickname)
+    }
+
     /// Takes the latest bounded multipart message body, if one was received.
     ///
     /// The body is held only in memory and is never logged.

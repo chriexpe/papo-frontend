@@ -15,11 +15,11 @@ fn server_and_account_order_and_active_selection_survive_restart() {
         registry.add_server(a.clone(), UnixMicros(1)).await.unwrap();
         registry.add_server(b.clone(), UnixMicros(2)).await.unwrap();
         registry
-            .add_account(first, None, None, true, UnixMicros(3))
+            .add_account(first, "fixture".into(), None, None, true, UnixMicros(3))
             .await
             .unwrap();
         registry
-            .add_account(second, None, None, true, UnixMicros(4))
+            .add_account(second, "fixture".into(), None, None, true, UnixMicros(4))
             .await
             .unwrap();
         registry
@@ -118,7 +118,7 @@ fn active_selection_is_per_server_and_rejects_cross_account_identity() {
         }
         for id in [first, second, other] {
             registry
-                .add_account(id, None, None, true, UnixMicros(1))
+                .add_account(id, "fixture".into(), None, None, true, UnixMicros(1))
                 .await
                 .unwrap();
         }
@@ -146,5 +146,64 @@ fn active_selection_is_per_server_and_rejects_cross_account_identity() {
                 .iter()
                 .all(|a| !a.active)
         );
+    });
+}
+
+#[test]
+fn account_names_are_replaced_in_place_and_survive_restart() {
+    let mut fixture = Fixture::new();
+    let server = address(1);
+    let id = account(&server, 1);
+    fixture.runtime().block_on(async {
+        let registry = fixture.storage().registry();
+        registry
+            .add_server(server.clone(), UnixMicros(1))
+            .await
+            .unwrap();
+        let generation = registry
+            .add_account(
+                id,
+                "old".into(),
+                Some("Old".into()),
+                None,
+                true,
+                UnixMicros(2),
+            )
+            .await
+            .unwrap();
+        registry
+            .update_account_names(id, "new".into(), Some("New".into()))
+            .await
+            .unwrap();
+        let saved = &registry.accounts(server.id()).await.unwrap()[0];
+        assert_eq!(saved.credential_generation, generation, "the same row");
+    });
+    fixture.reopen();
+    fixture.runtime().block_on(async {
+        let saved = &fixture
+            .storage()
+            .registry()
+            .accounts(server.id())
+            .await
+            .unwrap()[0];
+        assert_eq!(saved.username, "new");
+        assert_eq!(saved.display_name.as_deref(), Some("New"));
+    });
+}
+
+#[test]
+fn renaming_an_unknown_account_is_not_found() {
+    let fixture = Fixture::new();
+    let server = address(1);
+    fixture.runtime().block_on(async {
+        let registry = fixture.storage().registry();
+        registry
+            .add_server(server.clone(), UnixMicros(1))
+            .await
+            .unwrap();
+        let missing = registry
+            .update_account_names(account(&server, 9), "name".into(), None)
+            .await;
+        assert!(matches!(missing, Err(StorageError::NotFound)));
     });
 }

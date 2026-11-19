@@ -10,7 +10,7 @@ fn removal_deletes_more_than_one_shared_turn_of_state_without_losing_other_accou
         let server=address(1); let first=account(&server,1); let other=account(&server,2);
         let registry=fixture.storage().registry();
         registry.add_server(server,UnixMicros(1)).await.unwrap();
-        for id in [first,other] {registry.add_account(id,None,None,false,UnixMicros(1)).await.unwrap();}
+        for id in [first,other] {registry.add_account(id,"fixture".into(), None,None,false,UnixMicros(1)).await.unwrap();}
         registry.writer.write(move |tx|->Result<(),StorageError> {
             for index in 0..601u128 {
                 let channel=papo_api::Uuid::from_u128(index);

@@ -61,7 +61,7 @@ fn v1_upgrade_recovers_only_sending_and_keeps_intents_and_full_durability() {
     db.execute_batch(include_str!("../state_v1.sql")).unwrap();
     db.pragma_update(None, "user_version", 1).unwrap();
     db.execute("INSERT INTO servers(id,canonical_address,position,added_at_us) VALUES(zeroblob(16),'https://example.invalid',0,0)",[]).unwrap();
-    db.execute("INSERT INTO accounts(server_id,user_id,position,created_at_us) VALUES(zeroblob(16),zeroblob(16),0,0)",[]).unwrap();
+    db.execute("INSERT INTO accounts(server_id,user_id,username,position,created_at_us) VALUES(zeroblob(16),zeroblob(16),'fixture',0,0)",[]).unwrap();
     for (index, state) in ["Queued", "Sending", "Sent", "Unknown", "Failed"]
         .into_iter()
         .enumerate()

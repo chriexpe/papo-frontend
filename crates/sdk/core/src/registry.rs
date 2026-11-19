@@ -98,6 +98,7 @@ impl Registry {
     pub async fn add_account(
         &self,
         id: AccountId,
+        username: String,
         display_name: Option<String>,
         avatar_ref: Option<String>,
         active: bool,
@@ -107,10 +108,35 @@ impl Registry {
             visible_server(tx, id.server())?;
             if tx.query_row("SELECT 1 FROM accounts WHERE server_id=?1 AND user_id=?2",params![id.server().as_bytes(),id.user().as_bytes()], |_|Ok(())).optional()?.is_some() { return Err(StorageError::AlreadyExists); }
             if active { tx.execute("UPDATE accounts SET active=0 WHERE server_id=?", [id.server().as_bytes()])?; }
-            tx.execute("INSERT INTO accounts(server_id,user_id,display_name,avatar_ref,position,active,created_at_us) VALUES(?1,?2,?3,?4,(SELECT coalesce(max(position),-1)+1 FROM accounts WHERE server_id=?1),?5,?6)", params![id.server().as_bytes(),id.user().as_bytes(),display_name,avatar_ref,active,created_at.0])?;
+            tx.execute("INSERT INTO accounts(server_id,user_id,username,display_name,avatar_ref,position,active,created_at_us) VALUES(?1,?2,?3,?4,?5,(SELECT coalesce(max(position),-1)+1 FROM accounts WHERE server_id=?1),?6,?7)", params![id.server().as_bytes(),id.user().as_bytes(),username,display_name,avatar_ref,active,created_at.0])?;
             let generation = u64::try_from(tx.last_insert_rowid()).map_err(|_| StorageError::InvalidState)?;
             Ok(CredentialGeneration::new(generation))
         }).await
+    }
+
+    /// Replaces a visible account's username and display name with what its latest
+    /// sign-in reported, so a rename on the server reaches the saved account.
+    ///
+    /// # Errors
+    /// Returns `NotFound` for a hidden or missing account, or a storage failure.
+    pub async fn update_account_names(
+        &self,
+        id: AccountId,
+        username: String,
+        display_name: Option<String>,
+    ) -> Result<(), StorageError> {
+        self.writer
+            .write(move |tx| {
+                let changed = tx.execute(
+                    "UPDATE accounts SET username=?3,display_name=?4 WHERE server_id=?1 AND user_id=?2 AND hidden=0",
+                    params![id.server().as_bytes(), id.user().as_bytes(), username, display_name],
+                )?;
+                if changed == 0 {
+                    return Err(StorageError::NotFound);
+                }
+                Ok(())
+            })
+            .await
     }
 
     /// Returns only this server's visible accounts in their durable order.
@@ -121,12 +147,12 @@ impl Registry {
         let lease = Arc::clone(&self.lease);
         Ok(self.readers.query(self.path.clone(), move |tx| {
             let _lease=lease;
-            tx.prepare("SELECT a.user_id,a.display_name,a.avatar_ref,a.active,a.created_at_us,a.credential_generation FROM accounts a JOIN servers s ON s.id=a.server_id WHERE a.server_id=? AND a.hidden=0 AND s.hidden=0 ORDER BY a.position,a.user_id")?
+            tx.prepare("SELECT a.user_id,a.username,a.display_name,a.avatar_ref,a.active,a.created_at_us,a.credential_generation FROM accounts a JOIN servers s ON s.id=a.server_id WHERE a.server_id=? AND a.hidden=0 AND s.hidden=0 ORDER BY a.position,a.user_id")?
                 .query_map([server.as_bytes()], |row| {
                     let bytes: Vec<u8> = row.get(0)?;
                     let user = papo_api::Uuid::from_slice(&bytes).map_err(|_|rusqlite::Error::InvalidQuery)?;
-                    let generation = u64::try_from(row.get::<_,i64>(5)?).map_err(|_|rusqlite::Error::InvalidQuery)?;
-                    Ok(SavedAccount { id: AccountId::new(server,user),display_name:row.get(1)?,avatar_ref:row.get(2)?,active:row.get(3)?,created_at:UnixMicros(row.get(4)?),credential_generation:CredentialGeneration::new(generation) })
+                    let generation = u64::try_from(row.get::<_,i64>(6)?).map_err(|_|rusqlite::Error::InvalidQuery)?;
+                    Ok(SavedAccount { id: AccountId::new(server,user),username:row.get(1)?,display_name:row.get(2)?,avatar_ref:row.get(3)?,active:row.get(4)?,created_at:UnixMicros(row.get(5)?),credential_generation:CredentialGeneration::new(generation) })
                 })?.collect()
         }).await?)
     }

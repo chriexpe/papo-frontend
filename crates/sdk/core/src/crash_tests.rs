@@ -122,7 +122,7 @@ fn repeated_sigkills_during_removal_resume_before_profile_access() {
                 .await
                 .unwrap();
             registry
-                .add_account(id, None, None, true, UnixMicros(1))
+                .add_account(id, "fixture".into(), None, None, true, UnixMicros(1))
                 .await
                 .unwrap();
         });

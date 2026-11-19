@@ -17,6 +17,7 @@ const CREATED_AT: &str = "2026-01-01T00:00:00Z";
 struct User {
     id: String,
     username: String,
+    nickname: Option<String>,
     password: String,
 }
 
@@ -149,6 +150,7 @@ impl Auth {
                 User {
                     id,
                     username: request.username,
+                    nickname: None,
                     password: request.password,
                 },
             );
@@ -196,6 +198,26 @@ impl Auth {
         reply
     }
 
+    /// Renames a registered user and sets its nickname, as an edit on the server would;
+    /// sessions stay signed in. Returns false for an unknown or taken username.
+    pub(crate) fn rename_user(
+        &mut self,
+        username: &str,
+        new_username: &str,
+        nickname: Option<&str>,
+    ) -> bool {
+        if username != new_username && self.users.contains_key(new_username) {
+            return false;
+        }
+        let Some(mut user) = self.users.remove(username) else {
+            return false;
+        };
+        new_username.clone_into(&mut user.username);
+        user.nickname = nickname.map(str::to_owned);
+        self.users.insert(new_username.to_owned(), user);
+        true
+    }
+
     fn whoami(&self, path: &str, cookie: Option<&str>) -> Reply {
         let Some(user) = self
             .user_id(cookie)
@@ -206,7 +228,7 @@ impl Auth {
         Reply::json(
             200,
             json!({
-                "id": user.id, "username": user.username, "nickname": null, "avatar_blob": null,
+                "id": user.id, "username": user.username, "nickname": user.nickname, "avatar_blob": null,
                 "avatar_format": "", "status": null, "status_message": null, "typing": null,
                 "status_updated_at": null, "created_at": CREATED_AT, "roles": [],
                 "settings": {"version": 1, "config": {

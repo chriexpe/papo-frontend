@@ -93,7 +93,14 @@ fn stale_victim_selection_cannot_recreate_a_removed_accounts_database() {
                 .await
                 .unwrap();
             registry
-                .add_account(account, None, None, false, crate::UnixMicros(0))
+                .add_account(
+                    account,
+                    "fixture".into(),
+                    None,
+                    None,
+                    false,
+                    crate::UnixMicros(0),
+                )
                 .await
                 .unwrap();
             let cache = handle.inner.caches.open(account).await.unwrap();

@@ -21,6 +21,7 @@ fn account(user: u128, active: bool) -> SavedAccount {
                 .parse()
                 .unwrap(),
         ),
+        username: "fixture".into(),
         display_name: None,
         avatar_ref: None,
         active,

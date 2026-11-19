@@ -16,6 +16,7 @@ fn registry() -> Arc<RegistrySnapshot> {
     };
     let accounts = [1, 2].map(|user| SavedAccount {
         id: AccountId::new(server.address.id(), Uuid::from_u128(user)),
+        username: "fixture".into(),
         display_name: None,
         avatar_ref: None,
         active: user == 1,

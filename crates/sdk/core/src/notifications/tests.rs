@@ -42,7 +42,7 @@ pub(crate) fn fixture(path: &std::path::Path) -> (Client, Session) {
                 saved.credential_generation
             } else {
                 registry
-                    .add_account(account, None, None, true, UnixMicros(0))
+                    .add_account(account, "fixture".into(), None, None, true, UnixMicros(0))
                     .await
                     .unwrap()
             };

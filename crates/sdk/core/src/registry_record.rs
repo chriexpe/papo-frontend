@@ -21,7 +21,9 @@ pub struct SavedServer {
 pub struct SavedAccount {
     /// Server plus user identity.
     pub id: AccountId,
-    /// Last known non-secret display name.
+    /// The username the server reported at the last sign-in.
+    pub username: String,
+    /// Last known non-secret display name: the nickname, or the username without one.
     pub display_name: Option<String>,
     /// Last known non-secret media reference.
     pub avatar_ref: Option<String>,
