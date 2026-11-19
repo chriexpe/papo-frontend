@@ -38,6 +38,7 @@ pub(crate) async fn fetch(
         .blocks(client.request(rest.blocked_users()).await?)?
         .into();
     session.epochs.validate(epoch.generation)?;
+    snapshot.channel_census_complete = true;
     Ok(snapshot)
 }
 

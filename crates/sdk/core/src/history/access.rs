@@ -125,6 +125,15 @@ async fn seal(
                 .positions
                 .retain_revoked(*id, generation, *reason);
         }
+        crate::badges::restrict(
+            session,
+            &sealed.quarantined,
+            sealed
+                .denied
+                .iter()
+                .chain(&sealed.retained_denied)
+                .map(|(id, _)| *id),
+        );
         sealed
     };
     let changed = !sealed.quarantined.is_empty() || !sealed.denied.is_empty();
@@ -253,17 +262,14 @@ pub(super) async fn deny(
 ) -> Result<(), ClientError> {
     {
         let mut channels = session.history.channels.lock().await;
-        session
-            .history
-            .admission
-            .write()
-            .await
-            .deny(channel, reason);
+        let mut admissions = session.history.admission.write().await;
+        admissions.deny(channel, reason);
         channels.retain(|_, channel| !channel.is_closed());
         session
             .reading
             .positions
             .revoke(&[channel], generation, reason);
+        crate::badges::restrict(session, &[], std::iter::once(channel));
     }
     let listed = reason != HistoryClosedReason::ChannelDeleted;
     revoke(
@@ -348,6 +354,8 @@ pub(crate) async fn accepted(session: &SessionInner, generation: Generation) -> 
         .is_some_and(|connection| connection.generation == generation)
 }
 
+#[cfg(test)]
+mod badge_tests;
 #[cfg(test)]
 mod freshness_tests;
 #[cfg(test)]

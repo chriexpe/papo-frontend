@@ -143,6 +143,7 @@ fn project(
                 topic: channel.topic.clone(),
                 created_at: channel.created_at.clone(),
                 unread: None,
+                badges: None,
             };
             if reusable
                 && let Some(old) = value.id.as_deref().and_then(|id| by_id.get(id))

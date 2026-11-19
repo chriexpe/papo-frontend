@@ -37,6 +37,7 @@ pub(crate) struct SessionInner {
     pub operations_serial: tokio::sync::Mutex<()>,
     pub history: crate::history::HistoryStore,
     pub reading: crate::reading::Reading,
+    pub badges: crate::badges::Badges,
     pub outgoing: crate::outgoing::AccountQueue,
     pub reaction_commands: crate::operations::reactions::ReactionQueue,
     pub detached: crate::search::DetachedStore,
@@ -83,6 +84,7 @@ impl SessionInner {
             operations_serial: tokio::sync::Mutex::new(()),
             history: crate::history::HistoryStore::default(),
             reading: crate::reading::Reading::new(generation),
+            badges: crate::badges::Badges::new(generation),
             outgoing: crate::outgoing::AccountQueue::default(),
             reaction_commands: crate::operations::reactions::ReactionQueue::default(),
             detached: crate::search::DetachedStore::default(),
@@ -95,6 +97,7 @@ impl SessionInner {
         drop(self.outgoing.files_serial.lock().await);
         self.history.close_all().await;
         self.reading.close();
+        self.badges.image.close();
         self.outgoing.image.close();
         self.tasks.close();
         self.connection.send_replace(ConnectionStatus {

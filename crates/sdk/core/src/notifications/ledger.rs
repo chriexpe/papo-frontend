@@ -88,7 +88,9 @@ pub(crate) async fn save_settings(
     session: &Session,
     settings: NotificationSettings,
 ) -> Result<(), NotificationError> {
-    save(session, session.generation(), Some(settings), None).await
+    save(session, session.generation(), Some(settings), None).await?;
+    session.inner.notifications.policy_changes.send_replace(());
+    Ok(())
 }
 pub(crate) async fn save_cursor(
     session: &Session,

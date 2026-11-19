@@ -18,6 +18,8 @@ mod crash;
 #[cfg(test)]
 mod delivery_race_tests;
 #[cfg(test)]
+mod policy_signal_tests;
+#[cfg(test)]
 mod read_evidence_tests;
 #[cfg(test)]
 mod retention_tests;
@@ -127,6 +129,7 @@ pub(crate) struct Notifications {
     pub receiver: tokio::sync::Mutex<mpsc::Receiver<NotificationDelivery>>,
     pub events: Mutex<Option<mpsc::Sender<crate::Generated<papo_api::gateway::Event>>>>,
     pub status: watch::Sender<NotificationStatus>,
+    pub policy_changes: watch::Sender<()>,
     pub deferred_evictions: AtomicU64,
     pub lookup_evictions: AtomicU64,
 }
@@ -145,6 +148,7 @@ impl Default for Notifications {
             receiver: tokio::sync::Mutex::new(receiver),
             events: Mutex::default(),
             status: watch::channel(NotificationStatus::Ready).0,
+            policy_changes: watch::channel(()).0,
             deferred_evictions: AtomicU64::new(0),
             lookup_evictions: AtomicU64::new(0),
         }

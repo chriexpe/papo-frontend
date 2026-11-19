@@ -1,4 +1,7 @@
-//! Single notification decision for all producers; backend remains the authorization authority.
+//! Shared evidence-aware trigger classification and committed eligibility; delivery suppression stays local.
+
+#[cfg(test)]
+mod tests;
 
 use super::{NotificationDelivery, NotificationTarget};
 use crate::{
@@ -65,7 +68,7 @@ pub enum ChannelNotificationMode {
     All,
 }
 /// Durable device policy, isolated per authenticated account.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -100,6 +103,140 @@ impl Default for NotificationSettings {
         }
     }
 }
+/// Independently established positive evidence; current roles never prove historical authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Provenance {
+    DirectMention,
+    ReplyToAccount,
+    DirectMessage,
+}
+
+/// Historical trigger evidence, before current committed settings are applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Classification {
+    KnownTrigger(Provenance),
+    KnownNonTrigger,
+    Unknown,
+}
+
+/// Classifies held immutable message evidence without fetching parents or reconstructing permissions.
+/// `parent_author` must belong to this message's held parent; absent/deleted/malformed parents stay unknown.
+pub(crate) fn classify(
+    message: &crate::Message,
+    account: Uuid,
+    dm: bool,
+    parent_author: Option<Uuid>,
+) -> Classification {
+    let author = message.author_id.as_deref().and_then(|id| id.parse().ok());
+    if author == Some(account) {
+        return Classification::KnownNonTrigger;
+    }
+    let content = message.content.as_deref();
+    if let Some(Classification::KnownTrigger(provenance)) =
+        content.map(|content| classify_direct(content, account))
+    {
+        return Classification::KnownTrigger(provenance);
+    }
+    let parent = message
+        .reply_to
+        .as_deref()
+        .and_then(|id| id.parse::<Uuid>().ok());
+    if parent.is_some() && parent_author == Some(account) {
+        return Classification::KnownTrigger(Provenance::ReplyToAccount);
+    }
+    let webhook = message
+        .webhook_id
+        .as_deref()
+        .and_then(|id| id.parse::<Uuid>().ok())
+        .is_some();
+    if dm && (author.is_some() || message.author_id.is_none() || webhook) {
+        return Classification::KnownTrigger(Provenance::DirectMessage);
+    }
+    // The pin cannot broadcast everyone without a user author. A webhook can still mention directly.
+    let everyone_unknown = message
+        .author_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty())
+        && content.is_some_and(crate::mentions::contains_everyone_mention);
+    if content.is_none()
+        || (dm && author.is_none() && !webhook)
+        || (message.reply_to.is_some() && (parent.is_none() || parent_author.is_none()))
+        || everyone_unknown
+    {
+        Classification::Unknown
+    } else {
+        Classification::KnownNonTrigger
+    }
+}
+
+/// Small effective image of committed channel settings, shared by badges and delivery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ChannelPolicy {
+    enabled: bool,
+    triggers_enabled: bool,
+    all_messages: bool,
+}
+
+impl ChannelPolicy {
+    pub(crate) fn new(
+        settings: &NotificationSettings,
+        backend: &papo_api::wire::Notifications,
+        channel: Uuid,
+        dm: bool,
+        backend_mode: Option<&str>,
+    ) -> Self {
+        let mode =
+            settings
+                .channels
+                .get(&channel)
+                .copied()
+                .unwrap_or(if backend_mode == Some("all") {
+                    ChannelNotificationMode::All
+                } else {
+                    ChannelNotificationMode::Mentions
+                });
+        Self {
+            enabled: settings.enabled
+                && backend.enabled != Some(false)
+                && !settings.muted.contains(&channel)
+                && backend_mode != Some("off")
+                && mode != ChannelNotificationMode::Off,
+            triggers_enabled: if dm {
+                settings.direct_messages
+            } else {
+                settings.mentions && backend.mentions != Some(false)
+            },
+            all_messages: if dm {
+                settings.direct_messages
+            } else {
+                mode == ChannelNotificationMode::All
+            },
+        }
+    }
+
+    /// True when no trigger could count, even without history or a read boundary.
+    pub(crate) const fn badges_disabled(self) -> bool {
+        !self.enabled || !self.triggers_enabled
+    }
+
+    /// None means unresolved classification could change the eligible trigger count.
+    pub(crate) const fn badge_eligible(self, classification: Classification) -> Option<bool> {
+        if self.badges_disabled() {
+            return Some(false);
+        }
+        match classification {
+            Classification::KnownTrigger(_) => Some(true),
+            Classification::KnownNonTrigger => Some(false),
+            Classification::Unknown => None,
+        }
+    }
+
+    /// Authoritative live/inbox positives survive unknown historical classification; All admits ordinary messages.
+    pub(crate) const fn delivery_eligible(self, triggered: bool) -> bool {
+        self.enabled && (self.all_messages || (triggered && self.triggers_enabled))
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Candidate {
     pub channel: Uuid,
@@ -122,8 +259,20 @@ pub(super) fn contains_channel(resources: &PolicyResources, channel: Uuid) -> bo
             .iter()
             .any(|d| d.id.parse().ok() == Some(channel))
 }
+/// Direct tokens independently prove a trigger; other branches need more than live content evidence.
+pub(super) fn classify_direct(content: &str, account: Uuid) -> Classification {
+    if crate::mentions::contains_user_mention(content, account) {
+        Classification::KnownTrigger(Provenance::DirectMention)
+    } else {
+        Classification::Unknown
+    }
+}
+
 pub(super) fn mentions(content: &str, user: Uuid) -> bool {
-    crate::mentions::contains_user_mention(content, user)
+    matches!(
+        classify_direct(content, user),
+        Classification::KnownTrigger(_)
+    )
 }
 pub(super) fn decide(
     session: &Session,
@@ -143,9 +292,6 @@ pub(super) fn decide(
         || !contains_channel(resources, candidate.channel)
         || candidate.read
         || candidate.author == Some(session.account().user())
-        || !settings.enabled
-        || backend.enabled == Some(false)
-        || settings.muted.contains(&candidate.channel)
         || session
             .inner
             .notifications
@@ -160,30 +306,9 @@ pub(super) fn decide(
         .channels()
         .iter()
         .find(|c| c.id.as_deref().and_then(|s| s.parse().ok()) == Some(candidate.channel))
-        .and_then(|c| c.notification_settings.as_deref())
-        .unwrap_or("only_mentions");
-    if backend_mode == "off" {
-        return None;
-    }
-    let mode = settings
-        .channels
-        .get(&candidate.channel)
-        .copied()
-        .unwrap_or(if backend_mode == "all" {
-            ChannelNotificationMode::All
-        } else {
-            ChannelNotificationMode::Mentions
-        });
-    if mode == ChannelNotificationMode::Off {
-        return None;
-    }
-    if dm {
-        if !settings.direct_messages {
-            return None;
-        }
-    } else if mode != ChannelNotificationMode::All
-        && (!candidate.triggered || !settings.mentions || backend.mentions == Some(false))
-    {
+        .and_then(|c| c.notification_settings.as_deref());
+    let policy = ChannelPolicy::new(settings, backend, candidate.channel, dm, backend_mode);
+    if !policy.delivery_eligible(candidate.triggered) {
         return None;
     }
     Some(NotificationDelivery {
@@ -199,8 +324,8 @@ pub(super) fn decide(
     })
 }
 
-/// Eligibility is shared with claim admission, independently of suppression.
-pub(super) fn eligible(
+/// Broad at-most-once claim admission, not badge eligibility: suppressed candidates still consume identity.
+pub(super) fn claim_eligible(
     resources: &PolicyResources,
     settings: &NotificationSettings,
     candidate: &Candidate,

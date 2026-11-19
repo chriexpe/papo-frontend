@@ -181,6 +181,15 @@ fn quarantine_revocation_epoch_and_account_visibility_fences_gate_read_evidence(
 
             // Quarantine yields NotReady without dropping durable points; release restores it.
             session.inner.reading.positions.quarantine(&[channel]);
+            let quarantined = channel_read_evidence(&session, generation, channel)
+                .await
+                .unwrap();
+            assert!(!quarantined.ready);
+            assert!(!quarantined.boundary_known());
+            assert_eq!(
+                quarantined.badge_message(Uuid::from_u128(10), Some(key(100, 10))),
+                ReadEvidence::NotReady
+            );
             assert_eq!(
                 message_read_evidence(
                     &session,

@@ -136,5 +136,24 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(CHECK.source_violations("pub error: String", "papo-api"), [])
 
 
+class BadgeOwnershipTests(unittest.TestCase):
+    def test_badges_consume_owners_without_sql_hydration_or_permission_reconstruction(self):
+        core = SCRIPT.parent.parent / "crates" / "sdk" / "core" / "src"
+        sources = [core / "badges.rs", *(core / "badges").glob("*.rs")]
+        for path in sources:
+            if path.name == "tests.rs":
+                continue
+            source = path.read_text(encoding="utf-8")
+            for forbidden in ["rusqlite", "load_channel_read_points", "message_read_evidence(",
+                              "ReadDecisions", "permissions::", ".history(", ".inbox("]:
+                with self.subTest(path=path.name, forbidden=forbidden):
+                    self.assertNotIn(forbidden, source)
+        counts = (core / "badges" / "counts.rs").read_text(encoding="utf-8")
+        self.assertIn("snapshot.coverage()", counts)
+        self.assertIn("authored_by_other", counts)
+        self.assertIn("policy::classify", counts)
+        self.assertIn("read.badge_message", counts)
+
+
 if __name__ == "__main__":
     unittest.main()
