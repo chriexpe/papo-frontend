@@ -207,6 +207,10 @@ fn a_history_layout_fault_never_invalidates_the_account_cache() {
     let layout = ClientError::from(crate::HistoryError::Layout);
     assert!(matches!(layout, ClientError::HistoryLayout));
     assert!(!invalidates_account_cache(&layout));
+    // Neither does a lost race with retention on a history set.
+    assert!(!invalidates_account_cache(&ClientError::Cache(
+        crate::CacheError::Superseded
+    )));
     // Corrupt stored data still does: that branch is unchanged.
     assert!(invalidates_account_cache(&ClientError::Cache(
         crate::CacheError::InvalidData

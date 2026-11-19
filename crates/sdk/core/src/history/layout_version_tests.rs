@@ -1,6 +1,7 @@
 //! Layout compatibility and guards against real account-cache SQLite: an older layout rebuilds
 //! only its own channel's history set, a repeated identity is rejected before any row is
-//! written, and stored identities that could be reissued are reported as corrupt.
+//! written, and stored identities that could be reissued are reported as corrupt. Includes the
+//! one interleaving where cold retention retires a set between an open's authorize and load.
 
 use std::sync::Arc;
 
@@ -8,9 +9,9 @@ use papo_api::{HistoryOrder, Uuid};
 
 use super::{
     HistoryError,
-    cache_fixture::{CHANNEL, cache, merge, messages, open, persist, point},
-    persisted_layout::structural_layout,
-    persistence::{Stored, decode},
+    cache_fixture::{CHANNEL, cache, epoch, merge, messages, open, persist, point},
+    persisted_layout::{LAYOUT_VERSION, stored_version, structural_layout},
+    persistence::{State, Stored, decode},
     retention::Retainer,
 };
 use crate::{
@@ -239,5 +240,112 @@ fn stored_identities_that_repeat_or_could_be_reissued_are_corrupt() {
             let only = metadata["active_chunks"][0].clone();
             metadata["active_chunks"].as_array_mut().unwrap().push(only);
         })));
+    });
+}
+
+/// `ensure` authorizes and loads in two cache transactions, releasing the shared cache fence in
+/// between, while cold retention holds no channel lock (it runs only without a live model). So
+/// a retire can land between the two. The fixture runtime is single-threaded: one manual poll
+/// of `ensure` takes the free fence and spawns its authorize transaction, which cannot run until
+/// this task yields. Retention, awaited next, queues behind that transaction on the fence (FIFO),
+/// so the order is exactly authorize → retention load → retire → `ensure`'s load.
+#[test]
+fn a_set_retired_between_authorize_and_load_supersedes_the_open_and_rebuilds_on_retry() {
+    let fixture = Fixture::new();
+    fixture.runtime().block_on(async {
+        let cache = cache(&fixture, &[CHANNEL, OUTDATED]).await;
+        let current = current_history(&cache).await;
+        let old_set = outdated_history(&cache).await;
+        let instance = cache.history_instance();
+        let clock = cache.retention_version(bytes(OUTDATED));
+
+        let mut opening = State::default();
+        let mut ensure = Box::pin(opening.ensure(&cache, bytes(OUTDATED), Generation(1)));
+        let first = std::future::poll_fn(|cx| std::task::Poll::Ready(ensure.as_mut().poll(cx)));
+        assert!(
+            first.await.is_pending(),
+            "authorize is spawned, not yet run"
+        );
+        let mut retainer = Retainer::new(Arc::clone(&cache), Uuid::from_u128(OUTDATED));
+        assert!(retainer.evict(None).await.unwrap().is_none());
+        assert_eq!(cache.retention_version(bytes(OUTDATED)), clock + 1);
+        assert!(
+            stored(&cache, OUTDATED).await.is_none(),
+            "the authorized set was retired"
+        );
+
+        // The open finds its authorized set gone: a lost race, not corrupt data.
+        let result = ensure.await;
+        assert!(matches!(
+            result,
+            Err(HistoryError::Cache(CacheError::Superseded))
+        ));
+        assert!(matches!(
+            crate::ClientError::from(result.unwrap_err()),
+            crate::ClientError::Cache(CacheError::Superseded)
+        ));
+        // It failed in its load: it adopted no set and allocated no replacement.
+        assert!(stored(&cache, OUTDATED).await.is_none());
+        assert_eq!(opening.set_id, None);
+        assert!(matches!(
+            opening.persist(&cache, bytes(OUTDATED), &epoch(1)).await,
+            Err(HistoryError::Unverified)
+        ));
+        // A writer still holding the retired set and the pre-retire clock is refused.
+        let stale = cache
+            .history_commit_versioned(
+                bytes(OUTDATED),
+                old_set,
+                (Generation(1), tokio_util::sync::CancellationToken::new()),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Some((clock, 0)),
+            )
+            .await;
+        assert_eq!(stale, Err(CacheError::Superseded));
+
+        // The next authorized open starts a fresh version-2 set and works normally.
+        let mut rebuilt = open(&cache, OUTDATED, 1).await;
+        assert!(rebuilt.set_id.is_some_and(|set| set != old_set));
+        assert_eq!(rebuilt.model.chunks, Vec::new());
+        let ticket = super::merge::Ticket {
+            channel: bytes(OUTDATED),
+            generation: 1,
+            revision: rebuilt.model.revision,
+            cursor: None,
+            order: HistoryOrder::Desc,
+            limit: 100,
+        };
+        let page: Vec<_> = (1..=3)
+            .rev()
+            .map(|index| {
+                let mut message = super::cache_fixture::message(index);
+                message.channel_id = Some(Uuid::from_u128(OUTDATED).to_string());
+                message
+            })
+            .collect();
+        rebuilt.model.merge_page(&ticket, &page, false).unwrap();
+        rebuilt
+            .persist(&cache, bytes(OUTDATED), &epoch(1))
+            .await
+            .unwrap();
+        let data = stored(&cache, OUTDATED).await.unwrap();
+        assert_eq!(stored_version(&data.metadata).unwrap(), LAYOUT_VERSION);
+        let reloaded = open(&cache, OUTDATED, 1).await;
+        assert_eq!(reloaded.model.order, rebuilt.model.order);
+
+        // A late, stale retire of the old set neither hides the replacement nor ticks the clock.
+        let clock = cache.retention_version(bytes(OUTDATED));
+        cache
+            .retention_retire(bytes(OUTDATED), old_set)
+            .await
+            .unwrap();
+        assert_eq!(stored(&cache, OUTDATED).await.unwrap().set_id, data.set_id);
+        assert_eq!(cache.retention_version(bytes(OUTDATED)), clock);
+
+        // No account-wide invalidation: same cache instance, resources and other channel intact.
+        assert_eq!(cache.history_instance(), instance);
+        assert_account_cache_intact(&cache, &current).await;
     });
 }
