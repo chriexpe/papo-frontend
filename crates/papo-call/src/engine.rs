@@ -22,7 +22,7 @@ use papo_sdk::{
     MediaTransportState, MediaWarning,
 };
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::{runtime::Handle, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const QUEUE_CAPACITY: usize = 128;
@@ -107,11 +107,11 @@ impl Engine {
         };
         ensure_start_active(stop)?;
         if engine.graph.set_state(gst::State::Playing).is_err() {
-            engine.drain();
+            engine.drain(None);
             return Err(MediaStartError::DeviceUnavailable);
         }
         if stop.is_cancelled() {
-            engine.drain();
+            engine.drain(None);
             return Err(MediaStartError::Cancelled);
         }
         Ok(engine)
@@ -321,12 +321,15 @@ impl Engine {
         Ok(())
     }
 
-    pub fn drain(&mut self) -> bool {
+    pub fn drain(&mut self, runtime: Option<&Handle>) -> bool {
         self.video.revoke();
         self.camera.release();
         self.mic.release();
         self.events.close();
         while self.events.try_recv().is_ok() {}
+        if let Some(runtime) = runtime {
+            runtime.block_on(self.negotiation.close());
+        }
         let state = self.graph.set_state(gst::State::Null);
         self.video.drain();
         self.audio.drain();

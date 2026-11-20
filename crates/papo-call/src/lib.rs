@@ -109,7 +109,7 @@ impl MediaEngineFactory for GstreamerMediaFactory {
                             let result =
                                 runtime.block_on(engine.run(rx, &stop, attempt, &worker_reports));
                             stop.cancel();
-                            let drained = engine.drain();
+                            let drained = engine.drain(Some(&runtime));
                             drop(engine);
                             return finish_worker(
                                 result,
@@ -119,7 +119,7 @@ impl MediaEngineFactory for GstreamerMediaFactory {
                                 drained,
                             );
                         }
-                        engine.drain()
+                        engine.drain(None)
                     }
                     Err(error) => {
                         let _ = ready.send(Err(error));

@@ -136,6 +136,14 @@ impl Negotiation {
         Ok(())
     }
 
+    pub async fn close(&self) {
+        // Recent webrtcbin releases can close ICE and DTLS explicitly before the
+        // graph is stopped. Older releases still release them on the NULL transition.
+        if glib::subclass::SignalId::lookup("close", self.webrtc.type_()).is_some() {
+            let _ = promise(|promise| self.webrtc.emit_by_name::<()>("close", &[promise])).await;
+        }
+    }
+
     pub fn track(&self, pad: &gst::Pad) -> Option<(bool, String)> {
         let line = pad.property::<Option<rtc::WebRTCRTPTransceiver>>("transceiver")?;
         let media = self.remote.as_ref()?.sdp().media(line.mlineindex())?;
