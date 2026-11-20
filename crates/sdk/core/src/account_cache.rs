@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod admission_tests;
+mod decoding;
 mod encoding;
 pub(crate) mod history;
 mod history_manifest;
@@ -13,7 +14,11 @@ mod history_tests;
 mod lifecycle_tests;
 mod migration;
 mod persistence;
+#[cfg(test)]
+mod resource_fixtures;
 mod retention;
+#[cfg(test)]
+mod revision_tests;
 mod schema;
 #[cfg(test)]
 mod tests;
@@ -72,7 +77,7 @@ pub enum CacheResource {
     Blocks,
 }
 
-const ALL_RESOURCES: [CacheResource; 7] = [
+pub(crate) const ALL_RESOURCES: [CacheResource; 7] = [
     CacheResource::Server,
     CacheResource::Channels,
     CacheResource::Roles,
@@ -267,7 +272,7 @@ impl AccountCache {
         self.claim(generation)?;
         let fence = self.fence().await?;
         let context = self.context();
-        tokio::spawn(async move { persistence::load(&context, fence, generation).await })
+        tokio::spawn(async move { decoding::load(&context, fence, generation).await })
             .await
             .map_err(|_| CacheError::TaskStopped)?
     }
@@ -293,11 +298,24 @@ impl AccountCache {
         snapshot: &ResourceSnapshot,
         changed: &[CacheResource],
     ) -> Result<(), CacheError> {
+        match self.update_resources(snapshot, changed).await? {
+            None => Ok(()),
+            Some(maintenance_error) => Err(maintenance_error),
+        }
+    }
+
+    /// A successful switch may still carry a cleanup error. The session must finish
+    /// installing the switched revision before reporting that error.
+    pub(crate) async fn update_resources(
+        &self,
+        snapshot: &ResourceSnapshot,
+        changed: &[CacheResource],
+    ) -> Result<Option<CacheError>, CacheError> {
         let generation = snapshot.generation;
         self.claim(generation)?;
         let fence = self.fence().await?;
         if changed.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let selected = encoding::select(snapshot, changed);
         let context = self.context();

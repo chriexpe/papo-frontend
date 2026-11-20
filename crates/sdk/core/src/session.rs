@@ -32,7 +32,10 @@ pub(crate) struct SessionInner {
     pub secret_serial: tokio::sync::Mutex<()>,
     pub auth_serial: tokio::sync::Mutex<()>,
     pub verified_rest: tokio::sync::Mutex<Option<(Generation, papo_api::RestClient)>>,
-    pub resource_serial: tokio::sync::Mutex<()>,
+    /// Held through the revision switch and installation. A failed install requires a full reload.
+    pub resource_serial: Arc<tokio::sync::Mutex<()>>,
+    pub resource_observation: AtomicU64,
+    pub resource_recovery: watch::Sender<Option<Generation>>,
     pub admission: crate::resource_admission::Diagnostics,
     pub operations_serial: tokio::sync::Mutex<()>,
     pub history: crate::history::HistoryStore,
@@ -79,7 +82,9 @@ impl SessionInner {
             secret_serial: tokio::sync::Mutex::new(()),
             auth_serial: tokio::sync::Mutex::new(()),
             verified_rest: tokio::sync::Mutex::new(None),
-            resource_serial: tokio::sync::Mutex::new(()),
+            resource_serial: Arc::new(tokio::sync::Mutex::new(())),
+            resource_observation: AtomicU64::new(0),
+            resource_recovery: watch::channel(None).0,
             admission: crate::resource_admission::Diagnostics::default(),
             operations_serial: tokio::sync::Mutex::new(()),
             history: crate::history::HistoryStore::default(),
@@ -116,20 +121,25 @@ impl SessionInner {
         self.tasks.wait().await;
         self.outgoing.close_active_upload_files();
     }
-    pub fn publish_resources(
+    pub fn publish_resources(&self, snapshot: crate::ResourceSnapshot) -> Result<(), ClientError> {
+        self.epochs.apply(snapshot.generation, || {
+            self.publish_current_resources(snapshot)
+        })?
+    }
+
+    /// Caller holds the epoch fence, including when publishing a rejection under R1's lock.
+    pub(crate) fn publish_current_resources(
         &self,
         mut snapshot: crate::ResourceSnapshot,
     ) -> Result<(), ClientError> {
-        self.epochs.apply(snapshot.generation, || {
-            snapshot.version = self
-                .resources
-                .borrow()
-                .version
-                .checked_add(1)
-                .ok_or(ClientError::Closed)?;
-            self.resources.send_replace(Arc::new(snapshot));
-            Ok(())
-        })?
+        snapshot.version = self
+            .resources
+            .borrow()
+            .version
+            .checked_add(1)
+            .ok_or(ClientError::Closed)?;
+        self.resources.send_replace(Arc::new(snapshot));
+        Ok(())
     }
     pub fn status(
         &self,
@@ -237,7 +247,7 @@ impl Session {
     }
     /// Requests a new connection generation, canceling old socket and REST work.
     /// # Errors
-    /// Returns `Closed` if revoked or `Superseded` if another reconnect already replaced this request.
+    /// Returns `SignedOut` without a usable account or `Closed` if the session was revoked.
     pub fn reconnect(&self) -> Result<(), ClientError> {
         if !matches!(
             *self.inner.auth.borrow(),
@@ -245,9 +255,8 @@ impl Session {
         ) {
             return Err(ClientError::SignedOut);
         }
-        let epoch = self.inner.epochs.advance()?;
-        self.inner.epochs.apply(epoch.generation, || {
-            crate::activity::clear(&self.inner, epoch.generation);
+        self.inner.epochs.replace(None, |generation| {
+            crate::activity::clear(&self.inner, generation);
         })?;
         crate::connection_driver::start(self.client.clone(), Arc::clone(&self.inner));
         Ok(())

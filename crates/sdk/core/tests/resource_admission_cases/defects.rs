@@ -202,13 +202,8 @@ fn channel_defects() -> Vec<Defect> {
 fn people_defects(account: &Account<'_>) -> Vec<Defect> {
     let own = account.own();
     let snapshot = account.snapshot();
-    let own_row = snapshot
-        .members
-        .iter()
-        .find(|member| member.id.as_deref() == Some(own.to_string().as_str()))
-        .map(serde_json::to_value)
-        .expect("signed-in roster holds the account")
-        .expect("summary serializes");
+    let member = snapshot.users.get(own).expect("own summary");
+    let own_row = json!({"id":own,"username":member.username,"nickname":member.nickname,"created_at":member.created_at});
     let with_roles = |roles: Value| {
         let mut row = own_row.clone();
         row["roles"] = roles;

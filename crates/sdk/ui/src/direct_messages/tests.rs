@@ -1,30 +1,31 @@
 //! Global DM sorting uses instants and account-scoped identities; block filtering never crosses accounts.
 use super::*;
 use papo_sdk::{DirectConversation, ServerAddress, UserSummary, Uuid};
-fn image(generation: u64, timestamp: &str) -> Arc<ResourceSnapshot> {
-    Arc::new(ResourceSnapshot {
-        version: 1,
-        generation: Generation::for_test(generation),
-        server: None,
-        channels: Arc::default(),
-        channel_census_complete: true,
-        roles: Arc::default(),
-        members: Arc::default(),
-        profiles: Arc::default(),
-        blocks: Arc::default(),
-        dms: Arc::new(vec![DirectConversation {
-            id: Uuid::from_u128(1).to_string(),
-            user: UserSummary {
-                id: Some(Uuid::from_u128(2).to_string()),
-                ..UserSummary::default()
-            },
-            created_at: timestamp.into(),
-            last_message: None,
-            last_read_message: None,
-            last_read_at: None,
-            unread_count: 0,
-        }]),
-    })
+fn image(generation: u64, timestamp: &str, blocked: bool) -> Arc<ResourceSnapshot> {
+    let peer = UserSummary {
+        id: Some(Uuid::from_u128(2).to_string()),
+        ..UserSummary::default()
+    };
+    let dm = DirectConversation {
+        id: Uuid::from_u128(1).to_string(),
+        user: peer.clone(),
+        created_at: timestamp.into(),
+        ..DirectConversation::default()
+    };
+    Arc::new(
+        ResourceSnapshot::fixture(
+            Generation::for_test(generation),
+            None,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![dm],
+            if blocked { vec![peer] } else { vec![] },
+            Uuid::from_u128(3),
+        )
+        .unwrap(),
+    )
 }
 #[test]
 fn equal_remote_ids_remain_separate_and_activity_offsets_compare_as_instants() {
@@ -41,21 +42,16 @@ fn equal_remote_ids_remain_separate_and_activity_offsets_compare_as_instants() {
         Uuid::from_u128(3),
     );
     let mut images = BTreeMap::from([
-        (a, image(1, "2026-01-01T00:00:00.000002Z")),
-        (b, image(2, "2026-01-01T01:00:00.000001+01:00")),
+        (a, image(1, "2026-01-01T00:00:00.000002Z", false)),
+        (b, image(2, "2026-01-01T01:00:00.000001+01:00", false)),
     ]);
-    let rows = project(&images, &Vector::new());
+    let rows = project(&images, &Vector::new(), |_, _| true);
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].id.account, a);
     assert_eq!(rows[1].id.account, b);
     assert_ne!(rows[0].id, rows[1].id);
-    let mut blocked = (**images.get(&a).unwrap()).clone();
-    blocked.blocks = Arc::new(vec![UserSummary {
-        id: Some(Uuid::from_u128(2).to_string()),
-        ..UserSummary::default()
-    }]);
-    images.insert(a, Arc::new(blocked));
-    let next = project(&images, &rows);
+    images.insert(a, image(1, "2026-01-01T00:00:00.000002Z", true));
+    let next = project(&images, &rows, |account, _| account == a);
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].id.account, b);
     assert!(Arc::ptr_eq(&next[0], &rows[1]));

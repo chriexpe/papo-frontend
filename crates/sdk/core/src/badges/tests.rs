@@ -89,7 +89,7 @@ fn policy(settings: &NotificationSettings) -> ChannelPolicy {
         &papo_api::wire::Notifications::default(),
         Uuid::from_u128(2),
         false,
-        Some("all"),
+        Some(&crate::BackendMode::All),
     )
 }
 fn install_reading(session: &Session, state: ReadState) {

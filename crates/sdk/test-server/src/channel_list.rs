@@ -29,12 +29,13 @@ fn list(resources: &Resources, history: &History, user: &str) -> Reply {
             let id = channel.id.as_deref().unwrap_or_default();
             let mark = resources.read_marks.get(&(user.to_owned(), id.to_owned()));
             let mut value = json!(channel);
-            if let Some(setting) = resources
+            let mode = resources
                 .channel_settings
                 .get(&(user.to_owned(), id.to_owned()))
-            {
-                value["notification_settings"] = json!(setting);
-            }
+                .map(String::as_str)
+                .or(channel.notification_settings.as_deref())
+                .unwrap_or("only_mentions");
+            value["notification_settings"] = json!(mode);
             value["last_message"] = history
                 .latest(id)
                 .map_or(Value::Null, |message| summary(resources, message));

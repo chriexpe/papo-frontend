@@ -100,7 +100,7 @@ async fn build_channel_image(
         channel,
         server,
         head,
-    } in marks(snapshot)?
+    } in marks(snapshot)
     {
         if admitted.quarantined.contains(&channel) {
             // Last-good state is kept as is; no server mark is resolved or saved for it.

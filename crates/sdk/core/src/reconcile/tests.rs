@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    AccountId, AuthState, ServerAddress,
+    AccountId, AuthState, ResourceSnapshot, ServerAddress,
     secret::{CredentialGeneration, SecretKey},
 };
 use papo_api::gateway::{ChannelDeleteEvent, KnownEvent};

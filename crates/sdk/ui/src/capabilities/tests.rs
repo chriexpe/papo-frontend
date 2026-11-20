@@ -1,9 +1,10 @@
 //! Operation-specific independent gates and external identity separation, with no backend simulation.
 use super::*;
+use papo_sdk::permissions::direct_grants;
 #[test]
 fn typing_and_reaction_removal_use_read_while_add_uses_send() {
     let read = ChannelCapabilities::from_grants(
-        "text",
+        ChannelKind::Text,
         ChannelGrants {
             read: true,
             ..ChannelGrants::default()
@@ -13,7 +14,7 @@ fn typing_and_reaction_removal_use_read_while_add_uses_send() {
     assert!(read.type_here && read.remove_reaction);
     assert!(!read.send && !read.add_reaction);
     let send = ChannelCapabilities::from_grants(
-        "voice",
+        ChannelKind::Voice,
         ChannelGrants {
             send: true,
             voice: true,
@@ -27,7 +28,7 @@ fn typing_and_reaction_removal_use_read_while_add_uses_send() {
 #[test]
 fn pin_and_unpin_are_asymmetric_and_direct_attachments_do_not_require_a_role() {
     let pin = ChannelCapabilities::from_grants(
-        "text",
+        ChannelKind::Text,
         ChannelGrants::default(),
         GlobalPermissions {
             pin_message: true,
@@ -35,21 +36,10 @@ fn pin_and_unpin_are_asymmetric_and_direct_attachments_do_not_require_a_role() {
         },
     );
     assert!(pin.pin && !pin.unpin);
-    let direct = ChannelCapabilities::from_grants(
-        "dm",
-        direct_grants(true, false),
-        GlobalPermissions::default(),
-    );
+    let direct = ChannelCapabilities::from_direct_grants(direct_grants(true, false));
     assert!(direct.attach && direct.pin && direct.unpin);
     assert!(!direct.delete_others && !direct.connect_voice);
-    let blocked = ChannelCapabilities::from_grants(
-        "dm",
-        direct_grants(true, true),
-        GlobalPermissions {
-            owner: true,
-            ..GlobalPermissions::default()
-        },
-    );
+    let blocked = ChannelCapabilities::from_direct_grants(direct_grants(true, true));
     assert!(!blocked.read && !blocked.send && !blocked.pin && !blocked.can_edit(true));
     assert!(blocked.can_delete(true));
 }

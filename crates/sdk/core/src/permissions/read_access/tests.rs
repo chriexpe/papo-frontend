@@ -1,178 +1,108 @@
-//! Read decisions from accepted resources: the existing evaluator's outcomes become
-//! Allowed/Denied/Unknown, DMs use membership/block evidence, and nothing malformed grants.
+//! The evaluator consumes typed identities; sparse and ambiguous evidence cannot authorize history.
 
 use super::*;
-use papo_api::wire::{
-    Channel, ChannelPermissionEntry, ChannelPermissions, DirectConversation, RoleSummary, Server,
-    UserSummary,
-};
-use std::sync::Arc;
+use crate::resource_admission::{Admission, Diagnostics};
+use crate::resources::AdmittedMutation;
+use papo_api::wire;
+use serde_json::{Value, json};
 
-const OWNER: u128 = 1;
-const ME: u128 = 2;
-const PEER: u128 = 3;
-const ROLE: &str = "30000000-0000-4000-8000-000000000001";
-
-fn id(value: u128) -> Uuid {
-    Uuid::from_u128(value)
-}
-
-fn member(roles: Vec<&str>) -> UserSummary {
-    UserSummary {
-        id: Some(id(ME).to_string()),
-        roles: Some(
-            roles
-                .into_iter()
-                .map(|role| RoleSummary {
-                    id: Some(role.into()),
-                    ..RoleSummary::default()
-                })
-                .collect(),
-        ),
-        ..UserSummary::default()
-    }
-}
-
-fn restricted(channel: u128, read: bool) -> Channel {
-    Channel {
-        id: Some(id(channel).to_string()),
-        r#type: Some("text".into()),
-        permissions: Some(vec![ChannelPermissionEntry {
-            role_id: Some(ROLE.into()),
-            permissions: Some(ChannelPermissions {
-                read_channel: Some(read),
-                ..ChannelPermissions::default()
-            }),
-            ..ChannelPermissionEntry::default()
-        }]),
-        ..Channel::default()
-    }
-}
-
-fn dm(channel: u128, peer: Option<u128>) -> DirectConversation {
-    DirectConversation {
-        id: id(channel).to_string(),
-        user: UserSummary {
-            id: peer.map(|peer| id(peer).to_string()),
-            ..UserSummary::default()
-        },
-        created_at: "2026-01-01T00:00:00Z".into(),
-        last_message: None,
-        last_read_message: None,
-        last_read_at: None,
-        unread_count: 0,
-    }
-}
-
-fn snapshot(owner: u128, roles: Vec<&str>) -> ResourceSnapshot {
-    let mut snapshot = ResourceSnapshot::empty(crate::Generation(1));
-    snapshot.server = Some(Arc::new(Server {
-        owner_id: Some(id(owner).to_string()),
-        ..Server::default()
-    }));
-    snapshot.members = Arc::new(vec![member(roles)]);
-    snapshot
-}
-
-fn decide(snapshot: &ResourceSnapshot) -> ReadDecisions {
-    ReadDecisions::evaluate(snapshot, id(ME)).unwrap()
-}
-
-#[test]
-fn role_overwrites_decide_allowed_and_denied_without_a_second_evaluator() {
-    let mut granted = snapshot(OWNER, vec![ROLE]);
-    granted.channels = Arc::new(vec![restricted(10, true), restricted(11, false)]);
-    let decisions = decide(&granted);
-    assert_eq!(decisions.get(id(10)), Some(ReadAccess::Allowed));
-    assert_eq!(decisions.get(id(11)), Some(ReadAccess::Denied));
-
-    // Losing the role denies a channel whose only grant came from it.
-    let mut removed = granted.clone();
-    removed.members = Arc::new(vec![member(Vec::new())]);
-    assert_eq!(decide(&removed).get(id(10)), Some(ReadAccess::Denied));
-}
-
-#[test]
-fn owner_bypasses_ordinary_overwrites_but_not_dm_evidence() {
-    let mut owned = snapshot(ME, Vec::new());
-    owned.channels = Arc::new(vec![restricted(10, false)]);
-    owned.dms = Arc::new(vec![dm(20, Some(PEER))]);
-    owned.blocks = Arc::new(vec![UserSummary {
-        id: Some(id(PEER).to_string()),
-        ..UserSummary::default()
-    }]);
-    let decisions = decide(&owned);
-    assert_eq!(decisions.get(id(10)), Some(ReadAccess::Allowed));
-    assert_eq!(decisions.get(id(20)), Some(ReadAccess::Denied));
-}
-
-#[test]
-fn missing_permission_inputs_are_unknown_only_for_channels_that_need_them() {
-    let mut incomplete = snapshot(OWNER, vec![ROLE]);
-    let mut absent = restricted(10, true);
-    absent.permissions = None;
-    let open = Channel {
-        permissions: Some(Vec::new()),
-        ..restricted(11, true)
+const ME: Uuid = Uuid::from_u128(2);
+const PEER: Uuid = Uuid::from_u128(3);
+const ROLE: Uuid = Uuid::from_u128(0xabc);
+const CHANNEL: Uuid = Uuid::from_u128(10);
+fn snapshot(assigned: bool, owner: bool, overwrite: &Value) -> ResourceSnapshot {
+    let roles = if assigned {
+        vec![json!({"id":ROLE})]
+    } else {
+        vec![]
     };
-    incomplete.channels = Arc::new(vec![absent, open, restricted(12, true)]);
-    let decisions = decide(&incomplete);
-    assert_eq!(decisions.get(id(10)), Some(ReadAccess::Unknown));
-    assert_eq!(decisions.get(id(11)), Some(ReadAccess::Allowed));
-    assert_eq!(decisions.get(id(12)), Some(ReadAccess::Allowed));
+    let server = json!({"id":Uuid::nil(),"owner_id":owner.then_some(ME)});
+    let chan = json!({"id":CHANNEL,"type":"text","permissions":overwrite});
+    let member = json!({"id":ME,"roles":roles});
+    ResourceSnapshot::fixture(
+        crate::Generation(1),
+        Some(serde_json::from_value(server).unwrap()),
+        vec![serde_json::from_value(chan).unwrap()],
+        vec![serde_json::from_value(json!({"id":ROLE,"permissions":{}})).unwrap()],
+        vec![serde_json::from_value(member).unwrap()],
+        vec![],
+        vec![],
+        vec![],
+        ME,
+    )
+    .unwrap()
+}
 
-    // Without the account's member row only role-restricted channels are undecidable.
-    let mut no_member = incomplete.clone();
-    no_member.members = Arc::default();
-    let decisions = decide(&no_member);
-    assert_eq!(decisions.get(id(11)), Some(ReadAccess::Allowed));
-    assert_eq!(decisions.get(id(12)), Some(ReadAccess::Unknown));
-
-    // Without server metadata, the owner bypass cannot be ruled out or in.
-    let mut no_server = incomplete;
-    no_server.server = None;
-    assert_eq!(decide(&no_server).get(id(11)), Some(ReadAccess::Unknown));
+fn read(root: &ResourceSnapshot) -> Option<ReadAccess> {
+    ReadDecisions::evaluate(root, ME).get(CHANNEL)
 }
 
 #[test]
-fn listed_dms_are_allowed_unless_blocked_and_unattributable_evidence_is_unknown() {
-    let mut social = snapshot(OWNER, Vec::new());
-    social.dms = Arc::new(vec![dm(20, Some(PEER)), dm(21, None)]);
-    let decisions = decide(&social);
-    assert_eq!(decisions.get(id(20)), Some(ReadAccess::Allowed));
-    assert_eq!(decisions.get(id(21)), Some(ReadAccess::Unknown));
-
-    social.blocks = Arc::new(vec![UserSummary::default()]);
-    assert_eq!(decide(&social).get(id(20)), Some(ReadAccess::Unknown));
+fn only_exact_keys_grant_the_assigned_role() {
+    for (key, expected) in [
+        (ROLE.to_string(), ReadAccess::Allowed),
+        (ROLE.to_string().to_uppercase(), ReadAccess::Denied),
+    ] {
+        let overwrite = json!([{"role_id":key,"permissions":{"read_channel":true}}]);
+        assert_eq!(read(&snapshot(true, false, &overwrite)), Some(expected));
+        assert_eq!(
+            read(&snapshot(false, false, &overwrite)),
+            Some(ReadAccess::Denied)
+        );
+        assert_eq!(
+            read(&snapshot(false, true, &overwrite)),
+            Some(ReadAccess::Allowed)
+        );
+    }
 }
 
 #[test]
-fn unlisted_channels_have_no_decision_and_duplicates_never_grant() {
-    let mut duplicated = snapshot(OWNER, vec![ROLE]);
-    duplicated.channels = Arc::new(vec![restricted(10, true), restricted(10, true)]);
-    let decisions = decide(&duplicated);
-    assert_eq!(decisions.get(id(10)), Some(ReadAccess::Unknown));
-    assert_eq!(decisions.get(id(99)), None);
+fn missing_member_or_server_is_unknown_only_where_needed() {
+    let mut restricted = snapshot(
+        false,
+        false,
+        &json!([{"role_id":ROLE,"permissions":{"read_channel":true}}]),
+    );
+    restricted.members = crate::ResourceIds::default();
+    assert_eq!(read(&restricted), Some(ReadAccess::Unknown));
+    let mut open = snapshot(false, false, &json!([]));
+    open.members = crate::ResourceIds::default();
+    assert_eq!(read(&open), Some(ReadAccess::Allowed));
+    open.server = None;
+    assert_eq!(read(&open), Some(ReadAccess::Unknown));
+    assert_eq!(ReadDecisions::evaluate(&open, ME).get(PEER), None);
 }
 
 #[test]
-fn unparseable_ids_reject_the_admission_instead_of_reading_as_removal() {
-    let mut malformed = snapshot(OWNER, Vec::new());
-    malformed.channels = Arc::new(vec![Channel {
-        id: None,
-        ..restricted(10, true)
-    }]);
-    assert!(matches!(
-        ReadDecisions::evaluate(&malformed, id(ME)),
-        Err(ClientError::ResourceData)
-    ));
-    let mut malformed_dm = snapshot(OWNER, Vec::new());
-    malformed_dm.dms = Arc::new(vec![DirectConversation {
-        id: "not-a-uuid".into(),
-        ..dm(20, Some(PEER))
-    }]);
-    assert!(matches!(
-        ReadDecisions::evaluate(&malformed_dm, id(ME)),
-        Err(ClientError::ResourceData)
-    ));
+fn owner_does_not_grant_a_blocked_unresolved_or_ambiguous_dm() {
+    let diagnostics = Diagnostics::default();
+    let admission = Admission::for_test(ME, &diagnostics);
+    let mut base = snapshot(false, true, &json!([]));
+    let dm = json!({"dms":[{"id":CHANNEL,"user":{"id":PEER},"unread_count":0,"created_at":""}]});
+    let mutation = AdmittedMutation {
+        dms: Some(admission.dms(serde_json::from_value(dm).unwrap()).unwrap()),
+        ..Default::default()
+    };
+    base = mutation.apply(&base, ME).unwrap();
+    assert_eq!(read(&base), Some(ReadAccess::Unknown));
+    base.channels = crate::ResourceTable::default();
+    assert_eq!(read(&base), Some(ReadAccess::Allowed));
+    base.blocks.insert(0, PEER);
+    assert_eq!(read(&base), Some(ReadAccess::Denied));
+    base.users.remove(PEER);
+    assert_eq!(read(&base), Some(ReadAccess::Unknown));
+}
+
+#[test]
+fn absent_or_malformed_overwrites_reject_the_entire_group() {
+    let log = Diagnostics::default();
+    let admission = Admission::for_test(ME, &log);
+    for raw in [
+        json!({"id":CHANNEL,"type":"text"}),
+        json!({"id":CHANNEL,"type":"text","permissions":[{}]}),
+        json!({"id":"?","type":"text","permissions":[]}),
+    ] {
+        let list: wire::ChannelList = serde_json::from_value(json!({"channels":[raw]})).unwrap();
+        assert!(admission.channels(list).is_err());
+    }
 }

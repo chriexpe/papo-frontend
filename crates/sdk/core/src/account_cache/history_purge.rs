@@ -31,11 +31,24 @@ impl AccountCache {
     pub(super) async fn history_recover(&self) -> Result<(), CacheError> {
         loop {
             let account = self.account;
-            let changed = self.writer.cache_write(move |transaction| {
-                history_rows::verify(transaction, account)?;
-                transaction.execute("UPDATE history_channels SET verified_generation=NULL WHERE channel_id IN (SELECT channel_id FROM history_channels WHERE verified_generation IS NOT NULL LIMIT 100)", []).map_err(WorkerError::from).map_err(CacheError::from)
-            }).await?;
-            if changed < 500 {
+            let changed = self
+                .writer
+                .cache_write(move |transaction| {
+                    history_rows::verify(transaction, account)?;
+                    let changed = transaction
+                        .execute(
+                            "UPDATE history_channels SET verified_generation = NULL
+                     WHERE channel_id IN (
+                         SELECT channel_id FROM history_channels
+                         WHERE verified_generation IS NOT NULL LIMIT ?1
+                     )",
+                            [limit(0)?],
+                        )
+                        .map_err(WorkerError::from)?;
+                    Ok::<_, CacheError>(changed)
+                })
+                .await?;
+            if changed < TURN_ROWS {
                 break;
             }
         }

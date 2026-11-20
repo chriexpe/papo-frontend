@@ -122,14 +122,7 @@ impl Session {
         let channel = parse_id(result.channel_id.as_deref())?;
         let resources = self.inner.resources.borrow();
         if resources.generation != hit.generation
-            || !resources
-                .channels
-                .iter()
-                .any(|c| c.id.as_deref().and_then(|s| s.parse().ok()) == Some(channel))
-                && !resources
-                    .dms
-                    .iter()
-                    .any(|d| d.id.parse().ok() == Some(channel))
+            || resources.channels.get(channel).is_none() && resources.dms.get(channel).is_none()
         {
             return Err(SearchError::InvalidData);
         }

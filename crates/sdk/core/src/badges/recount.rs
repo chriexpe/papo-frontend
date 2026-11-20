@@ -252,38 +252,36 @@ async fn build(
 
 struct ChannelMetadata<'a> {
     direct_message: bool,
-    backend_mode: Option<&'a str>,
+    backend_mode: Option<&'a crate::BackendMode>,
     ambiguous: bool,
 }
 
 fn channel_metadata(resources: &ResourceSnapshot) -> BTreeMap<Uuid, ChannelMetadata<'_>> {
     let mut metadata = BTreeMap::new();
     for channel in resources.channels.iter() {
-        if let Some(id) = channel.id.as_deref().and_then(|id| id.parse::<Uuid>().ok()) {
-            metadata.insert(
-                id,
-                ChannelMetadata {
-                    direct_message: false,
-                    backend_mode: channel.notification_settings.as_deref(),
-                    ambiguous: false,
-                },
-            );
-        }
+        let id = channel.id;
+        metadata.insert(
+            id,
+            ChannelMetadata {
+                direct_message: false,
+                backend_mode: channel.notification_settings.as_ref(),
+                ambiguous: false,
+            },
+        );
     }
     for dm in resources.dms.iter() {
-        if let Ok(id) = dm.id.parse() {
-            metadata
-                .entry(id)
-                .and_modify(|value| {
-                    value.direct_message = true;
-                    value.ambiguous = true;
-                })
-                .or_insert(ChannelMetadata {
-                    direct_message: true,
-                    backend_mode: None,
-                    ambiguous: false,
-                });
-        }
+        let id = dm.id;
+        metadata
+            .entry(id)
+            .and_modify(|value| {
+                value.direct_message = true;
+                value.ambiguous = true;
+            })
+            .or_insert(ChannelMetadata {
+                direct_message: true,
+                backend_mode: None,
+                ambiguous: false,
+            });
     }
     metadata
 }

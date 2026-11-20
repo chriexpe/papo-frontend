@@ -21,8 +21,10 @@ use crate::{
 use super::HistoryClosedReason;
 
 mod admissions;
+mod quarantine;
 use admissions::Admission;
 pub(crate) use admissions::{Admissions, ChannelAdmission, Evidence, Refetch};
+pub(crate) use quarantine::{quarantine_failed_install, quarantine_rejected};
 
 /// Whether accepted changes to these resources can change a read decision: everything the
 /// evaluator reads (server owner, channels and overwrites, role assignments, DMs, blocks).
@@ -59,7 +61,7 @@ impl Transition {
         evidence: Evidence,
     ) -> Result<Self, ClientError> {
         session.epochs.validate(snapshot.generation)?;
-        let decisions = ReadDecisions::evaluate(snapshot, session.account.user())?;
+        let decisions = ReadDecisions::evaluate(snapshot, session.account.user());
         let sealed = seal(session, connection, &decisions, snapshot.generation).await?;
         Ok(Self {
             decisions,
@@ -340,6 +342,11 @@ async fn revoke(
         }
     }
     Ok(())
+}
+
+/// Whether any generation of this running session has installed live resource evidence.
+pub(crate) async fn warm(session: &SessionInner) -> bool {
+    session.history.connection.read().await.is_some()
 }
 
 /// Whether this generation already admitted a fetched snapshot. Until then the published

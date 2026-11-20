@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"papo/internal/middleware"
@@ -17,12 +18,13 @@ import (
 )
 
 type permissionCase struct {
-	Server     models.ServerSummary  `json:"server"`
-	Channel    models.ChannelSummary `json:"channel"`
-	Roles      []models.Role         `json:"roles"`
-	Member     models.UserSummary    `json:"member"`
-	Global     []bool                `json:"global"`
-	Operations []bool                `json:"operations,omitempty"`
+	DeletedRole string                `json:"deleted_role,omitempty"`
+	Server      models.ServerSummary  `json:"server"`
+	Channel     models.ChannelSummary `json:"channel"`
+	Roles       []models.Role         `json:"roles"`
+	Member      models.UserSummary    `json:"member"`
+	Global      []bool                `json:"global"`
+	Operations  []bool                `json:"operations,omitempty"`
 }
 
 func registerPermissionProof(e *echo.Echo) {
@@ -145,7 +147,34 @@ func permissionCases(ctx context.Context, e *echo.Echo) ([]permissionCase, error
 			}
 		}
 	}
-	return cases, nil
+	deleted, err := noncanonicalRoleDeletion(ctx, e, owner.ID, member.ID, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	return append(cases, deleted), nil
+}
+
+func noncanonicalRoleDeletion(ctx context.Context, e *echo.Echo, owner, member, role string) (permissionCase, error) {
+	// The role table compares UUIDs; the channel permission object compares key text.
+	channel, err := storage.CreateChannel(ctx, "permission-delete-proof", "text", "")
+	if err != nil {
+		return permissionCase{}, err
+	}
+	if _, err := services.UpdateChannelPermissions(ctx, owner, channel.ID, role, models.ChannelPermission{ReadChannel: true}); err != nil {
+		return permissionCase{}, err
+	}
+	if _, err := services.AssignUserRole(ctx, owner, member, role); err != nil {
+		return permissionCase{}, err
+	}
+	if err := services.CanReadChannel(ctx, channel.ID, member); err != nil {
+		return permissionCase{}, err
+	}
+	if err := services.DeleteRole(ctx, owner, strings.ReplaceAll(role, "-", "")); err != nil {
+		return permissionCase{}, err
+	}
+	result, err := capturePermissionCase(ctx, e, channel.ID, member, owner, true)
+	result.DeletedRole = role
+	return result, err
 }
 
 func assignProofRoles(ctx context.Context, user, a, b string, bits int) error {

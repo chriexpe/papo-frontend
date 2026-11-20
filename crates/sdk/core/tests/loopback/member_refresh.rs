@@ -6,6 +6,7 @@ use papo_api::{
     wire::{RoleSummary, UserProfile},
 };
 use papo_test_server::Config;
+use std::sync::Arc;
 
 use super::{
     fixture::{Fixture, Result},
@@ -16,7 +17,7 @@ fn member(index: u128) -> UserProfile {
     UserProfile {
         id: Some(Uuid::from_u128(0x2000_0000_0000_4000_8000_0000_0000_0000 + index).to_string()),
         username: Some(format!("member-{index}")),
-        nickname: Some("original".into()),
+        nickname: "original".into(),
         roles: Some(Vec::new()),
         ..UserProfile::default()
     }
@@ -24,19 +25,19 @@ fn member(index: u128) -> UserProfile {
 
 fn member_updates() -> [(&'static str, UserProfile); 4] {
     let mut joined = member(300);
-    joined.nickname = Some("joined".into());
+    joined.nickname = "joined".into();
     let mut role_added = joined.clone();
-    role_added.nickname = Some("role-added".into());
+    role_added.nickname = "role-added".into();
     role_added.roles = Some(vec![RoleSummary {
         id: Some(Uuid::from_u128(700).to_string()),
         name: Some("updated-role".into()),
         ..RoleSummary::default()
     }]);
     let mut role_removed = role_added.clone();
-    role_removed.nickname = Some("role-removed".into());
+    role_removed.nickname = "role-removed".into();
     role_removed.roles = Some(Vec::new());
     let mut avatar_changed = role_removed.clone();
-    avatar_changed.nickname = Some("avatar-changed".into());
+    avatar_changed.nickname = "avatar-changed".into();
     avatar_changed.avatar_format = Some("webp".into());
     [
         ("user_join", joined),
@@ -62,12 +63,7 @@ fn each_member_event_fetches_one_summary_without_repaging_a_large_roster() -> Re
             3
         );
         let mut snapshots = session.subscribe_resources();
-        let original_ids: Vec<_> = snapshots
-            .borrow()
-            .members
-            .iter()
-            .map(|user| user.id.clone())
-            .collect();
+        let original_ids: Vec<_> = snapshots.borrow().members.iter().collect();
 
         let mutations = member_updates();
         let target_id = Uuid::parse_str(mutations[0].1.id.as_deref().unwrap())?;
@@ -75,21 +71,17 @@ fn each_member_event_fetches_one_summary_without_repaging_a_large_roster() -> Re
             session.profiles(&[target_id, untouched_id]).await?;
             let before = fixture.server().member_request_counts().await;
             fixture.server().set_profile(expected.clone()).await?;
-            let snapshot = resources(&mut snapshots, |snapshot| {
-                snapshot
-                    .members
-                    .iter()
-                    .any(|user| user.id == expected.id && user.nickname == expected.nickname)
-                    && snapshot
-                        .profiles
-                        .iter()
-                        .all(|profile| profile.id != expected.id)
-            })
-            .await?;
+            let snapshot =
+                resources(&mut snapshots, |snapshot| {
+                    snapshot.users.get(target_id).is_some_and(|user| {
+                        user.nickname.as_deref() == expected.nickname.as_deref()
+                    }) && snapshot.profiles.get(target_id).is_none()
+                })
+                .await?;
             assert_eq!(snapshot.members.len(), 207, "{kind} duplicated a member");
             assert_eq!(
-                snapshot.members.last().unwrap().id,
-                expected.id,
+                snapshot.members.iter().last().unwrap(),
+                target_id,
                 "{kind} moved the joined user"
             );
             assert_eq!(
@@ -97,39 +89,29 @@ fn each_member_event_fetches_one_summary_without_repaging_a_large_roster() -> Re
                     .members
                     .iter()
                     .take(original_ids.len())
-                    .map(|user| user.id.clone())
                     .collect::<Vec<_>>(),
                 original_ids,
                 "{kind} changed unrelated membership"
             );
-            let refreshed = snapshot
-                .members
+            let refreshed = snapshot.users.get(target_id).ok_or("target summary")?;
+            let expected_roles: Vec<Uuid> = expected
+                .roles
+                .as_ref()
+                .unwrap()
                 .iter()
-                .find(|user| user.id == expected.id)
-                .unwrap();
+                .map(|role| role.id.as_deref().unwrap().parse())
+                .collect::<std::result::Result<_, _>>()?;
             assert_eq!(
-                refreshed
-                    .roles
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .map(|role| (&role.id, &role.name))
-                    .collect::<Vec<_>>(),
-                expected
-                    .roles
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .map(|role| (&role.id, &role.name))
-                    .collect::<Vec<_>>(),
-                "{kind} lost authoritative roles"
+                refreshed.roles.as_ref(),
+                Some(&expected_roles),
+                "{kind} lost observed assignments"
             );
             assert_eq!(
                 snapshot.profiles.len(),
                 1,
                 "{kind} invalidated unrelated profiles"
             );
-            assert_eq!(snapshot.profiles[0].id, untouched.id);
+            assert_eq!(snapshot.profiles.ids().next(), Some(untouched_id));
             let after = fixture.server().member_request_counts().await;
             assert_eq!(
                 after.list_requests, before.list_requests,
@@ -177,17 +159,105 @@ fn absent_summary_removes_only_that_member_and_invalidates_their_profile() -> Re
             })))
             .await?;
         let snapshot = resources(&mut snapshots, |snapshot| {
-            snapshot.members.iter().all(|user| user.id != removed.id)
+            !snapshot.members.contains(removed_id)
         })
         .await?;
         assert_eq!(snapshot.members.len(), 2);
-        assert!(snapshot.members.iter().any(|user| user.id == retained.id));
+        assert!(snapshot.members.contains(retained_id));
         assert_eq!(snapshot.profiles.len(), 1);
-        assert_eq!(snapshot.profiles[0].id, retained.id);
+        assert_eq!(snapshot.profiles.ids().next(), Some(retained_id));
         let after = fixture.server().member_request_counts().await;
         assert_eq!(after.list_requests, before.list_requests);
         assert_eq!(after.summary_requests, before.summary_requests + 1);
         assert_eq!(after.profile_requests, before.profile_requests);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}
+
+#[test]
+fn gateway_and_operation_refresh_join_the_same_user_in_each_relationship() -> Result {
+    use papo_api::gateway::UserJoinEvent;
+    use papo_api::wire::{DirectConversation, UserSummary};
+    use papo_sdk::operations::MetadataScope;
+    let fixture = Fixture::new(Config::default())?;
+    fixture.run(async {
+        let peer = member(21);
+        let id: Uuid = peer.id.as_deref().ok_or("peer ID")?.parse()?;
+        fixture.server().set_profile(peer).await?;
+        let session = signed_in(&fixture, "src-equality").await?;
+        let owner = session.account().user().to_string();
+        let user = UserSummary {
+            id: Some(id.to_string()),
+            ..UserSummary::default()
+        };
+        fixture
+            .server()
+            .set_blocks(&owner, vec![user.clone()])
+            .await;
+        let dm_id = Uuid::from_u128(55);
+        fixture
+            .server()
+            .set_direct_conversations(
+                &owner,
+                vec![DirectConversation {
+                    id: dm_id.to_string(),
+                    user,
+                    ..Default::default()
+                }],
+            )
+            .await?;
+        let mut watch = session.subscribe_resources();
+        resources(&mut watch, |root| {
+            root.dms.get(dm_id).is_some() && root.blocks.contains(id)
+        })
+        .await?;
+        let mut first = None;
+        let role = Uuid::from_u128(79);
+        for gateway in [true, false] {
+            if !gateway {
+                session.reconnect()?;
+                super::reconcile::online(&session).await?;
+            }
+            session.profiles(&[id]).await?;
+            let batch = serde_json::json!([{"id":id,"nickname":"updated","roles":[{"id":role}]}]);
+            fixture
+                .server()
+                .queue_operation_response("POST", "/users/user_summary_batch", 200, batch)
+                .await?;
+            if gateway {
+                fixture
+                    .server()
+                    .emit_event(KnownEvent::UserJoin(Box::new(UserJoinEvent {
+                        user_id: id.to_string(),
+                    })))
+                    .await?;
+            } else {
+                let result = session
+                    .operations()
+                    .refresh_metadata(MetadataScope::Member(id))
+                    .await?;
+                assert_eq!(result.value, papo_sdk::RefreshStatus::Updated);
+            }
+            let root = resources(&mut watch, |root| {
+                root.users
+                    .get(id)
+                    .is_some_and(|user| user.nickname.as_deref() == Some("updated"))
+            })
+            .await?;
+            let dm = root.dms.get(dm_id).ok_or("DM")?;
+            let summary = root.users.get_arc(dm.peer_id).ok_or("DM summary")?;
+            assert!(root.members.contains(id) && root.blocks.contains(id));
+            assert!(Arc::ptr_eq(&summary, &root.users.get_arc(id).unwrap()));
+            assert_eq!(summary.roles.as_deref(), Some([role].as_slice()));
+            assert!(root.profiles.get(id).is_none());
+            let observed = (summary, root.members.iter().collect::<Vec<_>>());
+            if let Some(previous) = first.take() {
+                assert_eq!(previous, observed);
+            } else {
+                first = Some(observed);
+            }
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()

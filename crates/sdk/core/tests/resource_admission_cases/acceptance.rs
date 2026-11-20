@@ -45,7 +45,7 @@ async fn restore(account: &Account<'_>) -> Result {
         snapshot
             .channels
             .iter()
-            .any(|channel| channel.id.as_deref() == Some(CHANNEL))
+            .any(|channel| channel.id.to_string() == CHANNEL)
     })
     .await?;
     Ok(())
@@ -156,13 +156,7 @@ fn a_malformed_display_only_member_row_is_dropped_and_the_roster_admitted() -> R
     fixture.run(async {
         let account = Account::start(&fixture, "adm-display").await?;
         let own = account.own().to_string();
-        let own_row = account
-            .snapshot()
-            .members
-            .iter()
-            .find(|member| member.id.as_deref() == Some(own.as_str()))
-            .map(serde_json::to_value)
-            .ok_or("own row")??;
+        let own_row = json!({"id":own,"roles":[]});
         let other = Uuid::from_u128(77).to_string();
         let labelled = Uuid::from_u128(78).to_string();
         let role = Uuid::from_u128(79).to_string();
@@ -184,19 +178,13 @@ fn a_malformed_display_only_member_row_is_dropped_and_the_roster_admitted() -> R
             snapshot.generation == online.generation
         })
         .await?;
-        let ids: Vec<_> = snapshot
-            .members
-            .iter()
-            .map(|member| member.id.clone())
-            .collect();
-        assert_eq!(ids, vec![Some(own), Some(other), Some(labelled)]);
-        let labels: Vec<_> = snapshot.members[2]
-            .roles
-            .iter()
-            .flatten()
-            .map(|label| label.id.clone())
-            .collect();
-        assert_eq!(labels, vec![Some(role)]);
+        let ids: Vec<_> = snapshot.members.iter().map(|id| id.to_string()).collect();
+        assert_eq!(ids, vec![own, other, labelled.clone()]);
+        let user = snapshot
+            .users
+            .get(labelled.parse()?)
+            .ok_or("labelled user")?;
+        assert_eq!(user.roles.as_deref(), Some([role.parse()?].as_slice()));
         let diagnostics = account.session.resource_admission();
         assert_eq!(diagnostics.dropped_rows, dropped + 2);
         assert_eq!(diagnostics.rejected_replacements, 0);
@@ -223,11 +211,10 @@ fn a_non_canonical_overwrite_role_id_the_backend_can_store_is_admitted_verbatim(
             trigger(&account, producer).await?;
             let snapshot = published(&account, |snapshot| {
                 snapshot.channels.iter().any(|channel| {
-                    channel.permissions.as_ref().is_some_and(|entries| {
-                        entries
-                            .iter()
-                            .any(|entry| entry.role_id.as_deref() == Some(role.as_str()))
-                    })
+                    channel
+                        .permissions
+                        .iter()
+                        .any(|entry| entry.key.text() == role)
                 })
             })
             .await?;
@@ -285,25 +272,13 @@ fn a_malformed_label_in_a_summary_batch_is_dropped_on_gateway_and_operation() ->
                 }
                 Producer::Reconnect => unreachable!("the roster path has its own test"),
             }
-            let snapshot = published(&account, |snapshot| {
-                snapshot
-                    .members
-                    .iter()
-                    .any(|member| member.id.as_deref() == Some(id.as_str()))
-            })
-            .await?;
-            let member = snapshot
-                .members
-                .iter()
-                .find(|member| member.id.as_deref() == Some(id.as_str()))
-                .ok_or("member")?;
-            let labels: Vec<_> = member
-                .roles
-                .iter()
-                .flatten()
-                .map(|label| label.id.clone())
-                .collect();
-            assert_eq!(labels, vec![Some(role.clone())], "{producer:?}");
+            let snapshot = published(&account, |snapshot| snapshot.members.contains(user)).await?;
+            let member = snapshot.users.get(user).ok_or("member")?;
+            assert_eq!(
+                member.roles.as_deref(),
+                Some([role.parse()?].as_slice()),
+                "{producer:?}"
+            );
             let diagnostics = account.session.resource_admission();
             assert_eq!(diagnostics.dropped_rows, dropped + 1, "{producer:?}");
             assert_eq!(diagnostics.rejected_replacements, 0);
@@ -331,7 +306,11 @@ fn a_full_server_of_500_channels_reconnects_and_refreshes_on_every_producer() ->
         assert_eq!(account.snapshot().channels.len(), 500);
         for producer in [Producer::Reconnect, Producer::Gateway, Producer::Operation] {
             let before = account.status().generation;
-            let version = account.snapshot().version;
+            // Give each reader a distinguishable response; equal-value responses legitimately suppress publication.
+            let marker=format!("full-{producer:?}");
+            let mut rows:Vec<_>=account.snapshot().channels.iter().map(|channel|json!({"id":channel.id,"name":channel.name,"type":"text","permissions":[]})).collect();
+            rows[0]["name"]=json!(marker);
+            account.script("GET","/channels",json!({"channels":rows})).await?;
             trigger(&account, producer).await?;
             let online = online_at(&account.session, |status| match producer {
                 Producer::Reconnect => status.generation.get() > before.get(),
@@ -340,7 +319,7 @@ fn a_full_server_of_500_channels_reconnects_and_refreshes_on_every_producer() ->
             .await?;
             let snapshot = published(&account, |snapshot| {
                 // The producer's own publication, so the next one cannot overlap it.
-                snapshot.version > version && snapshot.generation == online.generation
+                snapshot.channels.iter().any(|channel| channel.name.as_deref()==Some(marker.as_str())) && snapshot.generation == online.generation
             })
             .await?;
             assert_eq!(snapshot.channels.len(), 500, "{producer:?}");

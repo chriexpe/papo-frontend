@@ -10,22 +10,21 @@ use std::{pin::Pin, sync::Arc};
 use eyeball_im::VectorDiff;
 use futures_util::Stream;
 use imbl::Vector;
-use papo_sdk::{Generation, Session};
+use papo_sdk::{ChannelKind, Generation, Session, Uuid};
 
 use crate::channel_projection;
 
 /// Backend channel metadata with SDK-provided unread state, without inferred permissions.
 ///
-/// Optional fields remain optional. A missing, empty or duplicated ID cannot provide
-/// stable identity, so transitions involving those lists use a full `Reset`.
+/// Each admitted channel has a stable identity and a known kind.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChannelListItem {
-    /// Backend identity, when supplied; never synthesized from position or name.
-    pub id: Option<String>,
+    /// Backend channel identity.
+    pub id: Uuid,
     /// Backend channel name, untranslated and unmodified.
     pub name: Option<String>,
-    /// Backend channel type, retained verbatim rather than assuming known variants.
-    pub kind: Option<String>,
+    /// Admitted backend channel kind.
+    pub kind: ChannelKind,
     /// Backend position metadata; does not override the backend's list order.
     pub position: Option<i64>,
     /// Backend topic metadata.
@@ -41,8 +40,8 @@ pub struct ChannelListItem {
 /// One complete resource publication projected onto channel metadata.
 ///
 /// Apply `diffs` in order as one batch, then advance both version and generation.
-/// Commits affecting other resources can produce empty batches. Any version gap or
-/// generation change produces exactly one `Reset`, even if metadata is unchanged.
+/// Commits affecting other resources can produce empty batches. Skipped versions reconcile against the last delivered image.
+/// A generation change starts a fresh baseline with one `Reset`.
 #[derive(Clone, Debug)]
 pub struct ChannelListUpdate {
     /// Channel-list projection version represented after applying the entire batch.
@@ -56,7 +55,7 @@ pub struct ChannelListUpdate {
 /// Pull-driven channel edits; ends after the SDK resource watch closes.
 ///
 /// The source watch has capacity one. Slow subscribers retain their last projection
-/// and only the newest source snapshot, coalescing skipped versions into a `Reset`.
+/// and the newest source snapshot. The next batch reconciles those two images.
 /// There is no background task, unbounded queue or additional Tokio runtime.
 pub type ChannelListStream = Pin<Box<dyn Stream<Item = ChannelListUpdate> + Send>>;
 

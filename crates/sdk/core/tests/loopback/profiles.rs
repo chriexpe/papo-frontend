@@ -17,7 +17,7 @@ fn profile(index: u128) -> UserProfile {
     UserProfile {
         id: Some(Uuid::from_u128(index + 0x2000_0000_0000_4000_8000_0000_0000_0000).to_string()),
         username: Some(format!("profile-{index}")),
-        nickname: Some("before-invalidation".into()),
+        nickname: "before-invalidation".into(),
         ..UserProfile::default()
     }
 }
@@ -69,7 +69,7 @@ fn avatar_event_invalidates_only_the_requested_user_and_next_request_reads_fresh
         session.profiles(&[first_id, second_id]).await?;
         let mut snapshots = session.subscribe_resources();
         let mut changed = first.clone();
-        changed.nickname = Some("after-invalidation".into());
+        changed.nickname = "after-invalidation".into();
         fixture.server().set_profile(changed).await?;
         fixture
             .server()
@@ -81,11 +81,11 @@ fn avatar_event_invalidates_only_the_requested_user_and_next_request_reads_fresh
             snapshot
                 .profiles
                 .iter()
-                .all(|profile| profile.id != first.id)
+                .all(|profile| profile.id != first_id)
         })
         .await?;
         assert_eq!(snapshot.profiles.len(), 1);
-        assert_eq!(snapshot.profiles[0].id, second.id);
+        assert_eq!(snapshot.profiles.ids().next(), Some(second_id));
         let fresh = session.profiles(&[first_id]).await?;
         assert_eq!(
             fresh.value[0].nickname.as_deref(),
@@ -113,7 +113,7 @@ fn profile_batch_captured_before_reconnect_cannot_publish_in_the_new_generation(
             result = &mut request => { result?; return Err("profile request bypassed hold".into()); }
         }
         let mut changed = before;
-        changed.nickname = Some("new-profile-generation".into());
+        changed.nickname = "new-profile-generation".into();
         fixture.server().set_profile(changed).await?;
         session.reconnect()?;
         assert!(matches!(request.await, Err(ClientError::Superseded)));
@@ -173,23 +173,21 @@ fn avatar_bytes_are_returned_to_the_caller_but_never_retained_in_shared_profiles
             Some(2 * 1024 * 1024)
         );
         let image = session.subscribe_resources().borrow().clone();
-        let retained = image
-            .profiles
-            .iter()
-            .find(|profile| profile.id.as_deref() == Some(id.to_string().as_str()))
-            .unwrap();
-        assert!(retained.avatar_blob.is_none());
+        let retained = image.profiles.get(id).ok_or("profile details")?;
         assert_eq!(retained.avatar_format.as_deref(), Some("webp"));
-        assert_eq!(retained.nickname.as_deref(), Some("before-invalidation"));
-        let response = session.profiles(&[id]).await?;
-        assert!(
-            session
-                .subscribe_resources()
-                .borrow()
-                .profiles
-                .iter()
-                .all(|profile| profile.avatar_blob.is_none())
+        assert_eq!(
+            image
+                .users
+                .get(id)
+                .and_then(|user| user.nickname.as_deref()),
+            Some("before-invalidation")
         );
+        let response = session.profiles(&[id]).await?;
+        let next = session.subscribe_resources().borrow().clone();
+        assert!(std::sync::Arc::ptr_eq(
+            &image.profiles.get_arc(id).unwrap(),
+            &next.profiles.get_arc(id).unwrap()
+        ));
         assert_eq!(
             response.value[0].avatar_blob.as_ref().map(String::len),
             Some(2 * 1024 * 1024)

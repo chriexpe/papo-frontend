@@ -1,6 +1,5 @@
 //! Wire admission for authoritative resource replacements. Fetching, ordering, epochs,
-//! cache writes and access decisions stay with the reconnect, gateway and
-//! operation-refresh producers, which all call this module.
+//! durable publication and access decisions stay with the resource commit path and R1.
 //!
 //! A producer passes every fetched group through here before it may replace any part
 //! of the account's resource image. Each group is admitted whole or rejected whole. A
@@ -50,6 +49,7 @@
 
 mod channels;
 mod people;
+mod relationships;
 #[cfg(test)]
 mod tests;
 
@@ -62,9 +62,6 @@ pub(crate) use people::{Roster, RosterPage};
 /// `GET /channels` returns at most this many rows. A list of exactly this length is a
 /// legitimate full server. A longer one cannot come from the backend.
 const MAX_CHANNELS: usize = 500;
-
-/// Channel types `GET /channels` can list at the pinned backend; DMs are excluded there.
-const LISTED_CHANNEL_TYPES: [&str; 3] = ["text", "category", "voice"];
 
 /// Why a wire response, or one of its rows, was not admitted. Carries no identifiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,6 +169,10 @@ impl<'a> Admission<'a> {
         }
     }
 
+    pub fn for_disk(own: Uuid, diagnostics: &'a Diagnostics) -> Self {
+        Self { own, diagnostics }
+    }
+
     #[cfg(test)]
     pub fn for_test(own: Uuid, diagnostics: &'a Diagnostics) -> Self {
         Self { own, diagnostics }
@@ -189,11 +190,9 @@ impl<'a> Admission<'a> {
 }
 
 /// Parses a required identity in the backend's canonical lowercase hyphenated form.
-/// Consumers still compare these IDs as strings (the evaluator matches overwrite and
-/// own role IDs textually), so a non-canonical spelling of a valid UUID would silently
-/// miss a grant. It is invalid here instead.
+/// PostgreSQL UUID columns serialize canonically; overwrite object keys are parsed separately.
 fn parse_id(value: Option<&str>) -> Option<Uuid> {
     let value = value?;
     let id = Uuid::try_parse(value).ok()?;
-    (id.hyphenated().to_string() == value).then_some(id)
+    (id.hyphenated().encode_lower(&mut Uuid::encode_buffer()) == value).then_some(id)
 }

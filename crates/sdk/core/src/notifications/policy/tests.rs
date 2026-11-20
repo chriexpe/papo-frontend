@@ -17,7 +17,13 @@ fn message() -> Message {
 }
 
 fn policy(settings: &NotificationSettings, backend: &Notifications, dm: bool) -> ChannelPolicy {
-    ChannelPolicy::new(settings, backend, CHANNEL, dm, None)
+    ChannelPolicy::new(
+        settings,
+        backend,
+        CHANNEL,
+        dm,
+        Some(&crate::BackendMode::OnlyMentions),
+    )
 }
 
 #[test]
@@ -152,8 +158,14 @@ fn role_tokens_are_not_triggers_and_missing_content_is_not_a_negative() {
 fn all_mode_delivers_ordinary_messages_without_counting_them_as_badge_triggers() {
     let settings = NotificationSettings::default();
     let backend = Notifications::default();
-    let all = ChannelPolicy::new(&settings, &backend, CHANNEL, false, Some("all"));
-    assert!(all.delivery_eligible(false));
+    let all = ChannelPolicy::new(
+        &settings,
+        &backend,
+        CHANNEL,
+        false,
+        Some(&crate::BackendMode::All),
+    );
+    assert_eq!(all.delivery_eligible(false), Some(true));
     assert_eq!(
         all.badge_eligible(Classification::KnownNonTrigger),
         Some(false)
@@ -184,7 +196,13 @@ fn disabled_master_mute_and_either_off_mode_decisively_filter_unknowns() {
     settings
         .channels
         .insert(CHANNEL, ChannelNotificationMode::All);
-    let backend_off = ChannelPolicy::new(&settings, &backend, CHANNEL, false, Some("off"));
+    let backend_off = ChannelPolicy::new(
+        &settings,
+        &backend,
+        CHANNEL,
+        false,
+        Some(&crate::BackendMode::Off),
+    );
     let account_off = policy(
         &settings,
         &Notifications {
@@ -199,7 +217,7 @@ fn disabled_master_mute_and_either_off_mode_decisively_filter_unknowns() {
             disabled.badge_eligible(Classification::Unknown),
             Some(false)
         );
-        assert!(!disabled.delivery_eligible(true));
+        assert_eq!(disabled.delivery_eligible(true), Some(false));
     }
 }
 
@@ -223,7 +241,7 @@ fn mentions_switch_filters_badges_even_when_all_mode_can_still_deliver() {
     for policy in [device_mentions_off, backend_mentions_off] {
         assert!(policy.badges_disabled());
         assert_eq!(policy.badge_eligible(Classification::Unknown), Some(false));
-        assert!(policy.delivery_eligible(false));
+        assert_eq!(policy.delivery_eligible(false), Some(true));
     }
 }
 
@@ -238,7 +256,7 @@ fn dm_switch_is_independent_of_mentions_and_dm_delivery_does_not_require_inbox_t
         ..Default::default()
     };
     let enabled = policy(&settings, &backend, true);
-    assert!(enabled.delivery_eligible(false));
+    assert_eq!(enabled.delivery_eligible(false), Some(true));
     assert_eq!(
         enabled.badge_eligible(Classification::KnownTrigger(Provenance::DirectMessage)),
         Some(true)
@@ -246,7 +264,7 @@ fn dm_switch_is_independent_of_mentions_and_dm_delivery_does_not_require_inbox_t
     settings.direct_messages = false;
     let disabled = policy(&settings, &backend, true);
     assert!(disabled.badges_disabled());
-    assert!(!disabled.delivery_eligible(true));
+    assert_eq!(disabled.delivery_eligible(true), Some(false));
 }
 
 #[test]
@@ -263,6 +281,30 @@ fn authoritative_trigger_is_not_downgraded_by_unknown_historical_classification(
         false,
     );
     assert_eq!(policy.badge_eligible(Classification::Unknown), None);
-    assert!(policy.delivery_eligible(true));
-    assert!(!policy.delivery_eligible(false));
+    assert_eq!(policy.delivery_eligible(true), Some(true));
+    assert_eq!(policy.delivery_eligible(false), Some(false));
+}
+
+#[test]
+fn missing_and_unrecognized_backend_modes_cannot_deliver_or_count_a_mention() {
+    let mut settings = NotificationSettings::default();
+    settings
+        .channels
+        .insert(CHANNEL, ChannelNotificationMode::All);
+    for mode in [None, Some(crate::BackendMode::Unknown("mentions".into()))] {
+        let policy = ChannelPolicy::new(
+            &settings,
+            &Notifications::default(),
+            CHANNEL,
+            false,
+            mode.as_ref(),
+        );
+        assert_eq!(policy.delivery_eligible(true), None);
+        assert_eq!(policy.delivery_eligible(false), None);
+        assert!(policy.badges_uncertain());
+        assert_eq!(
+            policy.badge_eligible(Classification::KnownTrigger(Provenance::DirectMention)),
+            None
+        );
+    }
 }

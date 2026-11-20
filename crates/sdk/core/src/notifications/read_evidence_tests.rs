@@ -213,6 +213,7 @@ fn in_memory_unresolved_id_and_inbox_read_flag_suppress_and_claim() {
                     &resources,
                     ReadEvidence::Unread,
                 )
+                .unwrap()
                 .is_none()
             );
             assert!(matches!(
@@ -346,7 +347,14 @@ fn denied_channel_suppresses_with_background_channel_dm_resources() {
             let item = candidate();
             let bg = PolicyResources::channels_and_dms(
                 generation,
-                (*session.inner.resources.borrow().channels).clone(),
+                session
+                    .inner
+                    .resources
+                    .borrow()
+                    .channels
+                    .iter()
+                    .cloned()
+                    .collect(),
                 Vec::new(),
             );
             assert_eq!(bg.generation(), generation);

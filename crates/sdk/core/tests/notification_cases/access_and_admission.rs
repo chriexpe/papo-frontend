@@ -37,12 +37,7 @@ pub(super) async fn quarantine_channel(
         )
         .await?;
     let mut resources = session.subscribe_resources();
-    while !resources
-        .borrow()
-        .dms
-        .iter()
-        .any(|dm| dm.id == channel.to_string())
-    {
+    while !resources.borrow().dms.iter().any(|dm| dm.id == channel) {
         resources.changed().await?;
     }
     assert!(matches!(
@@ -360,12 +355,7 @@ fn quarantined_live_reply_upgrades_and_unrelated_event_does_not_swallow_wakeup()
             .ok_or("channel")?
             .parse()?;
         let mut resources = first.subscribe_resources();
-        while !resources
-            .borrow()
-            .channels
-            .iter()
-            .any(|c| c.id.as_deref().and_then(|id| id.parse().ok()) == Some(healthy))
-        {
+        while !resources.borrow().channels.iter().any(|c| c.id == healthy) {
             resources.changed().await?;
         }
         quarantine_channel(&f, &first, second.account().user(), channel).await?;
@@ -446,12 +436,7 @@ fn quarantined_server_read_row_claims_without_blocking_healthy_channel_record() 
                 .ok_or("channel")?
                 .parse()?;
             let mut resources = first.subscribe_resources();
-            while !resources
-                .borrow()
-                .channels
-                .iter()
-                .any(|c| c.id.as_deref().and_then(|id| id.parse().ok()) == Some(healthy))
-            {
+            while !resources.borrow().channels.iter().any(|c| c.id == healthy) {
                 resources.changed().await?;
             }
             let client = f.client().handle();

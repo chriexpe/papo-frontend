@@ -25,18 +25,26 @@ fn account(server: &SavedServer, user: u128, active: bool) -> SavedAccount {
     }
 }
 
-fn channel(id: &str, name: &str, kind: Option<&str>) -> Channel {
-    Channel {
-        id: Some(id.to_owned()),
-        name: Some(name.to_owned()),
-        r#type: kind.map(str::to_owned),
-        ..Channel::default()
+fn channel(id: u128, name: Option<&str>, kind: ChannelKind) -> ChannelRecord {
+    ChannelRecord {
+        id: Uuid::from_u128(id),
+        name: name.map(str::to_owned),
+        kind,
+        position: None,
+        topic: None,
+        parent_id: None,
+        permissions: Vec::new(),
+        created_at: None,
+        last_message: None,
+        last_read_message: None,
+        last_read_at: None,
+        notification_settings: None,
     }
 }
 
-fn entry(id: &str, name: &str) -> ChannelEntry {
+fn entry(id: u128, name: &str) -> ChannelEntry {
     ChannelEntry {
-        id: id.to_owned(),
+        id: Uuid::from_u128(id).to_string(),
         name: name.to_owned(),
     }
 }
@@ -72,8 +80,8 @@ fn a_signed_in_server_takes_its_name_owner_icon_and_channels_from_its_resources(
         ..RegistrySnapshot::default()
     };
     let (text_channels, voice_channels) = channels(&[
-        channel("c1", "general", Some("text")),
-        channel("c2", "hangout", Some("voice")),
+        channel(1, Some("general"), ChannelKind::Text),
+        channel(2, Some("hangout"), ChannelKind::Voice),
     ]);
     let resources = HashMap::from([(
         ana.id,
@@ -96,8 +104,8 @@ fn a_signed_in_server_takes_its_name_owner_icon_and_channels_from_its_resources(
         (account.name.as_str(), account.username.as_str()),
         ("Ana", "user2")
     );
-    assert_eq!(shown.text_channels, [entry("c1", "general")]);
-    assert_eq!(shown.voice_channels, [entry("c2", "hangout")]);
+    assert_eq!(shown.text_channels, [entry(1, "general")]);
+    assert_eq!(shown.voice_channels, [entry(2, "hangout")]);
 }
 
 #[test]
@@ -115,26 +123,13 @@ fn without_an_active_account_the_first_saved_one_is_shown() {
 
 #[test]
 fn channels_keep_the_server_s_order_and_drop_what_cannot_be_a_row() {
-    let unnamed = Channel {
-        id: Some("c5".to_owned()),
-        ..Channel::default()
-    };
     let (text, voice) = channels(&[
-        channel("c3", "random", None),
-        channel("c1", "general", Some("text")),
-        channel("c9", "Topics", Some("category")),
-        channel("", "no identity", Some("text")),
-        unnamed,
-        channel("c2", "hangout", Some("voice")),
-        channel("c4", "stage", Some("future-kind")),
+        channel(3, Some("random"), ChannelKind::Text),
+        channel(1, Some("general"), ChannelKind::Text),
+        channel(9, Some("Topics"), ChannelKind::Category),
+        channel(5, None, ChannelKind::Text),
+        channel(2, Some("hangout"), ChannelKind::Voice),
     ]);
-    assert_eq!(
-        text,
-        [
-            entry("c3", "random"),
-            entry("c1", "general"),
-            entry("c4", "stage")
-        ]
-    );
-    assert_eq!(voice, [entry("c2", "hangout")]);
+    assert_eq!(text, [entry(3, "random"), entry(1, "general")]);
+    assert_eq!(voice, [entry(2, "hangout")]);
 }

@@ -130,11 +130,13 @@ fn profile(
             ) else {
                 return problem(400, "invalid-param", path);
             };
-            profile.nickname = Some(nickname.into());
+            profile.nickname = nickname.into();
             profile.status_message = Some(status.into());
             profile.description = Some(description.into());
             if let Some(typing) = body.get("typing") {
-                profile.typing = typing.as_str().map(str::to_owned);
+                profile.typing = typing
+                    .as_str()
+                    .map_or(papo_api::NullableText::Null, Into::into);
             }
         }
         Some("status") => {

@@ -6,6 +6,8 @@
 
 #[path = "resource_admission_cases/acceptance.rs"]
 mod acceptance;
+#[path = "resource_admission_cases/commit.rs"]
+mod commit;
 #[path = "resource_admission_cases/defects.rs"]
 mod defects;
 mod fixture;
@@ -143,7 +145,7 @@ fn digest(snapshot: &ResourceSnapshot) -> Vec<String> {
         rows.push(format!("server:{:?}:{:?}", server.id, server.owner_id));
     }
     for channel in snapshot.channels.iter() {
-        let overwrites = channel.permissions.as_ref().map(Vec::len);
+        let overwrites = channel.permissions.len();
         rows.push(format!(
             "channel:{:?}:{:?}:{overwrites:?}",
             channel.id, channel.name
@@ -155,20 +157,16 @@ fn digest(snapshot: &ResourceSnapshot) -> Vec<String> {
             .iter()
             .map(|role| format!("role:{:?}", role.id)),
     );
-    for member in snapshot.members.iter() {
-        let roles: Vec<_> = member.roles.iter().flatten().map(|role| &role.id).collect();
+    for id in snapshot.members.iter() {
+        let member = snapshot.users.get(id).expect("roster summary");
+        let roles = &member.roles;
         rows.push(format!(
             "member:{:?}:{:?}:{roles:?}",
             member.id, member.nickname
         ));
     }
     rows.extend(snapshot.dms.iter().map(|dm| format!("dm:{}", dm.id)));
-    rows.extend(
-        snapshot
-            .blocks
-            .iter()
-            .map(|user| format!("block:{:?}", user.id)),
-    );
+    rows.extend(snapshot.blocks.iter().map(|user| format!("block:{user:?}")));
     rows.sort();
     rows
 }

@@ -73,7 +73,7 @@ fn failed_refresh_keeps_acknowledgment_and_history() -> Result {
                 .borrow()
                 .channels
                 .iter()
-                .any(|c| c.id.as_deref().and_then(|id| id.parse().ok()) == Some(channel))
+                .any(|c| c.id == channel)
         );
         receipt.validate(&session)?;
         assert_eq!(
@@ -98,7 +98,7 @@ fn failed_refresh_keeps_acknowledgment_and_history() -> Result {
                 .borrow()
                 .channels
                 .iter()
-                .any(|channel| channel.id == receipt.value.id)
+                .any(|channel| Some(channel.id.to_string()) == receipt.value.id)
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
@@ -130,7 +130,7 @@ fn missing_required_list_is_refresh_warning_without_revocation() -> Result {
                 .borrow()
                 .channels
                 .iter()
-                .any(|c| c.id.as_deref().and_then(|id| id.parse().ok()) == Some(channel))
+                .any(|c| c.id == channel)
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
@@ -236,7 +236,7 @@ fn concurrent_mutations_refresh_in_acknowledged_order() -> Result {
         assert_eq!(second.refresh, RefreshStatus::Updated);
         let image = session.subscribe_resources().borrow().clone();
         for id in [first.value.id, second.value.id] {
-            assert!(image.channels.iter().any(|c| c.id == id));
+            assert!(image.channels.iter().any(|c| Some(c.id.to_string()) == id));
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
@@ -266,7 +266,7 @@ fn concurrent_gateway_publication_preserves_newer_image() -> Result {
                 .borrow()
                 .channels
                 .iter()
-                .any(|c| c.id == created.id)
+                .any(|c| Some(c.id.to_string()) == created.id)
             {
                 break;
             }
@@ -283,7 +283,7 @@ fn concurrent_gateway_publication_preserves_newer_image() -> Result {
                 .borrow()
                 .channels
                 .iter()
-                .any(|c| c.id == created.id)
+                .any(|c| Some(c.id.to_string()) == created.id)
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;

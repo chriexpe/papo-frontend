@@ -48,10 +48,9 @@ fn unresolved_owner_evidence_invalidates_only_its_channel_despite_equal_read_sta
             let mut resources = (**session.inner.resources.borrow()).clone();
             let affected = Uuid::from_u128(2);
             let other = Uuid::from_u128(9);
-            Arc::make_mut(&mut resources.channels).push(crate::Channel {
-                id: Some(other.to_string()),
-                ..crate::Channel::default()
-            });
+            let mut second = resources.channels.get(affected).unwrap().clone();
+            second.id = other;
+            resources.channels.set(other, second);
             let reading = session.inner.reading.image.borrow().clone();
             let (previous, _) = build(&session, &resources, &reading, &BTreeMap::new()).await;
             session.inner.reading.unresolved.lock().await.insert(

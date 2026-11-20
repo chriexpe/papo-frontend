@@ -11,6 +11,8 @@ mod health;
 mod history;
 pub mod media;
 mod message_upload;
+mod nullable_text;
+pub use nullable_text::NullableText;
 mod pagination;
 mod people;
 mod rest;

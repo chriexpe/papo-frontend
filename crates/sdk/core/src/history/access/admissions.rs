@@ -124,6 +124,27 @@ impl Admissions {
             .collect()
     }
 
+    pub(crate) fn needs_revalidation(&self) -> bool {
+        self.channels.values().any(|value| {
+            matches!(
+                value,
+                Admission::Quarantined | Admission::Denied { durable: false, .. }
+            )
+        })
+    }
+
+    /// Rejected evidence only suspends access. Retain a stronger outstanding denial.
+    pub(super) fn quarantine(&mut self, channel: Uuid) -> bool {
+        if matches!(
+            self.get(channel),
+            Some(Admission::Denied { .. } | Admission::Quarantined)
+        ) {
+            return false;
+        }
+        self.channels.insert(channel, Admission::Quarantined);
+        true
+    }
+
     pub(crate) fn quarantined(&self) -> BTreeSet<Uuid> {
         self.channels
             .iter()

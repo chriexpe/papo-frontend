@@ -32,3 +32,12 @@ pub(crate) fn restrict(
         recount::publish(session, old.generation, old.channels_complete, channels);
     }
 }
+
+/// A rejected channel or DM census can no longer prove an exact account aggregate.
+/// Invoked while the admission write lock excludes a concurrent recount publication.
+pub(crate) fn invalidate_census(session: &SessionInner) {
+    let old = session.badges.image.borrow().clone();
+    if old.channels_complete {
+        recount::publish(session, old.generation, false, old.channels.clone());
+    }
+}

@@ -67,6 +67,8 @@ pub enum DiskFault {
     Measurement,
     /// Media index or content maintenance failed.
     Media,
+    /// A resource revision committed, but its subsequent cache maintenance failed.
+    ResourceMaintenance,
     /// History reclamation failed.
     History,
     /// Account lifecycle changed during maintenance.

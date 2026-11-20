@@ -143,15 +143,10 @@ fn other_members_malformed_rows_and_labels_are_dropped_with_a_diagnostic() {
         member(12, &[]),
     ];
     let admitted = roster(&log, users).unwrap();
-    let ids: Vec<_> = admitted.iter().map(|user| user.id.clone()).collect();
-    assert_eq!(ids, vec![id(OWN), id(10), id(12)]);
-    let labels: Vec<_> = admitted[1]
-        .roles
-        .iter()
-        .flatten()
-        .map(|role| role.id.clone())
-        .collect();
-    assert_eq!(labels, vec![id(9)]);
+    let ids: Vec<_> = admitted.iter().map(|user| user.id).collect();
+    assert_eq!(ids, [OWN, 10, 12].map(Uuid::from_u128));
+    let labels: Vec<_> = admitted[1].roles.iter().flatten().copied().collect();
+    assert_eq!(labels, vec![Uuid::from_u128(9)]);
     let diagnostics = log.snapshot();
     // One blank row, both copies of the repeated row, one blank and two repeated labels.
     assert_eq!(diagnostics.dropped_rows, 6);
@@ -196,11 +191,12 @@ fn summary_batches_reject_own_row_faults_but_drop_other_malformed_rows() {
         rejected(CacheResource::Members, AdmissionFault::UnexpectedId)
     );
     // An omitted other user does not exist; that is not a fault.
-    assert!(
+    assert_eq!(
         admission
             .summaries(&requested[..2], Vec::new())
             .unwrap()
-            .is_empty()
+            .present,
+        []
     );
     assert_eq!(log.snapshot().dropped_rows, 0);
     let mut uppercase = member(0xab, &[]);
@@ -213,8 +209,8 @@ fn summary_batches_reject_own_row_faults_but_drop_other_malformed_rows() {
         uppercase,
     ];
     let admitted = admission.summaries(&requested, response).unwrap();
-    let ids: Vec<_> = admitted.iter().map(|user| user.id.clone()).collect();
-    assert_eq!(ids, vec![id(OWN)]);
+    let ids: Vec<_> = admitted.present.iter().map(|user| user.id).collect();
+    assert_eq!(ids, vec![Uuid::from_u128(OWN)]);
     // The unrequested row, both repeated rows and the non-canonical row.
     assert_eq!(log.snapshot().dropped_rows, 4);
     assert_eq!(
@@ -293,16 +289,9 @@ fn dm_and_block_identities_are_security_bearing() {
             rejected(CacheResource::Blocks, fault)
         );
     }
-    assert!(
-        admission
-            .dms(DirectConversationList::default())
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        admission.dms(DirectConversationList::default()).unwrap(),
+        []
     );
-    assert!(
-        admission
-            .blocks(BlockListResponse::default())
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(admission.blocks(BlockListResponse::default()).unwrap(), []);
 }

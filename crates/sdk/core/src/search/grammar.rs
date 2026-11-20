@@ -126,6 +126,7 @@ impl SearchNames<'_> {
             self.resources
                 .members
                 .iter()
+                .filter_map(|id| self.resources.users.get(id))
                 .filter(|p| {
                     p.username
                         .as_deref()
@@ -134,7 +135,7 @@ impl SearchNames<'_> {
                             .as_deref()
                             .is_some_and(|s| s.eq_ignore_ascii_case(name))
                 })
-                .filter_map(|p| p.id.as_deref().and_then(|id| id.parse().ok())),
+                .map(|p| p.id),
         )
     }
     fn channel(&self, raw: &str) -> Result<Uuid, SearchError> {
@@ -151,7 +152,7 @@ impl SearchNames<'_> {
                         .as_deref()
                         .is_some_and(|s| s.eq_ignore_ascii_case(name))
                 })
-                .filter_map(|c| c.id.as_deref().and_then(|id| id.parse().ok())),
+                .map(|c| c.id),
         )
     }
     /// Finds channel and person metadata by name without loading additional members/profiles.
@@ -167,20 +168,21 @@ impl SearchNames<'_> {
                     .as_ref()
                     .is_some_and(|s| s.to_lowercase().contains(&needle))
             })
-            .filter_map(|c| c.id.as_deref().and_then(|s| s.parse().ok()))
+            .map(|c| c.id)
             .take(100)
             .collect();
         let people = self
             .resources
             .members
             .iter()
+            .filter_map(|id| self.resources.users.get(id))
             .filter(|p| {
                 [p.username.as_ref(), p.nickname.as_ref()]
                     .into_iter()
                     .flatten()
                     .any(|s| s.to_lowercase().contains(&needle))
             })
-            .filter_map(|p| p.id.as_deref().and_then(|s| s.parse().ok()))
+            .map(|p| p.id)
             .take(100)
             .collect();
         (channels, people)

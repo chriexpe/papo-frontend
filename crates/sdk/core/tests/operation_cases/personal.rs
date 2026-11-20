@@ -29,13 +29,21 @@ fn acknowledged_profile_refresh_retains_metadata_without_inline_avatar_bytes() -
         receipt.validate(&first)?;
         assert!(receipt.validate(&second).is_err());
         let resources = first.subscribe_resources().borrow().clone();
-        let profile = resources
-            .profiles
-            .iter()
-            .find(|profile| profile.id.as_deref() == Some(&first.account().user().to_string()))
-            .ok_or("missing profile")?;
-        assert_eq!(profile.nickname.as_deref(), Some("changed"));
-        assert_eq!(profile.status_message.as_deref(), Some("busy working"));
+        let user = first.account().user();
+        assert_eq!(
+            resources
+                .users
+                .get(user)
+                .and_then(|summary| summary.nickname.as_deref()),
+            Some("changed")
+        );
+        assert_eq!(
+            resources
+                .profiles
+                .get(user)
+                .and_then(|profile| profile.description.as_deref()),
+            Some("profile description")
+        );
         let receipt = first
             .operations()
             .update_avatar(UpdateAvatarRequest {
@@ -45,12 +53,7 @@ fn acknowledged_profile_refresh_retains_metadata_without_inline_avatar_bytes() -
             .await?;
         assert_eq!(receipt.refresh, RefreshStatus::Updated);
         let resources = first.subscribe_resources().borrow().clone();
-        let profile = resources
-            .profiles
-            .iter()
-            .find(|profile| profile.id.as_deref() == Some(&first.account().user().to_string()))
-            .ok_or("missing profile")?;
-        assert!(profile.avatar_blob.is_none());
+        let profile = resources.profiles.get(user).ok_or("missing profile")?;
         assert_eq!(profile.avatar_format.as_deref(), Some("png"));
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
@@ -87,12 +90,14 @@ fn rejected_profile_mutation_preserves_last_confirmed_projection() -> Result {
             )))
         ));
         let resources = first.subscribe_resources().borrow().clone();
-        let profile = resources
-            .profiles
-            .iter()
-            .find(|profile| profile.id.as_deref() == Some(&user.to_string()))
-            .ok_or("missing profile")?;
-        assert_eq!(profile.nickname.as_deref(), Some("confirmed"));
+        assert!(resources.profiles.get(user).is_some());
+        assert_eq!(
+            resources
+                .users
+                .get(user)
+                .and_then(|summary| summary.nickname.as_deref()),
+            Some("confirmed")
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()
@@ -144,10 +149,9 @@ fn account_and_channel_settings_refresh_without_changing_another_account() -> Re
         assert_eq!(
             resources
                 .channels
-                .iter()
-                .find(|c| c.id.as_deref() == Some(channel.to_string().as_str()))
-                .and_then(|c| c.notification_settings.as_deref()),
-            Some("off")
+                .get(channel)
+                .and_then(|c| c.notification_settings.as_ref()),
+            Some(&papo_sdk::BackendMode::Off)
         );
         assert_eq!(
             second.subscribe_resources().borrow().version,

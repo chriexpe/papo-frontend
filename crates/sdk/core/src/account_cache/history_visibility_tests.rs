@@ -7,15 +7,25 @@ fn large_visibility_manifests_stage_and_revoke_in_bounded_turns() {
     run(|caches, _| async move {
         let cache = caches.open(account()).await.unwrap();
         let mut resources = ResourceSnapshot::empty(GENERATION);
-        resources.channels = (1..=600)
-            .map(|id| Channel {
-                id: Some(Uuid::from_u128(id).to_string()),
-                ..Channel::default()
-            })
-            .collect::<Vec<_>>()
-            .into();
+        for id in 1..=500 {
+            let channel = crate::account_cache::resource_fixtures::channel(Uuid::from_u128(id));
+            resources.channels.set(channel.id, channel);
+        }
+        let peer = Uuid::from_u128(601);
+        for id in 501..=600 {
+            let dm = crate::DirectRecord {
+                id: Uuid::from_u128(id),
+                peer_id: peer,
+                created_at: String::new(),
+                last_read_message: None,
+                last_read_at: None,
+                last_message: None,
+                unread_count: 0,
+            };
+            resources.dms.set(dm.id, dm);
+        }
         cache
-            .update(&resources, &[CacheResource::Channels])
+            .update(&resources, &[CacheResource::Channels, CacheResource::Dms])
             .await
             .unwrap();
         let mut sets = Vec::new();
@@ -28,7 +38,7 @@ fn large_visibility_manifests_stage_and_revoke_in_bounded_turns() {
             );
         }
         cache
-            .update(&resources, &[CacheResource::Channels])
+            .update(&resources, &[CacheResource::Channels, CacheResource::Dms])
             .await
             .unwrap();
         for (channel, expected) in [(1_u128, sets[0]), (600, sets[599])] {
@@ -37,9 +47,32 @@ fn large_visibility_manifests_stage_and_revoke_in_bounded_turns() {
                 .await
                 .unwrap();
         }
-        resources.channels = Vec::new().into();
+        // A new process may start its generation counter at the same value. Every
+        // persisted verification claim must be cleared before the cache becomes usable.
+        caches.close(account()).await.unwrap();
+        let cache = caches.open(account()).await.unwrap();
+        assert!(
+            cache
+                .history_validate(600_u128.to_be_bytes(), sets[599], GENERATION)
+                .await
+                .is_err()
+        );
+        let claims: i64 = cache
+            .readers
+            .query(cache.path.clone(), |tx| {
+                tx.query_row(
+                    "SELECT COUNT(*) FROM history_channels WHERE verified_generation IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(claims, 0);
+        resources.channels = crate::ResourceTable::default();
+        resources.dms = crate::ResourceTable::default();
         cache
-            .update(&resources, &[CacheResource::Channels])
+            .update(&resources, &[CacheResource::Channels, CacheResource::Dms])
             .await
             .unwrap();
         assert!(

@@ -94,11 +94,7 @@ fn physical_prefix_eviction_reloads_with_detached_pin_real_tombstone_and_exact_g
             .unwrap();
         let channel = Uuid::from_u128(800_000);
         let mut resources = ResourceSnapshot::empty(generation);
-        resources.channels = vec![crate::Channel {
-            id: Some(channel.to_string()),
-            ..crate::Channel::default()
-        }]
-        .into();
+        resources.channels = crate::ResourceSnapshot::text_channels([channel]);
         cache.replace(&resources).await.unwrap();
         let mut state = State::default();
         state

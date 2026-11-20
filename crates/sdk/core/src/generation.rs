@@ -84,7 +84,18 @@ impl Epochs {
             .clone()
     }
 
+    #[cfg(test)]
     pub fn advance(&self) -> Result<Epoch, ClientError> {
+        self.replace(None, |_| {})
+    }
+
+    /// Replace the current epoch and publish its synchronous reset under the same fence.
+    /// A driver's retry may only replace the failed epoch; an explicit reconnect starts anew.
+    pub fn replace(
+        &self,
+        expected: Option<Generation>,
+        publish: impl FnOnce(Generation),
+    ) -> Result<Epoch, ClientError> {
         let mut current = self
             .current
             .lock()
@@ -92,17 +103,21 @@ impl Epochs {
         if self.root.is_cancelled() {
             return Err(ClientError::Closed);
         }
-        current.cancel.cancel();
+        if expected.is_some_and(|generation| generation != current.generation) {
+            return Err(ClientError::Superseded);
+        }
         let generation = self
             .next
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| ClientError::Closed)?;
+        current.cancel.cancel();
         *current = Epoch {
             generation: Generation(generation),
             cancel: self.root.child_token(),
         };
+        publish(current.generation);
         Ok(current.clone())
     }
 

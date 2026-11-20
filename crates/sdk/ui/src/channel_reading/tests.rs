@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 
 fn channel(id: u128) -> Arc<ChannelListItem> {
     Arc::new(ChannelListItem {
-        id: Some(Uuid::from_u128(id).to_string()),
+        id: Uuid::from_u128(id),
         name: None,
-        kind: None,
+        kind: papo_sdk::ChannelKind::Text,
         position: None,
         topic: None,
         created_at: None,
@@ -251,4 +251,86 @@ fn equal_overlay_preserves_generation_transitions_and_explicit_metadata_resets()
         ));
     }
     drop(reading_sender);
+}
+
+thread_local! {
+    pub(super) static VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static ROW_CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[test]
+fn unrelated_resource_updates_skip_all_500_channels_and_one_read_clones_one_row() {
+    let generation = Generation::for_test(1);
+    let (read_sender, reading) = watch::channel(self::reading(1, generation, 0));
+    let (_badges, badges) = watch::channel(self::badges(0, generation, 0));
+    let own = Uuid::from_u128(1_000);
+    let channels = (1..=500)
+        .map(|id| papo_sdk::Channel {
+            id: Some(Uuid::from_u128(id).to_string()),
+            r#type: Some("text".into()),
+            name: Some(id.to_string()),
+            permissions: Some(vec![]),
+            ..papo_sdk::Channel::default()
+        })
+        .collect();
+    let user = papo_sdk::UserSummary {
+        id: Some(own.to_string()),
+        roles: Some(vec![]),
+        ..papo_sdk::UserSummary::default()
+    };
+    let base = papo_sdk::ResourceSnapshot::fixture(
+        generation,
+        None,
+        channels,
+        vec![],
+        vec![user.clone()],
+        vec![],
+        vec![],
+        vec![],
+        own,
+    )
+    .unwrap();
+    let (resources, receiver) = watch::channel(Arc::new(base.clone()));
+    let mut subscription = subscribe(
+        crate::channel_projection::subscribe(receiver),
+        reading,
+        badges,
+    );
+    let mut changed = base
+        .with_summary_for_test(
+            own,
+            own,
+            papo_sdk::UserSummary {
+                nickname: "changed".into(),
+                ..user
+            },
+        )
+        .unwrap();
+    changed.version = 1;
+    resources.send_replace(Arc::new(changed));
+    VISITS.set(0);
+    ROW_CLONES.set(0);
+    assert!(subscription.stream.next().now_or_never().is_none());
+    assert_eq!(VISITS.get(), 0);
+    assert_eq!(ROW_CLONES.get(), 0);
+
+    let before = subscription.snapshot.clone();
+    read_sender.send_replace(self::reading(2, generation, 1));
+    let update = subscription.stream.next().now_or_never().unwrap().unwrap();
+    assert_eq!(ROW_CLONES.get(), 1);
+    assert!(matches!(
+        update.diffs.as_slice(),
+        [eyeball_im::VectorDiff::Set { index: 0, .. }]
+    ));
+    for diff in update.diffs {
+        diff.apply(&mut subscription.snapshot);
+    }
+    assert_eq!(
+        before
+            .iter()
+            .zip(&subscription.snapshot)
+            .filter(|(old, new)| Arc::ptr_eq(old, new))
+            .count(),
+        499
+    );
 }

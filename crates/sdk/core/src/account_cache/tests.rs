@@ -1,17 +1,12 @@
 //! Account-isolated cache persistence and recovery; session identity verification is tested above this layer.
 
+use super::resource_fixtures::snapshot;
 use super::*;
 use crate::{
     ServerAddress,
     storage_worker::{StorageWorker, WorkerConfig},
 };
-use papo_api::{
-    Uuid,
-    wire::{
-        Channel, ChannelPermissionEntry, ChannelPermissions, DirectConversation, Role, RoleSummary,
-        Server, UserProfile, UserSummary,
-    },
-};
+use papo_api::Uuid;
 use std::time::{Duration, Instant};
 
 fn account(user: u128) -> AccountId {
@@ -29,61 +24,6 @@ fn factory(root: DataRoot, worker: &StorageWorker) -> AccountCaches {
         Arc::new(worker.registrar()),
         Arc::new(ReadPool::default()),
     )
-}
-
-fn snapshot() -> ResourceSnapshot {
-    let mut snapshot = ResourceSnapshot::empty(Generation(4));
-    snapshot.version = 9;
-    snapshot.server = Some(Arc::new(Server {
-        id: Some(Uuid::from_u128(3).to_string()),
-        name: Some("fixture".into()),
-        icon_blob: Some("image".into()),
-        ..Server::default()
-    }));
-    Arc::make_mut(&mut snapshot.channels).push(Channel {
-        id: Some(Uuid::from_u128(5).to_string()),
-        name: Some("fixture".into()),
-        permissions: Some(vec![ChannelPermissionEntry {
-            role_id: Some(Uuid::from_u128(6).to_string()),
-            permissions: Some(ChannelPermissions {
-                read_channel: Some(false),
-                send_messages: Some(true),
-                ..ChannelPermissions::default()
-            }),
-            ..ChannelPermissionEntry::default()
-        }]),
-        ..Channel::default()
-    });
-    Arc::make_mut(&mut snapshot.roles).push(Role {
-        id: Some(Uuid::from_u128(6).to_string()),
-        ..Role::default()
-    });
-    let summary = UserSummary {
-        roles: Some(vec![RoleSummary {
-            id: Some(Uuid::from_u128(6).to_string()),
-            ..RoleSummary::default()
-        }]),
-        id: Some(Uuid::from_u128(7).to_string()),
-        status: Some("online".into()),
-        status_message: Some("live".into()),
-        typing: Some("live".into()),
-        status_updated_at: Some("live".into()),
-        ..UserSummary::default()
-    };
-    Arc::make_mut(&mut snapshot.members).push(summary.clone());
-    Arc::make_mut(&mut snapshot.blocks).push(summary.clone());
-    Arc::make_mut(&mut snapshot.profiles).push(UserProfile {
-        id: summary.id.clone(),
-        status: summary.status.clone(),
-        avatar_blob: Some("image".into()),
-        ..UserProfile::default()
-    });
-    Arc::make_mut(&mut snapshot.dms).push(DirectConversation {
-        id: Uuid::from_u128(8).to_string(),
-        user: summary,
-        ..DirectConversation::default()
-    });
-    snapshot
 }
 
 #[test]
@@ -141,14 +81,40 @@ fn persistence_strips_nested_live_state_and_image_bytes() {
         let cache = caches.open(account(1)).await.unwrap();
         cache.replace(&snapshot()).await.unwrap();
         let loaded = cache.load(Generation(4)).await.unwrap();
-        assert!(loaded.server.unwrap().icon_blob.is_none());
-        assert!(loaded.profiles[0].avatar_blob.is_none());
-        assert!(loaded.profiles[0].status.is_none());
-        for user in [&loaded.members[0], &loaded.blocks[0], &loaded.dms[0].user] {
-            assert!(user.status.is_none());
-            assert!(user.status_message.is_none());
-            assert!(user.typing.is_none());
-            assert!(user.status_updated_at.is_none());
+        assert!(
+            loaded
+                .users
+                .get(Uuid::from_u128(7))
+                .unwrap()
+                .typing
+                .is_none()
+        );
+        let payloads: Vec<Vec<u8>> = cache
+            .readers
+            .query(cache.path.clone(), |tx| {
+                tx.prepare(
+                    "SELECT payload FROM server_info UNION ALL SELECT payload FROM members
+                       UNION ALL SELECT payload FROM users UNION ALL SELECT payload FROM dms
+                       UNION ALL SELECT payload FROM blocks",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect()
+            })
+            .await
+            .unwrap();
+        let excluded = [
+            "status",
+            "status_message",
+            "typing",
+            "status_updated_at",
+            "icon_blob",
+            "avatar_blob",
+        ];
+        for payload in payloads {
+            let fields = String::from_utf8(payload).unwrap();
+            for field in excluded {
+                assert!(!fields.contains(&format!("\"{field}\"")));
+            }
         }
         caches.close(account(1)).await.unwrap();
     });
@@ -240,14 +206,8 @@ fn required_non_message_tables_round_trip_overwrites_and_blob_role_memberships()
         let expected = snapshot();
         cache.replace(&expected).await.unwrap();
         let loaded = cache.load(Generation(4)).await.unwrap();
-        assert_eq!(
-            serde_json::to_value(loaded.channels.as_ref()).unwrap(),
-            serde_json::to_value(expected.channels.as_ref()).unwrap()
-        );
-        assert_eq!(
-            serde_json::to_value(loaded.roles.as_ref()).unwrap(),
-            serde_json::to_value(expected.roles.as_ref()).unwrap()
-        );
+        assert_eq!(loaded.channels, expected.channels);
+        assert_eq!(loaded.roles, expected.roles);
         let (tables, member_id, role_id): (Vec<String>, Vec<u8>, Vec<u8>) = cache
             .readers
             .query(cache.path.clone(), |transaction| {

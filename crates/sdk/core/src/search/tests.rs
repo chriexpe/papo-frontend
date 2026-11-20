@@ -2,19 +2,32 @@
 use super::*;
 #[test]
 fn quoted_names_resolve_filters_and_ambiguous_labels_fail() {
-    let mut resources = crate::ResourceSnapshot::empty(crate::Generation(1));
-    resources.members = vec![crate::UserSummary {
-        id: Some(Uuid::from_u128(1).to_string()),
-        nickname: Some("Quoted Person".into()),
+    let person = |id| crate::UserSummary {
+        id: Some(Uuid::from_u128(id).to_string()),
+        nickname: "Quoted Person".into(),
         ..Default::default()
-    }]
-    .into();
-    resources.channels = vec![crate::Channel {
-        id: Some(Uuid::from_u128(2).to_string()),
-        name: Some("Quoted Channel".into()),
-        ..Default::default()
-    }]
-    .into();
+    };
+    let image = |users| {
+        crate::ResourceSnapshot::fixture(
+            crate::Generation(1),
+            None,
+            vec![crate::Channel {
+                id: Some(Uuid::from_u128(2).to_string()),
+                name: Some("Quoted Channel".into()),
+                r#type: Some("text".into()),
+                permissions: Some(vec![]),
+                ..Default::default()
+            }],
+            vec![],
+            users,
+            vec![],
+            vec![],
+            vec![],
+            Uuid::from_u128(7),
+        )
+        .unwrap()
+    };
+    let resources = image(vec![person(1)]);
     let names = SearchNames {
         resources: &resources,
     };
@@ -32,11 +45,7 @@ fn quoted_names_resolve_filters_and_ambiguous_labels_fail() {
     assert_eq!(query.contains_attachment, Some(true));
     assert_eq!(query.has.as_deref(), Some("link"));
     assert_eq!(query.text.as_deref(), Some("words"));
-    Arc::make_mut(&mut resources.members).push(crate::UserSummary {
-        id: Some(Uuid::from_u128(3).to_string()),
-        nickname: Some("Quoted Person".into()),
-        ..Default::default()
-    });
+    let resources = image(vec![person(1), person(3)]);
     assert!(
         SearchQuery::parse(
             "de:\"Quoted Person\"",

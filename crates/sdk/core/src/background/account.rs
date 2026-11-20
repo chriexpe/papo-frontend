@@ -184,5 +184,11 @@ async fn policy_resources(
         )
         .map_err(ClientError::from)?;
     session.inner.epochs.validate(generation)?;
-    Ok(crate::notifications::policy::PolicyResources::channels_and_dms(generation, channels, dms))
+    Ok(
+        crate::notifications::policy::PolicyResources::channels_and_dms(
+            generation,
+            channels,
+            dms.into_iter().map(|(dm, _)| dm).collect(),
+        ),
+    )
 }

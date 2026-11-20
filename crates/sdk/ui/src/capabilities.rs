@@ -1,10 +1,10 @@
 //! View affordances from current SDK permission inputs; never substitutes for server authorization.
 
 use papo_sdk::{
-    ConnectionState, Generated, Message, ResourceSnapshot, Session, Uuid,
+    ChannelKind, ConnectionState, Generated, Message, ResourceSnapshot, Session, Uuid,
     permissions::{
-        ChannelGrants, GlobalPermissions, PermissionDataError, channel_grants, direct_grants,
-        global_permissions,
+        ChannelGrants, GlobalPermissions, PermissionDataError, channel_grants,
+        direct_channel_grants, global_permissions,
     },
 };
 
@@ -41,9 +41,27 @@ pub struct ChannelCapabilities {
 impl ChannelCapabilities {
     /// Projects backend predicates through each operation's type-specific gate.
     #[must_use]
-    pub fn from_grants(kind: &str, grants: ChannelGrants, global: GlobalPermissions) -> Self {
-        let direct = kind == "dm";
-        let send = grants.send && matches!(kind, "text" | "voice" | "dm");
+    pub fn from_grants(
+        kind: ChannelKind,
+        grants: ChannelGrants,
+        global: GlobalPermissions,
+    ) -> Self {
+        Self::project(Some(kind), grants, global)
+    }
+
+    /// Applies direct-conversation gates to explicit account-bound membership and block evidence.
+    #[must_use]
+    pub fn from_direct_grants(grants: ChannelGrants) -> Self {
+        Self::project(None, grants, GlobalPermissions::default())
+    }
+
+    fn project(
+        kind: Option<ChannelKind>,
+        grants: ChannelGrants,
+        global: GlobalPermissions,
+    ) -> Self {
+        let direct = kind.is_none();
+        let send = grants.send && kind != Some(ChannelKind::Category);
         let pin = if direct {
             grants.read
         } else {
@@ -58,7 +76,7 @@ impl ChannelCapabilities {
             add_reaction: grants.send,
             remove_reaction: grants.read,
             type_here: grants.read,
-            connect_voice: kind == "voice" && grants.voice,
+            connect_voice: kind == Some(ChannelKind::Voice) && grants.voice,
             delete_others: grants.delete_others,
             direct,
         }
@@ -84,21 +102,15 @@ pub fn capabilities(
     user: Uuid,
     channel: Uuid,
 ) -> Result<ChannelCapabilities, PermissionDataError> {
-    let id = channel.to_string();
-    if snapshot.dms.iter().any(|dm| dm.id == id) {
+    if snapshot.dms.get(channel).is_some() {
         return Err(PermissionDataError::Unavailable);
     }
     let channel = snapshot
         .channels
-        .iter()
-        .find(|channel| channel.id.as_deref() == Some(id.as_str()))
-        .ok_or(PermissionDataError::Unavailable)?;
-    let kind = channel
-        .r#type
-        .as_deref()
+        .get(channel)
         .ok_or(PermissionDataError::Unavailable)?;
     Ok(ChannelCapabilities::from_grants(
-        kind,
+        channel.kind,
         channel_grants(snapshot, user, channel)?,
         global_permissions(snapshot, user)?,
     ))
@@ -112,21 +124,7 @@ fn direct_capabilities(
     snapshot: &ResourceSnapshot,
     channel: Uuid,
 ) -> Result<ChannelCapabilities, PermissionDataError> {
-    let id = channel.to_string();
-    let dm = snapshot
-        .dms
-        .iter()
-        .find(|dm| dm.id == id)
-        .ok_or(PermissionDataError::Unavailable)?;
-    let blocked = snapshot
-        .blocks
-        .iter()
-        .any(|blocked| blocked.id == dm.user.id);
-    Ok(ChannelCapabilities::from_grants(
-        "dm",
-        direct_grants(true, blocked),
-        GlobalPermissions::default(),
-    ))
+    direct_channel_grants(snapshot, channel).map(ChannelCapabilities::from_direct_grants)
 }
 
 /// Reads affordances for one account. Offline/cached conclusions never masquerade as fresh grants.
@@ -152,7 +150,7 @@ impl CapabilityService {
         self.fresh(&snapshot)?;
         Ok(Generated {
             generation: snapshot.generation,
-            value: if snapshot.dms.iter().any(|dm| dm.id == channel.to_string()) {
+            value: if snapshot.dms.get(channel).is_some() {
                 direct_capabilities(&snapshot, channel)?
             } else {
                 capabilities(&snapshot, self.session.account().user(), channel)?
@@ -276,7 +274,7 @@ impl CapabilityService {
             };
         }
         let global = global_permissions(&snapshot, self.session.account().user());
-        let channel = if snapshot.dms.iter().any(|dm| dm.id == channel.to_string()) {
+        let channel = if snapshot.dms.get(channel).is_some() {
             direct_capabilities(&snapshot, channel)
         } else {
             capabilities(&snapshot, self.session.account().user(), channel)

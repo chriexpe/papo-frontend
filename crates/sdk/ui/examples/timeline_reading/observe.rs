@@ -63,11 +63,10 @@ pub(super) async fn first(client: &Client, fixture: Option<&TestServer>) -> Resu
             .channels
             .iter()
             .find(|channel| {
-                channel.r#type.as_deref() == Some("text") && channel.last_message.is_some()
+                channel.kind == papo_sdk::ChannelKind::Text && channel.last_message.is_some()
             })
-            .and_then(|channel| channel.id.as_deref())
+            .map(|channel| channel.id)
             .ok_or("populated text channel required")?
-            .parse()?
     };
     let config = TimelineConfig {
         page_size: 20,

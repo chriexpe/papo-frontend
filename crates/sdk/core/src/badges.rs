@@ -4,7 +4,7 @@
 mod access;
 mod counts;
 mod recount;
-pub(crate) use access::restrict;
+pub(crate) use access::{invalidate_census, restrict};
 #[cfg(test)]
 mod tests;
 
