@@ -254,6 +254,7 @@ fn open_on_a_server_whose_account_is_signed_out_signs_it_in_again() {
         credentials: Credentials::Missing,
         address: "https://papo.example.invalid".to_owned(),
         username: "ana".to_owned(),
+        signing_in: false,
     };
     let (mut flow, mut fields, effects) =
         open_already_added(SavedAccounts::SignedOut(account.clone()));
@@ -286,6 +287,7 @@ fn signing_in_again_fills_the_username_and_keeps_to_the_same_account() {
         credentials: Credentials::Kept,
         address: "https://papo.example.invalid".to_owned(),
         username: "ana".to_owned(),
+        signing_in: false,
     };
     let mut fields = Fields::default();
     let (mut flow, discover) = SignIn::renewing(Host::Window, &account, &mut fields);
@@ -357,6 +359,7 @@ fn closing_a_sign_in_again_keeps_the_account_s_server() {
         credentials: Credentials::Missing,
         address: "https://papo.example.invalid".to_owned(),
         username: "ana".to_owned(),
+        signing_in: false,
     };
     let mut fields = Fields::default();
     let (flow, _) = SignIn::renewing(Host::Popup, &account, &mut fields);

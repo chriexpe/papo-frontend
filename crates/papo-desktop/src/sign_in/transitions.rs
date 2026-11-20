@@ -109,8 +109,9 @@ impl SignIn {
         let Screen::Account { server, phase, .. } = &self.screen else {
             return Effects::none();
         };
-        // The same account signs in again: there is no other server to pick.
-        if server.renewing.is_some() || *phase == Phase::Busy {
+        // The same account signs in again, or another joins a saved server:
+        // there is no other server to pick.
+        if server.renewing.is_some() || server.adding || *phase == Phase::Busy {
             return Effects::none();
         }
         let id = server.id;

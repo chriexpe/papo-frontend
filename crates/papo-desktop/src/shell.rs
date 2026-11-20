@@ -172,13 +172,43 @@ impl Shell {
         let pending = accounts
             .signed_out
             .iter()
-            .find(|account| !offered.contains(&account.id))
+            .find(|account| !account.signing_in && !offered.contains(&account.id))
             .cloned();
         if let Some(account) = pending {
             offered.push(account.id);
             let (flow, discover) = SignIn::renewing(host, &account, &mut self.fields);
             self.open_sign_in(flow, Some(discover));
         }
+    }
+
+    /// Signs `account` in again, in the popup, when it is signed out and no
+    /// screen is open: picked in the server pill's accounts. Returns whether
+    /// it was signed out.
+    pub(crate) fn sign_in_again(&mut self, account: AccountId) -> bool {
+        let Stage::Running {
+            accounts,
+            flow: None,
+            offered,
+            ..
+        } = &mut self.stage
+        else {
+            return false;
+        };
+        let Some(lapsed) = accounts
+            .signed_out
+            .iter()
+            .find(|lapsed| lapsed.id == account)
+            .cloned()
+        else {
+            return false;
+        };
+        // Closing this screen must not bring it straight back.
+        if !offered.contains(&account) {
+            offered.push(account);
+        }
+        let (flow, discover) = SignIn::renewing(Host::Popup, &lapsed, &mut self.fields);
+        self.open_sign_in(flow, Some(discover));
+        true
     }
 
     /// Opens the add-server screen in the popup: the rail's +.
@@ -325,6 +355,7 @@ impl Shell {
     }
 }
 
+mod accounts;
 mod navigate;
 #[cfg(test)]
 mod tests;

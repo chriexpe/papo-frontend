@@ -10,6 +10,7 @@ use super::{COMPOSER_KEY, Shell, view};
 use crate::account_watch::{Accounts, Credentials, SignedOut};
 use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 
+mod accounts;
 mod navigation;
 
 const SIZE_PT: (f32, f32) = (1000.0, 700.0);
@@ -54,6 +55,7 @@ fn expired() -> SignedOut {
         credentials: Credentials::Kept,
         address: "https://papo.example.invalid".to_owned(),
         username: "ana".to_owned(),
+        signing_in: false,
     }
 }
 
@@ -293,6 +295,33 @@ fn an_expired_session_asks_to_sign_in_again_as_the_same_person() {
 fn a_session_that_expires_while_another_account_works_opens_in_the_popup() {
     let mut rt = app();
     one_expired(&mut rt);
+    assert!(rt.find("sign-in-popup").is_some());
+}
+
+#[test]
+fn an_account_whose_sign_in_is_running_is_not_offered_until_it_ends() {
+    let mut rt = app();
+    let summary = |signing_in| Accounts {
+        saved: 2,
+        signed_out: vec![SignedOut {
+            signing_in,
+            ..expired()
+        }],
+    };
+    // The summary posted while an Add account sign-in runs.
+    rt.update(|shell, _tx| {
+        shell.accounts_changed(summary(true));
+    });
+    rt.frame(FRAME_S);
+    assert!(
+        rt.find("sign-in-popup").is_none(),
+        "a working account offered"
+    );
+    // The attempt failed: the account is offered now.
+    rt.update(|shell, _tx| {
+        shell.accounts_changed(summary(false));
+    });
+    rt.frame(FRAME_S);
     assert!(rt.find("sign-in-popup").is_some());
 }
 

@@ -127,6 +127,31 @@ fn without_an_active_account_the_first_saved_one_is_shown() {
 }
 
 #[test]
+fn a_server_lists_every_account_saved_on_it_in_the_registry_s_order() {
+    let (lumen, mirante) = (
+        server("https://lumen.example.invalid"),
+        server("https://mirante.example.invalid"),
+    );
+    let registry = RegistrySnapshot {
+        servers: vec![lumen.clone(), mirante.clone()],
+        accounts: vec![
+            account(&lumen, 3, false),
+            account(&mirante, 4, true),
+            account(&lumen, 2, true),
+        ],
+        ..RegistrySnapshot::default()
+    };
+    let list = project(&registry, &HashMap::new(), &BTreeMap::new());
+    let names: Vec<_> = list.servers[0]
+        .accounts
+        .iter()
+        .map(|account| (account.name.as_str(), account.username.as_str()))
+        .collect();
+    assert_eq!(names, [("user3", "user3"), ("Ana", "user2")]);
+    assert_eq!(list.servers[0].address, "lumen.example.invalid");
+}
+
+#[test]
 fn channels_keep_the_server_s_order_and_drop_what_cannot_be_a_row() {
     let (text, voice) = channels(
         &[
