@@ -16,7 +16,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 mod account;
-mod call;
 mod admin_audit;
 mod administration;
 mod appearance;
@@ -35,8 +34,8 @@ mod notification_policy;
 mod notifications;
 mod projection;
 mod social;
-mod webhooks;
 mod viewport;
+mod webhooks;
 use projection::project;
 #[cfg(any(test, all(debug_assertions, target_os = "android")))]
 mod reading_debug;
@@ -52,12 +51,6 @@ fn reply_notifications_default() -> bool {
 #[derive(Debug, Deserialize, uniffi::Enum)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
-    JoinVoice { channel_id: String },
-    LeaveVoice { attempt: u64 },
-    MuteVoice { attempt: u64, muted: bool },
-    CameraVoice { attempt: u64, on: bool },
-    CameraFacing { attempt: u64, front: bool },
-    VoicePlayback { attempt: u64, user_id: String, volume_percent: u16, muted: bool },
     Login {
         username: String,
         password: String,
@@ -82,7 +75,10 @@ pub enum Action {
         setting: String,
     },
     MarkServerRead,
-    MarkChannelRead { channel_id: String, owner_user_id: String },
+    MarkChannelRead {
+        channel_id: String,
+        owner_user_id: String,
+    },
     SaveServer {
         name: String,
         public: bool,
@@ -274,7 +270,6 @@ pub struct Client {
     #[cfg(all(debug_assertions, target_os = "android"))]
     reading_debug: reading_debug::ReadingDebug,
     runtime: ServerRuntime,
-    calls: call::Calls,
     notification_listener: Option<Arc<dyn notifications::NotificationListener>>,
     notification_visible: bool,
     push_registration: Option<(String, String)>,
@@ -388,7 +383,6 @@ impl Client {
             #[cfg(all(debug_assertions, target_os = "android"))]
             reading_debug,
             runtime: ServerRuntime::open(url, wake, secrets, cache, notifications),
-            calls: call::Calls::default(),
             notification_listener: listener,
             notification_visible: false,
             push_registration: None,
@@ -413,7 +407,9 @@ impl Client {
     // thread. Cache responses are bounded and checked against the owner epoch.
     fn hydrate(&mut self, channel: &str, before: Option<(i64, u32, String)>, older: bool) {
         let epoch = self.runtime.store.cache_restore_epoch();
-        let ticket = older.then(|| self.runtime.store.history_ticket(channel)).flatten();
+        let ticket = older
+            .then(|| self.runtime.store.history_ticket(channel))
+            .flatten();
         let result = self
             .runtime
             .cache
@@ -423,7 +419,10 @@ impl Client {
             return;
         }
         match result {
-            Some(Ok(page)) if ticket.is_some() => self.runtime.store.restore_cached_history(&ticket.unwrap(), page),
+            Some(Ok(page)) if ticket.is_some() => self
+                .runtime
+                .store
+                .restore_cached_history(&ticket.unwrap(), page),
             Some(Ok(page)) => self.runtime.store.restore_cached_page(page, older),
             _ if ticket.is_some() => self.runtime.store.cached_history_failed(&ticket.unwrap()),
             _ => self.runtime.store.cached_page_failed(channel, older),
@@ -603,11 +602,12 @@ impl Client {
             };
             self.observe_inbox_update(&update);
             self.observe_pin_update(&update);
-            for effect in self.runtime.process_update(update) {
-                self.calls.effect(&mut self.runtime, effect);
-            }
+            self.runtime.process_update(update);
             if context_response
-                && !self.runtime.store.loading_message_context(&self.runtime.store.selected_channel)
+                && !self
+                    .runtime
+                    .store
+                    .loading_message_context(&self.runtime.store.selected_channel)
                 && self.runtime.store.error.is_some()
             {
                 navigation_failed = true;
@@ -615,10 +615,12 @@ impl Client {
             self.sync_notification_context();
             count += 1;
         }
-        self.calls.pump(&mut self.runtime);
         if !self.navigation_target.is_empty() {
             let channel = &self.runtime.store.selected_channel;
-            let located = self.runtime.store.messages_in(channel)
+            let located = self
+                .runtime
+                .store
+                .messages_in(channel)
                 .any(|message| message.id == self.navigation_target);
             if located {
                 self.navigation_outcome = Some(NavigationOutcome::Located);
@@ -815,7 +817,6 @@ impl Client {
         }
         let store = &mut self.runtime.store;
         let command = match action {
-            action @ (Action::JoinVoice { .. } | Action::LeaveVoice { .. } | Action::MuteVoice { .. } | Action::CameraVoice { .. } | Action::CameraFacing { .. } | Action::VoicePlayback { .. }) => return self.calls.action(&mut self.runtime, action),
             Action::Search { .. } => unreachable!(),
             Action::ClearSearch => {
                 store.reset_search();
@@ -839,11 +840,18 @@ impl Client {
                 self.flush_store();
                 return Ok(());
             }
-            Action::MarkChannelRead { channel_id, owner_user_id } => {
+            Action::MarkChannelRead {
+                channel_id,
+                owner_user_id,
+            } => {
                 if owner_user_id != store.me {
                     return Err("Account changed".into());
                 }
-                if !store.channels.iter().any(|channel| channel.id == channel_id) {
+                if !store
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == channel_id)
+                {
                     return Err("Channel no longer exists".into());
                 }
                 store.mark_read(&channel_id);
@@ -942,7 +950,10 @@ impl Client {
                     .iter()
                     .find(|c| c.id == channel_id)
                     .ok_or("Channel no longer exists")?;
-                if !matches!(channel.kind, ChannelKind::Text | ChannelKind::Direct | ChannelKind::Voice) {
+                if !matches!(
+                    channel.kind,
+                    ChannelKind::Text | ChannelKind::Direct | ChannelKind::Voice
+                ) {
                     return Err("Select a text conversation".into());
                 }
                 let previous = store.selected_channel.clone();
@@ -984,7 +995,10 @@ impl Client {
                 if local_id.is_empty()
                     || !store.channels.iter().any(|c| {
                         c.id == channel_id
-                            && matches!(c.kind, ChannelKind::Text | ChannelKind::Direct | ChannelKind::Voice)
+                            && matches!(
+                                c.kind,
+                                ChannelKind::Text | ChannelKind::Direct | ChannelKind::Voice
+                            )
                     })
                 {
                     return Err("Select a text conversation".into());
@@ -1018,7 +1032,10 @@ impl Client {
                 if local_id.is_empty()
                     || !store.channels.iter().any(|c| {
                         c.id == channel_id
-                            && matches!(c.kind, ChannelKind::Text | ChannelKind::Direct | ChannelKind::Voice)
+                            && matches!(
+                                c.kind,
+                                ChannelKind::Text | ChannelKind::Direct | ChannelKind::Voice
+                            )
                     })
                 {
                     return Err("Select a text conversation".into());
@@ -1078,7 +1095,10 @@ impl Client {
                 {
                     return Err("You cannot delete this message".into());
                 }
-                Command::DeleteMessage { owner: store.me.clone(), message_id }
+                Command::DeleteMessage {
+                    owner: store.me.clone(),
+                    message_id,
+                }
             }
             Action::React {
                 channel_id,
@@ -1236,15 +1256,30 @@ impl Client {
                 let Some((since, last_id)) = store.begin_load_newer(&channel_id) else {
                     return Ok(());
                 };
-                let ticket = store.history_ticket(&channel_id).ok_or("History request expired")?;
-                let cached_edge = store.messages_in(&channel_id).max_by(|a, b|
-                    a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
-                    .map(|m| (m.at.timestamp_millis(), m.at.timestamp_subsec_nanos(), m.id.clone()));
-                self.runtime.net.send(Command::LoadNewerMessages { ticket: ticket.clone(), since, last_id });
+                let ticket = store
+                    .history_ticket(&channel_id)
+                    .ok_or("History request expired")?;
+                let cached_edge = store
+                    .messages_in(&channel_id)
+                    .max_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                    .map(|m| {
+                        (
+                            m.at.timestamp_millis(),
+                            m.at.timestamp_subsec_nanos(),
+                            m.id.clone(),
+                        )
+                    });
+                self.runtime.net.send(Command::LoadNewerMessages {
+                    ticket: ticket.clone(),
+                    since,
+                    last_id,
+                });
                 if let Some(edge) = cached_edge
-                    && let Some(Ok(page)) = self.runtime.cache.load_newer_channel_page_async(
-                        &self.runtime.server_key, &channel_id, edge,
-                    ).and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok())
+                    && let Some(Ok(page)) = self
+                        .runtime
+                        .cache
+                        .load_newer_channel_page_async(&self.runtime.server_key, &channel_id, edge)
+                        .and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok())
                 {
                     self.runtime.store.preview_cached_history(&ticket, page);
                 }
@@ -1262,16 +1297,29 @@ impl Client {
                     return Ok(());
                 };
                 let ticket = store.history_ticket(&id).ok_or("History request expired")?;
-                let cached_edge = store.messages_in(&id).min_by(|a, b|
-                    a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
-                    .map(|m| (m.at.timestamp_millis(), m.at.timestamp_subsec_nanos(), m.id.clone()));
+                let cached_edge = store
+                    .messages_in(&id)
+                    .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                    .map(|m| {
+                        (
+                            m.at.timestamp_millis(),
+                            m.at.timestamp_subsec_nanos(),
+                            m.id.clone(),
+                        )
+                    });
                 // Start HTTP before the local read; cache and network work overlap. Their
                 // independent cursors prevent cached display from skipping server validation.
-                self.runtime.net.send(Command::LoadOlderMessages { ticket: ticket.clone(), since, last_id });
+                self.runtime.net.send(Command::LoadOlderMessages {
+                    ticket: ticket.clone(),
+                    since,
+                    last_id,
+                });
                 if let Some(edge) = cached_edge
-                    && let Some(Ok(page)) = self.runtime.cache.load_older_context_page_async(
-                        &self.runtime.server_key, &id, edge,
-                    ).and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok())
+                    && let Some(Ok(page)) = self
+                        .runtime
+                        .cache
+                        .load_older_context_page_async(&self.runtime.server_key, &id, edge)
+                        .and_then(|rx| rx.recv_timeout(Duration::from_secs(2)).ok())
                 {
                     self.runtime.store.preview_cached_history(&ticket, page);
                 }
@@ -1369,7 +1417,6 @@ impl Client {
                 epoch,
             }),
             Action::ClearError => {
-                self.calls.clear_error();
                 store.error = None;
                 return Ok(());
             }
@@ -1385,7 +1432,6 @@ impl Client {
             &self.runtime.url,
             &self.runtime.server_key,
         );
-        value["call"] = serde_json::to_value(self.calls.projection(&self.runtime.store)).unwrap_or_default();
         value["pushRegistered"] = json!(
             self.push_registration
                 .as_ref()
@@ -1394,7 +1440,11 @@ impl Client {
         value["searchQuery"] = json!(self.search_query);
         value["navigationSerial"] = json!(self.navigation_serial);
         value["navigationTarget"] = json!(self.navigation_target);
-        value["navigationOutcome"] = json!(self.navigation_outcome.map(NavigationOutcome::as_str).unwrap_or(""));
+        value["navigationOutcome"] = json!(
+            self.navigation_outcome
+                .map(NavigationOutcome::as_str)
+                .unwrap_or("")
+        );
         value["reading"]["seekingCatchUp"] = json!(self.catching_up.is_some());
         if self.catching_up.is_some() {
             value["reading"]["syncPending"] = json!(true);
@@ -1405,7 +1455,6 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.calls.stop(&mut self.runtime, true);
         self.flush_store();
         self.runtime.cache.flush();
     }

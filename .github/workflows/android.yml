@@ -51,17 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370"
-          mkdir -p /tmp/papo-gst
-          touch /tmp/papo-gst/libgstreamer_android.so
-          for dep in GSTREAMER_1_0 GSTREAMER_APP_1_0 GSTREAMER_VIDEO_1_0 \
-                     GSTREAMER_AUDIO_1_0 GSTREAMER_BASE_1_0 \
-                     GSTREAMER_WEBRTC_1_0 GSTREAMER_SDP_1_0 GSTREAMER_RTP_1_0 \
-                     GLIB_2_0 GOBJECT_2_0 GIO_2_0; do
-            export "SYSTEM_DEPS_${dep}_NO_PKG_CONFIG=1"
-            export "SYSTEM_DEPS_${dep}_LIB=gstreamer_android"
-            export "SYSTEM_DEPS_${dep}_SEARCH_NATIVE=/tmp/papo-gst"
-          done
-          cargo ndk -t arm64-v8a --platform 31 clippy --locked -p papo-android --features calls --lib -- -D warnings
+          cargo ndk -t arm64-v8a --platform 31 clippy --locked -p papo-android --lib -- -D warnings
 
   android-compose:
     runs-on: ubuntu-latest
@@ -88,7 +78,6 @@ jobs:
           cargo install cargo-ndk --locked
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.16248370" "platforms;android-37.0" "platforms;android-37.2"
-      - uses: ./.github/actions/setup-call-gstreamer
       - name: Build native Compose APK and run lint
         env:
           PAPO_COMPOSE_FIREBASE_APP_ID: ${{ secrets.PAPO_COMPOSE_FIREBASE_APP_ID }}

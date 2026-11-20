@@ -5,7 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 
-/** The connection actor belongs to the process; an Activity disappearing must not end a call. */
+/** The connection actor belongs to the process; it survives Activity recreation. */
 class PapoApplication : Application(), ViewModelStoreOwner {
     override val viewModelStore = ViewModelStore()
     internal val updates: AppUpdates by lazy { AppUpdates(this) }
@@ -17,6 +17,5 @@ class PapoApplication : Application(), ViewModelStoreOwner {
     override fun onCreate() {
         super.onCreate()
         AppLanguage.update(this)
-        AndroidCallRuntime.initialize(this)
     }
 }

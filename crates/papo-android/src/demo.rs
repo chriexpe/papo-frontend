@@ -144,8 +144,14 @@ impl Demo {
                 )],
             ),
             ("music", vec![("ana", "trilha sonora do dia? 🎧", None)]),
-            ("voice-lounge", vec![("ana", "Podemos conversar por aqui também 👋", None)]),
-            ("voice-studio", vec![("bruno", "Ideias para a próxima versão?", None)]),
+            (
+                "voice-lounge",
+                vec![("ana", "Podemos conversar por aqui também 👋", None)],
+            ),
+            (
+                "voice-studio",
+                vec![("bruno", "Ideias para a próxima versão?", None)],
+            ),
             ("dm-ana", vec![("ana", "oi! bem-vindo ao Papo 👋", None)]),
         ] {
             let ticket = store.mark_loading(channel);
@@ -370,7 +376,10 @@ impl Demo {
                     c.notification_settings = setting;
                 }
             }
-            Action::MarkChannelRead { channel_id, owner_user_id } => {
+            Action::MarkChannelRead {
+                channel_id,
+                owner_user_id,
+            } => {
                 if owner_user_id != self.store.me {
                     return Err("Account changed".into());
                 }
@@ -380,7 +389,8 @@ impl Demo {
                         item.read = true;
                     }
                 }
-                self.store.apply(Update::Notifications(self.notifications.clone()));
+                self.store
+                    .apply(Update::Notifications(self.notifications.clone()));
             }
             Action::MarkServerRead => {
                 self.store.mark_all_read();

@@ -147,27 +147,6 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     internal fun reading(server: ServerState) = publications.reading(server)
 
-    internal val voiceCalls =
-        VoiceCallController(
-            viewModelScope,
-            request = { route, action, success, failure ->
-                val target = route.server(state.value.servers)
-                if (target == null) failure()
-                else
-                    command(
-                        action,
-                        target.url,
-                        onFailure = {
-                            if (action is Action.JoinVoice) AndroidCallRuntime.failedJoin()
-                            failure()
-                        },
-                        onSuccess = success,
-                    )
-            },
-            granted = AndroidCallRuntime::granted,
-            prepare = AndroidCallRuntime::prepare,
-            routeAudio = AndroidCallRuntime::routeAudio,
-        )
     internal val accountAppearance =
         AccountAppearanceCoordinator(
             application,
@@ -228,7 +207,6 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
 
     init {
-        AndroidCallRuntime.attach(this)
         MessageAlerts.start(application)
         viewModelScope.launch(dispatcher) {
             MessageAlerts.changes.collect { signals.trySend(Unit) }
@@ -297,15 +275,13 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun publish(error: String = state.value.error, opening: Boolean = false): Boolean {
-        val changed =
-            publications.publish(PapoState(snapshots.values.toList(), activeUrl, error, opening))
-        if (!changed) return false
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
-            voiceCalls.synchronize(state.value.servers)
-            AndroidCallRuntime.sync(state.value.servers, voiceCalls.state.value)
+    private fun publish(error: String = state.value.error, opening: Boolean = false): Boolean =
+        publications.publish(PapoState(snapshots.values.toList(), activeUrl, error, opening))
+
+    internal fun reportLocalNetworkPermissionDenied() {
+        viewModelScope.launch(dispatcher) {
+            publish(error = ui(R.string.local_network_permission_error))
         }
-        return true
     }
 
     private fun open(input: String, activate: Boolean = true): Boolean =
@@ -324,7 +300,6 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                     CoreWake { signals.trySend(Unit) },
                     MessageAlerts.listener,
                 )
-            handle.setCallHost(AndroidCallRuntime.host { signals.trySend(Unit) })
             val server = handle.poll()
             mediaCache.allowServer(server.url)
             attachments.allowServer(server.url)
@@ -872,23 +847,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                publish(
-                    error =
-                        if (
-                            action is Action.JoinVoice ||
-                                action is Action.LeaveVoice ||
-                                action is Action.MuteVoice ||
-                                action is Action.CameraVoice ||
-                                action is Action.CameraFacing ||
-                                action is Action.VoicePlayback
-                        )
-                            callIssueText(
-                                (e as? io.github.chriexpe.papo.core.CoreException.Operation)
-                                    ?.details
-                                    .orEmpty()
-                            )
-                        else e.message ?: ui(R.string.could_not_complete_action)
-                )
+                publish(error = e.message ?: ui(R.string.could_not_complete_action))
                 launch(kotlinx.coroutines.Dispatchers.Main) { onFailure() }
             }
         }
@@ -1524,12 +1483,6 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearError() {
-        voiceCalls.clearError()
-        voiceCalls.state.value.session
-            ?.route
-            ?.serverUrl
-            ?.takeIf { it != state.value.activeUrl }
-            ?.let { command(Action.ClearError, it) }
         publications.clearError()
         command(Action.ClearError)
     }
@@ -1661,31 +1614,6 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             val valid = mentions.filter { it.valid(text) }.map { it.native(text) }
             (handles[server.url] ?: error(ui(R.string.server_is_closed))).encodeMessage(text, valid)
         }
-
-    internal suspend fun callVideoFrame(
-        session: CallSession,
-        user: String,
-        kind: String,
-        after: ULong,
-    ): io.github.chriexpe.papo.core.CallVideoFrame? {
-        val client =
-            withContext(dispatcher) {
-                if (snapshots[session.route.serverUrl]?.me != session.route.ownerId) null
-                else handles[session.route.serverUrl]
-            } ?: return null
-        return withContext(kotlinx.coroutines.Dispatchers.IO) {
-            runCatching {
-                client.callVideoFrame(
-                    session.route.ownerId,
-                    session.sessionId.toULong(),
-                    user,
-                    kind,
-                    after,
-                )
-            }
-                .getOrNull()
-        }
-    }
 
     override fun onCleared() {
         if (callbackRegistered) connectivity.unregisterNetworkCallback(networkCallback)

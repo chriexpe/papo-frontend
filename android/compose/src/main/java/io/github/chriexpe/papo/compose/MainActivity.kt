@@ -3,10 +3,7 @@
 package io.github.chriexpe.papo.compose
 
 import android.app.Activity
-import android.app.PictureInPictureParams
-import android.content.res.Configuration
 import android.os.Bundle
-import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -27,19 +24,14 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import dev.chrisbanes.haze.HazeState
 import io.github.chriexpe.papo.core.Action
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val model: PapoViewModel by lazy { (application as PapoApplication).model }
-
-    private var pictureInPicture by mutableStateOf(false)
 
     override fun attachBaseContext(base: android.content.Context) {
         super.attachBaseContext(AppLanguage.context(base))
@@ -51,14 +43,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         if (savedInstanceState == null) MessageAlerts.target(intent)?.let(model::offerNotification)
         consumeRecovery(intent)
-        consumeCall(intent)
-        lifecycleScope.launch {
-            combine(model.state, model.voiceCalls.state) { state, calls -> state.servers to calls }
-                .collect { (servers, calls) -> updateCallPictureInPicture(servers, calls) }
-        }
-        setContent {
-            if (pictureInPicture) CallPictureInPicture(model) else PapoApp(model)
-        }
+        setContent { PapoApp(model) }
     }
 
     override fun onStart() {
@@ -80,53 +65,6 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         MessageAlerts.target(intent)?.let(model::offerNotification)
         consumeRecovery(intent)
-        consumeCall(intent)
-    }
-
-    private fun consumeCall(intent: android.content.Intent?) {
-        if (intent?.getBooleanExtra("openCall", false) == true) {
-            intent.removeExtra("openCall")
-            model.voiceCalls.reopen()
-        }
-    }
-
-    private fun updateCallPictureInPicture(servers: List<ServerState>, calls: VoiceCallUiState) {
-        if (
-            !packageManager.hasSystemFeature(
-                android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE
-            )
-        )
-            return
-        val session = calls.session?.takeUnless { it.demo }
-        volumeControlStream =
-            if (session != null) android.media.AudioManager.STREAM_VOICE_CALL
-            else android.media.AudioManager.USE_DEFAULT_STREAM_TYPE
-        val server = session?.route?.server(servers)
-        val video =
-            session != null &&
-                server != null &&
-                callParticipants(server, session.route.channelId, session).any {
-                    it.camera || it.screen
-                }
-        val params =
-            PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
-                .setAutoEnterEnabled(video)
-                .setSeamlessResizeEnabled(true)
-                .setActions(
-                    if (session != null) callPictureInPictureActions(this, session) else emptyList()
-                )
-                .build()
-        setPictureInPictureParams(params)
-        if (pictureInPicture && session == null) finish()
-    }
-
-    override fun onPictureInPictureModeChanged(
-        isInPictureInPictureMode: Boolean,
-        newConfig: Configuration,
-    ) {
-        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        pictureInPicture = isInPictureInPictureMode
     }
 
     private fun consumeRecovery(intent: android.content.Intent?) {
@@ -150,9 +88,6 @@ fun PapoApp(
     val localeConfiguration = androidx.compose.ui.platform.LocalConfiguration.current
     LaunchedEffect(localeConfiguration) { AppLanguage.update(context) }
     val state by model.state.collectAsStateWithLifecycle()
-    val callUi by model.voiceCalls.state.collectAsStateWithLifecycle()
-    val calls = VoiceCallContext(callUi, model.voiceCalls, state.servers, model)
-    CallPermissions(model.voiceCalls, callUi.permission)
     LocalNetworkPermission(model, state.servers)
     val preferences = LocalContext.current.getSharedPreferences("compose-appearance", 0)
     val appearance = remember(preferences) { ClientPreferences(preferences) }
@@ -316,13 +251,7 @@ fun PapoApp(
                 val leaveConversation: () -> Unit = { inConversation = false }
                 SideEffect {
                     model.visibleConversation(
-                        if (
-                            showingConversation &&
-                                profileId == null &&
-                                externalProfile == null &&
-                                callUi.screen == null &&
-                                callUi.participant == null
-                        )
+                        if (showingConversation && profileId == null && externalProfile == null)
                             server?.url.orEmpty()
                         else ""
                     )
@@ -375,7 +304,6 @@ fun PapoApp(
                 }
 
                 CompositionLocalProvider(
-                    LocalVoiceCall provides calls,
                     LocalProfileContext provides server?.let { ProfileContext(it, model) },
                     LocalOpenProfile provides openProfile,
                     LocalOpenExternalProfile provides
@@ -384,10 +312,7 @@ fun PapoApp(
                             externalProfile = author
                         },
                     LocalMediaOverlayBlocking provides
-                        (profileId != null ||
-                            externalProfile != null ||
-                            callUi.screen != null ||
-                            callUi.participant != null),
+                        (profileId != null || externalProfile != null),
                 ) {
                     // Child dialogs, sheets and the IME consume Back first. Keep the
                     // activity alive until navigation reaches the conversation list.
@@ -462,20 +387,11 @@ fun PapoApp(
                                                             tab = "Settings"
                                                         },
                                                         onOpen = { id ->
-                                                            if (
-                                                                server.channels.any {
-                                                                    it.id == id &&
-                                                                        it.kind == "voice"
-                                                                }
+                                                            model.navigate(
+                                                                server,
+                                                                Action.SelectChannel(id),
                                                             ) {
-                                                                model.voiceCalls.open(server, id)
-                                                            } else {
-                                                                model.navigate(
-                                                                    server,
-                                                                    Action.SelectChannel(id),
-                                                                ) {
-                                                                    enterConversation(server)
-                                                                }
+                                                                enterConversation(server)
                                                             }
                                                         },
                                                         onProfile = openProfile,
@@ -588,25 +504,13 @@ fun PapoApp(
                                 }
                             }
                         }
-                        if (callUi.screen != null) {
-                            Surface(Modifier.fillMaxSize()) {
-                                VoiceCallScreen(calls) { target, id ->
-                                    model.navigate(target, Action.SelectChannel(id)) {
-                                        enterConversation(target)
-                                        model.voiceCalls.minimize()
-                                    }
-                                }
-                            }
-                        }
                         val error =
-                            if (callUi.error.isNotEmpty()) callIssueText(callUi.error)
-                            else if (state.servers.isEmpty()) ""
+                            if (state.servers.isEmpty()) ""
                             else state.error.ifBlank { server?.error.orEmpty() }
                         if (error.isNotBlank() && server?.screen == "chat") {
                             FeedbackPill(
                                 error,
                                 {
-                                    model.voiceCalls.clearError()
                                     model.clearError()
                                 },
                                 Modifier.align(Alignment.TopCenter)
@@ -616,17 +520,6 @@ fun PapoApp(
                         }
                     }
                     UpdateSheet(updates)
-                    CallSwitchConfirmation(calls)
-                    CallParticipantSheet(
-                        calls,
-                        onProfile = openScopedProfile,
-                        onMessage = { target, id ->
-                            model.navigate(target, Action.OpenDm(id)) {
-                                enterConversation(target)
-                                model.voiceCalls.minimize()
-                            }
-                        },
-                    )
                     if (server?.screen == "chat")
                         externalProfile?.let { author ->
                             ExternalProfileSheet(server, author) { externalProfile = null }
@@ -645,7 +538,6 @@ fun PapoApp(
                                         profileId = null
                                         model.navigate(target, Action.OpenDm(user)) {
                                             enterConversation(target)
-                                            model.voiceCalls.minimize()
                                         }
                                     },
                                 )

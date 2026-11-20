@@ -129,7 +129,6 @@ internal fun ServerList(
     var forgetting by remember { mutableStateOf<ServerState?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
-    val callActive = LocalVoiceCall.current?.active == true
     val scope = rememberCoroutineScope()
     forgetting?.let { target ->
         AlertDialog(
@@ -182,7 +181,6 @@ internal fun ServerList(
             ),
         verticalArrangement = Arrangement.spacedBy(LocalUiDimensions.current.contentGap),
     ) {
-        if (callActive) item { CallBrowsingHeader() }
         item {
             Row(
                 Modifier.fillMaxWidth().testTag("global-actions"),
