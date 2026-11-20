@@ -19,6 +19,18 @@ pub(crate) const ADD_TILE_OUTLINE_PT: f32 = 1.0;
 pub(crate) const ADD_TILE_DASH_PT: (f32, f32) = (4.0, 3.0);
 /// The + inside its tile, in points square.
 pub(crate) const ADD_TILE_PLUS_PT: f32 = 18.0;
+/// The short bar beside an unread server's tile: its width and height, in
+/// points.
+pub(crate) const RAIL_UNREAD_BAR_PT: (f32, f32) = (4.0, 8.0);
+/// A mention badge's height, in points: a circle this wide for one or two
+/// characters, a pill for more.
+pub(crate) const MENTION_PILL_PT: f32 = 18.0;
+/// The ring in the rail's colour around a tile's mention pill, in points.
+pub(crate) const MENTION_PILL_RING_PT: f32 = 2.0;
+/// How far a tile's mention pill sits past the tile's corner, in points.
+pub(crate) const MENTION_PILL_OVERHANG_PT: f32 = 4.0;
+/// The dot at the end of an unread channel's row, in points square.
+pub(crate) const UNREAD_DOT_PT: f32 = 6.0;
 /// The channel list's width, in points.
 pub(crate) const SIDEBAR_WIDTH_PT: f32 = 232.0;
 /// A channel row's height, in points.

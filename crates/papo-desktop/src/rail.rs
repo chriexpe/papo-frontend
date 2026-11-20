@@ -5,16 +5,19 @@
 //! Owns the rail's look and what the keyboard, the pointer and assistive
 //! technology reach on it: arrows move between tiles, Alt+↑ and Alt+↓ move
 //! the focused server, a drag moves it too, and the menu key or a secondary
-//! click opens its menu. Badges are D1c's; a tile leaves room for one.
+//! click opens its menu. An unread server gets a short bar where the
+//! selected bar goes, and mentions a red badge on the tile's corner.
 
 use std::collections::HashMap;
 
 use papo_sdk::ServerId;
 use rune::{Drag, El, Image, Key, KeyEvent, ScrollSpec, col, el, icon, row, text};
 
+use crate::badges::mention_pill;
 use crate::design::{
-    ADD_TILE_DASH_PT, ADD_TILE_OUTLINE_PT, ADD_TILE_PLUS_PT, FOCUS_RING_PT, PILL_OUTLINE_PT,
-    Palette, RADIUS_ICON_PT, RADIUS_INDICATOR_PT, RAIL_INDICATOR_PT, RAIL_TILE_PT, RAIL_WIDTH_PT,
+    ADD_TILE_DASH_PT, ADD_TILE_OUTLINE_PT, ADD_TILE_PLUS_PT, FOCUS_RING_PT,
+    MENTION_PILL_OVERHANG_PT, MENTION_PILL_RING_PT, PILL_OUTLINE_PT, Palette, RADIUS_ICON_PT,
+    RADIUS_INDICATOR_PT, RAIL_INDICATOR_PT, RAIL_TILE_PT, RAIL_UNREAD_BAR_PT, RAIL_WIDTH_PT,
     SPACE_MD_PT, TYPE_TITLE,
 };
 use crate::icons::PLUS;
@@ -48,6 +51,8 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, palette: 
         .w_full()
         .items_center()
         .gap(SPACE_MD_PT)
+        // Room for the last tile's badge, which overhangs its corner.
+        .pb(MENTION_PILL_OVERHANG_PT + MENTION_PILL_RING_PT)
         .role("tablist")
         .label(strings::rail_label())
         .focus_group()
@@ -105,7 +110,7 @@ impl Tile<'_> {
         let face = face
             .key(tile_key(id))
             .role("tab")
-            .label(self.server.name.as_str())
+            .label(self.server.badge.label(&self.server.name))
             .description(strings::rail_move_hint())
             .focusable(true)
             .focus_selected(self.selected)
@@ -116,6 +121,20 @@ impl Tile<'_> {
             .on_secondary_press(move |shell: &mut Shell, _press, _tx| {
                 shell.open_server_menu_beside(id);
             });
+        // Pinned inside the tile's border, so a letter tile's 1 pt outline
+        // is added back: every badge overhangs the tile's corner alike.
+        let badge_overhang = if self.icon.is_some() {
+            MENTION_PILL_OVERHANG_PT
+        } else {
+            MENTION_PILL_OVERHANG_PT + PILL_OUTLINE_PT
+        };
+        let face = match self.server.badge.mentions() {
+            Some(count) => face.child(
+                el().pin(None, None, Some(-badge_overhang), Some(-badge_overhang))
+                    .child(mention_pill(count, Some(palette.surface_rail), palette)),
+            ),
+            None => face,
+        };
         // Keyed by server, so a reorder moves the whole place and a held
         // press on its tile survives the preview.
         let mut place = row()
@@ -124,8 +143,15 @@ impl Tile<'_> {
             .h(RAIL_TILE_PT)
             .center()
             .offset(0.0, self.offset_pt);
-        if self.selected {
-            let (width, height) = RAIL_INDICATOR_PT;
+        // The bar beside the tile: tall when selected, short when unread.
+        let bar = if self.selected {
+            Some(RAIL_INDICATOR_PT)
+        } else if self.server.badge.is_unread() {
+            Some(RAIL_UNREAD_BAR_PT)
+        } else {
+            None
+        };
+        if let Some((width, height)) = bar {
             place = place.child(
                 el().absolute(0.0, (RAIL_TILE_PT - height) / 2.0)
                     .size(width, height)

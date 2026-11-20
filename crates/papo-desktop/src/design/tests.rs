@@ -80,3 +80,17 @@ fn oled_content_is_true_black() {
     let content = Palette::new(Theme::Oled).surface_content;
     assert_eq!((content.r, content.g, content.b), (0.0, 0.0, 0.0));
 }
+
+#[test]
+fn a_mention_count_keeps_its_contrast() {
+    // White on the mock's red, as chosen: under the 4.5:1 text floor
+    // (3.42:1 dark, 4.36:1 light), so it is held to 3:1 instead.
+    for theme in THEMES {
+        let palette = Palette::new(theme);
+        let ratio = contrast(palette.mention_on, palette.mention);
+        assert!(
+            ratio >= 3.0,
+            "{theme:?} count on the mention badge: {ratio:.2}:1"
+        );
+    }
+}

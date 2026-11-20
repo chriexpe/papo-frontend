@@ -22,6 +22,10 @@ path = "src/main.rs"
 rune = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
 rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
 papo-sdk = { path = "../sdk/core" }
+# The rail's per-server badge aggregates (ServerListService::subscribe_badges).
+papo-sdk-ui = { path = "../sdk/ui" }
+# Reads that subscription's stream; the version the SDK locks.
+futures-util = "0.3"
 # Drives the SDK client's own runtime from the bridge thread; the locked version.
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 # The OS keyring: the Secret Service on a Linux host, the Secret portal inside

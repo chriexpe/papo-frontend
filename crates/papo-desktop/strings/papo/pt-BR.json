@@ -63,5 +63,12 @@
   "remove.body": "Você vai sair da conta neste dispositivo.",
   "remove.cancel": "Cancelar",
   "remove.confirm": "Remover",
-  "account.handle": "@{{username}}"
+  "account.handle": "@{{username}}",
+  "badge.unread": "mensagens não lidas",
+  "badge.mentions.one": "{{count}} menção",
+  "badge.mentions.other": "{{count}} menções",
+  "badge.mentions_at_least.one": "pelo menos {{count}} menção",
+  "badge.mentions_at_least.other": "pelo menos {{count}} menções",
+  "badge.count_more": "{{count}}+",
+  "badge.labelled": "{{name}}, {{badge}}"
 }

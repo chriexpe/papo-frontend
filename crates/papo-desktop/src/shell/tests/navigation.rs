@@ -4,6 +4,7 @@
 use rune::accesskit::Action;
 
 use super::*;
+use crate::badges::Badge;
 use crate::rail::{ADD_KEY, tile_key};
 use crate::server_list::{AccountEntry, ChannelEntry, ServerEntry, ServerList};
 
@@ -29,12 +30,15 @@ fn entry(name: &str, channels: &[&str]) -> ServerEntry {
             .map(|channel| ChannelEntry {
                 id: format!("{name}-{channel}"),
                 name: (*channel).to_owned(),
+                badge: Badge::default(),
             })
             .collect(),
         voice_channels: vec![ChannelEntry {
             id: format!("{name}-hangout"),
             name: "hangout".to_owned(),
+            badge: Badge::default(),
         }],
+        badge: Badge::default(),
     }
 }
 
@@ -276,4 +280,97 @@ fn return_in_the_removal_confirmation_keeps_the_server() {
         Some("server-options"),
         "back to its opener"
     );
+}
+
+/// The app with Lumen carrying 120 mentions, its "media" channel 3 or more,
+/// its "general" channel unread, and Mirante unknown.
+fn with_badges() -> Runtime<Shell> {
+    use papo_sdk::UnreadCount;
+    let mut lumen = entry("Lumen", &["general", "media", "random"]);
+    lumen.badge = Badge::new(Some(true), UnreadCount::Exact(120));
+    lumen.text_channels[0].badge = Badge::new(Some(true), UnreadCount::Exact(0));
+    lumen.text_channels[1].badge = Badge::new(None, UnreadCount::AtLeast(3));
+    let mut mirante = entry("Mirante", &["avisos"]);
+    mirante.badge = Badge::new(None, UnreadCount::AtLeast(0));
+    let mut rt = app();
+    rt.update(|shell, _tx| {
+        shell.servers_changed(ServerList {
+            servers: vec![lumen, mirante],
+        });
+    });
+    rt.frame(FRAME_S);
+    rt
+}
+
+#[test]
+fn badges_are_in_the_names_assistive_technology_reads() {
+    let rt = with_badges();
+    let tree = tree(&rt);
+    for name in [
+        "\"Lumen, 120 mentions\"",
+        "\"general, unread messages\"",
+        "\"media, at least 3 mentions\"",
+        "\"random\"",
+        "\"Mirante\"",
+    ] {
+        assert!(tree.contains(name), "{name}: {tree}");
+    }
+}
+
+#[test]
+fn pills_show_only_the_numbers_the_sdk_gave() {
+    let rt = with_badges();
+    let texts: Vec<String> = rt
+        .elements()
+        .into_iter()
+        .filter_map(|element| element.text)
+        .collect();
+    assert!(texts.iter().any(|text| text == "99+"), "{texts:?}");
+    assert!(texts.iter().any(|text| text == "3+"), "{texts:?}");
+    assert!(
+        !texts.iter().any(|text| text == "120" || text == "3"),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn a_settled_app_with_badges_asks_for_no_more_frames() {
+    let mut rt = with_badges();
+    assert!(settles(&mut rt), "badges keep the window drawing");
+}
+
+fn width(rt: &Runtime<Shell>, text: &str) -> f32 {
+    rt.elements()
+        .into_iter()
+        .find(|element| element.text.as_deref() == Some(text))
+        .map(|element| element.rect[2])
+        .unwrap()
+}
+
+#[test]
+fn the_selected_bar_wins_over_the_unread_bar() {
+    let rt = with_badges();
+    // Lumen is selected and unread: one bar beside it, the tall one.
+    let bars: Vec<f32> = rt
+        .elements()
+        .into_iter()
+        .filter(|element| {
+            element.path.contains("rail-place-") && (element.rect[2] - 4.0).abs() < 0.01
+        })
+        .map(|element| element.rect[3])
+        .collect();
+    assert_eq!(bars, [24.0], "{bars:?}");
+}
+
+#[test]
+fn short_counts_sit_in_a_circle_and_long_ones_in_a_pill() {
+    let rt = with_badges();
+    let circle = rt
+        .elements()
+        .into_iter()
+        .find(|element| element.text.as_deref() == Some("3+"))
+        .unwrap();
+    assert!(width(&rt, "3+") <= 18.0, "the text fits the circle");
+    assert!(circle.rect[3] <= 18.0);
+    assert!(width(&rt, "99+") > 0.0);
 }
