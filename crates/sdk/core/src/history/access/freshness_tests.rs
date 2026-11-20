@@ -4,10 +4,94 @@
 
 use super::{
     Admission, Refetch, Transition,
-    tests::{Evidence, Harness, RESTRICTED, snapshot},
+    tests::{Evidence, Harness, OPEN, RESTRICTED, poll_once, snapshot},
 };
 use crate::{HistoryClosedReason, HistoryError};
 use std::sync::Arc;
+
+#[test]
+fn backend_denial_filters_stale_reading_published_in_the_next_generation() {
+    let directory = tempfile::tempdir().unwrap();
+    let harness = Harness::open(&directory);
+    let generation = harness.generation;
+    harness
+        .client
+        .block_on(async {
+            let session = &harness.session;
+            let reading = &session.reading;
+            harness
+                .accept(&snapshot(generation, Evidence::Allowed))
+                .await
+                .unwrap();
+            reading
+                .publish(
+                    session,
+                    crate::ReadingSnapshot {
+                        generation,
+                        version: 0,
+                        channels: [
+                            (RESTRICTED, crate::ReadState::default()),
+                            (OPEN, crate::ReadState::default()),
+                        ]
+                        .into(),
+                    },
+                )
+                .await
+                .unwrap();
+            let mut stale = (**reading.image.borrow()).clone();
+            assert!(stale.channels.contains_key(&RESTRICTED));
+            assert!(stale.channels.contains_key(&OPEN));
+
+            // Hold the cache writer so the denial seals admission but cannot publish
+            // reading cleanup while the stale image moves to the next generation.
+            let cache = Arc::clone(&harness.connection.cache);
+            let (entered, waiting) = tokio::sync::oneshot::channel();
+            let (release, blocked) = std::sync::mpsc::channel::<()>();
+            let blocked_writer = tokio::spawn(async move {
+                cache
+                    .history_transaction(generation, move |_| {
+                        entered.send(()).unwrap();
+                        let _ = blocked.recv();
+                        Ok(())
+                    })
+                    .await
+            });
+            waiting.await.unwrap();
+            let mut denial = Box::pin(super::deny(
+                session,
+                &harness.connection.client,
+                &harness.connection.cache,
+                RESTRICTED,
+                None,
+                HistoryClosedReason::Forbidden,
+                generation,
+            ));
+            assert!(poll_once(&mut denial).is_pending());
+            assert_eq!(
+                harness.admission(RESTRICTED).await,
+                Some(Admission::Denied {
+                    reason: HistoryClosedReason::Forbidden,
+                    durable: false,
+                })
+            );
+            assert!(reading.image.borrow().channels.contains_key(&RESTRICTED));
+
+            stale.generation = session.epochs.advance().unwrap().generation;
+            let next_generation = stale.generation;
+            reading.publish(session, stale).await.unwrap();
+            {
+                let published = reading.image.borrow();
+                assert_eq!(published.generation, next_generation);
+                assert!(!published.channels.contains_key(&RESTRICTED));
+                assert!(published.channels.contains_key(&OPEN));
+            }
+            release.send(()).unwrap();
+            blocked_writer.await.unwrap().unwrap();
+            assert!(matches!(denial.await, Err(crate::ClientError::Superseded)));
+        })
+        .unwrap();
+    harness.finish();
+}
 
 #[test]
 fn backend_denial_is_cleared_only_by_a_complete_refetch_that_started_after_it() {

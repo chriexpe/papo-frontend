@@ -11,6 +11,8 @@ mod commit;
 #[path = "resource_admission_cases/defects.rs"]
 mod defects;
 mod fixture;
+#[path = "resource_admission_cases/held_refusal.rs"]
+mod held_refusal;
 #[path = "resource_admission_cases/rejection.rs"]
 mod rejection;
 #[path = "resource_admission_cases/writer_recovery.rs"]

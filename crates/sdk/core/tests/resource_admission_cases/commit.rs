@@ -11,7 +11,7 @@ use papo_sdk::{
 use serde_json::json;
 use std::sync::Arc;
 
-async fn refresh(account: &Account<'_>, scope: MetadataScope) -> Result<RefreshStatus> {
+pub(super) async fn refresh(account: &Account<'_>, scope: MetadataScope) -> Result<RefreshStatus> {
     Ok(account
         .session
         .operations()
@@ -20,7 +20,7 @@ async fn refresh(account: &Account<'_>, scope: MetadataScope) -> Result<RefreshS
         .value)
 }
 
-async fn set_id(account: &Account<'_>) -> Result<i64> {
+pub(super) async fn set_id(account: &Account<'_>) -> Result<i64> {
     let path = account.cache.clone();
     let channel = Uuid::parse_str(CHANNEL)?;
     Ok(tokio::task::spawn_blocking(move || {
