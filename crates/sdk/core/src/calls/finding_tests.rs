@@ -461,6 +461,8 @@ async fn local_destination_bind_and_unbind_increment_slot_plan_revision_monotoni
                     user_id: alice.to_string(),
                     kind: "video".into(),
                     first_seq: None,
+                    rtp_route_id: Some(1),
+                    rtp_route_ext_id: Some(14),
                 }],
             },
         ))),

@@ -9,7 +9,7 @@ use papo_api::gateway::{VoiceAudioRoutesEvent, VoiceVideoRoutesEvent};
 use std::collections::BTreeMap;
 
 use super::{
-    media_port::AudioRoute,
+    media_port::{AudioRoute, VideoRouteFence},
     model::{RoomMember, RoomsSnapshot, SpeakingState, VideoKind, VoiceDeviceState, VoiceRoom},
     reducer::{ActivePeerRef, ReducedVideoRoute, VoiceReducer},
 };
@@ -90,12 +90,22 @@ impl VoiceReducer {
             if !members.is_some_and(|m| m.contains_key(&participant)) {
                 continue;
             }
+            let fence = match (route.rtp_route_ext_id, route.rtp_route_id) {
+                (Some(extension_id @ 1..=14), Some(assignment_id)) if assignment_id != 0 => {
+                    Some(VideoRouteFence {
+                        extension_id,
+                        assignment_id,
+                    })
+                }
+                _ => None,
+            };
             self.video_routes.insert(
                 route.track_id.clone(),
                 ReducedVideoRoute {
                     track_id: route.track_id.clone(),
                     participant,
                     kind,
+                    fence,
                     first_seq: route.first_seq,
                 },
             );

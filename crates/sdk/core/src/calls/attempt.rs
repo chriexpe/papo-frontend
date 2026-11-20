@@ -164,10 +164,11 @@ impl ActiveAttempt {
                 participant: route.participant,
                 kind: route.kind,
                 first_seq: route.first_seq,
-                destination_id: self
-                    .destinations
-                    .get(&(route.participant, route.kind))
-                    .map(|dest| dest.id()),
+                destination_id: route.fence.and_then(|_| {
+                    self.destinations
+                        .get(&(route.participant, route.kind))
+                        .map(|dest| dest.id())
+                }),
             })
             .collect();
         CallSnapshot {
@@ -206,11 +207,12 @@ impl ActiveAttempt {
                 track_id: route.track_id.clone(),
                 participant: route.participant,
                 kind: route.kind,
-                first_seq: route.first_seq,
-                destination: self
-                    .destinations
-                    .get(&(route.participant, route.kind))
-                    .cloned(),
+                fence: route.fence,
+                destination: route.fence.and_then(|_| {
+                    self.destinations
+                        .get(&(route.participant, route.kind))
+                        .cloned()
+                }),
             })
             .collect();
         (self.video_slot_plan_revision, slots)

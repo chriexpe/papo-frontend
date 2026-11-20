@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,9 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media/oggreader"
 )
 
+const videoRouteURI = "urn:papo:rtp-hdrext:video-route-v1"
+const videoRouteExtensionID = 14
+
 const red = "00000000-0000-4000-8000-000000000101"
 const green = "00000000-0000-4000-8000-000000000102"
 const blue = "00000000-0000-4000-8000-000000000103"
@@ -27,25 +31,27 @@ type publisher struct {
 }
 
 type videoSlot struct {
-	track     *webrtc.TrackLocalStaticRTP
-	publisher publisher
-	first     *uint16
-	next      uint16
-	written   bool
-	pending   *rtp.Packet
-	frame     int
-	stamp     uint32
-	payloader codecs.VP8Payloader
+	track      *webrtc.TrackLocalStaticRTP
+	publisher  publisher
+	assignment uint64
+	first      *uint16
+	next       uint16
+	written    bool
+	pending    *rtp.Packet
+	frame      int
+	stamp      uint32
+	payloader  codecs.VP8Payloader
 }
 
 type roomMedia struct {
-	mu        sync.Mutex
-	revision  uint64
-	audioTurn uint64
-	swapAudio bool
-	rejected  bool
-	video     [6]videoSlot
-	audio     [8]*webrtc.TrackLocalStaticSample
+	mu         sync.Mutex
+	revision   uint64
+	assignment uint64
+	audioTurn  uint64
+	swapAudio  bool
+	rejected   bool
+	video      [6]videoSlot
+	audio      [8]*webrtc.TrackLocalStaticSample
 }
 
 func (m *roomMedia) subscribe(emit func(map[string]any), target publisher, enabled bool) {
@@ -56,15 +62,19 @@ func (m *roomMedia) subscribe(emit func(map[string]any), target publisher, enabl
 		emit(map[string]any{"type": "error", "code": "voice-not-found", "message": "Fixture rejected subscription"})
 		return
 	}
+	var reused *videoSlot
 	for i := range m.video {
 		slot := &m.video[i]
 		if enabled && slot.publisher.user == "" {
 			slot.publisher = target
+			m.assignment++
+			slot.assignment = m.assignment
 			slot.first = nil
 			slot.frame = 0
 			if slot.written {
 				first := slot.next
 				slot.first = &first
+				reused = slot
 			}
 			break
 		}
@@ -76,6 +86,14 @@ func (m *roomMedia) subscribe(emit func(map[string]any), target publisher, enabl
 	if enabled && target == (publisher{blue, "video"}) {
 		m.swapAudio = true
 	}
+	// Delay the free snapshot and send a complete replacement keyframe before
+	// publishing the assignment, as if the WebSocket were backlogged.
+	if !enabled && target == (publisher{red, "video"}) {
+		return
+	}
+	if reused != nil {
+		sendVideoFrame(reused, false)
+	}
 	m.revision++
 	routes := make([]map[string]any, 0, len(m.video))
 	for _, slot := range m.video {
@@ -84,6 +102,7 @@ func (m *roomMedia) subscribe(emit func(map[string]any), target publisher, enabl
 		}
 		route := map[string]any{
 			"track_id": slot.track.ID(), "user_id": slot.publisher.user, "kind": slot.publisher.kind,
+			"rtp_route_id": slot.assignment, "rtp_route_ext_id": videoRouteExtensionID,
 		}
 		if slot.first != nil {
 			route["first_seq"] = *slot.first
@@ -140,30 +159,39 @@ func (m *roomMedia) sendVideo() {
 		if slot.publisher.user == "" {
 			continue
 		}
-		// The pending final packet of the previous frame can cross an assignment.
-		// The new route's first_seq excludes it even when it arrives after the plan.
+		// The final packet of a frame can cross an assignment. It retains the
+		// extension written by its own assignment; do not relabel it.
 		if slot.pending != nil {
 			_ = slot.track.WriteRTP(slot.pending)
 			slot.pending = nil
 		}
-		frames := videos[slot.publisher]
-		frame := frames[slot.frame%len(frames)]
-		slot.frame++
-		payloads := slot.payloader.Payload(1150, frame)
-		for index, payload := range payloads {
-			packet := &rtp.Packet{Header: rtp.Header{
-				Version: 2, Marker: index == len(payloads)-1, SequenceNumber: slot.next, Timestamp: slot.stamp,
-			}, Payload: payload}
-			if packet.Marker {
-				slot.pending = packet
-			} else {
-				_ = slot.track.WriteRTP(packet)
-			}
-			slot.next++
-			slot.written = true
-		}
-		slot.stamp += 9000
+		sendVideoFrame(slot, true)
 	}
+}
+
+func sendVideoFrame(slot *videoSlot, delayLast bool) {
+	frames := videos[slot.publisher]
+	frame := frames[slot.frame%len(frames)]
+	slot.frame++
+	payloads := slot.payloader.Payload(1150, frame)
+	var assignment [8]byte
+	binary.BigEndian.PutUint64(assignment[:], slot.assignment)
+	for index, payload := range payloads {
+		packet := &rtp.Packet{Header: rtp.Header{
+			Version: 2, Marker: index == len(payloads)-1, SequenceNumber: slot.next, Timestamp: slot.stamp,
+		}, Payload: payload}
+		if err := packet.SetExtension(videoRouteExtensionID, assignment[:]); err != nil {
+			return
+		}
+		if packet.Marker && delayLast {
+			slot.pending = packet
+		} else {
+			_ = slot.track.WriteRTP(packet)
+		}
+		slot.next++
+		slot.written = true
+	}
+	slot.stamp += 9000
 }
 
 func readVideo(path string) ([][]byte, error) {

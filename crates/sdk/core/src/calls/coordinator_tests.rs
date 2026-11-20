@@ -569,6 +569,8 @@ async fn assert_stale_peer_events_dropped(
                 user_id: remote.to_string(),
                 kind: "video".into(),
                 first_seq: None,
+                rtp_route_id: Some(1),
+                rtp_route_ext_id: Some(14),
             }],
         },
     )));
@@ -810,44 +812,68 @@ fn assert_video_reassignment(
     call.bind_video(beto, VideoKind::Camera, dest_beto.clone())
         .unwrap();
 
-    h.deliver(KnownEvent::VoiceVideoRoutes(Box::new(
-        VoiceVideoRoutesEvent {
-            channel_id: channel.to_string(),
-            peer_id: "p1".into(),
-            revision: 1,
-            routes: vec![VoiceVideoRoute {
-                track_id: "papo-video-0".into(),
-                user_id: ana.to_string(),
-                kind: "video".into(),
-                first_seq: None,
-            }],
-        },
-    )));
-    assert_eq!(call.snapshot().video_bindings.len(), 1);
-    assert_eq!(
-        call.snapshot().video_bindings[0].destination_id,
-        Some(VideoDestinationId::from_raw(1))
-    );
+    let lease = h.media.latest_lease().unwrap();
+    let apply = |revision, participant: Uuid, rtp_route_id, rtp_route_ext_id| {
+        h.deliver(KnownEvent::VoiceVideoRoutes(Box::new(
+            VoiceVideoRoutesEvent {
+                channel_id: channel.to_string(),
+                peer_id: "p1".into(),
+                revision,
+                routes: vec![VoiceVideoRoute {
+                    track_id: "papo-video-0".into(),
+                    user_id: participant.to_string(),
+                    kind: "video".into(),
+                    first_seq: Some(900),
+                    rtp_route_id,
+                    rtp_route_ext_id,
+                }],
+            },
+        )));
+        let snapshot = call.snapshot();
+        assert_eq!(snapshot.video_bindings.len(), 1);
+        assert_eq!(snapshot.video_bindings[0].participant, participant);
+        let (fence, destination_id) = lease
+            .commands()
+            .iter()
+            .rev()
+            .find_map(|cmd| {
+                if let MediaCommand::SetVideoSlotPlan { slots, .. } = cmd {
+                    assert_eq!(slots.len(), 1);
+                    let slot = &slots[0];
+                    assert_eq!(slot.track_id, "papo-video-0");
+                    assert_eq!(slot.participant, participant);
+                    Some((slot.fence, slot.destination.as_ref().map(|dest| dest.id())))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(snapshot.video_bindings[0].destination_id, destination_id);
+        (fence, destination_id)
+    };
 
-    h.deliver(KnownEvent::VoiceVideoRoutes(Box::new(
-        VoiceVideoRoutesEvent {
-            channel_id: channel.to_string(),
-            peer_id: "p1".into(),
-            revision: 2,
-            routes: vec![VoiceVideoRoute {
-                track_id: "papo-video-0".into(),
-                user_id: beto.to_string(),
-                kind: "video".into(),
-                first_seq: Some(900),
-            }],
-        },
-    )));
-    assert_eq!(call.snapshot().video_bindings[0].participant, beto);
-    assert_eq!(call.snapshot().video_bindings[0].first_seq, Some(900));
-    assert_eq!(
-        call.snapshot().video_bindings[0].destination_id,
-        Some(VideoDestinationId::from_raw(2))
-    );
+    let (old_fence, old_destination) = apply(1, ana, Some(41), Some(14));
+    let (new_fence, new_destination) = apply(2, beto, Some(42), Some(14));
+    let old_fence = old_fence.unwrap();
+    let new_fence = new_fence.unwrap();
+    assert_eq!(old_destination, Some(VideoDestinationId::from_raw(1)));
+    assert_eq!(new_destination, Some(VideoDestinationId::from_raw(2)));
+    assert_eq!(old_fence.extension_id, new_fence.extension_id);
+    assert_eq!(new_fence.extension_id, 14);
+    assert_eq!(old_fence.assignment_id, 41);
+    assert_eq!(new_fence.assignment_id, 42);
+
+    // Even with a legacy sequence hint, incomplete or invalid fences cannot render.
+    for (revision, (assignment, extension)) in (3u64..).zip([
+        (None, None),
+        (Some(42), None),
+        (None, Some(14)),
+        (Some(0), Some(14)),
+        (Some(42), Some(0)),
+        (Some(42), Some(15)),
+    ]) {
+        assert_eq!(apply(revision, beto, assignment, extension), (None, None));
+    }
     (dest_ana, dest_beto)
 }
 

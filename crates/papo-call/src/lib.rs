@@ -12,6 +12,7 @@ pub mod platform;
 mod receive_audio;
 mod receive_video;
 mod slots;
+mod video_route;
 
 pub use platform::MediaDevices;
 pub use receive_video::{CpuVideoDestination, CpuVideoFrame};

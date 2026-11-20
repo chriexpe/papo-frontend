@@ -144,37 +144,6 @@ pub(crate) struct PadProbe {
 }
 
 impl PadProbe {
-    pub fn data(
-        pad: &gst::Pad,
-        probe: impl Fn(&gst::Pad, &mut gst::PadProbeInfo<'_>) -> gst::PadProbeReturn
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
-        let id = pad.add_probe(
-            gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
-            probe,
-        );
-        Self {
-            pad: pad.clone(),
-            id,
-        }
-    }
-
-    pub fn discard_one(pad: &gst::Pad) {
-        let first = std::sync::atomic::AtomicBool::new(true);
-        pad.add_probe(
-            gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
-            move |_, _| {
-                if first.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                    gst::PadProbeReturn::Drop
-                } else {
-                    gst::PadProbeReturn::Remove
-                }
-            },
-        );
-    }
-
     pub fn block(pad: &gst::Pad) -> Self {
         let id = pad.add_probe(
             gst::PadProbeType::BLOCK | gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,

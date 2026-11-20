@@ -63,7 +63,7 @@ for field, typ, opts in structs['VoiceError']:
         opt_typ = typ if typ.startswith('*') else '*' + typ
         manifest['error']['fields'].append([field, opt_typ, opts])
 
-scalar = {'string': 'String', 'int': 'i64', 'uint16': 'u16', 'uint64': 'u64',
+scalar = {'string': 'String', 'int': 'i64', 'uint8': 'u8', 'uint16': 'u16', 'uint64': 'u64',
           'bool': 'bool', 'time.Time': 'String',
           'models.MessageAttachment': 'crate::wire::Attachment',
           'models.ExternalAuthor': 'crate::wire::ExternalAuthor',
@@ -109,6 +109,11 @@ for name, records in groups.items():
             text += f'    /// Backend `{field}` field.\n'
             if typ.startswith('[]'):
                 text += '    #[serde(default, deserialize_with = "crate::gateway::nullable_list")]\n'
+            elif kind == '_VoiceVideoRoute' and field in ('rtp_route_id', 'rtp_route_ext_id'):
+                # Malformed fence fields disarm the route without discarding its snapshot.
+                typ = '*' + typ
+                text += ('    #[serde(default, deserialize_with = "crate::gateway::optional_route_number", '
+                         'skip_serializing_if = "Option::is_none")]\n')
             elif 'omitempty' in opts:
                 text += '    #[serde(default)]\n'
             text += f'    pub {field}: {rust_type(typ)},\n'

@@ -8,7 +8,10 @@ use papo_api::gateway::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::model::{VideoCodec, VideoKind, VoiceDeviceState};
+use super::{
+    media_port::VideoRouteFence,
+    model::{VideoCodec, VideoKind, VoiceDeviceState},
+};
 
 /// One decoded SFU video route entry retained by the reducer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,7 +22,9 @@ pub(crate) struct ReducedVideoRoute {
     pub participant: Uuid,
     /// Stream kind (`Camera` or `Screen`).
     pub kind: VideoKind,
-    /// Optional RTP sequence boundary when the slot was reused.
+    /// Validated RTP assignment fence, if supplied.
+    pub fence: Option<VideoRouteFence>,
+    /// Legacy sequence hint retained for the public call snapshot only.
     pub first_seq: Option<u16>,
 }
 

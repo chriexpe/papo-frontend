@@ -85,6 +85,9 @@ func (p *peer) join(channel string) error {
 			return err
 		}
 	}
+	if err := engine.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: videoRouteURI}, webrtc.RTPCodecTypeVideo); err != nil {
+		return err
+	}
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(engine), webrtc.WithSettingEngine(settings),
 		webrtc.WithInterceptorRegistry(&interceptor.Registry{}))
 	pc, err := api.NewPeerConnection(webrtc.Configuration{})

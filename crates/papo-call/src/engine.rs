@@ -6,7 +6,9 @@ use crate::{
     diagnostics,
     ice::IceConfig,
     mic::Mic,
-    negotiation::{Candidate, Codec, Negotiation, connect_ice, opus_caps, wait_for_rtp},
+    negotiation::{
+        Candidate, Codec, Negotiation, ReceiveTrack, connect_ice, opus_caps, wait_for_rtp,
+    },
     pipeline::{Branch, MediaResult, PadProbe, element},
     platform::MediaDevices,
     receive_audio::ReceiveAudio,
@@ -152,22 +154,24 @@ impl Engine {
     async fn event(&mut self, event: Event) -> MediaResult<Vec<MediaReportKind>> {
         match event {
             Event::Report(report) => return Ok(vec![report]),
-            Event::PadAdded(pad, _block) => {
-                if let Some((video, track)) = self.negotiation.track(&pad) {
-                    if video {
-                        let codec = self.codec.ok_or(MediaFatalError::UnsupportedCodec)?;
-                        self.video.attach(&self.graph, &pad, track, codec)?;
-                    } else {
-                        self.audio.attach(&self.graph, &pad, track)?;
-                    }
-                } else {
+            Event::PadAdded(pad, _block) => match self.negotiation.track(&pad) {
+                Some(ReceiveTrack::Video {
+                    id,
+                    route_extension,
+                }) => {
+                    let codec = self.codec.ok_or(MediaFatalError::UnsupportedCodec)?;
+                    self.video
+                        .attach(&self.graph, &pad, id, codec, route_extension)?;
+                }
+                Some(ReceiveTrack::Audio(id)) => self.audio.attach(&self.graph, &pad, id)?,
+                None => {
                     let sink = element("fakesink")?;
                     sink.set_property("async", false);
                     sink.set_property("sync", false);
                     let drain = Branch::attach(&self.graph, vec![sink], Some(&pad), None)?;
                     self.drains.insert(pad, drain);
                 }
-            }
+            },
             Event::PadRemoved(pad) => {
                 self.video.detach(&pad);
                 self.audio.detach(&pad);
@@ -209,7 +213,7 @@ impl Engine {
                 let codec = Codec::try_from(video_codec)?;
                 self.codec = Some(codec);
                 for _ in 0..self.slots.video {
-                    self.negotiation.receive_line(&codec.caps())?;
+                    self.negotiation.receive_line(&codec.receive_caps())?;
                 }
                 for _ in 0..self.slots.audio {
                     self.negotiation.receive_line(&opus_caps())?;

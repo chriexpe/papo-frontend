@@ -138,8 +138,6 @@ fn handle_join(
             screen_sharing: false,
             routes_revision: 0,
             video_slots: vec![None; 6],
-            video_slot_used: vec![false; 6],
-            video_slot_seq: vec![1000; 6],
         },
     );
     let members: Vec<Value> = room
