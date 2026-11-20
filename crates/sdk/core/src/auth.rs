@@ -1,8 +1,10 @@
 //! Account authentication policy; typed wire calls belong to papo-api and secrets to `SecretStore`.
 
 mod account;
+mod failure;
 mod restore;
 mod sign_in;
+pub use failure::AuthFailure;
 pub(crate) use restore::restore;
 
 use crate::{ClientError, ClientHandle, Generated, ServerAddress, Session, generation::Epoch};

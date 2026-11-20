@@ -2,8 +2,11 @@
 
 use papo_api::wire::{
     DropConnectionRequest, LoginRequest, LoginServerRequest, PasswordResetConsumeRequest,
+    RegisterRequest,
 };
-use papo_sdk::{AuthState, ClientError, ConnectionState, SessionEventError, UnixMicros};
+use papo_sdk::{
+    AuthFailure, AuthState, ClientError, ConnectionState, SessionEventError, UnixMicros,
+};
 use papo_test_server::{Config, Failure, RestStep};
 
 use super::fixture::{Fixture, Result, login, online, password, register, wait_for};
@@ -240,6 +243,71 @@ fn every_sign_in_saves_the_names_the_server_reports_now() -> Result {
         assert_eq!(
             saved(&handle),
             Some(("second-name".into(), Some("Second".into())))
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}
+
+#[test]
+fn the_backend_s_sign_in_rejections_are_classified_by_reason() -> Result {
+    let fixture = Fixture::new(Config {
+        public: false,
+        server_password: Some(password(2)),
+        ..Config::default()
+    })?;
+    fixture.run(async {
+        let handle = fixture.client().handle();
+        let server = handle
+            .add_server(&fixture.server().base_url(), UnixMicros(0))
+            .await?
+            .id;
+        let auth = handle.auth(server)?;
+        let attempt = || {
+            auth.register(RegisterRequest {
+                username: "reason-user".into(),
+                password: password(0),
+            })
+        };
+        let locked = attempt().await.map(drop).unwrap_err();
+        assert_eq!(
+            AuthFailure::classify(&locked),
+            Some(AuthFailure::ServerAccessRequired)
+        );
+        let wrong_server_password = auth
+            .server_login(LoginServerRequest {
+                server_password: password(3),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            AuthFailure::classify(&wrong_server_password),
+            Some(AuthFailure::InvalidCredentials)
+        );
+        auth.server_login(LoginServerRequest {
+            server_password: password(2),
+        })
+        .await?;
+        attempt().await?;
+        let taken = attempt().await.map(drop).unwrap_err();
+        assert_eq!(
+            AuthFailure::classify(&taken),
+            Some(AuthFailure::UsernameTaken)
+        );
+        let wrong_password = auth
+            .login(
+                LoginRequest {
+                    username: "reason-user".into(),
+                    password: password(4),
+                },
+                UnixMicros(0),
+            )
+            .await
+            .map(drop)
+            .unwrap_err();
+        assert_eq!(
+            AuthFailure::classify(&wrong_password),
+            Some(AuthFailure::InvalidCredentials)
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
