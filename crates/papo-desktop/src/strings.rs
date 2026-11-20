@@ -21,11 +21,11 @@ macro_rules! text {
     }};
 }
 
-/// The current locale's template for `$key` with its `{{server}}` filled in.
+/// The current locale's template for `$key` with its `{{$name}}` filled in.
 macro_rules! template {
-    ($key:literal, $server:expr) => {{
+    ($key:literal, $name:literal => $value:expr) => {{
         const KEY: Key = Key::named(catalog::KEYS, $key);
-        I18N.format(KEY, &[("server", &$server)])
+        I18N.format(KEY, &[($name, &$value)])
     }};
 }
 
@@ -284,12 +284,82 @@ pub(crate) fn dismiss() -> &'static str {
 
 /// The already-added line, naming the saved server.
 pub(crate) fn error_already_added(server: &str) -> String {
-    template!("sign_in.error.already_added", server)
+    template!("sign_in.error.already_added", "server" => server)
 }
 
 /// The pill shown once signed in, naming the server.
 pub(crate) fn connected_to(server: &str) -> String {
-    template!("toast.connected", server)
+    template!("toast.connected", "server" => server)
+}
+
+/// What assistive technology announces for the server rail.
+pub(crate) fn rail_label() -> &'static str {
+    text!("rail.label")
+}
+
+/// What assistive technology announces for the rail's +.
+pub(crate) fn rail_add_server() -> &'static str {
+    text!("rail.add_server")
+}
+
+/// How the keyboard moves a server in the rail.
+pub(crate) fn rail_move_hint() -> &'static str {
+    text!("rail.move_hint")
+}
+
+/// What assistive technology announces for the channel list.
+pub(crate) fn channels_label() -> &'static str {
+    text!("channels.label")
+}
+
+/// The text channels' group label, in capitals as the list shows it.
+pub(crate) fn text_channels() -> &'static str {
+    text!("channels.text")
+}
+
+/// The voice channels' group label, in capitals as the list shows it.
+pub(crate) fn voice_channels() -> &'static str {
+    text!("channels.voice")
+}
+
+/// What assistive technology announces for the server card's ⚙.
+pub(crate) fn server_options() -> &'static str {
+    text!("server_card.options")
+}
+
+/// The server menu's item that asks to remove it.
+pub(crate) fn remove_server() -> &'static str {
+    text!("server_menu.remove")
+}
+
+/// What removing a server does, in its confirmation.
+pub(crate) fn remove_body() -> &'static str {
+    text!("remove.body")
+}
+
+/// Keeps the server.
+pub(crate) fn remove_cancel() -> &'static str {
+    text!("remove.cancel")
+}
+
+/// Removes the server.
+pub(crate) fn remove_confirm() -> &'static str {
+    text!("remove.confirm")
+}
+
+/// The server card's line naming the server's owner.
+pub(crate) fn server_owner(name: &str) -> String {
+    template!("server_card.owner", "name" => name)
+}
+
+/// An account's username as the account pill shows it.
+pub(crate) fn account_handle(username: &str) -> String {
+    template!("account.handle", "username" => username)
+}
+
+/// The removal confirmation's question, naming the server.
+pub(crate) fn remove_title(server: &str) -> String {
+    template!("remove.title", "server" => server)
 }
 
 #[cfg(test)]

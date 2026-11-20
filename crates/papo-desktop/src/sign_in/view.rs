@@ -5,7 +5,7 @@
 //! no boxes around the content, one primary button, secondary actions as
 //! links. The controls are `controls`'; the window host is the shell's.
 
-use rune::{El, Icon, col, el, icon, row, text};
+use rune::{El, col, el, icon, row, text};
 
 use super::header::{server_header, title};
 
@@ -14,6 +14,7 @@ use crate::design::{
     POPUP_PADDING_PT, POPUP_SHADOW_PT, POPUP_SIZE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_POPUP_PT,
     SPACE_LG_PT, SPACE_SM_PT, SPACE_XL_PT, SPACE_XXL_PT, TYPE_CAPTION,
 };
+use crate::icons::CROSS;
 use crate::shell::Shell;
 use crate::strings;
 
@@ -21,13 +22,6 @@ use super::controls::{self, Field};
 use super::{
     AccountForm, Event, Fields, Form, Line, Phase, Screen, Server, SignIn, can_submit,
     password_rules_met,
-};
-
-/// The popup's close button: a cross.
-pub(crate) static CROSS: Icon = Icon {
-    name: "papo-cross",
-    view: 16.0,
-    body: r#"<path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/>"#,
 };
 
 /// The element key of the screen's column.

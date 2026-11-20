@@ -3,17 +3,18 @@
 //! and the "Connected to" pill. Pure: reads the shell and the system's light
 //! or dark preference.
 
-use rune::{Cx, El, col, icon, row, text, text_input};
+use rune::{Cx, El, col, el, icon, row, text, text_input};
 
 use super::{COMPOSER_KEY, Shell, Stage};
 use crate::design::{
-    COMPOSER_HEIGHT_PT, FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, PILL_CROSS_PT, PILL_OUTLINE_PT,
-    Palette, RADIUS_COMPOSER_PT, RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT, SPACE_SM_PT,
-    SPACE_XL_PT, TYPE_BODY, Theme,
+    COMPOSER_HEIGHT_PT, FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, PANE_EDGE_PT, PILL_CROSS_PT,
+    PILL_OUTLINE_PT, Palette, RADIUS_COMPOSER_PT, RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT,
+    SPACE_SM_PT, SPACE_XL_PT, TYPE_BODY, Theme,
 };
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
 use crate::strings;
+use crate::{channel_pane, menu, rail, remove_server};
 
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
@@ -43,9 +44,19 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 .padding(SPACE_LG_PT)
                 .child(sign_in::screen(flow, &shell.fields, &palette)),
             _ => {
-                let mut app = app(shell, surface, &palette);
+                let mut app = app(shell, &palette);
                 if let Some(server) = connected {
                     app = app.child(connected_pill(server, &palette));
+                }
+                if let Some(menu) = &shell.nav.menu {
+                    app = app.child(menu::view(menu, &palette, cx));
+                }
+                let removing = shell
+                    .nav
+                    .removing
+                    .and_then(|id| shell.nav.servers().get(id));
+                if let Some(server) = removing {
+                    app = app.child(remove_server::confirm(&server.name, &palette));
                 }
                 if let Some(flow) = flow {
                     app = app.child(sign_in::popup(flow, &shell.fields, &palette));
@@ -56,8 +67,9 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
     }
 }
 
-/// The conversation surface with the composer pill at its foot.
-fn app(shell: &Shell, surface: El, palette: &Palette) -> El {
+/// The rail, the channel pane and the conversation with the composer pill
+/// at its foot.
+fn app(shell: &Shell, palette: &Palette) -> El {
     let field = text_input(&shell.composer, TYPE_BODY)
         .key(COMPOSER_KEY)
         .label(strings::composer_label())
@@ -77,7 +89,25 @@ fn app(shell: &Shell, surface: El, palette: &Palette) -> El {
         .fill(palette.surface_pill)
         .border(PILL_OUTLINE_PT, palette.line_pill)
         .child(field);
-    surface.justify_end().padding(SPACE_LG_PT).child(pill)
+    let conversation = col()
+        .key("conversation")
+        .grow(1.0)
+        .min_w(0.0)
+        .h_full()
+        .justify_end()
+        .padding(SPACE_LG_PT)
+        .fill(palette.surface_content)
+        .child(pill);
+    let edge = || el().w(PANE_EDGE_PT).h_full().fill(palette.line_subtle);
+    row()
+        .w_full()
+        .h_full()
+        .fill(palette.surface_content)
+        .child(rail::view(&shell.nav, &shell.icons, palette))
+        .child(edge())
+        .child(channel_pane::view(&shell.nav, &shell.icons, palette))
+        .child(edge())
+        .child(conversation)
 }
 
 /// "Connected to {server}", floating at the top until dismissed.
@@ -95,7 +125,7 @@ fn connected_pill(server: &str, palette: &Palette) -> El {
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
         .on_press(Shell::dismiss_connected)
-        .child(icon(&sign_in::CROSS, PILL_CROSS_PT).color(palette.text_secondary));
+        .child(icon(&crate::icons::CROSS, PILL_CROSS_PT).color(palette.text_secondary));
     let pill = row()
         .key("connected")
         .h(HEADER_PILL_HEIGHT_PT)

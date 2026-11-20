@@ -8,10 +8,17 @@
 //! The binary (`src/main.rs`) only calls [`run`].
 
 mod account_watch;
+mod channel_pane;
 mod design;
+mod icons;
 mod keyring;
+mod menu;
+mod navigation;
 mod profile_dir;
+mod rail;
+mod remove_server;
 mod sdk_bridge;
+mod server_list;
 mod shell;
 mod sign_in;
 mod strings;
@@ -97,12 +104,33 @@ fn try_start_bridge(secrets: Arc<Keyring>, post: &Arc<rune::AppHandle<Shell>>) -
     let profile = Profile {
         root: DataRoot::new(root),
         secrets,
-        config: ClientConfig::default(),
+        config: client_config(),
     };
     let post: Arc<dyn Post<Shell>> = Arc::clone(post) as Arc<dyn Post<Shell>>;
     Bridge::start(profile, post)
         .inspect_err(|error| log::error!("the SDK bridge thread did not start: {error}"))
         .ok()
+}
+
+/// The SDK client's limits. A debug build run with `PAPO_DEV_LOOPBACK=1`
+/// lets a server on plain-HTTP loopback (the SDK's test server) keep its
+/// Secure sign-in cookie. While it is set the SDK connects only to loopback
+/// servers, so every other saved server stays unreachable. Release builds
+/// never read the variable.
+fn client_config() -> ClientConfig {
+    let config = ClientConfig::default();
+    if cfg!(debug_assertions)
+        && std::env::var_os("PAPO_DEV_LOOPBACK").is_some_and(|value| value == "1")
+    {
+        log::warn!(
+            "PAPO_DEV_LOOPBACK: loopback servers only, Secure cookies allowed over plain HTTP"
+        );
+        return ClientConfig {
+            insecure_loopback: true,
+            ..config
+        };
+    }
+    config
 }
 
 /// The log filter when `RUST_LOG` is not set: Papo's own crates at `info`,

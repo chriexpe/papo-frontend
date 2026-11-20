@@ -9,10 +9,12 @@ use rune::machine::Effects;
 
 use super::feedback::line_for;
 use super::{
-    AccountForm, AddressCheck, Created, Discovery, Effect, Event, Failure, Fields, Form, Line,
-    NEW_PASSWORD_MIN_CHARS, NEW_USERNAME_MIN_CHARS, PASSWORD_MAX_CHARS, Phase, Probe, ProbeFailure,
-    SavedAccounts, Screen, Server, SignIn, USERNAME_MAX_CHARS, address, renewing_screen,
+    AccountForm, AddressCheck, Created, Effect, Event, Failure, Fields, Form, Line,
+    NEW_PASSWORD_MIN_CHARS, NEW_USERNAME_MIN_CHARS, PASSWORD_MAX_CHARS, Phase, Screen, SignIn,
+    USERNAME_MAX_CHARS, address,
 };
+
+mod server_step;
 
 impl SignIn {
     /// Takes `event` and returns what the shell must do for it.
@@ -103,45 +105,6 @@ impl SignIn {
         }
     }
 
-    /// The already-added line's Open: the app when an account works, signing
-    /// in again when none does, else the server's account steps.
-    fn open(&mut self, fields: &mut Fields) -> Effects<Effect> {
-        let Screen::Address {
-            phase: Phase::Editing(Some(Line::AlreadyAdded(added))),
-            ..
-        } = &self.screen
-        else {
-            return Effects::none();
-        };
-        let added = added.as_ref().clone();
-        let mut effects = match added.saved {
-            SavedAccounts::Working => return Effects::one(Effect::OpenServer(added.id)),
-            SavedAccounts::SignedOut(account) => {
-                self.auth = None;
-                self.screen = renewing_screen(&account, fields);
-                if let Screen::Account { server, .. } = &mut self.screen {
-                    server.name = added.name;
-                }
-                Effects::none()
-            }
-            SavedAccounts::None => {
-                let server = Server {
-                    id: added.id,
-                    name: added.name,
-                    address: added.address,
-                    icon: None,
-                    unlocked: false,
-                    renewing: None,
-                };
-                self.enter_account(fields, server, added.public)
-            }
-        };
-        if let Some(icon) = added.icon {
-            effects.push(Effect::LoadIcon(icon));
-        }
-        effects
-    }
-
     fn change_server(&mut self, fields: &mut Fields) -> Effects<Effect> {
         let Screen::Account { server, phase, .. } = &self.screen else {
             return Effects::none();
@@ -177,89 +140,6 @@ impl SignIn {
         *form = Form::Account(wanted);
         *phase = Phase::Editing(None);
         focus_form(fields, *form);
-    }
-
-    fn probed(&mut self, fields: &mut Fields, probe: Probe) -> Effects<Effect> {
-        let Screen::Address { phase, .. } = &mut self.screen else {
-            return Effects::none();
-        };
-        match probe {
-            Probe::Failed(failure) => {
-                *phase = Phase::Editing(Some(match failure {
-                    ProbeFailure::Unreachable => Line::Unreachable,
-                    ProbeFailure::NotSetUp => Line::NotSetUp,
-                    ProbeFailure::NotPapo => Line::NotPapo,
-                }));
-                // The field took no input while busy; it gets the keyboard back.
-                fields.address.focused = true;
-                Effects::none()
-            }
-            Probe::AlreadyAdded(added) => {
-                *phase = Phase::Editing(Some(Line::AlreadyAdded(Box::new(added))));
-                fields.address.focused = true;
-                Effects::none()
-            }
-            Probe::Added { id, discovery } => {
-                let address = match &fields.address_check {
-                    AddressCheck::Valid { address, .. } => address::shown(address).to_owned(),
-                    AddressCheck::Empty | AddressCheck::Invalid(_) => String::new(),
-                };
-                let server = Server {
-                    id,
-                    name: discovery.name.unwrap_or_else(|| address.clone()),
-                    address,
-                    icon: None,
-                    unlocked: false,
-                    renewing: None,
-                };
-                let mut effects = self.enter_account(fields, server, discovery.public);
-                if let Some(icon) = discovery.icon {
-                    effects.push(Effect::LoadIcon(icon));
-                }
-                effects
-            }
-        }
-    }
-
-    /// Moves to `server`'s account steps: its password first unless it is
-    /// public.
-    fn enter_account(
-        &mut self,
-        fields: &mut Fields,
-        server: Server,
-        public: bool,
-    ) -> Effects<Effect> {
-        let form = if public {
-            Form::Account(AccountForm::SignIn)
-        } else {
-            Form::Unlock {
-                then: AccountForm::SignIn,
-                lapsed: false,
-            }
-        };
-        self.auth = None;
-        self.screen = Screen::Account {
-            server,
-            form,
-            phase: Phase::Editing(None),
-        };
-        focus_form(fields, form);
-        Effects::none()
-    }
-
-    fn discovered(&mut self, discovery: Option<Discovery>) -> Effects<Effect> {
-        let Screen::Account { server, .. } = &mut self.screen else {
-            return Effects::none();
-        };
-        let Some(discovery) = discovery else {
-            return Effects::none();
-        };
-        if let Some(name) = discovery.name {
-            server.name = name;
-        }
-        discovery
-            .icon
-            .map_or_else(Effects::none, |icon| Effects::one(Effect::LoadIcon(icon)))
     }
 
     fn unlocked(&mut self, fields: &mut Fields, result: Result<(), Failure>) {
@@ -299,7 +179,8 @@ impl SignIn {
         };
         match result {
             Ok(()) => Effects::one(Effect::Finish {
-                server: server.name.clone(),
+                id: server.id,
+                name: server.name.clone(),
             }),
             Err(failure) => {
                 self.failed(fields, AccountForm::SignIn, failure);
@@ -314,7 +195,8 @@ impl SignIn {
         };
         match created {
             Created::SignedIn => Effects::one(Effect::Finish {
-                server: server.name.clone(),
+                id: server.id,
+                name: server.name.clone(),
             }),
             Created::NotRegistered(failure) => {
                 self.failed(fields, AccountForm::CreateAccount, failure);
@@ -386,7 +268,7 @@ pub(crate) fn password_rules_met(password: &str) -> bool {
 }
 
 /// Focuses the first field `form` asks for.
-fn focus_form(fields: &mut Fields, form: Form) {
+pub(super) fn focus_form(fields: &mut Fields, form: Form) {
     match form {
         Form::Unlock { .. } => fields.server_password.focused = true,
         Form::Account(AccountForm::SignIn) => {

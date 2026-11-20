@@ -104,9 +104,11 @@ pub(crate) enum Effect {
     RemoveServer(ServerId),
     /// Decode the server's icon for the account steps.
     LoadIcon(Vec<u8>),
-    /// Signed in: close the screen and say so.
+    /// Signed in to server `id`, named `name`: close the screen, show the
+    /// server and say so.
     Finish {
-        server: String,
+        id: ServerId,
+        name: String,
     },
     /// Show the app on a server that has an account already.
     OpenServer(ServerId),

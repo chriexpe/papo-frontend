@@ -9,13 +9,16 @@
 //! here: the account watch posts only what the shell decides with. Sending is
 //! not wired: the field keeps what is typed.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use papo_sdk::{AccountId, AuthService};
-use rune::{ImageCache, TextEdit};
+use papo_sdk::{AccountId, AuthService, ServerId};
+use rune::{Image, ImageCache, TextEdit};
 
 use crate::account_watch::{self, Accounts};
+use crate::navigation::Navigation;
 use crate::sdk_bridge::{BridgeHost, OpenFailure, RequestSlot, Sdk};
+use crate::server_list;
 use crate::sign_in::{self, Event, Fields, Host, SignIn};
 
 /// The element key of the composer's text field.
@@ -39,6 +42,21 @@ pub(crate) struct Shell {
     /// Held by each change to the server list the flow makes, and by each
     /// probe, so a probe sees the removals sent before it.
     registry_writes: Arc<tokio::sync::Mutex<()>>,
+    /// Which server and channel are selected, the rail's order, the menu.
+    nav: Navigation,
+    /// Each server's decoded icon, and the bytes it was decoded from.
+    icons: HashMap<ServerId, Image>,
+    icon_bytes: HashMap<ServerId, Arc<[u8]>>,
+    /// The newest reorder sent; only its answer counts.
+    reorder_requests: RequestSlot,
+    reorder: Reorder,
+}
+
+/// The reorder on its way to the SDK, and the newest one waiting for it.
+#[derive(Default)]
+struct Reorder {
+    in_flight: bool,
+    waiting: Option<Vec<ServerId>>,
 }
 
 /// Where the app stands.
@@ -71,6 +89,11 @@ impl Default for Shell {
             server_card_requests: RequestSlot::default(),
             images: None,
             registry_writes: Arc::default(),
+            nav: Navigation::default(),
+            icons: HashMap::new(),
+            icon_bytes: HashMap::new(),
+            reorder_requests: RequestSlot::default(),
+            reorder: Reorder::default(),
         }
     }
 }
@@ -78,6 +101,7 @@ impl Default for Shell {
 impl BridgeHost for Shell {
     fn sdk_opened(&mut self, sdk: Sdk<Self>) {
         sdk.watch(|client, updates| account_watch::run(client, updates, Shell::accounts_changed));
+        sdk.watch(|client, updates| server_list::run(client, updates, Shell::servers_changed));
         self.sdk = Some(sdk);
     }
 
@@ -156,10 +180,6 @@ impl Shell {
     }
 
     /// Opens the add-server screen in the popup: the rail's +.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the rail's +, in the next slice, calls it")
-    )]
     pub(crate) fn add_server(&mut self) {
         if self.sign_in().is_none() && matches!(self.stage, Stage::Running { .. }) {
             let flow = SignIn::new(Host::Popup, &mut self.fields);
@@ -172,6 +192,7 @@ impl Shell {
             return;
         };
         *open = Some(Box::new(flow));
+        self.nav.dismiss_overlays();
         if let Some(effect) = first {
             let mut effects = rune::machine::Effects::none();
             effects.push(effect);
@@ -206,11 +227,16 @@ impl Shell {
         self.offer_sign_in_again();
     }
 
-    /// Signed in: the screens close and the pill names the server.
-    pub(crate) fn finish_sign_in(&mut self, server: String) {
+    /// Signed in to `server`: the screens close and the pill names it. A
+    /// server just added is selected; signing in again keeps the selection.
+    pub(crate) fn finish_sign_in(&mut self, server: ServerId, name: String) {
+        let added = self.sign_in().is_some_and(|flow| !flow.is_renewing());
         self.end_sign_in();
+        if added {
+            self.nav.select_server(server);
+        }
         if let Stage::Running { connected, .. } = &mut self.stage {
-            *connected = Some(server);
+            *connected = Some(name);
         }
     }
 
@@ -297,6 +323,7 @@ impl Shell {
     }
 }
 
+mod navigate;
 #[cfg(test)]
 mod tests;
 mod view;
