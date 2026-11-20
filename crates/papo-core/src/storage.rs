@@ -94,7 +94,9 @@ mod tests {
         let store = MemorySecretStore::default();
         store.store("um", Secret::SessionToken, "token-1").unwrap();
         store.store("um", Secret::ServerPassword, "senha").unwrap();
-        store.store("dois", Secret::SessionToken, "token-2").unwrap();
+        store
+            .store("dois", Secret::SessionToken, "token-2")
+            .unwrap();
 
         assert_eq!(
             store.load("um", Secret::SessionToken).unwrap().as_deref(),

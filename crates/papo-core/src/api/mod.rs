@@ -1,5 +1,5 @@
 pub mod client;
 pub mod models;
-mod scheduler;
 pub mod net;
+mod scheduler;
 pub mod ws;

@@ -5,18 +5,18 @@
 
 pub mod api;
 pub mod audit;
-pub mod embed_authoring;
-pub mod inbox;
 pub mod cache;
-pub mod giphy;
-pub mod markdown;
-pub mod format_assist;
-pub mod media_prepare;
 pub mod core;
+pub mod embed_authoring;
+pub mod format_assist;
+pub mod giphy;
+pub mod inbox;
+pub mod markdown;
+pub mod media_prepare;
 pub mod notification;
 pub mod preview;
-pub mod runtime;
 pub mod recovery;
+pub mod runtime;
 pub mod search;
 pub mod state;
 pub mod storage;
@@ -73,7 +73,10 @@ mod tests {
 
     #[test]
     fn enderecos_diferentes_geram_chaves_diferentes() {
-        assert_ne!(server_key("https://um.example"), server_key("https://dois.example"));
+        assert_ne!(
+            server_key("https://um.example"),
+            server_key("https://dois.example")
+        );
     }
 
     #[test]

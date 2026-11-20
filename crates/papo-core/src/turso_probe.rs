@@ -6,9 +6,9 @@
 
 use std::path::Path;
 
-use turso::{Builder, Connection, IntoParams};
 #[cfg(test)]
 use turso::Value;
+use turso::{Builder, Connection, IntoParams};
 
 pub type ProbeError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type ProbeResult<T> = Result<T, ProbeError>;
@@ -23,11 +23,7 @@ fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-async fn scalar_i64<P: IntoParams>(
-    conn: &Connection,
-    sql: &str,
-    params: P,
-) -> ProbeResult<i64> {
+async fn scalar_i64<P: IntoParams>(conn: &Connection, sql: &str, params: P) -> ProbeResult<i64> {
     let mut rows = conn.query(sql, params).await?;
     let row = rows
         .next()
@@ -185,7 +181,10 @@ mod tests {
                 ["alpha"],
             )
             .await?;
-        let row = rows.next().await?.ok_or_else(|| std::io::Error::other("inserted probe row is missing"))?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| std::io::Error::other("inserted probe row is missing"))?;
         assert_eq!(row.get::<String>(0)?, "A");
         assert_eq!(row.get::<i64>(1)?, 1);
         assert_eq!(row.get_value(2)?, Value::Blob(vec![0, 1, 2, 255]));
@@ -273,12 +272,12 @@ mod tests {
 
         let (_reopened_db, reopened) = open(&temp.path).await?;
         let mut rows = reopened
-            .query(
-                "SELECT value, counter FROM probe WHERE id = ?1",
-                ["alpha"],
-            )
+            .query("SELECT value, counter FROM probe WHERE id = ?1", ["alpha"])
             .await?;
-        let row = rows.next().await?.ok_or_else(|| std::io::Error::other("reopened alpha row is missing"))?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| std::io::Error::other("reopened alpha row is missing"))?;
         assert_eq!(row.get::<String>(0)?, "upserted");
         assert_eq!(row.get::<i64>(1)?, 3);
         assert!(temp.path.exists(), "Turso did not create the database file");
@@ -310,11 +309,8 @@ mod tests {
 
         {
             let tx = writer.transaction().await?;
-            tx.execute(
-                "UPDATE concurrency_probe SET value = 2 WHERE id = 1",
-                (),
-            )
-            .await?;
+            tx.execute("UPDATE concurrency_probe SET value = 2 WHERE id = 1", ())
+                .await?;
 
             // A distinct connection must not observe the uncommitted write.
             assert_eq!(
@@ -347,11 +343,7 @@ mod tests {
             .await?;
 
         // Independent async readers may execute concurrently on the same DB.
-        let read_a = scalar_i64(
-            &reader,
-            "SELECT COUNT(*) FROM concurrency_probe",
-            (),
-        );
+        let read_a = scalar_i64(&reader, "SELECT COUNT(*) FROM concurrency_probe", ());
         let read_b = scalar_i64(
             &second_writer,
             "SELECT SUM(value) FROM concurrency_probe",

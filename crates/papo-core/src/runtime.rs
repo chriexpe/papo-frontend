@@ -7,12 +7,10 @@ use crate::api::net::{
 };
 use crate::api::ws::{Connection, Event};
 use crate::cache::ClientDb;
-use crate::notification::{
-    CandidateSource, NotificationContext, NotificationCoordinator,
-};
-use crate::state::{Phase, Store};
+use crate::notification::{CandidateSource, NotificationContext, NotificationCoordinator};
 #[cfg(test)]
 use crate::state::Screen;
+use crate::state::{Phase, Store};
 use crate::storage::{Secret, SecretStore};
 
 pub const DEFAULT_DRAIN_LIMIT: usize = 256;
@@ -49,8 +47,16 @@ pub enum CallRuntimeEffect {
 pub enum RuntimeEffect {
     ServerUnlocked,
     ServerLabelChanged(String),
-    UserSettingsPatched { owner: String, request: u64, success: bool },
-    OutgoingEnqueued { local_id: String, owner_user_id: String, channel_id: String },
+    UserSettingsPatched {
+        owner: String,
+        request: u64,
+        success: bool,
+    },
+    OutgoingEnqueued {
+        local_id: String,
+        owner_user_id: String,
+        channel_id: String,
+    },
     OutgoingRejected {
         local_id: String,
         owner_user_id: String,
@@ -120,14 +126,7 @@ impl ServerRuntime {
         cache: Arc<ClientDb>,
         notification: Arc<NotificationCoordinator>,
     ) -> Self {
-        Self::open_with_store(
-            url,
-            Store::default(),
-            wake,
-            storage,
-            cache,
-            notification,
-        )
+        Self::open_with_store(url, Store::default(), wake, storage, cache, notification)
     }
 
     pub fn open_with_store(
@@ -292,10 +291,18 @@ impl ServerRuntime {
             },
             visible_server: view.visible_server,
             notifications_enabled: view.notifications_enabled
-                && self.store.user_settings.as_ref().is_none_or(|settings|settings.config.notifications.enabled),
+                && self
+                    .store
+                    .user_settings
+                    .as_ref()
+                    .is_none_or(|settings| settings.config.notifications.enabled),
             push_registered: view.push_registered,
-            channel_notification_settings: self.store.channels.iter()
-                .map(|channel| (channel.id.clone(), channel.notification_settings.clone())).collect(),
+            channel_notification_settings: self
+                .store
+                .channels
+                .iter()
+                .map(|channel| (channel.id.clone(), channel.notification_settings.clone()))
+                .collect(),
             channels: self
                 .store
                 .channels
@@ -315,7 +322,11 @@ impl ServerRuntime {
     /// wake. Policy and the durable ledger converge these with live events.
     pub fn deliver_notifications(&self, items: &[crate::api::models::Notification]) {
         for item in items {
-            let _ = self.notification.handle_notification(&self.server_key, item, CandidateSource::Background);
+            let _ = self.notification.handle_notification(
+                &self.server_key,
+                item,
+                CandidateSource::Background,
+            );
         }
     }
 
@@ -418,10 +429,7 @@ impl ServerRuntime {
             .map(|update| self.process_update(update))
     }
 
-    pub fn recv_timeout(
-        &mut self,
-        timeout: std::time::Duration,
-    ) -> Option<Vec<RuntimeEffect>> {
+    pub fn recv_timeout(&mut self, timeout: std::time::Duration) -> Option<Vec<RuntimeEffect>> {
         self.net
             .recv_timeout(timeout)
             .map(|update| self.process_update(update))
@@ -549,11 +557,19 @@ impl ServerRuntime {
             Update::Server(Some(server)) if !server.name.is_empty() => {
                 effects.push(RuntimeEffect::ServerLabelChanged(server.name.clone()));
             }
-            Update::UserSettingsPatched { owner, request, result } => effects.push(RuntimeEffect::UserSettingsPatched {
-                owner: owner.clone(), request: *request, success: result.is_ok(),
+            Update::UserSettingsPatched {
+                owner,
+                request,
+                result,
+            } => effects.push(RuntimeEffect::UserSettingsPatched {
+                owner: owner.clone(),
+                request: *request,
+                success: result.is_ok(),
             }),
             Update::Outgoing(item) => effects.push(RuntimeEffect::OutgoingEnqueued {
-                local_id: item.local_id.clone(), owner_user_id: item.owner_user_id.clone(), channel_id: item.channel_id.clone(),
+                local_id: item.local_id.clone(),
+                owner_user_id: item.owner_user_id.clone(),
+                channel_id: item.channel_id.clone(),
             }),
             Update::OutgoingRejected {
                 local_id,
@@ -575,16 +591,15 @@ impl ServerRuntime {
                 channel_id,
                 attempt,
                 servers,
-            } => effects.push(RuntimeEffect::Call(Box::new(CallRuntimeEffect::VoiceReady {
-                channel_id: channel_id.clone(),
-                attempt: *attempt,
-                servers: servers.clone(),
-            }))),
+            } => effects.push(RuntimeEffect::Call(Box::new(
+                CallRuntimeEffect::VoiceReady {
+                    channel_id: channel_id.clone(),
+                    attempt: *attempt,
+                    servers: servers.clone(),
+                },
+            ))),
             Update::Event(event)
-                if matches!(
-                    &**event,
-                    Event::VoiceLeft { .. } | Event::Failure { .. }
-                ) =>
+                if matches!(&**event, Event::VoiceLeft { .. } | Event::Failure { .. }) =>
             {
                 effects.push(RuntimeEffect::Call(Box::new(CallRuntimeEffect::Event {
                     event: Box::new((**event).clone()),
@@ -603,11 +618,13 @@ impl ServerRuntime {
                 channel_id,
                 attempt,
                 ..
-            } => effects.push(RuntimeEffect::Call(Box::new(CallRuntimeEffect::VoiceFailed {
-                channel_id: channel_id.clone(),
-                attempt: *attempt,
-                was_current: self.store.call.current(channel_id, *attempt),
-            }))),
+            } => effects.push(RuntimeEffect::Call(Box::new(
+                CallRuntimeEffect::VoiceFailed {
+                    channel_id: channel_id.clone(),
+                    attempt: *attempt,
+                    was_current: self.store.call.current(channel_id, *attempt),
+                },
+            ))),
             _ => {}
         }
         effects
@@ -625,10 +642,7 @@ mod tests {
 
     fn disabled_runtime() -> (ServerRuntime, Arc<MemorySecretStore>) {
         let cache = Arc::new(ClientDb::open(None));
-        let notification = Arc::new(NotificationCoordinator::new(
-            Arc::clone(&cache),
-            None,
-        ));
+        let notification = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         let secrets = Arc::new(MemorySecretStore::default());
         let runtime = ServerRuntime::open(
             "http://127.0.0.1:9".to_owned(),
@@ -685,10 +699,7 @@ mod tests {
     #[test]
     fn background_runtime_no_session_is_clean_bounded_noop() {
         let cache = Arc::new(ClientDb::open(None));
-        let notification = Arc::new(NotificationCoordinator::new(
-            Arc::clone(&cache),
-            None,
-        ));
+        let notification = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         let secrets = Arc::new(MemorySecretStore::default());
         let mut runtime = ServerRuntime::open_background(
             "http://127.0.0.1:9".to_owned(),
@@ -720,10 +731,7 @@ mod tests {
     #[test]
     fn background_runtime_honours_hard_deadline() {
         let cache = Arc::new(ClientDb::open(None));
-        let notification = Arc::new(NotificationCoordinator::new(
-            Arc::clone(&cache),
-            None,
-        ));
+        let notification = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         let secrets = Arc::new(MemorySecretStore::default());
         let url = "http://127.0.0.1:9".to_owned();
         let key = crate::server_key(&url);
@@ -750,10 +758,7 @@ mod tests {
     fn cancelling_background_runtime_does_not_clear_credentials_or_cache() {
         let path = temp_db_path("background-cancel");
         let cache = Arc::new(ClientDb::open(Some(path.clone())));
-        let notification = Arc::new(NotificationCoordinator::new(
-            Arc::clone(&cache),
-            None,
-        ));
+        let notification = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         let secrets = Arc::new(MemorySecretStore::default());
         let url = "http://127.0.0.1:9".to_owned();
         let key = crate::server_key(&url);
@@ -888,10 +893,7 @@ mod tests {
         let path = temp_db_path("cache-ops");
         let cache = Arc::new(ClientDb::open(Some(path.clone())));
         assert!(cache.is_enabled());
-        let notification = Arc::new(NotificationCoordinator::new(
-            Arc::clone(&cache),
-            None,
-        ));
+        let notification = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         let secrets = Arc::new(MemorySecretStore::default());
         let mut runtime = ServerRuntime::open(
             "http://127.0.0.1:9".to_owned(),
@@ -1032,10 +1034,7 @@ mod tests {
         );
 
         let cache = Arc::new(ClientDb::open(None));
-        let notification = Arc::new(NotificationCoordinator::new(
-            Arc::clone(&cache),
-            None,
-        ));
+        let notification = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         let mut runtime = ServerRuntime::open(
             "http://127.0.0.1:9".to_owned(),
             Wake::noop(),
@@ -1057,10 +1056,7 @@ mod tests {
         let (mut a, _) = disabled_runtime();
 
         let cache = Arc::new(ClientDb::open(None));
-        let notification = Arc::new(NotificationCoordinator::new(
-            Arc::clone(&cache),
-            None,
-        ));
+        let notification = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         let secrets = Arc::new(MemorySecretStore::default());
         let b = ServerRuntime::open(
             "http://127.0.0.1:10".to_owned(),
@@ -1098,10 +1094,7 @@ mod tests {
     fn forget_server_limpa_namespace_duravel_e_credenciais() {
         let path = temp_db_path("forget");
         let cache = Arc::new(ClientDb::open(Some(path.clone())));
-        let notification = Arc::new(NotificationCoordinator::new(
-            Arc::clone(&cache),
-            None,
-        ));
+        let notification = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         let secrets = Arc::new(MemorySecretStore::default());
         let mut runtime = ServerRuntime::open(
             "http://127.0.0.1:11".to_owned(),
@@ -1152,5 +1145,4 @@ mod tests {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
-
 }

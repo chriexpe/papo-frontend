@@ -446,7 +446,10 @@ mod tests {
         let (mut text, mut caret, mut pairing) = session();
         typing(&mut text, &mut caret, &mut pairing, "**");
         assert!(on_change(&text, "**pasted**", 8, &mut pairing).is_none());
-        assert_eq!(skip_closer("**pasted**", 8, &mut pairing).unwrap().text, "**pasted** ");
+        assert_eq!(
+            skip_closer("**pasted**", 8, &mut pairing).unwrap().text,
+            "**pasted** "
+        );
     }
 
     #[test]

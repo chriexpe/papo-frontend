@@ -6,15 +6,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, COOKIE, RETRY_AFTER};
+use reqwest::header::{ACCEPT, COOKIE, HeaderMap, HeaderValue, RETRY_AFTER};
 use reqwest::{Method, StatusCode};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use url::Url;
 
 use super::models::Notification as NotificationItem;
@@ -104,7 +104,8 @@ impl RequestGovernor {
 
     async fn observe_response(&self, response: &reqwest::Response) {
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            self.note_rate_limit(retry_after_delay(response.headers())).await;
+            self.note_rate_limit(retry_after_delay(response.headers()))
+                .await;
             return;
         }
 
@@ -163,7 +164,9 @@ fn retry_after_value(raw: &str) -> Option<Duration> {
     let deadline = chrono::DateTime::parse_from_rfc2822(raw)
         .ok()?
         .with_timezone(&Utc);
-    let millis = deadline.signed_duration_since(Utc::now()).num_milliseconds();
+    let millis = deadline
+        .signed_duration_since(Utc::now())
+        .num_milliseconds();
     (millis > 0).then(|| Duration::from_millis(millis as u64))
 }
 
@@ -171,7 +174,9 @@ fn request_governor(base: &Url) -> Arc<RequestGovernor> {
     static GOVERNORS: OnceLock<Mutex<HashMap<String, Weak<RequestGovernor>>>> = OnceLock::new();
     let key = base.origin().ascii_serialization();
     let registry = GOVERNORS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut registry = registry.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(existing) = registry.get(&key).and_then(Weak::upgrade) {
         return existing;
     }
@@ -298,7 +303,9 @@ pub enum SendMessageError {
 impl SendMessageError {
     pub fn into_api_error(self) -> ApiError {
         match self {
-            Self::SafeToRetry(error) | Self::FailedPermanent(error) | Self::UnknownOutcome(error) => error,
+            Self::SafeToRetry(error)
+            | Self::FailedPermanent(error)
+            | Self::UnknownOutcome(error) => error,
         }
     }
 
@@ -425,7 +432,9 @@ impl Api {
             request = request.json(body);
         }
 
-        self.governor.wait_turn_with_priority(path.starts_with("/auth/")).await;
+        self.governor
+            .wait_turn_with_priority(path.starts_with("/auth/"))
+            .await;
         let response = request
             .send()
             .await
@@ -575,14 +584,17 @@ impl Api {
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(30))
-                .build().map_err(|e| ApiError::Network(e.to_string()))?,
+                .build()
+                .map_err(|e| ApiError::Network(e.to_string()))?,
             session: Arc::new(Session::default()),
             ..self.clone()
         };
-        let _: serde_json::Value = public.post(
-            "/auth/password_reset",
-            &serde_json::json!({ "token": token, "password": password }),
-        ).await?;
+        let _: serde_json::Value = public
+            .post(
+                "/auth/password_reset",
+                &serde_json::json!({ "token": token, "password": password }),
+            )
+            .await?;
         Ok(())
     }
 
@@ -696,11 +708,7 @@ impl Api {
 
     pub async fn block_user(&self, user_id: &str) -> ApiResult<()> {
         let response = self
-            .send::<()>(
-                Method::POST,
-                &format!("/users/{user_id}/block"),
-                None,
-            )
+            .send::<()>(Method::POST, &format!("/users/{user_id}/block"), None)
             .await?;
         let status = response.status();
         if status.is_success() {
@@ -763,7 +771,8 @@ impl Api {
         &self,
         channel_id: &str,
     ) -> ApiResult<ChannelPermissionsResponse> {
-        self.get(&format!("/channels/{channel_id}/permissions")).await
+        self.get(&format!("/channels/{channel_id}/permissions"))
+            .await
     }
 
     pub async fn update_channel_permissions(
@@ -950,8 +959,16 @@ impl Api {
         attachments: &[Upload],
         embeds: &[super::models::CustomEmbedInput],
     ) -> ApiResult<Message> {
-        self.send_message_classified(channel_id, content, reply_to, notify_reply, attachments, embeds)
-            .await.map_err(SendMessageError::into_api_error)
+        self.send_message_classified(
+            channel_id,
+            content,
+            reply_to,
+            notify_reply,
+            attachments,
+            embeds,
+        )
+        .await
+        .map_err(SendMessageError::into_api_error)
     }
 
     /// Multipart uploads use the same uncertainty rules as text sends: local
@@ -974,8 +991,12 @@ impl Api {
             .text("channel_id", channel_id.to_owned())
             .text("content", content.to_owned());
         if !embeds.is_empty() {
-            form = form.text("embeds", serde_json::to_string(embeds)
-                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Decode(e.to_string())))?);
+            form = form.text(
+                "embeds",
+                serde_json::to_string(embeds).map_err(|e| {
+                    SendMessageError::FailedPermanent(ApiError::Decode(e.to_string()))
+                })?,
+            );
         }
         if let Some(reply_to) = reply_to {
             form = form
@@ -987,13 +1008,21 @@ impl Api {
             // tamanho do anexo, um para um. Agora o corpo sai em pedaços,
             // direto do disco, e mandar um vídeo grande custa o mesmo que
             // mandar um pequeno.
-            let file = tokio::fs::File::open(&upload.path)
-                .await
-                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(format!("{}: {e}", upload.name))))?;
+            let file = tokio::fs::File::open(&upload.path).await.map_err(|e| {
+                SendMessageError::FailedPermanent(ApiError::Network(format!(
+                    "{}: {e}",
+                    upload.name
+                )))
+            })?;
             let length = file
                 .metadata()
                 .await
-                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(format!("{}: {e}", upload.name))))?
+                .map_err(|e| {
+                    SendMessageError::FailedPermanent(ApiError::Network(format!(
+                        "{}: {e}",
+                        upload.name
+                    )))
+                })?
                 .len();
             let chunks = futures_util::stream::try_unfold(file, |mut file| async move {
                 use tokio::io::AsyncReadExt as _;
@@ -1032,16 +1061,25 @@ impl Api {
         let response = match request.send().await {
             Ok(response) => response,
             Err(error) if error.is_builder() || error.is_connect() => {
-                return Err(SendMessageError::SafeToRetry(ApiError::Network(error.to_string())));
+                return Err(SendMessageError::SafeToRetry(ApiError::Network(
+                    error.to_string(),
+                )));
             }
-            Err(error) => return Err(SendMessageError::UnknownOutcome(ApiError::Network(error.to_string()))),
+            Err(error) => {
+                return Err(SendMessageError::UnknownOutcome(ApiError::Network(
+                    error.to_string(),
+                )));
+            }
         };
         self.governor.observe_response(&response).await;
         self.session.absorb(&response);
         let status = response.status();
         Self::parse(response).await.map_err(|error| match status {
             StatusCode::TOO_MANY_REQUESTS => SendMessageError::SafeToRetry(error),
-            StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => SendMessageError::FailedPermanent(error),
+            StatusCode::BAD_REQUEST
+            | StatusCode::UNAUTHORIZED
+            | StatusCode::FORBIDDEN
+            | StatusCode::NOT_FOUND => SendMessageError::FailedPermanent(error),
             _ => SendMessageError::UnknownOutcome(error),
         })
     }
@@ -1131,7 +1169,12 @@ impl Api {
         }
     }
 
-    pub async fn edit_message(&self, message_id: &str, content: &str, embeds: Option<Vec<super::models::CustomEmbedInput>>) -> ApiResult<Message> {
+    pub async fn edit_message(
+        &self,
+        message_id: &str,
+        content: &str,
+        embeds: Option<Vec<super::models::CustomEmbedInput>>,
+    ) -> ApiResult<Message> {
         self.put(
             &format!("/messages/{message_id}"),
             &UpdateMessageRequest {
@@ -1288,7 +1331,9 @@ impl Api {
             let users: Vec<UserSummary> = self
                 .post(
                     "/users/user_summary_batch",
-                    &UserSummaryBatchRequest { ids: slice.to_vec() },
+                    &UserSummaryBatchRequest {
+                        ids: slice.to_vec(),
+                    },
                 )
                 .await?;
             all.extend(users);
@@ -1298,10 +1343,7 @@ impl Api {
 
     /// Ajustes portáteis da conta. O backend exige o envelope
     /// `{ "config": ... }` e devolve o registro versionado persistido.
-    pub async fn put_user_settings(
-        &self,
-        config: &UserConfig,
-    ) -> ApiResult<UserSettings> {
+    pub async fn put_user_settings(&self, config: &UserConfig) -> ApiResult<UserSettings> {
         self.put(
             "/users/settings",
             &UpdateUserSettingsRequest {
@@ -1417,7 +1459,8 @@ impl Api {
     }
 
     pub async fn delete_emoji(&self, emoji_id: &str) -> ApiResult<()> {
-        self.delete::<()>(&format!("/emojis/{emoji_id}"), None).await
+        self.delete::<()>(&format!("/emojis/{emoji_id}"), None)
+            .await
     }
 
     // -- Mídia por conteúdo ------------------------------------------------
@@ -1621,7 +1664,11 @@ impl Api {
 
     // -- Fixadas -----------------------------------------------------------
 
-    pub async fn pin_message(&self, channel_id: &str, message_id: &str) -> ApiResult<serde_json::Value> {
+    pub async fn pin_message(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+    ) -> ApiResult<serde_json::Value> {
         self.post(
             &format!("/channels/{channel_id}/messages/{message_id}/pin"),
             &(),
@@ -1702,15 +1749,16 @@ impl Api {
     }
 
     pub async fn unregister_push_device(&self, token: &str) -> ApiResult<()> {
-        let result = self.delete(
-            "/users/me/push-device",
-            Some(&PushDeviceRequest {
-                token: token.to_owned(),
-                platform: None,
-                device_name: None,
-            }),
-        )
-        .await;
+        let result = self
+            .delete(
+                "/users/me/push-device",
+                Some(&PushDeviceRequest {
+                    token: token.to_owned(),
+                    platform: None,
+                    device_name: None,
+                }),
+            )
+            .await;
         // Token rotation must still register the replacement when the old
         // token has already expired or been removed on the server.
         match result {
@@ -1730,7 +1778,11 @@ fn append_unique_emojis(
     seen: &mut HashSet<String>,
 ) -> usize {
     let before = all.len();
-    all.extend(emojis.into_iter().filter(|emoji| seen.insert(emoji.id.clone())));
+    all.extend(
+        emojis
+            .into_iter()
+            .filter(|emoji| seen.insert(emoji.id.clone())),
+    );
     all.len() - before
 }
 
@@ -1754,7 +1806,10 @@ mod tests {
         let body = r#"{"type":"about:blank","title":"muitas requisições","detail":"tente novamente mais tarde","status":429}"#;
         let error = problem_error(StatusCode::TOO_MANY_REQUESTS, body);
         assert!(matches!(error, ApiError::TooManyRequests(_)));
-        assert!(error.is_transient(), "429 continua sendo uma falha transitória");
+        assert!(
+            error.is_transient(),
+            "429 continua sendo uma falha transitória"
+        );
     }
 
     #[test]
@@ -1807,23 +1862,17 @@ mod tests {
         };
 
         assert_eq!(
-            append_unique_emojis(
-                &mut all,
-                vec![emoji("a"), emoji("b")],
-                &mut seen,
-            ),
+            append_unique_emojis(&mut all, vec![emoji("a"), emoji("b")], &mut seen,),
             2
         );
         assert_eq!(
-            append_unique_emojis(
-                &mut all,
-                vec![emoji("b"), emoji("c")],
-                &mut seen,
-            ),
+            append_unique_emojis(&mut all, vec![emoji("b"), emoji("c")], &mut seen,),
             1
         );
         assert_eq!(
-            all.iter().map(|emoji| emoji.id.as_str()).collect::<Vec<_>>(),
+            all.iter()
+                .map(|emoji| emoji.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["a", "b", "c"]
         );
     }
@@ -1833,11 +1882,17 @@ mod tests {
         let api = Api::new("http://127.0.0.1:9", Arc::new(Session::default())).unwrap();
         let file = Upload {
             path: std::env::temp_dir().join(format!("missing-{}", request_id())),
-            name: "missing.txt".into(), mime: "text/plain".into(), size: 10,
-            spoiler: false, anonymize: false,
+            name: "missing.txt".into(),
+            mime: "text/plain".into(),
+            size: 10,
+            spoiler: false,
+            anonymize: false,
         };
-        assert!(matches!(api.send_message_classified("chat", "", None, true, &[file], &[]).await,
-            Err(SendMessageError::FailedPermanent(_))));
+        assert!(matches!(
+            api.send_message_classified("chat", "", None, true, &[file], &[])
+                .await,
+            Err(SendMessageError::FailedPermanent(_))
+        ));
     }
 
     #[tokio::test]
@@ -1845,7 +1900,12 @@ mod tests {
         use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
         let path = std::env::temp_dir().join(format!("upload-{}", request_id()));
         std::fs::write(&path, b"attachment-fixture").unwrap();
-        for (status, expected) in [(400, "rejected"), (500, "unknown"), (429, "safe"), (200, "unknown")] {
+        for (status, expected) in [
+            (400, "rejected"),
+            (500, "unknown"),
+            (429, "safe"),
+            (200, "unknown"),
+        ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let server = tokio::spawn(async move {
@@ -1856,9 +1916,14 @@ mod tests {
                 assert!(line.starts_with("POST /messages "));
                 let mut length = 0;
                 loop {
-                    line.clear(); stream.read_line(&mut line).await.unwrap();
-                    if line == "\r\n" { break; }
-                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") { length = value.trim().parse::<usize>().unwrap(); }
+                    line.clear();
+                    stream.read_line(&mut line).await.unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
                 }
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).await.unwrap();
@@ -1867,13 +1932,36 @@ mod tests {
                 assert!(body.contains("filename=\"SPOILER_fixture.txt\""));
                 assert!(!body.contains("spoiler_attachments"));
                 assert!(body.contains("name=\"channel_id\""));
-                let response = format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
-                stream.get_mut().write_all(response.as_bytes()).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                );
+                stream
+                    .get_mut()
+                    .write_all(response.as_bytes())
+                    .await
+                    .unwrap();
             });
             let api = Api::new(&format!("http://{address}"), Arc::new(Session::default())).unwrap();
-            let file = Upload { path: path.clone(), name: "fixture.txt".into(), mime: "text/plain".into(), size: 18, spoiler: true, anonymize: false };
-            let error = api.send_message_classified("chat", "caption", None, true, &[file], &[]).await.unwrap_err();
-            assert_eq!(match error { SendMessageError::FailedPermanent(_) => "rejected", SendMessageError::UnknownOutcome(_) => "unknown", SendMessageError::SafeToRetry(_) => "safe" }, expected);
+            let file = Upload {
+                path: path.clone(),
+                name: "fixture.txt".into(),
+                mime: "text/plain".into(),
+                size: 18,
+                spoiler: true,
+                anonymize: false,
+            };
+            let error = api
+                .send_message_classified("chat", "caption", None, true, &[file], &[])
+                .await
+                .unwrap_err();
+            assert_eq!(
+                match error {
+                    SendMessageError::FailedPermanent(_) => "rejected",
+                    SendMessageError::UnknownOutcome(_) => "unknown",
+                    SendMessageError::SafeToRetry(_) => "safe",
+                },
+                expected
+            );
             server.await.unwrap();
         }
         std::fs::remove_file(path).unwrap();
@@ -1890,13 +1978,17 @@ mod tests {
         let count = requests.clone();
         let timestamp = "2026-10-12T12:00:00.123456789Z";
         let server = tokio::spawn(async move {
-            let emojis: Vec<_> = (0..60).map(|index| serde_json::json!({
-                "id": format!("emoji-{index:03}"),
-                "name": format!("emote-{index}"),
-                "created_at": timestamp,
-                "format": "PNG",
-                "image_blob": "aW1hZ2U=",
-            })).collect();
+            let emojis: Vec<_> = (0..60)
+                .map(|index| {
+                    serde_json::json!({
+                        "id": format!("emoji-{index:03}"),
+                        "name": format!("emote-{index}"),
+                        "created_at": timestamp,
+                        "format": "PNG",
+                        "image_blob": "aW1hZ2U=",
+                    })
+                })
+                .collect();
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut stream = BufReader::new(stream);
@@ -1910,7 +2002,11 @@ mod tests {
                 let offset = if !repeat_page && query.contains_key("since") {
                     assert_eq!(query.get("since").unwrap(), timestamp);
                     let cursor = query.get("last_id").unwrap();
-                    emojis.iter().position(|emoji| emoji["id"] == *cursor).unwrap() + 1
+                    emojis
+                        .iter()
+                        .position(|emoji| emoji["id"] == *cursor)
+                        .unwrap()
+                        + 1
                 } else {
                     0
                 };
@@ -1924,13 +2020,18 @@ mod tests {
                 let body = serde_json::json!({
                     "emojis": &emojis[offset..end],
                     "has_more": end < emojis.len(),
-                }).to_string();
+                })
+                .to_string();
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len(),
                 );
                 count.fetch_add(1, Ordering::Relaxed);
-                stream.get_mut().write_all(response.as_bytes()).await.unwrap();
+                stream
+                    .get_mut()
+                    .write_all(response.as_bytes())
+                    .await
+                    .unwrap();
             }
         });
         let api = Api::new(&format!("http://{address}"), Arc::new(Session::default())).unwrap();
