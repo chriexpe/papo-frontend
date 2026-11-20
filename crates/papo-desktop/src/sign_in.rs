@@ -35,6 +35,7 @@ pub(crate) use transitions::{can_submit, password_rules_met};
 pub(crate) use view::{popup, screen};
 
 use crate::account_watch::{Credentials, SignedOut};
+use crate::server_list::ServerEntry;
 
 /// The longest username the account steps take, in characters.
 pub(crate) const USERNAME_MAX_CHARS: usize = 16;
@@ -156,6 +157,9 @@ pub(crate) struct Server {
     /// The saved account signing in again after its session expired; `None`
     /// for a new account.
     pub(crate) renewing: Option<Renewing>,
+    /// A saved server getting another account (Add account): the server
+    /// stays, so Change server is hidden and closing removes nothing.
+    pub(crate) adding: bool,
 }
 
 /// A saved account signing in again.
@@ -203,6 +207,37 @@ impl SignIn {
         (flow, discover)
     }
 
+    /// Another account on `server`, which is saved and keeps its accounts:
+    /// the sign-in form, its username focused. `icon` is the server's icon
+    /// the shell already decoded.
+    pub(crate) fn adding_account(
+        host: Host,
+        server: &ServerEntry,
+        icon: Option<Image>,
+        fields: &mut Fields,
+    ) -> SignIn {
+        fields.username.focused = true;
+        let server = Server {
+            id: server.id,
+            name: server.name.clone(),
+            address: server.address.clone(),
+            icon,
+            unlocked: false,
+            renewing: None,
+            adding: true,
+        };
+        SignIn {
+            host,
+            screen: Screen::Account {
+                server,
+                form: Form::Account(AccountForm::SignIn),
+                phase: Phase::Editing(None),
+            },
+            auth: None,
+            abandoned: Arc::default(),
+        }
+    }
+
     pub(crate) fn host(&self) -> Host {
         self.host
     }
@@ -222,7 +257,7 @@ impl SignIn {
                 server,
                 phase: Phase::Editing(_),
                 ..
-            } if server.renewing.is_none() => Some(server.id),
+            } if server.renewing.is_none() && !server.adding => Some(server.id),
             // A request in flight may yet save the account; the next start
             // finds the server already added if it did not.
             Screen::Account { .. } | Screen::Address { .. } => None,
@@ -274,6 +309,7 @@ fn renewing_screen(account: &SignedOut, fields: &mut Fields) -> Screen {
         address,
         icon: None,
         unlocked: false,
+        adding: false,
         renewing: Some(Renewing {
             account: account.id,
             credentials: account.credentials,

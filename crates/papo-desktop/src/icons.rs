@@ -27,6 +27,20 @@ pub(crate) static GEAR: Icon = Icon {
     body: r#"<circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M8 1.8V3.6M8 12.4V14.2M1.8 8H3.6M12.4 8H14.2M3.6 3.6L4.9 4.9M11.1 11.1L12.4 12.4M3.6 12.4L4.9 11.1M11.1 4.9L12.4 3.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/>"#,
 };
 
+/// Switch account: two arrows, one each way.
+pub(crate) static SWAP: Icon = Icon {
+    name: "papo-swap",
+    view: 16.0,
+    body: r#"<path d="M3 5.5H12.5M10 3L12.5 5.5L10 8M13 10.5H3.5M6 8L3.5 10.5L6 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+
+/// The current choice: a check mark.
+pub(crate) static CHECK: Icon = Icon {
+    name: "papo-check",
+    view: 16.0,
+    body: r#"<path d="M3 8.5L6.5 12L13 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+
 /// A text channel: a hash.
 pub(crate) static HASH: Icon = Icon {
     name: "papo-hash",

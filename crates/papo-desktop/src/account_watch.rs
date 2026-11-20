@@ -41,6 +41,13 @@ pub(crate) struct SignedOut {
     pub(crate) address: String,
     /// The username it last signed in with. Never logged.
     pub(crate) username: String,
+    /// A sign-in for it is running now. It still counts as signed out until
+    /// that succeeds, but is not offered meanwhile: a summary posted just
+    /// before the attempt succeeded would otherwise offer an account that
+    /// works. Should the SDK ever leave a session in `SigningIn` (a failed
+    /// install of its new generation can), the account is not offered until
+    /// a relaunch; it stays reachable from the server pill's accounts.
+    pub(crate) signing_in: bool,
 }
 
 /// What the keyring holds for a signed-out account.
@@ -126,6 +133,7 @@ fn summarize(
                 credentials,
                 address: server.address.as_str().to_owned(),
                 username: account.username.clone(),
+                signing_in: state == AuthState::SigningIn,
             });
         }
     }

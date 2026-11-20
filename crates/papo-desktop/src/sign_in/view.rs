@@ -301,15 +301,17 @@ fn create_account_inputs(state: &FormState) -> (Vec<El>, Button) {
 }
 
 /// The links under the button. Signing in again hides Create account and
-/// Change server: it is the same account on the same server.
+/// Change server: it is the same account on the same server. Adding an
+/// account to a saved server hides Change server: the server stays.
 fn links(server: &Server, form: Form, palette: &Palette) -> Vec<El> {
     if server.renewing.is_some() {
         return Vec::new();
     }
     match form {
+        Form::Unlock { .. } if server.adding => Vec::new(),
         Form::Unlock { .. } => vec![change_server(palette)],
-        Form::Account(AccountForm::SignIn) => vec![
-            controls::link(
+        Form::Account(AccountForm::SignIn) => {
+            let mut links = vec![controls::link(
                 "to-create-account",
                 strings::create_account(),
                 false,
@@ -317,9 +319,12 @@ fn links(server: &Server, form: Form, palette: &Palette) -> Vec<El> {
                     shell.sign_in_event(Event::ShowForm(AccountForm::CreateAccount));
                 },
                 palette,
-            ),
-            change_server(palette),
-        ],
+            )];
+            if !server.adding {
+                links.push(change_server(palette));
+            }
+            links
+        }
         Form::Account(AccountForm::CreateAccount) => vec![controls::link(
             "to-sign-in",
             strings::have_account(),

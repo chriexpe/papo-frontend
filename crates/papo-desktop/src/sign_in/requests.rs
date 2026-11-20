@@ -81,19 +81,36 @@ fn request(shell: &mut Shell, effect: Effect) {
             );
         }
         Effect::Unlock { password } => {
-            with_auth(shell, &sdk, Event::Unlocked, Err, move |auth| async move {
-                auth.server_login(LoginServerRequest {
-                    server_password: password,
-                })
-                .await
-                .map_err(|error| failure("unlock", &error))
-            });
+            with_auth(
+                shell,
+                &sdk,
+                Event::Unlocked,
+                Err,
+                move |auth, _| async move {
+                    auth.server_login(LoginServerRequest {
+                        server_password: password,
+                    })
+                    .await
+                    .map_err(|error| failure("unlock", &error))
+                },
+            );
         }
         Effect::SignIn { username, password } => {
             let expected = renewed_account(shell);
-            with_auth(shell, &sdk, Event::SignedIn, Err, move |auth| async move {
-                sign_in(&auth, username, password, expected).await
-            });
+            let adding = is_adding(shell);
+            with_auth(
+                shell,
+                &sdk,
+                Event::SignedIn,
+                Err,
+                move |auth, client| async move {
+                    let account = sign_in(&auth, username, password, expected).await?;
+                    if adding {
+                        make_active(&client, account).await;
+                    }
+                    Ok(())
+                },
+            );
         }
         Effect::CreateAccount { username, password } => {
             with_auth(
@@ -101,11 +118,30 @@ fn request(shell: &mut Shell, effect: Effect) {
                 &sdk,
                 Event::Created,
                 Created::NotRegistered,
-                move |auth| async move { create_account(&auth, username, password).await },
+                move |auth, _| async move { create_account(&auth, username, password).await },
             );
         }
         Effect::RemoveServer(id) => remove_left_server(shell, id),
         Effect::LoadIcon(_) | Effect::Finish { .. } | Effect::OpenServer(_) => {}
+    }
+}
+
+/// Whether the flow adds an account to a saved server.
+fn is_adding(shell: &Shell) -> bool {
+    shell.sign_in().is_some_and(
+        |flow| matches!(flow.screen(), Screen::Account { server, .. } if server.adding),
+    )
+}
+
+/// Makes `account` its server's active one: Add account signing in an
+/// account already saved there, which the SDK leaves as it was. A failure
+/// keeps the account that was active, and the sign-in still stands.
+async fn make_active(client: &ClientHandle, account: AccountId) {
+    if let Err(error) = client
+        .set_active_account(account.server(), Some(account))
+        .await
+    {
+        log::warn!("the signed-in account was not made active: {error}");
     }
 }
 
@@ -145,7 +181,7 @@ fn with_auth<T, Work>(
     sdk: &Sdk<Shell>,
     event: fn(T) -> Event,
     failed: fn(Failure) -> T,
-    work: impl FnOnce(AuthService) -> Work + Send + 'static,
+    work: impl FnOnce(AuthService, ClientHandle) -> Work + Send + 'static,
 ) where
     T: Send + 'static,
     Work: Future<Output = T> + Send + 'static,
@@ -162,7 +198,7 @@ fn with_auth<T, Work>(
                 Ok(auth) => auth,
                 Err(error) => return (None, failed(failure("sign-in handle", &error))),
             };
-            let answer = work(auth.clone()).await;
+            let answer = work(auth.clone(), client).await;
             (Some(auth), answer)
         },
         move |shell, (auth, answer)| {
@@ -193,14 +229,14 @@ impl SignIn {
     }
 }
 
-/// Signs in; when `expected` names the account signing in again, another
-/// person's credentials are wrong credentials here.
+/// Signs in, returning the account; when `expected` names the account
+/// signing in again, another person's credentials are wrong credentials here.
 async fn sign_in(
     auth: &AuthService,
     username: String,
     password: String,
     expected: Option<AccountId>,
-) -> Result<(), Failure> {
+) -> Result<AccountId, Failure> {
     let session = auth
         .login(LoginRequest { username, password }, now())
         .await
@@ -209,7 +245,7 @@ async fn sign_in(
         log::info!("sign-in again was for another account");
         return Err(Failure::WrongCredentials);
     }
-    Ok(())
+    Ok(session.account())
 }
 
 /// Registers, then signs in with the same credentials: one action for the
@@ -225,7 +261,7 @@ async fn create_account(auth: &AuthService, username: String, password: String) 
         return Created::NotRegistered(failure("registration", &error));
     }
     match sign_in(auth, username, password, None).await {
-        Ok(()) => Created::SignedIn,
+        Ok(_) => Created::SignedIn,
         Err(failure) => Created::NotSignedIn(failure),
     }
 }

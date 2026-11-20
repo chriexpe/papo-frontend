@@ -17,9 +17,11 @@ fn server(name: &str, channels: &[&str]) -> ServerEntry {
     ServerEntry {
         id: id(name),
         name: name.to_owned(),
+        address: format!("{name}.example.invalid"),
         owner: None,
         icon: None,
         account: None,
+        accounts: Vec::new(),
         text_channels: channels
             .iter()
             .map(|channel| ChannelEntry {
@@ -170,4 +172,20 @@ fn a_cancelled_drag_sends_nothing_and_shows_the_saved_order() {
     nav.drag_cancelled();
     assert_eq!(shown(&nav), ["a", "b"]);
     assert_eq!(nav.drag_ended(), None);
+}
+
+#[test]
+fn the_open_accounts_close_when_another_server_is_selected_or_theirs_goes() {
+    let mut nav = Navigation::default();
+    nav.servers_changed(list(&["Lumen", "Mirante"]));
+    nav.open_accounts();
+    assert!(nav.accounts_open());
+    nav.select_server(id("Mirante"));
+    nav.select_server(id("Lumen"));
+    assert!(!nav.accounts_open(), "they stay closed coming back");
+    nav.open_accounts();
+    nav.servers_changed(list(&["Mirante"]));
+    assert!(!nav.accounts_open());
+    nav.select_server(id("Mirante"));
+    assert!(!nav.accounts_open());
 }

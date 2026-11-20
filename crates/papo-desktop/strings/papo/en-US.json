@@ -70,5 +70,11 @@
   "badge.mentions_at_least.one": "at least {{count}} mention",
   "badge.mentions_at_least.other": "at least {{count}} mentions",
   "badge.count_more": "{{count}}+",
-  "badge.labelled": "{{name}}, {{badge}}"
+  "badge.labelled": "{{name}}, {{badge}}",
+  "server_card.switch_account": "Switch account",
+  "accounts.title": "ACCOUNTS ON {{server}}",
+  "accounts.row": "{{name}}, @{{username}}",
+  "accounts.count.one": "{{count}} account",
+  "accounts.count.other": "{{count}} accounts",
+  "accounts.add": "Add account"
 }

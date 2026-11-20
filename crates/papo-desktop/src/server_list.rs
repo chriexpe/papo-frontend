@@ -56,6 +56,8 @@ pub(crate) struct ServerEntry {
     /// The name its resource gives once an account is signed in, else its
     /// address as shown.
     pub(crate) name: String,
+    /// Its address as shown: without `https://` or a trailing slash.
+    pub(crate) address: String,
     /// Its owner's username, when the resource names one.
     pub(crate) owner: Option<String>,
     /// Its icon's encoded bytes from the account's media store, at most
@@ -63,6 +65,9 @@ pub(crate) struct ServerEntry {
     pub(crate) icon: Option<Arc<[u8]>>,
     /// The account the channel list shows: the active one, else the first.
     pub(crate) account: Option<AccountEntry>,
+    /// Every account saved on it, in the registry's order: the accounts a
+    /// switch can pick from.
+    pub(crate) accounts: Vec<AccountEntry>,
     /// Text channels in the server's order; channels of unknown kinds too.
     pub(crate) text_channels: Vec<ChannelEntry>,
     /// Voice channels in the server's order.
@@ -78,6 +83,19 @@ pub(crate) struct AccountEntry {
     /// Its display name: the nickname, or the username without one.
     pub(crate) name: String,
     pub(crate) username: String,
+}
+
+impl AccountEntry {
+    fn of(saved: &SavedAccount) -> AccountEntry {
+        AccountEntry {
+            id: saved.id,
+            name: saved
+                .display_name
+                .clone()
+                .unwrap_or_else(|| saved.username.clone()),
+            username: saved.username.clone(),
+        }
+    }
 }
 
 /// A channel row.
@@ -113,21 +131,22 @@ pub(crate) fn project(
             let id = saved.address.id();
             let account = shown_account(&registry.accounts, id);
             let found = account.and_then(|account| resources.get(&account.id));
+            let address = shown_address(saved.address.as_str()).to_owned();
             ServerEntry {
                 id,
                 name: found
                     .and_then(|found| found.name.clone())
-                    .unwrap_or_else(|| shown_address(saved.address.as_str()).to_owned()),
+                    .unwrap_or_else(|| address.clone()),
+                address,
                 owner: found.and_then(|found| found.owner.clone()),
                 icon: found.and_then(|found| found.icon.clone()),
-                account: account.map(|account| AccountEntry {
-                    id: account.id,
-                    name: account
-                        .display_name
-                        .clone()
-                        .unwrap_or_else(|| account.username.clone()),
-                    username: account.username.clone(),
-                }),
+                account: account.map(AccountEntry::of),
+                accounts: registry
+                    .accounts
+                    .iter()
+                    .filter(|account| account.id.server() == id)
+                    .map(AccountEntry::of)
+                    .collect(),
                 text_channels: found
                     .map(|found| found.text_channels.clone())
                     .unwrap_or_default(),

@@ -8,23 +8,29 @@ use crate::badges::Badge;
 use crate::rail::{ADD_KEY, tile_key};
 use crate::server_list::{AccountEntry, ChannelEntry, ServerEntry, ServerList};
 
-fn named(name: &str) -> ServerId {
+pub(super) fn named(name: &str) -> ServerId {
     ServerAddress::parse(&format!("https://{name}.example.invalid"))
         .unwrap()
         .id()
 }
 
-fn entry(name: &str, channels: &[&str]) -> ServerEntry {
+pub(super) fn ana(server: &str) -> AccountEntry {
+    AccountEntry {
+        id: AccountId::new(named(server), Uuid::nil()),
+        name: "Ana".to_owned(),
+        username: "ana".to_owned(),
+    }
+}
+
+pub(super) fn entry(name: &str, channels: &[&str]) -> ServerEntry {
     ServerEntry {
         id: named(name),
         name: name.to_owned(),
+        address: format!("{name}.example.invalid"),
         owner: Some("nadia".to_owned()),
         icon: None,
-        account: Some(AccountEntry {
-            id: AccountId::new(named(name), Uuid::nil()),
-            name: "Ana".to_owned(),
-            username: "ana".to_owned(),
-        }),
+        account: Some(ana(name)),
+        accounts: vec![ana(name)],
         text_channels: channels
             .iter()
             .map(|channel| ChannelEntry {
@@ -43,7 +49,7 @@ fn entry(name: &str, channels: &[&str]) -> ServerEntry {
 }
 
 /// The app with two servers in the rail.
-fn with_servers() -> Runtime<Shell> {
+pub(super) fn with_servers() -> Runtime<Shell> {
     let mut rt = app();
     rt.update(|shell, _tx| {
         shell.servers_changed(ServerList {
@@ -57,14 +63,14 @@ fn with_servers() -> Runtime<Shell> {
     rt
 }
 
-fn focused(rt: &Runtime<Shell>) -> Option<String> {
+pub(super) fn focused(rt: &Runtime<Shell>) -> Option<String> {
     rt.elements()
         .into_iter()
         .find(|element| element.focused)
         .and_then(|element| element.key)
 }
 
-fn click(rt: &mut Runtime<Shell>, key: &str) {
+pub(super) fn click(rt: &mut Runtime<Shell>, key: &str) {
     rt.accessibility_action(key, Action::Click, None);
     rt.frame(FRAME_S);
 }
@@ -110,12 +116,12 @@ fn pressing_a_channel_selects_it() {
 }
 
 #[test]
-fn tab_goes_rail_then_add_then_server_options_then_channels_then_composer() {
+fn tab_goes_rail_then_add_then_the_server_pill_then_channels_then_composer() {
     let mut rt = with_servers();
     rt.accessibility_action(&tile_key(named("Lumen")), Action::Focus, None);
     rt.frame(FRAME_S);
     let mut order = vec![focused(&rt).unwrap()];
-    for _ in 0..4 {
+    for _ in 0..5 {
         press(&mut rt, Key::Tab);
         order.push(focused(&rt).unwrap());
     }
@@ -124,6 +130,7 @@ fn tab_goes_rail_then_add_then_server_options_then_channels_then_composer() {
         [
             tile_key(named("Lumen")),
             ADD_KEY.to_owned(),
+            "switch-account".to_owned(),
             "server-options".to_owned(),
             "channel-Lumen-general".to_owned(),
             COMPOSER_KEY.to_owned(),
