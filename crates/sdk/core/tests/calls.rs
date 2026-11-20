@@ -432,6 +432,60 @@ fn reconnect_logout_and_removal_end_calls_without_autojoin() -> Result {
 }
 
 #[test]
+fn rejoin_after_timed_out_join_with_successful_server_leave() -> Result {
+    let h = CallHarness::open(
+        Some(FakeMediaFactory::new()),
+        CallConfig {
+            join_timeout: Duration::from_secs(1),
+            ..CallConfig::default()
+        },
+    )?;
+    h.run(async {
+        let client = h.client().handle();
+        let server_id = client
+            .add_server(&h.server().base_url(), UnixMicros(0))
+            .await?
+            .id;
+        let auth = client.auth(server_id)?;
+        register(&auth, "leave-timeout").await?;
+        let channel = h
+            .server()
+            .create_voice_channel("lounge")
+            .await?
+            .id
+            .ok_or("channel")?
+            .parse()?;
+        let session = login(&auth, "leave-timeout").await?;
+        let generation = online(&session).await?;
+        wait_for_channel(&session, channel).await?;
+
+        h.server()
+            .push_voice_fault(VoiceFault::DropNextVoiceJoined)
+            .await;
+        let old = session.calls().join(channel)?;
+        let ended = wait_phase(&old, |phase| matches!(phase, CallPhase::Ended(_))).await?;
+        assert_eq!(ended.phase, CallPhase::Ended(CallEndReason::JoinTimeout));
+
+        let replacement = session.calls().join(channel)?;
+        let joined = wait_phase(&replacement, |phase| {
+            matches!(phase, CallPhase::Joined | CallPhase::Ended(_))
+        })
+        .await?;
+        assert_eq!(joined.phase, CallPhase::Joined);
+        assert_eq!(joined.generation, generation);
+        let commands = h.server().recorded_voice_commands().await;
+        let kinds: Vec<_> = commands
+            .iter()
+            .map(|command| command.kind.as_str())
+            .collect();
+        assert_eq!(kinds, ["voice_join", "voice_leave", "voice_join"]);
+        replacement.leave();
+        Ok::<_, Box<dyn Error>>(())
+    })??;
+    h.finish()
+}
+
+#[test]
 fn chat_and_heartbeat_keep_flowing_under_candidate_flood() -> Result {
     let media = FakeMediaFactory::new();
     let h = CallHarness::open(Some(media.clone()), CallConfig::default())?;

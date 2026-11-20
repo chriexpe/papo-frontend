@@ -106,6 +106,13 @@ impl SessionCalls {
             return false;
         }
         if item.allow_after_end {
+            if let Some(join) = guard
+                .abandoned_joins
+                .iter_mut()
+                .find(|join| join.attempt == item.attempt)
+            {
+                join.awaiting_leave_reply = true;
+            }
             return true;
         }
         let Some(active) = guard.active.as_mut() else {
@@ -363,13 +370,7 @@ impl SessionCalls {
             JoinDispatchState::Transmitted | JoinDispatchState::Acknowledged
         );
         if send_leave && transmitted_join {
-            if active.join_state == JoinDispatchState::Transmitted {
-                guard.abandoned_joins.push_back(AbandonedJoin {
-                    channel: active.channel,
-                    join_rejected: false,
-                });
-            }
-            let _ = self.enqueue_wire_locked(
+            let leave_enqueued = self.enqueue_wire_locked(
                 guard,
                 QueuedVoiceCommand {
                     generation: active.generation,
@@ -381,6 +382,15 @@ impl SessionCalls {
                 },
                 effects,
             );
+            if leave_enqueued {
+                guard.abandoned_joins.push_back(AbandonedJoin {
+                    attempt: active.attempt,
+                    channel: active.channel,
+                    join_rejected: false,
+                    peer_id: active.peer_id.clone(),
+                    awaiting_leave_reply: false,
+                });
+            }
         }
         let needs_drain = active.media_lease.is_some() || active.media_start_in_flight;
         if let Some(lease) = active.media_lease.take() {

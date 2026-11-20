@@ -132,12 +132,15 @@ impl SessionCalls {
         let Ok(channel) = payload.channel_id.parse::<Uuid>() else {
             return;
         };
-        if let Some(pos) = guard
+        if payload.peer_id.is_empty() {
+            return;
+        }
+        if let Some(join) = guard
             .abandoned_joins
-            .iter()
-            .position(|join| join.channel == channel && !join.join_rejected)
+            .iter_mut()
+            .find(|join| join.channel == channel && join.awaits_join_reply())
         {
-            guard.abandoned_joins.remove(pos);
+            join.peer_id = Some(payload.peer_id.clone());
             return;
         }
         let Some(active_channel) = guard
@@ -151,6 +154,12 @@ impl SessionCalls {
         let Some(admission) = guard.reducer.apply_voice_joined(active_channel, payload) else {
             return;
         };
+        // Direct replies to earlier commands precede this acknowledgement. Keep known
+        // peers for delayed broadcasts, which can still arrive after the replacement.
+        guard.abandoned_joins.retain_mut(|join| {
+            join.awaiting_leave_reply = false;
+            join.peer_id.is_some()
+        });
         let mut initial_wire = Vec::new();
         if let Some(active) = guard.active.as_mut() {
             active.phase = CallPhase::Joined;
@@ -276,16 +285,41 @@ impl SessionCalls {
         payload: &papo_api::gateway::VoiceLeaveEvent,
         effects: &mut SideEffects,
     ) {
+        let channel = payload.channel_id.parse::<Uuid>().ok();
+        let user = payload.user_id.parse::<Uuid>().ok();
         let peer_ref = Self::active_peer_ref(guard.active.as_ref());
+        if let Some(channel) = channel
+            && user == Some(self.account.user())
+            && !payload.peer_id.is_empty()
+            && !peer_ref
+                .as_ref()
+                .is_some_and(|peer| peer.channel == channel && peer.peer_id == payload.peer_id)
+        {
+            // A delayed leave for a known peer must not retire an unacknowledged join
+            // on the same channel. Without a known peer, the ordered self-leave can
+            // complete an abandoned join whose acknowledgement never arrived.
+            let known = guard.abandoned_joins.iter().position(|join| {
+                join.channel == channel && join.peer_id.as_deref() == Some(payload.peer_id.as_str())
+            });
+            let leaving = known.or_else(|| {
+                guard.abandoned_joins.iter().position(|join| {
+                    join.channel == channel && join.awaiting_leave_reply && join.awaits_join_reply()
+                })
+            });
+            if let Some(pos) = leaving {
+                guard.abandoned_joins.remove(pos);
+            }
+        }
         let outcome = guard
             .reducer
             .apply_leave(self.account.user(), peer_ref, payload);
         if outcome.ended_active_call {
             self.finish_active_locked(guard, CallEndReason::ServerRemoved, false, effects);
-        } else if let Ok(user) = payload.user_id.parse::<Uuid>()
-            && guard.active.as_ref().is_some_and(|active| {
-                payload.channel_id.parse::<Uuid>().ok() == Some(active.channel)
-            })
+        } else if let Some(user) = user
+            && guard
+                .active
+                .as_ref()
+                .is_some_and(|active| channel == Some(active.channel))
         {
             if let Some(active) = guard.active.as_mut() {
                 active.subscriptions.note_member_left(user);
@@ -358,19 +392,8 @@ impl SessionCalls {
                 | VoiceErrorCode::RateLimited
                 | VoiceErrorCode::RoomClosed
         );
-        // An ordered unscoped not-found can also be the explicit leave rejecting an
-        // abandoned join that never acquired a peer or sent a typed join reply.
-        if unscoped && let Some(join) = guard.abandoned_joins.front_mut() {
-            if code == VoiceErrorCode::NotFound
-                || (join.join_rejected && code == VoiceErrorCode::RateLimited)
-            {
-                guard.abandoned_joins.pop_front();
-                return;
-            }
-            if can_reject_join && !join.join_rejected {
-                join.join_rejected = true;
-                return;
-            }
+        if unscoped && Self::consume_abandoned_error(guard, code, can_reject_join) {
+            return;
         }
 
         if let Some(ch) = err_channel
@@ -423,5 +446,34 @@ impl SessionCalls {
                 self.publish_active_locked(guard);
             }
         }
+    }
+
+    fn consume_abandoned_error(
+        guard: &mut CoordinatorState,
+        code: VoiceErrorCode,
+        can_reject_join: bool,
+    ) -> bool {
+        // Not-found can complete the leave of a join that never acquired a peer.
+        if let Some(pos) = guard
+            .abandoned_joins
+            .iter()
+            .position(|join| join.awaiting_leave_reply)
+            && (code == VoiceErrorCode::NotFound
+                || (!guard.abandoned_joins[pos].awaits_join_reply()
+                    && code == VoiceErrorCode::RateLimited))
+        {
+            guard.abandoned_joins.remove(pos);
+            return true;
+        }
+        if can_reject_join
+            && let Some(join) = guard
+                .abandoned_joins
+                .iter_mut()
+                .find(|join| join.awaits_join_reply())
+        {
+            join.join_rejected = true;
+            return true;
+        }
+        false
     }
 }

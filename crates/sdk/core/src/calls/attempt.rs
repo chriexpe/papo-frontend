@@ -36,11 +36,22 @@ pub(crate) enum JoinDispatchState {
     Acknowledged,
 }
 
-/// A transmitted join that ended locally before the backend acknowledged it.
+/// A locally ended join with an outstanding server-side leave.
 pub(crate) struct AbandonedJoin {
+    pub attempt: CallAttemptId,
     pub channel: Uuid,
     /// A rejected join can still produce a separate error for its ordered leave.
     pub join_rejected: bool,
+    /// Known peer identity, including acknowledgements received after the attempt ended.
+    pub peer_id: Option<String>,
+    /// The writer approved the leave and no later join has been acknowledged.
+    pub awaiting_leave_reply: bool,
+}
+
+impl AbandonedJoin {
+    pub(crate) fn awaits_join_reply(&self) -> bool {
+        !self.join_rejected && self.peer_id.is_none()
+    }
 }
 
 /// Active attempt owned by a session.
