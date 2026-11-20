@@ -198,6 +198,9 @@ impl Stream for StagedFileStream {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.as_mut().get_mut();
         loop {
+            if matches!(this.state, StreamState::Done) {
+                return Poll::Ready(None);
+            }
             if this.is_cancelled() {
                 this.slot.close();
                 this.state = StreamState::Done;
@@ -336,61 +339,4 @@ fn verify_eof_and_digest(reader: &mut ReaderState) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    //! Pure chunk-reader integrity tests for staged upload streams; no sockets or clocks.
-    use super::*;
-    use std::io::Write;
-
-    fn reader_for(contents: &[u8], expected_size: u64, expected_digest: [u8; 32]) -> ReaderState {
-        let mut file = tempfile::tempfile().unwrap();
-        file.write_all(contents).unwrap();
-        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0)).unwrap();
-        ReaderState {
-            file,
-            expected_digest,
-            expected_size,
-            bytes_read: 0,
-            hasher: Sha256::new(),
-        }
-    }
-
-    #[test]
-    fn chunk_reader_detects_truncation_growth_and_digest_mismatch() {
-        let valid = b"hello-stream-world";
-        let digest: [u8; 32] = Sha256::digest(valid).into();
-
-        // Valid payload succeeds on final chunk.
-        let step = read_next_chunk(reader_for(valid, valid.len() as u64, digest)).unwrap();
-        assert!(matches!(step, ReadStep::LastChunk(bytes) if bytes.as_ref() == valid));
-
-        // Zero-byte file succeeds with Eof.
-        let empty_digest: [u8; 32] = Sha256::digest(b"").into();
-        let step = read_next_chunk(reader_for(b"", 0, empty_digest)).unwrap();
-        assert!(matches!(step, ReadStep::Eof));
-
-        // Truncated file returns UnexpectedEof once EOF arrives before expected_size.
-        let truncated = reader_for(&valid[..5], valid.len() as u64, digest);
-        let first = read_next_chunk(truncated).unwrap();
-        let ReadStep::Chunk(_, next_state) = first else {
-            panic!("expected partial chunk before EOF");
-        };
-        let eof_err = read_next_chunk(next_state).err().unwrap();
-        assert_eq!(eof_err.kind(), ErrorKind::UnexpectedEof);
-
-        // File that grew past expected_size returns InvalidData.
-        let mut grown = valid.to_vec();
-        grown.push(0xff);
-        let err = read_next_chunk(reader_for(&grown, valid.len() as u64, digest))
-            .err()
-            .unwrap();
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
-
-        // Tampered bytes with same length return InvalidData before emitting final chunk.
-        let mut tampered = valid.to_vec();
-        tampered[0] ^= 0xff;
-        let err = read_next_chunk(reader_for(&tampered, valid.len() as u64, digest))
-            .err()
-            .unwrap();
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
-    }
-}
+mod tests;

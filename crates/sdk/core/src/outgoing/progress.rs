@@ -101,6 +101,7 @@ impl ProgressCoalescer {
 }
 
 pub(super) struct ProgressReporter {
+    attempt: u32,
     coalescer: Mutex<ProgressCoalescer>,
     active: Arc<AtomicBool>,
     root_cancel: tokio_util::sync::CancellationToken,
@@ -121,12 +122,14 @@ impl ProgressReporter {
     pub(super) fn start(
         account: AccountId,
         operation_id: Uuid,
+        attempt: u32,
         total_bytes: u64,
         root_cancel: tokio_util::sync::CancellationToken,
         image: Arc<StateCell<Arc<OutgoingSnapshot>>>,
     ) -> (Arc<Self>, ActiveProgressGuard) {
         let active = Arc::new(AtomicBool::new(true));
         let reporter = Arc::new(Self {
+            attempt,
             coalescer: Mutex::new(ProgressCoalescer::new(
                 account,
                 operation_id,
@@ -155,25 +158,37 @@ impl ProgressReporter {
         let Some(progress) = next else {
             return;
         };
-        if !self.active.load(Ordering::Acquire) || self.root_cancel.is_cancelled() {
-            return;
-        }
-        publish_progress(&self.image, progress);
+        publish_progress(
+            &self.image,
+            progress,
+            self.attempt,
+            &self.active,
+            &self.root_cancel,
+        );
     }
 }
 
-pub(super) fn publish_progress(image: &StateCell<Arc<OutgoingSnapshot>>, progress: UploadProgress) {
+pub(super) fn publish_progress(
+    image: &StateCell<Arc<OutgoingSnapshot>>,
+    progress: UploadProgress,
+    expected_attempt: u32,
+    active: &AtomicBool,
+    root_cancel: &tokio_util::sync::CancellationToken,
+) {
     image.send_if_modified(|current| {
-        if current.account != Some(progress.account)
+        if !active.load(Ordering::Acquire)
+            || root_cancel.is_cancelled()
+            || current.account != Some(progress.account)
             || progress.bytes_uploaded > progress.total_bytes
         {
             return false;
         }
-        let still_sending = current
-            .operations
-            .iter()
-            .any(|op| op.id == progress.operation_id && op.state == OperationState::Sending);
-        if !still_sending {
+        let same_sending_attempt = current.operations.iter().any(|op| {
+            op.id == progress.operation_id
+                && op.state == OperationState::Sending
+                && op.attempts == expected_attempt
+        });
+        if !same_sending_attempt {
             return false;
         }
         if let Some(existing) = current.upload_progress
@@ -195,207 +210,4 @@ pub(super) fn publish_progress(image: &StateCell<Arc<OutgoingSnapshot>>, progres
 }
 
 #[cfg(test)]
-mod tests {
-    //! Pure deterministic coalescer tests using synthetic instants; no real clock or socket.
-    use super::*;
-    use crate::ServerAddress;
-
-    fn account() -> AccountId {
-        AccountId::new(
-            ServerAddress::parse("https://example.invalid")
-                .unwrap()
-                .id(),
-            Uuid::from_u128(1),
-        )
-    }
-
-    #[test]
-    fn coalescer_bounds_many_small_chunks_and_never_exceeds_total() {
-        let base = Instant::now();
-        let total = 10_000_u64 * 1024;
-        let mut coalescer = ProgressCoalescer::new(
-            account(),
-            Uuid::from_u128(2),
-            total,
-            base,
-            MIN_PUBLISH_INTERVAL,
-        );
-        let mut published = Vec::new();
-        for chunk in 0_u64..10_000 {
-            // 10,000 chunks spread across 500 ms (50 us per chunk).
-            let now = base + Duration::from_micros(chunk * 50);
-            if let Some(progress) = coalescer.advance(1024, now) {
-                published.push(progress);
-            }
-        }
-        // 500 ms at 100 ms interval -> at most 5 intermediate ticks plus completion milestone.
-        assert!(
-            published.len() <= 6,
-            "published {} updates",
-            published.len()
-        );
-        assert_ne!(published.len(), 0);
-        for pair in published.windows(2) {
-            assert!(pair[0].bytes_uploaded < pair[1].bytes_uploaded);
-        }
-        let last = published.last().unwrap();
-        assert_eq!(last.bytes_uploaded, total);
-        assert_eq!(last.total_bytes, total);
-        // Overshoot is clamped and never emits duplicate or > total values.
-        assert!(
-            coalescer
-                .advance(4096, base + Duration::from_secs(10))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn zero_delta_never_emits_duplicate_publication() {
-        let base = Instant::now();
-        let mut coalescer = ProgressCoalescer::new(
-            account(),
-            Uuid::from_u128(3),
-            1024,
-            base,
-            MIN_PUBLISH_INTERVAL,
-        );
-        assert!(
-            coalescer
-                .advance(0, base + Duration::from_secs(1))
-                .is_none()
-        );
-        let first = coalescer
-            .advance(512, base + Duration::from_millis(100))
-            .unwrap();
-        assert_eq!(first.bytes_uploaded, 512);
-        assert!(
-            coalescer
-                .advance(0, base + Duration::from_secs(2))
-                .is_none()
-        );
-        let done = coalescer
-            .advance(512, base + Duration::from_millis(101))
-            .unwrap();
-        assert_eq!(done.bytes_uploaded, 1024);
-    }
-
-    #[test]
-    fn publish_progress_preserves_all_operation_arc_identities() {
-        let acct = account();
-        let op1 = Arc::new(super::super::Operation {
-            id: Uuid::from_u128(10),
-            channel_id: Uuid::from_u128(20),
-            kind: Arc::new(super::super::OperationKind::Message(
-                super::super::OutgoingMessage::default(),
-            )),
-            state: OperationState::Sending,
-            attempts: 1,
-            depends_on: None,
-            failure: None,
-            message_id: None,
-            history_projected: false,
-            message: None,
-            created_at_us: 0,
-        });
-        let op2 = Arc::new(super::super::Operation {
-            id: Uuid::from_u128(11),
-            channel_id: Uuid::from_u128(21),
-            kind: Arc::new(super::super::OperationKind::Message(
-                super::super::OutgoingMessage::default(),
-            )),
-            state: OperationState::Queued,
-            attempts: 0,
-            depends_on: None,
-            failure: None,
-            message_id: None,
-            history_projected: false,
-            message: None,
-            created_at_us: 0,
-        });
-        let cell = StateCell::new(Arc::new(OutgoingSnapshot {
-            account: Some(acct),
-            version: 1,
-            operations: vec![Arc::clone(&op1), Arc::clone(&op2)],
-            upload_progress: Some(UploadProgress::initial(acct, op1.id, 1000)),
-            fault: None,
-        }));
-        publish_progress(
-            &cell,
-            UploadProgress {
-                account: acct,
-                operation_id: op1.id,
-                bytes_uploaded: 400,
-                total_bytes: 1000,
-            },
-        );
-        let snap = cell.borrow().clone();
-        assert_eq!(snap.version, 2);
-        assert_eq!(snap.upload_progress.unwrap().bytes_uploaded, 400);
-        assert!(Arc::ptr_eq(&snap.operations[0], &op1));
-        assert!(Arc::ptr_eq(&snap.operations[1], &op2));
-        // Non-Sending operations never accept stale progress updates.
-        publish_progress(
-            &cell,
-            UploadProgress {
-                account: acct,
-                operation_id: op2.id,
-                bytes_uploaded: 100,
-                total_bytes: 1000,
-            },
-        );
-        assert_eq!(cell.borrow().version, 2);
-    }
-
-    #[test]
-    fn close_image_atomically_clears_progress_and_rejects_late_updates() {
-        let acct = account();
-        let op_id = Uuid::from_u128(42);
-        let queue = super::super::AccountQueue::default();
-        queue.image.send_if_modified(|current| {
-            *current = Arc::new(OutgoingSnapshot {
-                account: Some(acct),
-                version: 3,
-                operations: vec![Arc::new(super::super::Operation {
-                    id: op_id,
-                    channel_id: Uuid::from_u128(43),
-                    kind: Arc::new(super::super::OperationKind::Message(
-                        super::super::OutgoingMessage::default(),
-                    )),
-                    state: OperationState::Sending,
-                    attempts: 1,
-                    depends_on: None,
-                    failure: None,
-                    message_id: None,
-                    history_projected: false,
-                    message: None,
-                    created_at_us: 0,
-                })],
-                upload_progress: Some(UploadProgress {
-                    account: acct,
-                    operation_id: op_id,
-                    bytes_uploaded: 512,
-                    total_bytes: 1024,
-                }),
-                fault: None,
-            });
-            true
-        });
-        let rx = queue.image.subscribe();
-        queue.close_image();
-        assert!(rx.has_changed().is_err());
-        assert!(rx.borrow().upload_progress.is_none());
-        assert_eq!(rx.borrow().version, 4);
-        // Late progress ticks after close_image must never reinstate progress.
-        publish_progress(
-            &queue.image,
-            UploadProgress {
-                account: acct,
-                operation_id: op_id,
-                bytes_uploaded: 1024,
-                total_bytes: 1024,
-            },
-        );
-        assert!(rx.borrow().upload_progress.is_none());
-        assert_eq!(rx.borrow().version, 4);
-    }
-}
+mod tests;

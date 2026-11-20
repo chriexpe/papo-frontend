@@ -145,8 +145,15 @@ impl OutgoingService {
     /// materializing the full file in memory.
     ///
     /// Enforces the 100 MiB per-attachment ceiling while copying, hashes incrementally, syncs the
-    /// staged file before returning and removes partial files on failure. An unreferenced staged
-    /// file remains eligible for orphan collection until pinned by a committed draft or operation.
+    /// staged file before returning and removes partial files on failure. While the returned
+    /// [`StagedAttachment`] handle stays alive in memory, background orphan collection preserves
+    /// its blob; once dropped without a durable draft or operation reference (or after restart),
+    /// the file remains eligible for collection.
+    ///
+    /// `reader` is driven synchronously on a tracked blocking worker, so a reader whose `read()`
+    /// call blocks indefinitely (for example an unclosed pipe or stalled IPC stream) can delay
+    /// account removal or client shutdown until `read()` returns; callers should supply bounded
+    /// local file readers or sources that unblock promptly.
     /// # Errors
     /// Returns [`OutgoingError::InvalidInput`] above 100 MiB, [`OutgoingError::Source`] on reader
     /// failure, or account/storage failures.

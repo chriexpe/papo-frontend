@@ -162,13 +162,13 @@ async fn drain(service: &OutgoingService) -> Result<(), OutgoingError> {
             Err(error) => return Err(error),
         };
         probe(session, operation.id, OutgoingDispatchPhase::Queued).await;
-        match claim_sending(service, &epoch, operation.id, initial_progress).await {
-            Ok(()) => {}
+        let attempt = match claim_sending(service, &epoch, operation.id, initial_progress).await {
+            Ok(attempt) => attempt,
             Err(OutgoingError::InvalidState) if !is_still_queued(session, operation.id).await => {
                 continue;
             }
             Err(error) => return Err(error),
-        }
+        };
         probe(session, operation.id, OutgoingDispatchPhase::Claimed).await;
         let result = execute_send(
             session,
@@ -176,7 +176,7 @@ async fn drain(service: &OutgoingService) -> Result<(), OutgoingError> {
             &rest,
             &operation,
             opened,
-            initial_progress,
+            initial_progress.map(|initial| (attempt, initial)),
             target,
         )
         .await;
@@ -220,7 +220,7 @@ async fn claim_sending(
     epoch: &crate::generation::Epoch,
     operation_id: Uuid,
     initial_progress: Option<UploadProgress>,
-) -> Result<(), OutgoingError> {
+) -> Result<u32, OutgoingError> {
     let session = &service.session;
     let _guard = session.inner.outgoing.serial.lock().await;
     session.inner.epochs.validate(epoch.generation)?;
@@ -239,7 +239,17 @@ async fn claim_sending(
         .await?;
     service
         .publish_with_progress(ProgressUpdate::Set(initial_progress))
-        .await
+        .await?;
+    session
+        .inner
+        .outgoing
+        .image
+        .borrow()
+        .operations
+        .iter()
+        .find(|op| op.id == operation_id && op.state == OperationState::Sending)
+        .map(|op| op.attempts)
+        .ok_or(OutgoingError::InvalidState)
 }
 
 async fn execute_send(
@@ -248,15 +258,16 @@ async fn execute_send(
     rest: &RestClient,
     operation: &Operation,
     opened: Vec<OpenedAttachment>,
-    initial_progress: Option<UploadProgress>,
+    initial_progress: Option<(u32, UploadProgress)>,
     target: Option<Uuid>,
 ) -> Result<Outcome, papo_api::Error> {
     let timeout = session.client.inner.config.request_timeout;
     let (reporter, _guard) = match initial_progress {
-        Some(initial) => {
+        Some((attempt, initial)) => {
             let (reporter, guard) = ProgressReporter::start(
                 initial.account,
                 initial.operation_id,
+                attempt,
                 initial.total_bytes,
                 session.inner.root.clone(),
                 Arc::clone(&session.inner.outgoing.image),
