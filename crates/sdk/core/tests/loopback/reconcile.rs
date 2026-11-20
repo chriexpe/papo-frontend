@@ -80,14 +80,15 @@ fn reconcile_replays_channel_mutations_after_a_captured_channels_response() -> R
                 && snapshot
                     .channels
                     .iter()
-                    .any(|channel| channel.id == created.id)
+                    .any(|channel| Some(channel.id.to_string()) == created.id)
                 && snapshot.channels.iter().any(|channel| {
-                    channel.id == renamed.id && channel.name.as_deref() == Some("after-rename")
+                    Some(channel.id.to_string()) == renamed.id
+                        && channel.name.as_deref() == Some("after-rename")
                 })
                 && snapshot
                     .channels
                     .iter()
-                    .all(|channel| channel.id != deleted.id)
+                    .all(|channel| Some(channel.id.to_string()) != deleted.id)
         })
         .await?;
         assert_eq!(online(&session).await?, generation);
@@ -123,7 +124,7 @@ fn held_old_generation_response_cannot_replace_new_generation_channels() -> Resu
             snapshot
                 .channels
                 .iter()
-                .any(|channel| channel.id == marker.id)
+                .any(|channel| Some(channel.id.to_string()) == marker.id)
         })
         .await?;
         assert_eq!(snapshot.generation, generation);
@@ -131,7 +132,7 @@ fn held_old_generation_response_cannot_replace_new_generation_channels() -> Resu
             snapshot
                 .channels
                 .iter()
-                .any(|current| current.id == channel.id
+                .any(|current| Some(current.id.to_string()) == channel.id
                     && current.name.as_deref() == Some("new-generation"))
         );
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -176,20 +177,20 @@ fn disconnected_channel_changes_replace_the_same_resource_subscription() -> Resu
                 && snapshot
                     .channels
                     .iter()
-                    .any(|channel| channel.id == created.id)
+                    .any(|channel| Some(channel.id.to_string()) == created.id)
         })
         .await?;
         assert!(
             snapshot
                 .channels
                 .iter()
-                .all(|channel| channel.id != deleted.id)
+                .all(|channel| Some(channel.id.to_string()) != deleted.id)
         );
         assert!(
             snapshot
                 .channels
                 .iter()
-                .any(|channel| channel.id == renamed.id
+                .any(|channel| Some(channel.id.to_string()) == renamed.id
                     && channel.name.as_deref() == Some("renamed-offline"))
         );
         Ok::<_, Box<dyn std::error::Error>>(())

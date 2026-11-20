@@ -24,12 +24,7 @@ async fn setup(f: &Fixture) -> Result<(Session, Uuid)> {
         .parse()?;
     let mut resources = session.subscribe_resources();
     loop {
-        if resources
-            .borrow()
-            .channels
-            .iter()
-            .any(|c| c.id.as_deref().and_then(|s| s.parse().ok()) == Some(channel))
-        {
+        if resources.borrow().channels.iter().any(|c| c.id == channel) {
             break;
         }
         resources.changed().await?;

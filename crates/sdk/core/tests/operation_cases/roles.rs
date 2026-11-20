@@ -20,35 +20,23 @@ fn assignment_and_removal_update_already_requested_profile_roles() -> Result {
         let receipt = session.operations().assign_role(user, role).await?;
         assert_eq!(receipt.refresh, RefreshStatus::Updated);
         let resources = session.subscribe_resources().borrow().clone();
-        let profile = resources
-            .profiles
-            .iter()
-            .find(|profile| profile.id.as_deref().and_then(|id| id.parse().ok()) == Some(user))
-            .ok_or("missing requested profile")?;
-        assert!(
-            profile
-                .roles
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .any(|label| label.id.as_deref().and_then(|id| id.parse().ok()) == Some(role))
-        );
+        assert!(resources.profiles.get(user).is_some());
+        let assignments = resources
+            .users
+            .get(user)
+            .and_then(|summary| summary.roles.as_ref())
+            .ok_or("missing assignments")?;
+        assert!(assignments.contains(&role));
         let receipt = session.operations().remove_role(user, role).await?;
         assert_eq!(receipt.refresh, RefreshStatus::Updated);
         let resources = session.subscribe_resources().borrow().clone();
-        let profile = resources
-            .profiles
-            .iter()
-            .find(|profile| profile.id.as_deref().and_then(|id| id.parse().ok()) == Some(user))
-            .ok_or("missing requested profile")?;
-        assert!(
-            !profile
-                .roles
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .any(|label| label.id.as_deref().and_then(|id| id.parse().ok()) == Some(role))
-        );
+        assert!(resources.profiles.get(user).is_some());
+        let assignments = resources
+            .users
+            .get(user)
+            .and_then(|summary| summary.roles.as_ref())
+            .ok_or("missing assignments")?;
+        assert!(!assignments.contains(&role));
         let requests = f.server().take_operation_requests().await;
         assert!(
             !requests

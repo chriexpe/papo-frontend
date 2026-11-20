@@ -140,14 +140,10 @@ fn live_reply_backlog_shares_one_inbox_page_and_uncached_event_fetches_evidence(
             .create_channel("barrier")
             .await?
             .id
-            .ok_or("channel")?;
+            .ok_or("channel")?
+            .parse::<Uuid>()?;
         let mut resources = first.subscribe_resources();
-        while !resources
-            .borrow()
-            .channels
-            .iter()
-            .any(|c| c.id.as_ref() == Some(&barrier))
-        {
+        while !resources.borrow().channels.iter().any(|c| c.id == barrier) {
             resources.changed().await?;
         }
         hold.release();

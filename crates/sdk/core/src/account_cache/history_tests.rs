@@ -17,10 +17,7 @@ use crate::{
     ServerAddress,
     storage_worker::{StorageWorker, WorkerConfig},
 };
-use papo_api::{
-    Uuid,
-    wire::{Channel, DirectConversation},
-};
+use papo_api::Uuid;
 use rusqlite::{Connection, params};
 use std::{
     future::Future,
@@ -30,7 +27,7 @@ use std::{
 const CHANNEL: [u8; 16] = 5_u128.to_be_bytes();
 const GENERATION: Generation = Generation(4);
 
-fn account() -> AccountId {
+pub(super) fn account() -> AccountId {
     AccountId::new(
         ServerAddress::parse("https://example.invalid")
             .unwrap()
@@ -41,21 +38,35 @@ fn account() -> AccountId {
 
 fn snapshot() -> ResourceSnapshot {
     let mut snapshot = ResourceSnapshot::empty(GENERATION);
-    snapshot.channels = vec![Channel {
-        id: Some(Uuid::from_bytes(CHANNEL).to_string()),
-        ..Channel::default()
-    }]
-    .into();
+    let channel = super::resource_fixtures::channel(Uuid::from_bytes(CHANNEL));
+    snapshot.channels.set(channel.id, channel);
     snapshot
 }
 
-fn run<F: Future<Output = ()>>(test: impl FnOnce(AccountCaches, DataRoot) -> F) {
+pub(super) fn run<F: Future<Output = ()>>(test: impl FnOnce(AccountCaches, DataRoot) -> F) {
+    run_with_initializer(Arc::new(|_| Ok(())), test);
+}
+
+pub(super) fn run_with_initializer<F: Future<Output = ()>>(
+    initialize: Initializer,
+    test: impl FnOnce(AccountCaches, DataRoot) -> F,
+) {
     let directory = tempfile::tempdir().unwrap();
     let root = DataRoot::new(directory.path());
     let mut worker = StorageWorker::shared(WorkerConfig::default()).unwrap();
+    let register = worker.registrar();
     let caches = AccountCaches::new(
         root.clone(),
-        Arc::new(worker.registrar()),
+        Arc::new(move |path, schema| {
+            let initialize = Arc::clone(&initialize);
+            register(
+                path,
+                Arc::new(move |connection| {
+                    schema(connection)?;
+                    initialize(connection)
+                }),
+            )
+        }),
         Arc::new(ReadPool::default()),
     );
     tokio::runtime::Runtime::new()
@@ -270,11 +281,7 @@ fn channel_and_dm_publication_preserves_survivors_and_revokes_disappearance() {
         let (cache, old) = populated(&caches, 1).await;
         let mut updated = snapshot();
         updated.version = 1;
-        updated.dms = vec![DirectConversation {
-            id: Uuid::from_u128(8).to_string(),
-            ..DirectConversation::default()
-        }]
-        .into();
+        updated.dms = crate::account_cache::resource_fixtures::snapshot().dms;
         cache.update(&updated, &[CacheResource::Dms]).await.unwrap();
         assert_eq!(
             cache
@@ -290,7 +297,7 @@ fn channel_and_dm_publication_preserves_survivors_and_revokes_disappearance() {
             .history_authorize(dm, GENERATION, false)
             .await
             .unwrap();
-        updated.channels = Vec::new().into();
+        updated.channels = crate::ResourceTable::default();
         cache
             .update(&updated, &[CacheResource::Channels])
             .await
@@ -303,7 +310,7 @@ fn channel_and_dm_publication_preserves_survivors_and_revokes_disappearance() {
                 .is_none()
         );
         assert!(cache.history_load(dm, GENERATION).await.unwrap().is_some());
-        updated.dms = Vec::new().into();
+        updated.dms = crate::ResourceTable::default();
         cache.update(&updated, &[CacheResource::Dms]).await.unwrap();
         assert!(cache.history_load(dm, GENERATION).await.unwrap().is_none());
         caches.close(account()).await.unwrap();

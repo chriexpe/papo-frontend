@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod admission_tests;
+mod decoding;
 mod encoding;
 pub(crate) mod history;
 mod history_manifest;
@@ -13,14 +14,19 @@ mod history_tests;
 mod lifecycle_tests;
 mod migration;
 mod persistence;
+mod registration;
+#[cfg(test)]
+mod resource_fixtures;
 mod retention;
+#[cfg(test)]
+mod revision_tests;
 mod schema;
 #[cfg(test)]
 mod tests;
 
 use crate::{
     AccountId, DataRoot, Generation, ResourceSnapshot,
-    storage_worker::{DatabaseWriter, Initializer, ReadPool, SqlBatch, WorkerError},
+    storage_worker::{DatabaseWriter, Initializer, ReadPool, WorkerError},
 };
 use std::{
     collections::HashMap,
@@ -72,7 +78,7 @@ pub enum CacheResource {
     Blocks,
 }
 
-const ALL_RESOURCES: [CacheResource; 7] = [
+pub(crate) const ALL_RESOURCES: [CacheResource; 7] = [
     CacheResource::Server,
     CacheResource::Channels,
     CacheResource::Roles,
@@ -137,56 +143,6 @@ impl AccountCaches {
                 accounts: Mutex::new(HashMap::new()),
             }),
         }
-    }
-
-    /// Open only after the caller verified `whoami` matches this account. Repeated opens
-    /// share a handle. Schema/created-for checks complete before any resource read.
-    /// Cancellation before lifecycle admission starts no detached work. Once admitted,
-    /// cancellation retains the close fence until the registered writer is fully installed.
-    ///
-    /// # Errors
-    /// Returns sanitized filesystem, initialization, registration or storage failures.
-    pub async fn open(&self, account: AccountId) -> Result<Arc<AccountCache>, CacheError> {
-        let inner = Arc::clone(&self.inner);
-        let slot = inner.slot(account).await;
-        let mut registered = Arc::clone(&slot.cache).lock_owned().await;
-        tokio::spawn(async move {
-            if let Some(cache) = registered.as_ref() {
-                return Ok(Arc::clone(cache));
-            }
-            let path = inner.root.account_cache(account);
-            let parent = path.parent().ok_or(CacheError::InvalidData)?.to_path_buf();
-            tokio::task::spawn_blocking(move || std::fs::create_dir_all(parent))
-                .await
-                .map_err(|_| CacheError::TaskStopped)?
-                .map_err(|_| WorkerError::System)?;
-            let writer = (inner.registrar)(
-                path.clone(),
-                Arc::new(move |connection| schema::initialize(connection, account)),
-            )?;
-            if let Err(error) = writer.commit(SqlBatch::new(Vec::new())?).await {
-                let _ = writer.close().await;
-                return Err(error.into());
-            }
-            let cache = Arc::new(AccountCache {
-                account,
-                path,
-                writer,
-                readers: Arc::clone(&inner.readers),
-                serial: Arc::new(Mutex::new(false)),
-                generation: Arc::new(AtomicU64::new(0)),
-                retention: std::sync::Mutex::new(HashMap::new()),
-                revokes: history::RevokeQueue::default(),
-            });
-            if let Err(error) = cache.history_recover().await {
-                let _ = cache.writer.close().await;
-                return Err(error);
-            }
-            *registered = Some(Arc::clone(&cache));
-            Ok(cache)
-        })
-        .await
-        .map_err(|_| CacheError::TaskStopped)?
     }
 
     /// Fence actual blocking reads and accepted writes, then drain/checkpoint/close the
@@ -254,6 +210,10 @@ impl AccountCaches {
 }
 
 impl AccountCache {
+    pub(crate) fn writer_failed(&self) -> bool {
+        self.writer.failed()
+    }
+
     pub(crate) fn account_id(&self) -> AccountId {
         self.account
     }
@@ -267,7 +227,7 @@ impl AccountCache {
         self.claim(generation)?;
         let fence = self.fence().await?;
         let context = self.context();
-        tokio::spawn(async move { persistence::load(&context, fence, generation).await })
+        tokio::spawn(async move { decoding::load(&context, fence, generation).await })
             .await
             .map_err(|_| CacheError::TaskStopped)?
     }
@@ -293,11 +253,24 @@ impl AccountCache {
         snapshot: &ResourceSnapshot,
         changed: &[CacheResource],
     ) -> Result<(), CacheError> {
+        match self.update_resources(snapshot, changed).await? {
+            None => Ok(()),
+            Some(maintenance_error) => Err(maintenance_error),
+        }
+    }
+
+    /// A successful switch may still carry a cleanup error. The session must finish
+    /// installing the switched revision before reporting that error.
+    pub(crate) async fn update_resources(
+        &self,
+        snapshot: &ResourceSnapshot,
+        changed: &[CacheResource],
+    ) -> Result<Option<CacheError>, CacheError> {
         let generation = snapshot.generation;
         self.claim(generation)?;
         let fence = self.fence().await?;
         if changed.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let selected = encoding::select(snapshot, changed);
         let context = self.context();

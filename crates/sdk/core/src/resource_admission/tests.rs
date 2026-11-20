@@ -3,12 +3,11 @@
 //! `tests/resource_admission.rs`.
 
 use super::{Admission, AdmissionFault, Diagnostics, ResourceRejection, Roster, RosterPage};
-use crate::{CacheResource, Generation, ResourceSnapshot, Uuid, permissions};
+use crate::{CacheResource, Uuid};
 use papo_api::wire::{
     Channel, ChannelList, ChannelPermissionEntry, ChannelPermissions, MemberListResponse, Role,
     RoleListResponse, RolePermissions, RoleSummary, Server, UserSummary,
 };
-use std::sync::Arc;
 
 mod people;
 
@@ -81,14 +80,17 @@ fn rejected(group: CacheResource, fault: AdmissionFault) -> ResourceRejection {
     ResourceRejection { group, fault }
 }
 
-fn channels(log: &Diagnostics, list: ChannelList) -> Result<Vec<Channel>, ResourceRejection> {
+fn channels(
+    log: &Diagnostics,
+    list: ChannelList,
+) -> Result<Vec<crate::ChannelRecord>, ResourceRejection> {
     Admission::for_test(Uuid::from_u128(OWN), log).channels(list)
 }
 
 fn roster(
     log: &Diagnostics,
     users: Vec<UserSummary>,
-) -> Result<Vec<UserSummary>, ResourceRejection> {
+) -> Result<Vec<crate::resources::UserObservation>, ResourceRejection> {
     let mut roster = Roster::new(Admission::for_test(Uuid::from_u128(OWN), log));
     match roster.page(page(Some(users), Some(false)))? {
         RosterPage::Complete(users) => Ok(users),
@@ -107,7 +109,7 @@ fn absent_and_null_channel_lists_are_rejected_but_an_explicit_empty_list_is_admi
         );
     }
     let empty: ChannelList = serde_json::from_str(r#"{"channels":[]}"#).unwrap();
-    assert!(channels(&log, empty).unwrap().is_empty());
+    assert_eq!(channels(&log, empty).unwrap(), []);
     let diagnostics = log.snapshot();
     assert_eq!(diagnostics.rejected_replacements, 2);
     assert_eq!(
@@ -159,26 +161,6 @@ fn malformed_nested_overwrite_rejects_channels_because_dropping_it_would_open_th
     assert_eq!(
         channels(&log, list).rejected(),
         rejected(CacheResource::Channels, AdmissionFault::InvalidId)
-    );
-    // Why it cannot be dropped: the existing evaluator reads the one-entry list as
-    // closed, and the same channel without it as open.
-    let mut image = ResourceSnapshot::empty(Generation(1));
-    image.server = Some(Arc::new(Server {
-        id: id(1),
-        owner_id: id(2),
-        ..Server::default()
-    }));
-    image.members = Arc::new(vec![member(OWN, &[])]);
-    let own = Uuid::from_u128(OWN);
-    assert!(
-        !permissions::channel_grants(&image, own, &restricted)
-            .unwrap()
-            .read
-    );
-    assert!(
-        permissions::channel_grants(&image, own, &channel(3))
-            .unwrap()
-            .read
     );
 }
 
@@ -245,8 +227,8 @@ fn channel_security_fields_must_be_present() {
         channels: Some(vec![spelled]),
     };
     let admitted = channels(&log, list).unwrap();
-    let kept = admitted[0].permissions.as_ref().unwrap()[0].role_id.clone();
-    assert_eq!(kept, uppercase);
+    let kept = admitted[0].permissions[0].key.text();
+    assert_eq!(Some(kept.as_ref()), uppercase.as_deref());
     let valid = Channel {
         permissions: Some(vec![
             overwrite(id(9), Some(true)),
@@ -312,20 +294,6 @@ fn an_unsupported_channel_type_is_rejected_because_the_evaluator_would_read_it_a
         };
         assert_eq!(channels(&log, list).unwrap().len(), 1, "{kind}");
     }
-    // Why: with no overwrites, the existing evaluator grants read on any non-DM type.
-    let mut image = ResourceSnapshot::empty(Generation(1));
-    image.server = Some(Arc::new(Server {
-        id: id(1),
-        owner_id: id(2),
-        ..Server::default()
-    }));
-    image.members = Arc::new(vec![member(OWN, &[])]);
-    let unknown = Channel {
-        r#type: Some("unexpected_type".into()),
-        ..channel(3)
-    };
-    let grants = permissions::channel_grants(&image, Uuid::from_u128(OWN), &unknown).unwrap();
-    assert!(grants.read);
 }
 
 #[test]
@@ -400,5 +368,5 @@ fn role_definitions_require_a_list_unique_ids_and_permissions() {
     let empty = RoleListResponse {
         roles: Some(Vec::new()),
     };
-    assert!(admission.roles(empty).unwrap().is_empty());
+    assert_eq!(admission.roles(empty).unwrap(), []);
 }

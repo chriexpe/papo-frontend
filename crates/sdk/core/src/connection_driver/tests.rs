@@ -204,15 +204,64 @@ async fn driver_cancel_stops_pending_connect_without_cancelling_session_root() {
 
 #[test]
 fn a_history_layout_fault_never_invalidates_the_account_cache() {
+    let session = session();
+    let generation = session.epochs.current().generation;
+    let invalidates = |error| invalidates_account_cache(&session, generation, error);
     let layout = ClientError::from(crate::HistoryError::Layout);
     assert!(matches!(layout, ClientError::HistoryLayout));
-    assert!(!invalidates_account_cache(&layout));
-    // Neither does a lost race with retention on a history set.
-    assert!(!invalidates_account_cache(&ClientError::Cache(
+    assert!(!invalidates(&layout));
+    assert!(!invalidates(&ClientError::Cache(
         crate::CacheError::Superseded
     )));
-    // Corrupt stored data still does: that branch is unchanged.
-    assert!(invalidates_account_cache(&ClientError::Cache(
-        crate::CacheError::InvalidData
-    )));
+    let storage = ClientError::Cache(crate::CacheError::InvalidData);
+    assert!(invalidates(&storage));
+    session.resource_recovery.send_replace(Some(generation));
+    assert!(!invalidates(&storage));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_install_wakes_the_existing_pump_and_enters_normal_backoff() {
+    let session = session();
+    let config = ClientConfig {
+        jitter: Arc::new(ZeroJitter),
+        ..ClientConfig::default()
+    };
+    let script = Script {
+        steps: Mutex::new(VecDeque::new()),
+        attempts: AtomicU64::new(0),
+    };
+    let run = drive(&config, &session, &script);
+    tokio::pin!(run);
+    tokio::select! { ()=&mut run=>panic!("driver stopped"), ()=tokio::task::yield_now()=>{} }
+    session
+        .resource_recovery
+        .send_replace(Some(session.epochs.current().generation));
+    tokio::select! { ()=&mut run=>panic!("driver stopped"), ()=tokio::task::yield_now()=>{} }
+    assert!(
+        matches!(session.connection.borrow().state,ConnectionState::Backoff{retry_at} if retry_at==tokio::time::Instant::now()+Duration::from_millis(500))
+    );
+    tokio::time::advance(Duration::from_millis(499)).await;
+    tokio::select! { ()=&mut run=>panic!("driver stopped"), ()=tokio::task::yield_now()=>{} }
+    assert_eq!(script.attempts.load(Ordering::Relaxed), 1);
+    session.root.cancel();
+    run.await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn late_failure_from_an_old_socket_cannot_replace_an_explicit_reconnect() {
+    let session = session();
+    let failed = session.epochs.current();
+    let explicit = session.epochs.advance().unwrap();
+    let mut attempt = 0;
+    let result = wait_backoff(
+        &ClientConfig::default(),
+        &session,
+        failed.generation,
+        &mut attempt,
+    )
+    .await;
+    assert!(result);
+    assert_eq!(session.epochs.current().generation, explicit.generation);
+    assert!(!explicit.cancel.is_cancelled());
+    assert_eq!(attempt, 0);
 }

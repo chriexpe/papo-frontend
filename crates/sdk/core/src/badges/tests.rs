@@ -89,10 +89,10 @@ fn policy(settings: &NotificationSettings) -> ChannelPolicy {
         &papo_api::wire::Notifications::default(),
         Uuid::from_u128(2),
         false,
-        Some("all"),
+        Some(&crate::BackendMode::All),
     )
 }
-fn install_reading(session: &Session, state: ReadState) {
+async fn install_reading(session: &Session, state: ReadState) {
     session
         .inner
         .reading
@@ -104,6 +104,7 @@ fn install_reading(session: &Session, state: ReadState) {
                 channels: [(Uuid::from_u128(2), state)].into(),
             },
         )
+        .await
         .unwrap();
 }
 
@@ -144,7 +145,7 @@ fn complete_and_incomplete_ranges_and_material_unknowns_remain_distinct() {
     let (mut client, session) = crate::notifications::tests::fixture(directory.path());
     client
         .block_on(async {
-            install_reading(&session, ReadState::default());
+            install_reading(&session, ReadState::default()).await;
             let mut direct = (*message(1, session.account().user())).clone();
             direct.content = Some(format!(
                 "{} {}",
@@ -211,7 +212,7 @@ fn parent_arrival_read_movement_and_policy_filtering_use_their_owners() {
     let (mut client, session) = crate::notifications::tests::fixture(directory.path());
     client
         .block_on(async {
-            install_reading(&session, ReadState::default());
+            install_reading(&session, ReadState::default()).await;
             let mut parent = (*message(1, session.account().user())).clone();
             parent.author_id = Some(session.account().user().to_string());
             let mut reply = (*message(2, session.account().user())).clone();
@@ -248,7 +249,8 @@ fn parent_arrival_read_movement_and_policy_filtering_use_their_owners() {
                     local_point: Some(MessageKey::from_message(&reply).unwrap()),
                     ..ReadState::default()
                 },
-            );
+            )
+            .await;
             let snapshot = snapshot(session.generation(), vec![reply], true);
             let evidence =
                 channel_read_evidence(&session, session.generation(), Uuid::from_u128(2))

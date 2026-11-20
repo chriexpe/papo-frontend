@@ -5,42 +5,39 @@ mod tests;
 
 use super::{NotificationDelivery, NotificationTarget};
 use crate::{
-    Channel, Generation, ResourceSnapshot, Session, Uuid, reading::evidence::ReadEvidence,
+    BackendMode, ChannelRecord, DirectRecord, Generation, ResourceSnapshot, ResourceTable, Session,
+    Uuid, reading::evidence::ReadEvidence,
 };
-use papo_api::wire::DirectConversation;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Admitted channel/DM metadata view consumed by notification policy.
 /// Never a complete `ResourceSnapshot`: only channel and DM lists are carried here, so unloaded
 /// resource groups (server, roles, members, profiles and blocks) remain structurally absent.
 pub(crate) struct PolicyResources {
     generation: Generation,
-    channels: Arc<Vec<Channel>>,
-    dms: Arc<Vec<DirectConversation>>,
+    channels: ResourceTable<ChannelRecord>,
+    dms: ResourceTable<DirectRecord>,
 }
 
 impl PolicyResources {
     pub(crate) fn from_snapshot(snapshot: &ResourceSnapshot) -> Self {
         Self {
             generation: snapshot.generation,
-            channels: Arc::clone(&snapshot.channels),
-            dms: Arc::clone(&snapshot.dms),
+            channels: snapshot.channels.clone(),
+            dms: snapshot.dms.clone(),
         }
     }
 
     pub(crate) fn channels_and_dms(
         generation: Generation,
-        channels: Vec<Channel>,
-        dms: Vec<DirectConversation>,
+        channels: Vec<ChannelRecord>,
+        dms: Vec<DirectRecord>,
     ) -> Self {
         Self {
             generation,
-            channels: Arc::new(channels),
-            dms: Arc::new(dms),
+            channels: ResourceTable::from_rows(channels.into_iter().map(|row| (row.id, row))),
+            dms: ResourceTable::from_rows(dms.into_iter().map(|row| (row.id, row))),
         }
     }
 
@@ -48,12 +45,9 @@ impl PolicyResources {
         self.generation
     }
 
-    pub(crate) fn channels(&self) -> &[Channel] {
+    #[cfg(test)]
+    pub(crate) fn channels(&self) -> &ResourceTable<ChannelRecord> {
         &self.channels
-    }
-
-    pub(crate) fn dms(&self) -> &[DirectConversation] {
-        &self.dms
     }
 }
 
@@ -172,7 +166,7 @@ pub(crate) fn classify(
 /// Small effective image of committed channel settings, shared by badges and delivery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ChannelPolicy {
-    enabled: bool,
+    enabled: Option<bool>,
     triggers_enabled: bool,
     all_messages: bool,
 }
@@ -183,24 +177,34 @@ impl ChannelPolicy {
         backend: &papo_api::wire::Notifications,
         channel: Uuid,
         dm: bool,
-        backend_mode: Option<&str>,
+        backend_mode: Option<&BackendMode>,
     ) -> Self {
-        let mode =
-            settings
-                .channels
-                .get(&channel)
-                .copied()
-                .unwrap_or(if backend_mode == Some("all") {
-                    ChannelNotificationMode::All
-                } else {
-                    ChannelNotificationMode::Mentions
-                });
+        let mode = settings.channels.get(&channel).copied().unwrap_or(
+            if backend_mode == Some(&BackendMode::All) {
+                ChannelNotificationMode::All
+            } else {
+                ChannelNotificationMode::Mentions
+            },
+        );
+        let enabled = if !settings.enabled
+            || backend.enabled == Some(false)
+            || settings.muted.contains(&channel)
+            || mode == ChannelNotificationMode::Off
+            || backend_mode == Some(&BackendMode::Off)
+        {
+            Some(false)
+        } else if dm
+            || matches!(
+                backend_mode,
+                Some(BackendMode::OnlyMentions | BackendMode::All)
+            )
+        {
+            Some(true)
+        } else {
+            None
+        };
         Self {
-            enabled: settings.enabled
-                && backend.enabled != Some(false)
-                && !settings.muted.contains(&channel)
-                && backend_mode != Some("off")
-                && mode != ChannelNotificationMode::Off,
+            enabled,
             triggers_enabled: if dm {
                 settings.direct_messages
             } else {
@@ -216,7 +220,12 @@ impl ChannelPolicy {
 
     /// True when no trigger could count, even without history or a read boundary.
     pub(crate) const fn badges_disabled(self) -> bool {
-        !self.enabled || !self.triggers_enabled
+        matches!(self.enabled, Some(false)) || !self.triggers_enabled
+    }
+
+    /// A missing or newer backend mode may suppress every trigger for this channel.
+    pub(crate) const fn badges_uncertain(self) -> bool {
+        self.enabled.is_none() && self.triggers_enabled
     }
 
     /// None means unresolved classification could change the eligible trigger count.
@@ -225,15 +234,19 @@ impl ChannelPolicy {
             return Some(false);
         }
         match classification {
-            Classification::KnownTrigger(_) => Some(true),
+            Classification::KnownTrigger(_) => self.enabled,
             Classification::KnownNonTrigger => Some(false),
             Classification::Unknown => None,
         }
     }
 
     /// Authoritative live/inbox positives survive unknown historical classification; All admits ordinary messages.
-    pub(crate) const fn delivery_eligible(self, triggered: bool) -> bool {
-        self.enabled && (self.all_messages || (triggered && self.triggers_enabled))
+    pub(crate) const fn delivery_eligible(self, triggered: bool) -> Option<bool> {
+        if self.all_messages || (triggered && self.triggers_enabled) {
+            self.enabled
+        } else {
+            Some(false)
+        }
     }
 }
 
@@ -250,14 +263,7 @@ pub(crate) struct Candidate {
     pub message_point: Option<crate::MessageKey>,
 }
 pub(super) fn contains_channel(resources: &PolicyResources, channel: Uuid) -> bool {
-    resources
-        .channels()
-        .iter()
-        .any(|c| c.id.as_deref().and_then(|s| s.parse().ok()) == Some(channel))
-        || resources
-            .dms()
-            .iter()
-            .any(|d| d.id.parse().ok() == Some(channel))
+    resources.channels.get(channel).is_some() || resources.dms.get(channel).is_some()
 }
 /// Direct tokens independently prove a trigger; other branches need more than live content evidence.
 pub(super) fn classify_direct(content: &str, account: Uuid) -> Classification {
@@ -274,6 +280,10 @@ pub(super) fn mentions(content: &str, user: Uuid) -> bool {
         Classification::KnownTrigger(_)
     )
 }
+/// A later admitted classification or mode can still permit delivery. Leave the identity unclaimed.
+#[derive(Debug)]
+pub(super) struct UnresolvedPolicy;
+
 pub(super) fn decide(
     session: &Session,
     generation: crate::Generation,
@@ -282,11 +292,9 @@ pub(super) fn decide(
     candidate: &Candidate,
     resources: &PolicyResources,
     read_evidence: ReadEvidence,
-) -> Option<NotificationDelivery> {
-    let dm = resources
-        .dms()
-        .iter()
-        .any(|d| d.id.parse().ok() == Some(candidate.channel));
+) -> Result<Option<NotificationDelivery>, UnresolvedPolicy> {
+    let dm = resources.dms.get(candidate.channel).is_some();
+    let ordinary = resources.channels.get(candidate.channel);
     if read_evidence != ReadEvidence::Unread
         || resources.generation() != generation
         || !contains_channel(resources, candidate.channel)
@@ -300,18 +308,22 @@ pub(super) fn decide(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&candidate.channel)
     {
-        return None;
+        return Ok(None);
     }
-    let backend_mode = resources
-        .channels()
-        .iter()
-        .find(|c| c.id.as_deref().and_then(|s| s.parse().ok()) == Some(candidate.channel))
-        .and_then(|c| c.notification_settings.as_deref());
+    if dm && ordinary.is_some() {
+        // Reading can resume before the new resource image is published. An older ambiguous
+        // image cannot prove which policy applies to an otherwise deliverable candidate.
+        return Err(UnresolvedPolicy);
+    }
+    let backend_mode = ordinary.and_then(|channel| channel.notification_settings.as_ref());
     let policy = ChannelPolicy::new(settings, backend, candidate.channel, dm, backend_mode);
-    if !policy.delivery_eligible(candidate.triggered) {
-        return None;
+    if !policy
+        .delivery_eligible(candidate.triggered)
+        .ok_or(UnresolvedPolicy)?
+    {
+        return Ok(None);
     }
-    Some(NotificationDelivery {
+    Ok(Some(NotificationDelivery {
         target: NotificationTarget {
             account: session.account(),
             generation,
@@ -321,7 +333,7 @@ pub(super) fn decide(
         preview: (settings.preview && backend.message_preview != Some(false))
             .then(|| candidate.content.chars().take(512).collect()),
         sound: settings.sound && backend.sound != Some(false),
-    })
+    }))
 }
 
 /// Broad at-most-once claim admission, not badge eligibility: suppressed candidates still consume identity.
@@ -330,20 +342,15 @@ pub(super) fn claim_eligible(
     settings: &NotificationSettings,
     candidate: &Candidate,
 ) -> bool {
-    if candidate.triggered
-        || resources
-            .dms()
-            .iter()
-            .any(|dm| dm.id.parse().ok() == Some(candidate.channel))
-    {
+    if candidate.triggered || resources.dms.get(candidate.channel).is_some() {
         return true;
     }
     match settings.channels.get(&candidate.channel) {
         Some(ChannelNotificationMode::All) => true,
         Some(ChannelNotificationMode::Mentions | ChannelNotificationMode::Off) => false,
-        None => resources.channels().iter().any(|channel| {
-            channel.id.as_deref().and_then(|id| id.parse().ok()) == Some(candidate.channel)
-                && channel.notification_settings.as_deref() == Some("all")
-        }),
+        None => resources
+            .channels
+            .get(candidate.channel)
+            .is_some_and(|channel| channel.notification_settings == Some(BackendMode::All)),
     }
 }

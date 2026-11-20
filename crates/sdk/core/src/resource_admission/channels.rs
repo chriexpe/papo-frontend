@@ -1,122 +1,184 @@
-//! Admission of server metadata, channels with their overwrites, and role definitions;
-//! people, DMs and blocks live in the sibling `people` module.
+//! Converts server, role and channel responses. Overwrites keep their exact backend key.
 
-use super::{
-    Admission, AdmissionFault, LISTED_CHANNEL_TYPES, MAX_CHANNELS, ResourceRejection, parse_id,
+use super::{Admission, AdmissionFault, MAX_CHANNELS, ResourceRejection, parse_id};
+use crate::{
+    CacheResource, ChannelKind, ChannelRecord, MessageHead, Overwrite, OverwriteKey, RoleFlags,
+    RoleRecord, ServerRecord, Uuid,
 };
-use crate::{CacheResource, Uuid};
-use papo_api::wire::{
-    Channel, ChannelList, ChannelPermissionEntry, Role, RoleListResponse, Server,
-};
+use papo_api::wire;
 use std::collections::HashSet;
 
 impl Admission<'_> {
-    /// Admits `GET /server`. A null `owner_id` is the backend's "no owner" and grants nothing.
-    /// # Errors
-    /// Rejects `Server` for an invalid server ID or a present but invalid owner ID.
-    pub fn server(self, server: Server) -> Result<Server, ResourceRejection> {
-        if parse_id(server.id.as_deref()).is_none() {
-            return Err(self.reject(CacheResource::Server, AdmissionFault::InvalidId));
-        }
-        if server.owner_id.is_some() && parse_id(server.owner_id.as_deref()).is_none() {
-            return Err(self.reject(CacheResource::Server, AdmissionFault::InvalidId));
-        }
-        Ok(server)
+    pub fn server(self, raw: wire::Server) -> Result<ServerRecord, ResourceRejection> {
+        let group = CacheResource::Server;
+        Ok(ServerRecord {
+            id: self.required_id(group, raw.id.as_deref())?,
+            owner_id: self.optional_id(group, raw.owner_id.as_deref())?,
+            name: raw.name,
+            icon_format: raw.icon_format,
+            public: raw.public,
+            owner_username: raw.owner_username,
+            created_at: raw.created_at,
+            channel_count: raw.channel_count,
+            member_count: raw.member_count,
+            role_count: raw.role_count,
+        })
     }
 
-    /// Admits the complete `GET /channels` replacement, including every nested overwrite.
-    /// # Errors
-    /// Rejects `Channels` for an absent list, a list longer than the backend maximum, or
-    /// any malformed channel or overwrite; no channel is ever dropped individually.
-    pub fn channels(self, list: ChannelList) -> Result<Vec<Channel>, ResourceRejection> {
+    pub fn channels(
+        self,
+        list: wire::ChannelList,
+    ) -> Result<Vec<ChannelRecord>, ResourceRejection> {
+        let group = CacheResource::Channels;
         let channels = list
             .channels
-            .ok_or_else(|| self.reject(CacheResource::Channels, AdmissionFault::MissingList))?;
+            .ok_or_else(|| self.reject(group, AdmissionFault::MissingList))?;
         if channels.len() > MAX_CHANNELS {
-            return Err(self.reject(CacheResource::Channels, AdmissionFault::ExceedsLimit));
+            return Err(self.reject(group, AdmissionFault::ExceedsLimit));
         }
         let mut seen = HashSet::with_capacity(channels.len());
-        for channel in &channels {
-            let fault = channel_fault(channel, &mut seen);
-            if let Some(fault) = fault {
-                return Err(self.reject(CacheResource::Channels, fault));
-            }
-        }
-        Ok(channels)
+        channels
+            .into_iter()
+            .map(|raw| {
+                let id = self.required_id(group, raw.id.as_deref())?;
+                if !seen.insert(id) {
+                    return Err(self.reject(group, AdmissionFault::DuplicateId));
+                }
+                let kind = match raw.r#type.as_deref() {
+                    Some("text") => ChannelKind::Text,
+                    Some("category") => ChannelKind::Category,
+                    Some("voice") => ChannelKind::Voice,
+                    None | Some("") => return Err(self.reject(group, AdmissionFault::MissingField)),
+                    _ => return Err(self.reject(group, AdmissionFault::UnsupportedValue)),
+                };
+                let entries = raw
+                    .permissions
+                    .ok_or_else(|| self.reject(group, AdmissionFault::MissingField))?;
+                let mut keys = HashSet::with_capacity(entries.len());
+                let mut permissions = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let key = entry
+                        .role_id
+                        .ok_or_else(|| self.reject(group, AdmissionFault::InvalidId))?;
+                    let role = Uuid::try_parse(&key)
+                        .map_err(|_| self.reject(group, AdmissionFault::InvalidId))?;
+                    let key = if role.hyphenated().encode_lower(&mut Uuid::encode_buffer())
+                        == key.as_str()
+                    {
+                        OverwriteKey::Canonical(role)
+                    } else {
+                        OverwriteKey::Noncanonical {
+                            id: role,
+                            spelling: key,
+                        }
+                    };
+                    if !keys.insert(key.clone()) {
+                        return Err(self.reject(group, AdmissionFault::DuplicateId));
+                    }
+                    let flags = entry
+                        .permissions
+                        .ok_or_else(|| self.reject(group, AdmissionFault::MissingField))?;
+                    permissions.push(Overwrite {
+                        key,
+                        read_channel: flags
+                            .read_channel
+                            .ok_or_else(|| self.reject(group, AdmissionFault::MissingField))?,
+                        send_messages: flags.send_messages,
+                        delete_messages: flags.delete_messages,
+                        connect_voice: flags.connect_voice,
+                    });
+                }
+                Ok(ChannelRecord {
+                    id,
+                    kind,
+                    permissions,
+                    name: raw.name,
+                    position: raw.position,
+                    topic: raw.topic,
+                    created_at: raw.created_at,
+                    parent_id: self.optional_id(group, raw.parent_id.as_deref())?,
+                    last_message: raw
+                        .last_message
+                        .map(|head| self.head(group, head))
+                        .transpose()?,
+                    last_read_message: self.optional_id(group, raw.last_read_message.as_deref())?,
+                    last_read_at: raw.last_read_at,
+                    notification_settings: raw.notification_settings.map(Into::into),
+                })
+            })
+            .collect()
     }
 
-    /// Admits the complete `GET /roles` replacement.
-    /// # Errors
-    /// Rejects `Roles` for an absent list or a role without a unique ID or permissions.
-    pub fn roles(self, list: RoleListResponse) -> Result<Vec<Role>, ResourceRejection> {
+    pub(super) fn head(
+        self,
+        group: CacheResource,
+        raw: wire::ChannelLastMessage,
+    ) -> Result<MessageHead, ResourceRejection> {
+        let created_at = raw
+            .created_at
+            .ok_or_else(|| self.reject(group, AdmissionFault::MissingField))?;
+        let created_at_us = crate::parse_message_timestamp_us(&created_at)
+            .map_err(|_| self.reject(group, AdmissionFault::UnsupportedValue))?;
+        Ok(MessageHead {
+            id: self.required_id(group, raw.id.as_deref())?,
+            author_id: self.optional_id(group, raw.author_id.as_deref())?,
+            author_username: raw.author_username,
+            content: raw.content,
+            created_at,
+            created_at_us,
+        })
+    }
+
+    pub(super) fn optional_id(
+        self,
+        group: CacheResource,
+        raw: Option<&str>,
+    ) -> Result<Option<Uuid>, ResourceRejection> {
+        raw.map(|value| self.required_id(group, Some(value)))
+            .transpose()
+    }
+
+    pub(super) fn required_id(
+        self,
+        group: CacheResource,
+        raw: Option<&str>,
+    ) -> Result<Uuid, ResourceRejection> {
+        parse_id(raw).ok_or_else(|| self.reject(group, AdmissionFault::InvalidId))
+    }
+
+    pub fn roles(self, list: wire::RoleListResponse) -> Result<Vec<RoleRecord>, ResourceRejection> {
+        let group = CacheResource::Roles;
         let roles = list
             .roles
-            .ok_or_else(|| self.reject(CacheResource::Roles, AdmissionFault::MissingList))?;
+            .ok_or_else(|| self.reject(group, AdmissionFault::MissingList))?;
         let mut seen = HashSet::with_capacity(roles.len());
-        for role in &roles {
-            let Some(id) = parse_id(role.id.as_deref()) else {
-                return Err(self.reject(CacheResource::Roles, AdmissionFault::InvalidId));
-            };
-            if !seen.insert(id) {
-                return Err(self.reject(CacheResource::Roles, AdmissionFault::DuplicateId));
-            }
-            if role.permissions.is_none() {
-                return Err(self.reject(CacheResource::Roles, AdmissionFault::MissingField));
-            }
-        }
-        Ok(roles)
+        roles
+            .into_iter()
+            .map(|role| {
+                let id = self.required_id(group, role.id.as_deref())?;
+                if !seen.insert(id) {
+                    return Err(self.reject(group, AdmissionFault::DuplicateId));
+                }
+                let p = role
+                    .permissions
+                    .ok_or_else(|| self.reject(group, AdmissionFault::MissingField))?;
+                Ok(RoleRecord {
+                    id,
+                    name: role.name,
+                    color: role.color,
+                    created_at: role.created_at,
+                    permissions: RoleFlags {
+                        manage_server: p.manage_server,
+                        manage_channels: p.manage_channels,
+                        manage_roles: p.manage_roles,
+                        manage_webhooks: p.manage_webhooks,
+                        ban_members: p.ban_members,
+                        pin_message: p.pin_message,
+                        everyone_message: p.everyone_message,
+                        send_attachment: p.send_attachment,
+                    },
+                })
+            })
+            .collect()
     }
-}
-
-fn channel_fault(channel: &Channel, seen: &mut HashSet<Uuid>) -> Option<AdmissionFault> {
-    let Some(id) = parse_id(channel.id.as_deref()) else {
-        return Some(AdmissionFault::InvalidId);
-    };
-    if !seen.insert(id) {
-        return Some(AdmissionFault::DuplicateId);
-    }
-    let Some(kind) = channel.r#type.as_deref().filter(|kind| !kind.is_empty()) else {
-        return Some(AdmissionFault::MissingField);
-    };
-    // The evaluator treats every non-DM type as an ordinary channel, so an unknown type
-    // with no overwrites would read as open.
-    if !LISTED_CHANNEL_TYPES.contains(&kind) {
-        return Some(AdmissionFault::UnsupportedValue);
-    }
-    // An absent overwrite list is unknown access; only an explicit `[]` means open.
-    let Some(overwrites) = &channel.permissions else {
-        return Some(AdmissionFault::MissingField);
-    };
-    let mut roles: HashSet<&str> = HashSet::with_capacity(overwrites.len());
-    overwrites
-        .iter()
-        .find_map(|overwrite| overwrite_fault(overwrite, &mut roles))
-}
-
-/// The backend stores an overwrite under the role ID text its route received, after
-/// Postgres accepted any UUID spelling, so a valid overwrite can be non-canonical. Such
-/// an entry matches no role on the backend or here (both compare text), so it is
-/// admitted verbatim: dropping or canonicalizing it would change who may read.
-fn overwrite_fault<'a>(
-    overwrite: &'a ChannelPermissionEntry,
-    roles: &mut HashSet<&'a str>,
-) -> Option<AdmissionFault> {
-    let Some(role) = overwrite.role_id.as_deref() else {
-        return Some(AdmissionFault::InvalidId);
-    };
-    if Uuid::try_parse(role).is_err() {
-        return Some(AdmissionFault::InvalidId);
-    }
-    // JSONB object keys are unique text, so only a textual repeat is malformed.
-    if !roles.insert(role) {
-        return Some(AdmissionFault::DuplicateId);
-    }
-    let read = overwrite
-        .permissions
-        .as_ref()
-        .and_then(|permissions| permissions.read_channel);
-    if read.is_none() {
-        return Some(AdmissionFault::MissingField);
-    }
-    None
 }

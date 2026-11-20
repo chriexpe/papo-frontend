@@ -107,11 +107,7 @@ fn stale_victim_selection_cannot_recreate_a_removed_accounts_database() {
             let generation = crate::Generation(5);
             let channel = crate::Uuid::from_u128(5);
             let mut resources = crate::ResourceSnapshot::empty(generation);
-            resources.channels = vec![crate::Channel {
-                id: Some(channel.to_string()),
-                ..crate::Channel::default()
-            }]
-            .into();
+            resources.channels = crate::ResourceSnapshot::text_channels([channel]);
             cache.replace(&resources).await.unwrap();
             let set = cache
                 .history_authorize(*channel.as_bytes(), generation, false)

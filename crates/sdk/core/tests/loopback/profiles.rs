@@ -5,11 +5,11 @@ use papo_api::{
     gateway::{AvatarUpdateEvent, KnownEvent},
     wire::UserProfile,
 };
-use papo_sdk::ClientError;
+use papo_sdk::{Backoff, ClientError, ConnectionState, HistoryError};
 use papo_test_server::Config;
 
 use super::{
-    fixture::{Fixture, Result},
+    fixture::{Fixture, Result, wait_for},
     reconcile::{online, resources, signed_in},
 };
 
@@ -17,9 +17,89 @@ fn profile(index: u128) -> UserProfile {
     UserProfile {
         id: Some(Uuid::from_u128(index + 0x2000_0000_0000_4000_8000_0000_0000_0000).to_string()),
         username: Some(format!("profile-{index}")),
-        nickname: Some("before-invalidation".into()),
+        nickname: "before-invalidation".into(),
         ..UserProfile::default()
     }
+}
+
+#[test]
+fn first_profile_request_after_restart_preserves_other_profiles_without_a_history_grant() -> Result
+{
+    let backoff = std::time::Duration::from_secs(3600);
+    let mut fixture = Fixture::with_backoff(
+        Config::default(),
+        Backoff {
+            initial: backoff,
+            maximum: backoff,
+        },
+    )?;
+    let mut first = profile(71);
+    let second = profile(72);
+    let first_id = Uuid::parse_str(first.id.as_deref().unwrap())?;
+    let second_id = Uuid::parse_str(second.id.as_deref().unwrap())?;
+    let (account, channel) = fixture.run(async {
+        let channel = fixture.server().create_channel("cold-profiles").await?;
+        let channel = Uuid::parse_str(channel.id.as_deref().unwrap())?;
+        fixture.server().set_profile(first.clone()).await?;
+        fixture.server().set_profile(second).await?;
+        let session = signed_in(&fixture, "cold-profile").await?;
+        session.profiles(&[first_id, second_id]).await?;
+        session.history(channel).await?;
+        fixture.server().set_gateway_accepting(false).await;
+        Ok::<_, Box<dyn std::error::Error>>((session.account(), channel))
+    })??;
+
+    fixture.reopen()?;
+    let mut complete = fixture.run(async {
+        let session = fixture.client().handle().session(account)?;
+        wait_for(&mut session.subscribe_connection(), |status| {
+            matches!(status.state, ConnectionState::Backoff { .. })
+        })
+        .await?;
+        assert_eq!(session.subscribe_resources().borrow().version, 0);
+        first.description = Some("fresh detail".into());
+        fixture.server().set_profile(first).await?;
+        session.profiles(&[first_id]).await?;
+        let display = session.subscribe_resources().borrow().clone();
+        assert!(display.profiles.get(second_id).is_some());
+        assert!(display.channels.get(channel).is_some());
+        assert!(!display.channel_census_complete);
+        assert!(matches!(
+            session.history(channel).await,
+            Err(HistoryError::Unverified)
+        ));
+        fixture.server().set_gateway_accepting(true).await;
+        Ok::<_, Box<dyn std::error::Error>>(
+            fixture.server().hold_next_rest("GET", "/channels").await?,
+        )
+    })??;
+
+    // Hold the first complete fetch so this image can only come from the switched revision.
+    fixture.reopen()?;
+    fixture.run(async {
+        complete.wait_started().await?;
+        let session = fixture.client().handle().session(account)?;
+        let display = session.subscribe_resources().borrow().clone();
+        assert_eq!(
+            display
+                .profiles
+                .get(first_id)
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("fresh detail")
+        );
+        assert!(display.profiles.get(second_id).is_some());
+        assert!(!display.channel_census_complete);
+        assert!(matches!(
+            session.history(channel).await,
+            Err(HistoryError::Unverified)
+        ));
+        complete.release();
+        online(&session).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
 }
 
 #[test]
@@ -69,7 +149,7 @@ fn avatar_event_invalidates_only_the_requested_user_and_next_request_reads_fresh
         session.profiles(&[first_id, second_id]).await?;
         let mut snapshots = session.subscribe_resources();
         let mut changed = first.clone();
-        changed.nickname = Some("after-invalidation".into());
+        changed.nickname = "after-invalidation".into();
         fixture.server().set_profile(changed).await?;
         fixture
             .server()
@@ -81,11 +161,11 @@ fn avatar_event_invalidates_only_the_requested_user_and_next_request_reads_fresh
             snapshot
                 .profiles
                 .iter()
-                .all(|profile| profile.id != first.id)
+                .all(|profile| profile.id != first_id)
         })
         .await?;
         assert_eq!(snapshot.profiles.len(), 1);
-        assert_eq!(snapshot.profiles[0].id, second.id);
+        assert_eq!(snapshot.profiles.ids().next(), Some(second_id));
         let fresh = session.profiles(&[first_id]).await?;
         assert_eq!(
             fresh.value[0].nickname.as_deref(),
@@ -113,7 +193,7 @@ fn profile_batch_captured_before_reconnect_cannot_publish_in_the_new_generation(
             result = &mut request => { result?; return Err("profile request bypassed hold".into()); }
         }
         let mut changed = before;
-        changed.nickname = Some("new-profile-generation".into());
+        changed.nickname = "new-profile-generation".into();
         fixture.server().set_profile(changed).await?;
         session.reconnect()?;
         assert!(matches!(request.await, Err(ClientError::Superseded)));
@@ -173,23 +253,21 @@ fn avatar_bytes_are_returned_to_the_caller_but_never_retained_in_shared_profiles
             Some(2 * 1024 * 1024)
         );
         let image = session.subscribe_resources().borrow().clone();
-        let retained = image
-            .profiles
-            .iter()
-            .find(|profile| profile.id.as_deref() == Some(id.to_string().as_str()))
-            .unwrap();
-        assert!(retained.avatar_blob.is_none());
+        let retained = image.profiles.get(id).ok_or("profile details")?;
         assert_eq!(retained.avatar_format.as_deref(), Some("webp"));
-        assert_eq!(retained.nickname.as_deref(), Some("before-invalidation"));
-        let response = session.profiles(&[id]).await?;
-        assert!(
-            session
-                .subscribe_resources()
-                .borrow()
-                .profiles
-                .iter()
-                .all(|profile| profile.avatar_blob.is_none())
+        assert_eq!(
+            image
+                .users
+                .get(id)
+                .and_then(|user| user.nickname.as_deref()),
+            Some("before-invalidation")
         );
+        let response = session.profiles(&[id]).await?;
+        let next = session.subscribe_resources().borrow().clone();
+        assert!(std::sync::Arc::ptr_eq(
+            &image.profiles.get_arc(id).unwrap(),
+            &next.profiles.get_arc(id).unwrap()
+        ));
         assert_eq!(
             response.value[0].avatar_blob.as_ref().map(String::len),
             Some(2 * 1024 * 1024)

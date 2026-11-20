@@ -178,7 +178,13 @@ fn account_resources_are_isolated_and_late_removed_response_cannot_recreate_cach
         first.reconnect()?;
         online(&first).await?;
         assert_eq!(
-            first.subscribe_resources().borrow().blocks[0].id,
+            first
+                .subscribe_resources()
+                .borrow()
+                .blocks
+                .iter()
+                .next()
+                .map(|id| id.to_string()),
             blocked.id
         );
         assert_eq!(first.subscribe_resources().borrow().dms.len(), 1);

@@ -133,14 +133,13 @@ async fn once(
     let mut accepted = point;
     let mut acknowledgement = None;
     let mut unresolved = None;
-    if let Some(message) = message {
-        let message_id = message.parse().map_err(|_| ClientError::ResourceData)?;
+    if let Some(message_id) = message {
         let server = ServerReadPoint {
             message_id,
             recorded_at,
         };
         let state = session.reading_state(channel).unwrap_or_default();
-        let head = head.as_ref().map(reconcile_marks::head_point).transpose()?;
+        let head = head.as_ref().map(reconcile_marks::head_point);
         match reconcile_marks::resolve(
             session,
             &connection,
@@ -178,9 +177,9 @@ async fn once(
 }
 
 struct RemoteMark {
-    message: Option<String>,
+    message: Option<Uuid>,
     recorded_at: Option<String>,
-    head: Option<papo_api::wire::ChannelLastMessage>,
+    head: Option<crate::MessageHead>,
 }
 
 async fn remote_mark(
@@ -188,19 +187,20 @@ async fn remote_mark(
     connection: &crate::reconcile::ResourceConnection,
     channel: Uuid,
 ) -> Result<RemoteMark, ClientError> {
-    let dm = session
-        .inner
-        .resources
-        .borrow()
-        .dms
-        .iter()
-        .any(|dm| dm.id.parse::<Uuid>().ok() == Some(channel));
-    if dm {
-        let dm = session
+    let admission = crate::resource_admission::Admission::new(&session.inner);
+    if session.inner.resources.borrow().dms.get(channel).is_some() {
+        let response = session
             .client
             .inner
             .request(connection.rest.direct_conversation(channel))
             .await?;
+        let (dm, _) = admission
+            .dms(papo_api::wire::DirectConversationList {
+                dms: vec![response],
+            })?
+            .into_iter()
+            .find(|(dm, _)| dm.id == channel)
+            .ok_or(ClientError::ResourceData)?;
         Ok(RemoteMark {
             message: dm.last_read_message,
             recorded_at: dm.last_read_at,
@@ -212,11 +212,10 @@ async fn remote_mark(
             .inner
             .request(connection.rest.channels())
             .await?;
-        let mark = channels
-            .channels
-            .unwrap_or_default()
+        let mark = admission
+            .channels(channels)?
             .into_iter()
-            .find(|item| item.id.as_deref().and_then(|id| id.parse::<Uuid>().ok()) == Some(channel))
+            .find(|item| item.id == channel)
             .ok_or(ClientError::NotFound)?;
         Ok(RemoteMark {
             message: mark.last_read_message,
@@ -310,5 +309,5 @@ async fn confirm(
         }
     }
     image.generation = generation;
-    session.inner.reading.publish(&session.inner, image)
+    session.inner.reading.publish(&session.inner, image).await
 }

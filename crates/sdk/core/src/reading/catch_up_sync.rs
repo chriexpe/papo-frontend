@@ -67,7 +67,7 @@ pub(crate) async fn hydrate_from_storage(
             }
             reading.channels.insert(channel, state);
         }
-        session.reading.publish(session, reading)?;
+        session.reading.publish(session, reading).await?;
     }
     session
         .reading
@@ -108,6 +108,10 @@ pub(crate) async fn revoke_channels(
         .delete_channel_reading_state(session.account, channels.to_vec())
         .await?;
     // Publish removal after the synchronous=FULL delete commits and fences any newer grant.
+    session
+        .reading
+        .remove_revoked(session, generation, channels)
+        .await?;
     position_publish::remove_from_image(session, channels, generation);
     session
         .reading

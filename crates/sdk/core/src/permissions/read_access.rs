@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use papo_api::Uuid;
 
-use super::{AccountEvidence, PermissionDataError, direct_grants};
-use crate::{ClientError, ResourceSnapshot};
+use super::{AccountEvidence, PermissionDataError, direct_channel_grants};
+use crate::ResourceSnapshot;
 
 /// What accepted resource evidence says about reading one channel's history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,14 +29,11 @@ pub(crate) struct ReadDecisions {
 
 impl ReadDecisions {
     /// Evaluate every listed channel for `user`.
-    /// # Errors
-    /// Returns `ResourceData` when a listed channel or DM has no parseable ID: dropping it
-    /// would turn a malformed row into an apparent removal.
-    pub(crate) fn evaluate(snapshot: &ResourceSnapshot, user: Uuid) -> Result<Self, ClientError> {
+    pub(crate) fn evaluate(snapshot: &ResourceSnapshot, user: Uuid) -> Self {
         let mut result = Self::default();
         let evidence = AccountEvidence::new(snapshot, user);
         for channel in snapshot.channels.iter() {
-            let id = parse(channel.id.as_deref())?;
+            let id = channel.id;
             let access = match evidence.channel_grants(channel) {
                 Ok(grants) if grants.read => ReadAccess::Allowed,
                 Ok(_) => ReadAccess::Denied,
@@ -44,12 +41,15 @@ impl ReadDecisions {
             };
             result.insert(id, access);
         }
-        let blocked = own_blocks(snapshot);
         for dm in snapshot.dms.iter() {
-            let id = parse(Some(dm.id.as_str()))?;
-            result.insert(id, direct_access(dm, blocked.as_ref()));
+            let access = match direct_channel_grants(snapshot, dm.id) {
+                Ok(grants) if grants.read => ReadAccess::Allowed,
+                Ok(_) => ReadAccess::Denied,
+                Err(PermissionDataError::Unavailable) => ReadAccess::Unknown,
+            };
+            result.insert(dm.id, access);
         }
-        Ok(result)
+        result
     }
 
     pub(crate) fn get(&self, channel: Uuid) -> Option<ReadAccess> {
@@ -69,39 +69,6 @@ impl ReadDecisions {
         if self.decisions.insert(id, access).is_some() {
             self.decisions.insert(id, ReadAccess::Unknown);
         }
-    }
-}
-
-fn parse(id: Option<&str>) -> Result<Uuid, ClientError> {
-    id.and_then(|id| id.parse().ok())
-        .ok_or(ClientError::ResourceData)
-}
-
-/// The account's own blocks, or `None` when an entry cannot be attributed to a user.
-fn own_blocks(snapshot: &ResourceSnapshot) -> Option<BTreeSet<Uuid>> {
-    snapshot
-        .blocks
-        .iter()
-        .map(|user| user.id.as_deref().and_then(|id| id.parse().ok()))
-        .collect()
-}
-
-/// The pinned DM list only returns conversations where the account is a member, the
-/// account has not hidden it and there is no block in either direction. A listed DM is
-/// membership evidence. The own block list can add a block (lists fetched separately
-/// may disagree) but cannot prove that the peer has not blocked the account.
-fn direct_access(
-    dm: &papo_api::wire::DirectConversation,
-    blocked: Option<&BTreeSet<Uuid>>,
-) -> ReadAccess {
-    let peer = dm.user.id.as_deref().and_then(|id| id.parse::<Uuid>().ok());
-    let (Some(peer), Some(blocked)) = (peer, blocked) else {
-        return ReadAccess::Unknown;
-    };
-    if direct_grants(true, blocked.contains(&peer)).read {
-        ReadAccess::Allowed
-    } else {
-        ReadAccess::Denied
     }
 }
 

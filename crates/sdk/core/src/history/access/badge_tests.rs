@@ -143,6 +143,7 @@ fn direct_denial_immediately_removes_cached_badges_and_repeated_denial_is_noop()
                 &harness.connection.client,
                 &harness.connection.cache,
                 RESTRICTED,
+                None,
                 HistoryClosedReason::PermissionDenied,
                 harness.generation,
             )
@@ -162,6 +163,7 @@ fn direct_denial_immediately_removes_cached_badges_and_repeated_denial_is_noop()
                 &harness.connection.client,
                 &harness.connection.cache,
                 RESTRICTED,
+                None,
                 HistoryClosedReason::PermissionDenied,
                 harness.generation,
             )

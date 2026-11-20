@@ -1,10 +1,12 @@
 //! Socket-side reconciliation and bounded event journaling; fetching, cache SQL and UI diffs live elsewhere.
 
 use crate::{
-    AccountCache, ClientError, ClientHandle, ConnectionState, Generated, ResourceSnapshot,
+    AccountCache, ClientError, ClientHandle, ConnectionState, Generated, Generation,
     connection_driver::Socket,
     generation::Epoch,
-    history::access::{self, Refetch, Transition, accepted, affects_read_access},
+    history::access::Refetch,
+    resource_admission::Admission,
+    resource_commit::{self, FetchStamp},
     session::SessionInner,
 };
 use papo_api::{RestClient, gateway::Event};
@@ -22,30 +24,59 @@ pub(crate) struct ResourceConnection {
     pub cache: Arc<AccountCache>,
 }
 
+impl ResourceConnection {
+    /// Install the switched cache revision as display data. A resident image already
+    /// includes partial profile writes, so only failed installation requires reloading it.
+    pub(crate) async fn bootstrap_display(
+        &self,
+        session: &SessionInner,
+        generation: Generation,
+        _guard: &resource_commit::Reservation,
+    ) -> Result<(), ClientError> {
+        session.epochs.validate(generation)?;
+        let held = session.resources.borrow().clone();
+        let reload = !held.has_display_baseline || session.resource_recovery.borrow().is_some();
+        let mut snapshot = if reload {
+            let mut disk = self.cache.load(generation).await?;
+            disk.gaps = held.gaps.clone();
+            disk
+        } else if held.generation != generation || held.channel_census_complete {
+            (*held).clone()
+        } else {
+            return Ok(());
+        };
+        snapshot.generation = generation;
+        snapshot.channel_census_complete = false;
+        session.publish_resources(snapshot)
+    }
+}
+
 pub(crate) async fn run(
-    session: &SessionInner,
+    session: &Arc<SessionInner>,
     epoch: &Epoch,
     socket: &mut dyn Socket,
     connection: &ResourceConnection,
 ) -> Result<(), ClientError> {
     let mut journal = VecDeque::new();
     collect(session, epoch, socket, &mut journal, async {
-        let _guard = session.resource_serial.lock().await;
-        let snapshot = connection.cache.load(epoch.generation).await?;
-        session.publish_resources(snapshot)
+        let guard = resource_commit::reserve(session).await;
+        connection
+            .bootstrap_display(session, epoch.generation, &guard)
+            .await
     })
     .await?;
     collect(session, epoch, socket, &mut journal, async {
-        let _guard = session.resource_serial.lock().await;
-        let evidence = access::evidence(session, Refetch::Complete).await;
-        let snapshot = crate::reconcile_fetch::fetch(connection, session, epoch).await?;
-        session.epochs.validate(epoch.generation)?;
-        let transition = Transition::begin(session, connection, &snapshot, evidence).await?;
-        connection.cache.replace(&snapshot).await?;
-        transition.finish(session, connection).await?;
-        crate::reading::reconcile::resources(session, connection, &snapshot).await?;
-        crate::history::reconnect::refresh(session, connection, epoch.generation).await?;
-        session.publish_resources(snapshot)
+        let guard = resource_commit::reserve(session).await;
+        let mut stamp = FetchStamp::capture(session, epoch.generation, Refetch::Complete).await?;
+        let facts = crate::reconcile_fetch::fetch(
+            &mut stamp.observing(session, Some(&guard)),
+            connection,
+            Admission::new(session),
+        )
+        .await;
+        resource_commit::commit(session, connection, guard, stamp, facts)
+            .await?
+            .require_current()
     })
     .await?;
     crate::notifications::live::start(connection.client.session(session.account)?);
@@ -59,7 +90,7 @@ pub(crate) async fn run(
 }
 
 async fn replay(
-    session: &SessionInner,
+    session: &Arc<SessionInner>,
     epoch: &Epoch,
     socket: &mut dyn Socket,
     connection: &ResourceConnection,
@@ -86,49 +117,19 @@ async fn replay(
             continue;
         }
         collect(session, epoch, socket, journal, async {
-            let _guard = session.resource_serial.lock().await;
-            let mut snapshot = (**session.resources.borrow()).clone();
-            // A new connection starts with a replacement, never merges old generation presence.
-            let accepted_base = snapshot.generation == epoch.generation;
-            if !accepted_base {
-                snapshot = ResourceSnapshot::empty(epoch.generation);
-            }
-            let evidence = access::evidence(session, Refetch::Partial).await;
-            if let Some(changed) = crate::reconcile_event::apply(
-                crate::resource_admission::Admission::new(session),
+            let guard = resource_commit::reserve(session).await;
+            let mut stamp =
+                FetchStamp::capture(session, epoch.generation, Refetch::Partial).await?;
+            let facts = crate::reconcile_event::fetch(
+                Admission::new(session),
                 connection,
-                &mut snapshot,
+                &mut stamp.observing(session, Some(&guard)),
                 &event,
             )
-            .await?
-            {
-                session.epochs.validate(epoch.generation)?;
-                // A partial or cache-loaded image is no access evidence, and until this
-                // generation's fetch is admitted reading has no admission to follow.
-                let admitted = accepted_base && accepted(session, epoch.generation).await;
-                let transition = if admitted && affects_read_access(&changed) {
-                    Some(Transition::begin(session, connection, &snapshot, evidence).await?)
-                } else {
-                    None
-                };
-                connection.cache.update(&snapshot, &changed).await?;
-                let admission_changed = match transition {
-                    Some(transition) => transition.finish(session, connection).await?,
-                    None => false,
-                };
-                if admitted
-                    && (admission_changed
-                        || changed.iter().any(|resource| {
-                            matches!(
-                                resource,
-                                crate::CacheResource::Channels | crate::CacheResource::Dms
-                            )
-                        }))
-                {
-                    crate::reading::reconcile::resources(session, connection, &snapshot).await?;
-                }
-                session.publish_resources(snapshot)?;
-            }
+            .await;
+            resource_commit::commit(session, connection, guard, stamp, facts)
+                .await?
+                .require_current()?;
             session.epochs.apply(epoch.generation, || {
                 let _ = session.events.send(Generated {
                     generation: epoch.generation,

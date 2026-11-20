@@ -27,16 +27,27 @@ pub(crate) fn between<T: Clone + PartialEq, K: Ord>(
             last = Some(index);
             moved
         });
-    // Bound general move searches; common append/prepend/edit/delete paths never search.
-    if reordered && previous.len().max(next.len()) > 64 {
-        return vec![VectorDiff::Reset {
-            values: next.clone(),
-        }];
-    }
+    // A sparse move in a large list still has a small edit script. Identify the
+    // retained ordered subsequence so the main pass can remove and reinsert just the movers.
+    let large_reorder = reordered && previous.len().max(next.len()) > 64;
+    let moved = if large_reorder {
+        let shared = next
+            .iter()
+            .filter_map(|item| positions.get(&identity(item)).copied())
+            .collect::<Vec<_>>();
+        let Some(moved) = sparse_moves(&shared) else {
+            return vec![VectorDiff::Reset {
+                values: next.clone(),
+            }];
+        };
+        moved
+    } else {
+        BTreeSet::new()
+    };
     let mut current = previous.clone();
     let mut diffs = Vec::new();
     for index in (0..current.len()).rev() {
-        if !identities.contains(&identity(&current[index])) {
+        if moved.contains(&index) || !identities.contains(&identity(&current[index])) {
             current.remove(index);
             diffs.push(VectorDiff::Remove { index });
         }
@@ -56,6 +67,7 @@ pub(crate) fn between<T: Clone + PartialEq, K: Ord>(
             continue;
         }
         if reordered
+            && !large_reorder
             && let Some(old_index) = current
                 .iter()
                 .position(|item| identity(item) == identity(value))
@@ -77,6 +89,35 @@ pub(crate) fn between<T: Clone + PartialEq, K: Ord>(
         }
     }
     diffs
+}
+
+/// Original positions outside a longest increasing subsequence. For large shuffles
+/// a Reset bounds the number of consumer-visible edits.
+fn sparse_moves(positions: &[usize]) -> Option<BTreeSet<usize>> {
+    let mut ends: Vec<usize> = Vec::new();
+    let mut previous = Vec::with_capacity(positions.len());
+    for (index, &position) in positions.iter().enumerate() {
+        let length = ends.partition_point(|&end| positions[end] < position);
+        previous.push(length.checked_sub(1).map(|prior| ends[prior]));
+        if length == ends.len() {
+            ends.push(index);
+        } else {
+            ends[length] = index;
+        }
+        if index + 1 - ends.len() > 64 {
+            return None;
+        }
+    }
+    let mut keep = ends.last().copied();
+    let mut moved = BTreeSet::new();
+    for (index, &position) in positions.iter().enumerate().rev() {
+        if Some(index) == keep {
+            keep = previous[index];
+        } else {
+            moved.insert(position);
+        }
+    }
+    Some(moved)
 }
 
 #[cfg(test)]
@@ -134,6 +175,25 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn a_single_move_across_a_large_list_stays_two_edits() {
+        let before: Vector<usize> = (0..5_000).collect();
+        let mut after = before.clone();
+        let value = after.remove(100);
+        after.insert(4_000, value);
+        let diffs = between(&before, &after, |id| *id);
+        assert!(matches!(
+            diffs.as_slice(),
+            [
+                VectorDiff::Remove { index: 100 },
+                VectorDiff::Insert {
+                    index: 4_000,
+                    value: 100
+                }
+            ]
+        ));
     }
 
     #[test]

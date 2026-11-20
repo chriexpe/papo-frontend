@@ -109,9 +109,8 @@ async fn prove(
         .channels
         .iter()
         .find(|c| c.name.as_deref() == Some(channel_name))
-        .and_then(|c| c.id.as_ref())
-        .ok_or("proof channel unavailable")?
-        .parse()?;
+        .map(|c| c.id)
+        .ok_or("proof channel unavailable")?;
     exercise(session, channel).await
 }
 

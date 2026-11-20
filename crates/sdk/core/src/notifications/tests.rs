@@ -56,13 +56,24 @@ pub(crate) fn fixture(path: &std::path::Path) -> (Client, Session) {
             );
             handle.inner.pool.insert(Arc::clone(&inner)).await;
             let generation = inner.epochs.current().generation;
-            let mut resources = crate::ResourceSnapshot::empty(generation);
-            resources.channels = vec![crate::Channel {
-                id: Some(Uuid::from_u128(2).to_string()),
-                notification_settings: Some("only_mentions".into()),
-                ..Default::default()
-            }]
-            .into();
+            let resources = crate::ResourceSnapshot::fixture(
+                generation,
+                None,
+                vec![crate::Channel {
+                    r#type: Some("text".into()),
+                    permissions: Some(vec![]),
+                    id: Some(Uuid::from_u128(2).to_string()),
+                    notification_settings: Some("only_mentions".into()),
+                    ..Default::default()
+                }],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                account.user(),
+            )
+            .unwrap();
             inner.publish_resources(resources).unwrap();
             super::backend::remember(&inner, generation, None).unwrap();
             Session {
@@ -95,97 +106,72 @@ fn own_visible_muted_disabled_and_non_triggered_candidates_are_suppressed() {
     let mut settings = NotificationSettings::default();
     let mut item = candidate();
     let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
-    assert!(
+    let decision = |settings: &NotificationSettings, item: &policy::Candidate| {
         policy::decide(
             &session,
             generation,
-            &settings,
+            settings,
             &backend,
-            &item,
+            item,
             &resources,
-            ReadEvidence::Unread
+            ReadEvidence::Unread,
         )
         .unwrap()
-        .preview
-        .is_none()
-    );
+    };
+    assert!(decision(&settings, &item).unwrap().preview.is_none());
     item.author = Some(session.account().user());
-    assert!(
-        policy::decide(
-            &session,
-            generation,
-            &settings,
-            &backend,
-            &item,
-            &resources,
-            ReadEvidence::Unread
-        )
-        .is_none()
-    );
+    assert!(decision(&settings, &item).is_none());
     item = candidate();
     session
         .notifications()
         .set_visible_channels([item.channel].into())
         .unwrap();
-    assert!(
-        policy::decide(
-            &session,
-            generation,
-            &settings,
-            &backend,
-            &item,
-            &resources,
-            ReadEvidence::Unread
-        )
-        .is_none()
-    );
+    assert!(decision(&settings, &item).is_none());
     session
         .notifications()
         .set_visible_channels(BTreeSet::default())
         .unwrap();
     settings.muted.insert(item.channel);
-    assert!(
-        policy::decide(
-            &session,
-            generation,
-            &settings,
-            &backend,
-            &item,
-            &resources,
-            ReadEvidence::Unread
-        )
-        .is_none()
-    );
+    assert!(decision(&settings, &item).is_none());
     settings.muted.clear();
     settings.enabled = false;
-    assert!(
-        policy::decide(
-            &session,
-            generation,
-            &settings,
-            &backend,
-            &item,
-            &resources,
-            ReadEvidence::Unread
-        )
-        .is_none()
-    );
+    assert!(decision(&settings, &item).is_none());
     settings.enabled = true;
     item.triggered = false;
-    assert!(
-        policy::decide(
-            &session,
-            generation,
-            &settings,
-            &backend,
-            &item,
-            &resources,
-            ReadEvidence::Unread
-        )
-        .is_none()
-    );
+    assert!(decision(&settings, &item).is_none());
     client.shutdown().unwrap();
 }
+#[test]
+fn a_resumed_unread_message_waits_for_its_unambiguous_resource_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, session) = fixture(dir.path());
+    let mut image = (**session.inner.resources.borrow()).clone();
+    let item = candidate();
+    image.dms.set(
+        item.channel,
+        crate::DirectRecord {
+            id: item.channel,
+            peer_id: Uuid::from_u128(4),
+            created_at: String::new(),
+            last_message: None,
+            last_read_message: None,
+            last_read_at: None,
+            unread_count: 0,
+        },
+    );
+    let result = policy::decide(
+        &session,
+        session.generation(),
+        &NotificationSettings::default(),
+        &papo_api::wire::Notifications::default(),
+        &item,
+        &PolicyResources::from_snapshot(&image),
+        ReadEvidence::Unread,
+    );
+    assert!(result.is_err());
+    client.shutdown().unwrap();
+}
+
 #[test]
 fn canonical_full_claim_deduplicates_concurrent_producers_and_survives_restart() {
     let dir = tempfile::tempdir().unwrap();

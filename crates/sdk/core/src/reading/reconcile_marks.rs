@@ -7,7 +7,7 @@ use crate::{
     ClientError, ResourceSnapshot, Session, read_points::ServerReadPoint,
     reconcile::ResourceConnection,
 };
-use papo_api::{HistoryQuery, Uuid, wire::ChannelLastMessage};
+use papo_api::{HistoryQuery, Uuid};
 
 pub(super) struct Mark {
     pub(super) channel: Uuid,
@@ -15,53 +15,42 @@ pub(super) struct Mark {
     pub(super) head: Option<MessageKey>,
 }
 
-pub(super) fn marks(snapshot: &ResourceSnapshot) -> Result<Vec<Mark>, ClientError> {
+pub(super) fn marks(snapshot: &ResourceSnapshot) -> Vec<Mark> {
     snapshot
         .channels
         .iter()
         .map(|channel| {
             (
-                channel.id.as_deref(),
-                channel.last_read_message.as_deref(),
-                channel.last_read_at.as_deref(),
+                channel.id,
+                channel.last_read_message,
+                channel.last_read_at.as_ref(),
                 channel.last_message.as_ref(),
             )
         })
         .chain(snapshot.dms.iter().map(|dm| {
             (
-                Some(dm.id.as_str()),
-                dm.last_read_message.as_deref(),
-                dm.last_read_at.as_deref(),
+                dm.id,
+                dm.last_read_message,
+                dm.last_read_at.as_ref(),
                 dm.last_message.as_ref(),
             )
         }))
-        .map(|(channel, message, recorded_at, head)| {
-            let channel = channel
-                .ok_or(ClientError::ResourceData)?
-                .parse()
-                .map_err(|_| ClientError::ResourceData)?;
-            let server = message
-                .map(|message| {
-                    Ok::<_, ClientError>(ServerReadPoint {
-                        message_id: message.parse().map_err(|_| ClientError::ResourceData)?,
-                        recorded_at: recorded_at.map(str::to_owned),
-                    })
-                })
-                .transpose()?;
-            Ok(Mark {
-                channel,
-                server,
-                head: head.map(head_point).transpose()?,
-            })
+        .map(|(channel, message, recorded_at, head)| Mark {
+            channel,
+            server: message.map(|message_id| ServerReadPoint {
+                message_id,
+                recorded_at: recorded_at.cloned(),
+            }),
+            head: head.map(head_point),
         })
         .collect()
 }
 
-pub(super) fn head_point(head: &ChannelLastMessage) -> Result<MessageKey, ClientError> {
-    let (Some(created_at), Some(id)) = (head.created_at.as_deref(), head.id.as_deref()) else {
-        return Err(ClientError::ResourceData);
-    };
-    MessageKey::parse(created_at, id).map_err(|_| ClientError::ResourceData)
+pub(super) fn head_point(head: &crate::MessageHead) -> MessageKey {
+    MessageKey {
+        message_id: head.id,
+        created_at_us: head.created_at_us,
+    }
 }
 
 /// A deleted anchor with a previously resolved key stays ordered. The pinned protocol

@@ -10,8 +10,8 @@ pub struct UserSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#username: Option<String>,
     /// Backend `nickname` field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub r#nickname: Option<String>,
+    #[serde(default, skip_serializing_if = "crate::NullableText::is_missing")]
+    pub r#nickname: crate::NullableText,
     /// Backend `banned` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#banned: Option<bool>,
@@ -22,8 +22,8 @@ pub struct UserSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#status_message: Option<String>,
     /// Backend `typing` field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub r#typing: Option<String>,
+    #[serde(default, skip_serializing_if = "crate::NullableText::is_missing")]
+    pub r#typing: crate::NullableText,
     /// Backend `status_updated_at` field. Timestamp strings are preserved verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#status_updated_at: Option<String>,

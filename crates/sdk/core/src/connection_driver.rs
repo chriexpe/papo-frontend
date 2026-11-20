@@ -80,7 +80,7 @@ impl Connector for ApiConnector {
             }
             crate::notifications::backend::remember(session, epoch.generation, who.settings)?;
             *session.verified_rest.lock().await = Some((epoch.generation, rest.clone()));
-            let cache = self.0.inner.caches.open(session.account).await?;
+            let cache = self.0.inner.caches.for_reconcile(session.account).await?;
             session.epochs.validate(epoch.generation)?;
             let gateway =
                 tokio::time::timeout(self.0.inner.config.request_timeout, Gateway::connect(&rest))
@@ -136,7 +136,7 @@ pub(crate) fn start(client: ClientHandle, session: Arc<SessionInner>) {
 
 pub(crate) async fn drive(
     config: &crate::ClientConfig,
-    session: &SessionInner,
+    session: &Arc<SessionInner>,
     connector: &dyn Connector,
 ) {
     let mut attempt = 0_u32;
@@ -182,9 +182,11 @@ pub(crate) async fn drive(
                 if !reconciles {
                     attempt = 0;
                 }
+                let mut recovery = session.resource_recovery.subscribe();
                 let failure = tokio::select! {
                     biased;
                     () = session.driver_cancel.cancelled() => return,
+                    _ = recovery.wait_for(|requested| *requested == Some(epoch.generation)) => Some(ClientError::ReconcileRequired),
                     result = pump(session, &epoch, socket.as_mut()) => result,
                 };
                 // A reconciling socket proves the connection only once reconcile reaches
@@ -222,7 +224,7 @@ pub(crate) async fn drive(
                 () = epoch.cancel.cancelled() => continue,
             }
         }
-        if !wait_backoff(config, session, &mut attempt).await {
+        if !wait_backoff(config, session, epoch.generation, &mut attempt).await {
             return;
         }
     }
@@ -242,10 +244,13 @@ fn reached_online(session: &SessionInner, generation: crate::Generation) -> bool
 async fn wait_backoff(
     config: &crate::ClientConfig,
     session: &SessionInner,
+    failed: crate::Generation,
     attempt: &mut u32,
 ) -> bool {
-    let Ok(next) = session.epochs.advance() else {
-        return false;
+    let next = match session.epochs.replace(Some(failed), |_| {}) {
+        Ok(next) => next,
+        Err(ClientError::Superseded) => return true,
+        Err(_) => return false,
     };
     if session
         .history
@@ -279,7 +284,16 @@ mod tests;
 /// Whether a reconcile failure means the account cache itself cannot be trusted. Only
 /// storage-level faults do; a history layout invariant (`HistoryLayout`) is rejected before
 /// any write, so it leaves the cache intact and never discards it.
-fn invalidates_account_cache(error: &ClientError) -> bool {
+fn invalidates_account_cache(
+    session: &SessionInner,
+    generation: crate::Generation,
+    error: &ClientError,
+) -> bool {
+    // A failed resource commit may already have switched SQLite's visible revision.
+    // Its replacement must reload that revision even when downstream installation hit I/O.
+    if *session.resource_recovery.borrow() == Some(generation) {
+        return false;
+    }
     matches!(
         error,
         ClientError::Cache(
@@ -292,13 +306,15 @@ fn invalidates_account_cache(error: &ClientError) -> bool {
 
 /// Serves exactly one socket; returning a failure never reconnects inside the API layer.
 async fn pump(
-    session: &SessionInner,
+    session: &Arc<SessionInner>,
     epoch: &Epoch,
     socket: &mut dyn Socket,
 ) -> Option<ClientError> {
     if let Some(resources) = socket.resources() {
         let result = crate::reconcile::run(session, epoch, socket, &resources).await;
-        if result.as_ref().is_err_and(invalidates_account_cache)
+        if result
+            .as_ref()
+            .is_err_and(|error| invalidates_account_cache(session, epoch.generation, error))
             && session.epochs.validate(epoch.generation).is_ok()
             && let Err(error) = resources
                 .client

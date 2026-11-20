@@ -17,27 +17,30 @@ async fn capabilities_match_pinned_go_for_role_combinations_overrides_owner_and_
     assert!(response.status().is_success());
     let report: Value = response.json().await.unwrap();
     let cases = report["ordinary"].as_array().unwrap();
-    assert_eq!(cases.len(), 2060);
+    assert_eq!(cases.len(), 2061);
+    let mut deletion_cases = 0;
     let mut operations = 0;
     for (index, case) in cases.iter().enumerate() {
         let member: papo_sdk::UserSummary = serde_json::from_value(case["member"].clone()).unwrap();
         let user: Uuid = member.id.as_deref().unwrap().parse().unwrap();
         let channel: papo_sdk::Channel = serde_json::from_value(case["channel"].clone()).unwrap();
         let channel_id = channel.id.as_deref().unwrap().parse().unwrap();
-        let snapshot = ResourceSnapshot {
-            version: 1,
-            generation: Generation::for_test(1),
-            server: Some(Arc::new(
-                serde_json::from_value(case["server"].clone()).unwrap(),
-            )),
-            channels: Arc::new(vec![channel]),
-            channel_census_complete: true,
-            roles: Arc::new(serde_json::from_value(case["roles"].clone()).unwrap()),
-            members: Arc::new(vec![member]),
-            profiles: Arc::default(),
-            dms: Arc::default(),
-            blocks: Arc::default(),
-        };
+        let snapshot = ResourceSnapshot::fixture(
+            Generation::for_test(1),
+            Some(serde_json::from_value(case["server"].clone()).unwrap()),
+            vec![channel],
+            serde_json::from_value(case["roles"].clone()).unwrap(),
+            vec![member],
+            vec![],
+            vec![],
+            vec![],
+            user,
+        )
+        .unwrap();
+        if let Some(role) = case["deleted_role"].as_str() {
+            deletion_cases += 1;
+            check_deleted_role(&snapshot, user, channel_id, role.parse().unwrap(), case);
+        }
         let global = global_permissions(&snapshot, user).unwrap();
         let actual = [
             global.manage_server,
@@ -74,7 +77,8 @@ async fn capabilities_match_pinned_go_for_role_combinations_overrides_owner_and_
             );
         }
     }
-    assert_eq!(operations, 1036);
+    assert_eq!(operations, 1037);
+    assert_eq!(deletion_cases, 1);
     let direct = report["direct"].as_array().unwrap();
     assert_eq!(direct.len(), 12);
     for (index, case) in direct.iter().enumerate() {
@@ -82,11 +86,7 @@ async fn capabilities_match_pinned_go_for_role_combinations_overrides_owner_and_
             case["member"].as_bool().unwrap(),
             case["blocked"].as_bool().unwrap(),
         );
-        let caps = papo_sdk_ui::ChannelCapabilities::from_grants(
-            "dm",
-            grants,
-            papo_sdk::permissions::GlobalPermissions::default(),
-        );
+        let caps = papo_sdk_ui::ChannelCapabilities::from_direct_grants(grants);
         let actual = [
             caps.read,
             caps.send,
@@ -103,6 +103,32 @@ async fn capabilities_match_pinned_go_for_role_combinations_overrides_owner_and_
             "direct case {index}"
         );
     }
+}
+
+fn check_deleted_role(
+    snapshot: &ResourceSnapshot,
+    user: Uuid,
+    channel: Uuid,
+    deleted: Uuid,
+    backend: &Value,
+) {
+    assert!(snapshot.roles.get(deleted).is_none());
+    assert!(
+        !snapshot
+            .users
+            .get(user)
+            .unwrap()
+            .roles
+            .as_ref()
+            .unwrap()
+            .contains(&deleted)
+    );
+    let overwrites = &snapshot.channels.get(channel).unwrap().permissions;
+    assert!(
+        matches!(overwrites.as_slice(), [entry] if entry.key == papo_sdk::OverwriteKey::Canonical(deleted) && entry.read_channel)
+    );
+    assert_eq!(backend["operations"][0], false);
+    assert!(!capabilities(snapshot, user, channel).unwrap().read);
 }
 
 #[test]
@@ -149,11 +175,7 @@ fn sdk_typing_command_uses_session_gateway_and_live_generation() {
                 .iter()
                 .find(|channel| channel.name.as_deref() == Some("upload-proof"))
                 .unwrap()
-                .id
-                .as_deref()
-                .unwrap()
-                .parse()
-                .unwrap();
+                .id;
             let mut activity = session.subscribe_activity();
             session.report_typing(channel).unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(10), async {

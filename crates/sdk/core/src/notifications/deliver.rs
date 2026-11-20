@@ -127,7 +127,7 @@ pub(super) async fn deliver_at(
         Err(ReadingError::Storage(error)) => return Err(error.into()),
         Err(_) => return Err(NotificationError::InvalidData),
     };
-    let delivery = policy::decide(
+    let Ok(delivery) = policy::decide(
         session,
         generation,
         &settings,
@@ -135,7 +135,9 @@ pub(super) async fn deliver_at(
         &candidate,
         resources,
         read_evidence,
-    );
+    ) else {
+        return Ok(DeliveryOutcome::Deferred);
+    };
     claim_eligible(session, generation, &candidate, now_us, delivery).await
 }
 

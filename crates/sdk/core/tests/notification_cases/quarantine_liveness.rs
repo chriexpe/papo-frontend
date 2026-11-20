@@ -36,12 +36,7 @@ async fn create_visible_channel(f: &Fixture, session: &Session, name: &str) -> R
         .ok_or("channel")?
         .parse()?;
     let mut resources = session.subscribe_resources();
-    while !resources
-        .borrow()
-        .channels
-        .iter()
-        .any(|c| c.id.as_deref().and_then(|id| id.parse().ok()) == Some(channel))
-    {
+    while !resources.borrow().channels.iter().any(|c| c.id == channel) {
         resources.changed().await?;
     }
     Ok(channel)
@@ -447,4 +442,75 @@ fn buried_healthy_row_behind_quarantined_row_completes_across_wakes_without_live
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()
+}
+
+#[test]
+fn unrecognized_or_absent_mode_retries_the_same_inbox_identity_after_revalidation() -> Result {
+    let fixture = Fixture::new(papo_test_server::Config::default())?;
+    fixture.run(async {
+        let (session, sender, channel) = setup(&fixture).await?;
+        let client = fixture.client().handle();
+        let account = session.account();
+        let baseline = row(
+            1,
+            channel,
+            sender.account().user(),
+            account.user(),
+            &timestamp_offset(-5),
+        );
+        fixture
+            .server()
+            .set_notifications(account.user(), vec![baseline.clone()])
+            .await?;
+        client.push_wake(account, deadline()).await?;
+        let previous = stored_cursor(&fixture, &session)?.ok_or("baseline cursor")?;
+        let pending = row(
+            2,
+            channel,
+            sender.account().user(),
+            account.user(),
+            &timestamp_offset(-1),
+        );
+        fixture
+            .server()
+            .set_notifications(account.user(), vec![baseline, pending.clone()])
+            .await?;
+        for mode in [None, Some("future")] {
+            let mut record = serde_json::json!({"id":channel,"type":"text","permissions":[]});
+            if let Some(raw) = mode {
+                record["notification_settings"] = serde_json::json!(raw);
+            }
+            fixture
+                .server()
+                .queue_operation_response(
+                    "GET",
+                    "/channels",
+                    200,
+                    serde_json::json!({"channels":[record]}),
+                )
+                .await?;
+            let report = client.push_wake(account, deadline()).await?;
+            assert_eq!(report.accounts[0].outcome, BackgroundOutcome::More);
+            assert!(report.deliveries.is_empty());
+            assert_eq!(ledger_rows(&fixture)?, 0);
+            assert_eq!(stored_cursor(&fixture, &session)?.as_ref(), Some(&previous));
+        }
+        let retried = client.push_wake(account, deadline()).await?;
+        assert_eq!(retried.accounts[0].outcome, BackgroundOutcome::Complete);
+        assert_eq!(retried.deliveries.len(), 1);
+        assert_eq!(ledger_rows(&fixture)?, 1);
+        assert_eq!(
+            stored_cursor(&fixture, &session)?.map(|cursor| cursor.id),
+            pending.id
+        );
+        assert!(
+            client
+                .push_wake(account, deadline())
+                .await?
+                .deliveries
+                .is_empty()
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
 }

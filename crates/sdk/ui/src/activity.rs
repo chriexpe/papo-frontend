@@ -117,33 +117,17 @@ fn project(
                 && entry.expires_at > tokio::time::Instant::now()
         })
         .map(|entry| {
-            let id = entry.user.to_string();
             let presence = activity.presence.get(&entry.user);
-            let profile = matching_resources
-                .then(|| {
-                    resources
-                        .profiles
-                        .iter()
-                        .find(|profile| profile.id.as_deref() == Some(id.as_str()))
-                })
-                .flatten();
             let member = matching_resources
-                .then(|| {
-                    resources
-                        .members
-                        .iter()
-                        .find(|member| member.id.as_deref() == Some(id.as_str()))
-                })
+                .then(|| resources.users.get(entry.user))
                 .flatten();
             TypingItem {
                 user: entry.user,
                 nickname: presence
                     .and_then(|presence| presence.nickname.clone())
-                    .or_else(|| profile.and_then(|profile| profile.nickname.clone()))
                     .or_else(|| member.and_then(|member| member.nickname.clone())),
                 phrase: presence
                     .and_then(|presence| presence.typing_phrase.clone())
-                    .or_else(|| profile.and_then(|profile| profile.typing.clone()))
                     .or_else(|| member.and_then(|member| member.typing.clone())),
             }
         })

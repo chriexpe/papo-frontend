@@ -195,11 +195,7 @@ fn persist_and_restore(model: super::model::Model, generation: u64) -> super::pe
             .unwrap();
         let channel = Uuid::from_u128(CHANNEL);
         let mut resources = ResourceSnapshot::empty(Generation(generation));
-        resources.channels = vec![crate::Channel {
-            id: Some(channel.to_string()),
-            ..crate::Channel::default()
-        }]
-        .into();
+        resources.channels = crate::ResourceSnapshot::text_channels([channel]);
         cache.replace(&resources).await.unwrap();
         let mut state = super::persistence::State::default();
         state

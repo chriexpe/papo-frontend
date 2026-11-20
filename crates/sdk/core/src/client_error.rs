@@ -40,6 +40,9 @@ pub enum ClientError {
     /// Reconcile could not keep up with the bounded event journal; a new generation is required.
     #[error("reconcile event journal overflow")]
     ReconcileOverflow,
+    /// Resource installation could not finish; the connection driver must reload and reconcile.
+    #[error("resource reconciliation required")]
+    ReconcileRequired,
     /// A history layout broke an SDK invariant before anything was written. Distinct from
     /// `Cache`: stored data is intact, so this never invalidates the account cache.
     #[error("history layout invariant violated")]

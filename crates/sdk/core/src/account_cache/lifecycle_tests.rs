@@ -3,12 +3,9 @@
 use super::*;
 use crate::{
     ServerAddress,
-    storage_worker::{SqlMutation, StorageWorker, WorkerConfig},
+    storage_worker::{SqlBatch, SqlMutation, StorageWorker, WorkerConfig},
 };
-use papo_api::{
-    Uuid,
-    wire::{Channel, UserSummary},
-};
+use papo_api::Uuid;
 use std::{
     future::Future,
     task::Poll,
@@ -114,14 +111,7 @@ fn selective_updates_do_not_rewrite_large_unchanged_memberships() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let cache = caches.open(account()).await.unwrap();
-        let mut snapshot = ResourceSnapshot::empty(Generation(1));
-        snapshot.members = (1..=1_501)
-            .map(|id| UserSummary {
-                id: Some(Uuid::from_u128(id).to_string()),
-                ..UserSummary::default()
-            })
-            .collect::<Vec<_>>()
-            .into();
+        let mut snapshot = super::resource_fixtures::roster(1_501, Generation(1));
         cache.replace(&snapshot).await.unwrap();
         let before: i64 = cache
             .readers
@@ -133,10 +123,8 @@ fn selective_updates_do_not_rewrite_large_unchanged_memberships() {
             .await
             .unwrap();
         snapshot.version = 1;
-        Arc::make_mut(&mut snapshot.channels).push(Channel {
-            id: Some(Uuid::from_u128(99).to_string()),
-            ..Channel::default()
-        });
+        let channel = super::resource_fixtures::channel(Uuid::from_u128(99));
+        snapshot.channels.set(channel.id, channel);
         cache
             .update(&snapshot, &[CacheResource::Channels])
             .await
@@ -175,14 +163,7 @@ fn sparse_cached_positions_do_not_repeat_query_batches() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let cache = caches.open(account()).await.unwrap();
-        let mut snapshot = ResourceSnapshot::empty(Generation(1));
-        snapshot.members = (1..=500)
-            .map(|id| UserSummary {
-                id: Some(Uuid::from_u128(id).to_string()),
-                ..UserSummary::default()
-            })
-            .collect::<Vec<_>>()
-            .into();
+        let snapshot = super::resource_fixtures::roster(500, Generation(1));
         cache.replace(&snapshot).await.unwrap();
         cache
             .writer
@@ -212,11 +193,7 @@ fn interrupted_staging_never_becomes_visible_and_is_pruned_after_next_publicatio
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let cache = caches.open(account()).await.unwrap();
-        let mut snapshot = ResourceSnapshot::empty(Generation(1));
-        Arc::make_mut(&mut snapshot.members).push(UserSummary {
-            id: Some(Uuid::from_u128(3).to_string()),
-            ..UserSummary::default()
-        });
+        let mut snapshot = super::resource_fixtures::roster(1, Generation(1));
         cache.replace(&snapshot).await.unwrap();
         cache
             .writer
@@ -243,7 +220,7 @@ fn interrupted_staging_never_becomes_visible_and_is_pruned_after_next_publicatio
         let loaded = cache.load(Generation(2)).await.unwrap();
         assert_eq!(loaded.members.len(), 1);
         snapshot.generation = Generation(2);
-        Arc::make_mut(&mut snapshot.members).clear();
+        snapshot.members = crate::ResourceIds::default();
         cache.replace(&snapshot).await.unwrap();
         let count: i64 = cache
             .readers

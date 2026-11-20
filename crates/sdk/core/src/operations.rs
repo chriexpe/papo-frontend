@@ -13,7 +13,6 @@ pub mod moderation;
 pub mod profile;
 pub mod reactions;
 mod refresh;
-mod role_projection;
 pub mod roles;
 pub mod settings;
 pub mod social;

@@ -18,7 +18,7 @@ pub(super) fn mentions(
     if policy.badges_disabled() {
         return Ok(UnreadCount::Exact(0));
     }
-    if !read.boundary_known() {
+    if policy.badges_uncertain() || !read.boundary_known() {
         return Ok(UnreadCount::AtLeast(0));
     }
     let coverage = snapshot.coverage()?;

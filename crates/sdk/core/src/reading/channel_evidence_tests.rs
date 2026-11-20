@@ -53,6 +53,7 @@ fn channel_evidence_requires_current_published_boundary_even_without_a_stored_ro
                 .inner
                 .reading
                 .publish(&session.inner, image)
+                .await
                 .unwrap();
             let known_empty = channel_read_evidence(&session, generation, channel)
                 .await
@@ -102,6 +103,7 @@ fn boundary_inputs_change_without_public_read_state_changes() {
                 .inner
                 .reading
                 .publish(&session.inner, image)
+                .await
                 .unwrap();
             let public_state = session.reading_state(channel);
             let initial = channel_boundaries(&session.inner).await;
@@ -226,6 +228,7 @@ fn unresolved_server_id_preserves_known_maximum_but_never_proves_badge_unread() 
                 .inner
                 .reading
                 .publish(&session.inner, image)
+                .await
                 .unwrap();
             let durable_unresolved = channel_read_evidence(&session, generation, channel)
                 .await

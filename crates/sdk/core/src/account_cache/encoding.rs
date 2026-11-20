@@ -1,10 +1,10 @@
-//! Cache wire encoding and live-field exclusion; SQL revisions and session generations live elsewhere.
+//! Resource payloads and role edges for a SQLite revision. SQL visibility lives in persistence.
 
 use super::{CacheError, CacheResource, ResourceSnapshot, schema::MEMBER_ROLES};
-use papo_api::Uuid;
+use crate::Uuid;
 use serde::Serialize;
-use serde_json::Value;
-use std::collections::HashSet;
+
+mod payload;
 
 pub(super) struct Selection {
     snapshot: ResourceSnapshot,
@@ -22,30 +22,18 @@ pub(super) struct Record {
     pub payload: Vec<u8>,
 }
 
-/// Copy only selected groups across the owned blocking-work boundary, never presence.
+/// The immutable roots share their entity storage with the caller. Encoding joins only
+/// selected relations to canonical users and never copies unrelated records.
 pub(super) fn select(snapshot: &ResourceSnapshot, resources: &[CacheResource]) -> Selection {
-    let mut selected = ResourceSnapshot::empty(snapshot.generation);
-    selected.version = snapshot.version;
-    let mut seen = HashSet::new();
-    let resources: Vec<_> = resources
-        .iter()
-        .copied()
-        .filter(|resource| seen.insert(*resource))
-        .collect();
-    for resource in &resources {
-        match resource {
-            CacheResource::Server => selected.server.clone_from(&snapshot.server),
-            CacheResource::Channels => selected.channels.clone_from(&snapshot.channels),
-            CacheResource::Roles => selected.roles.clone_from(&snapshot.roles),
-            CacheResource::Members => selected.members.clone_from(&snapshot.members),
-            CacheResource::Profiles => selected.profiles.clone_from(&snapshot.profiles),
-            CacheResource::Dms => selected.dms.clone_from(&snapshot.dms),
-            CacheResource::Blocks => selected.blocks.clone_from(&snapshot.blocks),
+    let mut selected = Vec::with_capacity(resources.len());
+    for &resource in resources {
+        if !selected.contains(&resource) {
+            selected.push(resource);
         }
     }
     Selection {
-        snapshot: selected,
-        resources,
+        snapshot: snapshot.clone(),
+        resources: selected,
     }
 }
 
@@ -57,134 +45,91 @@ pub(super) fn encode(selection: Selection) -> Result<Encoded, CacheError> {
     let version = i64::try_from(snapshot.version).map_err(|_| CacheError::InvalidData)?;
     let mut tables = Vec::with_capacity(resources.len() + 1);
     for resource in resources {
-        let (table, records) = match resource {
+        let (index, records) = match resource {
             CacheResource::Server => (
                 0,
                 snapshot
                     .server
                     .iter()
-                    .map(|item| record(item.id.as_deref(), item.as_ref()))
-                    .collect::<Result<Vec<Record>, _>>()?,
+                    .map(|server| record(server.id, server.as_ref()))
+                    .collect::<Result<_, _>>()?,
             ),
             CacheResource::Channels => (
                 1,
                 snapshot
                     .channels
                     .iter()
-                    .map(|item| record(item.id.as_deref(), item))
-                    .collect::<Result<Vec<Record>, _>>()?,
+                    .map(|channel| record(channel.id, &payload::channel(channel)))
+                    .collect::<Result<_, _>>()?,
             ),
             CacheResource::Roles => (
                 2,
                 snapshot
                     .roles
                     .iter()
-                    .map(|item| record(item.id.as_deref(), item))
-                    .collect::<Result<Vec<Record>, _>>()?,
+                    .map(|role| record(role.id, role))
+                    .collect::<Result<_, _>>()?,
             ),
             CacheResource::Members => {
-                let records = snapshot
-                    .members
-                    .iter()
-                    .map(|item| record(item.id.as_deref(), item))
-                    .collect::<Result<Vec<Record>, _>>()?;
-                let mut roles = Vec::new();
-                for member in snapshot.members.iter() {
-                    let parent = Some(uuid(member.id.as_deref())?);
-                    for role in member.roles.iter().flatten() {
-                        roles.push(Record {
-                            id: uuid(role.id.as_deref())?,
-                            parent,
+                let mut members = Vec::with_capacity(snapshot.members.len());
+                let mut edges = Vec::new();
+                for id in snapshot.members.iter() {
+                    let user = snapshot.users.get(id).ok_or(CacheError::InvalidData)?;
+                    members.push(record(id, &payload::summary(id, Some(user)))?);
+                    for role in user.roles.iter().flatten() {
+                        edges.push(Record {
+                            id: *role.as_bytes(),
+                            parent: Some(*id.as_bytes()),
                             payload: Vec::new(),
                         });
                     }
                 }
-                validate_unique(&roles)?;
-                tables.push((MEMBER_ROLES, roles));
-                (3, records)
+                tables.push((MEMBER_ROLES, edges));
+                (3, members)
             }
             CacheResource::Profiles => (
                 4,
                 snapshot
                     .profiles
                     .iter()
-                    .map(|item| record(item.id.as_deref(), item))
-                    .collect::<Result<Vec<Record>, _>>()?,
+                    .map(|detail| {
+                        let user = snapshot.users.get(detail.id);
+                        record(detail.id, &payload::profile(detail, user))
+                    })
+                    .collect::<Result<_, _>>()?,
             ),
             CacheResource::Dms => (
                 5,
                 snapshot
                     .dms
                     .iter()
-                    .map(|item| record(Some(&item.id), item))
-                    .collect::<Result<Vec<Record>, _>>()?,
+                    .map(|dm| {
+                        let user = snapshot.users.get(dm.peer_id);
+                        record(dm.id, &payload::direct(dm, user))
+                    })
+                    .collect::<Result<_, _>>()?,
             ),
             CacheResource::Blocks => (
                 6,
                 snapshot
                     .blocks
                     .iter()
-                    .map(|item| record(item.id.as_deref(), item))
-                    .collect::<Result<Vec<Record>, _>>()?,
+                    .map(|id| {
+                        let user = snapshot.users.get(id);
+                        record(id, &payload::blocked(id, user))
+                    })
+                    .collect::<Result<_, _>>()?,
             ),
         };
-        validate_unique(&records)?;
-        tables.push((table, records));
+        tables.push((index, records));
     }
     Ok(Encoded { version, tables })
 }
 
-fn validate_unique(records: &[Record]) -> Result<(), CacheError> {
-    let mut ids = HashSet::with_capacity(records.len());
-    if records
-        .iter()
-        .any(|record| !ids.insert((record.parent, record.id)))
-    {
-        return Err(CacheError::InvalidData);
-    }
-    Ok(())
-}
-
-fn uuid(value: Option<&str>) -> Result<[u8; 16], CacheError> {
-    Uuid::parse_str(value.ok_or(CacheError::InvalidData)?)
-        .map(|id| *id.as_bytes())
-        .map_err(|_| CacheError::InvalidData)
-}
-
-fn record(value: Option<&str>, item: &impl Serialize) -> Result<Record, CacheError> {
-    let id = uuid(value)?;
-    let mut value = serde_json::to_value(item).map_err(|_| CacheError::InvalidData)?;
-    strip_live_fields(&mut value);
-    let payload = serde_json::to_vec(&value).map_err(|_| CacheError::InvalidData)?;
+fn record(id: Uuid, item: &impl Serialize) -> Result<Record, CacheError> {
     Ok(Record {
-        id,
+        id: *id.as_bytes(),
         parent: None,
-        payload,
+        payload: serde_json::to_vec(item).map_err(|_| CacheError::InvalidData)?,
     })
-}
-
-fn strip_live_fields(value: &mut Value) {
-    match value {
-        Value::Object(fields) => {
-            for name in [
-                "status",
-                "status_message",
-                "typing",
-                "status_updated_at",
-                "avatar_blob",
-                "icon_blob",
-            ] {
-                fields.remove(name);
-            }
-            for value in fields.values_mut() {
-                strip_live_fields(value);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                strip_live_fields(item);
-            }
-        }
-        _ => {}
-    }
 }

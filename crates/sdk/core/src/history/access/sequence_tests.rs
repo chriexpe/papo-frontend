@@ -17,8 +17,7 @@ use std::sync::Arc;
 /// The allowed snapshot with `OPEN` no longer listed.
 fn without_open(generation: crate::Generation) -> crate::ResourceSnapshot {
     let mut snapshot = snapshot(generation, Evidence::Allowed);
-    Arc::make_mut(&mut snapshot.channels)
-        .retain(|channel| channel.id.as_deref() != Some(OPEN.to_string().as_str()));
+    snapshot.channels.remove(OPEN);
     snapshot
 }
 
@@ -145,8 +144,7 @@ fn same_session_regrant_after_an_unpersisted_denial_never_reuses_the_old_set() {
                 let decisions = crate::permissions::read_access::ReadDecisions::evaluate(
                     &snapshot(generation, Evidence::Denied),
                     Uuid::nil(),
-                )
-                .unwrap();
+                );
                 let mut admissions = harness.session.history.admission.write().await;
                 admissions.seal(&decisions, &channels);
                 channels.retain(|_, channel| !channel.is_closed());
@@ -388,6 +386,7 @@ fn completed_backend_denial_during_a_transition_is_not_reopened_by_its_older_evi
                 &harness.client.handle(),
                 &harness.connection.cache,
                 RESTRICTED,
+                None,
                 HistoryClosedReason::Forbidden,
                 generation,
             )

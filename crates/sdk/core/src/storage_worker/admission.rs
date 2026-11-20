@@ -41,6 +41,15 @@ impl<T> CommitReceipt<T> {
 }
 
 impl DatabaseWriter {
+    /// A terminal SQL/worker fault requires a new registration before further writes.
+    pub(crate) fn failed(&self) -> bool {
+        let state = self.shared.lock();
+        usize::try_from(self.database_id)
+            .ok()
+            .and_then(|index| state.databases.get(index))
+            .is_some_and(|database| database.failure.is_some())
+    }
+
     /// Worker-local database identifier used in shutdown and failure reports.
     #[must_use]
     pub fn database_id(&self) -> u64 {

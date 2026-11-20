@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use papo_sdk::{
-    AccountId, Channel, ClientHandle, MAX_ICON_BYTES, MediaSource, RegistrySnapshot,
-    ResourceSnapshot, SavedAccount, ServerId, Session,
+    AccountId, ChannelKind, ChannelRecord, ClientHandle, MAX_ICON_BYTES, MediaSource,
+    RegistrySnapshot, ResourceSnapshot, SavedAccount, ServerId, Session,
 };
 use tokio::task::JoinSet;
 
@@ -139,28 +139,25 @@ fn shown_account(accounts: &[SavedAccount], id: ServerId) -> Option<&SavedAccoun
     on_server.find(|account| account.active).or(first)
 }
 
-/// Splits the server's channels into text and voice, in its order. A channel
-/// without an identity or a name cannot be a row; a category holds channels
-/// and is not one.
-pub(crate) fn channels(all: &[Channel]) -> (Vec<ChannelEntry>, Vec<ChannelEntry>) {
+/// Groups named text and voice channels, preserving backend order within each group.
+fn channels<'a>(
+    all: impl IntoIterator<Item = &'a ChannelRecord>,
+) -> (Vec<ChannelEntry>, Vec<ChannelEntry>) {
     let mut text = Vec::new();
     let mut voice = Vec::new();
     for channel in all {
-        let (Some(id), Some(name)) = (&channel.id, &channel.name) else {
+        let Some(name) = &channel.name else {
             continue;
         };
-        if id.is_empty() {
-            continue;
-        }
-        let entry = ChannelEntry {
-            id: id.clone(),
+        let rows = match channel.kind {
+            ChannelKind::Text => &mut text,
+            ChannelKind::Voice => &mut voice,
+            ChannelKind::Category => continue,
+        };
+        rows.push(ChannelEntry {
+            id: channel.id.to_string(),
             name: name.clone(),
-        };
-        match channel.r#type.as_deref() {
-            Some("voice") => voice.push(entry),
-            Some("category") => {}
-            _ => text.push(entry),
-        }
+        });
     }
     (text, voice)
 }
@@ -294,7 +291,7 @@ fn read_resources(
 
 fn resources(snapshot: &ResourceSnapshot, icon: Option<Arc<[u8]>>) -> ServerResources {
     let server = snapshot.server.as_deref();
-    let (text_channels, voice_channels) = channels(&snapshot.channels);
+    let (text_channels, voice_channels) = channels(snapshot.channels.iter());
     ServerResources {
         name: server
             .and_then(|server| server.name.clone())

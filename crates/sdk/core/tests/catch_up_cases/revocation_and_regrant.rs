@@ -92,7 +92,7 @@ async fn delete_and_regrant_channel(fixture: &Fixture, session: &papo_sdk::Sessi
         .borrow_and_update()
         .channels
         .iter()
-        .any(|c| c.id.as_deref() == Some(CHANNEL))
+        .any(|c| c.id == channel())
     {
         res_rx.changed().await?;
     }
@@ -114,7 +114,7 @@ async fn delete_and_regrant_channel(fixture: &Fixture, session: &papo_sdk::Sessi
         .borrow_and_update()
         .channels
         .iter()
-        .any(|c| c.id.as_deref() == Some(CHANNEL) && c.name.as_deref() == Some("restored"))
+        .any(|c| c.id == channel() && c.name.as_deref() == Some("restored"))
     {
         res_rx.changed().await?;
     }
@@ -238,7 +238,7 @@ fn coalesced_position_waiters_receive_concrete_revocation_error_variants() -> Re
             .borrow_and_update()
             .channels
             .iter()
-            .any(|c| c.id.as_deref() == Some(CHANNEL))
+            .any(|c| c.id == channel())
         {
             res_rx.changed().await?;
         }

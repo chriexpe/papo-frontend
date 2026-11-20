@@ -125,7 +125,11 @@ def generate(spec):
             typ = rust_type(schema, name + ''.join(x.title() for x in field.split('_')))
             optional = field not in node.get('required', []) or schema.get('nullable', False)
             lines += [f'    /// Backend `{field}` field.' + (' Timestamp strings are preserved verbatim.' if schema.get('format') == 'date-time' else '')]
-            if optional:
+            # A nullable profile field can be absent in a sparse response or explicitly cleared.
+            if name in ('UserSummary', 'UserProfile') and field in ('nickname', 'typing'):
+                typ = 'crate::NullableText'
+                lines += ['    #[serde(default, skip_serializing_if = "crate::NullableText::is_missing")]']
+            elif optional:
                 typ = f'Option<{typ}>'
                 lines += ['    #[serde(default, skip_serializing_if = "Option::is_none")]']
             if snake(field) != field:

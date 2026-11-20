@@ -84,14 +84,8 @@ pub(super) async fn cache(fixture: &Fixture, channels: &[u128]) -> Arc<AccountCa
         .await
         .unwrap();
     let mut resources = ResourceSnapshot::empty(Generation(1));
-    resources.channels = channels
-        .iter()
-        .map(|id| crate::Channel {
-            id: Some(Uuid::from_u128(*id).to_string()),
-            ..crate::Channel::default()
-        })
-        .collect::<Vec<_>>()
-        .into();
+    resources.channels =
+        crate::ResourceSnapshot::text_channels(channels.iter().copied().map(Uuid::from_u128));
     cache.replace(&resources).await.unwrap();
     cache
 }

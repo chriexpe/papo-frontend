@@ -77,6 +77,7 @@ mod reconcile;
 mod reconcile_event;
 mod reconcile_fetch;
 mod resource_admission;
+mod resource_commit;
 pub use resource_admission::{AdmissionDiagnostics, AdmissionFault, DroppedRow, ResourceRejection};
 mod resources;
 pub use account_cache::{AccountCache, AccountCaches, CacheError, CacheResource};
@@ -85,7 +86,11 @@ pub use papo_api::wire::{
     Role, RoleSummary, UserProfile, UserSummary,
 };
 pub use read_points::ServerReadPoint;
-pub use resources::ResourceSnapshot;
+pub use resources::{
+    BackendMode, ChannelKind, ChannelRecord, DirectRecord, EntityTable, MessageHead, Overwrite,
+    OverwriteKey, ProfileRecord, ResourceIds, ResourceSnapshot, ResourceTable, RoleFlags,
+    RoleRecord, ServerRecord, UserRecord,
+};
 mod notifications;
 pub use notifications::{
     ChannelNotificationMode, InboxCursor, InboxPage, NotificationDelivery, NotificationDiagnostics,

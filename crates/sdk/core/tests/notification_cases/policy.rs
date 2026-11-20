@@ -85,22 +85,21 @@ fn backend_all_does_not_turn_ephemeral_events_into_device_mention_alerts() -> Re
     let f = Fixture::new(papo_test_server::Config::default())?;
     f.run(async {
         let (first, second, channel) = setup(&f).await?;
-        let mut metadata = first
-            .subscribe_resources()
-            .borrow()
-            .channels
-            .iter()
-            .find(|c| c.id.as_deref().and_then(|id| id.parse().ok()) == Some(channel))
-            .cloned()
-            .ok_or("channel")?;
-        metadata.notification_settings = Some("all".into());
-        metadata.name = Some("changed".into());
-        f.server().set_channel(metadata).await?;
+        f.server()
+            .set_channel(papo_sdk::Channel {
+                id: Some(channel.to_string()),
+                r#type: Some("text".into()),
+                name: Some("changed".into()),
+                position: Some(0),
+                notification_settings: Some("all".into()),
+                permissions: Some(vec![]),
+                ..Default::default()
+            })
+            .await?;
         let mut resources = first.subscribe_resources();
         loop {
             if resources.borrow().channels.iter().any(|c| {
-                c.id.as_deref().and_then(|id| id.parse().ok()) == Some(channel)
-                    && c.notification_settings.as_deref() == Some("all")
+                c.id == channel && c.notification_settings == Some(papo_sdk::BackendMode::All)
             }) {
                 break;
             }

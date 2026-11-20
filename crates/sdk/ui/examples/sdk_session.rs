@@ -222,7 +222,7 @@ async fn exercise_channels(
 
 fn contains(list: &ChannelListSubscription, id: &str, name: Option<&str>) -> bool {
     list.snapshot.iter().any(|item: &Arc<ChannelListItem>| {
-        item.id.as_deref() == Some(id) && name.is_none_or(|name| item.name.as_deref() == Some(name))
+        item.id.to_string() == id && name.is_none_or(|name| item.name.as_deref() == Some(name))
     })
 }
 

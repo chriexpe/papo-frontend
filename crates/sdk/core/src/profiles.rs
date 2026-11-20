@@ -1,13 +1,21 @@
 //! On-demand generation-stamped profile batches; member listing and live invalidation belong to reconcile.
 
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
 use papo_api::{
     Uuid,
     wire::{ProfileBatchRequest, UserProfile},
 };
 
-use crate::{CacheResource, ClientError, Generated, Session, generation::Epoch};
+use crate::{
+    ClientError, Generated, Session,
+    generation::Epoch,
+    history::access::Refetch,
+    reconcile::ResourceConnection,
+    resource_admission::Admission,
+    resource_commit::{self, FetchResult, FetchStamp},
+    resources::AdmittedMutation,
+};
 
 impl Session {
     /// Fetches up to 1000 requested IDs in batches of at most 50, deduplicating IDs.
@@ -26,7 +34,7 @@ impl Session {
         let users = users
             .iter()
             .filter(|user| seen.insert(**user))
-            .map(ToString::to_string)
+            .copied()
             .collect();
         let session = self.clone();
         let token = self.inner.tasks.token();
@@ -48,7 +56,7 @@ impl Session {
     async fn fetch_profiles(
         &self,
         epoch: &Epoch,
-        users: Vec<String>,
+        users: Vec<Uuid>,
     ) -> Result<Generated<Vec<UserProfile>>, ClientError> {
         let secret = self
             .inner
@@ -65,37 +73,52 @@ impl Session {
             return Err(ClientError::Identity);
         }
         let cache = self.client.inner.caches.open(self.account()).await?;
+        let connection = ResourceConnection {
+            client: self.client.clone(),
+            rest,
+            cache,
+        };
         let mut profiles = Vec::new();
         for ids in users.chunks(50) {
-            // Serialize one bounded batch with member invalidation, then yield to waiting live merges.
-            let _serial = self.inner.resource_serial.lock().await;
-            self.inner.epochs.validate(epoch.generation)?;
-            let request = ProfileBatchRequest { ids: ids.to_vec() };
-            let response = self.client.inner.request(rest.profiles(&request)).await?;
-            let mut batch = response.profiles.unwrap_or_default();
-            let mut returned = HashSet::new();
-            for profile in &batch {
-                let id = profile.id.as_ref().ok_or(ClientError::ResourceData)?;
-                if !ids.contains(id) || !returned.insert(id) {
-                    return Err(ClientError::ResourceData);
-                }
+            let guard = resource_commit::reserve(&self.inner).await;
+            if !self.inner.resources.borrow().has_display_baseline {
+                connection
+                    .bootstrap_display(&self.inner, epoch.generation, &guard)
+                    .await?;
             }
-            self.inner.epochs.validate(epoch.generation)?;
-            let mut snapshot = (**self.inner.resources.borrow()).clone();
-            if snapshot.generation != epoch.generation {
-                return Err(ClientError::Superseded);
-            }
-            let cached = Arc::make_mut(&mut snapshot.profiles);
-            cached.retain(|existing| !existing.id.as_ref().is_some_and(|id| ids.contains(id)));
-            for profile in &mut batch {
-                // Do not clone the base64 bytes into the shared resource image.
-                let avatar = profile.avatar_blob.take();
-                cached.push(profile.clone());
-                profile.avatar_blob = avatar;
-            }
-            cache.update(&snapshot, &[CacheResource::Profiles]).await?;
-            self.inner.publish_resources(snapshot)?;
-            profiles.extend(batch);
+            let stamp =
+                FetchStamp::capture(&self.inner, epoch.generation, Refetch::Partial).await?;
+            let request = ProfileBatchRequest {
+                ids: ids.iter().map(ToString::to_string).collect(),
+            };
+            let response = self
+                .client
+                .inner
+                .request(connection.rest.profiles(&request))
+                .await;
+            let fetched: FetchResult = (|| {
+                let mut batch = response?.profiles;
+                let metadata = batch.as_mut().map(|profiles| {
+                    profiles
+                        .iter_mut()
+                        .map(|profile| {
+                            let avatar = profile.avatar_blob.take();
+                            let retained = profile.clone();
+                            profile.avatar_blob = avatar;
+                            retained
+                        })
+                        .collect()
+                });
+                let batch_facts = Admission::new(&self.inner).profiles(ids, metadata)?;
+                profiles.extend(batch.into_iter().flatten());
+                Ok(AdmittedMutation {
+                    profiles: vec![batch_facts],
+                    ..Default::default()
+                })
+            })();
+            resource_commit::commit(&self.inner, &connection, guard, stamp, fetched)
+                .await?
+                .require_current()?;
         }
         Ok(Generated {
             generation: epoch.generation,

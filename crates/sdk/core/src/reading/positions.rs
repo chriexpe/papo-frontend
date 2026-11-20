@@ -69,63 +69,9 @@ pub(crate) struct PositionCoordinator {
     state: Mutex<State>,
 }
 
-impl State {
-    fn fence(&self, channel: Uuid, generation: Generation) -> Option<ChannelFence> {
-        if let Some(entry) = self.revoked.get(&channel)
-            && entry.generation == generation
-        {
-            return Some(ChannelFence::Closed(entry.reason));
-        }
-        self.quarantined
-            .contains(&channel)
-            .then_some(ChannelFence::Unknown)
-    }
-}
+mod access;
 
 impl PositionCoordinator {
-    pub fn check_writable(
-        &self,
-        channel: Uuid,
-        generation: Generation,
-        expected_epoch: u64,
-    ) -> Option<ChannelFence> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.closed {
-            return Some(ChannelFence::Closed(HistoryClosedReason::AccountClosed));
-        }
-        let current = state.revocation_epochs.get(&channel).copied();
-        let current_epoch = current.map_or(0, |entry| entry.epoch);
-        if current_epoch != expected_epoch {
-            return Some(ChannelFence::Closed(
-                state
-                    .revoked
-                    .get(&channel)
-                    .map(|entry| entry.reason)
-                    .or_else(|| current.map(|entry| entry.reason))
-                    .unwrap_or(HistoryClosedReason::ChannelRemoved),
-            ));
-        }
-        state.fence(channel, generation)
-    }
-
-    pub fn check_current_channel(
-        &self,
-        channel: Uuid,
-        generation: Generation,
-    ) -> Option<ChannelFence> {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.closed {
-            return Some(ChannelFence::Closed(HistoryClosedReason::AccountClosed));
-        }
-        state.fence(channel, generation)
-    }
-
     /// Refuse new and in-flight reading work while history access is unknown, without
     /// bumping the revocation epoch: a later grant resumes the same position incarnation.
     pub fn quarantine(&self, channels: &[Uuid]) {

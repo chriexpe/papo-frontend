@@ -39,33 +39,33 @@ pub(super) enum Evidence {
 
 /// The account (nil user) holds `ROLE`; `RESTRICTED` follows `evidence`, `OPEN` is open.
 pub(super) fn snapshot(generation: Generation, evidence: Evidence) -> ResourceSnapshot {
-    let mut snapshot = ResourceSnapshot::empty(generation);
-    snapshot.server = Some(Arc::new(Server {
+    let server = Server {
         id: Some(Uuid::from_u128(2).to_string()),
         owner_id: Some(Uuid::from_u128(1).to_string()),
         ..Server::default()
-    }));
-    snapshot.members = Arc::new(vec![UserSummary {
+    };
+    let members = vec![UserSummary {
         id: Some(Uuid::nil().to_string()),
         roles: Some(vec![RoleSummary {
             id: Some(ROLE.into()),
             ..RoleSummary::default()
         }]),
         ..UserSummary::default()
-    }]);
+    }];
     let restricted = crate::Channel {
         id: Some(RESTRICTED.to_string()),
         r#type: Some("text".into()),
         permissions: match evidence {
-            Evidence::Unknown => None,
-            Evidence::Allowed | Evidence::Denied => Some(vec![ChannelPermissionEntry {
-                role_id: Some(ROLE.into()),
-                permissions: Some(ChannelPermissions {
-                    read_channel: Some(matches!(evidence, Evidence::Allowed)),
-                    ..ChannelPermissions::default()
-                }),
-                ..ChannelPermissionEntry::default()
-            }]),
+            Evidence::Unknown | Evidence::Allowed | Evidence::Denied => {
+                Some(vec![ChannelPermissionEntry {
+                    role_id: Some(ROLE.into()),
+                    permissions: Some(ChannelPermissions {
+                        read_channel: Some(matches!(evidence, Evidence::Allowed)),
+                        ..ChannelPermissions::default()
+                    }),
+                    ..ChannelPermissionEntry::default()
+                }])
+            }
         },
         ..crate::Channel::default()
     };
@@ -75,30 +75,59 @@ pub(super) fn snapshot(generation: Generation, evidence: Evidence) -> ResourceSn
         permissions: Some(Vec::new()),
         ..crate::Channel::default()
     };
-    snapshot.channels = Arc::new(vec![restricted, open]);
+    let role = papo_api::wire::Role {
+        id: Some(ROLE.into()),
+        permissions: Some(papo_api::wire::RolePermissions::default()),
+        ..Default::default()
+    };
+    let mut snapshot = ResourceSnapshot::fixture(
+        generation,
+        Some(server),
+        vec![restricted, open],
+        vec![role],
+        members,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Uuid::nil(),
+    )
+    .unwrap();
+    if matches!(evidence, Evidence::Unknown) {
+        snapshot.gaps.await_channel(RESTRICTED);
+    }
     snapshot
 }
 
-fn with_dm(mut snapshot: ResourceSnapshot, blocked: bool) -> ResourceSnapshot {
-    snapshot.dms = Arc::new(vec![DirectConversation {
+fn with_dm(snapshot: &ResourceSnapshot, blocked: bool) -> ResourceSnapshot {
+    let peer = UserSummary {
+        id: Some(PEER.to_string()),
+        ..Default::default()
+    };
+    let wire = DirectConversation {
         id: DM.to_string(),
-        user: UserSummary {
-            id: Some(PEER.to_string()),
-            ..UserSummary::default()
-        },
+        user: peer.clone(),
         created_at: "2026-01-01T00:00:00Z".into(),
-        last_message: None,
-        last_read_message: None,
-        last_read_at: None,
-        unread_count: 0,
-    }]);
-    if blocked {
-        snapshot.blocks = Arc::new(vec![UserSummary {
-            id: Some(PEER.to_string()),
-            ..UserSummary::default()
-        }]);
+        ..Default::default()
+    };
+    let diagnostics = crate::resource_admission::Diagnostics::default();
+    let admit = crate::resource_admission::Admission::for_test(Uuid::nil(), &diagnostics);
+    crate::resources::AdmittedMutation {
+        dms: Some(
+            admit
+                .dms(papo_api::wire::DirectConversationList { dms: vec![wire] })
+                .unwrap(),
+        ),
+        blocks: Some(
+            admit
+                .blocks(papo_api::wire::BlockListResponse {
+                    users: if blocked { vec![peer] } else { Vec::new() },
+                })
+                .unwrap(),
+        ),
+        ..Default::default()
     }
-    snapshot
+    .apply(snapshot, Uuid::nil())
+    .unwrap()
 }
 
 pub(super) struct Harness {
@@ -337,10 +366,10 @@ fn dm_block_denies_with_a_durable_marker_and_unblocking_regrants_a_fresh_set() {
         .client
         .block_on(async {
             let base = snapshot(generation, Evidence::Allowed);
-            harness.accept(&with_dm(base.clone(), false)).await.unwrap();
+            harness.accept(&with_dm(&base, false)).await.unwrap();
             let old_set = harness.set(DM).await;
             let old = harness.session.history.verified_channel(DM).await.unwrap();
-            harness.accept(&with_dm(base.clone(), true)).await.unwrap();
+            harness.accept(&with_dm(&base, true)).await.unwrap();
             assert!(matches!(
                 old.check(),
                 Err(HistoryError::Closed(HistoryClosedReason::PermissionDenied))
@@ -351,7 +380,7 @@ fn dm_block_denies_with_a_durable_marker_and_unblocking_regrants_a_fresh_set() {
                 harness.session.history.verified_channel(DM).await,
                 Err(HistoryError::Unverified)
             ));
-            harness.accept(&with_dm(base, false)).await.unwrap();
+            harness.accept(&with_dm(&base, false)).await.unwrap();
             let regranted = harness.session.history.verified_channel(DM).await.unwrap();
             assert!(!Arc::ptr_eq(&old, &regranted));
             assert_ne!(harness.set(DM).await, old_set);

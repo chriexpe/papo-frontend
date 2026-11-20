@@ -15,7 +15,7 @@ fn member_updates_keep_unrelated_rows_and_invalidate_requested_profiles_without_
             .set_profile(UserProfile {
                 id: Some(user.to_string()),
                 username: Some("view-member".into()),
-                nickname: Some("first".into()),
+                nickname: "first".into(),
                 ..UserProfile::default()
             })
             .await?;
@@ -25,7 +25,7 @@ fn member_updates_keep_unrelated_rows_and_invalidate_requested_profiles_without_
         let mut rows = members.snapshot.clone();
         let own = rows
             .iter()
-            .find(|item| item.id == session.account().user().to_string())
+            .find(|item| item.id == session.account().user())
             .unwrap()
             .clone();
         service.load_profiles(&[user]).await?;
@@ -36,7 +36,7 @@ fn member_updates_keep_unrelated_rows_and_invalidate_requested_profiles_without_
                 id: Some(user.to_string()),
                 username: Some("view-member".into()),
                 avatar_format: Some("webp".into()),
-                nickname: Some("second".into()),
+                nickname: "second".into(),
                 ..UserProfile::default()
             })
             .await?;
@@ -45,9 +45,10 @@ fn member_updates_keep_unrelated_rows_and_invalidate_requested_profiles_without_
             for diff in update.diffs {
                 diff.apply(&mut rows);
             }
-            if rows.iter().any(|item| {
-                item.id == user.to_string() && item.nickname.as_deref() == Some("second")
-            }) {
+            if rows
+                .iter()
+                .any(|item| item.id == user && item.nickname.as_deref() == Some("second"))
+            {
                 break;
             }
         }
@@ -64,7 +65,7 @@ fn member_updates_keep_unrelated_rows_and_invalidate_requested_profiles_without_
                 .profiles()
                 .snapshot
                 .iter()
-                .all(|item| item.member.id != user.to_string())
+                .all(|item| item.member.id != user)
         );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;

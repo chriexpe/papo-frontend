@@ -233,29 +233,34 @@ async fn rejection(
     generation: Generation,
     error: ClientError,
 ) -> HistoryError {
-    if let Err(error) = handle.check(generation) {
-        return error;
-    }
     let status = match &error {
         ClientError::Api(
             papo_api::Error::Problem { status, .. } | papo_api::Error::Http { status },
-        ) => *status,
-        _ => return error.into(),
+        ) => Some(*status),
+        _ => None,
     };
+    let current = handle.check(generation);
     let reason = match status {
-        403 => HistoryClosedReason::Forbidden,
-        404 => HistoryClosedReason::NotFound,
-        _ => return error.into(),
+        Some(403) => HistoryClosedReason::Forbidden,
+        Some(404) => HistoryClosedReason::NotFound,
+        _ => return current.err().unwrap_or_else(|| error.into()),
     };
+    // Quarantine is provisional. A backend refusal still seals this incarnation;
+    // deny checks its identity and generation again after acquiring the map.
+    if let Err(state) = current
+        && !matches!(state, HistoryError::AccessUnknown)
+    {
+        return state;
+    }
     let _state = handle.channel.state.lock().await;
     // Loss of access ends capabilities even when persisting the revocation fails; the
     // admission stays denied, so a later grant writes the marker before admitting anything.
-    handle.channel.close(reason);
     if let Err(error) = super::access::deny(
         &handle.session.inner,
         &handle.session.client,
         &connection.cache,
         handle.channel.id,
+        Some(&handle.channel),
         reason,
         generation,
     )
