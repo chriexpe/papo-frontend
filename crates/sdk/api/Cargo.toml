@@ -12,7 +12,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 url = "2"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "multipart"] }
+# Streamed multipart uploads reuse the locked bytes and reqwest versions.
+bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "multipart", "stream"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "0.27", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 cookie_store = { version = "=0.22.1", default-features = false }

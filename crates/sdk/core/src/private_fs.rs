@@ -82,6 +82,24 @@ pub(crate) fn staged_file(path: &Path) -> Result<File, StorageError> {
     file(path)
 }
 
+/// Creates a brand-new owner-private temporary staging file, failing if the path already exists.
+pub(crate) fn new_staged_temp_file(path: &Path) -> Result<File, StorageError> {
+    let mut options = File::options();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 /// Existing Windows files may have explicit broad ACEs despite a private parent.
 /// Unix traversal through the owner-only root protects all SQLite sidecars too.
 pub(crate) fn profile(path: &Path) -> Result<(), StorageError> {

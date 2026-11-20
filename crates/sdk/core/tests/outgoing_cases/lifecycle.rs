@@ -25,10 +25,10 @@ fn drafts_operations_and_dependencies_are_account_scoped_and_late_results_cannot
             channel,
             DraftBody {
                 message: OutgoingMessage {
-                    attachments: vec![OutgoingAttachment {
-                        filename: "private.bin".into(),
-                        bytes: vec![0, 255, 1],
-                    }],
+                    attachments: vec![OutgoingAttachment::from_bytes(
+                        "private.bin",
+                        vec![0, 255, 1],
+                    )],
                     ..Default::default()
                 },
                 ..Default::default()
@@ -42,10 +42,7 @@ fn drafts_operations_and_dependencies_are_account_scoped_and_late_results_cannot
             channel,
             DraftBody {
                 message: OutgoingMessage {
-                    attachments: vec![OutgoingAttachment {
-                        filename: "other.bin".into(),
-                        bytes: vec![2],
-                    }],
+                    attachments: vec![OutgoingAttachment::from_bytes("other.bin", vec![2])],
                     ..Default::default()
                 },
                 ..Default::default()
@@ -80,8 +77,15 @@ fn drafts_operations_and_dependencies_are_account_scoped_and_late_results_cannot
         );
         hold.release();
         assert!(qa.draft(channel).await.is_err());
+        let b_draft = qb.draft(channel).await?.unwrap();
+        let b_staged = b_draft.body.message.attachments[0].staged().unwrap();
+        assert_eq!(b_staged.size_bytes(), 1);
         assert_eq!(
-            qb.draft(channel).await?.unwrap().body.message.attachments[0].bytes,
+            std::fs::read(
+                papo_sdk::DataRoot::new(f.profile.path())
+                    .outgoing_files(b.account())
+                    .join(b_staged.digest_hex())
+            )?,
             [2]
         );
         qb.enqueue(channel, id(3), message(), UnixMicros(0)).await?;
@@ -152,10 +156,7 @@ fn confirmed_receipts_plateau_and_release_files_after_full_acknowledgement() -> 
                 channel,
                 id(1),
                 OperationKind::Message(OutgoingMessage {
-                    attachments: vec![OutgoingAttachment {
-                        filename: "proof.bin".into(),
-                        bytes: vec![0, 255, 1],
-                    }],
+                    attachments: vec![OutgoingAttachment::from_bytes("proof.bin", vec![0, 255, 1])],
                     ..Default::default()
                 }),
                 UnixMicros(0),
@@ -165,7 +166,8 @@ fn confirmed_receipts_plateau_and_release_files_after_full_acknowledgement() -> 
         let OperationKind::Message(body) = first.kind.as_ref() else {
             return Err("creation changed kind".into());
         };
-        assert_eq!(body.attachments[0].bytes.len(), 0);
+        assert!(body.attachments[0].is_released());
+        assert_eq!(body.attachments[0].size_bytes(), 0);
         for n in 2..=270 {
             queue
                 .enqueue(channel, id(n), message(), UnixMicros(0))

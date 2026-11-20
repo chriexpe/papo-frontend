@@ -275,34 +275,6 @@ impl RestClient {
         )
         .await
     }
-    /// Sends a multipart message once. The caller owns ambiguous-send policy.
-    /// # Errors
-    /// Returns transport, problem or decoding failures.
-    pub async fn create_message(&self, request: &MessageUpload<'_>) -> Result<Message, Error> {
-        let mut form =
-            reqwest::multipart::Form::new().text("channel_id", request.channel_id.to_owned());
-        for (key, value) in [
-            ("content", request.content),
-            ("reply_to", request.reply_to),
-            ("embeds", request.embeds),
-        ] {
-            if let Some(value) = value {
-                form = form.text(key, value.to_owned());
-            }
-        }
-        for attachment in request.attachments {
-            form = form.part(
-                "attachments",
-                reqwest::multipart::Part::bytes(attachment.bytes.to_vec())
-                    .file_name(attachment.filename.to_owned()),
-            );
-        }
-        self.json(
-            self.route_request(&routes::POST_MESSAGES, &[])?
-                .multipart(form),
-        )
-        .await
-    }
     /// Edits a message once.
     /// # Errors
     /// Returns transport, problem or decoding failures.
@@ -325,28 +297,6 @@ impl RestClient {
             .await
             .map(|_| ())
     }
-}
-
-/// A multipart message upload; each attachment retains its caller-selected filename.
-pub struct MessageUpload<'a> {
-    /// Target channel identifier.
-    pub channel_id: &'a str,
-    /// Optional message text.
-    pub content: Option<&'a str>,
-    /// Optional identifier of the message being replied to.
-    pub reply_to: Option<&'a str>,
-    /// Optional JSON-encoded embed array.
-    pub embeds: Option<&'a str>,
-    /// Attachments in their intended order.
-    pub attachments: &'a [MessageAttachment<'a>],
-}
-
-/// One multipart attachment, including its backend-visible original filename.
-pub struct MessageAttachment<'a> {
-    /// Filename supplied in the multipart content disposition.
-    pub filename: &'a str,
-    /// Unmodified file contents.
-    pub bytes: &'a [u8],
 }
 
 /// Validates and normalizes the sole server scope used by transports and snapshots.

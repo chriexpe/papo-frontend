@@ -180,3 +180,108 @@ fn delete_received_before_http_receipt_wins_over_late_acknowledgement() -> Resul
     })??;
     f.finish()
 }
+
+#[test]
+fn throttled_upload_progress_updates_preserve_local_echo_identity_without_spurious_timeline_diffs()
+-> Result {
+    use futures_util::StreamExt;
+    use papo_sdk::OutgoingAttachment;
+    use papo_test_server::UploadThrottle;
+    use std::time::Duration;
+
+    let f = Fixture::new(4, vec![])?;
+    f.run(async {
+        let session = f.signed_in("progress-echo").await?;
+        let timeline = Timeline::live(session.clone(), channel(), config()).await?;
+        let mut stream = timeline.subscribe()?;
+        let queue = session.outgoing();
+        let staged = queue
+            .stage_attachment(std::io::Cursor::new(vec![0xab_u8; 4 * 1024 * 1024]))
+            .await?;
+        f.server()
+            .set_message_upload_throttle(Some(UploadThrottle {
+                chunk_bytes: 512 * 1024,
+                delay: Duration::from_millis(35),
+            }))
+            .await;
+
+        let local = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0077);
+        let mut outgoing = queue.subscribe().await?;
+        queue
+            .enqueue(
+                channel(),
+                local,
+                OperationKind::Message(OutgoingMessage {
+                    content: "progress-echo".into(),
+                    attachments: vec![OutgoingAttachment::from_staged("upload.bin", staged)],
+                    ..Default::default()
+                }),
+                UnixMicros(0),
+            )
+            .await?;
+
+        until(&mut stream, |s| {
+            echo(&s.items, local).is_some_and(|item| {
+                matches!(
+                    item.as_ref(),
+                    TimelineItem::LocalEcho { operation, .. }
+                        if operation.state == OperationState::Sending
+                )
+            })
+        })
+        .await?;
+        let sending_echo = Arc::clone(echo(&stream.items, local).unwrap());
+
+        // Observe multiple progress updates on OutgoingSnapshot until Sent.
+        let mut progress_ticks = 0_usize;
+        loop {
+            let snap = outgoing.borrow_and_update().clone();
+            if snap.progress_for(local).is_some() {
+                progress_ticks += 1;
+            }
+            if snap
+                .operations
+                .iter()
+                .any(|op| op.id == local && op.state == OperationState::Sent)
+            {
+                break;
+            }
+            outgoing.changed().await?;
+        }
+        assert!(
+            progress_ticks >= 2,
+            "expected multiple upload progress ticks"
+        );
+
+        // Drain timeline events up to Sent retirement; none should have empty diffs from progress ticks.
+        let mut empty_diff_events = 0_usize;
+        while echo(&stream.items, local).is_some() {
+            match stream.stream.next().await {
+                Some(papo_sdk_ui::TimelineEvent::Update(update)) => {
+                    if update.diffs.is_empty() {
+                        empty_diff_events += 1;
+                    }
+                    for diff in update.diffs {
+                        diff.apply(&mut stream.items);
+                    }
+                    if let Some(current_echo) = echo(&stream.items, local)
+                        && matches!(
+                            current_echo.as_ref(),
+                            TimelineItem::LocalEcho { operation, .. }
+                                if operation.state == OperationState::Sending
+                        )
+                    {
+                        assert!(Arc::ptr_eq(&sending_echo, current_echo));
+                    }
+                }
+                _ => return Err("timeline closed unexpectedly".into()),
+            }
+        }
+        assert_eq!(
+            empty_diff_events, 0,
+            "ephemeral upload progress ticks must not emit empty Timeline diff events"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}

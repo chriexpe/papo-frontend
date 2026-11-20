@@ -48,8 +48,8 @@ mod outgoing;
 pub use outgoing::OutgoingFault;
 pub use outgoing::{
     Draft, DraftBody, MessageTarget, Operation, OperationFailure, OperationKind, OperationState,
-    OutgoingAttachment, OutgoingError, OutgoingMessage, OutgoingService, OutgoingSnapshot,
-    RetryDecision,
+    OutgoingAttachment, OutgoingAttachmentContent, OutgoingError, OutgoingMessage, OutgoingService,
+    OutgoingSnapshot, RetryDecision, StagedAttachment, UploadProgress,
 };
 pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
 mod catch_up;

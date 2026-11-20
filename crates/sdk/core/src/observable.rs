@@ -55,4 +55,15 @@ impl<T: Clone> StateCell<T> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
     }
+    /// Atomically applies one final update and closes the cell under the same sender lock.
+    pub fn close_with(&self, change: impl FnOnce(&mut T) -> bool) {
+        let mut sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(active) = sender.as_ref() {
+            active.send_if_modified(change);
+        }
+        sender.take();
+    }
 }

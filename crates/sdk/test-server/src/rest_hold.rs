@@ -41,6 +41,24 @@ impl RestHold {
 }
 
 impl PendingHold {
+    pub(crate) fn pair(method: &str, path: &str, before_body: bool) -> (Self, RestHold) {
+        let (started, observed) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        (
+            Self {
+                method: method.to_owned(),
+                path: path.to_owned(),
+                before_body,
+                started,
+                released,
+            },
+            RestHold {
+                started: Some(observed),
+                release,
+            },
+        )
+    }
+
     pub(crate) async fn wait(self) {
         let _ = self.started.send(());
         let _ = self.released.await;

@@ -7,10 +7,10 @@ fn payload_bytes_and_stable_local_dependencies_round_trip_without_borrowed_files
     let id = Uuid::from_u128(1);
     let kind = OperationKind::Message(OutgoingMessage {
         reply_to: Some(MessageTarget::Local(id)),
-        attachments: vec![OutgoingAttachment {
-            filename: "SPOILER_pixel.png".into(),
-            bytes: vec![0, 255, 1],
-        }],
+        attachments: vec![OutgoingAttachment::from_bytes(
+            "SPOILER_pixel.png",
+            vec![0, 255, 1],
+        )],
         ..Default::default()
     });
     let json = serde_json::to_vec(&kind).unwrap();
@@ -19,7 +19,10 @@ fn payload_bytes_and_stable_local_dependencies_round_trip_without_borrowed_files
     let OperationKind::Message(message) = restored else {
         panic!("creation payload changed");
     };
-    assert_eq!(message.attachments[0].bytes, [0, 255, 1]);
+    assert_eq!(
+        message.attachments[0].inline_bytes(),
+        Some([0, 255, 1].as_slice())
+    );
     assert_eq!(message.attachments[0].filename, "SPOILER_pixel.png");
 }
 
@@ -27,10 +30,7 @@ fn payload_bytes_and_stable_local_dependencies_round_trip_without_borrowed_files
 fn invalid_filenames_text_bounds_and_ambiguous_reaction_ids_are_rejected() {
     for filename in ["", "../x", "a\\b", "a\r\nb", "a\0b"] {
         let kind = OperationKind::Message(OutgoingMessage {
-            attachments: vec![OutgoingAttachment {
-                filename: filename.into(),
-                bytes: vec![],
-            }],
+            attachments: vec![OutgoingAttachment::from_bytes(filename, vec![])],
             ..Default::default()
         });
         assert!(matches!(kind.validate(), Err(OutgoingError::InvalidInput)));

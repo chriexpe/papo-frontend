@@ -110,12 +110,13 @@ impl Registry {
             }
         };
         kind.validate()?;
-        let bytes = if let OperationKind::Message(message) = &mut kind {
-            files::detach(&mut message.attachments)
+        let inputs = if let OperationKind::Message(message) = &mut kind {
+            files::detach_inputs(&mut message.attachments, session.account())?
         } else {
             Vec::new()
         };
-        let (references, attachment_bytes) = self.stage_files(&session, bytes, local).await?;
+        let (references, attachment_bytes) =
+            self.prepare_attachments(&session, inputs, local).await?;
         let payload = encode(&kind)?;
         let dependency = kind.dependency();
         self.writer
