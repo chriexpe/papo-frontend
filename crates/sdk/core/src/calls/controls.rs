@@ -43,7 +43,7 @@ fn control_attempt(
     result
 }
 
-/// Updates mute intent on the active attempt and notifies media + server.
+/// Updates mute intent on the active attempt and notifies media + server in lock order.
 pub(crate) fn set_muted(
     calls: &Arc<SessionCalls>,
     attempt: CallAttemptId,
@@ -53,11 +53,8 @@ pub(crate) fn set_muted(
     control_attempt(calls, attempt, runtime, |this, guard, effects| {
         let active = guard.active.as_mut().ok_or(CallError::Ended)?;
         active.settings.muted = muted;
-        effects
-            .media_commands
-            .push(MediaCommand::SetMuted { muted });
-        if matches!(active.phase, CallPhase::Joined | CallPhase::Connected) {
-            effects.wire_commands.push(QueuedVoiceCommand {
+        let wire = matches!(active.phase, CallPhase::Joined | CallPhase::Connected).then(|| {
+            QueuedVoiceCommand {
                 generation: active.generation,
                 attempt: active.attempt,
                 command: Command::VoiceMute {
@@ -65,9 +62,15 @@ pub(crate) fn set_muted(
                     muted,
                 },
                 allow_after_end: false,
-            });
+            }
+        });
+        if let Some(item) = wire
+            && !this.enqueue_wire_locked(guard, item, effects)
+        {
+            return Err(CallError::Ended);
         }
-        this.stage_active_publish(guard, effects);
+        SessionCalls::enqueue_media_locked(guard, MediaCommand::SetMuted { muted }, effects);
+        this.publish_active_locked(guard);
         Ok(())
     })
 }
@@ -82,8 +85,8 @@ pub(crate) fn set_camera(
     control_attempt(calls, attempt, runtime, |this, guard, effects| {
         let active = guard.active.as_mut().ok_or(CallError::Ended)?;
         active.settings.camera_on = on;
-        if matches!(active.phase, CallPhase::Joined | CallPhase::Connected) {
-            effects.wire_commands.push(QueuedVoiceCommand {
+        let wire = matches!(active.phase, CallPhase::Joined | CallPhase::Connected).then(|| {
+            QueuedVoiceCommand {
                 generation: active.generation,
                 attempt: active.attempt,
                 command: Command::VoiceCamera {
@@ -91,10 +94,15 @@ pub(crate) fn set_camera(
                     on,
                 },
                 allow_after_end: false,
-            });
+            }
+        });
+        if let Some(item) = wire
+            && !this.enqueue_wire_locked(guard, item, effects)
+        {
+            return Err(CallError::Ended);
         }
-        effects.media_commands.push(MediaCommand::SetCamera { on });
-        this.stage_active_publish(guard, effects);
+        SessionCalls::enqueue_media_locked(guard, MediaCommand::SetCamera { on }, effects);
+        this.publish_active_locked(guard);
         Ok(())
     })
 }
@@ -109,10 +117,12 @@ pub(crate) fn set_camera_facing(
     control_attempt(calls, attempt, runtime, |this, guard, effects| {
         let active = guard.active.as_mut().ok_or(CallError::Ended)?;
         active.settings.camera_facing = facing;
-        effects
-            .media_commands
-            .push(MediaCommand::SetCameraFacing { facing });
-        this.stage_active_publish(guard, effects);
+        SessionCalls::enqueue_media_locked(
+            guard,
+            MediaCommand::SetCameraFacing { facing },
+            effects,
+        );
+        this.publish_active_locked(guard);
         Ok(())
     })
 }
@@ -130,10 +140,12 @@ pub(crate) fn set_playback(
         let active = guard.active.as_mut().ok_or(CallError::Ended)?;
         let playback = PlaybackSettings::new(gain_percent, muted);
         active.playback.insert(user, playback);
-        effects
-            .media_commands
-            .push(MediaCommand::SetPlayback { user, playback });
-        this.stage_active_publish(guard, effects);
+        SessionCalls::enqueue_media_locked(
+            guard,
+            MediaCommand::SetPlayback { user, playback },
+            effects,
+        );
+        this.publish_active_locked(guard);
         Ok(())
     })
 }
@@ -170,11 +182,13 @@ pub(crate) fn bind_video(
         {
             effects.revoke_destinations.push(old);
         }
-        let (revision, slots) = active.slot_plan(&guard.reducer);
-        effects
-            .media_commands
-            .push(MediaCommand::SetVideoSlotPlan { revision, slots });
-        this.stage_active_publish(guard, effects);
+        let (revision, slots) = active.next_slot_plan(&guard.reducer);
+        SessionCalls::enqueue_media_locked(
+            guard,
+            MediaCommand::SetVideoSlotPlan { revision, slots },
+            effects,
+        );
+        this.publish_active_locked(guard);
         Ok(())
     })
 }
@@ -192,11 +206,13 @@ pub(crate) fn unbind_video(
         if let Some(old) = active.destinations.remove(&(participant, kind)) {
             effects.revoke_destinations.push(old);
         }
-        let (revision, slots) = active.slot_plan(&guard.reducer);
-        effects
-            .media_commands
-            .push(MediaCommand::SetVideoSlotPlan { revision, slots });
-        this.stage_active_publish(guard, effects);
+        let (revision, slots) = active.next_slot_plan(&guard.reducer);
+        SessionCalls::enqueue_media_locked(
+            guard,
+            MediaCommand::SetVideoSlotPlan { revision, slots },
+            effects,
+        );
+        this.publish_active_locked(guard);
         Ok(())
     })
 }
@@ -210,13 +226,13 @@ pub(crate) fn on_audio_focus_lost(
     control_attempt(calls, attempt, runtime, |this, guard, effects| {
         let active = guard.active.as_mut().ok_or(CallError::Ended)?;
         active.host_audio_focus = false;
+        let mut wire = None;
+        let mut needs_mute_cmd = false;
         if !active.settings.muted {
             active.settings.muted = true;
-            effects
-                .media_commands
-                .push(MediaCommand::SetMuted { muted: true });
+            needs_mute_cmd = true;
             if matches!(active.phase, CallPhase::Joined | CallPhase::Connected) {
-                effects.wire_commands.push(QueuedVoiceCommand {
+                wire = Some(QueuedVoiceCommand {
                     generation: active.generation,
                     attempt: active.attempt,
                     command: Command::VoiceMute {
@@ -227,7 +243,19 @@ pub(crate) fn on_audio_focus_lost(
                 });
             }
         }
-        this.stage_active_publish(guard, effects);
+        if let Some(item) = wire
+            && !this.enqueue_wire_locked(guard, item, effects)
+        {
+            return Err(CallError::Ended);
+        }
+        if needs_mute_cmd {
+            SessionCalls::enqueue_media_locked(
+                guard,
+                MediaCommand::SetMuted { muted: true },
+                effects,
+            );
+        }
+        this.publish_active_locked(guard);
         Ok(())
     })
 }
@@ -238,23 +266,23 @@ pub(crate) fn on_audio_focus_regained(
     attempt: CallAttemptId,
     runtime: &tokio::runtime::Handle,
 ) -> Result<(), CallError> {
-    control_attempt(calls, attempt, runtime, |this, guard, effects| {
+    control_attempt(calls, attempt, runtime, |this, guard, _effects| {
         let active = guard.active.as_mut().ok_or(CallError::Ended)?;
         active.host_audio_focus = true;
-        this.stage_active_publish(guard, effects);
+        this.publish_active_locked(guard);
         Ok(())
     })
 }
 
-/// Ends this specific attempt if it is still current; stale attempts are untouched.
+/// Ends this specific attempt if it is still current; returns `true` iff it ended that attempt.
 pub(crate) fn leave_attempt(
     calls: &Arc<SessionCalls>,
     attempt: CallAttemptId,
     reason: CallEndReason,
     runtime: &tokio::runtime::Handle,
-) {
+) -> bool {
     let mut effects = SideEffects::default();
-    {
+    let ended = {
         let mut guard = calls
             .state
             .lock()
@@ -265,9 +293,13 @@ pub(crate) fn leave_attempt(
             .is_some_and(|active| active.attempt == attempt && active.phase.is_active())
         {
             calls.finish_active_locked(&mut guard, reason, true, &mut effects);
+            true
+        } else {
+            false
         }
-    }
+    };
     calls.execute_effects(effects, runtime);
+    ended
 }
 
 /// Acquires a compare-on-release host lease token scoped to `(attempt, kind)`.

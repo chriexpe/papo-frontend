@@ -3,25 +3,38 @@
 
 use crate::{AccountId, Generation, ResourceSnapshot, Uuid, observable::StateCell};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Arc,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    fifo::{QueuedVoiceCommand, VoiceCommandSender},
+    fifo::VoiceCommandSender,
     media_port::{
         CaptureState, MediaCommand, MediaLease, MediaTransportState, VideoDestination,
         VideoSlotBinding,
     },
     model::{
         CallAttemptId, CallParticipant, CallPhase, CallSettings, CallSnapshot, CallWarning,
-        HostLeaseKind, PlaybackSettings, RoomsSnapshot, VideoBinding, VideoCodec, VideoKind,
+        HostLeaseKind, PlaybackSettings, VideoBinding, VideoCodec, VideoKind,
     },
     reducer::VoiceReducer,
     subscriptions::VideoSubscriptionPlanner,
 };
+
+/// Explicit wire lifecycle of this attempt's `voice_join` command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JoinDispatchState {
+    /// `voice_join` has not yet been enqueued (`Preparing`).
+    NotQueued,
+    /// `voice_join` is queued in the voice FIFO but has not yet been approved for wire send.
+    Queued,
+    /// `voice_join` was approved for wire transmission by `AccountSocket`, awaiting `voice_joined`.
+    Transmitted,
+    /// `voice_joined` was received and accepted for this attempt.
+    Acknowledged,
+}
 
 /// Active attempt owned by a session.
 pub(crate) struct ActiveAttempt {
@@ -39,9 +52,12 @@ pub(crate) struct ActiveAttempt {
     pub playback: BTreeMap<Uuid, PlaybackSettings>,
     pub destinations: BTreeMap<(Uuid, VideoKind), Arc<dyn VideoDestination>>,
     pub subscriptions: VideoSubscriptionPlanner,
-    pub media_lease: Option<Box<dyn MediaLease>>,
+    pub scheduled_wakeup: Option<Instant>,
+    pub video_slot_plan_revision: u64,
+    pub pending_media_commands: VecDeque<MediaCommand>,
+    pub media_lease: Option<Arc<dyn MediaLease>>,
     pub media_start_in_flight: bool,
-    pub voice_join_sent: bool,
+    pub join_state: JoinDispatchState,
     pub host_audio_focus: bool,
     pub host_leases: BTreeMap<HostLeaseKind, u64>,
     pub cancel: CancellationToken,
@@ -95,9 +111,12 @@ impl ActiveAttempt {
             playback: BTreeMap::new(),
             destinations: BTreeMap::new(),
             subscriptions: VideoSubscriptionPlanner::default(),
+            scheduled_wakeup: None,
+            video_slot_plan_revision: 0,
+            pending_media_commands: VecDeque::new(),
             media_lease: None,
             media_start_in_flight: false,
-            voice_join_sent: false,
+            join_state: JoinDispatchState::NotQueued,
             host_audio_focus: true,
             host_leases: BTreeMap::new(),
             cancel,
@@ -158,8 +177,12 @@ impl ActiveAttempt {
         }
     }
 
-    /// Projects the current video slot plan for `MediaCommand::SetVideoSlotPlan`.
-    pub(crate) fn slot_plan(&self, reducer: &VoiceReducer) -> (u64, Vec<VideoSlotBinding>) {
+    /// Advances the monotonic per-attempt slot-plan revision and projects `SetVideoSlotPlan`.
+    pub(crate) fn next_slot_plan(
+        &mut self,
+        reducer: &VoiceReducer,
+    ) -> (u64, Vec<VideoSlotBinding>) {
+        self.video_slot_plan_revision = self.video_slot_plan_revision.saturating_add(1);
         let slots = reducer
             .video_routes()
             .values()
@@ -174,7 +197,7 @@ impl ActiveAttempt {
                     .cloned(),
             })
             .collect();
-        (reducer.video_revision(), slots)
+        (self.video_slot_plan_revision, slots)
     }
 
     /// Appends `warning` if not already present.
@@ -190,29 +213,17 @@ impl ActiveAttempt {
     }
 }
 
-/// Update to apply to `SessionCalls::active_cell` after releasing the coordinator lock.
-#[derive(Default)]
-pub(crate) enum ActivePublish {
-    /// Leave `active_cell` untouched.
-    #[default]
-    Unchanged,
-    /// Clear `active_cell` to `None`.
-    Clear,
-    /// Replace `active_cell` with `Some(snapshot)`.
-    Set(Box<CallSnapshot>),
-}
-
 /// Side effects collected while holding `CoordinatorState` and executed after releasing the lock.
+///
+/// Wire commands are enqueued into the non-blocking voice FIFO under `CoordinatorState` in exact
+/// state-mutation order; active-attempt media commands are queued into `ActiveAttempt::pending_media_commands`
+/// and drained serially outside `CoordinatorState` under `SessionCalls::media_dispatch`.
 #[derive(Default)]
 pub(crate) struct SideEffects {
-    pub media_commands: Vec<MediaCommand>,
-    pub stop_leases: Vec<(CallAttemptId, Box<dyn MediaLease>)>,
+    pub drain_media: bool,
+    pub stop_leases: Vec<(CallAttemptId, Arc<dyn MediaLease>)>,
     pub revoke_destinations: Vec<Arc<dyn VideoDestination>>,
-    pub wire_commands: Vec<QueuedVoiceCommand>,
-    pub schedule_retry_at: Option<(CallAttemptId, Instant)>,
-    pub closed_cells: Vec<(Arc<StateCell<CallSnapshot>>, CallSnapshot)>,
-    pub active_publish: ActivePublish,
-    pub rooms_publish: Option<RoomsSnapshot>,
+    pub schedule_retry_at: Option<(CallAttemptId, Instant, CancellationToken)>,
 }
 
 /// Mutable state guarded by `SessionCalls::state`.
@@ -224,7 +235,7 @@ pub(crate) struct CoordinatorState {
     pub rooms_version: u64,
     pub active: Option<ActiveAttempt>,
     pub draining_attempts: BTreeSet<CallAttemptId>,
-    pub abandoned_joins: BTreeMap<Uuid, u32>,
+    pub abandoned_joins: VecDeque<Uuid>,
     pub command_sender: Option<(Generation, VoiceCommandSender)>,
     pub next_host_lease_id: u64,
 }

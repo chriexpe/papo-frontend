@@ -835,7 +835,7 @@ async fn disconnect_ends_call_without_auto_rejoin_and_fifo_overflow_ends_call() 
     })));
     // Fill bounded FIFO (capacity 2; VoiceJoin already occupies slot 1) until overflow.
     call.set_muted(false).unwrap();
-    call.set_muted(true).unwrap();
+    assert_eq!(call.set_muted(true), Err(CallError::Ended));
     assert_eq!(
         call.snapshot().phase,
         CallPhase::Ended(CallEndReason::CommandOverflow)

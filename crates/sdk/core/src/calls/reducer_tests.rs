@@ -537,7 +537,7 @@ fn video_routes_handle_reassignment_departed_member_and_release() {
         },
     );
     assert!(!leave.ended_active_call);
-    assert!(leave.video_routes_changed);
+    assert!(leave.routes.video_changed);
     assert!(reducer.video_routes().is_empty());
 
     // Explicit release snapshot (revision 4, empty routes) also leaves empty routes.

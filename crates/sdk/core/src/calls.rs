@@ -25,9 +25,13 @@ pub(crate) mod subscriptions;
 #[cfg(test)]
 mod coordinator_tests;
 #[cfg(test)]
+mod finding_tests;
+#[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]
 mod reducer_tests;
+#[cfg(test)]
+mod regression_tests;
 
 pub use errors::{
     VoiceErrorCode, VoiceErrorDisposition, classify_voice_error, is_fatal_voice_code,

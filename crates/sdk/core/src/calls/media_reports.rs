@@ -61,58 +61,70 @@ impl SessionCalls {
         let joined = matches!(active.phase, CallPhase::Joined | CallPhase::Connected);
         match report.kind {
             MediaReportKind::LocalOffer { sdp } if joined => {
-                effects.wire_commands.push(QueuedVoiceCommand {
-                    generation,
-                    attempt,
-                    command: Command::VoiceOffer {
-                        channel_id: channel_str,
-                        sdp,
+                let _ = self.enqueue_wire_locked(
+                    guard,
+                    QueuedVoiceCommand {
+                        generation,
+                        attempt,
+                        command: Command::VoiceOffer {
+                            channel_id: channel_str,
+                            sdp,
+                        },
+                        allow_after_end: false,
                     },
-                    allow_after_end: false,
-                });
+                    effects,
+                );
             }
             MediaReportKind::LocalAnswer { sdp } if joined => {
-                effects.wire_commands.push(QueuedVoiceCommand {
-                    generation,
-                    attempt,
-                    command: Command::VoiceAnswer {
-                        channel_id: channel_str,
-                        sdp,
+                let _ = self.enqueue_wire_locked(
+                    guard,
+                    QueuedVoiceCommand {
+                        generation,
+                        attempt,
+                        command: Command::VoiceAnswer {
+                            channel_id: channel_str,
+                            sdp,
+                        },
+                        allow_after_end: false,
                     },
-                    allow_after_end: false,
-                });
+                    effects,
+                );
             }
             MediaReportKind::LocalIceCandidate {
                 candidate,
                 sdp_mid,
                 sdp_mline_index,
             } if joined => {
-                effects.wire_commands.push(QueuedVoiceCommand {
-                    generation,
-                    attempt,
-                    command: Command::VoiceIceCandidate {
-                        channel_id: channel_str,
-                        candidate,
-                        sdp_mid,
-                        sdp_mline_index,
+                let _ = self.enqueue_wire_locked(
+                    guard,
+                    QueuedVoiceCommand {
+                        generation,
+                        attempt,
+                        command: Command::VoiceIceCandidate {
+                            channel_id: channel_str,
+                            candidate,
+                            sdp_mid,
+                            sdp_mline_index,
+                        },
+                        allow_after_end: false,
                     },
-                    allow_after_end: false,
-                });
+                    effects,
+                );
             }
             MediaReportKind::TransportState(state) => {
                 self.apply_transport_state_locked(guard, state, effects);
             }
             MediaReportKind::MicCapture(state) => {
                 active.mic_capture = state;
-                self.stage_active_publish(guard, effects);
+                self.publish_active_locked(guard);
             }
             MediaReportKind::CameraCapture(state) => {
                 active.camera_capture = state;
-                self.stage_active_publish(guard, effects);
+                self.publish_active_locked(guard);
             }
             MediaReportKind::Warning(warning) => {
                 active.push_warning(map_media_warning(warning));
-                self.stage_active_publish(guard, effects);
+                self.publish_active_locked(guard);
             }
             MediaReportKind::Fatal(error) => {
                 self.finish_active_locked(guard, map_media_fatal(error), true, effects);
@@ -140,17 +152,17 @@ impl SessionCalls {
                     active.phase = CallPhase::Connected;
                 }
                 active.clear_warning(CallWarning::IceDisconnected);
-                self.stage_active_publish(guard, effects);
+                self.publish_active_locked(guard);
             }
             MediaTransportState::Disconnected => {
                 active.push_warning(CallWarning::IceDisconnected);
-                self.stage_active_publish(guard, effects);
+                self.publish_active_locked(guard);
             }
             MediaTransportState::Failed | MediaTransportState::Closed => {
                 self.finish_active_locked(guard, CallEndReason::NegotiationFailed, true, effects);
             }
             MediaTransportState::New | MediaTransportState::Connecting => {
-                self.stage_active_publish(guard, effects);
+                self.publish_active_locked(guard);
             }
         }
     }

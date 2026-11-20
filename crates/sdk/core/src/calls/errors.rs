@@ -44,6 +44,7 @@ impl VoiceErrorCode {
 
 /// Outcome of classifying a backend voice error in the current call phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VoiceErrorDisposition {
     /// Ends the active call attempt immediately with the mapped reason.
     Fatal(CallEndReason),

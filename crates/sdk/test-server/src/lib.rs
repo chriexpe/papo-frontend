@@ -62,6 +62,7 @@ mod rest_hold;
 mod server;
 mod voice;
 mod voice_ws;
+mod voice_ws_slots;
 
 pub use config::{Config, Failure, GatewayStep, RestStep};
 pub use history_seed::HistorySeed;

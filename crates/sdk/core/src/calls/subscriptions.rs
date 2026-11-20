@@ -57,7 +57,6 @@ impl VideoSubscriptionPlanner {
                 kind: route.kind,
             };
             self.retry_after.remove(&target);
-            self.requested.insert(target);
         }
     }
 

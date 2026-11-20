@@ -108,6 +108,7 @@ pub(crate) fn spawn_prepare(
             &calls,
             attempt,
             generation,
+            initial_settings,
             &cancel,
             start_result,
             &rt_handle,
@@ -174,6 +175,7 @@ fn finish_media_start(
     calls: &Arc<SessionCalls>,
     attempt: CallAttemptId,
     generation: Generation,
+    initial_settings: InitialMediaSettings,
     cancel: &CancellationToken,
     start_result: Result<Box<dyn super::media_port::MediaLease>, MediaStartError>,
     rt_handle: &tokio::runtime::Handle,
@@ -194,16 +196,19 @@ fn finish_media_start(
                 }
                 guard.draining_attempts.remove(&attempt);
             }
-            calls.client_lease.mark_drained(attempt);
             let reason = match error {
                 MediaStartError::UnsupportedCodec => CallEndReason::CodecUnsupported,
                 MediaStartError::DeviceUnavailable
                 | MediaStartError::Cancelled
                 | MediaStartError::Internal => CallEndReason::DeviceUnavailable,
             };
+            // End the attempt first (transitioning Active -> Free), then notify any waiters
+            // in Draining/ReleasePending if the attempt was already cancelled during start().
             fail_prepare(calls, attempt, reason, rt_handle);
+            calls.client_lease.mark_drained(attempt);
         }
         Ok(lease) => {
+            let lease: Arc<dyn super::media_port::MediaLease> = Arc::from(lease);
             let mut effects = SideEffects::default();
             let mut late_cancelled_lease = None;
             let mut join_cancel = None;
@@ -219,21 +224,31 @@ fn finish_media_start(
                         && !cancel.is_cancelled()
                 });
                 if still_current {
-                    if let Some(active) = guard.active.as_mut() {
+                    let join_cmd = if let Some(active) = guard.active.as_mut() {
                         active.media_start_in_flight = false;
                         active.media_lease = Some(lease);
                         active.phase = CallPhase::Joining;
-                        active.voice_join_sent = true;
+                        active.join_state = super::attempt::JoinDispatchState::Queued;
                         join_cancel = Some(active.cancel.clone());
-                        effects.wire_commands.push(QueuedVoiceCommand {
+                        // Sync any controls invoked while start() was in flight.
+                        sync_pre_start_controls(active, initial_settings, &mut effects);
+                        Some(QueuedVoiceCommand {
                             generation,
                             attempt,
                             command: Command::VoiceJoin {
                                 channel_id: active.channel.to_string(),
                             },
                             allow_after_end: false,
-                        });
-                        calls.stage_active_publish(&mut guard, &mut effects);
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(cmd) = join_cmd {
+                        if calls.enqueue_wire_locked(&mut guard, cmd, &mut effects) {
+                            calls.publish_active_locked(&mut guard);
+                        } else {
+                            join_cancel = None;
+                        }
                     }
                 } else {
                     guard.draining_attempts.insert(attempt);
@@ -261,6 +276,43 @@ fn finish_media_start(
                 );
             }
         }
+    }
+}
+
+fn sync_pre_start_controls(
+    active: &mut super::attempt::ActiveAttempt,
+    initial_settings: InitialMediaSettings,
+    effects: &mut SideEffects,
+) {
+    if active.settings.muted != initial_settings.muted {
+        active
+            .pending_media_commands
+            .push_back(MediaCommand::SetMuted {
+                muted: active.settings.muted,
+            });
+        effects.drain_media = true;
+    }
+    if active.settings.camera_on != initial_settings.camera_on {
+        active
+            .pending_media_commands
+            .push_back(MediaCommand::SetCamera {
+                on: active.settings.camera_on,
+            });
+        effects.drain_media = true;
+    }
+    if active.settings.camera_facing != initial_settings.camera_facing {
+        active
+            .pending_media_commands
+            .push_back(MediaCommand::SetCameraFacing {
+                facing: active.settings.camera_facing,
+            });
+        effects.drain_media = true;
+    }
+    for (&user, &playback) in &active.playback {
+        active
+            .pending_media_commands
+            .push_back(MediaCommand::SetPlayback { user, playback });
+        effects.drain_media = true;
     }
 }
 
@@ -329,11 +381,16 @@ pub(crate) fn spawn_subscription_wakeup(
     calls: Arc<SessionCalls>,
     attempt: CallAttemptId,
     at: Instant,
+    cancel: CancellationToken,
     runtime: &tokio::runtime::Handle,
 ) {
     let rt_handle = runtime.clone();
     runtime.spawn(async move {
-        tokio::time::sleep_until(at).await;
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return,
+            () = tokio::time::sleep_until(at) => {}
+        }
         calls.on_subscription_wakeup(attempt, &rt_handle);
     });
 }

@@ -132,7 +132,8 @@ pub enum MediaCommand {
     },
     /// Replace active SFU video slot assignments and host destinations.
     SetVideoSlotPlan {
-        /// Monotonic revision from `voice_video_routes` (or latest binding update).
+        /// Monotonic per-attempt slot-plan revision incremented on every backend video-route
+        /// update, departed-member cleanup, and local destination bind/unbind.
         revision: u64,
         /// Full replacement snapshot of active video slot bindings.
         slots: Vec<VideoSlotBinding>,

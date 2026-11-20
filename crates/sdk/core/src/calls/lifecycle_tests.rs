@@ -159,8 +159,17 @@ fn voice_resources(
     Arc::new(snapshot)
 }
 
-async fn drain_one(rx: &mut VoiceCommandReceiver) -> Command {
-    rx.recv().await.expect("expected voice command").command
+async fn drain_one(
+    calls: &SessionCalls,
+    gen_id: Generation,
+    rx: &mut VoiceCommandReceiver,
+) -> Command {
+    loop {
+        let item = rx.recv().await.expect("expected voice command");
+        if calls.should_send(&item, gen_id) {
+            return item.command;
+        }
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -212,7 +221,7 @@ async fn leave_before_voice_join_sends_no_leave_and_leave_after_voice_join_ignor
         .unwrap();
     let handle2 = CallHandle::from_parts(acct, attempt2, Arc::clone(&calls), cell2, rt.clone());
     assert!(matches!(
-        drain_one(&mut rx).await,
+        drain_one(&calls, gen1, &mut rx).await,
         Command::VoiceJoin { .. }
     ));
     assert_eq!(handle2.snapshot().phase, CallPhase::Joining);
@@ -223,7 +232,7 @@ async fn leave_before_voice_join_sends_no_leave_and_leave_after_voice_join_ignor
         CallPhase::Ended(CallEndReason::LocalLeave)
     );
     assert!(matches!(
-        drain_one(&mut rx).await,
+        drain_one(&calls, gen1, &mut rx).await,
         Command::VoiceLeave { .. }
     ));
 
@@ -276,7 +285,7 @@ async fn release_pending_blocks_new_join_until_late_drain_completes() {
         .unwrap();
     let handle1 = CallHandle::from_parts(acct, attempt1, Arc::clone(&calls), cell1, rt.clone());
     assert!(matches!(
-        drain_one(&mut rx).await,
+        drain_one(&calls, gen1, &mut rx).await,
         Command::VoiceJoin { .. }
     ));
 
@@ -285,7 +294,7 @@ async fn release_pending_blocks_new_join_until_late_drain_completes() {
     lease1.set_auto_drain(false);
     handle1.leave();
     assert!(matches!(
-        drain_one(&mut rx).await,
+        drain_one(&calls, gen1, &mut rx).await,
         Command::VoiceLeave { .. }
     ));
 
@@ -346,7 +355,7 @@ async fn post_join_subscribe_rejection_retries_with_backoff_on_fake_clock() {
         .unwrap();
     let handle = CallHandle::from_parts(acct, attempt, Arc::clone(&calls), cell, rt.clone());
     assert!(matches!(
-        drain_one(&mut rx).await,
+        drain_one(&calls, gen1, &mut rx).await,
         Command::VoiceJoin { .. }
     ));
 
@@ -380,7 +389,7 @@ async fn post_join_subscribe_rejection_retries_with_backoff_on_fake_clock() {
         sdp: "v=0\r\n".into(),
     });
     assert!(matches!(
-        drain_one(&mut rx).await,
+        drain_one(&calls, gen1, &mut rx).await,
         Command::VoiceOffer { .. }
     ));
     calls.on_gateway_event(
@@ -401,7 +410,7 @@ async fn post_join_subscribe_rejection_retries_with_backoff_on_fake_clock() {
         }])
         .unwrap();
     assert!(matches!(
-        drain_one(&mut rx).await,
+        drain_one(&calls, gen1, &mut rx).await,
         Command::TrackSubscribe { .. }
     ));
 
@@ -427,7 +436,7 @@ async fn post_join_subscribe_rejection_retries_with_backoff_on_fake_clock() {
     tokio::time::advance(Duration::from_millis(500)).await;
     tokio::task::yield_now().await;
     assert!(matches!(
-        drain_one(&mut rx).await,
+        drain_one(&calls, gen1, &mut rx).await,
         Command::TrackSubscribe { .. }
     ));
 }

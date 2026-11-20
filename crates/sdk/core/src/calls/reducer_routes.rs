@@ -193,15 +193,27 @@ impl VoiceReducer {
         &self.audio_routes
     }
 
+    /// Latest audio route revision applied for this peer (0 if none yet).
+    #[must_use]
+    pub(crate) fn audio_revision(&self) -> u64 {
+        self.last_audio_revision.unwrap_or(0)
+    }
+
+    /// Current audio routes as a `Vec<AudioRoute>` for `MediaCommand::SetAudioRoutes`.
+    #[must_use]
+    pub(crate) fn audio_route_vec(&self) -> Vec<AudioRoute> {
+        self.audio_routes
+            .iter()
+            .map(|(track_id, &user)| AudioRoute {
+                track_id: track_id.clone(),
+                user,
+            })
+            .collect()
+    }
+
     /// Current SFU video routes (`track_id` → route).
     #[must_use]
     pub(crate) fn video_routes(&self) -> &BTreeMap<String, ReducedVideoRoute> {
         &self.video_routes
-    }
-
-    /// Latest video route revision applied for this peer (0 if none yet).
-    #[must_use]
-    pub(crate) fn video_revision(&self) -> u64 {
-        self.last_video_revision.unwrap_or(0)
     }
 }

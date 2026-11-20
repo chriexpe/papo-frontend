@@ -249,16 +249,16 @@ impl CallHandle {
     /// # Errors
     /// Returns `CallError::Ended` if this attempt has already ended.
     pub fn on_host_terminated(&self) -> Result<(), CallError> {
-        if !self.snapshot().phase.is_active() {
-            return Err(CallError::Ended);
-        }
-        controls::leave_attempt(
+        if controls::leave_attempt(
             &self.calls,
             self.attempt,
             CallEndReason::HostTerminated,
             &self.runtime,
-        );
-        Ok(())
+        ) {
+            Ok(())
+        } else {
+            Err(CallError::Ended)
+        }
     }
 
     /// Registers a compare-on-release host lease (e.g. audio focus or foreground service) for this attempt.

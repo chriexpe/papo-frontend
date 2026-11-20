@@ -101,7 +101,7 @@ impl ClientCallLease {
                 active: Some(current),
                 ..
             } if current.account != account => Err(CallError::Busy),
-            LeaseState::Free => {
+            LeaseState::Free | LeaseState::Active(_) => {
                 let attempt = self.allocate_attempt();
                 let next = ActiveCallLease {
                     account,
@@ -117,24 +117,6 @@ impl ClientCallLease {
                     LeaseState::Active(next)
                 };
                 Ok((attempt, previous_needs_drain))
-            }
-            LeaseState::Active(current) => {
-                let attempt = self.allocate_attempt();
-                let next = ActiveCallLease {
-                    account,
-                    attempt,
-                    channel,
-                };
-                let draining = previous_needs_drain.or(Some(current.attempt));
-                *guard = if let Some(draining) = draining {
-                    LeaseState::Draining {
-                        draining,
-                        active: Some(next),
-                    }
-                } else {
-                    LeaseState::Active(next)
-                };
-                Ok((attempt, draining))
             }
             LeaseState::Draining { draining, .. } => {
                 let attempt = self.allocate_attempt();
@@ -159,7 +141,7 @@ impl ClientCallLease {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match *guard {
+        let notify = match *guard {
             LeaseState::Active(current) if current.attempt == attempt => {
                 *guard = if needs_drain {
                     LeaseState::Draining {
@@ -169,9 +151,7 @@ impl ClientCallLease {
                 } else {
                     LeaseState::Free
                 };
-                if !needs_drain {
-                    self.drain_notify.notify_waiters();
-                }
+                !needs_drain
             }
             LeaseState::Draining {
                 draining,
@@ -181,8 +161,13 @@ impl ClientCallLease {
                     draining: if needs_drain { attempt } else { draining },
                     active: None,
                 };
+                false
             }
-            _ => {}
+            _ => false,
+        };
+        drop(guard);
+        if notify {
+            self.drain_notify.notify_waiters();
         }
     }
 
@@ -201,10 +186,6 @@ impl ClientCallLease {
                 true
             }
             LeaseState::ReleasePending { attempt: stuck } if stuck == attempt => {
-                *guard = LeaseState::Free;
-                true
-            }
-            LeaseState::Active(current) if current.attempt == attempt => {
                 *guard = LeaseState::Free;
                 true
             }

@@ -51,13 +51,22 @@ pub(crate) struct JoinedAdmission {
     pub video_codec: VideoCodec,
 }
 
+/// Active-call route changes triggered when a remote occupant departs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RouteCleanup {
+    /// True when active audio routes lost entries for the departed member.
+    pub audio_changed: bool,
+    /// True when active video routes lost entries for the departed member.
+    pub video_changed: bool,
+}
+
 /// Outcome of applying `voice_leave` to the reducer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LeaveOutcome {
     /// True when the departing member is `self_user` AND `peer_id` matches the active peer.
     pub ended_active_call: bool,
-    /// True when a departed remote member caused active video routes to drop entries.
-    pub video_routes_changed: bool,
+    /// Route cleanups for a departed remote occupant in the active channel.
+    pub routes: RouteCleanup,
     /// True when visible room occupancy changed.
     pub rooms_changed: bool,
 }
@@ -135,6 +144,11 @@ impl VoiceReducer {
                     speakers: existing_room.and_then(|room| room.speakers.clone()),
                 });
                 entry.members.insert(user, preserved_device);
+            }
+        }
+        for room in next.values_mut() {
+            if let Some(speakers) = room.speakers.as_mut() {
+                speakers.retain(|speaker| room.members.contains_key(speaker));
             }
         }
         self.rooms = next;
@@ -232,7 +246,7 @@ impl VoiceReducer {
         ) else {
             return LeaveOutcome {
                 ended_active_call: false,
-                video_routes_changed: false,
+                routes: RouteCleanup::default(),
                 rooms_changed: false,
             };
         };
@@ -246,7 +260,7 @@ impl VoiceReducer {
                     // Late self-leave from an earlier peer on the same channel: ignore completely.
                     return LeaveOutcome {
                         ended_active_call: false,
-                        video_routes_changed: false,
+                        routes: RouteCleanup::default(),
                         rooms_changed: false,
                     };
                 }
@@ -254,30 +268,32 @@ impl VoiceReducer {
                 self.clear_attempt_routes();
                 return LeaveOutcome {
                     ended_active_call: true,
-                    video_routes_changed: false,
+                    routes: RouteCleanup::default(),
                     rooms_changed,
                 };
             }
             let rooms_changed = self.remove_member(channel, user);
             return LeaveOutcome {
                 ended_active_call: false,
-                video_routes_changed: false,
+                routes: RouteCleanup::default(),
                 rooms_changed,
             };
         }
 
         let rooms_changed = self.remove_member(channel, user);
-        let mut video_routes_changed = false;
+        let mut routes = RouteCleanup::default();
         if active_peer.is_some_and(|active| active.channel == channel) {
             let before_video = self.video_routes.len();
             self.video_routes
                 .retain(|_, route| route.participant != user);
-            video_routes_changed = self.video_routes.len() != before_video;
+            routes.video_changed = self.video_routes.len() != before_video;
+            let before_audio = self.audio_routes.len();
             self.audio_routes.retain(|_, owner| *owner != user);
+            routes.audio_changed = self.audio_routes.len() != before_audio;
         }
         LeaveOutcome {
             ended_active_call: false,
-            video_routes_changed,
+            routes,
             rooms_changed,
         }
     }

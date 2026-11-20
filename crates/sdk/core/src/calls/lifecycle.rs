@@ -51,7 +51,7 @@ impl SessionCalls {
                     }
                 }
             }
-            self.stage_rooms_publish(&mut guard, &mut effects);
+            self.publish_rooms_locked(&mut guard);
         }
         self.execute_effects_optional(effects, runtime);
     }
@@ -98,7 +98,7 @@ impl SessionCalls {
                 guard.reducer.reset_generation(generation);
                 guard.abandoned_joins.clear();
             }
-            self.stage_rooms_publish(&mut guard, &mut effects);
+            self.publish_rooms_locked(&mut guard);
         }
         self.execute_effects_optional(effects, runtime);
     }
@@ -169,11 +169,12 @@ impl SessionCalls {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if guard
+            if let Some(active) = guard
                 .active
-                .as_ref()
-                .is_some_and(|active| active.attempt == attempt && active.phase.is_active())
+                .as_mut()
+                .filter(|active| active.attempt == attempt && active.phase.is_active())
             {
+                active.scheduled_wakeup = None;
                 self.reconcile_subscriptions_locked(&mut guard, &mut effects);
             }
         }

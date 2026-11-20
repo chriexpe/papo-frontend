@@ -10,7 +10,7 @@ use crate::{
 };
 use papo_api::gateway::Command;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -19,7 +19,7 @@ use std::{
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-pub(crate) use super::attempt::{ActiveAttempt, ActivePublish, CoordinatorState, SideEffects};
+pub(crate) use super::attempt::{ActiveAttempt, CoordinatorState, JoinDispatchState, SideEffects};
 use super::{
     fifo::{EnqueueError, QueuedVoiceCommand, VoiceCommandReceiver},
     lease::ClientCallLease,
@@ -39,6 +39,9 @@ pub(crate) struct SessionCalls {
     pub rooms_cell: Arc<StateCell<RoomsSnapshot>>,
     pub active_cell: Arc<StateCell<Option<CallSnapshot>>>,
     pub state: Mutex<CoordinatorState>,
+    /// Serializes external `MediaLease::send` calls outside `state` so delivery order strictly
+    /// matches state-mutation order. Lock hierarchy: `media_dispatch` → `state` (never reversed).
+    media_dispatch: Mutex<()>,
     pub closed: AtomicU64,
 }
 
@@ -66,10 +69,11 @@ impl SessionCalls {
                 rooms_version: 0,
                 active: None,
                 draining_attempts: BTreeSet::new(),
-                abandoned_joins: BTreeMap::new(),
+                abandoned_joins: VecDeque::new(),
                 command_sender: None,
                 next_host_lease_id: 1,
             }),
+            media_dispatch: Mutex::new(()),
             closed: AtomicU64::new(0),
         })
     }
@@ -86,6 +90,9 @@ impl SessionCalls {
     }
 
     /// Checks whether `AccountSocket` should transmit a queued voice command on `generation`.
+    ///
+    /// Transitions `JoinDispatchState::Queued` → `Transmitted` at the exact moment `VoiceJoin`
+    /// is approved for transmission so canceled unsent joins never create abandoned server joins.
     #[must_use]
     pub(crate) fn should_send(&self, item: &QueuedVoiceCommand, socket_gen: Generation) -> bool {
         if item.generation != socket_gen {
@@ -94,15 +101,25 @@ impl SessionCalls {
         if item.allow_after_end {
             return true;
         }
-        let guard = self
+        let mut guard = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.active.as_ref().is_some_and(|active| {
-            active.attempt == item.attempt
-                && active.generation == socket_gen
-                && active.phase.is_active()
-        })
+        let Some(active) = guard.active.as_mut() else {
+            return false;
+        };
+        if active.attempt != item.attempt
+            || active.generation != socket_gen
+            || !active.phase.is_active()
+        {
+            return false;
+        }
+        if matches!(item.command, Command::VoiceJoin { .. })
+            && active.join_state == JoinDispatchState::Queued
+        {
+            active.join_state = JoinDispatchState::Transmitted;
+        }
+        true
     }
 
     /// Returns a cloned snapshot cell for the currently active attempt, if any.
@@ -177,7 +194,7 @@ impl SessionCalls {
                 ActiveAttempt::new(self.account, generation, attempt, channel, cancel.clone());
             let snap = active.snapshot(self.account, &guard.reducer);
             active.snapshot_cell.send_replace(snap.clone());
-            effects.active_publish = ActivePublish::Set(Box::new(snap));
+            self.active_cell.send_replace(Some(snap));
             guard.active = Some(active);
             (attempt, generation, wait_drain, cancel, cell, effects)
         };
@@ -209,6 +226,69 @@ impl SessionCalls {
         })
     }
 
+    /// Enqueues a wire command into the non-blocking voice FIFO in exact state-mutation order.
+    ///
+    /// Fails the active attempt immediately if the FIFO overflows (`CommandOverflow`) or if the
+    /// current-generation command channel is absent or closed (`ConnectionLost`).
+    pub(crate) fn enqueue_wire_locked(
+        &self,
+        guard: &mut CoordinatorState,
+        item: QueuedVoiceCommand,
+        effects: &mut SideEffects,
+    ) -> bool {
+        let allow_after_end = item.allow_after_end;
+        let result = match guard.command_sender.as_ref() {
+            Some((sender_gen, sender)) if *sender_gen == item.generation => sender.try_send(item),
+            _ => Err(EnqueueError::Closed),
+        };
+        match result {
+            Ok(()) => true,
+            Err(EnqueueError::Full) => {
+                if !allow_after_end && guard.active.is_some() {
+                    self.finish_active_locked(
+                        guard,
+                        CallEndReason::CommandOverflow,
+                        false,
+                        effects,
+                    );
+                }
+                false
+            }
+            Err(EnqueueError::Closed) => {
+                if !allow_after_end && guard.active.is_some() {
+                    self.finish_active_locked(guard, CallEndReason::ConnectionLost, false, effects);
+                }
+                false
+            }
+        }
+    }
+
+    /// Queues a media command on the active attempt in state-mutation order and marks drain needed.
+    pub(crate) fn enqueue_media_locked(
+        guard: &mut CoordinatorState,
+        command: MediaCommand,
+        effects: &mut SideEffects,
+    ) {
+        if let Some(active) = guard.active.as_mut()
+            && active.media_lease.is_some()
+        {
+            active.pending_media_commands.push_back(command);
+            effects.drain_media = true;
+        }
+    }
+
+    /// Schedules a deduplicated wakeup timer for pending video subscriptions if needed.
+    pub(crate) fn stage_subscription_wakeup_locked(
+        active: &mut ActiveAttempt,
+        at: Instant,
+        effects: &mut SideEffects,
+    ) {
+        if active.scheduled_wakeup.is_none_or(|existing| at < existing) {
+            active.scheduled_wakeup = Some(at);
+            effects.schedule_retry_at = Some((active.attempt, at, active.cancel.clone()));
+        }
+    }
+
     /// Reconciles pending video subscriptions against current publishers and pacing limits.
     pub(crate) fn reconcile_subscriptions_locked(
         &self,
@@ -221,6 +301,8 @@ impl SessionCalls {
         if !matches!(active.phase, CallPhase::Joined | CallPhase::Connected) {
             return;
         }
+        let generation = active.generation;
+        let attempt = active.attempt;
         let now = Instant::now();
         let commands = active.subscriptions.reconcile(
             active.channel,
@@ -228,20 +310,26 @@ impl SessionCalls {
             &guard.reducer,
             now,
         );
-        for command in commands {
-            effects.wire_commands.push(QueuedVoiceCommand {
-                generation: active.generation,
-                attempt: active.attempt,
-                command,
-                allow_after_end: false,
-            });
-        }
         if let Some(at) =
             active
                 .subscriptions
                 .next_wakeup(active.channel, self.account.user(), &guard.reducer)
         {
-            effects.schedule_retry_at = Some((active.attempt, at));
+            Self::stage_subscription_wakeup_locked(active, at, effects);
+        }
+        for command in commands {
+            if !self.enqueue_wire_locked(
+                guard,
+                QueuedVoiceCommand {
+                    generation,
+                    attempt,
+                    command,
+                    allow_after_end: false,
+                },
+                effects,
+            ) {
+                break;
+            }
         }
     }
 
@@ -257,18 +345,28 @@ impl SessionCalls {
             return;
         };
         active.cancel.cancel();
-        if send_leave && active.voice_join_sent {
-            if active.phase == CallPhase::Joining {
-                *guard.abandoned_joins.entry(active.channel).or_default() += 1;
+        let transmitted_join = matches!(
+            active.join_state,
+            JoinDispatchState::Transmitted | JoinDispatchState::Acknowledged
+        );
+        if send_leave && transmitted_join {
+            if active.join_state == JoinDispatchState::Transmitted
+                && reason != CallEndReason::JoinTimeout
+            {
+                guard.abandoned_joins.push_back(active.channel);
             }
-            effects.wire_commands.push(QueuedVoiceCommand {
-                generation: active.generation,
-                attempt: active.attempt,
-                command: Command::VoiceLeave {
-                    channel_id: active.channel.to_string(),
+            let _ = self.enqueue_wire_locked(
+                guard,
+                QueuedVoiceCommand {
+                    generation: active.generation,
+                    attempt: active.attempt,
+                    command: Command::VoiceLeave {
+                        channel_id: active.channel.to_string(),
+                    },
+                    allow_after_end: true,
                 },
-                allow_after_end: true,
-            });
+                effects,
+            );
         }
         let needs_drain = active.media_lease.is_some() || active.media_start_in_flight;
         if let Some(lease) = active.media_lease.take() {
@@ -287,18 +385,17 @@ impl SessionCalls {
         guard.reducer.clear_attempt_routes();
         guard.reducer.clear_room_speakers(active.channel);
         let final_snapshot = active.snapshot(self.account, &guard.reducer);
-        effects
-            .closed_cells
-            .push((Arc::clone(&active.snapshot_cell), final_snapshot));
-        effects.active_publish = ActivePublish::Clear;
+        // Publish closed cell and clear active_cell under the coordinator lock so concurrent
+        // transitions can never overwrite a newer attempt or room snapshot out of order.
+        active.snapshot_cell.close_with(|slot| {
+            *slot = final_snapshot;
+            true
+        });
+        self.active_cell.send_replace(None);
     }
 
-    /// Stages a fresh `RoomsSnapshot` publication outside the coordinator lock.
-    pub(crate) fn stage_rooms_publish(
-        &self,
-        guard: &mut CoordinatorState,
-        effects: &mut SideEffects,
-    ) {
+    /// Publishes a fresh `RoomsSnapshot` strictly serialized under the coordinator lock.
+    pub(crate) fn publish_rooms_locked(&self, guard: &mut CoordinatorState) {
         guard.rooms_version = guard.rooms_version.saturating_add(1);
         let snapshot = guard.reducer.project_rooms(
             guard.rooms_version,
@@ -306,22 +403,18 @@ impl SessionCalls {
             &guard.resources,
             self.account.user(),
         );
-        effects.rooms_publish = Some(snapshot);
+        self.rooms_cell.send_replace(snapshot);
     }
 
-    /// Stages an active `CallSnapshot` publication outside the coordinator lock.
-    pub(crate) fn stage_active_publish(
-        &self,
-        guard: &mut CoordinatorState,
-        effects: &mut SideEffects,
-    ) {
+    /// Publishes the active `CallSnapshot` strictly serialized under the coordinator lock.
+    pub(crate) fn publish_active_locked(&self, guard: &mut CoordinatorState) {
         let Some(active) = guard.active.as_mut() else {
             return;
         };
         active.version = active.version.saturating_add(1);
         let snap = active.snapshot(self.account, &guard.reducer);
         active.snapshot_cell.send_replace(snap.clone());
-        effects.active_publish = ActivePublish::Set(Box::new(snap));
+        self.active_cell.send_replace(Some(snap));
     }
 
     /// Executes deferred side effects outside the coordinator lock with a live Tokio runtime.
@@ -342,48 +435,6 @@ impl SessionCalls {
         for destination in effects.revoke_destinations {
             destination.revoke();
         }
-        // Enqueue wire commands BEFORE dispatching media commands so camera intent always
-        // enters the ordered voice FIFO ahead of any offer emitted by the media engine.
-        let mut overflowed = false;
-        if !effects.wire_commands.is_empty() {
-            let sender = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .command_sender
-                .clone();
-            if let Some((sender_gen, sender)) = sender {
-                for item in effects.wire_commands {
-                    if item.generation != sender_gen {
-                        continue;
-                    }
-                    if matches!(sender.try_send(item), Err(EnqueueError::Full)) {
-                        overflowed = true;
-                        break;
-                    }
-                }
-            }
-        }
-        // Publish state transitions and closed cells before telling old leases to stop so
-        // callers observing a stopped lease already see the ended call snapshot.
-        for (cell, final_snapshot) in effects.closed_cells {
-            cell.close_with(|slot| {
-                *slot = final_snapshot;
-                true
-            });
-        }
-        match effects.active_publish {
-            ActivePublish::Unchanged => {}
-            ActivePublish::Clear => {
-                self.active_cell.send_replace(None);
-            }
-            ActivePublish::Set(snap) => {
-                self.active_cell.send_replace(Some(*snap));
-            }
-        }
-        if let Some(rooms) = effects.rooms_publish {
-            self.rooms_cell.send_replace(rooms);
-        }
         for (attempt, lease) in effects.stop_leases {
             let _ = lease.send(MediaCommand::Stop);
             if let Some(rt) = runtime {
@@ -395,23 +446,38 @@ impl SessionCalls {
                 );
             }
         }
-        if !effects.media_commands.is_empty() {
-            let guard = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(lease) = guard.active.as_ref().and_then(|a| a.media_lease.as_ref()) {
-                for command in effects.media_commands {
-                    let _ = lease.send(command);
-                }
-            }
+        if effects.drain_media {
+            self.drain_media_commands();
         }
-        if overflowed {
-            let _ = self.end_active(CallEndReason::CommandOverflow, runtime);
-        } else if let Some((attempt, at)) = effects.schedule_retry_at
+        if let Some((attempt, at, cancel)) = effects.schedule_retry_at
             && let Some(rt) = runtime
         {
-            startup::spawn_subscription_wakeup(Arc::clone(self), attempt, at, rt);
+            startup::spawn_subscription_wakeup(Arc::clone(self), attempt, at, cancel, rt);
+        }
+    }
+
+    /// Drains queued active-attempt media commands serially outside `self.state`.
+    fn drain_media_commands(&self) {
+        let _dispatch_guard = self
+            .media_dispatch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            let next = {
+                let mut guard = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.active.as_mut().and_then(|active| {
+                    let lease = active.media_lease.as_ref().map(Arc::clone)?;
+                    let cmd = active.pending_media_commands.pop_front()?;
+                    Some((lease, cmd))
+                })
+            };
+            let Some((lease, cmd)) = next else {
+                break;
+            };
+            let _ = lease.send(cmd);
         }
     }
 }

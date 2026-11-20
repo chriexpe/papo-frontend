@@ -111,7 +111,8 @@ pub struct ActiveCallView {
     pub attempt: CallAttemptId,
     /// Active voice channel identity.
     pub channel: Uuid,
-    /// Call lifecycle phase (including terminal `Ended(reason)`).
+    /// Active call phase (`Preparing` → `Joining` → `Joined` → `Connected`); terminal `Ended`
+    /// transitions are observed on `CallHandle::subscribe()` when `CallView::active` clears to `None`.
     pub phase: CallPhase,
     /// Room video codec announced by `voice_joined`.
     pub video_codec: Option<VideoCodec>,
@@ -217,27 +218,55 @@ impl CallService {
         let snapshot = project(&self.session, &rooms, active.as_ref(), &resources, status);
 
         let session = self.session.clone();
+        let initial_last = snapshot.clone();
         let changes = stream::unfold(
-            (rooms_rx, active_rx, resources_rx, connection_rx, session),
-            move |(mut rooms_rx, mut active_rx, mut resources_rx, mut connection_rx, session)| async move {
-                tokio::select! {
-                    result = rooms_rx.changed() => result.ok()?,
-                    result = active_rx.changed() => result.ok()?,
-                    result = resources_rx.changed() => result.ok()?,
-                    result = connection_rx.changed() => result.ok()?,
+            (
+                rooms_rx,
+                active_rx,
+                resources_rx,
+                connection_rx,
+                session,
+                initial_last,
+            ),
+            move |(
+                mut rooms_rx,
+                mut active_rx,
+                mut resources_rx,
+                mut connection_rx,
+                session,
+                mut last_view,
+            )| async move {
+                loop {
+                    tokio::select! {
+                        result = rooms_rx.changed() => result.ok()?,
+                        result = active_rx.changed() => result.ok()?,
+                        result = resources_rx.changed() => result.ok()?,
+                        result = connection_rx.changed() => result.ok()?,
+                    }
+                    if session.is_closed() {
+                        return None;
+                    }
+                    let rooms = rooms_rx.borrow_and_update().clone();
+                    let active = active_rx.borrow_and_update().clone();
+                    let resources = Arc::clone(&resources_rx.borrow_and_update());
+                    let status = *connection_rx.borrow_and_update();
+                    let view = project(&session, &rooms, active.as_ref(), &resources, status);
+                    if view == last_view {
+                        continue;
+                    }
+                    last_view = view.clone();
+                    return Some((
+                        view,
+                        (
+                            rooms_rx,
+                            active_rx,
+                            resources_rx,
+                            connection_rx,
+                            session,
+                            last_view,
+                        ),
+                    ));
                 }
-                if session.is_closed() {
-                    return None;
-                }
-                let rooms = rooms_rx.borrow_and_update().clone();
-                let active = active_rx.borrow_and_update().clone();
-                let resources = Arc::clone(&resources_rx.borrow_and_update());
-                let status = *connection_rx.borrow_and_update();
-                let view = project(&session, &rooms, active.as_ref(), &resources, status);
-                Some((
-                    view,
-                    (rooms_rx, active_rx, resources_rx, connection_rx, session),
-                ))
             },
         );
         CallSubscription {

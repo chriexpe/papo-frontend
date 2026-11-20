@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use super::{
-    coordinator::{CoordinatorState, SessionCalls, SideEffects},
+    coordinator::{CoordinatorState, JoinDispatchState, SessionCalls, SideEffects},
     errors::{VoiceErrorCode, VoiceErrorDisposition, classify_voice_error},
     fifo::QueuedVoiceCommand,
     media_port::MediaCommand,
@@ -37,8 +37,8 @@ impl SessionCalls {
             match known {
                 KnownEvent::PresenceSync(payload) => {
                     guard.reducer.apply_presence_sync(payload);
-                    self.stage_rooms_publish(&mut guard, &mut effects);
-                    self.stage_active_publish(&mut guard, &mut effects);
+                    self.publish_rooms_locked(&mut guard);
+                    self.publish_active_locked(&mut guard);
                 }
                 KnownEvent::VoiceJoined(payload) => {
                     self.handle_voice_joined_locked(&mut guard, payload, &mut effects);
@@ -54,14 +54,14 @@ impl SessionCalls {
                 }
                 KnownEvent::VoiceStateUpdate(payload) => {
                     if let Some((channel, _)) = guard.reducer.apply_state_update(payload) {
-                        self.stage_rooms_publish(&mut guard, &mut effects);
+                        self.publish_rooms_locked(&mut guard);
                         if guard
                             .active
                             .as_ref()
                             .is_some_and(|active| active.channel == channel)
                         {
                             self.reconcile_subscriptions_locked(&mut guard, &mut effects);
-                            self.stage_active_publish(&mut guard, &mut effects);
+                            self.publish_active_locked(&mut guard);
                         }
                     }
                 }
@@ -70,13 +70,13 @@ impl SessionCalls {
                 }
                 KnownEvent::ActiveSpeakerUpdate(payload) => {
                     if let Some(channel) = guard.reducer.apply_active_speakers(payload) {
-                        self.stage_rooms_publish(&mut guard, &mut effects);
+                        self.publish_rooms_locked(&mut guard);
                         if guard
                             .active
                             .as_ref()
                             .is_some_and(|active| active.channel == channel)
                         {
-                            self.stage_active_publish(&mut guard, &mut effects);
+                            self.publish_active_locked(&mut guard);
                         }
                     }
                 }
@@ -86,10 +86,12 @@ impl SessionCalls {
                     if let Some((revision, routes)) =
                         state.reducer.apply_audio_routes(peer_ref, payload)
                     {
-                        effects
-                            .media_commands
-                            .push(MediaCommand::SetAudioRoutes { revision, routes });
-                        self.stage_active_publish(state, &mut effects);
+                        Self::enqueue_media_locked(
+                            state,
+                            MediaCommand::SetAudioRoutes { revision, routes },
+                            &mut effects,
+                        );
+                        self.publish_active_locked(state);
                     }
                 }
                 KnownEvent::VoiceVideoRoutes(payload) => {
@@ -102,12 +104,14 @@ impl SessionCalls {
                     {
                         if let Some(active) = state.active.as_mut() {
                             active.subscriptions.note_video_routes(&state.reducer);
-                            let (revision, slots) = active.slot_plan(&state.reducer);
-                            effects
-                                .media_commands
-                                .push(MediaCommand::SetVideoSlotPlan { revision, slots });
+                            let (revision, slots) = active.next_slot_plan(&state.reducer);
+                            Self::enqueue_media_locked(
+                                state,
+                                MediaCommand::SetVideoSlotPlan { revision, slots },
+                                &mut effects,
+                            );
                         }
-                        self.stage_active_publish(state, &mut effects);
+                        self.publish_active_locked(state);
                     }
                 }
                 KnownEvent::Error(payload) => {
@@ -128,13 +132,8 @@ impl SessionCalls {
         let Ok(channel) = payload.channel_id.parse::<Uuid>() else {
             return;
         };
-        if let Some(count) = guard.abandoned_joins.get_mut(&channel)
-            && *count > 0
-        {
-            *count -= 1;
-            if *count == 0 {
-                guard.abandoned_joins.remove(&channel);
-            }
+        if let Some(pos) = guard.abandoned_joins.iter().position(|ch| *ch == channel) {
+            guard.abandoned_joins.remove(pos);
             return;
         }
         let Some(active_channel) = guard
@@ -148,12 +147,14 @@ impl SessionCalls {
         let Some(admission) = guard.reducer.apply_voice_joined(active_channel, payload) else {
             return;
         };
+        let mut initial_wire = Vec::new();
         if let Some(active) = guard.active.as_mut() {
             active.phase = CallPhase::Joined;
+            active.join_state = JoinDispatchState::Acknowledged;
             active.peer_id = Some(admission.peer_id);
             active.video_codec = Some(admission.video_codec);
             if !active.settings.muted {
-                effects.wire_commands.push(QueuedVoiceCommand {
+                initial_wire.push(QueuedVoiceCommand {
                     generation: active.generation,
                     attempt: active.attempt,
                     command: Command::VoiceMute {
@@ -164,7 +165,7 @@ impl SessionCalls {
                 });
             }
             if active.settings.camera_on {
-                effects.wire_commands.push(QueuedVoiceCommand {
+                initial_wire.push(QueuedVoiceCommand {
                     generation: active.generation,
                     attempt: active.attempt,
                     command: Command::VoiceCamera {
@@ -174,12 +175,22 @@ impl SessionCalls {
                     allow_after_end: false,
                 });
             }
-            effects.media_commands.push(MediaCommand::StartNegotiation {
-                video_codec: admission.video_codec,
-            });
         }
-        self.stage_rooms_publish(guard, effects);
-        self.stage_active_publish(guard, effects);
+        for item in initial_wire {
+            if !self.enqueue_wire_locked(guard, item, effects) {
+                self.publish_rooms_locked(guard);
+                return;
+            }
+        }
+        Self::enqueue_media_locked(
+            guard,
+            MediaCommand::StartNegotiation {
+                video_codec: admission.video_codec,
+            },
+            effects,
+        );
+        self.publish_rooms_locked(guard);
+        self.publish_active_locked(guard);
     }
 
     fn handle_voice_answer_locked(
@@ -196,12 +207,16 @@ impl SessionCalls {
         {
             return;
         }
-        effects.media_commands.push(MediaCommand::RemoteAnswer {
-            sdp: payload.sdp.clone(),
-        });
         if let Some(active) = guard.active.as_mut() {
             active.subscriptions.mark_first_answer_received();
         }
+        Self::enqueue_media_locked(
+            guard,
+            MediaCommand::RemoteAnswer {
+                sdp: payload.sdp.clone(),
+            },
+            effects,
+        );
         self.reconcile_subscriptions_locked(guard, effects);
     }
 
@@ -218,9 +233,13 @@ impl SessionCalls {
         {
             return;
         }
-        effects.media_commands.push(MediaCommand::RemoteOffer {
-            sdp: payload.sdp.clone(),
-        });
+        Self::enqueue_media_locked(
+            guard,
+            MediaCommand::RemoteOffer {
+                sdp: payload.sdp.clone(),
+            },
+            effects,
+        );
     }
 
     fn handle_voice_ice_locked(
@@ -236,13 +255,15 @@ impl SessionCalls {
         {
             return;
         }
-        effects
-            .media_commands
-            .push(MediaCommand::RemoteIceCandidate {
+        Self::enqueue_media_locked(
+            guard,
+            MediaCommand::RemoteIceCandidate {
                 candidate: payload.candidate.clone(),
                 sdp_mid: payload.sdp_mid.clone(),
                 sdp_mline_index: payload.sdp_mline_index,
-            });
+            },
+            effects,
+        );
     }
 
     fn handle_voice_leave_locked(
@@ -258,21 +279,37 @@ impl SessionCalls {
         if outcome.ended_active_call {
             self.finish_active_locked(guard, CallEndReason::ServerRemoved, false, effects);
         } else if let Ok(user) = payload.user_id.parse::<Uuid>()
-            && let Some(active) = guard.active.as_mut()
-            && payload.channel_id.parse::<Uuid>().ok() == Some(active.channel)
+            && guard.active.as_ref().is_some_and(|active| {
+                payload.channel_id.parse::<Uuid>().ok() == Some(active.channel)
+            })
         {
-            active.subscriptions.note_member_left(user);
-            if outcome.video_routes_changed {
-                let (revision, slots) = active.slot_plan(&guard.reducer);
-                effects
-                    .media_commands
-                    .push(MediaCommand::SetVideoSlotPlan { revision, slots });
+            if let Some(active) = guard.active.as_mut() {
+                active.subscriptions.note_member_left(user);
+            }
+            if outcome.routes.audio_changed {
+                let revision = guard.reducer.audio_revision();
+                let routes = guard.reducer.audio_route_vec();
+                Self::enqueue_media_locked(
+                    guard,
+                    MediaCommand::SetAudioRoutes { revision, routes },
+                    effects,
+                );
+            }
+            if outcome.routes.video_changed
+                && let Some(active) = guard.active.as_mut()
+            {
+                let (revision, slots) = active.next_slot_plan(&guard.reducer);
+                Self::enqueue_media_locked(
+                    guard,
+                    MediaCommand::SetVideoSlotPlan { revision, slots },
+                    effects,
+                );
             }
             self.reconcile_subscriptions_locked(guard, effects);
-            self.stage_active_publish(guard, effects);
+            self.publish_active_locked(guard);
         }
         if outcome.rooms_changed {
-            self.stage_rooms_publish(guard, effects);
+            self.publish_rooms_locked(guard);
         }
     }
 
@@ -285,6 +322,7 @@ impl SessionCalls {
         let Some(code) = payload.code.as_deref().and_then(VoiceErrorCode::from_wire) else {
             return;
         };
+        let has_peer_scope = payload.peer_id.as_deref().is_some_and(|id| !id.is_empty());
         if let Some(peer_id) = payload.peer_id.as_deref().filter(|id| !id.is_empty()) {
             let Some(active_peer) = Self::active_peer_ref(guard.active.as_ref()) else {
                 return;
@@ -293,32 +331,50 @@ impl SessionCalls {
                 return;
             }
         }
-        if let Some(channel_str) = payload.channel_id.as_deref().filter(|id| !id.is_empty()) {
-            let Ok(channel) = channel_str.parse::<Uuid>() else {
-                return;
-            };
-            if guard
-                .active
-                .as_ref()
-                .is_none_or(|active| active.channel != channel)
-            {
-                return;
-            }
-        }
-        let has_peer_scope = payload.peer_id.as_deref().is_some_and(|id| !id.is_empty());
+
+        let err_channel = match payload
+            .channel_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .map(str::parse::<Uuid>)
+        {
+            Some(Ok(ch)) => Some(ch),
+            Some(Err(_)) => return,
+            None => None,
+        };
+
+        // Consume a join-phase error belonging to an abandoned join without swallowing a real
+        // channel-scoped error (such as `voice-room-closed`) for an active Joined/Connected call.
         if !has_peer_scope
             && matches!(
                 classify_voice_error(code, true),
                 VoiceErrorDisposition::Fatal(_)
             )
             && !guard.abandoned_joins.is_empty()
-            && let Some(first_channel) = guard.abandoned_joins.keys().next().copied()
-            && let Some(count) = guard.abandoned_joins.get_mut(&first_channel)
         {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                guard.abandoned_joins.remove(&first_channel);
+            if let Some(ch) = err_channel {
+                let active_live_on_ch = guard.active.as_ref().is_some_and(|active| {
+                    active.channel == ch
+                        && matches!(active.phase, CallPhase::Joined | CallPhase::Connected)
+                });
+                if !active_live_on_ch
+                    && let Some(pos) = guard.abandoned_joins.iter().position(|entry| *entry == ch)
+                {
+                    guard.abandoned_joins.remove(pos);
+                    return;
+                }
+            } else {
+                guard.abandoned_joins.pop_front();
+                return;
             }
+        }
+
+        if let Some(ch) = err_channel
+            && guard
+                .active
+                .as_ref()
+                .is_none_or(|active| active.channel != ch)
+        {
             return;
         }
 
@@ -351,10 +407,10 @@ impl SessionCalls {
                         self.account.user(),
                         &guard.reducer,
                     ) {
-                        effects.schedule_retry_at = Some((active.attempt, at));
+                        Self::stage_subscription_wakeup_locked(active, at, effects);
                     }
                 }
-                self.stage_active_publish(guard, effects);
+                self.publish_active_locked(guard);
             }
         }
     }
