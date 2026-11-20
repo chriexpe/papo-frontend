@@ -3,9 +3,12 @@
 
 use std::{error::Error, sync::Arc, time::Duration};
 
-use papo_api::wire::{
-    Channel, ChannelPermissionEntry, ChannelPermissions, LoginRequest, RegisterRequest, Role,
-    RolePermissions, UserProfile,
+use papo_api::{
+    gateway::{Event, KnownEvent},
+    wire::{
+        Channel, ChannelPermissionEntry, ChannelPermissions, LoginRequest, RegisterRequest, Role,
+        RolePermissions, UserProfile,
+    },
 };
 use papo_sdk::{
     AuthService, Backoff, CallConfig, CallEndReason, CallError, CallPhase, Client, ClientConfig,
@@ -442,6 +445,7 @@ fn chat_and_heartbeat_keep_flowing_under_candidate_flood() -> Result {
         register(&auth, "flood-user").await?;
         let session = login(&auth, "flood-user").await?;
         online(&session).await?;
+        let mut events = session.subscribe_events();
 
         let text_ch: Uuid = h
             .server()
@@ -457,10 +461,18 @@ fn chat_and_heartbeat_keep_flowing_under_candidate_flood() -> Result {
             .id
             .ok_or("voice_ch")?
             .parse()?;
+        let voice_id = voice_ch.to_string();
+        loop {
+            if let Event::Known(KnownEvent::ChannelCreate(channel)) = events.next().await?.value
+                && channel.channel_id == voice_id
+            {
+                assert_eq!(channel.channel_type, "voice");
+                break;
+            }
+        }
         wait_for_channel(&session, text_ch).await?;
         wait_for_channel(&session, voice_ch).await?;
 
-        let mut events = session.subscribe_events();
         let call = session.calls().join(voice_ch)?;
         wait_phase(&call, |p| p == CallPhase::Joined).await?;
         let lease = media.latest_lease().ok_or("lease")?;

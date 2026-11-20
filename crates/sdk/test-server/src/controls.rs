@@ -17,6 +17,14 @@ impl TestServer {
     /// # Errors
     /// Returns [`Error::Configuration`] for an empty name or exhausted fixture counters.
     pub async fn create_channel(&self, name: &str) -> Result<Channel, Error> {
+        self.create_channel_with_type(name, "text").await
+    }
+
+    pub(crate) async fn create_channel_with_type(
+        &self,
+        name: &str,
+        channel_type: &str,
+    ) -> Result<Channel, Error> {
         if name.is_empty() {
             return Err(Error::Configuration);
         }
@@ -44,7 +52,7 @@ impl TestServer {
         let channel = Channel {
             id: Some(id),
             name: Some(name.to_owned()),
-            r#type: Some("text".into()),
+            r#type: Some(channel_type.into()),
             position: Some(position),
             permissions: Some(Vec::new()),
             created_at: Some(CREATED_AT.into()),

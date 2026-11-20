@@ -199,10 +199,7 @@ impl TestServer {
         &self,
         name: &str,
     ) -> Result<papo_api::wire::Channel, crate::Error> {
-        let mut channel = self.create_channel(name).await?;
-        channel.r#type = Some("voice".into());
-        self.set_channel(channel.clone()).await?;
-        Ok(channel)
+        self.create_channel_with_type(name, "voice").await
     }
 
     /// Replaces the ICE servers returned by `GET /voice/ice-servers`.

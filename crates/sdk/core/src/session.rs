@@ -168,10 +168,11 @@ impl SessionInner {
             .checked_add(1)
             .ok_or(ClientError::Closed)?;
         let published = Arc::new(snapshot);
-        self.resources.send_replace(Arc::clone(&published));
         let runtime = tokio::runtime::Handle::try_current().ok();
+        // A resource watcher may join a newly admitted voice channel immediately.
         self.calls
             .on_resources_updated(&published, runtime.as_ref());
+        self.resources.send_replace(published);
         Ok(())
     }
     pub fn status(
