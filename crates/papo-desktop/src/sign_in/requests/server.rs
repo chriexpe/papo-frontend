@@ -6,7 +6,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use papo_sdk::{ClientHandle, RegistrySnapshot, ServerAddress, ServerDiscovery, ServerId};
+use papo_sdk::{
+    AuthState, ClientHandle, RegistrySnapshot, ServerAddress, ServerDiscovery, ServerId,
+};
 
 use super::now;
 use crate::account_watch::{self, SignedOut};
@@ -119,11 +121,11 @@ fn saved_accounts(
         .filter(|account| account.id.server() == id)
     {
         // An account without a session yet is one just signed in.
-        let lapse = client
+        let state = client
             .session(account.id)
             .ok()
-            .and_then(|session| account_watch::lapse(session.auth().state()));
-        let Some(credentials) = lapse else {
+            .map(|session| session.auth().state());
+        let Some(credentials) = state.and_then(account_watch::lapse) else {
             return SavedAccounts::Working;
         };
         if saved == SavedAccounts::None {
@@ -132,6 +134,7 @@ fn saved_accounts(
                 credentials,
                 address: address.to_owned(),
                 username: account.username.clone(),
+                signing_in: state == Some(AuthState::SigningIn),
             });
         }
     }

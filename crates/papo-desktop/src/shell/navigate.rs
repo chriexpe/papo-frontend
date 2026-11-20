@@ -120,11 +120,14 @@ impl Shell {
         }
     }
 
-    /// The server card's ⚙: the menu grows from the card.
-    pub(crate) fn open_server_menu(&mut self) {
+    /// The server card's ⚙: the menu grows from the card. ⚙ takes the
+    /// keyboard: pressed on the grown pill, the accounts closing would
+    /// otherwise hand it to ⇄, and the menu would give it back there.
+    pub(crate) fn open_server_menu(&mut self, tx: &mut Tx) {
         if let Some(server) = self.nav.selected().map(|server| server.id) {
             let trigger = SERVER_OPTIONS_KEY.to_owned();
             self.open_menu(Placement::GrowFrom(SERVER_CARD_KEY), trigger, server);
+            tx.focus(SERVER_OPTIONS_KEY, false);
         }
     }
 
@@ -138,6 +141,8 @@ impl Shell {
     }
 
     fn open_menu(&mut self, placement: Placement, trigger: String, server: ServerId) {
+        // ⚙ shows on the grown pill too; the menu takes the pill's place.
+        self.nav.close_accounts();
         let items = vec![MenuItem {
             key: "menu-remove-server",
             label: strings::remove_server(),

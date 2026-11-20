@@ -1,6 +1,7 @@
 //! Where the person is in the app: the selected server and, per server, the
 //! selected channel; the rail's order while a reorder is on its way to the
-//! SDK or a tile is being dragged; the open menu and the remove confirmation.
+//! SDK or a tile is being dragged; the open menu, the open accounts and the
+//! remove confirmation.
 //!
 //! Owns these transitions and nothing the SDK holds: the server list itself
 //! comes from `server_list`, and reordering or removing is sent to the SDK by
@@ -28,6 +29,8 @@ pub(crate) struct Navigation {
     pending_order: Option<Vec<ServerId>>,
     drag: Option<RailDrag>,
     pub(crate) menu: Option<OpenMenu>,
+    /// The server whose accounts are open: its pill grown from ⇄.
+    accounts: Option<ServerId>,
     /// The server whose removal waits for the person to confirm.
     pub(crate) removing: Option<ServerId>,
 }
@@ -69,6 +72,9 @@ impl Navigation {
         {
             self.removing = None;
         }
+        if self.accounts.is_some_and(|server| !order.contains(&server)) {
+            self.accounts = None;
+        }
     }
 
     /// The rail in the order to draw: a drag's preview, else the order on its
@@ -103,10 +109,29 @@ impl Navigation {
         self.selected.and_then(|id| self.servers.get(id))
     }
 
+    /// Selects server `id`; the accounts of another server close.
     pub(crate) fn select_server(&mut self, id: ServerId) {
         if self.servers.get(id).is_some() {
             self.selected = Some(id);
+            if self.accounts != Some(id) {
+                self.accounts = None;
+            }
         }
+    }
+
+    /// Whether the selected server's accounts are open.
+    pub(crate) fn accounts_open(&self) -> bool {
+        self.accounts.is_some() && self.accounts == self.selected
+    }
+
+    /// Opens the selected server's accounts, closing the other overlays.
+    pub(crate) fn open_accounts(&mut self) {
+        self.dismiss_overlays();
+        self.accounts = self.selected;
+    }
+
+    pub(crate) fn close_accounts(&mut self) {
+        self.accounts = None;
     }
 
     /// The selected server's channel: the one picked, else its first text
@@ -179,6 +204,7 @@ impl Navigation {
     pub(crate) fn dismiss_overlays(&mut self) {
         self.drag = None;
         self.menu = None;
+        self.accounts = None;
         self.removing = None;
     }
 

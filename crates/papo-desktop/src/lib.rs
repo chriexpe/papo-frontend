@@ -7,6 +7,7 @@
 //!
 //! The binary (`src/main.rs`) only calls [`run`].
 
+mod account_switch;
 mod account_watch;
 mod badges;
 mod channel_pane;

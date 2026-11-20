@@ -39,6 +39,7 @@ impl SignIn {
                     icon: None,
                     unlocked: false,
                     renewing: None,
+                    adding: false,
                 };
                 self.enter_account(fields, server, added.public)
             }
@@ -81,6 +82,7 @@ impl SignIn {
                     icon: None,
                     unlocked: false,
                     renewing: None,
+                    adding: false,
                 };
                 let mut effects = self.enter_account(fields, server, discovery.public);
                 if let Some(icon) = discovery.icon {

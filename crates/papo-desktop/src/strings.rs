@@ -340,6 +340,32 @@ pub(crate) fn server_options() -> &'static str {
     text!("server_card.options")
 }
 
+/// The server pill's ⇄, which opens the accounts on the server.
+pub(crate) fn switch_account() -> &'static str {
+    text!("server_card.switch_account")
+}
+
+/// The caption over a server's accounts, naming the server as given (the
+/// caller writes it in capitals, as the catalog writes the rest).
+pub(crate) fn accounts_on(server: &str) -> String {
+    template!("accounts.title", "server" => server)
+}
+
+/// An account's row in the switch, for assistive technology.
+pub(crate) fn account_row(name: &str, username: &str) -> String {
+    template!("accounts.row", "name" => name, "username" => username)
+}
+
+/// "2 accounts", for the ⇄'s label when a server has more than one.
+pub(crate) fn account_count(count: u64) -> String {
+    plural!("accounts.count", count)
+}
+
+/// The switch's last row: another account on this server.
+pub(crate) fn add_account() -> &'static str {
+    text!("accounts.add")
+}
+
 /// The server menu's item that asks to remove it.
 pub(crate) fn remove_server() -> &'static str {
     text!("server_menu.remove")
