@@ -17,6 +17,7 @@ use rune::{Image, ImageCache, TextEdit};
 
 use crate::account_watch::{self, Accounts};
 use crate::navigation::Navigation;
+use crate::reconnect_hints;
 use crate::sdk_bridge::{BridgeHost, OpenFailure, RequestSlot, Sdk};
 use crate::server_list;
 use crate::sign_in::{self, Event, Fields, Host, SignIn};
@@ -102,6 +103,7 @@ impl BridgeHost for Shell {
     fn sdk_opened(&mut self, sdk: Sdk<Self>) {
         sdk.watch(|client, updates| account_watch::run(client, updates, Shell::accounts_changed));
         sdk.watch(|client, updates| server_list::run(client, updates, Shell::servers_changed));
+        sdk.run(reconnect_hints::run);
         self.sdk = Some(sdk);
     }
 

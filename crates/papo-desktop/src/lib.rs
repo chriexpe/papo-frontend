@@ -13,10 +13,14 @@ mod channel_pane;
 mod design;
 mod icons;
 mod keyring;
+mod lifecycle;
 mod menu;
 mod navigation;
+#[cfg(test)]
+mod private_bus;
 mod profile_dir;
 mod rail;
+mod reconnect_hints;
 mod remove_server;
 mod sdk_bridge;
 mod server_list;
@@ -32,11 +36,13 @@ use std::sync::Arc;
 use papo_sdk::{ClientConfig, DataRoot};
 
 use crate::keyring::{Keyring, SecretService};
+use crate::lifecycle::{Lifecycle, Start};
 use crate::sdk_bridge::{Bridge, BridgeHost, OpenFailure, Post, Profile};
 use crate::shell::Shell;
 
 /// Starts the desktop client and blocks until its window closes and the SDK
-/// has shut down.
+/// has shut down. When Papo already runs, asks it to show its window and
+/// returns at once.
 ///
 /// # Errors
 ///
@@ -44,6 +50,11 @@ use crate::shell::Shell;
 /// Wayland or X11 display.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
+    // Before anything else starts: a later launch only hands off and exits.
+    let mut lifecycle = match Lifecycle::start() {
+        Start::Running(lifecycle) => lifecycle,
+        Start::HandedOff => return Ok(()),
+    };
     strings::use_system_language();
     rune::set_app_id(window::APP_ID);
     // Rune ends the process the moment the app quits unless told otherwise;
@@ -52,6 +63,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let keyring = Arc::new(Keyring::start(SecretService::default)?);
     let app = rune::App::new(window::spec());
     let post = Arc::new(app.handle());
+    lifecycle.attach(Arc::new(app.handle()));
     let bridge = Rc::new(RefCell::new(BridgeSlot::NotStarted));
     let starter = Rc::clone(&bridge);
     let secrets = Arc::clone(&keyring);
@@ -66,11 +78,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
     let result = app.try_run();
     // The exit fence: the window is gone; shut the SDK down before the
-    // process ends, then the keyring it used.
+    // process ends, then the keyring it used. Papo's name goes last, once the
+    // SDK has released the profile, so a launch waiting for it can open it.
+    lifecycle.quitting();
     if let BridgeSlot::Running(bridge) = bridge.replace(BridgeSlot::Unavailable) {
         bridge.shutdown();
     }
     keyring.close();
+    lifecycle.stop();
     result?;
     Ok(())
 }

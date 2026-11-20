@@ -44,7 +44,7 @@ apt_runtime="libgstreamer1.0-0 libgstreamer-plugins-base1.0-0
 apt_build="build-essential pkg-config git python3 libssl-dev libgstreamer1.0-dev
     libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev
     libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
-    libx11-dev libxcursor-dev libxi-dev libxrandr-dev libfontconfig1-dev"
+    libx11-dev libxcursor-dev libxi-dev libxrandr-dev libfontconfig1-dev dbus-daemon"
 
 dnf_runtime="gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good
     gstreamer1-plugins-bad-free gstreamer1-plugin-libav libnice-gstreamer1
@@ -54,12 +54,12 @@ dnf_build="gcc pkgconf-pkg-config git python3 openssl-devel gstreamer1-devel
     gstreamer1-plugins-base-devel gstreamer1-plugins-bad-free-devel
     libxkbcommon-devel libxkbcommon-x11-devel wayland-devel
     libX11-devel libXcursor-devel libXi-devel libXrandr-devel
-    fontconfig-devel"
+    fontconfig-devel dbus-daemon"
 
 pacman_runtime="gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad
     gst-libav libnice gst-plugin-pipewire libxkbcommon libxkbcommon-x11 wayland libx11 fontconfig
     noto-fonts-emoji xdg-desktop-portal"
-pacman_build="base-devel pkgconf git python openssl"
+pacman_build="base-devel pkgconf git python openssl dbus"
 
 if command -v apt-get >/dev/null 2>&1; then
     manager="sudo apt-get install -y"
