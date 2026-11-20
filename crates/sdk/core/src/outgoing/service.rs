@@ -2,11 +2,16 @@
 
 use super::{
     Arc, ClientError, Draft, DraftBody, EnqueueSource, Operation, OperationKind, OperationState,
-    OutgoingError, OutgoingSnapshot, RetryDecision, Uuid,
+    OutgoingError, OutgoingSnapshot, RetryDecision, StagedAttachment, UploadProgress, Uuid,
 };
 use crate::{Session, UnixMicros};
 use std::{future::Future, sync::atomic::Ordering};
 use tokio::sync::watch;
+
+pub(super) enum ProgressUpdate {
+    Preserve,
+    Set(Option<UploadProgress>),
+}
 
 /// An account-owned queue capability. Clones never retarget after account replacement.
 #[derive(Clone)]
@@ -56,6 +61,9 @@ impl OutgoingService {
     }
     pub(super) async fn ensure(&self) -> Result<(), OutgoingError> {
         let queue = &self.session.inner.outgoing;
+        if queue.initialized.load(Ordering::Acquire) {
+            return self.check();
+        }
         let _guard = queue.serial.lock().await;
         self.check()?;
         if !queue.initialized.load(Ordering::Acquire) {
@@ -74,6 +82,12 @@ impl OutgoingService {
             .await
     }
     pub(super) async fn publish(&self) -> Result<(), OutgoingError> {
+        self.publish_with_progress(ProgressUpdate::Preserve).await
+    }
+    pub(super) async fn publish_with_progress(
+        &self,
+        progress: ProgressUpdate,
+    ) -> Result<(), OutgoingError> {
         let queue = &self.session.inner.outgoing;
         let previous = queue.image.borrow().clone();
         let mut operations = self
@@ -98,19 +112,58 @@ impl OutgoingService {
             }
         }
         drop(previous);
-        let version = queue
-            .image
-            .borrow()
-            .version
-            .checked_add(1)
-            .ok_or(OutgoingError::InvalidData)?;
-        queue.image.send_replace(Arc::new(OutgoingSnapshot {
-            account: Some(self.session.account()),
-            version,
-            operations,
-            fault: None,
-        }));
+        let account = self.session.account();
+        let mut overflow = false;
+        queue.image.send_if_modified(|current| {
+            let Some(version) = current.version.checked_add(1) else {
+                overflow = true;
+                return false;
+            };
+            let upload_progress = match progress {
+                ProgressUpdate::Set(value) => value,
+                ProgressUpdate::Preserve => current.upload_progress.filter(|active| {
+                    operations.iter().any(|op| {
+                        op.id == active.operation_id && op.state == OperationState::Sending
+                    })
+                }),
+            };
+            *current = Arc::new(OutgoingSnapshot {
+                account: Some(account),
+                version,
+                operations,
+                upload_progress,
+                fault: None,
+            });
+            true
+        });
+        if overflow {
+            return Err(OutgoingError::InvalidData);
+        }
         Ok(())
+    }
+    /// Streams an attachment source into this account's durable content-addressed staging without
+    /// materializing the full file in memory.
+    ///
+    /// Enforces the 100 MiB per-attachment ceiling while copying, hashes incrementally, syncs the
+    /// staged file before returning and removes partial files on failure. An unreferenced staged
+    /// file remains eligible for orphan collection until pinned by a committed draft or operation.
+    /// # Errors
+    /// Returns [`OutgoingError::InvalidInput`] above 100 MiB, [`OutgoingError::Source`] on reader
+    /// failure, or account/storage failures.
+    pub async fn stage_attachment<R>(&self, reader: R) -> Result<StagedAttachment, OutgoingError>
+    where
+        R: std::io::Read + Send + 'static,
+    {
+        self.run(move |this| async move {
+            this.ensure().await?;
+            this.session
+                .client
+                .inner
+                .registry
+                .stage_reader(&this.session, reader, Uuid::nil())
+                .await
+        })
+        .await
     }
     /// Observes committed images and independent initialization faults without waiting for storage.
     /// Clone an image and release watch borrows before awaiting or reentering this service.
@@ -182,7 +235,7 @@ impl OutgoingService {
                 )
                 .await;
             if let Err(error) = result {
-                this.collect().await?;
+                let _ = this.collect().await;
                 return Err(error);
             }
             this.publish().await?;
@@ -235,15 +288,22 @@ impl OutgoingService {
         self.run(move |this| async move {
             this.ensure().await?;
             let _guard = this.session.inner.outgoing.serial.lock().await;
-            let result = this
+            let revision = match this
                 .session
                 .client
                 .inner
                 .registry
                 .draft_save(this.session.clone(), channel, body, at.0, expected)
-                .await;
+                .await
+            {
+                Ok(revision) => revision,
+                Err(error) => {
+                    let _ = this.collect().await;
+                    return Err(error);
+                }
+            };
             this.collect().await?;
-            result
+            Ok(revision)
         })
         .await
     }

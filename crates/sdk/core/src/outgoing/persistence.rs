@@ -150,46 +150,53 @@ pub(super) fn opt_decode<T: DeserializeOwned>(
 
 fn read_operation(
     row: &rusqlite::Row<'_>,
-    root: &Path,
     account: AccountId,
     previous: &BTreeMap<Uuid, Arc<Operation>>,
-) -> Result<Operation, OutgoingError> {
+) -> Result<(Operation, Vec<files::Reference>), OutgoingError> {
     let outcome: Outcome = opt_decode(row.get(7)?)?.unwrap_or_default();
     let state = OperationState::from_db(&row.get::<_, String>(3)?)?;
     let id = uuid_column(&row.get::<_, Vec<u8>>(0)?)?;
-    let payload: Vec<u8> = row.get(2)?;
-    let mut kind: OperationKind = decode(&payload)?;
     let retained = previous
         .get(&id)
         .filter(|op| op.state != OperationState::Sent && state != OperationState::Sent);
-    if retained.is_none()
-        && state != OperationState::Sent
-        && let OperationKind::Message(message) = &mut kind
-    {
-        let references: Vec<files::Reference> = opt_decode(row.get(9)?)?.unwrap_or_default();
-        files::load(root, account, &mut message.attachments, &references)?;
-    }
-    Ok(Operation {
-        id,
-        channel_id: uuid_column(&row.get::<_, Vec<u8>>(1)?)?,
-        kind: retained.map_or_else(|| Arc::new(kind), |op| Arc::clone(&op.kind)),
-        state,
-        attempts: row.get(4)?,
-        depends_on: opt_uuid_column(row.get(5)?)?,
-        failure: opt_decode(row.get(6)?)?,
-        message_id: outcome.message_id,
-        history_projected: outcome.projected,
-        message: outcome.message.map(Arc::new),
-        created_at_us: row.get(8)?,
-    })
+    let mut to_verify = Vec::new();
+    let kind = if let Some(existing) = retained {
+        Arc::clone(&existing.kind)
+    } else {
+        let payload: Vec<u8> = row.get(2)?;
+        let mut decoded: OperationKind = decode(&payload)?;
+        if state != OperationState::Sent
+            && let OperationKind::Message(message) = &mut decoded
+        {
+            let references: Vec<files::Reference> = opt_decode(row.get(9)?)?.unwrap_or_default();
+            files::attach_references(account, &mut message.attachments, &references)?;
+            to_verify = references;
+        }
+        Arc::new(decoded)
+    };
+    Ok((
+        Operation {
+            id,
+            channel_id: uuid_column(&row.get::<_, Vec<u8>>(1)?)?,
+            kind,
+            state,
+            attempts: row.get(4)?,
+            depends_on: opt_uuid_column(row.get(5)?)?,
+            failure: opt_decode(row.get(6)?)?,
+            message_id: outcome.message_id,
+            history_projected: outcome.projected,
+            message: outcome.message.map(Arc::new),
+            created_at_us: row.get(8)?,
+        },
+        to_verify,
+    ))
 }
 
 fn list_operations(
     tx: &Transaction<'_>,
     session: &Session,
-    root: &Path,
     previous: &BTreeMap<Uuid, Arc<Operation>>,
-) -> Result<Vec<Arc<Operation>>, OutgoingError> {
+) -> Result<(Vec<Arc<Operation>>, Vec<files::Reference>), OutgoingError> {
     visible(tx, session)?;
     let account = session.account();
     let mut statement = tx.prepare(LIST_OPERATIONS_SQL)?;
@@ -198,10 +205,13 @@ fn list_operations(
         account.user().as_bytes()
     ])?;
     let mut values = Vec::new();
+    let mut to_verify = Vec::new();
     while let Some(row) = rows.next()? {
-        values.push(Arc::new(read_operation(row, root, account, previous)?));
+        let (operation, refs) = read_operation(row, account, previous)?;
+        values.push(Arc::new(operation));
+        to_verify.extend(refs);
     }
-    Ok(values)
+    Ok((values, to_verify))
 }
 
 fn finalize_sent(
@@ -218,7 +228,7 @@ fn finalize_sent(
     crate::expressions::confirmed(tx, account, &kind)?;
     if let OperationKind::Message(message) = &mut kind {
         for file in &mut message.attachments {
-            file.bytes.clear();
+            file.release();
         }
     }
     let order: i64 = tx.query_row(
@@ -318,20 +328,23 @@ impl Registry {
         session: Session,
         previous: Arc<OutgoingSnapshot>,
     ) -> Result<Vec<Arc<Operation>>, OutgoingError> {
-        let root = data_root(self)?;
         let lease = Arc::clone(&self.lease);
+        let reader_session = session.clone();
         let previous: BTreeMap<_, _> = previous
             .operations
             .iter()
             .map(|op| (op.id, Arc::clone(op)))
             .collect();
-        self.readers
+        let (operations, to_verify) = self
+            .readers
             .query(self.path.clone(), move |tx| {
                 let _lease = lease;
-                Ok(list_operations(tx, &session, &root, &previous))
+                Ok(list_operations(tx, &reader_session, &previous))
             })
             .await
-            .map_err(OutgoingError::from)?
+            .map_err(OutgoingError::from)??;
+        self.verify_staged_files(&session, to_verify).await?;
+        Ok(operations)
     }
 
     pub(super) async fn outgoing_transition(

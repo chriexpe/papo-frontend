@@ -13,10 +13,7 @@ fn local() -> Uuid {
 fn message() -> OutgoingMessage {
     OutgoingMessage {
         content: "synthetic".into(),
-        attachments: vec![OutgoingAttachment {
-            filename: "proof.bin".into(),
-            bytes: vec![0, 255, 1],
-        }],
+        attachments: vec![OutgoingAttachment::from_bytes("proof.bin", vec![0, 255, 1])],
         ..Default::default()
     }
 }

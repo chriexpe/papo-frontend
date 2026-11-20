@@ -8,6 +8,10 @@ mod fixture;
 mod lifecycle;
 #[path = "outgoing_cases/staging.rs"]
 mod staging;
+#[path = "outgoing_cases/streaming.rs"]
+mod streaming;
+#[path = "outgoing_cases/streaming_fences.rs"]
+mod streaming_fences;
 use fixture::{Fixture, Result, login, register};
 use papo_sdk::{
     DraftBody, MessageTarget, OperationKind, OperationState, OutgoingAttachment, OutgoingError,
@@ -65,10 +69,10 @@ fn full_drafts_keep_immutable_files_newer_edits_and_explicit_local_dependencies(
         let queue = account.outgoing();
         let mut body = DraftBody {
             message: OutgoingMessage {
-                attachments: vec![OutgoingAttachment {
-                    filename: "original.png".into(),
-                    bytes: vec![0, 255, 1],
-                }],
+                attachments: vec![OutgoingAttachment::from_bytes(
+                    "original.png",
+                    vec![0, 255, 1],
+                )],
                 ..Default::default()
             },
             mentions: vec![account.account().user()],
@@ -81,8 +85,7 @@ fn full_drafts_keep_immutable_files_newer_edits_and_explicit_local_dependencies(
             .enqueue_draft(channel, id(1), revision, UnixMicros(50))
             .await?;
         hold.wait_started().await?;
-        body.message.attachments[0].filename = "newer.png".into();
-        body.message.attachments[0].bytes = vec![2];
+        body.message.attachments = vec![OutgoingAttachment::from_bytes("newer.png", vec![2])];
         let newer = queue
             .save_draft(channel, body, UnixMicros(6), Some(revision))
             .await?;
@@ -107,18 +110,7 @@ fn full_drafts_keep_immutable_files_newer_edits_and_explicit_local_dependencies(
                 .as_deref(),
             Some("original.png")
         );
-        assert_eq!(queue.draft(channel).await?.unwrap().revision, newer);
-        assert_eq!(
-            queue
-                .draft(channel)
-                .await?
-                .unwrap()
-                .body
-                .message
-                .attachments[0]
-                .bytes,
-            [2]
-        );
+        assert_draft_attachment_bytes(&f, account.account(), &queue, channel, newer, &[2]).await?;
         assert!(matches!(
             queue
                 .enqueue(
@@ -143,21 +135,36 @@ fn full_drafts_keep_immutable_files_newer_edits_and_explicit_local_dependencies(
     f.reopen()?;
     f.run(async {
         let restored = f.client().handle().session(account_id)?;
-        assert_eq!(
-            restored
-                .outgoing()
-                .draft(channel)
-                .await?
-                .unwrap()
-                .body
-                .message
-                .attachments[0]
-                .bytes,
-            [2]
-        );
+        assert_draft_attachment_bytes(&f, account_id, &restored.outgoing(), channel, 2, &[2])
+            .await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()
+}
+
+async fn assert_draft_attachment_bytes(
+    f: &Fixture,
+    account: papo_sdk::AccountId,
+    queue: &papo_sdk::OutgoingService,
+    channel: Uuid,
+    expected_revision: u64,
+    expected_bytes: &[u8],
+) -> Result {
+    let draft = queue.draft(channel).await?.unwrap();
+    assert_eq!(draft.revision, expected_revision);
+    let att = &draft.body.message.attachments[0];
+    assert!(att.inline_bytes().is_none());
+    let staged = att.staged().unwrap();
+    assert_eq!(staged.size_bytes(), expected_bytes.len() as u64);
+    assert_eq!(
+        std::fs::read(
+            papo_sdk::DataRoot::new(f.profile.path())
+                .outgoing_files(account)
+                .join(staged.digest_hex())
+        )?,
+        expected_bytes
+    );
+    Ok(())
 }
 
 #[test]

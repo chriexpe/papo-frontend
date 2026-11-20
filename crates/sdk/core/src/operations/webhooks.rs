@@ -49,21 +49,28 @@ impl WebhookMessage {
                     .map_err(|_| OperationError::InvalidInput)?,
             )
         };
+        let attachments = self
+            .message
+            .attachments
+            .into_iter()
+            .map(|file| {
+                let bytes = file
+                    .inline_bytes()
+                    .ok_or(OperationError::InvalidInput)?
+                    .to_vec();
+                Ok(WebhookAttachment {
+                    filename: file.filename,
+                    bytes,
+                })
+            })
+            .collect::<Result<Vec<_>, OperationError>>()?;
         Ok(WebhookMessageRequest {
             content: Some(self.message.content),
             external_message_id: self.external_message_id,
             external_author,
             reply_to,
             embeds,
-            attachments: self
-                .message
-                .attachments
-                .into_iter()
-                .map(|file| WebhookAttachment {
-                    filename: file.filename,
-                    bytes: file.bytes,
-                })
-                .collect(),
+            attachments,
         })
     }
 }
@@ -242,10 +249,7 @@ mod tests {
         assert_eq!(author.id.as_deref(), Some("foreign"));
         let request = WebhookMessage {
             message: OutgoingMessage {
-                attachments: vec![crate::OutgoingAttachment {
-                    filename: "../private".into(),
-                    bytes: vec![],
-                }],
+                attachments: vec![crate::OutgoingAttachment::from_bytes("../private", vec![])],
                 ..OutgoingMessage::default()
             },
             ..WebhookMessage::default()

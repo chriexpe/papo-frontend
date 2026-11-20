@@ -7,17 +7,21 @@ mod enqueue;
 mod file_io;
 pub(crate) mod files;
 mod persistence;
+mod progress;
 mod projection;
 mod receipt;
 mod request;
 mod service;
+mod stream;
 #[cfg(test)]
 mod tests;
 
 use crate::{AccountId, ClientError, Message, StorageError, Uuid};
 pub use content::{
-    Draft, DraftBody, MessageTarget, OperationKind, OutgoingAttachment, OutgoingMessage,
+    Draft, DraftBody, MessageTarget, OperationKind, OutgoingAttachment, OutgoingAttachmentContent,
+    OutgoingMessage, StagedAttachment,
 };
+pub use progress::UploadProgress;
 pub use service::OutgoingService;
 use std::sync::{Arc, atomic::AtomicBool};
 use tokio::sync::{Mutex, Notify};
@@ -123,8 +127,20 @@ pub struct OutgoingSnapshot {
     /// plus receipts needed by dependencies. Pending projection counts toward admission.
     /// Entries follow durable insertion order. Consumer-held snapshots may retain older bytes.
     pub operations: Vec<Arc<Operation>>,
+    /// Ephemeral in-memory upload progress for the currently sending attachment operation, if any.
+    /// Never persisted; cleared on state transitions, discard, or account closure.
+    pub upload_progress: Option<UploadProgress>,
     /// A dispatcher failure leaves committed intent intact and is observable to consumers.
     pub fault: Option<OutgoingFault>,
+}
+
+impl OutgoingSnapshot {
+    /// Returns ephemeral in-memory upload progress for `operation_id`, when actively uploading.
+    #[must_use]
+    pub fn progress_for(&self, operation_id: Uuid) -> Option<UploadProgress> {
+        self.upload_progress
+            .filter(|progress| progress.operation_id == operation_id)
+    }
 }
 
 /// Typed local outgoing failure. Descriptions never expose message, file or server data.
@@ -134,6 +150,9 @@ pub enum OutgoingError {
     /// Invalid content, filename, size or reaction identity.
     #[error("invalid outgoing input")]
     InvalidInput,
+    /// Caller-supplied attachment reader failed before staging completed.
+    #[error("attachment source read failed ({0:?})")]
+    Source(std::io::ErrorKind),
     /// Identity is missing, belongs to another account or has an invalid dependency.
     #[error("outgoing identity unavailable")]
     NotFound,
@@ -173,10 +192,46 @@ impl From<crate::storage_worker::WorkerError> for OutgoingError {
     }
 }
 
+pub(super) struct StagedPins {
+    counts: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
+}
+
+impl Default for StagedPins {
+    fn default() -> Self {
+        Self {
+            counts: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+}
+
+pub(super) struct StagedPin {
+    digest_hex: String,
+    pins: std::sync::Weak<StagedPins>,
+}
+
+impl Drop for StagedPin {
+    fn drop(&mut self) {
+        if let Some(pins) = self.pins.upgrade() {
+            let mut counts = pins
+                .counts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(count) = counts.get_mut(&self.digest_hex) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    counts.remove(&self.digest_hex);
+                }
+            }
+        }
+    }
+}
+
 pub(crate) struct AccountQueue {
     pub image: Arc<crate::observable::StateCell<Arc<OutgoingSnapshot>>>,
     serial: Mutex<()>,
     pub(crate) files_serial: Arc<Mutex<()>>,
+    staged_pins: Arc<StagedPins>,
+    active_uploads: std::sync::Mutex<Vec<std::sync::Weak<stream::ActiveUploadSlot>>>,
     initialized: AtomicBool,
     running: AtomicBool,
     wake: Notify,
@@ -188,13 +243,82 @@ impl Default for AccountQueue {
                 account: None,
                 version: 0,
                 operations: Vec::new(),
+                upload_progress: None,
                 fault: None,
             })),
             serial: Mutex::new(()),
             files_serial: Arc::new(Mutex::new(())),
+            staged_pins: Arc::new(StagedPins::default()),
+            active_uploads: std::sync::Mutex::new(Vec::new()),
             initialized: AtomicBool::new(false),
             running: AtomicBool::new(false),
             wake: Notify::new(),
+        }
+    }
+}
+
+impl AccountQueue {
+    /// Atomically clears ephemeral upload progress and closes the outgoing observable.
+    pub(crate) fn close_image(&self) {
+        self.image.close_with(|current| {
+            if current.upload_progress.is_none() {
+                return false;
+            }
+            let mut next = (**current).clone();
+            next.upload_progress = None;
+            next.version = next.version.saturating_add(1);
+            *current = Arc::new(next);
+            true
+        });
+    }
+
+    pub(super) fn pin_staged(&self, digest_hex: String) -> Arc<StagedPin> {
+        let mut counts = self
+            .staged_pins
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = counts.entry(digest_hex.clone()).or_insert(0);
+        *entry = entry.saturating_add(1);
+        Arc::new(StagedPin {
+            digest_hex,
+            pins: Arc::downgrade(&self.staged_pins),
+        })
+    }
+
+    pub(super) fn pinned_names(&self) -> Vec<String> {
+        self.staged_pins
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    fn register_upload_slot(&self, slot: &Arc<stream::ActiveUploadSlot>) {
+        let mut slots = self
+            .active_uploads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slots.retain(|weak| weak.strong_count() > 0);
+        slots.push(Arc::downgrade(slot));
+    }
+
+    /// Closes any staged upload file handles still held by an idle HTTP transport stream.
+    /// Call after cancelling `root` and awaiting `tasks` so no blocking chunk read is active.
+    pub(crate) fn close_active_upload_files(&self) {
+        let slots = {
+            let mut slots = self
+                .active_uploads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *slots)
+        };
+        for weak in slots {
+            if let Some(slot) = weak.upgrade() {
+                slot.close();
+            }
         }
     }
 }

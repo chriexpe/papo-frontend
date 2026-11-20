@@ -36,6 +36,9 @@ pub(crate) struct State {
     pub(crate) rest: VecDeque<RestStep>,
     pub(crate) base_url: String,
     pub(crate) message_body: Option<Bytes>,
+    pub(crate) received_upload: Option<crate::message_upload::ReceivedUpload>,
+    pub(crate) upload_throttle: Option<crate::message_upload::UploadThrottle>,
+    pub(crate) upload_byte_holds: Vec<crate::message_upload::UploadByteHold>,
     pub(crate) outgoing: crate::OutgoingRequestCounts,
     pub(crate) silent_outgoing: bool,
     pub(crate) notification_search: crate::notification_search::NotificationSearch,
@@ -50,6 +53,7 @@ pub(crate) struct State {
 pub struct TestServer {
     address: SocketAddr,
     disconnects: broadcast::Sender<()>,
+    stop_accept: Mutex<Option<oneshot::Sender<oneshot::Sender<()>>>>,
     stop: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), Error>>>,
     pub(crate) state: Arc<Mutex<State>>,
@@ -88,6 +92,9 @@ impl TestServer {
             rest: config.rest.clone().into(),
             base_url: format!("http://{address}"),
             message_body: None,
+            received_upload: None,
+            upload_throttle: None,
+            upload_byte_holds: Vec::new(),
             outgoing: crate::OutgoingRequestCounts::default(),
             silent_outgoing: false,
             notification_search: crate::notification_search::NotificationSearch::default(),
@@ -95,17 +102,20 @@ impl TestServer {
             operations: crate::operation_requests::Operations::default(),
         }));
         let (stop, stopped) = oneshot::channel();
+        let (stop_accept, accept_stopped) = oneshot::channel();
         let (disconnects, _) = broadcast::channel(1);
         let task = tokio::spawn(serve(
             listener,
             Arc::new(config),
             Arc::clone(&state),
             stopped,
+            accept_stopped,
             disconnects.clone(),
         ));
         Ok(Self {
             address,
             disconnects,
+            stop_accept: Mutex::new(Some(stop_accept)),
             stop: Some(stop),
             task: Some(task),
             state,
@@ -143,6 +153,18 @@ impl TestServer {
     /// Call only after observing the client's Online state; no timer or script delay is needed.
     pub fn disconnect_gateways(&self) {
         let _ = self.disconnects.send(());
+    }
+
+    /// Stops accepting new TCP connections while keeping existing gateway sockets open, so new
+    /// REST dials fail with OS connection refusal (`NotDispatched`) without advancing session epoch.
+    pub async fn stop_accepting(&self) {
+        let sender = self.stop_accept.lock().await.take();
+        if let Some(sender) = sender {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            if sender.send(ack_tx).is_ok() {
+                let _ = ack_rx.await;
+            }
+        }
     }
 
     /// Issues a one-use reset capability for a registered fixture user; never logs the token.
@@ -225,13 +247,26 @@ async fn serve(
     config: Arc<Config>,
     state: Arc<Mutex<State>>,
     mut stopped: oneshot::Receiver<()>,
+    mut stop_accept: oneshot::Receiver<oneshot::Sender<()>>,
     disconnects: broadcast::Sender<()>,
 ) -> Result<(), Error> {
+    let mut listener = Some(listener);
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
             _ = &mut stopped => break,
-            accepted = listener.accept(), if connections.len() < MAX_CONNECTIONS => {
+            ack = &mut stop_accept, if listener.is_some() => {
+                listener = None;
+                if let Ok(ack) = ack {
+                    let _ = ack.send(());
+                }
+            }
+            accepted = async {
+                match listener.as_ref() {
+                    Some(sock) => sock.accept().await,
+                    None => std::future::pending().await,
+                }
+            }, if listener.is_some() && connections.len() < MAX_CONNECTIONS => {
                 let (stream, _) = accepted.map_err(|_| Error::Listener)?;
                 connections.spawn(connection(stream, Arc::clone(&config), Arc::clone(&state), disconnects.subscribe()));
             }

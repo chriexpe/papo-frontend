@@ -123,10 +123,7 @@ async fn exercise(session: papo_sdk::Session, channel: Uuid) -> Result<(), Box<d
             DraftBody {
                 message: OutgoingMessage {
                     content: "synthetic".into(),
-                    attachments: vec![OutgoingAttachment {
-                        filename: "proof.bin".into(),
-                        bytes: vec![0, 255, 1],
-                    }],
+                    attachments: vec![OutgoingAttachment::from_bytes("proof.bin", vec![0, 255, 1])],
                     ..Default::default()
                 },
                 mentions: vec![session.account().user()],

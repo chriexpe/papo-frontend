@@ -98,7 +98,7 @@ impl SessionInner {
         self.history.close_all().await;
         self.reading.close();
         self.badges.image.close();
-        self.outgoing.image.close();
+        self.outgoing.close_image();
         self.tasks.close();
         self.connection.send_replace(ConnectionStatus {
             generation: self.epochs.current().generation,
@@ -114,6 +114,7 @@ impl SessionInner {
         self.activity.close();
         self.resources.close();
         self.tasks.wait().await;
+        self.outgoing.close_active_upload_files();
     }
     pub fn publish_resources(
         &self,

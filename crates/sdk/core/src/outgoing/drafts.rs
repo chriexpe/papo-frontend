@@ -1,10 +1,9 @@
 //! Durable channel draft persistence; outgoing operations and attachment I/O live elsewhere.
 
-use super::persistence::{data_root, decode, encode, visible};
+use super::persistence::{decode, encode, visible};
 use super::{AccountId, Arc, Draft, DraftBody, OutgoingError, Uuid, files};
 use crate::{Registry, Session};
 use rusqlite::{OptionalExtension, Transaction, params};
-use std::path::Path;
 
 const DRAFT_SELECT_SQL: &str = "
     SELECT revision, body, updated_at_us, files
@@ -45,15 +44,18 @@ impl Registry {
         session: Session,
         channel: Uuid,
     ) -> Result<Option<Draft>, OutgoingError> {
-        let root = data_root(self)?;
         let lease = Arc::clone(&self.lease);
-        self.readers
+        let reader_session = session.clone();
+        let (draft, refs) = self
+            .readers
             .query(self.path.clone(), move |tx| {
                 let _lease = lease;
-                Ok(load_in_tx(tx, &session, channel, &root))
+                Ok(load_in_tx(tx, &reader_session, channel))
             })
             .await
-            .map_err(OutgoingError::from)?
+            .map_err(OutgoingError::from)??;
+        self.verify_staged_files(&session, refs).await?;
+        Ok(draft)
     }
 
     pub(super) async fn draft_save(
@@ -65,8 +67,8 @@ impl Registry {
         expected: Option<u64>,
     ) -> Result<u64, OutgoingError> {
         body.message.validate()?;
-        let bytes = files::detach(&mut body.message.attachments);
-        let (references, _) = self.stage_files(&session, bytes, channel).await?;
+        let inputs = files::detach_inputs(&mut body.message.attachments, session.account())?;
+        let (references, _) = self.prepare_attachments(&session, inputs, channel).await?;
         self.writer
             .write(move |tx| {
                 visible(tx, &session)?;
@@ -147,18 +149,16 @@ fn load_in_tx(
     tx: &Transaction<'_>,
     session: &Session,
     channel: Uuid,
-    root: &Path,
-) -> Result<Option<Draft>, OutgoingError> {
+) -> Result<(Option<Draft>, Vec<files::Reference>), OutgoingError> {
     visible(tx, session)?;
-    load_row(tx, session.account(), channel, root)
+    load_row(tx, session.account(), channel)
 }
 
 fn load_row(
     tx: &Transaction<'_>,
     account: AccountId,
     channel: Uuid,
-    root: &Path,
-) -> Result<Option<Draft>, OutgoingError> {
+) -> Result<(Option<Draft>, Vec<files::Reference>), OutgoingError> {
     type DraftRow = (i64, Option<Vec<u8>>, i64, Option<Vec<u8>>);
     let row: Option<DraftRow> = tx
         .query_row(
@@ -172,15 +172,19 @@ fn load_row(
         )
         .optional()?;
     let Some((revision, body, updated_at_us, references)) = row else {
-        return Ok(None);
+        return Ok((None, Vec::new()));
     };
     let mut body: DraftBody =
         body.map_or_else(|| Ok(DraftBody::default()), |bytes| decode(&bytes))?;
-    let references = references.map_or_else(|| Ok(Vec::new()), |bytes| decode(&bytes))?;
-    files::load(root, account, &mut body.message.attachments, &references)?;
-    Ok(Some(Draft {
-        revision: u64::try_from(revision).map_err(|_| OutgoingError::InvalidData)?,
-        body,
-        updated_at_us,
-    }))
+    let references: Vec<files::Reference> =
+        references.map_or_else(|| Ok(Vec::new()), |bytes| decode(&bytes))?;
+    files::attach_references(account, &mut body.message.attachments, &references)?;
+    Ok((
+        Some(Draft {
+            revision: u64::try_from(revision).map_err(|_| OutgoingError::InvalidData)?,
+            body,
+            updated_at_us,
+        }),
+        references,
+    ))
 }

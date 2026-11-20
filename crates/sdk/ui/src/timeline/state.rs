@@ -160,11 +160,10 @@ impl WindowState {
             .outgoing
             .as_mut()
             .map_or(0, |rx| rx.borrow_and_update().version);
-        if self.raw.version == next.version
+        let outgoing_only = self.raw.version == next.version
             && self.raw.generation == next.generation
-            && self.reading_version == reading_version
-            && self.outgoing_version == outgoing_version
-        {
+            && self.reading_version == reading_version;
+        if outgoing_only && self.outgoing_version == outgoing_version {
             return Ok(());
         }
         let reset = self.raw.generation != next.generation
@@ -173,6 +172,22 @@ impl WindowState {
         self.raw = next;
         self.reading_version = reading_version;
         self.outgoing_version = outgoing_version;
+        if outgoing_only {
+            let items = self.project(config)?;
+            if items == self.publisher.items {
+                return Ok(());
+            }
+            let version = self
+                .publisher
+                .version
+                .checked_add(1)
+                .ok_or(TimelineError::VersionExhausted)?;
+            self.publisher
+                .publish(version, self.raw.generation, items, false, |item| {
+                    item.identity()
+                });
+            return Ok(());
+        }
         if self.bounds.lower.is_none() {
             let cursors: Vec<_> = self
                 .raw

@@ -37,8 +37,8 @@ impl Process {
             reader: Some(reader),
         })
     }
-    pub fn ready(&self, needs_probe: bool) -> Result {
-        let mut acknowledged = false;
+    pub fn ready(&self, needs_enqueued: bool, needs_probe: bool) -> Result {
+        let mut acknowledged = !needs_enqueued;
         let mut boundary = !needs_probe;
         while !acknowledged || !boundary {
             let line = self

@@ -1,7 +1,7 @@
 //! Deterministic message mutation fixture and payload-free request counts; production validation remains backend-owned.
 
 use crate::{
-    TestServer,
+    ReceivedUpload, TestServer,
     response::{Reply, problem},
     server::State,
 };
@@ -11,7 +11,6 @@ use papo_api::{
     wire::{Attachment, Message, UpdateMessageRequest},
 };
 use serde_json::json;
-use std::collections::BTreeMap;
 
 /// Counts only dispatch/acceptance, never credentials or content.
 #[derive(Clone, Copy, Default, Debug)]
@@ -36,31 +35,34 @@ pub(crate) fn relevant(method: &str, path: &str) -> bool {
         || (path.starts_with("/messages/") && matches!(method, "PUT" | "DELETE"))
         || (path.ends_with("/reactions") && matches!(method, "POST" | "DELETE"))
 }
+pub(crate) fn handle_create(
+    state: &mut State,
+    user: Option<&str>,
+    parts: &ReceivedUpload,
+    path: &str,
+) -> Reply {
+    let Some(user) = user else {
+        return problem(401, "unauthorized", path);
+    };
+    create(state, user, parts, path)
+}
+
 pub(crate) fn handle(
     state: &mut State,
     method: &str,
     path: &str,
     user: Option<&str>,
-    content_type: &str,
     body: &[u8],
 ) -> Option<Reply> {
-    if !relevant(method, path) {
+    if !relevant(method, path) || path == "/messages" {
         return None;
     }
     let Some(user) = user else {
         return Some(problem(401, "unauthorized", path));
     };
-    Some(if path == "/messages" {
-        create(state, user, content_type, body, path)
-    } else {
-        mutate(state, user, method, path, body)
-    })
+    Some(mutate(state, user, method, path, body))
 }
-struct Parts {
-    fields: BTreeMap<String, String>,
-    files: Vec<(String, Vec<u8>)>,
-}
-fn validate_create(state: &State, user: &str, parts: &Parts) -> Result<(), u16> {
+fn validate_create(state: &State, user: &str, parts: &ReceivedUpload) -> Result<(), u16> {
     let channel = parts.fields.get("channel_id").ok_or(400_u16)?;
     if !state.resources.channels.contains_key(channel) {
         return Err(404);
@@ -94,67 +96,11 @@ fn validate_create(state: &State, user: &str, parts: &Parts) -> Result<(), u16> 
     }
     Ok(())
 }
-fn parts(content_type: &str, body: &[u8]) -> Option<Parts> {
-    let boundary = content_type
-        .split(';')
-        .map(str::trim)
-        .find_map(|p| p.strip_prefix("boundary="))?
-        .trim_matches('"');
-    if boundary.is_empty() || boundary.len() > 200 {
-        return None;
-    }
-    let delimiter = format!("\r\n--{boundary}").into_bytes();
-    let prefix = format!("--{boundary}\r\n");
-    let mut rest = body.strip_prefix(prefix.as_bytes())?;
-    let mut parts = Parts {
-        fields: BTreeMap::new(),
-        files: Vec::new(),
-    };
-    for _ in 0..16 {
-        let end = rest.windows(4).position(|v| v == b"\r\n\r\n")?;
-        let headers = std::str::from_utf8(&rest[..end]).ok()?;
-        rest = &rest[end + 4..];
-        let end = rest.windows(delimiter.len()).position(|v| v == delimiter)?;
-        let value = &rest[..end];
-        let disposition = headers.lines().find(|line| {
-            line.to_ascii_lowercase()
-                .starts_with("content-disposition:")
-        })?;
-        let attr = |name: &str| {
-            disposition
-                .split(';')
-                .map(str::trim)
-                .find_map(|p| p.strip_prefix(name))
-                .and_then(|p| p.strip_prefix('"'))
-                .and_then(|p| p.strip_suffix('"'))
-        };
-        let name = attr("name=")?;
-        if let Some(filename) = attr("filename=") {
-            if name != "attachments" || parts.files.len() >= 10 {
-                return None;
-            }
-            parts.files.push((filename.to_owned(), value.to_vec()));
-        } else {
-            parts
-                .fields
-                .insert(name.to_owned(), String::from_utf8(value.to_vec()).ok()?);
-        }
-        rest = &rest[end + delimiter.len()..];
-        if rest.starts_with(b"--") {
-            return Some(parts);
-        }
-        rest = rest.strip_prefix(b"\r\n")?;
-    }
-    None
-}
-fn create(state: &mut State, user: &str, content_type: &str, body: &[u8], path: &str) -> Reply {
-    let Some(parts) = parts(content_type, body) else {
-        return problem(400, "invalid-param", path);
-    };
+fn create(state: &mut State, user: &str, parts: &ReceivedUpload, path: &str) -> Reply {
     let Some(channel) = parts.fields.get("channel_id") else {
         return problem(400, "invalid-param", path);
     };
-    if let Err(status) = validate_create(state, user, &parts) {
+    if let Err(status) = validate_create(state, user, parts) {
         return problem(status, "invalid-param", path);
     }
     let Some(counter) = state.outgoing.accepted.checked_add(1) else {
@@ -173,7 +119,7 @@ fn create(state: &mut State, user: &str, content_type: &str, body: &[u8], path: 
         .files
         .iter()
         .enumerate()
-        .map(|(index, (name, bytes))| Attachment {
+        .map(|(index, file)| Attachment {
             id: Some(
                 Uuid::from_u128(
                     0xa000_0000_0000_4000_8000_0000_0000_0000
@@ -182,8 +128,8 @@ fn create(state: &mut State, user: &str, content_type: &str, body: &[u8], path: 
                 )
                 .to_string(),
             ),
-            original_file_name: Some(name.clone()),
-            size_bytes: i64::try_from(bytes.len()).ok(),
+            original_file_name: Some(file.filename.clone()),
+            size_bytes: i64::try_from(file.size_bytes).ok(),
             ..Default::default()
         })
         .collect::<Vec<_>>();
@@ -194,7 +140,7 @@ fn create(state: &mut State, user: &str, content_type: &str, body: &[u8], path: 
         content: parts.fields.get("content").cloned(),
         reply_to: parts.fields.get("reply_to").cloned(),
         created_at: Some(created_at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)),
-        embeds: Some(response_embeds(&parts, &attachments)),
+        embeds: Some(response_embeds(parts, &attachments)),
         attachments: Some(attachments.clone()),
         ..Default::default()
     };
@@ -277,7 +223,10 @@ fn mutate(state: &mut State, user: &str, method: &str, path: &str, body: &[u8]) 
     }
 }
 
-fn response_embeds(parts: &Parts, attachments: &[Attachment]) -> Vec<papo_api::wire::Embed> {
+fn response_embeds(
+    parts: &ReceivedUpload,
+    attachments: &[Attachment],
+) -> Vec<papo_api::wire::Embed> {
     let mut embeds: Vec<serde_json::Value> = parts
         .fields
         .get("embeds")
@@ -310,20 +259,4 @@ fn response_embeds(parts: &Parts, attachments: &[Attachment]) -> Vec<papo_api::w
         .into_iter()
         .filter_map(|embed| serde_json::from_value(embed).ok())
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    //! Byte parser tests use synthetic binary parts, with no network or clock.
-    use super::*;
-    #[test]
-    fn multipart_keeps_binary_bytes_and_repeated_file_order() {
-        let body=b"--b\r\nContent-Disposition: form-data; name=\"attachments\"; filename=\"one\"\r\n\r\n\0\xff\r\n--b\r\nContent-Disposition: form-data; name=\"attachments\"; filename=\"two\"\r\n\r\n\x01\r\n--b--\r\n";
-        let parts = parts("multipart/form-data; boundary=b", body).unwrap();
-        assert_eq!(
-            parts.files,
-            vec![("one".into(), vec![0, 255]), ("two".into(), vec![1])]
-        );
-        assert!(super::parts("multipart/form-data", body).is_none());
-    }
 }

@@ -49,6 +49,17 @@ pub(crate) async fn handle(
     if let Some(hold) = request_hold {
         hold.wait().await;
     }
+    if method == "POST" && path == "/messages" {
+        return handle_message_upload(
+            request.into_body(),
+            &state,
+            &path,
+            cookie.as_deref(),
+            &content_type,
+            &base_url,
+        )
+        .await;
+    }
     let Ok(body) = Limited::new(request.into_body(), MAX_BODY_BYTES)
         .collect()
         .await
@@ -59,9 +70,6 @@ pub(crate) async fn handle(
     let (reply, hold) = {
         let mut state = state.lock().await;
         let user_id = state.auth.user_id(cookie.as_deref()).map(str::to_owned);
-        if method == "POST" && path == "/messages" {
-            state.message_body = Some(body.clone());
-        }
         let reply = route(
             &mut state,
             &config,
@@ -70,7 +78,6 @@ pub(crate) async fn handle(
             &query,
             user_id.as_deref(),
             &media_headers,
-            &content_type,
             cookie.as_deref(),
             &body,
         );
@@ -85,6 +92,63 @@ pub(crate) async fn handle(
         hold.wait().await;
     }
     Ok(encode(reply))
+}
+
+async fn handle_message_upload(
+    body: Incoming,
+    state: &Mutex<State>,
+    path: &str,
+    cookie: Option<&str>,
+    content_type: &str,
+    base_url: &str,
+) -> Result<HttpResponse, Infallible> {
+    let (throttle, byte_hold) = {
+        let mut locked = state.lock().await;
+        let byte_hold = if locked.upload_byte_holds.is_empty() {
+            None
+        } else {
+            Some(locked.upload_byte_holds.remove(0))
+        };
+        (locked.upload_throttle, byte_hold)
+    };
+    let parsed = match crate::message_upload::read_multipart_message(
+        body,
+        content_type,
+        throttle,
+        byte_hold,
+    )
+    .await
+    {
+        Ok(parsed) => parsed,
+        Err(crate::message_upload::ReadUploadError::TooLarge) => {
+            return Ok(encode(problem(413, "invalid-param", path), base_url));
+        }
+        Err(crate::message_upload::ReadUploadError::Malformed) => {
+            return Ok(encode(problem(400, "invalid-param", path), base_url));
+        }
+    };
+    let (reply, hold) = {
+        let mut locked = state.lock().await;
+        let user_id = locked.auth.user_id(cookie).map(str::to_owned);
+        locked.message_body = parsed.raw_body;
+        locked.received_upload = Some(parsed.upload.clone());
+        let reply = crate::message_requests::handle_create(
+            &mut locked,
+            user_id.as_deref(),
+            &parsed.upload,
+            path,
+        );
+        let hold = locked
+            .holds
+            .iter()
+            .position(|hold| !hold.before_body && hold.method == "POST" && hold.path == path)
+            .map(|index| locked.holds.remove(index));
+        (reply, hold)
+    };
+    if let Some(hold) = hold {
+        hold.wait().await;
+    }
+    Ok(encode(reply, base_url))
 }
 
 fn auth_reply(
@@ -225,10 +289,6 @@ fn observe(
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "fixture HTTP request parts are borrowed only during routing"
-)]
 fn route(
     state: &mut State,
     config: &Config,
@@ -237,7 +297,6 @@ fn route(
     query: &str,
     user_id: Option<&str>,
     media_headers: &hyper::HeaderMap,
-    content_type: &str,
     cookie: Option<&str>,
     body: &[u8],
 ) -> Reply {
@@ -253,8 +312,7 @@ fn route(
         crate::encoded_media::handle(state, method, path, user_id, media_headers)
     {
         reply
-    } else if let Some(reply) =
-        crate::message_requests::handle(state, method, path, user_id, content_type, body)
+    } else if let Some(reply) = crate::message_requests::handle(state, method, path, user_id, body)
     {
         reply
     } else if let Some(reply) = crate::read_marks::handle(state, method, path, user_id, body) {

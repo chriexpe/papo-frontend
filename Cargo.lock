@@ -4153,6 +4153,7 @@ dependencies = [
 name = "papo-api"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "cookie_store",
  "futures-util",
  "papo-test-server",
@@ -4231,8 +4232,10 @@ name = "papo-sdk"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "bytes",
  "chrono",
  "fs2",
+ "futures-core",
  "imbl",
  "papo-api",
  "papo-test-server",
@@ -4284,6 +4287,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
