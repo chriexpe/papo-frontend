@@ -18,13 +18,6 @@ pub(crate) struct RequestSlot {
 
 impl RequestSlot {
     /// Starts a request; every earlier ticket from this slot is now stale.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the server step, the next slice, is the first to issue one"
-        )
-    )]
     pub(crate) fn issue(&mut self) -> Ticket {
         // No session issues 2^64 requests, so this cannot overflow.
         self.current += 1;

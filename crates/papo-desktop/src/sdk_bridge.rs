@@ -86,13 +86,6 @@ impl<S: 'static> Sdk<S> {
     /// thread, unless `slot` has issued a newer ticket than `ticket` by then:
     /// a superseded result is dropped, and the view does not redraw for it.
     /// `apply` returns whether it changed what the view reads.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the server step, the next slice, is the first caller"
-        )
-    )]
     pub(crate) fn request<T, Work, Done>(
         &self,
         ticket: Ticket,
@@ -117,9 +110,50 @@ impl<S: 'static> Sdk<S> {
                 }));
             })
         });
+        self.send(job);
+    }
+
+    /// Runs `work` on the client's runtime until it returns or the exit fence
+    /// cancels it. Meanwhile it posts what it sees to the UI thread through
+    /// [`Updates`], as often as it needs: a subscription, not a request.
+    pub(crate) fn watch<Work>(
+        &self,
+        work: impl FnOnce(ClientHandle, Updates<S>) -> Work + Send + 'static,
+    ) where
+        Work: Future<Output = ()> + Send + 'static,
+    {
+        let updates = Updates {
+            post: Arc::clone(&self.post),
+        };
+        self.send(Box::new(move |client| Box::pin(work(client, updates))));
+    }
+
+    /// Runs `work` on the client's runtime for its effect alone: the UI waits
+    /// for no answer, and the exit fence cancels it if it still runs.
+    pub(crate) fn run<Work>(&self, work: impl FnOnce(ClientHandle) -> Work + Send + 'static)
+    where
+        Work: Future<Output = ()> + Send + 'static,
+    {
+        self.send(Box::new(move |client| Box::pin(work(client))));
+    }
+
+    fn send(&self, job: Job) {
         if self.jobs.send(job).is_err() {
             log::debug!("dropped a request sent after the SDK shut down");
         }
+    }
+}
+
+/// A watch's way to change the UI state: each change runs on the UI thread,
+/// in the order sent.
+pub(crate) struct Updates<S> {
+    post: Arc<dyn Post<S>>,
+}
+
+impl<S: 'static> Updates<S> {
+    /// Queues `change`, which returns whether it changed what the view reads.
+    pub(crate) fn send(&self, change: impl FnOnce(&mut S) -> bool + Send + 'static) {
+        self.post.post(Box::new(move |state, _tx| change(state)));
     }
 }
 
