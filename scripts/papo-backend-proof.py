@@ -12,6 +12,8 @@ import urllib.request
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--backend', type=pathlib.Path, required=True)
+parser.add_argument('--media-codec', choices=('h264', 'vp8'),
+                    help='run the real GStreamer SFU proof on a fresh PostgreSQL database')
 args = parser.parse_args()
 backend = args.backend.resolve()
 pin = (ROOT / 'crates/sdk/api/protocol/backend-commit').read_text().strip()
@@ -31,6 +33,8 @@ with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
     # All independent proof clients share one loopback IP and the auth token bucket.
     # Provision burst capacity for the suite; keep real authentication/authorization middleware.
     env = dict(os.environ, PAPO_PROOF_ADDRESS_FILE=str(address_file), AUTH_RATE_BURST='256')
+    if args.media_codec:
+        env['VOICE_VIDEO_CODEC'] = args.media_codec
     with subprocess.Popen([str(ROOT / 'target/papo-backend-proof')], cwd=backend / 'backend', env=env,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as process:
         try:
@@ -47,6 +51,11 @@ with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
                 time.sleep(0.1)
             else:
                 raise RuntimeError('Backend readiness timed out')
+            if args.media_codec:
+                env.update(PAPO_CALL_PROOF_ADDRESS=address, PAPO_CALL_PROOF_CODEC=args.media_codec)
+                subprocess.run(['cargo', 'run', '--locked', '-p', 'papo-call-proof'],
+                               cwd=ROOT, env=env, check=True, timeout=300)
+                raise SystemExit(0)
             env['PAPO_BACKEND_PROOF_ADDRESS'] = address
             subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-api', '--test', 'postgres', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)
             subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-sdk', '--features', 'test-support', '--test', 'session12_backend', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)

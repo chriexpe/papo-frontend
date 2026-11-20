@@ -8,12 +8,13 @@ publish = false
 description = "UI-independent GStreamer WebRTC call engine for Papo clients"
 
 [dependencies]
-papo-core = { path = "../papo-core" }
+papo-sdk = { path = "../sdk/core" }
 gstreamer = "0.24"
-gstreamer-app = "0.24"
+gstreamer-app = { version = "0.24", features = ["v1_20"] }
 gstreamer-video = "0.24"
-gstreamer-webrtc = "0.24"
+gstreamer-webrtc = { version = "0.24", features = ["v1_20"] }
 gstreamer-sdp = "0.24"
 gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
-serde_json = "1"
 log = "0.4"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tokio-util = "0.7"

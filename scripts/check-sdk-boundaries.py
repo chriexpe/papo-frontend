@@ -21,8 +21,8 @@ SDK_EDGES = {
     "papo-test-server": {"papo-api"},
 }
 PRODUCTION = {"papo-api", "papo-sdk", "papo-sdk-ui", "papo-ffi"}
-LEGACY = {"papo", "papo-core", "papo-android", "papo-desktop", "papo-call"}
-PLATFORM = re.compile(r"^(?:rune(?:[-_].*)?|gpui(?:[-_].*)?|egui(?:[-_].*)?|eframe|uniffi(?:[-_].*)?|jni|android-activity)$")
+LEGACY = {"papo", "papo-core", "papo-android", "papo-desktop"}
+PLATFORM = re.compile(r"^(?:papo-call|gstreamer(?:[-_].*)?|rune(?:[-_].*)?|gpui(?:[-_].*)?|egui(?:[-_].*)?|eframe|uniffi(?:[-_].*)?|jni|android-activity)$")
 TYPE_REFERENCE = re.compile(r"\b(?:rune(?:_\w+)?|gpui(?:_\w+)?|egui(?:_\w+)?|eframe|uniffi(?:_\w+)?|androidx|compose)\s*::")
 UI_TEXT = re.compile(r"\b(?:tr|gettext|ngettext|localize|translate)\s*[!(]")
 STRING_ERROR = re.compile(
@@ -48,8 +48,6 @@ def dependency_violations(metadata):
             )
             if target in SDK_EDGES and target not in SDK_EDGES[name] and not test_backend:
                 violations.append(f"{name}: forbidden direct SDK dependency {target}")
-        if name not in PRODUCTION:
-            continue
         pending = [package_id]
         visited = set()
         while pending:

@@ -1,0 +1,15 @@
+[package]
+name = "papo-call-proof"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gstreamer = "0.24"
+gstreamer-app = "0.24"
+log = "0.4"
+papo-api = { path = "../../../crates/sdk/api" }
+papo-call = { path = "../../../crates/papo-call" }
+papo-sdk = { path = "../../../crates/sdk/core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

@@ -85,6 +85,13 @@ class DependencyTests(unittest.TestCase):
                 with self.subTest(edges=edges):
                     self.assertTrue(CHECK.dependency_violations(metadata(edges)))
 
+    def test_sdk_and_fixture_reject_native_media_dependencies(self):
+        for sdk in CHECK.SDK_EDGES:
+            for target in ("papo-call", "gstreamer", "gstreamer-webrtc-sys"):
+                with self.subTest(sdk=sdk, target=target):
+                    graph = metadata({sdk: [("helper", "dev")], "helper": [(target, None)]})
+                    self.assertTrue(CHECK.dependency_violations(graph))
+
     def test_third_party_dev_dependencies_are_not_built(self):
         graph = metadata({"papo-sdk": [("helper", None)], "helper": [("gpui", "dev")]})
         self.assertEqual(CHECK.dependency_violations(graph), [])

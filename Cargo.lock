@@ -4176,8 +4176,22 @@ dependencies = [
  "gstreamer-video",
  "gstreamer-webrtc",
  "log",
- "papo-core",
- "serde_json",
+ "papo-sdk",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "papo-call-proof"
+version = "0.0.0"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "log",
+ "papo-api",
+ "papo-call",
+ "papo-sdk",
+ "tokio",
 ]
 
 [[package]]
