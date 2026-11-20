@@ -312,10 +312,16 @@ mod tests {
             panic!("wrong event");
         };
         assert!(payload.embeds.is_empty());
-        let event =
-            Event::decode(br#"{"type":"voice_audio_routes","channel_id":"","routes":null}"#)
-                .unwrap();
+        let event = Event::decode(
+            br#"{"type":"voice_audio_routes","channel_id":"","peer_id":"","revision":0,"routes":null}"#,
+        )
+        .unwrap();
         assert_eq!(event.kind(), "voice_audio_routes");
+        let event = Event::decode(
+            br#"{"type":"voice_video_routes","channel_id":"","peer_id":"","revision":0,"routes":null}"#,
+        )
+        .unwrap();
+        assert_eq!(event.kind(), "voice_video_routes");
     }
 
     #[test]
@@ -334,3 +340,5 @@ mod tests {
 
 #[cfg(test)]
 mod timing_tests;
+#[cfg(test)]
+mod voice_tests;

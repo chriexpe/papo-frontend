@@ -8,12 +8,21 @@ use tokio::sync::broadcast;
 #[derive(Clone)]
 pub(crate) struct Update {
     recipient: Option<String>,
+    recipient_client: Option<String>,
     excluded: BTreeSet<String>,
     pub(crate) payload: Value,
 }
 
 impl Update {
+    #[cfg(test)]
     pub(crate) fn visible_to(&self, user_id: &str) -> bool {
+        self.visible_to_client(user_id, "")
+    }
+
+    pub(crate) fn visible_to_client(&self, user_id: &str, client_id: &str) -> bool {
+        if let Some(target_client) = self.recipient_client.as_deref() {
+            return target_client == client_id;
+        }
         self.recipient
             .as_deref()
             .is_none_or(|recipient| recipient == user_id)
@@ -35,14 +44,38 @@ impl Presence {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn join(&mut self, user_id: &str) -> (Value, broadcast::Receiver<Update>) {
+        self.join_with_voice(user_id, &BTreeMap::new())
+    }
+
+    pub(crate) fn join_with_voice(
+        &mut self,
+        user_id: &str,
+        voice_by_user: &BTreeMap<String, Vec<String>>,
+    ) -> (Value, broadcast::Receiver<Update>) {
         let count = self.connections.entry(user_id.to_owned()).or_default();
         *count += 1;
         if *count == 1 {
             self.emit(None, update(user_id, "online"));
         }
         let updates = self.updates.subscribe();
-        let members: Vec<_> = self.connections.keys().map(|user_id| json!({"user_id": user_id, "status": "online", "status_message": null, "user_voice": []})).collect();
+        let mut users: BTreeSet<&str> = self.connections.keys().map(String::as_str).collect();
+        for member_id in voice_by_user.keys() {
+            users.insert(member_id.as_str());
+        }
+        let members: Vec<_> = users
+            .into_iter()
+            .map(|member_id| {
+                let channels = voice_by_user.get(member_id).cloned().unwrap_or_default();
+                json!({
+                    "user_id": member_id,
+                    "status": "online",
+                    "status_message": null,
+                    "user_voice": channels,
+                })
+            })
+            .collect();
         (
             json!({"type": "presence_sync", "members": members}),
             updates,
@@ -56,6 +89,16 @@ impl Presence {
     pub(crate) fn emit(&self, recipient: Option<&str>, payload: Value) {
         let _ = self.updates.send(Update {
             recipient: recipient.map(str::to_owned),
+            recipient_client: None,
+            excluded: BTreeSet::new(),
+            payload,
+        });
+    }
+
+    pub(crate) fn emit_to_client(&self, client_id: &str, payload: Value) {
+        let _ = self.updates.send(Update {
+            recipient: None,
+            recipient_client: Some(client_id.to_owned()),
             excluded: BTreeSet::new(),
             payload,
         });
@@ -64,6 +107,7 @@ impl Presence {
     pub(crate) fn emit_except(&self, excluded: BTreeSet<String>, payload: Value) {
         let _ = self.updates.send(Update {
             recipient: None,
+            recipient_client: None,
             excluded,
             payload,
         });

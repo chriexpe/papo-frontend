@@ -56,6 +56,10 @@ impl AuthService {
     /// Returns backend or credential failures; an uncertain deletion requires read-back on reuse.
     pub async fn logout(&self) -> Result<(), ClientError> {
         let session = self.session.clone().ok_or(ClientError::SignedOut)?;
+        let _ = session.inner.calls.end_active(
+            crate::CallEndReason::LoggedOut,
+            Some(&self.client.inner.runtime),
+        );
         session
             .inner
             .notifications

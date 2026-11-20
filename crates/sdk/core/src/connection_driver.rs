@@ -18,22 +18,76 @@ struct AccountSocket {
     gateway: Gateway,
     resources: crate::reconcile::ResourceConnection,
     typing: tokio::sync::watch::Receiver<Option<Generated<(papo_api::Uuid, tokio::time::Instant)>>>,
+    voice: crate::calls::VoiceCommandReceiver,
+    voice_closed: bool,
+    calls: Arc<crate::calls::SessionCalls>,
     generation: crate::Generation,
+    prefer_read: bool,
+}
+impl AccountSocket {
+    async fn send_voice_item(
+        &mut self,
+        item: Option<crate::calls::QueuedVoiceCommand>,
+    ) -> Result<(), ClientError> {
+        let Some(item) = item else {
+            self.voice_closed = true;
+            return Ok(());
+        };
+        if self.calls.should_send(&item, self.generation) {
+            self.gateway.send(&item.command).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_typing_if_fresh(&mut self) -> Result<(), ClientError> {
+        let command = self.typing.borrow_and_update().clone();
+        if let Some(command) = command
+            && command.generation == self.generation
+            && command.value.1.elapsed() < std::time::Duration::from_secs(10)
+        {
+            self.gateway
+                .send(&papo_api::gateway::Command::Typing {
+                    channel_id: command.value.0.to_string(),
+                })
+                .await?;
+        }
+        Ok(())
+    }
 }
 impl Socket for AccountSocket {
     fn next(&mut self) -> IoFuture<'_, Option<Event>> {
         Box::pin(async {
             loop {
-                tokio::select! {
-                    result = self.gateway.next() => return Ok(result?),
-                    changed = self.typing.changed() => {
-                        if changed.is_err() { return Err(ClientError::Closed); }
-                        let command = self.typing.borrow_and_update().clone();
-                        if let Some(command) = command
-                            && command.generation == self.generation
-                            && command.value.1.elapsed() < std::time::Duration::from_secs(10)
-                        {
-                            self.gateway.send(&papo_api::gateway::Command::Typing { channel_id: command.value.0.to_string() }).await?;
+                if self.prefer_read {
+                    tokio::select! {
+                        biased;
+                        result = self.gateway.next() => {
+                            self.prefer_read = false;
+                            return Ok(result?);
+                        }
+                        item = self.voice.recv(), if !self.voice_closed => {
+                            self.send_voice_item(item).await?;
+                            self.prefer_read = true;
+                        }
+                        changed = self.typing.changed() => {
+                            if changed.is_err() { return Err(ClientError::Closed); }
+                            self.send_typing_if_fresh().await?;
+                        }
+                    }
+                } else {
+                    tokio::select! {
+                        biased;
+                        item = self.voice.recv(), if !self.voice_closed => {
+                            self.send_voice_item(item).await?;
+                            self.prefer_read = true;
+                        }
+                        result = self.gateway.next() => {
+                            self.prefer_read = false;
+                            return Ok(result?);
+                        }
+                        changed = self.typing.changed() => {
+                            if changed.is_err() { return Err(ClientError::Closed); }
+                            self.send_typing_if_fresh().await?;
                         }
                     }
                 }
@@ -87,10 +141,15 @@ impl Connector for ApiConnector {
                     .await
                     .map_err(|_| ClientError::Timeout)??;
             session.epochs.validate(epoch.generation)?;
+            let voice = session.calls.attach_socket(epoch.generation);
             Ok(Box::new(AccountSocket {
                 gateway,
                 typing: session.typing_command.subscribe(),
+                voice,
+                voice_closed: false,
+                calls: Arc::clone(&session.calls),
                 generation: epoch.generation,
+                prefer_read: true,
                 resources: crate::reconcile::ResourceConnection {
                     client: self.0.clone(),
                     rest,
@@ -337,12 +396,20 @@ async fn pump(
         match next {
             Ok(Some(event)) => {
                 let closed = matches!(event, Event::Closed(_));
-                let _ = session.epochs.apply(epoch.generation, || {
-                    session.events.send(Generated {
-                        generation: epoch.generation,
-                        value: event,
-                    })
-                });
+                crate::calls::receive_gateway_event(
+                    session,
+                    epoch.generation,
+                    &event,
+                    &tokio::runtime::Handle::current(),
+                );
+                if !crate::calls::is_voice_only_event(&event) {
+                    let _ = session.epochs.apply(epoch.generation, || {
+                        session.events.send(Generated {
+                            generation: epoch.generation,
+                            value: event,
+                        })
+                    });
+                }
                 if closed {
                     return Some(ClientError::Gateway(papo_api::gateway::Error::Transport));
                 }

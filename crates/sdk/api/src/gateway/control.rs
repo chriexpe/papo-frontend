@@ -10,4 +10,10 @@ pub struct ErrorEvent {
     /// Backend `code` field.
     #[serde(default)]
     pub code: Option<String>,
+    /// Backend `channel_id` field.
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    /// Backend `peer_id` field.
+    #[serde(default)]
+    pub peer_id: Option<String>,
 }

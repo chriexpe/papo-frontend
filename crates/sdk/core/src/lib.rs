@@ -13,6 +13,20 @@ pub use background::{
     BackgroundAccountResult, BackgroundCancellation, BackgroundOutcome, BackgroundReport,
     InteractiveSyncGuard,
 };
+mod calls;
+pub use calls::{
+    AudioRoute, CallAttemptId, CallConfig, CallEndReason, CallError, CallHandle, CallParticipant,
+    CallPhase, CallSettings, CallSnapshot, CallWarning, Calls, CameraFacing, CaptureState,
+    HostLease, HostLeaseKind, IceServerConfig, InitialMediaSettings, MAX_PLAYBACK_GAIN_PERCENT,
+    MEDIA_REPORT_CHANNEL_CAPACITY, MediaCommand, MediaEngineFactory, MediaFatalError, MediaLease,
+    MediaLeaseError, MediaReport, MediaReportKind, MediaReportSink, MediaReportSinkError,
+    MediaStartError, MediaStartFuture, MediaTransportState, MediaWarning, PlaybackSettings,
+    RoomMember, RoomsSnapshot, SpeakingState, VideoBinding, VideoCodec, VideoDestination,
+    VideoDestinationId, VideoKind, VideoSlotBinding, VideoTarget, VoiceDeviceState, VoiceErrorCode,
+    VoiceErrorDisposition, VoiceRoom, classify_voice_error, is_fatal_voice_code,
+};
+#[cfg(any(test, feature = "test-support"))]
+pub use calls::{FakeMediaFactory, FakeMediaLeaseHandle, FakeStartBehavior, FakeVideoDestination};
 mod client;
 mod client_error;
 mod client_handle;

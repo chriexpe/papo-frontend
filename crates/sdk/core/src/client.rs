@@ -38,6 +38,11 @@ pub struct ClientConfig {
     pub backoff: Backoff,
     /// Injectable jitter; tests use deterministic implementations.
     pub jitter: Arc<dyn Jitter>,
+    /// Call control timeouts and voice FIFO bounds.
+    pub call: crate::CallConfig,
+    /// Optional platform-supplied call media engine factory (injected by desktop/Android bootstrap).
+    /// Accounts without one can still watch voice rooms; joining returns `CallError::MediaUnavailable`.
+    pub media_engine: Option<Arc<dyn crate::MediaEngineFactory>>,
     /// Permit Secure cookies over literal HTTP loopback only, for integration proofs.
     pub insecure_loopback: bool,
     /// Test-only deterministic interruption points; production builds have no dispatch hook.
@@ -56,6 +61,8 @@ impl Default for ClientConfig {
             disk: crate::DiskBudget::default(),
             backoff: Backoff::default(),
             jitter: Arc::new(RuntimeJitter::default()),
+            call: crate::CallConfig::default(),
+            media_engine: None,
             insecure_loopback: false,
             #[cfg(feature = "test-support")]
             outgoing_probe: None,
@@ -82,6 +89,7 @@ pub(crate) struct ClientInner {
     pub background: crate::background::BackgroundState,
     pub disk_serial: tokio::sync::Mutex<()>,
     pub disk_status: tokio::sync::watch::Sender<crate::DiskStatus>,
+    pub call_lease: Arc<crate::calls::ClientCallLease>,
 }
 
 /// External-thread owner of one Tokio runtime and session 4's storage owner.
@@ -111,6 +119,9 @@ impl Client {
             || config.credential_timeout.is_zero()
             || config.request_timeout.is_zero()
             || config.disk.maintenance_interval.is_zero()
+            || config.call.join_timeout.is_zero()
+            || config.call.drain_timeout.is_zero()
+            || config.call.command_queue_capacity == 0
         {
             return Err(ClientError::Configuration);
         }
@@ -154,6 +165,7 @@ impl Client {
                 config,
                 outgoing_files: Arc::new(tokio::sync::Semaphore::new(2)),
                 outgoing_collection: Arc::new(tokio::sync::Semaphore::new(1)),
+                call_lease: Arc::new(crate::calls::ClientCallLease::default()),
             }),
         };
         let mut client = Self {

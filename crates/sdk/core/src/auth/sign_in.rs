@@ -199,13 +199,15 @@ async fn install(
         .inner
         .secrets
         .activate(verified.account, generation)?;
-    let inner = SessionInner::new(
+    let inner = SessionInner::new_with_calls(
         verified.account,
         auth.address.clone(),
         SecretKey::new(verified.account, generation),
         Arc::clone(&client.inner.pool.next),
         client.inner.pool.root.child_token(),
         AuthState::SigningIn,
+        client.inner.config.call,
+        Arc::clone(&client.inner.call_lease),
     );
     let epoch = inner.epochs.current();
     let task = inner.tasks.token();

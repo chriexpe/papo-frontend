@@ -163,6 +163,10 @@ impl SessionPool {
             .remove(&account);
         if let Some(session) = session {
             self.changes.send_replace(());
+            let _ = session.calls.end_active(
+                crate::CallEndReason::AccountRemoved,
+                tokio::runtime::Handle::try_current().ok().as_ref(),
+            );
             session.stop().await;
         }
     }

@@ -15,13 +15,15 @@ pub(crate) async fn restore(
         .inner
         .secrets
         .activate(account.id, account.credential_generation)?;
-    let inner = SessionInner::new(
+    let inner = SessionInner::new_with_calls(
         account.id,
         address,
         SecretKey::new(account.id, account.credential_generation),
         Arc::clone(&client.inner.pool.next),
         client.inner.pool.root.child_token(),
         AuthState::NeedsServer,
+        client.inner.config.call,
+        Arc::clone(&client.inner.call_lease),
     );
     let secret_result = inner.read_secret(&client.inner.secrets, &inner.root).await;
     if let Ok(Some(_)) = &secret_result {

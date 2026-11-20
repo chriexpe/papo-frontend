@@ -247,6 +247,8 @@ pub const fn direct_grants(member: bool, blocked_either_direction: bool) -> Chan
 }
 
 pub(crate) mod read_access;
+mod voice_access;
+pub use voice_access::{VoiceAccess, voice_access};
 
 #[cfg(test)]
 mod tests;

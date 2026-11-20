@@ -161,11 +161,20 @@ async fn collect<T>(
             event=socket.next()=> {
                 let event=event?.ok_or(ClientError::Gateway(papo_api::gateway::Error::Transport))?;
                 if matches!(event,Event::Closed(_)) { return Err(ClientError::Gateway(papo_api::gateway::Error::Transport)); }
+                crate::activity::receive(session, epoch.generation, &event);
+                crate::calls::receive_gateway_event(
+                    session,
+                    epoch.generation,
+                    &event,
+                    &tokio::runtime::Handle::current(),
+                );
+                if crate::calls::is_voice_only_event(&event) {
+                    continue;
+                }
                 if journal.len()==JOURNAL_CAPACITY {
                     session.history.counters.reconnect_overflows.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Err(ClientError::ReconcileOverflow);
                 }
-                crate::activity::receive(session, epoch.generation, &event);
                 journal.push_back(event);
                 session.history.counters.reconnect_journal_peak.fetch_max(journal.len() as u64, std::sync::atomic::Ordering::Relaxed);
             }
@@ -178,14 +187,25 @@ async fn next(
     epoch: &Epoch,
     socket: &mut dyn Socket,
 ) -> Result<Event, ClientError> {
-    tokio::select! {
-        biased;
-        ()=session.root.cancelled()=>Err(ClientError::Closed),
-        ()=epoch.cancel.cancelled()=>Err(ClientError::Superseded),
-        event=socket.next()=> {
-            let event = event?.ok_or(ClientError::Gateway(papo_api::gateway::Error::Transport))?;
-            crate::activity::receive(session, epoch.generation, &event);
-            Ok(event)
-        },
+    loop {
+        let event = tokio::select! {
+            biased;
+            ()=session.root.cancelled()=>return Err(ClientError::Closed),
+            ()=epoch.cancel.cancelled()=>return Err(ClientError::Superseded),
+            event=socket.next()=> {
+                let event = event?.ok_or(ClientError::Gateway(papo_api::gateway::Error::Transport))?;
+                crate::activity::receive(session, epoch.generation, &event);
+                crate::calls::receive_gateway_event(
+                    session,
+                    epoch.generation,
+                    &event,
+                    &tokio::runtime::Handle::current(),
+                );
+                event
+            },
+        };
+        if !crate::calls::is_voice_only_event(&event) {
+            return Ok(event);
+        }
     }
 }
