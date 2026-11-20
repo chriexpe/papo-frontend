@@ -95,7 +95,6 @@ fn draft(owner: &str, channel: &str, text: &str) -> CachedDraft {
     }
 }
 
-
 #[test]
 fn open_apply_reopen_round_trip() {
     let temp = TempDb::new("roundtrip");
@@ -294,7 +293,11 @@ fn channel_cache_pages_are_bounded_and_cursor_stable() {
         .load_channel_page_async(
             "srv",
             "geral",
-            Some((oldest.created_at, oldest.created_at_nanos, oldest.id.clone())),
+            Some((
+                oldest.created_at,
+                oldest.created_at_nanos,
+                oldest.id.clone(),
+            )),
         )
         .expect("second request")
         .recv_timeout(std::time::Duration::from_secs(2))
@@ -310,7 +313,11 @@ fn channel_cache_pages_are_bounded_and_cursor_stable() {
         .load_channel_page_async(
             "srv",
             "geral",
-            Some((oldest.created_at, oldest.created_at_nanos, oldest.id.clone())),
+            Some((
+                oldest.created_at,
+                oldest.created_at_nanos,
+                oldest.id.clone(),
+            )),
         )
         .expect("third request")
         .recv_timeout(std::time::Duration::from_secs(2))
@@ -354,10 +361,17 @@ fn pinned_retention_does_not_move_local_history_cursor() {
         .expect("reply")
         .expect("page");
     assert_eq!(
-        page.messages.iter().filter(|message| !message.pinned).count(),
+        page.messages
+            .iter()
+            .filter(|message| !message.pinned)
+            .count(),
         CACHE_PAGE_SIZE as usize
     );
-    assert!(page.pins.iter().any(|message| message.id == "pin" && message.pinned));
+    assert!(
+        page.pins
+            .iter()
+            .any(|message| message.id == "pin" && message.pinned)
+    );
     let oldest_normal = page
         .messages
         .iter()
@@ -379,7 +393,8 @@ fn fetched_pin_snapshot_is_available_after_reopening_the_database() {
     })).unwrap();
     state.apply(crate::api::net::Update::PinnedMessages {
         ticket: None,
-        channel_id: "geral".into(), messages: vec![pinned],
+        channel_id: "geral".into(),
+        messages: vec![pinned],
     });
     let db = open(&temp);
     db.submit("srv", state.take_cache_ops());
@@ -387,8 +402,12 @@ fn fetched_pin_snapshot_is_available_after_reopening_the_database() {
     drop(db);
 
     let db = open(&temp);
-    let page = db.load_channel_page_async("srv", "geral", None).unwrap()
-        .recv_timeout(std::time::Duration::from_secs(2)).unwrap().unwrap();
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
     let mut restored = crate::state::Store::default();
     restored.restore_cached_page(page.clone(), false);
     let cached_pin = &restored.pinned_messages["geral"][0];
@@ -399,7 +418,8 @@ fn fetched_pin_snapshot_is_available_after_reopening_the_database() {
     // A delayed local page must not resurrect pins removed by a fresh response.
     let mut fresh = crate::state::Store::default();
     fresh.apply(crate::api::net::Update::Pinned {
-        channel_id: "geral".into(), ids: Vec::new(),
+        channel_id: "geral".into(),
+        ids: Vec::new(),
     });
     fresh.restore_cached_page(page, false);
     assert!(fresh.pinned_messages["geral"].is_empty());
@@ -671,26 +691,36 @@ fn merge_channel_head_purges_disjoint_history_when_anchor_missing() {
 fn merge_channel_head_accepts_any_overlap_not_only_oldest() {
     let temp = TempDb::new("merge-partial-overlap");
     let db = open(&temp);
-    db.submit("srv", vec![CacheOp::ReplaceChannelSnapshot {
-        channel_id: "geral".to_owned(),
-        cached_at: now_millis(),
-        messages: vec![
-            message("old", "geral", "old", 1_000),
-            message("shared", "geral", "shared", 9_000),
-        ],
-    }]);
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![
+                message("old", "geral", "old", 1_000),
+                message("shared", "geral", "shared", 9_000),
+            ],
+        }],
+    );
     db.flush();
-    db.submit("srv", vec![CacheOp::MergeChannelHead {
-        channel_id: "geral".to_owned(),
-        cached_at: now_millis(),
-        messages: vec![
-            message("server-older", "geral", "older", 8_000),
-            message("shared", "geral", "updated", 9_000),
-            message("server-newer", "geral", "newer", 10_000),
-        ],
-        deleted_ids: vec![],
-        overlap_ids: vec!["server-older".into(), "shared".into(), "server-newer".into()],
-    }]);
+    db.submit(
+        "srv",
+        vec![CacheOp::MergeChannelHead {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![
+                message("server-older", "geral", "older", 8_000),
+                message("shared", "geral", "updated", 9_000),
+                message("server-newer", "geral", "newer", 10_000),
+            ],
+            deleted_ids: vec![],
+            overlap_ids: vec![
+                "server-older".into(),
+                "shared".into(),
+                "server-newer".into(),
+            ],
+        }],
+    );
     db.flush();
     let snapshot = db.load_snapshot("srv").unwrap();
     assert!(snapshot.messages.iter().any(|m| m.id == "old"));
@@ -701,19 +731,35 @@ fn merge_channel_head_accepts_any_overlap_not_only_oldest() {
 fn merge_channel_head_without_witnesses_preserves_unproven_history() {
     let temp = TempDb::new("merge-no-witness");
     let db = open(&temp);
-    db.submit("srv", vec![CacheOp::ReplaceChannelSnapshot {
-        channel_id: "geral".into(), cached_at: now_millis(),
-        messages: vec![message("stale", "geral", "stale", 1_000)],
-    }]);
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".into(),
+            cached_at: now_millis(),
+            messages: vec![message("stale", "geral", "stale", 1_000)],
+        }],
+    );
     db.flush();
-    db.submit("srv", vec![CacheOp::MergeChannelHead {
-        channel_id: "geral".into(), cached_at: now_millis(),
-        messages: vec![message("fresh", "geral", "fresh", 9_000)],
-        deleted_ids: vec![], overlap_ids: vec![],
-    }]);
+    db.submit(
+        "srv",
+        vec![CacheOp::MergeChannelHead {
+            channel_id: "geral".into(),
+            cached_at: now_millis(),
+            messages: vec![message("fresh", "geral", "fresh", 9_000)],
+            deleted_ids: vec![],
+            overlap_ids: vec![],
+        }],
+    );
     db.flush();
     let snapshot = db.load_snapshot("srv").unwrap();
-    assert_eq!(snapshot.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["stale", "fresh"]);
+    assert_eq!(
+        snapshot
+            .messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["stale", "fresh"]
+    );
 }
 
 #[test]
@@ -740,7 +786,12 @@ fn retention_is_hard_bounded() {
         "retenção deve manter só a janela recente"
     );
     // A janela mantém as mais recentes.
-    assert!(snapshot.messages.iter().any(|m| m.id == format!("m{}", MESSAGE_RETENTION + 249)));
+    assert!(
+        snapshot
+            .messages
+            .iter()
+            .any(|m| m.id == format!("m{}", MESSAGE_RETENTION + 249))
+    );
 }
 
 #[test]
@@ -755,13 +806,17 @@ fn embedded_message_restores_from_cache_without_network() {
         "description": "Mensagem de outro servidor",
         "author": {"name": "Jenga"},
         "footer": {"text": "Discord"}
-    }])).unwrap();
+    }]))
+    .unwrap();
 
-    db.submit("srv", vec![CacheOp::ReplaceChannelSnapshot {
-        channel_id: "geral".to_owned(),
-        messages: vec![msg],
-        cached_at: now_millis(),
-    }]);
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            messages: vec![msg],
+            cached_at: now_millis(),
+        }],
+    );
     db.flush();
 
     let page = db
@@ -774,7 +829,10 @@ fn embedded_message_restores_from_cache_without_network() {
     let restored = page.messages[0].to_store();
     assert_eq!(restored.previews.len(), 1);
     assert_eq!(restored.previews[0].title.as_deref(), Some("Jenga"));
-    assert_eq!(restored.previews[0].description.as_deref(), Some("Mensagem de outro servidor"));
+    assert_eq!(
+        restored.previews[0].description.as_deref(),
+        Some("Mensagem de outro servidor")
+    );
 }
 
 #[test]
@@ -853,10 +911,8 @@ fn attachment_dimensions_survive_api_confirmation_and_legacy_cache_loading() {
 #[test]
 fn open_creates_missing_parent_directory() {
     let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!(
-        "papo-cache-parent-{}-{serial}",
-        std::process::id()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("papo-cache-parent-{}-{serial}", std::process::id()));
     let path = root.join("nested").join("papo-cache.db");
     let db = ClientDb::open(Some(path.clone()));
     assert!(db.is_enabled(), "cache deve criar a pasta de dados ausente");
@@ -1121,7 +1177,9 @@ fn clear_server_orders_after_large_backlog() {
     db.clear_server("srv-a");
     db.submit(
         "srv-a",
-        vec![CacheOp::UpsertMessage(message("post", "geral", "post", 100_000))],
+        vec![CacheOp::UpsertMessage(message(
+            "post", "geral", "post", 100_000,
+        ))],
     );
 
     resume.send(()).expect("retomar o worker");
@@ -1402,7 +1460,6 @@ fn restart_produces_deterministic_store_projection() {
     assert_eq!(store.timeline_status("geral"), TimelineStatus::Stale);
 }
 
-
 #[test]
 fn local_ids_are_unique() {
     let mut ids = std::collections::HashSet::new();
@@ -1470,14 +1527,8 @@ fn sending_becomes_unknown_after_process_reopen() {
             outgoing("local-a", "user-a", "oi", OutgoingState::Queued),
         )
         .expect("enqueue");
-        db.transition_outgoing(
-            "srv",
-            "user-a",
-            "local-a",
-            OutgoingState::Sending,
-            None,
-        )
-        .expect("sending");
+        db.transition_outgoing("srv", "user-a", "local-a", OutgoingState::Sending, None)
+            .expect("sending");
     }
 
     let db = open(&temp);
@@ -1553,8 +1604,18 @@ fn outgoing_rows_are_partitioned_by_owner_and_server() {
     let a = db.load_outgoing("srv-a", "user-a").expect("a");
     let b = db.load_outgoing("srv-a", "user-b").expect("b");
     let other_server = db.load_outgoing("srv-b", "user-a").expect("other");
-    assert_eq!(a.iter().map(|row| row.local_id.as_str()).collect::<Vec<_>>(), vec!["local-a"]);
-    assert_eq!(b.iter().map(|row| row.local_id.as_str()).collect::<Vec<_>>(), vec!["local-b"]);
+    assert_eq!(
+        a.iter()
+            .map(|row| row.local_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["local-a"]
+    );
+    assert_eq!(
+        b.iter()
+            .map(|row| row.local_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["local-b"]
+    );
     assert_eq!(
         other_server
             .iter()
@@ -1622,7 +1683,10 @@ fn disabled_clientdb_rejects_durable_enqueue() {
         "srv",
         outgoing("local-a", "user-a", "oi", OutgoingState::Queued),
     );
-    assert!(result.is_err(), "sem ClientDb não pode existir envio indurável");
+    assert!(
+        result.is_err(),
+        "sem ClientDb não pode existir envio indurável"
+    );
 }
 
 #[test]
@@ -1651,7 +1715,6 @@ fn outgoing_queue_hard_bound_rejects_excess_without_discarding_old_rows() {
     assert!(rows.iter().all(|row| row.local_id != "local-excess"));
 }
 
-
 #[test]
 fn deliberate_retry_is_a_durable_explicit_transition_back_to_queued() {
     let temp = TempDb::new("outgoing-explicit-retry");
@@ -1674,14 +1737,8 @@ fn deliberate_retry_is_a_durable_explicit_transition_back_to_queued() {
         OutgoingState::UnknownOutcome
     );
 
-    db.transition_outgoing(
-        "srv",
-        "user-a",
-        "local-a",
-        OutgoingState::Queued,
-        None,
-    )
-    .expect("explicit retry");
+    db.transition_outgoing("srv", "user-a", "local-a", OutgoingState::Queued, None)
+        .expect("explicit retry");
     assert_eq!(
         db.load_outgoing("srv", "user-a").expect("load")[0].state,
         OutgoingState::Queued
@@ -1706,7 +1763,6 @@ fn dismiss_removes_only_the_selected_outgoing_row_durably() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].local_id, "local-b");
 }
-
 
 fn cached_preview(url: &str, title: &str, used: i64) -> CachedPreview {
     CachedPreview {
@@ -1744,7 +1800,10 @@ fn preview_metadata_survives_clientdb_reopen() {
         .expect("load preview")
         .expect("persisted preview");
     assert_eq!(row.title.as_deref(), Some("Papo"));
-    assert_eq!(row.image_url.as_deref(), Some("https://example.com/project/cover.png"));
+    assert_eq!(
+        row.image_url.as_deref(),
+        Some("https://example.com/project/cover.png")
+    );
     assert_eq!(row.state, PreviewCacheState::Ready);
 }
 
@@ -1829,7 +1888,6 @@ async fn preview_retention_is_global_and_hard_bounded() {
     );
 }
 
-
 #[test]
 fn drafts_round_trip_replace_and_partition_by_owner_server_channel() {
     let temp = TempDb::new("draft-partition");
@@ -1854,7 +1912,11 @@ fn drafts_round_trip_replace_and_partition_by_owner_server_channel() {
     );
     db.submit(
         "srv-b",
-        vec![CacheOp::UpsertDraft(draft("owner-a", "general", "outro servidor"))],
+        vec![CacheOp::UpsertDraft(draft(
+            "owner-a",
+            "general",
+            "outro servidor",
+        ))],
     );
     db.flush();
 
@@ -1927,10 +1989,7 @@ fn v4_database_migrates_to_current_without_reset() {
         .unwrap();
     runtime.block_on(async {
         let path = path.to_string_lossy().into_owned();
-        let db = turso::Builder::new_local(&path)
-            .build()
-            .await
-            .unwrap();
+        let db = turso::Builder::new_local(&path).build().await.unwrap();
         let mut conn = db.connect().unwrap();
         let version = super::schema::apply_migrations_for_test(&mut conn, 4)
             .await
@@ -1950,7 +2009,6 @@ fn v4_database_migrates_to_current_without_reset() {
     assert_eq!(rows[0].text, "migrado");
 }
 
-
 #[test]
 fn server_emojis_round_trip_empty_isolation_and_clear() {
     let temp = TempDb::new("server-emojis");
@@ -1968,8 +2026,11 @@ fn server_emojis_round_trip_empty_isolation_and_clear() {
     {
         let db = open(&temp);
         let read = |server: &str| {
-            db.load_emojis_async(server).unwrap()
-                .recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap()
+            db.load_emojis_async(server)
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap()
         };
         assert_eq!(read("srv-a"), Some(vec![emoji.clone()]));
         assert_eq!(read("srv-b"), Some(Vec::new()));
@@ -1990,23 +2051,44 @@ fn profile_images_are_bounded_partitioned_and_cleared() {
     let image = "aGVsbG8=".to_owned();
     {
         let db = open(&temp);
-        db.submit("a", vec![
-            CacheOp::SetServerIcon(Some(image.clone())),
-            CacheOp::SetAvatar { user_id: "alice".into(), blob: Some(image.clone()) },
-        ]);
-        db.submit("b", vec![CacheOp::SetAvatar {
-            user_id: "bob".into(), blob: Some(image.clone()),
-        }]);
+        db.submit(
+            "a",
+            vec![
+                CacheOp::SetServerIcon(Some(image.clone())),
+                CacheOp::SetAvatar {
+                    user_id: "alice".into(),
+                    blob: Some(image.clone()),
+                },
+            ],
+        );
+        db.submit(
+            "b",
+            vec![CacheOp::SetAvatar {
+                user_id: "bob".into(),
+                blob: Some(image.clone()),
+            }],
+        );
         db.flush();
     }
     let db = open(&temp);
-    let load = |key: &str| db.load_profile_images_async(key).unwrap()
-        .recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+    let load = |key: &str| {
+        db.load_profile_images_async(key)
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
+    };
     let a = load("a");
     assert_eq!(a.server_icon.as_deref(), Some(image.as_str()));
     assert_eq!(a.avatars, vec![("alice".into(), image.clone())]);
     assert_eq!(load("b").avatars, vec![("bob".into(), image.clone())]);
-    db.submit("a", vec![CacheOp::SetAvatar { user_id: "alice".into(), blob: None }]);
+    db.submit(
+        "a",
+        vec![CacheOp::SetAvatar {
+            user_id: "alice".into(),
+            blob: None,
+        }],
+    );
     db.flush();
     assert!(load("a").avatars.is_empty());
     db.submit("b", vec![CacheOp::ClearCachedData]);
@@ -2018,47 +2100,84 @@ fn profile_images_are_bounded_partitioned_and_cleared() {
 fn startup_metadata_restores_assets_before_network_and_keeps_the_own_avatar() {
     let temp = TempDb::new("startup-assets");
     let image = "aGVsbG8=".to_owned();
-    let emoji = CachedEmoji { id: "ok".into(), name: "ok".into(), blob: Some(image.clone()) };
+    let emoji = CachedEmoji {
+        id: "ok".into(),
+        name: "ok".into(),
+        blob: Some(image.clone()),
+    };
     {
         let db = open(&temp);
-        db.submit("server", vec![
-            CacheOp::SetOwner {
-                owner_user_id: "00-me".into(), me_name: "Me".into(), me_username: "me".into(),
-            },
-            CacheOp::UpsertServer(CachedServer {
-                name: "Server".into(), description: None, owner_user_id: Some("00-me".into()),
-                me_user_id: Some("00-me".into()), me_display_name: Some("Me".into()),
-                me_username: Some("me".into()), updated_at: now_millis(),
-            }),
-            CacheOp::SetServerIcon(Some(image.clone())),
-            CacheOp::SetAvatar { user_id: "00-me".into(), blob: Some(image.clone()) },
-            CacheOp::ReplaceEmojis(vec![emoji.clone()]),
-        ]);
+        db.submit(
+            "server",
+            vec![
+                CacheOp::SetOwner {
+                    owner_user_id: "00-me".into(),
+                    me_name: "Me".into(),
+                    me_username: "me".into(),
+                },
+                CacheOp::UpsertServer(CachedServer {
+                    name: "Server".into(),
+                    description: None,
+                    owner_user_id: Some("00-me".into()),
+                    me_user_id: Some("00-me".into()),
+                    me_display_name: Some("Me".into()),
+                    me_username: Some("me".into()),
+                    updated_at: now_millis(),
+                }),
+                CacheOp::SetServerIcon(Some(image.clone())),
+                CacheOp::SetAvatar {
+                    user_id: "00-me".into(),
+                    blob: Some(image.clone()),
+                },
+                CacheOp::ReplaceEmojis(vec![emoji.clone()]),
+            ],
+        );
         // A busy server must not evict the account avatar behind the startup header.
-        db.submit("server", (0..140).map(|n| CacheOp::SetAvatar {
-            user_id: format!("user-{n:03}"), blob: Some(image.clone()),
-        }).collect());
+        db.submit(
+            "server",
+            (0..140)
+                .map(|n| CacheOp::SetAvatar {
+                    user_id: format!("user-{n:03}"),
+                    blob: Some(image.clone()),
+                })
+                .collect(),
+        );
         db.flush();
     }
     let db = open(&temp);
     let metadata = db.load_metadata("server").unwrap();
     assert_eq!(metadata.profile_images.avatars.len(), 128);
-    assert!(metadata.profile_images.avatars.iter().any(|(id, _)| id == "00-me"));
+    assert!(
+        metadata
+            .profile_images
+            .avatars
+            .iter()
+            .any(|(id, _)| id == "00-me")
+    );
     let mut store = crate::state::Store::default();
     store.restore_cached_metadata(metadata);
-    assert_eq!(store.server.as_ref().unwrap().icon.as_deref(), Some(image.as_str()));
+    assert_eq!(
+        store.server.as_ref().unwrap().icon.as_deref(),
+        Some(image.as_str())
+    );
     assert_eq!(store.avatars.get("00-me"), Some(&image));
     assert_eq!(store.emojis[0].blob, emoji.blob);
     assert_eq!(store.connection, crate::api::ws::Connection::Offline);
-    assert!(store.take_cache_ops().is_empty(), "A restore must not rewrite unchanged assets");
+    assert!(
+        store.take_cache_ops().is_empty(),
+        "A restore must not rewrite unchanged assets"
+    );
     // A real removal wins, including against any later cached restore.
-    let profile: crate::api::models::UserProfile = serde_json::from_value(
-        serde_json::json!({"id":"00-me", "username":"me", "roles":[]})
-    ).unwrap();
+    let profile: crate::api::models::UserProfile =
+        serde_json::from_value(serde_json::json!({"id":"00-me", "username":"me", "roles":[]}))
+            .unwrap();
     store.apply(crate::api::net::Update::Profiles(vec![profile.clone()]));
     store.take_cache_ops();
     store.apply(crate::api::net::Update::Profiles(vec![profile]));
-    assert!(store.take_cache_ops().is_empty(), "Unchanged profiles must not rewrite member/avatar tables");
+    assert!(
+        store.take_cache_ops().is_empty(),
+        "Unchanged profiles must not rewrite member/avatar tables"
+    );
     store.restore_cached_profile_images(db.load_metadata("server").unwrap().profile_images);
     assert!(!store.avatars.contains_key("00-me"));
     db.submit("server", vec![CacheOp::ClearCachedData]);
@@ -2072,22 +2191,56 @@ fn startup_metadata_restores_assets_before_network_and_keeps_the_own_avatar() {
 fn cached_forward_pages_require_a_continuous_anchor_and_keep_exact_order() {
     let temp = TempDb::new("forward-cache");
     let db = open(&temp);
-    db.submit("server", vec![CacheOp::ReplaceChannelSnapshot {
-        channel_id: "chat".into(), cached_at: now_millis(),
-        messages: (1..=5).map(|n| message(&format!("m{n}"), "chat", "cached", n * 1000)).collect(),
-    }]);
+    db.submit(
+        "server",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "chat".into(),
+            cached_at: now_millis(),
+            messages: (1..=5)
+                .map(|n| message(&format!("m{n}"), "chat", "cached", n * 1000))
+                .collect(),
+        }],
+    );
     db.flush();
-    let load = |id: &str, at| db.load_newer_channel_page_async(
-        "server", "chat", (at, 0, id.into())
-    ).unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+    let load = |id: &str, at| {
+        db.load_newer_channel_page_async("server", "chat", (at, 0, id.into()))
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
+    };
     let page = load("m2", 2000);
-    assert_eq!(page.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m3", "m4", "m5"]);
+    assert_eq!(
+        page.messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        ["m3", "m4", "m5"]
+    );
     assert!(!page.has_more);
-    assert!(load("missing", 2000).messages.is_empty(), "Do not skip a hole to reach cached rows");
-    assert!(load("m2", 1999).messages.is_empty(), "The full cursor, including time, must match");
-    let older = |id: &str| db.load_older_context_page_async("server", "chat", (4000, 0, id.into()))
-        .unwrap().recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
-    assert_eq!(older("m4").messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m1", "m2", "m3"]);
+    assert!(
+        load("missing", 2000).messages.is_empty(),
+        "Do not skip a hole to reach cached rows"
+    );
+    assert!(
+        load("m2", 1999).messages.is_empty(),
+        "The full cursor, including time, must match"
+    );
+    let older = |id: &str| {
+        db.load_older_context_page_async("server", "chat", (4000, 0, id.into()))
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(
+        older("m4")
+            .messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        ["m1", "m2", "m3"]
+    );
     assert!(older("missing").messages.is_empty());
 }
 

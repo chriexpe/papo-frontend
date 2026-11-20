@@ -13,21 +13,12 @@ pub struct Core {
 }
 
 impl Core {
-    pub fn spawn(
-        base_url: String,
-        wake: Wake,
-        storage: Arc<dyn SecretStore>,
-    ) -> Self {
+    pub fn spawn(base_url: String, wake: Wake, storage: Arc<dyn SecretStore>) -> Self {
         // O wrapper genérico não conhece um diretório de dados. Mantemos a
         // API existente, mas um QueueMessage será recusado com segurança em
         // vez de ser enviado sem persistência. Frontends com ClientDb usam
         // spawn_with_cache.
-        Self::spawn_with_cache(
-            base_url,
-            wake,
-            storage,
-            Arc::new(ClientDb::open(None)),
-        )
+        Self::spawn_with_cache(base_url, wake, storage, Arc::new(ClientDb::open(None)))
     }
 
     pub fn spawn_with_cache(

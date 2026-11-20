@@ -42,7 +42,6 @@ val releaseKeystore = firebaseValue("PAPO_ANDROID_KEYSTORE")
 
 android {
     sourceSets["main"].java.srcDir(rootProject.file("shared/src/main/java"))
-    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("gstreamer-assets").get().asFile)
     namespace = "io.github.chriexpe.papo.compose"
     compileSdk = 37
     ndkVersion = "30.0.16248370"
@@ -172,8 +171,7 @@ listOf("debug", "release", "benchmark").forEach { variant ->
     val native =
         tasks.register<Exec>("buildRust${suffix}Native") {
             group = "build"
-            description =
-                "Build $variant papo-core, shared GStreamer call engine and UniFFI without egui"
+            description = "Build $variant papo-core and UniFFI"
             workingDir(rootProject.file(".."))
             inputs.files(rootProject.file("../Cargo.toml"), rootProject.file("../Cargo.lock"))
             inputs.files(
@@ -186,15 +184,7 @@ listOf("debug", "release", "benchmark").forEach { variant ->
                     include("Cargo.toml", "src/**")
                 }
             )
-            inputs.files(
-                fileTree(rootProject.file("../crates/papo-call")) {
-                    include("Cargo.toml", "src/**")
-                }
-            )
-            inputs.files(
-                rootProject.file("../scripts/android-compose-native.sh"),
-                rootProject.file("call-gstreamer/CMakeLists.txt"),
-            )
+            inputs.file(rootProject.file("../scripts/android-compose-native.sh"))
             inputs.files(fileTree("src/main/assets/demo"))
             inputs.property("abis", papoAbis)
             inputs.property("profile", variant)
@@ -215,10 +205,7 @@ listOf("debug", "release", "benchmark").forEach { variant ->
                     .orElse("unconfigured"),
             )
             papoAbis.forEach { abi ->
-                listOf("libpapo_compose.so", "libgstreamer_android.so", "libc++_shared.so")
-                    .forEach { library ->
-                        outputs.file(nativeDirectory.map { it.file("$abi/$library") })
-                    }
+                outputs.file(nativeDirectory.map { it.file("$abi/libpapo_compose.so") })
             }
             commandLine(
                 "bash",
@@ -279,7 +266,8 @@ val composeFormatter by configurations.creating {
 }
 
 dependencies {
-    composeFormatter("com.facebook:ktfmt:0.64:with-dependencies") { isTransitive = false }
+    // The bundled CLI has no runtime dependencies to resolve from Maven metadata.
+    composeFormatter("com.facebook:ktfmt:0.64:with-dependencies@jar")
 }
 
 val composeKotlinSources = fileTree("src") { include("**/*.kt") } + files("build.gradle.kts")

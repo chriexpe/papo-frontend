@@ -68,33 +68,58 @@ pub(crate) fn project_message(store: &Store, url: &str, message: &Message) -> Va
     // Categorize visual highlights separately from notification/badge eligibility.
     // Priority: direct mention > matching role > authorized everyone > reply.
     let own = message.author_id == store.me;
-    let direct = !own && (
-        papo_core::notification::mentions_user(
-            &message.content, &store.me, &store.my_name, &message.author_id, false
+    let direct = !own
+        && (papo_core::notification::mentions_user(
+            &message.content,
+            &store.me,
+            &store.my_name,
+            &message.author_id,
+            false,
         ) || papo_core::notification::mentions_user(
-            &message.content, &store.me, &store.my_username, &message.author_id, false
-        )
-    );
-    let my_roles = store.member(&store.me).map(|me| me.roles.clone()).unwrap_or_default();
-    let mentioned_role = if own { None } else {
+            &message.content,
+            &store.me,
+            &store.my_username,
+            &message.author_id,
+            false,
+        ));
+    let my_roles = store
+        .member(&store.me)
+        .map(|me| me.roles.clone())
+        .unwrap_or_default();
+    let mentioned_role = if own {
+        None
+    } else {
         store.roles.iter().find(|role| {
-            my_roles.contains(&role.id) &&
-                !papo_core::notification::tag_spans(&message.content, std::slice::from_ref(&role.name)).is_empty()
+            my_roles.contains(&role.id)
+                && !papo_core::notification::tag_spans(
+                    &message.content,
+                    std::slice::from_ref(&role.name),
+                )
+                .is_empty()
         })
     };
-    let everyone = !own && store.can_mention_everyone(&message.author_id)
-        && !papo_core::notification::tag_spans(
-            &message.content, &["everyone".to_owned()]
-        ).is_empty();
-    let replying_to_me = !own && message.reply_to.as_ref()
-        .and_then(|id| store.message(id))
-        .is_some_and(|source| source.author_id == store.me);
-    let highlight_kind = if direct { "direct" }
-        else if mentioned_role.is_some() || everyone { "role" }
-        else if replying_to_me { "reply" }
-        else { "" };
+    let everyone = !own
+        && store.can_mention_everyone(&message.author_id)
+        && !papo_core::notification::tag_spans(&message.content, &["everyone".to_owned()])
+            .is_empty();
+    let replying_to_me = !own
+        && message
+            .reply_to
+            .as_ref()
+            .and_then(|id| store.message(id))
+            .is_some_and(|source| source.author_id == store.me);
+    let highlight_kind = if direct {
+        "direct"
+    } else if mentioned_role.is_some() || everyone {
+        "role"
+    } else if replying_to_me {
+        "reply"
+    } else {
+        ""
+    };
     let highlight_role_color = mentioned_role
-        .and_then(|role| role.color.clone()).unwrap_or_default();
+        .and_then(|role| role.color.clone())
+        .unwrap_or_default();
     json!({
         "id": message.id,
         "authorId": message.author_id,
@@ -394,7 +419,6 @@ pub(crate) fn project(store: &Store, url: &str, key: &str) -> Value {
             .unwrap_or_default()
     );
     snapshot["pinsKnown"] = json!(store.pinned_messages.contains_key(&store.selected_channel));
-    snapshot["call"] = json!(crate::call::project(store));
     snapshot["canPin"] = json!(store.can_pin_in(&store.selected_channel));
     snapshot["typingPhrase"] = json!(store.typing_phrase().unwrap_or_default());
     snapshot

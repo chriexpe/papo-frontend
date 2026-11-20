@@ -5,13 +5,13 @@
 //! A deduplicação durável converge Message + Notification pelo message_id.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::api::models::{Message, Notification};
 use crate::cache::{
-    ClaimResult, ClientDb, NotificationDecision, NotificationLedgerEntry,
-    NotificationLedgerStats, now_millis,
+    ClaimResult, ClientDb, NotificationDecision, NotificationLedgerEntry, NotificationLedgerStats,
+    now_millis,
 };
 
 pub type NotificationSink = Arc<dyn Fn(NotificationEnvelope) + Send + Sync>;
@@ -175,11 +175,7 @@ impl NotificationCoordinator {
         self.diagnostics
             .lock()
             .ok()
-            .and_then(|diagnostics| {
-                diagnostics
-                    .get(&(server_key.to_owned(), owner))
-                    .cloned()
-            })
+            .and_then(|diagnostics| diagnostics.get(&(server_key.to_owned(), owner)).cloned())
             .unwrap_or_default()
     }
 
@@ -199,7 +195,11 @@ impl NotificationCoordinator {
             return NotificationOutcome::Ignored;
         }
 
-        if !context.channel_notification_settings.get(&message.channel_id).is_some_and(|mode| mode != "off") {
+        if !context
+            .channel_notification_settings
+            .get(&message.channel_id)
+            .is_some_and(|mode| mode != "off")
+        {
             return NotificationOutcome::Ignored;
         }
 
@@ -236,7 +236,9 @@ impl NotificationCoordinator {
         notification: &Notification,
         source: CandidateSource,
     ) -> NotificationOutcome {
-        if !matches!(source, CandidateSource::Live | CandidateSource::Background) || notification.read {
+        if !matches!(source, CandidateSource::Live | CandidateSource::Background)
+            || notification.read
+        {
             return NotificationOutcome::Ignored;
         }
         let (Some(channel_id), Some(message_id)) = (
@@ -252,7 +254,11 @@ impl NotificationCoordinator {
             return NotificationOutcome::Ignored;
         }
 
-        if context.channel_notification_settings.get(channel_id).is_some_and(|mode| mode == "off") {
+        if context
+            .channel_notification_settings
+            .get(channel_id)
+            .is_some_and(|mode| mode == "off")
+        {
             return NotificationOutcome::Ignored;
         }
 
@@ -282,11 +288,7 @@ impl NotificationCoordinator {
             .unwrap_or_else(|| self.foreground.load(Ordering::Acquire))
     }
 
-    fn process(
-        &self,
-        context: NotificationContext,
-        candidate: Candidate,
-    ) -> NotificationOutcome {
+    fn process(&self, context: NotificationContext, candidate: Candidate) -> NotificationOutcome {
         let suppression = if !context.notifications_enabled {
             Some(SuppressionReason::NotificationsDisabled)
         } else if candidate.author_id.as_deref() == Some(context.owner_user_id.as_str()) {
@@ -320,10 +322,7 @@ impl NotificationCoordinator {
         };
 
         let claim = self.cache.claim_notification(&context.server_key, entry);
-        let key = (
-            context.server_key.clone(),
-            context.owner_user_id.clone(),
-        );
+        let key = (context.server_key.clone(), context.owner_user_id.clone());
 
         let (claim, stats) = match claim {
             Ok(result) => result,
@@ -365,8 +364,11 @@ impl NotificationCoordinator {
             return NotificationOutcome::Suppressed(reason);
         }
 
-        let envelope_title =
-            title(&context, candidate.author_id.as_deref(), &candidate.channel_id);
+        let envelope_title = title(
+            &context,
+            candidate.author_id.as_deref(),
+            &candidate.channel_id,
+        );
         let envelope_body = display_mentions(&context.members, &candidate.body);
         let envelope = NotificationEnvelope {
             owner_user_id: context.owner_user_id.clone(),
@@ -417,10 +419,7 @@ pub fn mentions_user(
     }
     let lower = text.to_lowercase();
     (!owner_user_id.is_empty()
-        && lower.contains(&format!(
-            "@mention(<@{}>)",
-            owner_user_id.to_lowercase()
-        )))
+        && lower.contains(&format!("@mention(<@{}>)", owner_user_id.to_lowercase())))
         || (!owner_name.is_empty()
             && !owner_name.eq_ignore_ascii_case("everyone")
             && !tag_spans(text, &[owner_name.to_owned()]).is_empty())
@@ -513,11 +512,7 @@ fn display_mentions(members: &HashMap<String, String>, text: &str) -> String {
     out
 }
 
-fn title(
-    context: &NotificationContext,
-    author_id: Option<&str>,
-    channel_id: &str,
-) -> String {
+fn title(context: &NotificationContext, author_id: Option<&str>, channel_id: &str) -> String {
     let author = author_id
         .and_then(|id| context.members.get(id))
         .cloned()
@@ -541,8 +536,8 @@ fn title(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     struct TempDb {
         dir: PathBuf,
@@ -581,10 +576,18 @@ mod tests {
             visible_server: visible,
             notifications_enabled: enabled,
             push_registered: false,
-            channel_notification_settings: [("geral".into(), "only_mentions".into()), ("outro".into(), "all".into())].into_iter().collect(),
-            channels: [("geral".to_owned(), "Geral".to_owned()), ("outro".to_owned(), "Outro".to_owned())]
-                .into_iter()
-                .collect(),
+            channel_notification_settings: [
+                ("geral".into(), "only_mentions".into()),
+                ("outro".into(), "all".into()),
+            ]
+            .into_iter()
+            .collect(),
+            channels: [
+                ("geral".to_owned(), "Geral".to_owned()),
+                ("outro".to_owned(), "Outro".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
             members: [
                 (owner.to_owned(), "Ana".to_owned()),
                 ("bia".to_owned(), "Bia".to_owned()),
@@ -706,11 +709,22 @@ mod tests {
         let temp = TempDb::new("notification-muted-channel");
         let (coordinator, deliveries) = coordinator(temp.db(), false);
         let mut view = context("srv", "me", true, true);
-        view.channel_notification_settings.insert("geral".into(), "off".into());
+        view.channel_notification_settings
+            .insert("geral".into(), "off".into());
         coordinator.sync_context(view);
         let msg = message("m1", "geral", "bia", "oi @mention(<@me>)");
-        assert_eq!(coordinator.handle_message("srv", &msg, CandidateSource::Live), NotificationOutcome::Ignored);
-        assert_eq!(coordinator.handle_notification("srv", &notification("n1", "m1", "geral", "bia"), CandidateSource::Live), NotificationOutcome::Ignored);
+        assert_eq!(
+            coordinator.handle_message("srv", &msg, CandidateSource::Live),
+            NotificationOutcome::Ignored
+        );
+        assert_eq!(
+            coordinator.handle_notification(
+                "srv",
+                &notification("n1", "m1", "geral", "bia"),
+                CandidateSource::Live
+            ),
+            NotificationOutcome::Ignored
+        );
         assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 0);
     }
 
@@ -719,10 +733,38 @@ mod tests {
         let temp = TempDb::new("notification-channel-modes");
         let (coordinator, deliveries) = coordinator(temp.db(), false);
         coordinator.sync_context(context("srv", "me", true, true));
-        assert_eq!(coordinator.handle_message("srv", &message("m1", "geral", "bia", "oi"), CandidateSource::Live), NotificationOutcome::Ignored);
-        assert_eq!(coordinator.handle_message("srv", &message("m2", "geral", "bia", "oi @mention(<@me>)"), CandidateSource::Live), NotificationOutcome::Delivered);
-        assert_eq!(coordinator.handle_notification("srv", &notification("n3", "m3", "geral", "bia"), CandidateSource::Live), NotificationOutcome::Delivered);
-        assert_eq!(coordinator.handle_notification("srv", &notification("n4", "m4", "outro", "bia"), CandidateSource::Live), NotificationOutcome::Delivered);
+        assert_eq!(
+            coordinator.handle_message(
+                "srv",
+                &message("m1", "geral", "bia", "oi"),
+                CandidateSource::Live
+            ),
+            NotificationOutcome::Ignored
+        );
+        assert_eq!(
+            coordinator.handle_message(
+                "srv",
+                &message("m2", "geral", "bia", "oi @mention(<@me>)"),
+                CandidateSource::Live
+            ),
+            NotificationOutcome::Delivered
+        );
+        assert_eq!(
+            coordinator.handle_notification(
+                "srv",
+                &notification("n3", "m3", "geral", "bia"),
+                CandidateSource::Live
+            ),
+            NotificationOutcome::Delivered
+        );
+        assert_eq!(
+            coordinator.handle_notification(
+                "srv",
+                &notification("n4", "m4", "outro", "bia"),
+                CandidateSource::Live
+            ),
+            NotificationOutcome::Delivered
+        );
         assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 3);
     }
 
@@ -1239,7 +1281,6 @@ mod tests {
         assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
     }
 
-
     fn ledger_entry(owner: &str, message_id: &str, handled_at: i64) -> NotificationLedgerEntry {
         NotificationLedgerEntry {
             owner_user_id: owner.to_owned(),
@@ -1285,11 +1326,9 @@ mod tests {
     async fn notification_ledger_has_a_hard_row_bound() {
         let temp = TempDb::new("retention");
         let path = temp.dir.join("papo-cache.db");
-        let mut db = crate::cache::TursoCache::open(
-            path.to_str().expect("utf-8 temp path"),
-        )
-        .await
-        .expect("open");
+        let mut db = crate::cache::TursoCache::open(path.to_str().expect("utf-8 temp path"))
+            .await
+            .expect("open");
         const TEST_LIMIT: i64 = 8;
         let mut stats = NotificationLedgerStats::default();
         for index in 0..(TEST_LIMIT + 2) {
@@ -1317,7 +1356,6 @@ mod tests {
         assert_eq!(claim, ClaimResult::New);
         assert_eq!(stats.rows, TEST_LIMIT);
     }
-
 }
 
 #[cfg(test)]

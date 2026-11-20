@@ -19,10 +19,10 @@ use futures_util::StreamExt;
 use reqwest::header::{
     ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, LOCATION, RETRY_AFTER, USER_AGENT,
 };
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use url::{Host, Url};
 
-use crate::cache::{now_millis, CachedPreview, ClientDb, PreviewCacheState};
+use crate::cache::{CachedPreview, ClientDb, PreviewCacheState, now_millis};
 
 const HTML_MAX: usize = 2 << 20;
 const OEMBED_MAX: usize = 512 << 10;
@@ -117,8 +117,11 @@ impl ResolvedPreview {
             return None;
         }
         if let Ok(url) = Url::parse(image)
-            && url.host_str().is_some_and(|host| host == "twimg.com" || host.ends_with(".twimg.com"))
-            && (url.path().contains("/profile_images/") || url.path().contains("/default_profile_images/"))
+            && url
+                .host_str()
+                .is_some_and(|host| host == "twimg.com" || host.ends_with(".twimg.com"))
+            && (url.path().contains("/profile_images/")
+                || url.path().contains("/default_profile_images/"))
         {
             return None;
         }
@@ -368,7 +371,9 @@ impl PreviewCoordinator {
         let mut entries = self.inner.entries.lock().ok()?;
         let access_tick = self.inner.access_tick.fetch_add(1, Ordering::Relaxed) + 1;
         let state = {
-            let entry = entries.entry(key.clone()).or_insert_with(MemoryEntry::loading);
+            let entry = entries
+                .entry(key.clone())
+                .or_insert_with(MemoryEntry::loading);
             entry.last_used = access_tick;
 
             if entry.wants_refresh(now) {
@@ -561,10 +566,7 @@ async fn process_request(
         }
     }
 
-    inner
-        .stats
-        .network_resolves
-        .fetch_add(1, Ordering::Relaxed);
+    inner.stats.network_resolves.fetch_add(1, Ordering::Relaxed);
 
     match resolve_url(&client, &oembed_registry, &key, 0).await {
         Ok(resolved) => {
@@ -863,12 +865,11 @@ async fn resolve_url(
     let final_url = response.url().clone();
     let status = response.status();
     let source_soft_failure = is_preview_soft_client_error(status);
-    let mut persistent =
-        response_allows_persistence(response.headers()) && !source_soft_failure;
+    let mut persistent = response_allows_persistence(response.headers()) && !source_soft_failure;
     let content_type = response_content_type(response.headers());
     let header_oembed = oembed_header_endpoint(response.headers(), &final_url);
-    let source_failure = source_soft_failure
-        .then(|| preview_status_error(status, response.headers()));
+    let source_failure =
+        source_soft_failure.then(|| preview_status_error(status, response.headers()));
     if source_soft_failure {
         log_preview_soft_failure_headers(source_url, status, response.headers());
     }
@@ -952,15 +953,9 @@ async fn resolve_url(
         // um site que recusou nosso crawler com 401/403/404 ainda pode ter um
         // endpoint oEmbed público e perfeitamente utilizável.
         match registry_oembed_endpoint(client, oembed_registry, source_url).await {
-            Some(endpoint) => resolve_oembed(
-                client,
-                oembed_registry,
-                source_url,
-                endpoint,
-                depth,
-            )
-            .await
-            .ok(),
+            Some(endpoint) => resolve_oembed(client, oembed_registry, source_url, endpoint, depth)
+                .await
+                .ok(),
             None => None,
         }
     };
@@ -1007,8 +1002,7 @@ async fn resolve_url(
         // resolver gets a challenge page instead of their card. They mirror
         // the original path, though, and the registry knows that original.
         if depth < 2
-            && let Some(origin) =
-                registry_mirror_origin(client, oembed_registry, source_url).await
+            && let Some(origin) = registry_mirror_origin(client, oembed_registry, source_url).await
             && let Ok(mut mirrored) =
                 Box::pin(resolve_url(client, oembed_registry, &origin, depth + 1)).await
         {
@@ -1096,7 +1090,12 @@ async fn resolve_oembed(
         }),
     };
 
-    preview.post.fill_from(social::engagement(value.get("provider_name").and_then(|v| v.as_str()).unwrap_or_default()));
+    preview.post.fill_from(social::engagement(
+        value
+            .get("provider_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+    ));
 
     match kind {
         "photo" => {
@@ -1173,7 +1172,10 @@ async fn resolve_oembed(
 /// the `/embed` convention those scripts share. Only same-site permalinks.
 fn snippet_embed_page(snippet: &str, source_url: &str) -> Option<String> {
     let source = Url::parse(source_url).ok()?;
-    let site = |url: &Url| url.host_str().map(|host| host.trim_start_matches("www.").to_owned());
+    let site = |url: &Url| {
+        url.host_str()
+            .map(|host| host.trim_start_matches("www.").to_owned())
+    };
     let tags = || {
         snippet
             .split('<')
@@ -1251,7 +1253,11 @@ fn video_path(url: &Url) -> bool {
 /// Player state embedded as (possibly repeatedly escaped) JSON, e.g.
 /// `"video_url":"https:\\/\\/cdn...mp4"` inside a hydration script string.
 fn embedded_json_video_url(html: &str) -> Option<String> {
-    embedded_json_url(html, &["video_url", "playable_url", "contentUrl"], video_path)
+    embedded_json_url(
+        html,
+        &["video_url", "playable_url", "contentUrl"],
+        video_path,
+    )
 }
 
 /// Well-known avatar keys in embedded player/profile JSON.
@@ -1349,7 +1355,9 @@ async fn resolve_activitypub(
         if let Ok(bytes) = read_limited_bytes(response, ACTIVITYPUB_MAX, "ActivityPub").await
             && let Ok(actor) = serde_json::from_slice::<serde_json::Value>(&bytes)
         {
-            preview.post.fill_from(activitypub_actor(&actor, &actor_base));
+            preview
+                .post
+                .fill_from(activitypub_actor(&actor, &actor_base));
         }
     }
     Ok(ResolvedOutcome {
@@ -1378,8 +1386,8 @@ fn activitypub_preview(
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        let Some(url) = activitypub_object_url(item.get("url"), base)
-            .filter(|url| safe_remote_url(url))
+        let Some(url) =
+            activitypub_object_url(item.get("url"), base).filter(|url| safe_remote_url(url))
         else {
             continue;
         };
@@ -1572,7 +1580,12 @@ fn html_post_meta(html: &str, base: &Url, title: Option<&str>) -> PostMeta {
     let mut post = PostMeta {
         published_at: meta_content(
             html,
-            &["article:published_time", "og:published_time", "datePublished", "date"],
+            &[
+                "article:published_time",
+                "og:published_time",
+                "datePublished",
+                "date",
+            ],
         )
         .and_then(|raw| parse_published(&raw)),
         author_name: meta_content(html, &["author", "article:author"])
@@ -1691,10 +1704,38 @@ fn hydration_post(html: &str) -> PostMeta {
             .find_map(|key| hydration_value(html, key).and_then(parse_count))
     };
     PostMeta {
-        likes: count(&["favorite_count", "favourites_count", "like_count", "likes_count", "likeCount"]),
-        comments: count(&["reply_count", "replies_count", "comment_count", "comments_count", "replyCount", "commentCount"]),
-        shares: count(&["retweet_count", "reblogs_count", "repost_count", "reposts_count", "share_count", "shares_count", "repostCount", "shareCount"]),
-        views: count(&["view_count", "views_count", "viewCount", "play_count", "video_view_count"]),
+        likes: count(&[
+            "favorite_count",
+            "favourites_count",
+            "like_count",
+            "likes_count",
+            "likeCount",
+        ]),
+        comments: count(&[
+            "reply_count",
+            "replies_count",
+            "comment_count",
+            "comments_count",
+            "replyCount",
+            "commentCount",
+        ]),
+        shares: count(&[
+            "retweet_count",
+            "reblogs_count",
+            "repost_count",
+            "reposts_count",
+            "share_count",
+            "shares_count",
+            "repostCount",
+            "shareCount",
+        ]),
+        views: count(&[
+            "view_count",
+            "views_count",
+            "viewCount",
+            "play_count",
+            "video_view_count",
+        ]),
         published_at: hydration_value(html, "created_at_ms")
             .and_then(|raw| raw.parse::<i64>().ok())
             .map(|ms| ms / 1000)
@@ -1839,7 +1880,9 @@ fn html_site_icon(html: &str, base: &Url) -> Option<String> {
         if !tag_name_is(tag, "link") {
             continue;
         }
-        let rel = html_attr(tag, "rel").unwrap_or_default().to_ascii_lowercase();
+        let rel = html_attr(tag, "rel")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let rank = if rel.contains("apple-touch-icon") {
             2
         } else if rel.split_whitespace().any(|part| part == "icon") {
@@ -1917,7 +1960,9 @@ fn parse_published(raw: &str) -> Option<i64> {
     }
     for format in ["%Y-%m-%d", "%B %d, %Y", "%b %d, %Y"] {
         if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, format) {
-            return date.and_hms_opt(0, 0, 0).map(|time| time.and_utc().timestamp());
+            return date
+                .and_hms_opt(0, 0, 0)
+                .map(|time| time.and_utc().timestamp());
         }
     }
     None
@@ -1947,7 +1992,11 @@ fn parse_count(raw: &str) -> Option<u64> {
 fn social_summary(text: &str) -> Option<PostMeta> {
     let (counts, rest) = text.split_once(" - ").unwrap_or((text, ""));
     let mut post = PostMeta::default();
-    for part in counts.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+    for part in counts
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
         let (number, label) = part.split_once(' ')?;
         let count = parse_count(number)?;
         match label.trim().to_ascii_lowercase().as_str() {
@@ -2044,7 +2093,8 @@ fn json_ld_value_preview(
                 map.get("@type").is_some_and(|kind| match kind {
                     serde_json::Value::String(kind) => kind.eq_ignore_ascii_case(wanted),
                     serde_json::Value::Array(kinds) => kinds.iter().any(|kind| {
-                        kind.as_str().is_some_and(|kind| kind.eq_ignore_ascii_case(wanted))
+                        kind.as_str()
+                            .is_some_and(|kind| kind.eq_ignore_ascii_case(wanted))
                     }),
                     _ => false,
                 })
@@ -2073,10 +2123,10 @@ fn json_ld_value_preview(
                 return None;
             }
 
-            let media_url = json_ld_url(map.get("contentUrl"), base)
-                .filter(|url| safe_remote_url(url));
-            let embed_url = json_ld_url(map.get("embedUrl"), base)
-                .filter(|url| safe_remote_url(url));
+            let media_url =
+                json_ld_url(map.get("contentUrl"), base).filter(|url| safe_remote_url(url));
+            let embed_url =
+                json_ld_url(map.get("embedUrl"), base).filter(|url| safe_remote_url(url));
             let image_url = json_ld_url(map.get("thumbnailUrl"), base)
                 .or_else(|| json_ld_url(map.get("image"), base))
                 .filter(|url| safe_remote_url(url));
@@ -2139,7 +2189,8 @@ fn json_ld_post(map: &serde_json::Map<String, serde_json::Value>, base: &Url) ->
             post.author_name = json_string(author, "name");
             post.author_handle = json_string(author, "alternateName")
                 .map(|handle| format!("@{}", handle.trim_start_matches('@')));
-            post.author_url = json_ld_url(author.get("url"), base).filter(|url| safe_remote_url(url));
+            post.author_url =
+                json_ld_url(author.get("url"), base).filter(|url| safe_remote_url(url));
             post.author_avatar =
                 json_ld_url(author.get("image"), base).filter(|url| safe_remote_url(url));
         }
@@ -2156,7 +2207,9 @@ fn json_ld_post(map: &serde_json::Map<String, serde_json::Value>, base: &Url) ->
             .and_then(|kind| kind.as_str().or_else(|| kind.get("@type")?.as_str()))
             .unwrap_or_default();
         let count = statistic.get("userInteractionCount").and_then(|count| {
-            count.as_u64().or_else(|| count.as_str().and_then(parse_count))
+            count
+                .as_u64()
+                .or_else(|| count.as_str().and_then(parse_count))
         });
         if kind.ends_with("LikeAction") {
             post.likes = post.likes.or(count);
@@ -2361,10 +2414,7 @@ fn preview_body_class(content_type: &str, body: &str) -> &'static str {
     }
 }
 
-fn safe_header_class(
-    headers: &reqwest::header::HeaderMap,
-    name: &'static str,
-) -> &'static str {
+fn safe_header_class(headers: &reqwest::header::HeaderMap, name: &'static str) -> &'static str {
     let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) else {
         return "none";
     };
@@ -2443,10 +2493,18 @@ fn log_preview_soft_failure(
         "preview {}: source status={} content_type={} body_class={} body_bytes={} retry_after={}",
         safe_key(source_url),
         status.as_u16(),
-        if content_type.is_empty() { "none" } else { content_type },
+        if content_type.is_empty() {
+            "none"
+        } else {
+            content_type
+        },
         preview_body_class(content_type, body),
         body.len().min(HTML_MAX),
-        if retry_after_ms.is_some() { "present" } else { "none" },
+        if retry_after_ms.is_some() {
+            "present"
+        } else {
+            "none"
+        },
     );
 }
 
@@ -2569,8 +2627,7 @@ pub fn extract_https_urls(text: &str) -> Vec<String> {
         let end = tail
             .char_indices()
             .find_map(|(index, ch)| {
-                (ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\''))
-                    .then_some(index)
+                (ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\'')).then_some(index)
             })
             .unwrap_or(tail.len());
         let raw = tail[..end].trim_end_matches(|ch: char| {
@@ -2631,7 +2688,10 @@ async fn read_limited_bytes(
     max: usize,
     label: &str,
 ) -> Result<Vec<u8>, ResolveError> {
-    if response.content_length().is_some_and(|len| len > max as u64) {
+    if response
+        .content_length()
+        .is_some_and(|len| len > max as u64)
+    {
         return Err(ResolveError::negative(format!("{label} grande demais")));
     }
     let mut stream = response.bytes_stream();
@@ -2855,10 +2915,7 @@ fn wildcard_url_match(pattern: &str, candidate: &str) -> bool {
         cursor += found + part.len();
     }
 
-    pattern.ends_with('*')
-        || parts
-            .last()
-            .is_none_or(|last| candidate.ends_with(last))
+    pattern.ends_with('*') || parts.last().is_none_or(|last| candidate.ends_with(last))
 }
 
 fn oembed_header_endpoint(headers: &reqwest::header::HeaderMap, base: &Url) -> Option<Url> {
@@ -2868,9 +2925,7 @@ fn oembed_header_endpoint(headers: &reqwest::header::HeaderMap, base: &Url) -> O
         };
         for item in value.split(',') {
             let lower = item.to_ascii_lowercase();
-            if !lower.contains("rel=\"alternate\"")
-                || !lower.contains("application/json+oembed")
-            {
+            if !lower.contains("rel=\"alternate\"") || !lower.contains("application/json+oembed") {
                 continue;
             }
             let Some(start) = item.find('<') else {
@@ -2932,8 +2987,7 @@ fn activitypub_endpoint(html: &str, base: &Url) -> Option<Url> {
             .unwrap_or_default()
             .to_ascii_lowercase();
         let is_activity = mime.starts_with("application/activity+json")
-            || (mime.starts_with("application/ld+json")
-                && mime.contains("activitystreams"));
+            || (mime.starts_with("application/ld+json") && mime.contains("activitystreams"));
         if !is_activity {
             continue;
         }
@@ -2954,7 +3008,9 @@ fn html_media_url(html: &str, base: &str) -> Option<String> {
             if !tag_name_is(tag, tag_name) {
                 continue;
             }
-            let mime = html_attr(tag, "type").unwrap_or_default().to_ascii_lowercase();
+            let mime = html_attr(tag, "type")
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             if tag_name == "source" && !mime.is_empty() && !mime.starts_with("video/") {
                 continue;
             }
@@ -3068,10 +3124,7 @@ fn html_attr(tag: &str, wanted: &str) -> Option<String> {
         }
 
         let value_start = index;
-        while index < bytes.len()
-            && !bytes[index].is_ascii_whitespace()
-            && bytes[index] != b'>'
-        {
+        while index < bytes.len() && !bytes[index].is_ascii_whitespace() && bytes[index] != b'>' {
             index += 1;
         }
         return (index > value_start).then(|| tag[value_start..index].to_owned());
@@ -3101,25 +3154,28 @@ fn decode_html_text(value: &str) -> String {
     while let Some(start) = rest.find('&') {
         out.push_str(&rest[..start]);
         rest = &rest[start..];
-        let decoded = rest[1..].find(';').filter(|end| *end <= 10).and_then(|end| {
-            let entity = &rest[1..=end];
-            let ch = match entity {
-                "amp" => Some('&'),
-                "quot" => Some('"'),
-                "apos" => Some('\''),
-                "lt" => Some('<'),
-                "gt" => Some('>'),
-                "nbsp" => Some('\u{a0}'),
-                _ => entity
-                    .strip_prefix("#x")
-                    .or_else(|| entity.strip_prefix("#X"))
-                    .map(|hex| u32::from_str_radix(hex, 16))
-                    .or_else(|| entity.strip_prefix('#').map(str::parse::<u32>))
-                    .and_then(Result::ok)
-                    .and_then(char::from_u32),
-            }?;
-            Some((ch, end + 2))
-        });
+        let decoded = rest[1..]
+            .find(';')
+            .filter(|end| *end <= 10)
+            .and_then(|end| {
+                let entity = &rest[1..=end];
+                let ch = match entity {
+                    "amp" => Some('&'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "nbsp" => Some('\u{a0}'),
+                    _ => entity
+                        .strip_prefix("#x")
+                        .or_else(|| entity.strip_prefix("#X"))
+                        .map(|hex| u32::from_str_radix(hex, 16))
+                        .or_else(|| entity.strip_prefix('#').map(str::parse::<u32>))
+                        .and_then(Result::ok)
+                        .and_then(char::from_u32),
+                }?;
+                Some((ch, end + 2))
+            });
         match decoded {
             Some((ch, len)) => {
                 out.push(ch);
@@ -3244,10 +3300,15 @@ mod tests {
               <meta property="og:site_name" content="Code Forge">
             </head></html>
         "#;
-        let preview = parse_html_preview(base.as_str(), &base, html).await.unwrap();
+        let preview = parse_html_preview(base.as_str(), &base, html)
+            .await
+            .unwrap();
         assert_eq!(preview.kind, PreviewKind::Link);
         assert_eq!(preview.title.as_deref(), Some("Papo"));
-        assert_eq!(preview.image_url.as_deref(), Some("https://code.example/cover.png"));
+        assert_eq!(
+            preview.image_url.as_deref(),
+            Some("https://code.example/cover.png")
+        );
         assert_eq!(preview.provider_name.as_deref(), Some("Code Forge"));
     }
 
@@ -3256,14 +3317,24 @@ mod tests {
         let base = Url::parse("https://media.example/watch/1").unwrap();
         let direct = r#"<meta property="og:video" content="/clip.mp4">
                          <meta property="og:video:type" content="video/mp4">"#;
-        let preview = parse_html_preview(base.as_str(), &base, direct).await.unwrap();
+        let preview = parse_html_preview(base.as_str(), &base, direct)
+            .await
+            .unwrap();
         assert_eq!(preview.kind, PreviewKind::Video);
-        assert_eq!(preview.media_url.as_deref(), Some("https://media.example/clip.mp4"));
+        assert_eq!(
+            preview.media_url.as_deref(),
+            Some("https://media.example/clip.mp4")
+        );
 
         let player = r#"<meta name="twitter:player" content="/embed/1">"#;
-        let preview = parse_html_preview(base.as_str(), &base, player).await.unwrap();
+        let preview = parse_html_preview(base.as_str(), &base, player)
+            .await
+            .unwrap();
         assert_eq!(preview.kind, PreviewKind::Embed);
-        assert_eq!(preview.embed_url.as_deref(), Some("https://media.example/embed/1"));
+        assert_eq!(
+            preview.embed_url.as_deref(),
+            Some("https://media.example/embed/1")
+        );
     }
 
     #[tokio::test]
@@ -3275,7 +3346,9 @@ mod tests {
             <meta name="twitter:creator" content="@LudeonStudios">
             <video src="https://video.twimg.com/tweet_video/HUclzmQXEAANJz2.mp4"></video>
         "#;
-        let preview = parse_html_preview(base.as_str(), &base, html).await.unwrap();
+        let preview = parse_html_preview(base.as_str(), &base, html)
+            .await
+            .unwrap();
 
         assert_eq!(preview.kind, PreviewKind::Link);
         assert_eq!(preview.media_url, None);
@@ -3299,11 +3372,19 @@ mod tests {
             }
             </script>
         "#;
-        let preview = parse_html_preview(base.as_str(), &base, html).await.unwrap();
+        let preview = parse_html_preview(base.as_str(), &base, html)
+            .await
+            .unwrap();
         assert_eq!(preview.kind, PreviewKind::Embed);
         assert_eq!(preview.title.as_deref(), Some("Demo"));
-        assert_eq!(preview.image_url.as_deref(), Some("https://video.example/poster.jpg"));
-        assert_eq!(preview.embed_url.as_deref(), Some("https://video.example/embed/1"));
+        assert_eq!(
+            preview.image_url.as_deref(),
+            Some("https://video.example/poster.jpg")
+        );
+        assert_eq!(
+            preview.embed_url.as_deref(),
+            Some("https://video.example/embed/1")
+        );
     }
 
     fn isolated_coordinator() -> (PreviewCoordinator, mpsc::Receiver<String>) {
@@ -3463,7 +3544,9 @@ mod tests {
         let html = r#"<link rel="alternate" type="application/json+oembed"
                          href="/oembed?url=https%3A%2F%2Fvideo.example%2Fwatch%2F1">"#;
         assert_eq!(
-            oembed_endpoint(html, &base).map(|url| url.to_string()).as_deref(),
+            oembed_endpoint(html, &base)
+                .map(|url| url.to_string())
+                .as_deref(),
             Some("https://video.example/oembed?url=https%3A%2F%2Fvideo.example%2Fwatch%2F1")
         );
     }
@@ -3518,7 +3601,10 @@ mod tests {
             registry_entry("x", &["https://x.com/*/status/*"]),
             registry_entry(
                 "photos",
-                &["https://photoapp.com/*/p/*", "https://www.photoapp.com/reel/*"],
+                &[
+                    "https://photoapp.com/*/p/*",
+                    "https://www.photoapp.com/reel/*",
+                ],
             ),
             registry_entry("posts", &["https://*.postsite.com/*/status/*"]),
         ];
@@ -3553,7 +3639,10 @@ mod tests {
         );
         // A permalink on another site is not the provider's embed.
         let foreign = r#"<blockquote><a href="https://elsewhere.example/p/1">x</a></blockquote>"#;
-        assert_eq!(snippet_embed_page(foreign, "https://posts.example/u/1"), None);
+        assert_eq!(
+            snippet_embed_page(foreign, "https://posts.example/u/1"),
+            None
+        );
     }
 
     #[test]
@@ -3583,10 +3672,13 @@ mod tests {
             post.caption.as_deref(),
             Some("A hand stitched texture pack? \n\n#minecraft")
         );
-        assert_eq!(social_summary("1 like - someone"), Some(PostMeta {
-            likes: Some(1),
-            ..PostMeta::default()
-        }));
+        assert_eq!(
+            social_summary("1 like - someone"),
+            Some(PostMeta {
+                likes: Some(1),
+                ..PostMeta::default()
+            })
+        );
         // Ordinary descriptions are not mistaken for summaries.
         assert_eq!(social_summary("A blog about cats - and dogs"), None);
         assert_eq!(parse_count("91,638"), Some(91_638));
@@ -3617,10 +3709,16 @@ mod tests {
         let preview = json_ld_preview(html, base.as_str(), &base).unwrap();
         assert_eq!(preview.post.author_name.as_deref(), Some("Demo"));
         assert_eq!(preview.post.author_handle.as_deref(), Some("@demo"));
-        assert_eq!(preview.post.author_avatar.as_deref(), Some("https://posts.example/a.png"));
+        assert_eq!(
+            preview.post.author_avatar.as_deref(),
+            Some("https://posts.example/a.png")
+        );
         assert_eq!(preview.post.likes, Some(91_638));
         assert_eq!(preview.post.comments, Some(187));
-        assert_eq!(preview.post.published_at, parse_published("2026-09-21T11:31:00Z"));
+        assert_eq!(
+            preview.post.published_at,
+            parse_published("2026-09-21T11:31:00Z")
+        );
     }
 
     #[test]
@@ -3642,10 +3740,16 @@ mod tests {
             <meta itemprop="datePublished" content="2009-10-24T23:57:33-07:00">"#;
         let post = microdata_post(html, &base);
         assert_eq!(post.author_name.as_deref(), Some("Chan"));
-        assert_eq!(post.author_url.as_deref(), Some("https://video.example/@Chan"));
+        assert_eq!(
+            post.author_url.as_deref(),
+            Some("https://video.example/@Chan")
+        );
         assert_eq!(post.likes, Some(19_426_647));
         assert_eq!(post.views, Some(1_820_999_528));
-        assert_eq!(profile_handle("https://video.example/@Chan").as_deref(), Some("@Chan"));
+        assert_eq!(
+            profile_handle("https://video.example/@Chan").as_deref(),
+            Some("@Chan")
+        );
 
         let state = r#"legacy:{bookmark_count:1917,favorite_count:4358,quote_count:393,reply_count:673,retweet_count:98},created_at_ms:1790110438000,avatar:$R[27]={image_url:"https://cdn.example/profile/a_normal.jpg"}"#;
         let post = hydration_post(state);
@@ -3653,18 +3757,27 @@ mod tests {
         assert_eq!(post.comments, Some(673));
         assert_eq!(post.shares, Some(98));
         assert_eq!(post.published_at, Some(1_790_110_438));
-        assert_eq!(post.author_avatar.as_deref(), Some("https://cdn.example/profile/a_normal.jpg"));
+        assert_eq!(
+            post.author_avatar.as_deref(),
+            Some("https://cdn.example/profile/a_normal.jpg")
+        );
     }
 
     #[test]
     fn hydrated_video_must_match_the_page_thumbnail() {
         let state = r#"variants:[{content_type:"video/mp4",bitrate:256000,url:"https://cdn.example/v/2102501611842965504/480x270/a.mp4"},{bitrate:2176000,content_type:"video/mp4",url:"https://cdn.example/v/2102501611842965504/1280x720/b.mp4"}],promo:{content_type:"video/mp4",bitrate:9000000,url:"https://cdn.example/ads/9999999999999/c.mp4"}"#;
         assert_eq!(
-            hydration_video(state, Some("https://img.example/thumb/2102501611842965504/img/x.jpg"))
-                .as_deref(),
+            hydration_video(
+                state,
+                Some("https://img.example/thumb/2102501611842965504/img/x.jpg")
+            )
+            .as_deref(),
             Some("https://cdn.example/v/2102501611842965504/1280x720/b.mp4")
         );
-        assert_eq!(hydration_video(state, Some("https://img.example/unrelated.jpg")), None);
+        assert_eq!(
+            hydration_video(state, Some("https://img.example/unrelated.jpg")),
+            None
+        );
     }
 
     #[test]
@@ -3703,8 +3816,7 @@ mod tests {
                 }
             ]
         });
-        let preview =
-            activitypub_preview(&value, "https://proxy.example/reel/abc", &base).unwrap();
+        let preview = activitypub_preview(&value, "https://proxy.example/reel/abc", &base).unwrap();
         assert_eq!(preview.kind, PreviewKind::Video);
         assert_eq!(
             preview.media_url.as_deref(),
@@ -3726,7 +3838,9 @@ mod tests {
                   rel="alternate"
                   type="application/activity+json">
         "#;
-        let preview = parse_html_preview(base.as_str(), &base, html).await.unwrap();
+        let preview = parse_html_preview(base.as_str(), &base, html)
+            .await
+            .unwrap();
         assert_eq!(preview.kind, PreviewKind::Video);
         assert_eq!(
             preview.media_url.as_deref(),
@@ -3734,7 +3848,6 @@ mod tests {
         );
         assert!(preview.embed_url.is_none());
     }
-
 
     #[test]
     fn primary_403_is_retryable_but_404_is_negative() {
@@ -3751,11 +3864,17 @@ mod tests {
 
     #[test]
     fn primary_soft_failures_are_limited_to_401_403_404() {
-        assert!(is_preview_soft_client_error(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(is_preview_soft_client_error(
+            reqwest::StatusCode::UNAUTHORIZED
+        ));
         assert!(is_preview_soft_client_error(reqwest::StatusCode::FORBIDDEN));
         assert!(is_preview_soft_client_error(reqwest::StatusCode::NOT_FOUND));
-        assert!(!is_preview_soft_client_error(reqwest::StatusCode::TOO_MANY_REQUESTS));
-        assert!(!is_preview_soft_client_error(reqwest::StatusCode::BAD_REQUEST));
+        assert!(!is_preview_soft_client_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(!is_preview_soft_client_error(
+            reqwest::StatusCode::BAD_REQUEST
+        ));
     }
 
     #[test]
@@ -3790,7 +3909,6 @@ mod tests {
         assert_eq!(safe_header_class(&headers, "server"), "cloudflare");
     }
 
-
     #[test]
     fn cloudflare_challenge_detection_is_explicit() {
         let mut headers = reqwest::header::HeaderMap::new();
@@ -3802,10 +3920,7 @@ mod tests {
             reqwest::StatusCode::FORBIDDEN,
             &headers
         ));
-        assert!(!is_cloudflare_challenge(
-            reqwest::StatusCode::OK,
-            &headers
-        ));
+        assert!(!is_cloudflare_challenge(reqwest::StatusCode::OK, &headers));
     }
 
     #[test]
@@ -3817,5 +3932,4 @@ mod tests {
         assert!(!ua.contains("discordbot"));
         assert!(!ua.contains("googlebot"));
     }
-
 }

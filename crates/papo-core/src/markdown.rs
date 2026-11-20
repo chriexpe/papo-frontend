@@ -136,17 +136,26 @@ pub fn substitute_mentions(display: &str, bindings: &[MentionBinding]) -> Prepar
     // avoids decoding ordinary prose merely to prove it contains no delimiter.
     let untouched = !display.as_bytes().contains(&0xEE)
         || !display.contains([SENTINEL_OPEN, SENTINEL_CLOSE, '\u{E002}']);
-    let source: Cow<'_, str> = if untouched { Cow::Borrowed(display) }
-        else { Cow::Owned(display.chars().filter(|c| !is_private(*c)).collect()) };
+    let source: Cow<'_, str> = if untouched {
+        Cow::Borrowed(display)
+    } else {
+        Cow::Owned(display.chars().filter(|c| !is_private(*c)).collect())
+    };
     const WIRE: &str = "@mention(<@";
     if bindings.is_empty() && !source.contains(WIRE) {
-        return Prepared { source: source.into_owned(), mentions: Vec::new() };
+        return Prepared {
+            source: source.into_owned(),
+            mentions: Vec::new(),
+        };
     }
     // Convert scalar positions once, only when bindings actually require them.
     let mut spans = Vec::new();
     if untouched && !bindings.is_empty() {
-        let offsets: Vec<_> = display.char_indices().map(|(at, _)| at)
-            .chain(std::iter::once(display.len())).collect();
+        let offsets: Vec<_> = display
+            .char_indices()
+            .map(|(at, _)| at)
+            .chain(std::iter::once(display.len()))
+            .collect();
         for binding in bindings {
             let len = 1 + binding.label.chars().count();
             if let Some(end) = binding.start.checked_add(len)
@@ -164,7 +173,9 @@ pub fn substitute_mentions(display: &str, bindings: &[MentionBinding]) -> Prepar
     let mut from = 0;
     let mut wire_at = source.find(WIRE);
     while from < source.len() {
-        while spans.peek().is_some_and(|&(start, _, _)| start < from) { spans.next(); }
+        while spans.peek().is_some_and(|&(start, _, _)| start < from) {
+            spans.next();
+        }
         // Bindings can precede or consume a wire token. Cache lookahead so a
         // long bound-only draft does not rescan its remaining suffix per binding.
         if wire_at.is_some_and(|at| at < from) {
@@ -180,7 +191,10 @@ pub fn substitute_mentions(display: &str, bindings: &[MentionBinding]) -> Prepar
         if bound_at == Some(next) {
             let (_, end, binding) = spans.next().expect("peeked");
             push_sentinel(&mut out, mentions.len());
-            mentions.push(Mention { user_id: binding.user_id.clone(), label: binding.label.clone() });
+            mentions.push(Mention {
+                user_id: binding.user_id.clone(),
+                label: binding.label.clone(),
+            });
             from = end;
             continue;
         }
@@ -189,7 +203,10 @@ pub fn substitute_mentions(display: &str, bindings: &[MentionBinding]) -> Prepar
             let id = &source[id_start..id_start + close];
             if id.len() >= 16 && id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') {
                 push_sentinel(&mut out, mentions.len());
-                mentions.push(Mention { user_id: id.to_owned(), label: "usuário".to_owned() });
+                mentions.push(Mention {
+                    user_id: id.to_owned(),
+                    label: "usuário".to_owned(),
+                });
                 from = id_start + close + 2;
                 continue;
             }
@@ -199,7 +216,10 @@ pub fn substitute_mentions(display: &str, bindings: &[MentionBinding]) -> Prepar
         from = next + 1;
     }
     out.push_str(&source[from..]);
-    Prepared { source: out, mentions }
+    Prepared {
+        source: out,
+        mentions,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +233,9 @@ pub fn normalize_fenced_code_blocks(content: &str) -> String {
 }
 
 fn normalize_newlines(content: &str) -> Cow<'_, str> {
-    let Some(first) = content.find('\r') else { return Cow::Borrowed(content) };
+    let Some(first) = content.find('\r') else {
+        return Cow::Borrowed(content);
+    };
     let mut out = String::with_capacity(content.len());
     out.push_str(&content[..first]);
     let mut rest = &content[first..];
@@ -221,7 +243,9 @@ fn normalize_newlines(content: &str) -> Cow<'_, str> {
         out.push_str(&rest[..at]);
         out.push('\n');
         rest = &rest[at + 1..];
-        if let Some(after) = rest.strip_prefix('\n') { rest = after; }
+        if let Some(after) = rest.strip_prefix('\n') {
+            rest = after;
+        }
     }
     out.push_str(rest);
     Cow::Owned(out)
@@ -233,15 +257,21 @@ fn find_fence(content: &str) -> Option<usize> {
     let mut from = 0;
     while let Some(relative) = content[from..].find('`') {
         let at = from + relative;
-        if content[at..].starts_with("```") { return Some(at); }
+        if content[at..].starts_with("```") {
+            return Some(at);
+        }
         from = at + 1;
     }
     None
 }
 
 fn normalize_fences(content: &str) -> Cow<'_, str> {
-    let Some(first) = find_fence(content) else { return Cow::Borrowed(content) };
-    if find_fence(&content[first + 3..]).is_none() { return Cow::Borrowed(content); }
+    let Some(first) = find_fence(content) else {
+        return Cow::Borrowed(content);
+    };
+    if find_fence(&content[first + 3..]).is_none() {
+        return Cow::Borrowed(content);
+    }
     let mut out = String::with_capacity(content.len() + 16);
     let mut rest_start = 0;
     while let Some(open) = find_fence(&content[rest_start..]).map(|i| i + rest_start) {
@@ -300,7 +330,9 @@ pub fn preserve_blank_lines(content: &str) -> String {
 }
 
 fn preserve_blanks(content: &str) -> Cow<'_, str> {
-    if !content.contains("\n\n") { return Cow::Borrowed(content); }
+    if !content.contains("\n\n") {
+        return Cow::Borrowed(content);
+    }
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
     let mut in_fence = false;
@@ -332,12 +364,19 @@ fn push_segment(out: &mut String, segment: &str, in_fence: bool) {
     while let Some(relative) = segment[scanned..].find('\n') {
         let at = scanned + relative;
         scanned = at + 1;
-        if segment.as_bytes().get(scanned) != Some(&b'\n') { continue; }
+        if segment.as_bytes().get(scanned) != Some(&b'\n') {
+            continue;
+        }
         out.push_str(&segment[copied..at]);
-        let run = segment.as_bytes()[at..].iter().take_while(|&&b| b == b'\n').count();
+        let run = segment.as_bytes()[at..]
+            .iter()
+            .take_while(|&&b| b == b'\n')
+            .count();
         out.push_str("\n\n");
         for index in 0..run - 1 {
-            if index > 0 { out.push_str("\n\n"); }
+            if index > 0 {
+                out.push_str("\n\n");
+            }
             out.push_str(BLANK_LINE_MARKER);
         }
         out.push_str("\n\n");
@@ -443,15 +482,22 @@ pub fn parse(prepared: &Prepared) -> Vec<Block> {
     // stack with thousands of nested quotes/lists. Preserve their literal
     // content instead of dropping the deeply nested part.
     let mut events = CheckedEvents {
-        inner: Parser::new_ext(&source, options), depth: 0, exceeded: false,
+        inner: Parser::new_ext(&source, options),
+        depth: 0,
+        exceeded: false,
     };
     let blocks = builder.blocks(&mut events);
     if events.exceeded {
         // The iterator never yielded the over-limit Start, so the partial
         // tree and builder stack are bounded too. Discard the entire result.
-        return vec![Block::Paragraph(finish(vec![Inline::Text {
-            text: prepared.source.clone(), style: Style::default(), link: None,
-        }], &prepared.mentions))];
+        return vec![Block::Paragraph(finish(
+            vec![Inline::Text {
+                text: prepared.source.clone(),
+                style: Style::default(),
+                link: None,
+            }],
+            &prepared.mentions,
+        ))];
     }
     blocks
 }
@@ -472,11 +518,16 @@ struct CheckedEvents<I> {
 impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CheckedEvents<I> {
     type Item = Event<'a>;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.exceeded { return None; }
+        if self.exceeded {
+            return None;
+        }
         let event = self.inner.next()?;
         match &event {
             Event::Start(_) => {
-                if self.depth == 64 { self.exceeded = true; return None; }
+                if self.depth == 64 {
+                    self.exceeded = true;
+                    return None;
+                }
                 self.depth += 1;
             }
             Event::End(_) => self.depth = self.depth.saturating_sub(1),
@@ -532,10 +583,13 @@ impl Builder<'_> {
                             continue;
                         }
                         second
-                    } else { None };
+                    } else {
+                        None
+                    };
                     // Replay only this paragraph's consumed prefix, without
                     // imposing a peek/buffer branch on every parser event.
-                    let inlines = self.inlines(&mut first.into_iter().chain(second).chain(events.by_ref()));
+                    let inlines =
+                        self.inlines(&mut first.into_iter().chain(second).chain(events.by_ref()));
                     blocks.push(paragraph_or_spacer(inlines, self.mentions));
                 }
                 Event::Start(Tag::Heading { level, .. }) => {
@@ -716,7 +770,8 @@ impl Builder<'_> {
             // Imagem: só http(s) vira imagem (o cliente web também a carrega);
             // qualquer outro destino fica como o texto alternativo.
             Event::Start(Tag::Image { dest_url, .. }) => {
-                self.image_text.push((dest_url.into_string(), String::new()));
+                self.image_text
+                    .push((dest_url.into_string(), String::new()));
             }
             Event::End(TagEnd::Image) => {
                 if let Some((src, alt)) = self.image_text.pop() {
@@ -773,10 +828,15 @@ fn finish(mut inlines: Vec<Inline>, mentions: &[Mention]) -> Vec<Inline> {
     // buffer is needed unless that node actually contains a sentinel.
     if inlines.len() <= 1 {
         match inlines.first_mut() {
-            Some(Inline::Text { text, .. }) if text.is_empty() => { inlines.clear(); return inlines; }
+            Some(Inline::Text { text, .. }) if text.is_empty() => {
+                inlines.clear();
+                return inlines;
+            }
             Some(Inline::Text { text, .. }) if text.contains(SENTINEL_OPEN) => {}
             Some(Inline::Code(code)) => {
-                if code.contains(SENTINEL_OPEN) { *code = restore_mentions(code, mentions); }
+                if code.contains(SENTINEL_OPEN) {
+                    *code = restore_mentions(code, mentions);
+                }
                 return inlines;
             }
             _ => return inlines,
@@ -788,19 +848,31 @@ fn finish(mut inlines: Vec<Inline>, mentions: &[Mention]) -> Vec<Inline> {
     for read in 0..inlines.len() {
         let inline = std::mem::replace(&mut inlines[read], Inline::Break);
         match (inlines[..written].last_mut(), inline) {
-            (Some(Inline::Text { text, style, link }),
-             Inline::Text { text: more, style: more_style, link: more_link })
-                if *style == more_style && *link == more_link => text.push_str(&more),
-            (_, other) => { inlines[written] = other; written += 1; }
+            (
+                Some(Inline::Text { text, style, link }),
+                Inline::Text {
+                    text: more,
+                    style: more_style,
+                    link: more_link,
+                },
+            ) if *style == more_style && *link == more_link => text.push_str(&more),
+            (_, other) => {
+                inlines[written] = other;
+                written += 1;
+            }
         }
     }
     inlines.truncate(written);
-    let needs_split = inlines.iter().any(|i| matches!(i, Inline::Text { text, .. } if text.contains(SENTINEL_OPEN)));
+    let needs_split = inlines
+        .iter()
+        .any(|i| matches!(i, Inline::Text { text, .. } if text.contains(SENTINEL_OPEN)));
     if !needs_split {
         inlines.retain_mut(|inline| match inline {
             Inline::Text { text, .. } => !text.is_empty(),
             Inline::Code(code) => {
-                if code.contains(SENTINEL_OPEN) { *code = restore_mentions(code, mentions); }
+                if code.contains(SENTINEL_OPEN) {
+                    *code = restore_mentions(code, mentions);
+                }
                 true
             }
             _ => true,
@@ -822,7 +894,11 @@ fn finish(mut inlines: Vec<Inline>, mentions: &[Mention]) -> Vec<Inline> {
 }
 
 fn restore_owned_mentions(text: String, mentions: &[Mention]) -> String {
-    if text.contains(SENTINEL_OPEN) { restore_mentions(&text, mentions) } else { text }
+    if text.contains(SENTINEL_OPEN) {
+        restore_mentions(&text, mentions)
+    } else {
+        text
+    }
 }
 
 fn split_mentions(
@@ -907,7 +983,14 @@ mod tests {
     fn excessive_nesting_preserves_literal_content_without_recursive_layout() {
         let source = format!("{}kept", "> ".repeat(2000));
         let prepared = super::substitute_mentions(&source, &[]);
-        assert_eq!(super::parse(&prepared), vec![super::Block::Paragraph(vec![super::Inline::Text {text: source, style: super::Style::default(), link: None}])]);
+        assert_eq!(
+            super::parse(&prepared),
+            vec![super::Block::Paragraph(vec![super::Inline::Text {
+                text: source,
+                style: super::Style::default(),
+                link: None
+            }])]
+        );
     }
 
     use super::*;
@@ -1247,12 +1330,16 @@ mod tests {
         let parsed = parse(&prepared);
         let inlines = only_paragraph(&parsed);
         assert_eq!(plain(&parsed), "+ @Ana teste");
-        assert!(inlines.iter().any(|inline| {
-            matches!(inline, Inline::Mention { user_id, .. } if user_id == ID)
-        }));
-        assert!(texts(inlines).iter().any(|(text, style, _)| {
-            *text == "teste" && style.bold
-        }));
+        assert!(
+            inlines.iter().any(|inline| {
+                matches!(inline, Inline::Mention { user_id, .. } if user_id == ID)
+            })
+        );
+        assert!(
+            texts(inlines)
+                .iter()
+                .any(|(text, style, _)| { *text == "teste" && style.bold })
+        );
     }
 
     #[test]
@@ -1274,9 +1361,12 @@ mod tests {
                 panic!("lista: {parsed:?}");
             };
             assert_eq!(items.len(), 1);
-            assert!(items[0].blocks.iter().all(|block| {
-                !matches!(block, Block::List { .. })
-            }));
+            assert!(
+                items[0]
+                    .blocks
+                    .iter()
+                    .all(|block| { !matches!(block, Block::List { .. }) })
+            );
             assert!(plain(&parsed).contains("+ segundo"));
         }
     }

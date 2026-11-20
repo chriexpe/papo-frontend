@@ -117,21 +117,32 @@ fn search_top_six<K: Ord, T>(candidates: impl Iterator<Item = (K, T)>) -> Vec<(K
 }
 
 fn search_members<'a>(store: &'a Store, needle: &str) -> Vec<&'a Member> {
-    search_top_six(store.members.iter().enumerate().filter_map(|(index, member)| {
-        let name = search_lowercase(&member.name);
-        let username = if needle.is_empty() {
-            Cow::Borrowed("")
-        } else {
-            search_lowercase(&member.username)
-        };
-        if !needle.is_empty() && !name.contains(needle) && !username.contains(needle) {
-            return None;
-        }
-        Some((
-            (!name.starts_with(needle), !username.starts_with(needle), name, index),
-            member,
-        ))
-    }))
+    search_top_six(
+        store
+            .members
+            .iter()
+            .enumerate()
+            .filter_map(|(index, member)| {
+                let name = search_lowercase(&member.name);
+                let username = if needle.is_empty() {
+                    Cow::Borrowed("")
+                } else {
+                    search_lowercase(&member.username)
+                };
+                if !needle.is_empty() && !name.contains(needle) && !username.contains(needle) {
+                    return None;
+                }
+                Some((
+                    (
+                        !name.starts_with(needle),
+                        !username.starts_with(needle),
+                        name,
+                        index,
+                    ),
+                    member,
+                ))
+            }),
+    )
     .into_iter()
     .map(|(_, member)| member)
     .collect()

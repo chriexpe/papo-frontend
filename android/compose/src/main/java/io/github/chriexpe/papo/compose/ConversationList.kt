@@ -83,7 +83,6 @@ internal fun ConversationList(
         }
     }
     val dimensions = LocalUiDimensions.current
-    val callActive = LocalVoiceCall.current?.active == true
     // A server owns its search; changing servers never leaks terms/results.
     var query by
         rememberSaveable(server.url, stateSaver = TextFieldValue.Saver) {
@@ -141,7 +140,7 @@ internal fun ConversationList(
         Row(
             Modifier.fillMaxWidth()
                 .padding(horizontal = dimensions.screenPadding)
-                .padding(top = 8.dp, bottom = if (callActive) 0.dp else 8.dp),
+                .padding(top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(dimensions.contentGap),
         ) {
@@ -167,7 +166,6 @@ internal fun ConversationList(
                 }
             }
         }
-        CallBrowsingHeader(Modifier.padding(horizontal = dimensions.screenPadding))
         if (server.connection != "online")
             ConnectionBanner(server.connection) { model.command(Action.Refresh, server.url) }
         OutlinedTextField(
@@ -365,14 +363,6 @@ internal fun ConversationList(
                                     onOpen = { onOpen(channel.id) },
                                     onProfile = { onProfile(channel.userId) },
                                 )
-                            else if (channel.kind == "voice")
-                                VoiceChannelItem(
-                                    server,
-                                    channel,
-                                    onOpen,
-                                    onSettings = { channelActions = it },
-                                    muted = muted(channel.id),
-                                )
                             else
                                 ChannelItem(
                                     channel,
@@ -450,8 +440,6 @@ private fun PersonItem(
 internal fun ChannelItem(
     channel: io.github.chriexpe.papo.core.ChannelView,
     onOpen: (String) -> Unit,
-    voiceSummary: String? = null,
-    joined: Boolean = false,
     onSettings: ((String) -> Unit)? = null,
     muted: Boolean = false,
 ) {
@@ -459,17 +447,15 @@ internal fun ChannelItem(
         headlineContent = {
             Text(
                 channel.name,
-                fontWeight =
-                    if (!muted && (channel.unread || joined)) FontWeight.Bold
-                    else FontWeight.Medium,
+                fontWeight = if (!muted && channel.unread) FontWeight.Bold else FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (muted) .55f else 1f),
             )
         },
         supportingContent =
-            if (voiceSummary != null || channel.topic.isNotBlank())
+            if (channel.topic.isNotBlank())
                 ({
                     Text(
-                        voiceSummary ?: channel.topic,
+                        channel.topic,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -486,9 +472,7 @@ internal fun ChannelItem(
                     Icon(
                         Icons.Outlined.VolumeUp,
                         ui(R.string.voice_channel),
-                        tint =
-                            if (joined) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 else Text("#", fontSize = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -507,10 +491,6 @@ internal fun ChannelItem(
         },
         modifier =
             Modifier.clip(RoundedCornerShape(18.dp))
-                .background(
-                    if (joined) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .35f)
-                    else androidx.compose.ui.graphics.Color.Transparent
-                )
                 .combinedClickable(
                     onClick = { onOpen(channel.id) },
                     onLongClick = onSettings?.let { action -> { action(channel.id) } },

@@ -13,8 +13,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 papo-core = { path = "../papo-core" }
-papo-call = { path = "../papo-call", optional = true }
-gstreamer = { version = "0.24", optional = true }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -28,7 +26,6 @@ base64 = "0.22"
 
 [features]
 bindgen = ["uniffi/cli"]
-calls = ["dep:papo-call", "dep:gstreamer"]
 
 [[bin]]
 name = "papo-bindgen"

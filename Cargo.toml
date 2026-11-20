@@ -9,6 +9,7 @@ members = [
     "crates/sdk/ui",
     "crates/sdk/ffi",
     "crates/sdk/test-server",
+    "tests/call-sfu/client",
 ]
 resolver = "2"
 

@@ -3,19 +3,19 @@
 //! Nada aqui é autoridade: o servidor continua mandando. Este módulo só
 //! grava e lê a projeção delimitada que a Store produz.
 
-use std::collections::HashSet;
 use base64::Engine as _;
+use std::collections::HashSet;
 
 use turso::{Builder, Connection, Value};
 
 use super::schema::apply_migrations;
 use super::types::{
-    CachedAttachment, CachedChannel, CachedDraft, CachedMember, CachedMentionBinding, CachedMessage,
-    CachedMessagePage, CachedOutgoing, CachedPreview, CachedReaction, CachedReadState, CachedServer,
-    CachedServerMetadata, CachedServerSnapshot, CachedEmoji, CachedProfileImages, CacheOp, ClaimResult,
-    NotificationLedgerEntry, NotificationLedgerStats, OutgoingState, PreviewCacheState,
-    CACHE_PAGE_SIZE, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
-    PREVIEW_CACHE_LIMIT,
+    CACHE_PAGE_SIZE, CacheOp, CachedAttachment, CachedChannel, CachedDraft, CachedEmoji,
+    CachedMember, CachedMentionBinding, CachedMessage, CachedMessagePage, CachedOutgoing,
+    CachedPreview, CachedProfileImages, CachedReaction, CachedReadState, CachedServer,
+    CachedServerMetadata, CachedServerSnapshot, ClaimResult, MESSAGE_RETENTION,
+    NOTIFICATION_LEDGER_LIMIT, NotificationLedgerEntry, NotificationLedgerStats, OUTGOING_LIMIT,
+    OutgoingState, PINNED_RETENTION, PREVIEW_CACHE_LIMIT, PreviewCacheState,
 };
 
 /// Conexão de trabalho do cache. Uma só por processo, dona de um worker.
@@ -33,7 +33,9 @@ fn text(value: &str) -> Value {
 }
 
 fn opt_text(value: Option<&str>) -> Value {
-    value.map(|v| Value::Text(v.to_owned())).unwrap_or(Value::Null)
+    value
+        .map(|v| Value::Text(v.to_owned()))
+        .unwrap_or(Value::Null)
 }
 
 fn integer(value: i64) -> Value {
@@ -74,8 +76,12 @@ const MAX_CACHED_AVATARS: i64 = 128;
 /// removes a previously cached image instead of resurrecting stale bytes.
 fn original_image(blob: &Option<String>) -> Option<Vec<u8>> {
     let encoded = blob.as_ref()?;
-    if encoded.len() > (MAX_PROFILE_IMAGE_BYTES * 4 / 3 + 8) { return None; }
-    let image = base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()).ok()?;
+    if encoded.len() > (MAX_PROFILE_IMAGE_BYTES * 4 / 3 + 8) {
+        return None;
+    }
+    let image = base64::engine::general_purpose::STANDARD
+        .decode(encoded.as_bytes())
+        .ok()?;
     (image.len() <= MAX_PROFILE_IMAGE_BYTES).then_some(image)
 }
 
@@ -898,9 +904,15 @@ impl TursoCache {
                 integer(outgoing.created_at),
                 text(outgoing.state.as_db()),
                 integer(outgoing.attempt_count as i64),
-                outgoing.last_attempt_at.map(Value::Integer).unwrap_or(Value::Null),
+                outgoing
+                    .last_attempt_at
+                    .map(Value::Integer)
+                    .unwrap_or(Value::Null),
                 opt_text(outgoing.last_error.as_deref()),
-                text(&serde_json::to_string(&outgoing.embeds).map_err(|e| turso::Error::Misuse(e.to_string()))?),
+                text(
+                    &serde_json::to_string(&outgoing.embeds)
+                        .map_err(|e| turso::Error::Misuse(e.to_string()))?,
+                ),
             ],
         )
         .await?;
@@ -930,7 +942,8 @@ impl TursoCache {
         entry: &NotificationLedgerEntry,
         limit: i64,
     ) -> Result<(ClaimResult, NotificationLedgerStats), turso::Error> {
-        self.claim_notification_with_limit(server_key, entry, limit).await
+        self.claim_notification_with_limit(server_key, entry, limit)
+            .await
     }
 
     async fn claim_notification_with_limit(
@@ -978,11 +991,7 @@ impl TursoCache {
                        ORDER BY handled_at DESC, message_id DESC
                        LIMIT ?3
                    )",
-                vec![
-                    text(server_key),
-                    text(&entry.owner_user_id),
-                    integer(limit),
-                ],
+                vec![text(server_key), text(&entry.owner_user_id), integer(limit)],
             )
             .await?;
         }
@@ -1194,10 +1203,7 @@ impl TursoCache {
     }
 
     /// Lê metadados globais de preview pelo URL canônico.
-    pub async fn load_preview(
-        &self,
-        url_key: &str,
-    ) -> Result<Option<CachedPreview>, turso::Error> {
+    pub async fn load_preview(&self, url_key: &str) -> Result<Option<CachedPreview>, turso::Error> {
         let mut rows = self
             .conn
             .query(
@@ -1236,7 +1242,8 @@ impl TursoCache {
 
     /// Grava um preview e poda a tabela global na mesma transação.
     pub async fn store_preview(&mut self, preview: &CachedPreview) -> Result<(), turso::Error> {
-        self.store_preview_with_limit(preview, PREVIEW_CACHE_LIMIT).await
+        self.store_preview_with_limit(preview, PREVIEW_CACHE_LIMIT)
+            .await
     }
 
     #[cfg(test)]
@@ -1287,7 +1294,10 @@ impl TursoCache {
                 opt_text(preview.description.as_deref()),
                 opt_text(preview.provider_name.as_deref()),
                 integer(preview.resolved_at),
-                preview.retry_after.map(Value::Integer).unwrap_or(Value::Null),
+                preview
+                    .retry_after
+                    .map(Value::Integer)
+                    .unwrap_or(Value::Null),
                 opt_text(preview.failure_class.as_deref()),
                 integer(preview.last_used_at),
                 opt_text(preview.post_meta.as_deref()),
@@ -1309,11 +1319,17 @@ impl TursoCache {
     }
 
     /// Loads only the small bounded profile asset table, never on the UI thread.
-    pub async fn load_profile_images(&self, server_key: &str) -> Result<CachedProfileImages, turso::Error> {
-        let mut rows = self.conn.query(
-            "SELECT kind, resource_id, image_data FROM profile_images WHERE server_key = ?1",
-            [server_key],
-        ).await?;
+    pub async fn load_profile_images(
+        &self,
+        server_key: &str,
+    ) -> Result<CachedProfileImages, turso::Error> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT kind, resource_id, image_data FROM profile_images WHERE server_key = ?1",
+                [server_key],
+            )
+            .await?;
         let mut images = CachedProfileImages::default();
         while let Some(row) = rows.next().await? {
             let kind: String = row.get(0)?;
@@ -1329,12 +1345,22 @@ impl TursoCache {
         Ok(images)
     }
 
-    pub async fn load_emojis(&self, server_key: &str) -> Result<Option<Vec<CachedEmoji>>, turso::Error> {
-        let mut state = self.conn.query(
-            "SELECT 1 FROM server_emojis_state WHERE server_key = ?1", [server_key]).await?;
+    pub async fn load_emojis(
+        &self,
+        server_key: &str,
+    ) -> Result<Option<Vec<CachedEmoji>>, turso::Error> {
+        let mut state = self
+            .conn
+            .query(
+                "SELECT 1 FROM server_emojis_state WHERE server_key = ?1",
+                [server_key],
+            )
+            .await?;
         let cached = state.next().await?.is_some();
         drop(state);
-        if !cached { return Ok(None); }
+        if !cached {
+            return Ok(None);
+        }
         let mut rows = self.conn.query(
             "SELECT emoji_id, name, image_data FROM server_emojis WHERE server_key = ?1 ORDER BY emoji_id",
             [server_key]).await?;
@@ -1493,7 +1519,8 @@ impl TursoCache {
         channel_id: &str,
         before: Option<(i64, u32, &str)>,
     ) -> Result<CachedMessagePage, turso::Error> {
-        self.load_channel_page_direction(server_key, channel_id, before, false, false).await
+        self.load_channel_page_direction(server_key, channel_id, before, false, false)
+            .await
     }
 
     pub(super) async fn load_channel_page_direction(
@@ -1531,7 +1558,15 @@ impl TursoCache {
             .conn
             .query(
                 &sql,
-                vec![text(server_key), text(channel_id), before_at, before_nanos, before_id, integer(limit), boolean(require_anchor)],
+                vec![
+                    text(server_key),
+                    text(channel_id),
+                    before_at,
+                    before_nanos,
+                    before_id,
+                    integer(limit),
+                    boolean(require_anchor),
+                ],
             )
             .await?;
 
@@ -1585,14 +1620,14 @@ impl TursoCache {
                 let attachments: String = row.get(8)?;
                 let reactions: String = row.get(9)?;
                 let embeds: String = row.get(10)?;
-            let external_json: Option<String> = row.get(11)?;
+                let external_json: Option<String> = row.get(11)?;
                 pins.push(CachedMessage {
                     id: row.get(0)?,
                     channel_id: row.get(1)?,
                     author_id: row.get(2)?,
                     content: row.get(3)?,
                     created_at: row.get(4)?,
-                created_at_nanos: row.get::<i64>(12)? as u32,
+                    created_at_nanos: row.get::<i64>(12)? as u32,
                     edited: row.get(5)?,
                     reply_to: row.get(6)?,
                     pinned: row.get(7)?,
@@ -1601,7 +1636,8 @@ impl TursoCache {
                     reactions: serde_json::from_str::<Vec<CachedReaction>>(&reactions)
                         .unwrap_or_default(),
                     embeds: serde_json::from_str(&embeds).unwrap_or_default(),
-                external_author: external_json.and_then(|value| serde_json::from_str(&value).ok()),
+                    external_author: external_json
+                        .and_then(|value| serde_json::from_str(&value).ok()),
                 });
             }
         }
@@ -1752,37 +1788,79 @@ impl TursoCache {
     }
 }
 
-
 #[cfg(test)]
 mod draft_decode_tests {
     use super::*;
 
     #[tokio::test]
     async fn unchanged_messages_do_not_write_but_edits_and_history_promotion_do() {
-        let directory = std::env::temp_dir().join(format!("papo-write-dedup-{}-{}",
-            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let directory = std::env::temp_dir().join(format!(
+            "papo-write-dedup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&directory).unwrap();
         {
-            let cache = TursoCache::open(directory.join("cache.db").to_str().unwrap()).await.unwrap();
+            let cache = TursoCache::open(directory.join("cache.db").to_str().unwrap())
+                .await
+                .unwrap();
             let api: crate::api::models::Message = serde_json::from_value(serde_json::json!({
                 "id":"m1", "channel_id":"chat", "author_id":"me", "content":"cached",
                 "created_at":"2026-10-27T00:00:00.123456789Z"
-            })).unwrap();
+            }))
+            .unwrap();
             let mut message = CachedMessage::from_api(&api);
-            cache.conn.execute(UPSERT_MESSAGE, message_params("server", &message)).await.unwrap();
+            cache
+                .conn
+                .execute(UPSERT_MESSAGE, message_params("server", &message))
+                .await
+                .unwrap();
             async fn changes(cache: &TursoCache) -> i64 {
-                let mut rows = cache.conn.query("SELECT total_changes()", ()).await.unwrap();
+                let mut rows = cache
+                    .conn
+                    .query("SELECT total_changes()", ())
+                    .await
+                    .unwrap();
                 rows.next().await.unwrap().unwrap().get(0).unwrap()
             }
             let initial = changes(&cache).await;
-            cache.conn.execute(UPSERT_MESSAGE, message_params("server", &message)).await.unwrap();
+            cache
+                .conn
+                .execute(UPSERT_MESSAGE, message_params("server", &message))
+                .await
+                .unwrap();
             assert_eq!(changes(&cache).await, initial);
             message.content = "edited".into();
-            cache.conn.execute(UPSERT_MESSAGE, message_params("server", &message)).await.unwrap();
+            cache
+                .conn
+                .execute(UPSERT_MESSAGE, message_params("server", &message))
+                .await
+                .unwrap();
             assert_eq!(changes(&cache).await, initial + 1);
-            cache.conn.execute(UPSERT_TIMELINE_MESSAGE.as_str(), message_params("server", &message)).await.unwrap();
-            assert_eq!(changes(&cache).await, initial + 2, "Same body still needs timeline promotion");
-            cache.conn.execute(UPSERT_TIMELINE_MESSAGE.as_str(), message_params("server", &message)).await.unwrap();
+            cache
+                .conn
+                .execute(
+                    UPSERT_TIMELINE_MESSAGE.as_str(),
+                    message_params("server", &message),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                changes(&cache).await,
+                initial + 2,
+                "Same body still needs timeline promotion"
+            );
+            cache
+                .conn
+                .execute(
+                    UPSERT_TIMELINE_MESSAGE.as_str(),
+                    message_params("server", &message),
+                )
+                .await
+                .unwrap();
             assert_eq!(changes(&cache).await, initial + 2);
         }
         std::fs::remove_dir_all(directory).unwrap();

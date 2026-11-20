@@ -1,11 +1,13 @@
 package io.github.chriexpe.papo.compose
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.platform.LocalContext
 import java.net.URI
 
 /** SDK 37 protects LAN servers too; public-server connections do not need this permission. */
@@ -32,18 +34,19 @@ internal fun localServer(url: String): Boolean {
 
 @Composable
 internal fun LocalNetworkPermission(model: PapoViewModel, servers: List<ServerState>) {
+    val context = LocalContext.current
     var asked by rememberSaveable { mutableStateOf(false) }
     val launcher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
-            if (allowed) model.resume()
-            else model.voiceCalls.reportError("local-network-permission")
+            if (allowed) model.resume() else model.reportLocalNetworkPermissionDenied()
         }
     val required = servers.any { localServer(it.url) }
     LaunchedEffect(required) {
         if (
             required &&
                 !asked &&
-                !AndroidCallRuntime.granted(Manifest.permission.ACCESS_LOCAL_NETWORK)
+                context.checkSelfPermission(Manifest.permission.ACCESS_LOCAL_NETWORK) !=
+                    PackageManager.PERMISSION_GRANTED
         ) {
             asked = true
             launcher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)

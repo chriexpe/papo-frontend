@@ -1,3 +1,5 @@
+//! Platform defaults and host-provided device elements. Focus, permissions and routing belong to the host.
+
 #[cfg(target_os = "android")]
 use gstreamer as gst;
 #[cfg(target_os = "android")]
@@ -66,75 +68,40 @@ fn camera_source_candidates_for(platform: GstPlatform) -> &'static [&'static str
     }
 }
 
-pub fn prepare_environment() {
-    #[cfg(target_os = "macos")]
-    {
-        let Ok(exe) = std::env::current_exe() else {
-            return;
-        };
-        let Some(contents) = exe.parent().and_then(|p| p.parent()) else {
-            return;
-        };
-        let plugins = contents.join("PlugIns");
-        if plugins.is_dir() {
-            // Set once before gst::init spawns native worker threads.
-            unsafe {
-                std::env::set_var("GST_PLUGIN_PATH_1_0", &plugins);
-                std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins);
-            }
-        }
-        let scanner = contents.join("Helpers/gst-plugin-scanner");
-        if scanner.is_file() {
-            unsafe { std::env::set_var("GST_PLUGIN_SCANNER", &scanner) };
-        }
-        let gio = contents.join("Resources/gio-modules");
-        if gio.is_dir() {
-            unsafe { std::env::set_var("GIO_EXTRA_MODULES", &gio) };
-        }
+use gstreamer::Element;
+use papo_sdk::CameraFacing;
+
+/// Supplies device elements on the media executor. Return a new unparented element for each call.
+/// Implementations may select platform devices or provide deterministic sources for media proofs.
+pub trait MediaDevices: Send + Sync + 'static {
+    /// Opens a microphone source on demand. `None` enables listen-only operation.
+    fn microphone(&self) -> Option<Element> {
+        first_available(audio_source_candidates_for(current_platform()))
     }
-    #[cfg(target_os = "windows")]
-    {
-        let Ok(exe) = std::env::current_exe() else {
-            return;
-        };
-        let Some(root) = exe.parent() else { return };
 
-        let plugins = root.join("gstreamer-1.0");
-        if plugins.is_dir() {
-            // SAFETY: called once before gst::init() starts GStreamer threads.
-            unsafe {
-                std::env::set_var("GST_PLUGIN_PATH_1_0", &plugins);
-                std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins);
-            }
-        }
+    /// Opens a camera source for this facing. `None` leaves audio running.
+    fn camera(&self, _facing: CameraFacing) -> Option<Element> {
+        first_available(camera_source_candidates_for(current_platform()))
+    }
 
-        let scanner = root.join("gst-plugin-scanner.exe");
-        if scanner.is_file() {
-            unsafe { std::env::set_var("GST_PLUGIN_SCANNER", &scanner) };
-        }
-
-        let gio = root.join("gio-modules");
-        if gio.is_dir() {
-            unsafe { std::env::set_var("GIO_EXTRA_MODULES", &gio) };
-        }
+    /// Creates the single communication output for mixed audio.
+    fn speaker(&self) -> Option<Element> {
+        first_available(audio_sink_candidates_for(current_platform()))
     }
 }
 
-pub fn initialize_platform() {
+pub(crate) struct DefaultDevices;
+impl MediaDevices for DefaultDevices {}
+
+fn first_available(factories: &[&str]) -> Option<Element> {
+    factories
+        .iter()
+        .find_map(|name| crate::pipeline::element(name).ok())
+}
+
+pub(crate) fn initialize_platform() {
     #[cfg(target_os = "android")]
     demote_broken_decoders();
-}
-
-pub fn audio_sink_candidates() -> &'static [&'static str] {
-    audio_sink_candidates_for(current_platform())
-}
-
-pub fn audio_source_candidates() -> &'static [&'static str] {
-    audio_source_candidates_for(current_platform())
-}
-
-pub fn camera_source_candidates() -> &'static [&'static str] {
-    camera_source_candidates_for(current_platform())
 }
 
 #[cfg(target_os = "android")]
@@ -151,7 +118,7 @@ fn demote_broken_decoders() {
         }
     }
     if demoted > 0 {
-        log::info!("{demoted} decodificador(es) do aparelho despriorizado(s)");
+        log::debug!("Demoted {demoted} incompatible Android decoders");
     }
 }
 

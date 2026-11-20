@@ -13,12 +13,13 @@ mod tests;
 
 pub use store::TursoCache;
 pub use types::{
-    new_local_id, now_millis, CachedAttachment, CachedChannel, CachedDraft, CachedEmoji, CachedProfileImages, CachedMember,
-    CachedMentionBinding, CachedMessage, CachedMessagePage, CachedOutgoing, CachedPreview,
-    CachedReaction, CachedReadState, CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp,
-    ClaimResult, NotificationDecision, NotificationLedgerEntry, NotificationLedgerStats,
-    OutgoingState, PreviewCacheState, CACHE_PAGE_SIZE, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT,
-    OUTGOING_LIMIT, PINNED_RETENTION, PREVIEW_CACHE_LIMIT,
+    CACHE_PAGE_SIZE, CacheOp, CachedAttachment, CachedChannel, CachedDraft, CachedEmoji,
+    CachedMember, CachedMentionBinding, CachedMessage, CachedMessagePage, CachedOutgoing,
+    CachedPreview, CachedProfileImages, CachedReaction, CachedReadState, CachedServer,
+    CachedServerMetadata, CachedServerSnapshot, ClaimResult, MESSAGE_RETENTION,
+    NOTIFICATION_LEDGER_LIMIT, NotificationDecision, NotificationLedgerEntry,
+    NotificationLedgerStats, OUTGOING_LIMIT, OutgoingState, PINNED_RETENTION, PREVIEW_CACHE_LIMIT,
+    PreviewCacheState, new_local_id, now_millis,
 };
 
 use std::collections::VecDeque;
@@ -65,11 +66,7 @@ impl CacheStats {
             written: self.written.load(Ordering::Relaxed),
             write_failures: self.write_failures.load(Ordering::Relaxed),
             restores: self.restores.load(Ordering::Relaxed),
-            last_error: self
-                .last_error
-                .lock()
-                .ok()
-                .and_then(|error| error.clone()),
+            last_error: self.last_error.lock().ok().and_then(|error| error.clone()),
         }
     }
 }
@@ -141,9 +138,7 @@ enum WorkerMsg {
     ClaimNotification {
         server_key: String,
         entry: NotificationLedgerEntry,
-        reply: std::sync::mpsc::Sender<
-            Result<(ClaimResult, NotificationLedgerStats), String>,
-        >,
+        reply: std::sync::mpsc::Sender<Result<(ClaimResult, NotificationLedgerStats), String>>,
     },
     LoadPreview {
         url_key: String,
@@ -210,7 +205,15 @@ impl ClientDb {
 
         let spawned = std::thread::Builder::new()
             .name("papo-cache".to_owned())
-            .spawn(move || worker(queue_rx, worker_pending, ready_tx, worker_path, worker_stats));
+            .spawn(move || {
+                worker(
+                    queue_rx,
+                    worker_pending,
+                    ready_tx,
+                    worker_path,
+                    worker_stats,
+                )
+            });
 
         if let Err(error) = spawned {
             log::warn!("cache: worker não abriu: {error}");
@@ -554,20 +557,34 @@ impl ClientDb {
     }
 
     pub fn load_profile_images_async(
-        &self, server_key: &str,
+        &self,
+        server_key: &str,
     ) -> Option<std::sync::mpsc::Receiver<Result<CachedProfileImages, String>>> {
         let (tx, rx) = std::sync::mpsc::channel();
-        self.enqueue(WorkerMsg::LoadProfileImages {
-            server_key: server_key.to_owned(), reply: tx,
-        }, false).then_some(rx)
+        self.enqueue(
+            WorkerMsg::LoadProfileImages {
+                server_key: server_key.to_owned(),
+                reply: tx,
+            },
+            false,
+        )
+        .then_some(rx)
     }
 
     /// Hidratação de figurinhas no worker, sem bloquear a renderização.
     pub fn load_emojis_async(
-        &self, server_key: &str,
+        &self,
+        server_key: &str,
     ) -> Option<std::sync::mpsc::Receiver<Result<Option<Vec<CachedEmoji>>, String>>> {
         let (tx, rx) = std::sync::mpsc::channel();
-        self.enqueue(WorkerMsg::LoadEmojis { server_key: server_key.to_owned(), reply: tx }, false).then_some(rx)
+        self.enqueue(
+            WorkerMsg::LoadEmojis {
+                server_key: server_key.to_owned(),
+                reply: tx,
+            },
+            false,
+        )
+        .then_some(rx)
     }
 
     /// Enfileira uma página de timeline sem bloquear o chamador. O Receiver é
@@ -815,12 +832,17 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
             let _ = reply.send(result);
         }
         WorkerMsg::LoadProfileImages { server_key, reply } => {
-            let result = cache.load_profile_images(&server_key).await
+            let result = cache
+                .load_profile_images(&server_key)
+                .await
                 .map_err(|error| error.to_string());
             let _ = reply.send(result);
         }
         WorkerMsg::LoadEmojis { server_key, reply } => {
-            let result = cache.load_emojis(&server_key).await.map_err(|error| error.to_string());
+            let result = cache
+                .load_emojis(&server_key)
+                .await
+                .map_err(|error| error.to_string());
             let _ = reply.send(result);
         }
         WorkerMsg::LoadChannelPage {
@@ -835,7 +857,9 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
                 .load_channel_page_direction(
                     &server_key,
                     &channel_id,
-                    before.as_ref().map(|(at, nanos, id)| (*at, *nanos, id.as_str())),
+                    before
+                        .as_ref()
+                        .map(|(at, nanos, id)| (*at, *nanos, id.as_str())),
                     forward,
                     require_anchor,
                 )

@@ -963,14 +963,6 @@ internal fun ConversationScreen(
                                 )
                             }
                         }
-                        if (channel.kind == "voice") {
-                            VoiceChannelTabs(
-                                chat = true,
-                                onChat = {},
-                                onCall = { model.voiceCalls.open(server, channel.id) },
-                                flushWithHeader = true,
-                            )
-                        }
                         if (descriptionExpanded) {
                             Text(
                                 channel.topic.ifBlank {
@@ -994,7 +986,6 @@ internal fun ConversationScreen(
                         }
                     }
                 }
-                CallBrowsingHeader()
                 if (server.connection != "online")
                     GlassPill(Modifier.padding(top = 8.dp), radius = 24) {
                         ConnectionBanner(server.connection) {

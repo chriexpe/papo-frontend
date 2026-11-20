@@ -1,25 +1,26 @@
 //! Estado da aplicação, alimentado pelas respostas REST e pelos eventos do
 //! WebSocket.
 
-pub mod call;
-pub mod webhooks;
-mod previews;
 mod authorization;
-#[cfg(test)]
-mod reading_tests;
+pub mod call;
 #[cfg(test)]
 mod inbox_tests;
+mod previews;
+#[cfg(test)]
+mod reading_tests;
+pub mod webhooks;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local, Utc};
-use crate::api::models::{self, parse_hex_color, Attachment};
+use crate::api::models::{self, Attachment, parse_hex_color};
 use crate::api::net::{RefreshTicket, Update};
 use crate::api::ws::{Connection, Event};
 use crate::cache::{
-    now_millis, CachedChannel, CachedMember, CachedMessage, CachedMessagePage, CachedOutgoing,
-    CachedReadState, CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp, OutgoingState,
+    CacheOp, CachedChannel, CachedMember, CachedMessage, CachedMessagePage, CachedOutgoing,
+    CachedReadState, CachedServer, CachedServerMetadata, CachedServerSnapshot, OutgoingState,
+    now_millis,
 };
+use chrono::{DateTime, Local, Utc};
 
 pub use call::{CallState, Phase, Stage};
 
@@ -721,7 +722,6 @@ fn mention_boundary(c: char) -> bool {
     c.is_whitespace() || (!c.is_alphanumeric() && c != '_')
 }
 
-
 /// Apply one mutation to a projection without treating a standalone message
 /// as proof that the gap between two history windows has been fetched.
 fn project_messages(messages: &mut Vec<Message>, mutation: &TimelineMutation, insert: bool) {
@@ -916,9 +916,8 @@ impl Store {
             .channel(&self.selected_channel)
             .is_some_and(|channel| channel.kind == ChannelKind::Direct)
             && !keep.contains(&self.selected_channel);
-        self.channels.retain(|channel| {
-            channel.kind != ChannelKind::Direct || keep.contains(&channel.id)
-        });
+        self.channels
+            .retain(|channel| channel.kind != ChannelKind::Direct || keep.contains(&channel.id));
         self.direct_messages.clear();
         for dm in dms {
             self.upsert_direct_message(dm);
@@ -946,29 +945,41 @@ impl Store {
             .filter_map(|(index, channel)| (channel.kind != ChannelKind::Direct).then_some(index))
             .collect();
         order.sort_by_key(|&index| self.channels[index].position);
-        let explicit = self.channels.iter().any(|channel| channel.parent_id.is_some());
+        let explicit = self
+            .channels
+            .iter()
+            .any(|channel| channel.parent_id.is_some());
         // Borrow parent IDs until the final output: no temporary String clones.
         let mut categories = HashMap::new();
         if explicit {
             for channel in &self.channels {
                 // self.channel(id) historically used the first duplicate ID.
-                categories.entry(channel.id.as_str())
+                categories
+                    .entry(channel.id.as_str())
                     .or_insert(channel.kind == ChannelKind::Category);
             }
         }
         let is_category = |id: &str| categories.get(id).copied().unwrap_or(false);
         let mut current = None;
-        let parents: Vec<(usize, Option<&str>)> = order.iter().map(|&index| {
-            let channel = &self.channels[index];
-            if channel.kind == ChannelKind::Category {
-                current = Some(channel.id.as_str());
-                return (index, None);
-            }
-            let parent = if explicit {
-                channel.parent_id.as_deref().filter(|parent| is_category(parent))
-            } else { current };
-            (index, parent)
-        }).collect();
+        let parents: Vec<(usize, Option<&str>)> = order
+            .iter()
+            .map(|&index| {
+                let channel = &self.channels[index];
+                if channel.kind == ChannelKind::Category {
+                    current = Some(channel.id.as_str());
+                    return (index, None);
+                }
+                let parent = if explicit {
+                    channel
+                        .parent_id
+                        .as_deref()
+                        .filter(|parent| is_category(parent))
+                } else {
+                    current
+                };
+                (index, parent)
+            })
+            .collect();
         let mut children: HashMap<&str, Vec<usize>> = HashMap::new();
         for &(index, parent) in &parents {
             if let Some(parent) = parent {
@@ -977,13 +988,19 @@ impl Store {
         }
         let mut layout = Vec::with_capacity(parents.len());
         for &(index, parent) in &parents {
-            if parent.is_some() { continue; }
+            if parent.is_some() {
+                continue;
+            }
             layout.push((index, None));
             let channel = &self.channels[index];
             if channel.kind == ChannelKind::Category
                 && let Some(children) = children.get(channel.id.as_str())
             {
-                layout.extend(children.iter().map(|&child| (child, Some(channel.id.clone()))));
+                layout.extend(
+                    children
+                        .iter()
+                        .map(|&child| (child, Some(channel.id.clone()))),
+                );
             }
         }
         layout
@@ -995,7 +1012,10 @@ impl Store {
     pub fn move_channel_local(&mut self, id: &str, new_position: i32, parent: Option<String>) {
         let mut order: Vec<usize> = (0..self.channels.len()).collect();
         order.sort_by_key(|&index| self.channels[index].position);
-        let Some(from) = order.iter().position(|&index| self.channels[index].id == id) else {
+        let Some(from) = order
+            .iter()
+            .position(|&index| self.channels[index].id == id)
+        else {
             return;
         };
         let moved = order.remove(from);
@@ -1039,8 +1059,10 @@ impl Store {
     /// pessoa no servidor.
     pub fn encode_mentions(&self, text: &str, bindings: &[MentionBinding]) -> String {
         // Collecting preserves the original last-binding-wins precedence.
-        let bindings_by_start: HashMap<usize, &MentionBinding> = bindings.iter()
-            .map(|binding| (binding.start, binding)).collect();
+        let bindings_by_start: HashMap<usize, &MentionBinding> = bindings
+            .iter()
+            .map(|binding| (binding.start, binding))
+            .collect();
         let mut out = String::with_capacity(text.len());
         let mut from = 0;
         let mut char_offset = 0;
@@ -1060,32 +1082,50 @@ impl Store {
                 continue;
             }
 
-            let boundary = text[..at].chars().next_back()
+            let boundary = text[..at]
+                .chars()
+                .next_back()
                 .is_none_or(|ch| mention_boundary(ch) && ch != '<');
-            let global = boundary && ["everyone", "todos"].iter().any(|word| {
-                rest.get(..word.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(word))
-                    && rest[word.len()..].chars().next().is_none_or(mention_boundary)
-            });
+            let global = boundary
+                && ["everyone", "todos"].iter().any(|word| {
+                    rest.get(..word.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(word))
+                        && rest[word.len()..]
+                            .chars()
+                            .next()
+                            .is_none_or(mention_boundary)
+                });
             if boundary && !global {
                 // Find the longest label and its ambiguity count in one pass.
                 // Equal-length matches retain the first member, as the stable sort did.
                 let mut best: Option<&Member> = None;
                 let mut duplicates = 0;
                 for member in &self.members {
-                    if !rest.get(..member.name.len()).is_some_and(|s| s.eq_ignore_ascii_case(&member.name)) {
+                    if !rest
+                        .get(..member.name.len())
+                        .is_some_and(|s| s.eq_ignore_ascii_case(&member.name))
+                    {
                         continue;
                     }
                     match best {
                         Some(old) if old.name.len() > member.name.len() => {}
                         Some(old) if old.name.len() == member.name.len() => {
-                            if old.name.eq_ignore_ascii_case(&member.name) { duplicates += 1; }
+                            if old.name.eq_ignore_ascii_case(&member.name) {
+                                duplicates += 1;
+                            }
                         }
-                        _ => { best = Some(member); duplicates = 1; }
+                        _ => {
+                            best = Some(member);
+                            duplicates = 1;
+                        }
                     }
                 }
                 if let Some(member) = best
                     && duplicates == 1
-                    && rest[member.name.len()..].chars().next().is_none_or(mention_boundary)
+                    && rest[member.name.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(mention_boundary)
                 {
                     out.push_str("@mention(<@");
                     out.push_str(&member.id);
@@ -1121,7 +1161,9 @@ impl Store {
         let mut output_chars = 0;
         while let Some(start) = rest.find(PREFIX) {
             let id_start = start + PREFIX.len();
-            let Some(end) = rest[id_start..].find(">)") else { break };
+            let Some(end) = rest[id_start..].find(">)") else {
+                break;
+            };
             let id = &rest[id_start..id_start + end];
             if id.is_empty() {
                 // Keep malformed tokens literal, and continue looking after the prefix.
@@ -1151,15 +1193,16 @@ impl Store {
         self.reaction_details_loading.insert(message_id.to_owned())
     }
 
-    pub fn reaction_details_cursor(
-        &self,
-        message_id: &str,
-    ) -> Option<(DateTime<Utc>, String)> {
+    pub fn reaction_details_cursor(&self, message_id: &str) -> Option<(DateTime<Utc>, String)> {
         self.reaction_details
             .get(message_id)?
             .iter()
             .flat_map(|group| group.users.iter())
-            .min_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)))
+            .min_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| a.id.cmp(&b.id))
+            })
             .map(|user| (user.created_at, user.id.clone()))
     }
 
@@ -1471,9 +1514,7 @@ impl Store {
     }
 
     /// Only restore images whose authoritative response has not arrived.
-    pub fn restore_cached_profile_images(
-        &mut self, images: crate::cache::CachedProfileImages,
-    ) {
+    pub fn restore_cached_profile_images(&mut self, images: crate::cache::CachedProfileImages) {
         if !self.server_icon_fresh
             && let Some(icon) = images.server_icon
             && let Some(server) = self.server.as_mut()
@@ -1488,11 +1529,18 @@ impl Store {
     }
 
     pub fn restore_cached_emojis(&mut self, emojis: Vec<crate::cache::CachedEmoji>) {
-        if self.emojis_fresh { return; }
+        if self.emojis_fresh {
+            return;
+        }
         self.emojis_cached = true;
-        self.emojis = emojis.into_iter().map(|emoji| CustomEmoji {
-            id: emoji.id, name: emoji.name, blob: emoji.blob,
-        }).collect();
+        self.emojis = emojis
+            .into_iter()
+            .map(|emoji| CustomEmoji {
+                id: emoji.id,
+                name: emoji.name,
+                blob: emoji.blob,
+            })
+            .collect();
     }
 
     /// Compatibilidade interna/testes: restaura o snapshot integral antigo.
@@ -1614,13 +1662,14 @@ impl Store {
         let timelines = ids
             .into_iter()
             .map(|channel_id| {
-                let active_refresh = self.loading_channels.get(&channel_id).map(|refresh| {
-                    RefreshDiagnostics {
-                        generation: refresh.ticket.generation,
-                        request_id: refresh.ticket.request_id,
-                        barrier_revision: refresh.barrier_revision,
-                    }
-                });
+                let active_refresh =
+                    self.loading_channels
+                        .get(&channel_id)
+                        .map(|refresh| RefreshDiagnostics {
+                            generation: refresh.ticket.generation,
+                            request_id: refresh.ticket.request_id,
+                            barrier_revision: refresh.barrier_revision,
+                        });
                 let (journal_revision, journal_entries) = self
                     .mutation_journals
                     .get(&channel_id)
@@ -1866,7 +1915,10 @@ impl Store {
             return None;
         }
         let cursor = if self.browsing_history(channel_id) {
-            self.message_contexts.get(channel_id)?.older_server_cursor.clone()?
+            self.message_contexts
+                .get(channel_id)?
+                .older_server_cursor
+                .clone()?
         } else {
             self.history_server_cursor.get(channel_id)?.clone()
         };
@@ -1895,7 +1947,11 @@ impl Store {
         }
         // Cached previews may extend beyond the authoritative window. They must not move the
         // HTTP cursor past unvalidated rows, including deletions absent from the cached copy.
-        let cursor = self.message_contexts.get(channel_id)?.newer_server_cursor.clone()?;
+        let cursor = self
+            .message_contexts
+            .get(channel_id)?
+            .newer_server_cursor
+            .clone()?;
         self.reserve_history(channel_id, cursor.clone(), true);
         Some(cursor)
     }
@@ -1908,12 +1964,16 @@ impl Store {
         }
         let request = &self.history_requests[&ticket.channel_id];
         if page.messages.iter().any(|message| {
-            let key = (message.to_store().at.with_timezone(&Utc), message.id.clone());
-            message.channel_id != ticket.channel_id || if request.forward {
-                key <= request.cursor
-            } else {
-                key >= request.cursor
-            }
+            let key = (
+                message.to_store().at.with_timezone(&Utc),
+                message.id.clone(),
+            );
+            message.channel_id != ticket.channel_id
+                || if request.forward {
+                    key <= request.cursor
+                } else {
+                    key >= request.cursor
+                }
         }) {
             return;
         }
@@ -1922,12 +1982,16 @@ impl Store {
         if let Some(context) = self.message_contexts.get_mut(&ticket.channel_id) {
             for message in page.messages {
                 if !context.messages.iter().any(|known| known.id == message.id) {
-                    project_messages(&mut context.messages,
-                        &TimelineMutation::MessageUpsert(message.to_store()), true);
+                    project_messages(
+                        &mut context.messages,
+                        &TimelineMutation::MessageUpsert(message.to_store()),
+                        true,
+                    );
                 }
             }
         } else if !forward {
-            self.cache_history_has_more.insert(ticket.channel_id.clone(), page.has_more);
+            self.cache_history_has_more
+                .insert(ticket.channel_id.clone(), page.has_more);
             for message in page.messages {
                 if !self.timeline_ids.contains(&message.id) {
                     self.timeline_ids.insert(message.id.clone());
@@ -2045,7 +2109,10 @@ impl Store {
         }
         let id = &self.selected_channel;
         if id.is_empty()
-            || matches!(self.timeline_status(id), TimelineStatus::Fresh | TimelineStatus::Refreshing)
+            || matches!(
+                self.timeline_status(id),
+                TimelineStatus::Fresh | TimelineStatus::Refreshing
+            )
         {
             return None;
         }
@@ -2090,7 +2157,11 @@ impl Store {
     }
 
     fn record_timeline_mutation(&mut self, channel_id: &str, mutation: TimelineMutation) {
-        for request in self.preview_requests.values_mut().filter(|r| r.ticket.channel_id == channel_id) {
+        for request in self
+            .preview_requests
+            .values_mut()
+            .filter(|r| r.ticket.channel_id == channel_id)
+        {
             request.mutations.push(mutation.clone());
         }
         if let Some(request) = self.pin_requests.get_mut(channel_id) {
@@ -2127,7 +2198,12 @@ impl Store {
             .chain(self.preview_messages.iter())
             .find(|message| message.id == message_id)
             .map(|message| message.channel_id.clone())
-            .or_else(|| self.search_results.iter().find(|r|r.id == message_id).map(|r|r.channel_id.clone()))
+            .or_else(|| {
+                self.search_results
+                    .iter()
+                    .find(|r| r.id == message_id)
+                    .map(|r| r.channel_id.clone())
+            })
             .or_else(|| {
                 self.mutation_journals
                     .iter()
@@ -2512,14 +2588,21 @@ impl Store {
             });
             return;
         }
-        if let Some(message) = self.messages.iter()
-            .chain(self.message_contexts.values().flat_map(|context| context.messages.iter()))
+        if let Some(message) = self
+            .messages
+            .iter()
+            .chain(
+                self.message_contexts
+                    .values()
+                    .flat_map(|context| context.messages.iter()),
+            )
             .chain(self.pinned_messages.values().flatten())
             .find(|message| message.id == message_id)
             && !message.pending
         {
             let cached = CachedMessage::from_store(message);
-            self.pending_cache.push(CacheOp::UpsertDetachedMessage(cached));
+            self.pending_cache
+                .push(CacheOp::UpsertDetachedMessage(cached));
         }
     }
 
@@ -2611,7 +2694,7 @@ impl Store {
             _ => false,
         };
         project_messages(&mut self.preview_messages, &mutation, false);
-        if let TimelineMutation::MessageDelete {id} = &mutation {
+        if let TimelineMutation::MessageDelete { id } = &mutation {
             self.search_results.retain(|result| &result.id != id);
         }
         project_messages(&mut self.messages, &mutation, insert_in_head);
@@ -2805,12 +2888,8 @@ impl Store {
     }
 
     fn message_key(&self, message_id: &str) -> Option<(DateTime<Utc>, String)> {
-        self.message(message_id).map(|message| {
-            (
-                message.at.with_timezone(&Utc),
-                message.id.clone(),
-            )
-        })
+        self.message(message_id)
+            .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
     }
 
     fn frontier_key(&self, channel_id: &str) -> Option<(DateTime<Utc>, String)> {
@@ -2866,7 +2945,9 @@ impl Store {
             .acknowledged_key(channel_id)
             .max(self.frontier_key(channel_id));
         let has_newer = self
-            .messages.iter().filter(|message| message.channel_id == channel_id)
+            .messages
+            .iter()
+            .filter(|message| message.channel_id == channel_id)
             .filter(|message| !message.pending && message.author_id != self.me)
             .any(|message| {
                 let key = (message.at.with_timezone(&Utc), message.id.clone());
@@ -2876,7 +2957,11 @@ impl Store {
             .read_states
             .get(channel_id)
             .map_or(0, |state| state.unread_mentions.len() as u32);
-        if let Some(channel) = self.channels.iter_mut().find(|channel| channel.id == channel_id) {
+        if let Some(channel) = self
+            .channels
+            .iter_mut()
+            .find(|channel| channel.id == channel_id)
+        {
             channel.unread = has_newer || mentions > 0;
             channel.mentions = mentions;
         }
@@ -2886,11 +2971,14 @@ impl Store {
     /// new server window. An own message or pin is valid evidence when it
     /// belongs to that history, but an isolated send or pin snapshot is not.
     fn local_region_touches(&self, channel_id: &str, window_ids: &HashSet<String>) -> bool {
-        self.messages.iter().filter(|message| message.channel_id == channel_id).any(|message| {
-            !message.pending
-                && self.timeline_ids.contains(&message.id)
-                && window_ids.contains(&message.id)
-        })
+        self.messages
+            .iter()
+            .filter(|message| message.channel_id == channel_id)
+            .any(|message| {
+                !message.pending
+                    && self.timeline_ids.contains(&message.id)
+                    && window_ids.contains(&message.id)
+            })
     }
 
     /// Há mensagem carregada depois de uma fronteira de leitura conhecida.
@@ -3327,7 +3415,13 @@ impl Store {
     fn text_mentions_me(&self, text: &str, author: &str) -> bool {
         let everyone = self.can_mention_everyone(author);
         crate::notification::mentions_user(text, &self.me, &self.my_name, author, everyone)
-            || crate::notification::mentions_user(text, &self.me, &self.my_username, author, everyone)
+            || crate::notification::mentions_user(
+                text,
+                &self.me,
+                &self.my_username,
+                author,
+                everyone,
+            )
             || (author != self.me && self.mentions_my_role(text))
     }
 
@@ -3487,8 +3581,11 @@ impl Store {
     #[cfg(debug_assertions)]
     pub fn reading_diagnostics(&self, channel_id: &str) -> serde_json::Value {
         let state = self.read_states.get(channel_id);
-        let keys: Vec<_> = self.messages_in(channel_id).filter(|m| !m.pending)
-            .map(|m| (m.at.with_timezone(&Utc), m.id.clone())).collect();
+        let keys: Vec<_> = self
+            .messages_in(channel_id)
+            .filter(|m| !m.pending)
+            .map(|m| (m.at.with_timezone(&Utc), m.id.clone()))
+            .collect();
         serde_json::json!({
             "owner": self.me, "channel": channel_id,
             "frontier": self.frontier_key(channel_id),
@@ -3754,7 +3851,10 @@ impl Store {
     }
 
     pub fn can_open_server_admin(&self) -> bool {
-        self.can_manage_server() || self.can_manage_channels() || self.can_manage_roles() || self.can_manage_webhooks()
+        self.can_manage_server()
+            || self.can_manage_channels()
+            || self.can_manage_roles()
+            || self.can_manage_webhooks()
     }
 
     // -- Atualizações ------------------------------------------------------
@@ -3764,8 +3864,12 @@ impl Store {
         match update {
             Update::Session(Some(me)) => {
                 self.webhooks = Default::default();
-                if self.me != me.id { self.inbox.reset(); self.inbox_error = None; }
-                else { self.inbox.invalidate_requests(); }
+                if self.me != me.id {
+                    self.inbox.reset();
+                    self.inbox_error = None;
+                } else {
+                    self.inbox.invalidate_requests();
+                }
                 self.me = me.id.clone();
                 self.my_name = me.display_name().to_owned();
                 self.my_username = me.username.clone();
@@ -3817,12 +3921,16 @@ impl Store {
             Update::Server(server) => {
                 // Move the API-owned base64 icon into the Store. Only persistence
                 // needs a second owned copy, and only when the icon has changed.
-                let new_icon = server.as_ref().and_then(|server|
-                    server.icon_blob.as_ref().filter(|blob| !blob.is_empty())
-                );
+                let new_icon = server
+                    .as_ref()
+                    .and_then(|server| server.icon_blob.as_ref().filter(|blob| !blob.is_empty()));
                 self.server_icon_fresh = true;
                 let changed = self.server.as_ref().and_then(|s| s.icon.as_ref()) != new_icon;
-                self.screen = if server.is_some() { Screen::Chat } else { Screen::NeedsServer };
+                self.screen = if server.is_some() {
+                    Screen::Chat
+                } else {
+                    Screen::NeedsServer
+                };
                 let updated = server.map(|server| Server {
                     name: server.name,
                     description: server.owner_username.map(|owner| format!("de {owner}")),
@@ -3847,7 +3955,10 @@ impl Store {
                         )));
                 }
             }
-            Update::ChannelNotificationSetting { channel_id, setting } => {
+            Update::ChannelNotificationSetting {
+                channel_id,
+                setting,
+            } => {
                 if let Some(channel) = self.channels.iter_mut().find(|c| c.id == channel_id) {
                     channel.notification_settings = setting;
                 }
@@ -3882,10 +3993,8 @@ impl Store {
                     .into_iter()
                     .filter(|channel| channel.kind != "category")
                     .map(|channel| {
-                        let (unread, mentions) = previous
-                            .get(&channel.id)
-                            .copied()
-                            .unwrap_or((false, 0));
+                        let (unread, mentions) =
+                            previous.get(&channel.id).copied().unwrap_or((false, 0));
                         // Sem marca local, o canal conta como visto: o
                         // servidor não guarda o último lido.
                         let mark = self.read_marks.get(&channel.id).copied();
@@ -3956,7 +4065,9 @@ impl Store {
                 self.busy = false;
             }
             Update::DirectMessageHidden(id) => {
-                let remaining = self.direct_messages.iter()
+                let remaining = self
+                    .direct_messages
+                    .iter()
                     .filter(|dm| dm.id != id)
                     .cloned()
                     .collect();
@@ -3966,7 +4077,9 @@ impl Store {
             Update::UserBlockChanged { user_id, blocked } => {
                 if blocked {
                     self.blocked_users.insert(user_id.clone());
-                    let remaining = self.direct_messages.iter()
+                    let remaining = self
+                        .direct_messages
+                        .iter()
                         .filter(|dm| dm.user.id != user_id)
                         .cloned()
                         .collect();
@@ -3978,7 +4091,9 @@ impl Store {
             }
             Update::BlockedUsers(users) => {
                 self.blocked_users = users.into_iter().map(|user| user.id).collect();
-                let remaining = self.direct_messages.iter()
+                let remaining = self
+                    .direct_messages
+                    .iter()
                     .filter(|dm| !self.is_user_blocked(&dm.user.id))
                     .cloned()
                     .collect();
@@ -4014,7 +4129,8 @@ impl Store {
                     self.avatars_fresh.insert(id.clone());
                     if self.avatars.get(&id) != avatar.as_ref() {
                         self.pending_cache.push(CacheOp::SetAvatar {
-                            user_id: id.clone(), blob: avatar.clone(),
+                            user_id: id.clone(),
+                            blob: avatar.clone(),
                         });
                         match avatar {
                             Some(blob) => {
@@ -4035,10 +4151,7 @@ impl Store {
                                 .description
                                 .clone()
                                 .filter(|text| !text.trim().is_empty()),
-                            banner: profile
-                                .banner_media
-                                .clone()
-                                .filter(|sha| !sha.is_empty()),
+                            banner: profile.banner_media.clone().filter(|sha| !sha.is_empty()),
                             created_at: profile
                                 .created_at
                                 .as_deref()
@@ -4059,8 +4172,10 @@ impl Store {
                         self.my_username = username.clone();
                     }
                     if let Some(member) = self.members.iter_mut().find(|member| member.id == id) {
-                        members_changed |= member.username != username || member.name != name
-                            || member.roles != roles || member.role_color != color;
+                        members_changed |= member.username != username
+                            || member.name != name
+                            || member.roles != roles
+                            || member.role_color != color;
                         member.username = username;
                         member.name = name;
                         member.status_message = status_message;
@@ -4105,11 +4220,17 @@ impl Store {
                 let has_more = has_more && !messages.is_empty();
                 if let Some(context) = self.message_contexts.get_mut(&channel_id) {
                     let from = self.history_requests[&channel_id].cursor.clone();
-                    let end = messages.iter().map(|message| (message.created_at, message.id.clone())).min();
-                    let present: HashSet<_> = messages.iter().map(|message| message.id.clone()).collect();
+                    let end = messages
+                        .iter()
+                        .map(|message| (message.created_at, message.id.clone()))
+                        .min();
+                    let present: HashSet<_> =
+                        messages.iter().map(|message| message.id.clone()).collect();
                     context.messages.retain(|message| {
                         let key = (message.at.with_timezone(&Utc), message.id.clone());
-                        message.pending || key >= from || present.contains(&message.id)
+                        message.pending
+                            || key >= from
+                            || present.contains(&message.id)
                             || (has_more && end.as_ref().is_some_and(|last| key < *last))
                     });
                     if let Some(end) = end {
@@ -4203,12 +4324,18 @@ impl Store {
                 let channel_id = &ticket.channel_id;
                 let barrier = self.history_requests[channel_id].barrier_revision;
                 let from = self.history_requests[channel_id].cursor.clone();
-                let end = messages.iter().map(|message| (message.created_at, message.id.clone())).max();
-                let present: HashSet<_> = messages.iter().map(|message| message.id.clone()).collect();
+                let end = messages
+                    .iter()
+                    .map(|message| (message.created_at, message.id.clone()))
+                    .max();
+                let present: HashSet<_> =
+                    messages.iter().map(|message| message.id.clone()).collect();
                 if let Some(context) = self.message_contexts.get_mut(channel_id) {
                     context.messages.retain(|message| {
                         let key = (message.at.with_timezone(&Utc), message.id.clone());
-                        message.pending || key <= from || present.contains(&message.id)
+                        message.pending
+                            || key <= from
+                            || present.contains(&message.id)
                             || (has_more && end.as_ref().is_some_and(|last| key > *last))
                     });
                     if let Some(end) = end {
@@ -4285,10 +4412,12 @@ impl Store {
                 self.message_contexts.insert(
                     ticket.channel_id.clone(),
                     HistoryContext {
-                        older_server_cursor: messages.first().map(|message|
-                            (message.at.with_timezone(&Utc), message.id.clone())),
-                        newer_server_cursor: messages.last().map(|message|
-                            (message.at.with_timezone(&Utc), message.id.clone())),
+                        older_server_cursor: messages
+                            .first()
+                            .map(|message| (message.at.with_timezone(&Utc), message.id.clone())),
+                        newer_server_cursor: messages
+                            .last()
+                            .map(|message| (message.at.with_timezone(&Utc), message.id.clone())),
                         messages,
                         has_older: context.has_more_before,
                         has_newer: context.has_more_after,
@@ -4319,14 +4448,18 @@ impl Store {
                 self.mutation_journals.remove(&ticket.channel_id);
             }
             Update::UserSettingsPatched { owner, result, .. } => {
-                if owner != self.me { return; }
+                if owner != self.me {
+                    return;
+                }
                 match result {
                     Ok(settings) => self.apply(Update::UserSettings(settings)),
                     Err(message) => self.error = Some(message),
                 }
             }
             Update::UserSettings(settings) => {
-                if self.me.is_empty() || settings.user_id != self.me { return; }
+                if self.me.is_empty() || settings.user_id != self.me {
+                    return;
+                }
                 let mut settings = *settings;
                 settings.config = settings.config.normalised();
                 self.user_settings = Some(settings);
@@ -4335,7 +4468,11 @@ impl Store {
                 self.devices = devices;
                 self.busy = false;
             }
-            Update::AuditLogs { logs, has_more, append } => {
+            Update::AuditLogs {
+                logs,
+                has_more,
+                append,
+            } => {
                 if append {
                     self.audit_logs.extend(logs);
                 } else {
@@ -4344,8 +4481,13 @@ impl Store {
                 self.audit_has_more = has_more;
                 self.busy = false;
             }
-            Update::Done | Update::PasswordResetLink { .. } | Update::PasswordRecovered => self.busy = false,
-            Update::SearchFailed { generation, message } => {
+            Update::Done | Update::PasswordResetLink { .. } | Update::PasswordRecovered => {
+                self.busy = false
+            }
+            Update::SearchFailed {
+                generation,
+                message,
+            } => {
                 if generation == self.search_generation {
                     self.searching = false;
                     self.error = Some(message);
@@ -4357,10 +4499,16 @@ impl Store {
                 has_more,
                 append,
             } => {
-                if generation != self.search_generation { return; }
+                if generation != self.search_generation {
+                    return;
+                }
                 if append {
                     for result in results {
-                        if !self.search_results.iter().any(|existing| existing.id == result.id) {
+                        if !self
+                            .search_results
+                            .iter()
+                            .any(|existing| existing.id == result.id)
+                        {
                             self.search_results.push(result);
                         }
                     }
@@ -4370,7 +4518,7 @@ impl Store {
                 self.search_has_more = has_more;
                 self.searching = false;
             }
-            Update::ReactionComplete { .. } => {},
+            Update::ReactionComplete { .. } => {}
             Update::ReactionDetailsFailed { message_id } => {
                 self.reaction_details_loading.remove(&message_id);
             }
@@ -4398,7 +4546,8 @@ impl Store {
                         target.push(incoming);
                     }
                 }
-                self.reaction_details_has_more.insert(message_id.clone(), has_more);
+                self.reaction_details_has_more
+                    .insert(message_id.clone(), has_more);
                 self.reaction_details_loading.remove(&message_id);
             }
             // Chega depois da lista nova, então o canal já está lá.
@@ -4414,9 +4563,13 @@ impl Store {
                     let role_color = role_color(&user.roles);
                     let roles = user.roles.iter().map(|role| role.id.clone()).collect();
                     let name = user.display_name().to_owned();
-                    if let Some(member) = self.members.iter_mut().find(|member| member.id == user.id) {
-                        changed |= member.username != user.username || member.name != name
-                            || member.banned != user.banned || member.role_color != role_color
+                    if let Some(member) =
+                        self.members.iter_mut().find(|member| member.id == user.id)
+                    {
+                        changed |= member.username != user.username
+                            || member.name != name
+                            || member.banned != user.banned
+                            || member.role_color != role_color
                             || member.roles != roles;
                         member.username = user.username;
                         member.name = name;
@@ -4435,7 +4588,11 @@ impl Store {
                             username: user.username,
                             name,
                             banned: user.banned,
-                            presence: user.status.as_deref().map(Presence::parse).unwrap_or(Presence::Offline),
+                            presence: user
+                                .status
+                                .as_deref()
+                                .map(Presence::parse)
+                                .unwrap_or(Presence::Offline),
                             status_message: user.status_message,
                             typing_label: user.typing,
                             role_color,
@@ -4461,10 +4618,7 @@ impl Store {
                     .into_iter()
                     .map(|user| {
                         let name = user.display_name().to_owned();
-                        let presence = presence
-                            .get(&user.id)
-                            .copied()
-                            .unwrap_or(Presence::Offline);
+                        let presence = presence.get(&user.id).copied().unwrap_or(Presence::Offline);
                         let role_color = role_color(&user.roles);
                         let roles = user.roles.iter().map(|role| role.id.clone()).collect();
                         Member {
@@ -4512,16 +4666,27 @@ impl Store {
                     let pinned: HashSet<String> = authoritative_pins
                         .as_ref()
                         .map(|ids| ids.iter().cloned().collect())
-                        .unwrap_or_else(|| self.known_pins.get(&channel_id).cloned().unwrap_or(previous_pins));
+                        .unwrap_or_else(|| {
+                            self.known_pins
+                                .get(&channel_id)
+                                .cloned()
+                                .unwrap_or(previous_pins)
+                        });
                     if authoritative_pins.is_some() {
                         self.known_pins.insert(channel_id.clone(), pinned.clone());
                         if let Some(messages) = self.pinned_messages.get_mut(&channel_id) {
                             messages.retain(|message| pinned.contains(&message.id));
                         }
                     }
-                    if let Some(oldest) = messages.iter().min_by_key(|message| (message.created_at, &message.id)) {
-                        self.history_server_cursor.insert(channel_id.clone(), (oldest.created_at, oldest.id.clone()));
-                    } else { self.history_server_cursor.remove(&channel_id); }
+                    if let Some(oldest) = messages
+                        .iter()
+                        .min_by_key(|message| (message.created_at, &message.id))
+                    {
+                        self.history_server_cursor
+                            .insert(channel_id.clone(), (oldest.created_at, oldest.id.clone()));
+                    } else {
+                        self.history_server_cursor.remove(&channel_id);
+                    }
                     let me = self.me.clone();
                     let messages = messages
                         .into_iter()
@@ -4627,13 +4792,16 @@ impl Store {
                 self.apply(Update::OutgoingRemoved(local_id));
                 self.error = Some(message);
             }
-            Update::UploadFailed { local_id, message, state } => {
+            Update::UploadFailed {
+                local_id,
+                message,
+                state,
+            } => {
                 if self
                     .message(&local_id)
                     .is_some_and(|message| message.pending)
                 {
-                    self.outgoing_states
-                        .insert(local_id, state);
+                    self.outgoing_states.insert(local_id, state);
                 }
                 self.error = Some(message);
             }
@@ -4661,7 +4829,10 @@ impl Store {
             Update::Edited(message) => {
                 let me = self.me.clone();
                 let updated = convert(*message, &me);
-                self.record_timeline_mutation(&updated.channel_id, TimelineMutation::MessageUpsert(updated.clone()));
+                self.record_timeline_mutation(
+                    &updated.channel_id,
+                    TimelineMutation::MessageUpsert(updated.clone()),
+                );
                 self.apply_mutation(
                     MutationSource::Reconcile,
                     StoreMutation::Timeline {
@@ -4682,15 +4853,25 @@ impl Store {
                 );
             }
             Update::Emojis(emojis) => {
-                let fresh: Vec<CustomEmoji> = emojis.into_iter().map(|emoji| CustomEmoji {
-                    id: emoji.id, name: emoji.name, blob: emoji.image_blob,
-                }).collect();
+                let fresh: Vec<CustomEmoji> = emojis
+                    .into_iter()
+                    .map(|emoji| CustomEmoji {
+                        id: emoji.id,
+                        name: emoji.name,
+                        blob: emoji.image_blob,
+                    })
+                    .collect();
                 self.emojis_fresh = true;
                 if !self.emojis_cached || self.emojis != fresh {
                     self.pending_cache.push(CacheOp::ReplaceEmojis(
-                        fresh.iter().map(|emoji| crate::cache::CachedEmoji {
-                            id: emoji.id.clone(), name: emoji.name.clone(), blob: emoji.blob.clone(),
-                        }).collect(),
+                        fresh
+                            .iter()
+                            .map(|emoji| crate::cache::CachedEmoji {
+                                id: emoji.id.clone(),
+                                name: emoji.name.clone(),
+                                blob: emoji.blob.clone(),
+                            })
+                            .collect(),
                     ));
                     self.emojis = fresh;
                     self.emojis_cached = true;
@@ -4781,12 +4962,13 @@ impl Store {
                 messages.retain(|message| message.pinned);
                 let ids = messages.iter().map(|message| message.id.clone()).collect();
                 for message in &messages {
-                    self.pending_cache
-                        .push(CacheOp::UpsertDetachedMessage(CachedMessage::from_store(
-                            message,
-                        )));
+                    self.pending_cache.push(CacheOp::UpsertDetachedMessage(
+                        CachedMessage::from_store(message),
+                    ));
                 }
-                for message in &messages {self.reconcile_known_message(message);}
+                for message in &messages {
+                    self.reconcile_known_message(message);
+                }
                 self.pinned_messages.insert(channel_id.clone(), messages);
                 self.apply(Update::Pinned { channel_id, ids });
             }
@@ -4880,22 +5062,48 @@ impl Store {
                     self.persist_read_state(&channel_id);
                 }
             }
-            Update::Webhooks { owner, epoch, request, result } => {
-                if owner == self.me && epoch == self.cache_restore_epoch && self.can_manage_webhooks() {
+            Update::Webhooks {
+                owner,
+                epoch,
+                request,
+                result,
+            } => {
+                if owner == self.me
+                    && epoch == self.cache_restore_epoch
+                    && self.can_manage_webhooks()
+                {
                     self.webhooks.complete(request, result);
                 }
             }
-            Update::NotificationInbox { owner, epoch, flight, result } => {
-                if owner != self.me || epoch != self.cache_restore_epoch || !self.inbox.current(&flight) { return; }
+            Update::NotificationInbox {
+                owner,
+                epoch,
+                flight,
+                result,
+            } => {
+                if owner != self.me
+                    || epoch != self.cache_restore_epoch
+                    || !self.inbox.current(&flight)
+                {
+                    return;
+                }
                 match result {
                     Ok(page) => {
                         let notices = page.notifications.clone();
                         match self.inbox.complete(&flight, page) {
-                            Ok(()) => { self.inbox_error = None; self.apply(Update::Notifications(notices)); }
-                            Err(error) => { self.inbox_error = Some(format!("{error:?}")); }
+                            Ok(()) => {
+                                self.inbox_error = None;
+                                self.apply(Update::Notifications(notices));
+                            }
+                            Err(error) => {
+                                self.inbox_error = Some(format!("{error:?}"));
+                            }
                         }
                     }
-                    Err(error) => { self.inbox.cancel(&flight); self.inbox_error = Some(error); }
+                    Err(error) => {
+                        self.inbox.cancel(&flight);
+                        self.inbox_error = Some(error);
+                    }
                 }
             }
             Update::Notifications(notifications) => {
@@ -4905,7 +5113,9 @@ impl Store {
                         self.confirm_notification_read(&notification);
                         continue;
                     }
-                    if notification.author_id.as_deref() == Some(self.me.as_str()) { continue; }
+                    if notification.author_id.as_deref() == Some(self.me.as_str()) {
+                        continue;
+                    }
                     let Some(channel_id) = notification.channel_id.clone() else {
                         continue;
                     };
@@ -5066,10 +5276,7 @@ impl Store {
                     },
                 );
             }
-            Event::MessagePinned {
-                message_id,
-                pinned,
-            } => {
+            Event::MessagePinned { message_id, pinned } => {
                 let channel_id = self.channel_for_message(&message_id);
                 self.apply_mutation(
                     MutationSource::Live,
@@ -5135,11 +5342,7 @@ impl Store {
                         users.remove(&user_id);
                     }
                 }
-                if let Some(member) = self
-                    .members
-                    .iter_mut()
-                    .find(|member| member.id == user_id)
-                {
+                if let Some(member) = self.members.iter_mut().find(|member| member.id == user_id) {
                     member.presence = Presence::parse(&status);
                     if offline {
                         member.status_message = None;
@@ -5168,7 +5371,9 @@ impl Store {
                     .collect();
                 for users in self.typing.values_mut() {
                     users.retain(|id, _| {
-                        online.get(id).is_some_and(|member| member.status != "offline")
+                        online
+                            .get(id)
+                            .is_some_and(|member| member.status != "offline")
                     });
                 }
                 for member in &mut self.members {
@@ -5188,19 +5393,14 @@ impl Store {
                 );
                 self.sort_members();
             }
-            Event::Activity {
-                user_id,
-                activity,
-            } => {
-                match activity {
-                    Some(activity) => {
-                        self.activities.insert(user_id, activity);
-                    }
-                    None => {
-                        self.activities.remove(&user_id);
-                    }
+            Event::Activity { user_id, activity } => match activity {
+                Some(activity) => {
+                    self.activities.insert(user_id, activity);
                 }
-            }
+                None => {
+                    self.activities.remove(&user_id);
+                }
+            },
             Event::ActivitySync(members) => {
                 self.activities.clear();
                 for member in members {
@@ -5305,9 +5505,17 @@ impl Store {
                 log::warn!("evento de erro do servidor: {message}");
             }
             // A sinalização é da thread da call, não do estado da tela.
-            Event::VoiceAnswer { .. } | Event::VoiceOffer { .. } | Event::VoiceCandidate { .. } => {}
-            Event::Notification { id, message_id, author_id, .. } => {
-                if author_id.as_deref() == Some(self.me.as_str()) { return; }
+            Event::VoiceAnswer { .. } | Event::VoiceOffer { .. } | Event::VoiceCandidate { .. } => {
+            }
+            Event::Notification {
+                id,
+                message_id,
+                author_id,
+                ..
+            } => {
+                if author_id.as_deref() == Some(self.me.as_str()) {
+                    return;
+                }
                 // O evento não traz o canal. Se a mensagem ainda não chegou,
                 // deixamos a listagem REST resolver depois em vez de consumir
                 // o id sem conseguir guardar o alvo.
@@ -5404,13 +5612,26 @@ impl Store {
 
     /// Restore an optimistic reaction after rejection. A websocket count may
     /// have arrived meanwhile, so changing the own flag alone can subtract twice.
-    pub fn restore_reaction_local(&mut self, message_id: &str, emoji: &Emoji, mine: bool, count: u32) {
+    pub fn restore_reaction_local(
+        &mut self,
+        message_id: &str,
+        emoji: &Emoji,
+        mine: bool,
+        count: u32,
+    ) {
         self.set_reaction_local(message_id, emoji, mine);
         let channel_id = self.channel_for_message(message_id);
-        self.apply_mutation(MutationSource::Local, StoreMutation::Timeline {
-            channel_id,
-            mutation: TimelineMutation::Reaction { message_id: message_id.to_owned(), emoji: emoji.clone(), count: i64::from(count) },
-        });
+        self.apply_mutation(
+            MutationSource::Local,
+            StoreMutation::Timeline {
+                channel_id,
+                mutation: TimelineMutation::Reaction {
+                    message_id: message_id.to_owned(),
+                    emoji: emoji.clone(),
+                    count: i64::from(count),
+                },
+            },
+        );
     }
 
     /// Compatibilidade para chamadores que ainda expressam a ação como toggle.
@@ -5579,8 +5800,7 @@ impl Store {
     }
 
     fn sort_members(&mut self) {
-        self.members
-            .sort_by_key(|a| a.name.to_lowercase());
+        self.members.sort_by_key(|a| a.name.to_lowercase());
     }
 }
 
@@ -5690,7 +5910,11 @@ mod channel_layout_tests {
             .collect();
         assert_eq!(
             layout,
-            vec![("proj", None), ("dev", Some("proj".into())), ("geral", None)]
+            vec![
+                ("proj", None),
+                ("dev", Some("proj".into())),
+                ("geral", None)
+            ]
         );
     }
 
@@ -5726,9 +5950,16 @@ mod channel_layout_tests {
             ..Store::default()
         };
         store.move_channel_local("a", 3, Some("cat".into()));
-        let order: Vec<_> = store.channels.iter().map(|c| (c.id.as_str(), c.position)).collect();
+        let order: Vec<_> = store
+            .channels
+            .iter()
+            .map(|c| (c.id.as_str(), c.position))
+            .collect();
         assert_eq!(order, vec![("cat", 1), ("b", 2), ("a", 3)]);
-        assert_eq!(store.channel("a").unwrap().parent_id.as_deref(), Some("cat"));
+        assert_eq!(
+            store.channel("a").unwrap().parent_id.as_deref(),
+            Some("cat")
+        );
         store.move_channel_local("a", 1, Some(String::new()));
         assert_eq!(store.channel("a").unwrap().parent_id, None);
         assert_eq!(store.channels[0].id, "a");
@@ -5744,17 +5975,20 @@ mod typing_tests {
             me: "me".into(),
             selected_channel: "c1".into(),
             connection: Connection::Online,
-            members: [("u1", "Ana"), ("u2", "Bia")].into_iter().map(|(id, name)| Member {
-                id: id.into(),
-                username: name.into(),
-                name: name.into(),
-                banned: false,
-                presence: Presence::Online,
-                status_message: None,
-                typing_label: Some("escrevendo…".into()),
-                role_color: None,
-                roles: Vec::new(),
-            }).collect(),
+            members: [("u1", "Ana"), ("u2", "Bia")]
+                .into_iter()
+                .map(|(id, name)| Member {
+                    id: id.into(),
+                    username: name.into(),
+                    name: name.into(),
+                    banned: false,
+                    presence: Presence::Online,
+                    status_message: None,
+                    typing_label: Some("escrevendo…".into()),
+                    role_color: None,
+                    roles: Vec::new(),
+                })
+                .collect(),
             ..Store::default()
         }
     }
@@ -5788,7 +6022,11 @@ mod typing_tests {
     fn typing_views_ignore_expired_signals_before_cleanup() {
         let mut store = store();
         signal(&mut store, "c1", "u1", true);
-        store.typing.get_mut("c1").unwrap().insert("u1".into(), Instant::now() - TYPING_TTL);
+        store
+            .typing
+            .get_mut("c1")
+            .unwrap()
+            .insert("u1".into(), Instant::now() - TYPING_TTL);
         assert!(store.typing_names().is_empty());
         assert!(store.typing_phrase().is_none());
     }
@@ -5892,7 +6130,11 @@ mod tests {
 
     #[test]
     fn blank_profile_and_user_refreshes_keep_author_and_mention_names() {
-        let mut store = Store {me:"u1".into(),my_name:"Old display name".into(),..Store::default()};
+        let mut store = Store {
+            me: "u1".into(),
+            my_name: "Old display name".into(),
+            ..Store::default()
+        };
         store.apply(Update::Profiles(vec![models::UserProfile {
             id: "u1".to_owned(),
             username: "jenosmobile".to_owned(),
@@ -5908,10 +6150,16 @@ mod tests {
             roles: Vec::new(),
         }]));
         let assert_visible = |store: &Store| {
-            assert_eq!(store.my_name,"jenosmobile");
-            assert_eq!(store.my_username,"jenosmobile");
-            assert_eq!(store.member("u1").map(|member| member.name.as_str()), Some("jenosmobile"));
-            assert_eq!(store.display_mentions("oi @mention(<@u1>)"), "oi @jenosmobile");
+            assert_eq!(store.my_name, "jenosmobile");
+            assert_eq!(store.my_username, "jenosmobile");
+            assert_eq!(
+                store.member("u1").map(|member| member.name.as_str()),
+                Some("jenosmobile")
+            );
+            assert_eq!(
+                store.display_mentions("oi @mention(<@u1>)"),
+                "oi @jenosmobile"
+            );
         };
         assert_visible(&store);
 
@@ -5958,7 +6206,10 @@ mod tests {
             cached_channels: HashSet::new(),
             ..Default::default()
         });
-        assert_eq!(store.member("u1").map(|member| member.name.as_str()), Some("jenosmobile"));
+        assert_eq!(
+            store.member("u1").map(|member| member.name.as_str()),
+            Some("jenosmobile")
+        );
         assert_eq!(store.display_mentions("@mention(<@u1>)"), "@jenosmobile");
     }
 
@@ -5989,11 +6240,15 @@ mod tests {
                 entries: VecDeque::from([
                     JournalEntry {
                         revision: 110,
-                        mutation: TimelineMutation::MessageDelete { id: "m1".to_owned() },
+                        mutation: TimelineMutation::MessageDelete {
+                            id: "m1".to_owned(),
+                        },
                     },
                     JournalEntry {
                         revision: 111,
-                        mutation: TimelineMutation::MessageDelete { id: "m2".to_owned() },
+                        mutation: TimelineMutation::MessageDelete {
+                            id: "m2".to_owned(),
+                        },
                     },
                 ]),
             },
@@ -6003,14 +6258,26 @@ mod tests {
         assert_eq!(diagnostics.sync_generation, 7);
         assert_eq!(diagnostics.selected_channel, "refreshing");
 
-        let fresh = diagnostics.timelines.iter().find(|item| item.channel_id == "fresh").unwrap();
+        let fresh = diagnostics
+            .timelines
+            .iter()
+            .find(|item| item.channel_id == "fresh")
+            .unwrap();
         assert_eq!(fresh.status, TimelineStatus::Fresh);
         assert_eq!(fresh.fresh_generation, Some(7));
 
-        let stale = diagnostics.timelines.iter().find(|item| item.channel_id == "stale").unwrap();
+        let stale = diagnostics
+            .timelines
+            .iter()
+            .find(|item| item.channel_id == "stale")
+            .unwrap();
         assert_eq!(stale.status, TimelineStatus::Stale);
 
-        let refreshing = diagnostics.timelines.iter().find(|item| item.channel_id == "refreshing").unwrap();
+        let refreshing = diagnostics
+            .timelines
+            .iter()
+            .find(|item| item.channel_id == "refreshing")
+            .unwrap();
         assert_eq!(refreshing.status, TimelineStatus::Refreshing);
         assert_eq!(
             refreshing.active_refresh,
@@ -6038,14 +6305,20 @@ mod tests {
         assert_eq!(diagnostics.timelines[0].channel_id, "geral");
     }
 
-
     #[test]
     fn voice_channel_chat_uses_normal_history_and_cache() {
         let mut store = store_com_canal_carregado("voice");
         store.channels.push(Channel {
-            id: "voice".into(), name: "Voice".into(), kind: ChannelKind::Voice, topic: None,
-            position: 0, permissions: Vec::new(), notification_settings: "all".into(),
-            parent_id: None, unread: false, mentions: 0,
+            id: "voice".into(),
+            name: "Voice".into(),
+            kind: ChannelKind::Voice,
+            topic: None,
+            position: 0,
+            permissions: Vec::new(),
+            notification_settings: "all".into(),
+            parent_id: None,
+            unread: false,
+            mentions: 0,
         });
         store.cached_channels.insert("voice".into());
         assert_eq!(store.channel_needing_cache(), Some("voice".into()));
@@ -6094,11 +6367,7 @@ mod tests {
         }
     }
 
-    fn finish_snapshot(
-        store: &mut Store,
-        ticket: RefreshTicket,
-        messages: Vec<models::Message>,
-    ) {
+    fn finish_snapshot(store: &mut Store, ticket: RefreshTicket, messages: Vec<models::Message>) {
         store.apply(Update::Messages {
             ticket,
             messages,
@@ -6254,7 +6523,10 @@ mod tests {
             label: "Chris".to_owned(),
             user_id: "id-b".to_owned(),
         };
-        assert_eq!(store.encode_mentions("@Chris", &[binding]), "@mention(<@id-b>)");
+        assert_eq!(
+            store.encode_mentions("@Chris", &[binding]),
+            "@mention(<@id-b>)"
+        );
     }
 
     #[test]
@@ -6272,10 +6544,7 @@ mod tests {
             roles: Vec::new(),
         });
 
-        assert_eq!(
-            store.encode_mentions("ana@Chris.com", &[]),
-            "ana@Chris.com"
-        );
+        assert_eq!(store.encode_mentions("ana@Chris.com", &[]), "ana@Chris.com");
     }
 
     #[test]
@@ -6310,10 +6579,7 @@ mod tests {
         assert_eq!(store.channel_needing_messages(), None);
 
         store.apply(Update::Connection(Connection::Online));
-        assert_eq!(
-            store.channel_needing_messages(),
-            Some("geral".to_owned())
-        );
+        assert_eq!(store.channel_needing_messages(), Some("geral".to_owned()));
     }
 
     #[test]
@@ -6329,10 +6595,7 @@ mod tests {
         assert_eq!(store.channel_needing_messages(), None);
 
         store.apply(Update::Connection(Connection::Online));
-        assert_eq!(
-            store.channel_needing_messages(),
-            Some("geral".to_owned())
-        );
+        assert_eq!(store.channel_needing_messages(), Some("geral".to_owned()));
     }
 
     #[test]
@@ -6343,23 +6606,20 @@ mod tests {
         };
         store.apply(Update::Connection(Connection::Online));
 
-        assert_eq!(
-            store.channel_needing_messages(),
-            Some("geral".to_owned())
-        );
+        assert_eq!(store.channel_needing_messages(), Some("geral".to_owned()));
         let ticket = store.mark_loading("geral");
         assert_eq!(store.channel_needing_messages(), None);
 
         store.apply(Update::MessagesFailed(ticket));
-        assert_eq!(
-            store.channel_needing_messages(),
-            Some("geral".to_owned())
-        );
+        assert_eq!(store.channel_needing_messages(), Some("geral".to_owned()));
     }
 
     #[test]
     fn resposta_de_geracao_antiga_nao_fica_fresca() {
-        let mut store = Store { selected_channel: "geral".to_owned(), ..Store::default() };
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
         store.apply(Update::Connection(Connection::Online));
         let antiga = store.mark_loading("geral");
         store.apply(Update::Connection(Connection::Offline));
@@ -6385,7 +6645,10 @@ mod tests {
 
     #[test]
     fn resposta_antiga_da_mesma_geracao_nao_supersede_tentativa_nova() {
-        let mut store = Store { selected_channel: "geral".to_owned(), ..Store::default() };
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
         store.apply(Update::Connection(Connection::Online));
         let primeira = store.mark_loading("geral");
         let segunda = store.mark_loading("geral");
@@ -6409,7 +6672,10 @@ mod tests {
 
     #[test]
     fn falha_antiga_nao_cancela_tentativa_atual() {
-        let mut store = Store { selected_channel: "geral".to_owned(), ..Store::default() };
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
         store.apply(Update::Connection(Connection::Online));
         let antiga = store.mark_loading("geral");
         let atual = store.mark_loading("geral");
@@ -6456,7 +6722,11 @@ mod tests {
 
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
         assert_eq!(
-            store.messages.iter().filter(|message| message.id == "nova").count(),
+            store
+                .messages
+                .iter()
+                .filter(|message| message.id == "nova")
+                .count(),
             1
         );
     }
@@ -6478,7 +6748,10 @@ mod tests {
             vec![wire_message("m1", "geral", "velho")],
         );
 
-        assert_eq!(store.message("m1").map(|message| message.content.as_str()), Some("novo"));
+        assert_eq!(
+            store.message("m1").map(|message| message.content.as_str()),
+            Some("novo")
+        );
     }
 
     #[test]
@@ -6655,11 +6928,15 @@ mod tests {
         );
 
         assert_eq!(
-            primeiro.message("m-a").map(|message| message.content.as_str()),
+            primeiro
+                .message("m-a")
+                .map(|message| message.content.as_str()),
             Some("live-a")
         );
         assert_eq!(
-            segundo.message("m-b").map(|message| message.content.as_str()),
+            segundo
+                .message("m-b")
+                .map(|message| message.content.as_str()),
             Some("base-b")
         );
         assert_eq!(segundo.timeline_status("b"), TimelineStatus::Fresh);
@@ -6749,7 +7026,9 @@ mod tests {
         let mut store = store_para_proveniencia();
         let message = wire_message("m-live", "outro", "@mention(<@eu>) oi");
 
-        store.apply(Update::Event(Box::new(Event::Message(Box::new(message.clone())))));
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(
+            message.clone(),
+        )))));
         store.apply(Update::Event(Box::new(Event::Message(Box::new(message)))));
 
         let channel = store.channel("outro").expect("canal existe");
@@ -6830,7 +7109,11 @@ mod tests {
         let mut store = store_para_proveniencia();
         let pending_id = store.push_pending("outro", "@mention(<@eu>) local", None);
 
-        assert!(store.message(&pending_id).is_some_and(|message| message.pending));
+        assert!(
+            store
+                .message(&pending_id)
+                .is_some_and(|message| message.pending)
+        );
         let channel = store.channel("outro").expect("canal existe");
         assert!(!channel.unread);
         assert_eq!(channel.mentions, 0);
@@ -6970,7 +7253,9 @@ mod tests {
             1
         );
         assert_eq!(
-            rest_primeiro.message("m1").map(|message| message.content.as_str()),
+            rest_primeiro
+                .message("m1")
+                .map(|message| message.content.as_str()),
             Some("ws")
         );
 
@@ -6994,7 +7279,9 @@ mod tests {
             1
         );
         assert_eq!(
-            ws_primeiro.message("m1").map(|message| message.content.as_str()),
+            ws_primeiro
+                .message("m1")
+                .map(|message| message.content.as_str()),
             Some("ws")
         );
     }
@@ -7229,7 +7516,10 @@ mod tests {
         let mut store = Store::default();
         store.restore_cached(snapshot_de_cache());
 
-        assert_eq!(store.message("m-cached").expect("mensagem").content, "do disco");
+        assert_eq!(
+            store.message("m-cached").expect("mensagem").content,
+            "do disco"
+        );
         assert_eq!(store.server.as_ref().expect("servidor").name, "Papo");
         assert_eq!(store.me, "eu");
         // Cacheado não é fresco.
@@ -7251,7 +7541,10 @@ mod tests {
         store.restore_cached(snapshot);
 
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Stale);
-        assert_eq!(store.timeline_status("inexistente"), TimelineStatus::Missing);
+        assert_eq!(
+            store.timeline_status("inexistente"),
+            TimelineStatus::Missing
+        );
     }
 
     #[test]
@@ -7289,9 +7582,7 @@ mod tests {
             StoreMutation::Timeline {
                 channel_id: Some("outro".to_owned()),
                 mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
-                    "m-cache",
-                    "outro",
-                    "cache",
+                    "m-cache", "outro", "cache",
                 )),
             },
         );
@@ -7379,8 +7670,7 @@ mod tests {
         store.apply(Update::Session(None));
         let ops = store.take_cache_ops();
         assert!(
-            ops.iter()
-                .any(|op| matches!(op, CacheOp::ClearCachedData)),
+            ops.iter().any(|op| matches!(op, CacheOp::ClearCachedData)),
             "sessão encerrada limpa apenas estado reconstruível"
         );
         assert!(
@@ -7409,7 +7699,10 @@ mod tests {
             },
         }))));
         assert_eq!(
-            store.user_settings.as_ref().map(|settings| &settings.config),
+            store
+                .user_settings
+                .as_ref()
+                .map(|settings| &settings.config),
             Some(&initial)
         );
 
@@ -7423,7 +7716,10 @@ mod tests {
             updated_at: None,
         })));
         assert_eq!(
-            store.user_settings.as_ref().map(|settings| &settings.config),
+            store
+                .user_settings
+                .as_ref()
+                .map(|settings| &settings.config),
             Some(&updated)
         );
     }
@@ -7468,14 +7764,12 @@ mod tests {
         keep.created_at = base;
 
         let me = store.me.clone();
-        store.messages = vec![
-            convert(old, &me),
-            convert(stale, &me),
-            convert(keep, &me),
-        ];
+        store.messages = vec![convert(old, &me), convert(stale, &me), convert(keep, &me)];
 
         // These fixture rows represent a fetched chronological page.
-        store.timeline_ids.extend(store.messages.iter().map(|message| message.id.clone()));
+        store
+            .timeline_ids
+            .extend(store.messages.iter().map(|message| message.id.clone()));
 
         let ticket = store.mark_loading("geral");
         let mut keep_new = wire_message("keep", "geral", "new value");
@@ -7489,10 +7783,18 @@ mod tests {
             pinned_ids: Some(Vec::new()),
         });
 
-        assert!(store.message("old").is_some(), "histórico mais antigo deve sobreviver");
-        assert!(store.message("stale").is_none(), "linha ausente dentro do head deve sair");
+        assert!(
+            store.message("old").is_some(),
+            "histórico mais antigo deve sobreviver"
+        );
+        assert!(
+            store.message("stale").is_none(),
+            "linha ausente dentro do head deve sair"
+        );
         assert_eq!(
-            store.message("keep").map(|message| message.content.as_str()),
+            store
+                .message("keep")
+                .map(|message| message.content.as_str()),
             Some("new value")
         );
         assert!(store.message("new").is_some());
@@ -7504,7 +7806,8 @@ mod tests {
                 if channel_id == "geral" && deleted_ids == &vec!["stale".to_owned()]
         )));
         assert!(
-            !ops.iter().any(|op| matches!(op, CacheOp::ReplaceChannelSnapshot { .. })),
+            !ops.iter()
+                .any(|op| matches!(op, CacheOp::ReplaceChannelSnapshot { .. })),
             "refresh parcial não pode achatar o cache inteiro"
         );
     }
@@ -7538,7 +7841,11 @@ mod tests {
             append: true,
         });
 
-        let ids: Vec<_> = store.search_results.iter().map(|item| item.id.as_str()).collect();
+        let ids: Vec<_> = store
+            .search_results
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["a", "b", "c"]);
         assert!(!store.search_has_more);
         assert!(!store.searching);
@@ -7551,14 +7858,23 @@ mod tests {
         store.reset_search();
         store.searching = true;
         store.apply(Update::SearchResults {
-            generation: old, results: Vec::new(), has_more: true, append: false,
+            generation: old,
+            results: Vec::new(),
+            has_more: true,
+            append: false,
         });
-        store.apply(Update::SearchFailed { generation: old, message: "old error".into() });
+        store.apply(Update::SearchFailed {
+            generation: old,
+            message: "old error".into(),
+        });
         assert!(store.searching);
         assert!(!store.search_has_more);
         assert!(store.error.is_none());
         store.apply(Update::SearchResults {
-            generation: store.search_generation, results: Vec::new(), has_more: true, append: false,
+            generation: store.search_generation,
+            results: Vec::new(),
+            has_more: true,
+            append: false,
         });
         assert!(!store.searching);
         assert!(store.search_has_more);
@@ -7572,9 +7888,13 @@ mod tests {
         let mut store = Store::default();
         store.apply(Update::PinnedMessages {
             ticket: None,
-            channel_id: "c1".into(), messages: vec![wire_message("old-pin", "c1", "old pinned text")],
+            channel_id: "c1".into(),
+            messages: vec![wire_message("old-pin", "c1", "old pinned text")],
         });
-        assert!(store.messages.is_empty(), "pins must not create a gap in the timeline");
+        assert!(
+            store.messages.is_empty(),
+            "pins must not create a gap in the timeline"
+        );
         assert_eq!(store.pinned_messages["c1"][0].content, "old pinned text");
         store.set_message_pinned_local("old-pin", false);
         assert!(store.pinned_messages["c1"].is_empty());
@@ -7698,7 +8018,8 @@ mod tests {
         });
         let ops = store.take_cache_ops();
         assert!(
-            !ops.iter().any(|op| matches!(op, CacheOp::ReplacePins { .. })),
+            !ops.iter()
+                .any(|op| matches!(op, CacheOp::ReplacePins { .. })),
             "falha ao buscar pins não pode zerar o cache"
         );
     }
@@ -7795,12 +8116,14 @@ mod tests {
 
         store.observe_visible_messages_with_policy("geral", &["m6".to_owned()], true);
 
-        assert!(store
-            .read_states
-            .get("geral")
-            .unwrap()
-            .unread_mentions
-            .is_empty());
+        assert!(
+            store
+                .read_states
+                .get("geral")
+                .unwrap()
+                .unread_mentions
+                .is_empty()
+        );
         assert!(!store.channel("geral").unwrap().unread);
     }
 
@@ -7957,27 +8280,40 @@ mod tests {
         let mut store = navigation_store(6);
         store.observe_visible_messages("geral", &ids(5..=6));
         store.observe_visible_messages("geral", &ids(4..=5));
-        assert_eq!(store.hourglass_range("geral"), Some(("m2".into(), "m3".into())));
+        assert_eq!(
+            store.hourglass_range("geral"),
+            Some(("m2".into(), "m3".into()))
+        );
         let writes = store.take_cache_ops();
-        let cached = writes.iter().rev().find_map(|op| match op {
-            CacheOp::UpsertReadState(read) => Some(read),
-            _ => None,
-        }).expect("gap-end write");
+        let cached = writes
+            .iter()
+            .rev()
+            .find_map(|op| match op {
+                CacheOp::UpsertReadState(read) => Some(read),
+                _ => None,
+            })
+            .expect("gap-end write");
         assert_eq!(cached.gap_end_message_id.as_deref(), Some("m4"));
         store.reset_read_span("geral");
         store.observe_visible_messages("geral", &ids(5..=6));
-        assert_eq!(store.hourglass_range("geral"), Some(("m2".into(), "m3".into())));
+        assert_eq!(
+            store.hourglass_range("geral"),
+            Some(("m2".into(), "m3".into()))
+        );
     }
 
     #[test]
     fn unread_prefix_with_unloaded_anchor_stays_unread_until_history_arrives() {
         let mut store = navigation_store(6);
         let ghost = navigation_message("ghost", 0);
-        store.read_states.insert("geral".into(), ChannelReadState {
-            read_at: Some(ghost.at.with_timezone(&Utc)),
-            read_message_id: Some("ghost".into()),
-            ..ChannelReadState::default()
-        });
+        store.read_states.insert(
+            "geral".into(),
+            ChannelReadState {
+                read_at: Some(ghost.at.with_timezone(&Utc)),
+                read_message_id: Some("ghost".into()),
+                ..ChannelReadState::default()
+            },
+        );
         store.history_has_more.insert("geral".into(), true);
         store.observe_visible_messages("geral", &ids(5..=6));
         store.observe_visible_messages("geral", &ids(3..=5));
@@ -8225,7 +8561,12 @@ mod memory_optimization_tests {
 
         store.apply(Update::Profiles(vec![profile(Some("large-base64-image"))]));
         assert_eq!(store.avatars["avatar-user"].as_ptr(), first);
-        assert!(!store.take_cache_ops().iter().any(|op| matches!(op, CacheOp::SetAvatar { .. })));
+        assert!(
+            !store
+                .take_cache_ops()
+                .iter()
+                .any(|op| matches!(op, CacheOp::SetAvatar { .. }))
+        );
 
         store.apply(Update::Profiles(vec![profile(None)]));
         assert!(!store.avatars.contains_key("avatar-user"));
@@ -8249,13 +8590,21 @@ mod memory_optimization_tests {
             icon_blob: Some("icon-base64".into()),
         };
         store.apply(Update::Server(Some(Box::new(server()))));
-        assert_eq!(store.server.as_ref().and_then(|s| s.icon.as_deref()), Some("icon-base64"));
+        assert_eq!(
+            store.server.as_ref().and_then(|s| s.icon.as_deref()),
+            Some("icon-base64")
+        );
         assert!(store.take_cache_ops().iter().any(|op| matches!(
             op, CacheOp::SetServerIcon(Some(icon)) if icon == "icon-base64"
         )));
 
         store.apply(Update::Server(Some(Box::new(server()))));
-        assert!(!store.take_cache_ops().iter().any(|op| matches!(op, CacheOp::SetServerIcon(_))));
+        assert!(
+            !store
+                .take_cache_ops()
+                .iter()
+                .any(|op| matches!(op, CacheOp::SetServerIcon(_)))
+        );
     }
 }
 

@@ -10,8 +10,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use super::client::{Api, Session};
 use super::models::{DirectConversation, LinkPreview, Message};
@@ -294,9 +294,7 @@ pub async fn run(
         {
             Ok(()) => {
                 backoff = BACKOFF_MIN;
-                log::info!(
-                    "runtime {scope}: websocket {endpoint}: encerrado; reconectando"
-                );
+                log::info!("runtime {scope}: websocket {endpoint}: encerrado; reconectando");
             }
             Err(error) => {
                 log::warn!("runtime {scope}: websocket {endpoint}: caiu: {error}");
@@ -345,12 +343,10 @@ async fn connect(
     );
 
     api.wait_request_turn().await;
-    let connected = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async(request),
-    )
-    .await
-    .map_err(|_| "timeout no handshake".to_owned())?;
+    let connected =
+        tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request))
+            .await
+            .map_err(|_| "timeout no handshake".to_owned())?;
 
     let (stream, _) = match connected {
         Ok(pair) => pair,
@@ -367,7 +363,10 @@ async fn connect(
             return Err(error.to_string());
         }
     };
-    log::info!("runtime {scope}: websocket {}: conectado", api.websocket_url());
+    log::info!(
+        "runtime {scope}: websocket {}: conectado",
+        api.websocket_url()
+    );
     let _ = status.send((socket_epoch, Connection::Online));
     let (mut sink, mut source) = stream.split();
 
@@ -459,8 +458,7 @@ pub fn presence_activity() -> String {
 }
 
 fn is_heartbeat_ack(text: &str) -> bool {
-    serde_json::from_str::<Envelope>(text)
-        .is_ok_and(|envelope| envelope.kind == "heartbeat_ack")
+    serde_json::from_str::<Envelope>(text).is_ok_and(|envelope| envelope.kind == "heartbeat_ack")
 }
 
 /// Traduz o JSON cru para os eventos da interface.
@@ -634,17 +632,23 @@ mod tests {
 
     #[test]
     fn snapshot_de_embeds_pode_substituir_e_limpar() {
-        let event = parse(r#"{"type":"message_embeds_update","channel_id":"c1",
+        let event = parse(
+            r#"{"type":"message_embeds_update","channel_id":"c1",
             "message_id":"m1","embeds":[{"id":"e1","source_type":"custom",
-            "title":"Status","fields":[{"position":0,"name":"X","value":"Y"}]}]}"#);
+            "title":"Status","fields":[{"position":0,"name":"X","value":"Y"}]}]}"#,
+        );
         assert!(matches!(event, Some(Event::MessageEmbedsUpdated {
             ref channel_id, ref message_id, ref embeds,
         }) if channel_id == "c1" && message_id == "m1" &&
             embeds.len() == 1 && embeds[0].fields[0].value == "Y"));
 
-        let empty = parse(r#"{"type":"message_embeds_update","channel_id":"c1",
-            "message_id":"m1","embeds":[]}"#);
-        assert!(matches!(empty, Some(Event::MessageEmbedsUpdated { ref embeds, .. }) if embeds.is_empty()));
+        let empty = parse(
+            r#"{"type":"message_embeds_update","channel_id":"c1",
+            "message_id":"m1","embeds":[]}"#,
+        );
+        assert!(
+            matches!(empty, Some(Event::MessageEmbedsUpdated { ref embeds, .. }) if embeds.is_empty())
+        );
     }
 
     #[test]
@@ -661,7 +665,9 @@ mod tests {
 
     #[test]
     fn le_presence_sync_com_canais_de_voz() {
-        let event = parse(r#"{"type":"presence_sync","members":[{"user_id":"u1","status":"online","status_message":null,"user_voice":["voz-1","voz-2"]}]}"#);
+        let event = parse(
+            r#"{"type":"presence_sync","members":[{"user_id":"u1","status":"online","status_message":null,"user_voice":["voz-1","voz-2"]}]}"#,
+        );
         assert!(matches!(
             event,
             Some(Event::PresenceSync(ref members))
@@ -671,7 +677,9 @@ mod tests {
 
     #[test]
     fn le_rotas_de_audio() {
-        let event = parse(r#"{"type":"voice_audio_routes","channel_id":"voz-1","routes":[{"track_id":"papo-audio-0","user_id":"u1"}]}"#);
+        let event = parse(
+            r#"{"type":"voice_audio_routes","channel_id":"voz-1","routes":[{"track_id":"papo-audio-0","user_id":"u1"}]}"#,
+        );
         assert!(matches!(
             event,
             Some(Event::VoiceAudioRoutes { ref channel_id, ref routes })
@@ -683,7 +691,9 @@ mod tests {
 
     #[test]
     fn le_presence_com_metadados_completos() {
-        let event = parse(r#"{"type":"presence_update","user_id":"u1","status":"away","status_message":"almoço","typing":"digitando…","nickname":"Ana"}"#);
+        let event = parse(
+            r#"{"type":"presence_update","user_id":"u1","status":"away","status_message":"almoço","typing":"digitando…","nickname":"Ana"}"#,
+        );
         assert!(matches!(
             event,
             Some(Event::Presence {
@@ -702,7 +712,9 @@ mod tests {
 
     #[test]
     fn le_rich_presence_update_e_sync() {
-        let event = parse(r#"{"type":"activity_update","user_id":"u1","activity":{"kind":"playing","name":"Hades II","details":"Fields","started_at":"2023-11-14T22:13:20Z"}}"#);
+        let event = parse(
+            r#"{"type":"activity_update","user_id":"u1","activity":{"kind":"playing","name":"Hades II","details":"Fields","started_at":"2023-11-14T22:13:20Z"}}"#,
+        );
         assert!(matches!(
             event,
             Some(Event::Activity {
@@ -722,7 +734,9 @@ mod tests {
             }) if user_id == "u1"
         ));
 
-        let event = parse(r#"{"type":"activity_sync","members":[{"user_id":"u2","activity":{"kind":"working","name":"Zed"}}]}"#);
+        let event = parse(
+            r#"{"type":"activity_sync","members":[{"user_id":"u2","activity":{"kind":"working","name":"Zed"}}]}"#,
+        );
         assert!(matches!(
             event,
             Some(Event::ActivitySync(ref members))
@@ -787,7 +801,9 @@ mod tests {
     /// sem tolerar isso a entrada na call morria calada.
     #[test]
     fn entrada_na_call_aceita_lista_nula() {
-        let event = parse(r#"{"type":"voice_joined","channel_id":"c1","members":null,"active_speakers":null}"#);
+        let event = parse(
+            r#"{"type":"voice_joined","channel_id":"c1","members":null,"active_speakers":null}"#,
+        );
         assert!(matches!(
             event,
             Some(Event::VoiceJoined { ref members, .. }) if members.is_empty()

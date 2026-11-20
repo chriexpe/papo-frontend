@@ -504,7 +504,11 @@ impl AuditLogEntry {
     pub fn channel(&self) -> Option<&str> {
         self.channel_id
             .as_deref()
-            .or_else(|| self.metadata.get("channel_id").and_then(|value| value.as_str()))
+            .or_else(|| {
+                self.metadata
+                    .get("channel_id")
+                    .and_then(|value| value.as_str())
+            })
             .filter(|id| !id.is_empty())
     }
 
@@ -512,7 +516,11 @@ impl AuditLogEntry {
     pub fn target(&self) -> Option<&str> {
         self.target_user_id
             .as_deref()
-            .or_else(|| self.metadata.get("author_id").and_then(|value| value.as_str()))
+            .or_else(|| {
+                self.metadata
+                    .get("author_id")
+                    .and_then(|value| value.as_str())
+            })
             .filter(|id| !id.is_empty())
     }
 }
@@ -765,7 +773,9 @@ impl Attachment {
     }
 
     pub fn mime(&self) -> &str {
-        self.mime_type.as_deref().unwrap_or("application/octet-stream")
+        self.mime_type
+            .as_deref()
+            .unwrap_or("application/octet-stream")
     }
 
     /// O que este anexo é, para a interface escolher como desenhá-lo.
@@ -859,65 +869,124 @@ impl EmbedMedia {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EmbedPlayback { Video, YouTube }
+pub enum EmbedPlayback {
+    Video,
+    YouTube,
+}
 
 impl LinkPreview {
     pub fn animated(&self) -> bool {
         self.fetch_method.as_deref() == Some("gif")
-            || [self.image.as_ref(), self.thumbnail.as_ref()].into_iter().flatten()
+            || [self.image.as_ref(), self.thumbnail.as_ref()]
+                .into_iter()
+                .flatten()
                 .filter_map(|media| media.mime_type.as_deref())
-                .any(|mime| mime.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("image/gif"))
+                .any(|mime| {
+                    mime.split(';')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .eq_ignore_ascii_case("image/gif")
+                })
     }
 
     /// Automatic direct media belongs in the timeline like an attachment.
     /// A webpage's social image and authored custom cards retain their framing.
     pub fn native_media(&self) -> bool {
-        if self.source_type.as_deref() == Some("custom") || self.playback() == Some(EmbedPlayback::YouTube) {
+        if self.source_type.as_deref() == Some("custom")
+            || self.playback() == Some(EmbedPlayback::YouTube)
+        {
             return false;
         }
-        let Some(source) = self.url.as_deref().and_then(|raw| url::Url::parse(raw).ok()) else { return false; };
-        if !matches!(source.scheme(), "http" | "https") { return false; }
-        let has_media = self.image.is_some() || self.thumbnail.is_some() || self.video.is_some() || self.image_data.is_some();
-        has_media && (self.animated()
-            || Kind::guess("", source.path()) != Kind::Other
-            || source.path().to_ascii_lowercase().ends_with(".m3u8")
-            || [self.image.as_ref(), self.video.as_ref()].into_iter().flatten().any(|media| {
-                media.url.as_deref().and_then(|raw| url::Url::parse(raw).ok()).as_ref() == Some(&source)
-                    && media.mime_type.as_deref().is_some_and(|mime| matches!(Kind::of(mime), Kind::Image | Kind::Video | Kind::Audio))
-            }))
+        let Some(source) = self
+            .url
+            .as_deref()
+            .and_then(|raw| url::Url::parse(raw).ok())
+        else {
+            return false;
+        };
+        if !matches!(source.scheme(), "http" | "https") {
+            return false;
+        }
+        let has_media = self.image.is_some()
+            || self.thumbnail.is_some()
+            || self.video.is_some()
+            || self.image_data.is_some();
+        has_media
+            && (self.animated()
+                || Kind::guess("", source.path()) != Kind::Other
+                || source.path().to_ascii_lowercase().ends_with(".m3u8")
+                || [self.image.as_ref(), self.video.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .any(|media| {
+                        media
+                            .url
+                            .as_deref()
+                            .and_then(|raw| url::Url::parse(raw).ok())
+                            .as_ref()
+                            == Some(&source)
+                            && media.mime_type.as_deref().is_some_and(|mime| {
+                                matches!(Kind::of(mime), Kind::Image | Kind::Video | Kind::Audio)
+                            })
+                    }))
     }
 
     /// Backend video URLs are relay inputs, not public image URLs. An absent
     /// MIME means an iframe only for the backend's exact YouTube pattern.
     pub fn playback(&self) -> Option<EmbedPlayback> {
         if let Some(video) = &self.video {
-            if video.mime_type.as_deref().is_some_and(|mime| mime.trim().to_ascii_lowercase().starts_with("video/")) {
+            if video
+                .mime_type
+                .as_deref()
+                .is_some_and(|mime| mime.trim().to_ascii_lowercase().starts_with("video/"))
+            {
                 return Some(EmbedPlayback::Video);
             }
             if video.mime_type.as_deref().is_none_or(str::is_empty)
-                && video.url.as_deref().is_some_and(valid_youtube_embed) {
+                && video.url.as_deref().is_some_and(valid_youtube_embed)
+            {
                 return Some(EmbedPlayback::YouTube);
             }
         }
-        self.embed_url.as_deref().filter(|url| valid_youtube_embed(url)).map(|_| EmbedPlayback::YouTube)
+        self.embed_url
+            .as_deref()
+            .filter(|url| valid_youtube_embed(url))
+            .map(|_| EmbedPlayback::YouTube)
     }
 
     pub fn media_dimensions(&self) -> Option<(u32, u32)> {
-        let video = self.playback().and(self.video.as_ref()).and_then(EmbedMedia::dimensions);
+        let video = self
+            .playback()
+            .and(self.video.as_ref())
+            .and_then(EmbedMedia::dimensions);
         // GET /embeds/:id returns the thumbnail blob when one exists, with
         // the original image as fallback. Reserve space for those same bytes.
-        video.or_else(|| self.thumbnail.as_ref().and_then(EmbedMedia::dimensions))
+        video
+            .or_else(|| self.thumbnail.as_ref().and_then(EmbedMedia::dimensions))
             .or_else(|| self.image.as_ref().and_then(EmbedMedia::dimensions))
     }
 }
 
 pub fn valid_youtube_embed(raw: &str) -> bool {
-    let Ok(url) = url::Url::parse(raw) else { return false; };
-    let Some(id) = url.path().strip_prefix("/embed/") else { return false; };
-    url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
+    let Ok(url) = url::Url::parse(raw) else {
+        return false;
+    };
+    let Some(id) = url.path().strip_prefix("/embed/") else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
         && url.port_or_known_default() == Some(443)
-        && matches!(url.host_str(), Some("www.youtube.com" | "www.youtube-nocookie.com"))
-        && !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && matches!(
+            url.host_str(),
+            Some("www.youtube.com" | "www.youtube-nocookie.com")
+        )
+        && !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -969,9 +1038,11 @@ impl CustomEmbedInput {
     /// mídia privada: URL pública e media SHA não são equivalentes.
     pub fn from_media_free_preview(preview: &LinkPreview) -> Option<Self> {
         if preview.source_type.as_deref() != Some("custom")
-            || preview.thumbnail.is_some() || preview.image.is_some()
+            || preview.thumbnail.is_some()
+            || preview.image.is_some()
             || preview.video.is_some()
-            || preview.image_data.is_some() || preview.author_image_data.is_some()
+            || preview.image_data.is_some()
+            || preview.author_image_data.is_some()
             || preview.author.as_ref().is_some_and(|a| a.media.is_some())
             || preview.footer.as_ref().is_some_and(|f| f.icon.is_some())
         {
@@ -991,11 +1062,15 @@ impl CustomEmbedInput {
             footer: preview.footer.as_ref().map(|f| CustomEmbedFooterInput {
                 text: f.text.clone().unwrap_or_default(),
             }),
-            fields: preview.fields.iter().map(|f| CustomEmbedFieldInput {
-                name: f.name.clone(),
-                value: f.value.clone(),
-                inline: f.inline,
-            }).collect(),
+            fields: preview
+                .fields
+                .iter()
+                .map(|f| CustomEmbedFieldInput {
+                    name: f.name.clone(),
+                    value: f.value.clone(),
+                    inline: f.inline,
+                })
+                .collect(),
             ..Default::default()
         })
     }
@@ -1003,12 +1078,22 @@ impl CustomEmbedInput {
 
 impl CustomEmbedInput {
     pub fn has_content(&self) -> bool {
-        !self.title.trim().is_empty() || !self.description.trim().is_empty()
-            || !self.url.trim().is_empty() || !self.site_name.trim().is_empty()
-            || self.author.as_ref().is_some_and(|a| !a.name.trim().is_empty()
-                || !a.url.trim().is_empty() || !a.icon_url.trim().is_empty())
-            || self.footer.as_ref().is_some_and(|f| !f.text.trim().is_empty())
-            || self.thumbnail.is_some() || self.image.is_some() || self.video.is_some()
+        !self.title.trim().is_empty()
+            || !self.description.trim().is_empty()
+            || !self.url.trim().is_empty()
+            || !self.site_name.trim().is_empty()
+            || self.author.as_ref().is_some_and(|a| {
+                !a.name.trim().is_empty()
+                    || !a.url.trim().is_empty()
+                    || !a.icon_url.trim().is_empty()
+            })
+            || self
+                .footer
+                .as_ref()
+                .is_some_and(|f| !f.text.trim().is_empty())
+            || self.thumbnail.is_some()
+            || self.image.is_some()
+            || self.video.is_some()
             || !self.fields.is_empty()
     }
 }
@@ -1267,11 +1352,7 @@ pub fn parse_hex_color(hex: &str) -> Option<[u8; 3]> {
         return None;
     }
     let value = u32::from_str_radix(hex, 16).ok()?;
-    Some([
-        (value >> 16) as u8,
-        (value >> 8) as u8,
-        value as u8,
-    ])
+    Some([(value >> 16) as u8, (value >> 8) as u8, value as u8])
 }
 
 /// Família de mídia derivada do mime type.
@@ -1301,8 +1382,8 @@ impl Kind {
             | "heif" | "svg" | "ico" | "jxl" => Self::Image,
             "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi" | "ogv" | "wmv" | "flv" | "3gp"
             | "mpg" | "mpeg" | "ts" | "m2ts" => Self::Video,
-            "mp3" | "ogg" | "oga" | "opus" | "wav" | "flac" | "m4a" | "m4b" | "aac" | "wma" | "aif"
-            | "aiff" | "weba" | "mka" => Self::Audio,
+            "mp3" | "ogg" | "oga" | "opus" | "wav" | "flac" | "m4a" | "m4b" | "aac" | "wma"
+            | "aif" | "aiff" | "weba" | "mka" => Self::Audio,
             _ => return None,
         };
         Some(kind)
@@ -1343,10 +1424,12 @@ mod tests {
         let embed: LinkPreview = serde_json::from_value(serde_json::json!({
             "id":"portrait", "fields":null, "image":{"mime_type":"image/png"},
             "thumbnail":{"width":540,"height":960}
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(embed.media_dimensions(), Some((540, 960)));
         assert!(embed.fields.is_empty());
-        let restored: LinkPreview = serde_json::from_str(&serde_json::to_string(&embed).unwrap()).unwrap();
+        let restored: LinkPreview =
+            serde_json::from_str(&serde_json::to_string(&embed).unwrap()).unwrap();
         assert_eq!(restored.media_dimensions(), Some((540, 960)));
     }
 
@@ -1357,8 +1440,22 @@ mod tests {
         assert_eq!(direct.media_dimensions(), Some((1920, 1080)));
         let iframe: LinkPreview = serde_json::from_value(serde_json::json!({"id":"y","video":{"url":"https://www.youtube.com/embed/abc_123-xyz","width":1280,"height":720}})).unwrap();
         assert_eq!(iframe.playback(), Some(EmbedPlayback::YouTube));
-        for url in ["https://www.youtube.com.attacker.example/embed/abc", "http://www.youtube.com/embed/abc", "https://user@www.youtube.com/embed/abc", "https://www.youtube.com/watch?v=abc", "https://www.youtube.com/embed/abc/path"] { assert!(!valid_youtube_embed(url), "{url}"); }
-        let invalid = EmbedMedia { url: None, mime_type: None, width: Some(-1), height: Some(0), size_bytes: None };
+        for url in [
+            "https://www.youtube.com.attacker.example/embed/abc",
+            "http://www.youtube.com/embed/abc",
+            "https://user@www.youtube.com/embed/abc",
+            "https://www.youtube.com/watch?v=abc",
+            "https://www.youtube.com/embed/abc/path",
+        ] {
+            assert!(!valid_youtube_embed(url), "{url}");
+        }
+        let invalid = EmbedMedia {
+            url: None,
+            mime_type: None,
+            width: Some(-1),
+            height: Some(0),
+            size_bytes: None,
+        };
         assert_eq!(invalid.dimensions(), None);
     }
 
@@ -1367,7 +1464,8 @@ mod tests {
         let embed: LinkPreview = serde_json::from_value(serde_json::json!({
             "id":"image", "image":{"width":1920,"height":1080},
             "thumbnail":{"width":540,"height":960}
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(embed.media_dimensions(), Some((540, 960)));
     }
 
@@ -1391,7 +1489,6 @@ mod tests {
         );
     }
 
-
     /// Os nomes dos campos vêm do `createChannelRequest` do backend
     /// (`name`, `type`, `topic`). Errar um deles só apareceria como um 400
     /// em tempo de execução, então o teste prende o formato aqui.
@@ -1405,10 +1502,7 @@ mod tests {
             access_roles: Vec::new(),
         })
         .unwrap();
-        assert_eq!(
-            body,
-            r#"{"name":"geral","type":"text","topic":"conversa"}"#
-        );
+        assert_eq!(body, r#"{"name":"geral","type":"text","topic":"conversa"}"#);
     }
 
     /// Categoria e cargos de acesso viajam no mesmo pedido da criação.
@@ -1491,7 +1585,10 @@ mod tests {
             }
         }
         assert_eq!(Kind::guess("audio/mp4", "Voice note.m4a"), Kind::Audio);
-        assert_eq!(Kind::guess("application/octet-stream", "Voice note.m4a"), Kind::Audio);
+        assert_eq!(
+            Kind::guess("application/octet-stream", "Voice note.m4a"),
+            Kind::Audio
+        );
         assert_eq!(Kind::guess("video/mp4", "movie.mp4"), Kind::Video);
         assert_eq!(Kind::guess("video/mp4", "movie.m4v"), Kind::Video);
         assert_eq!(Kind::guess("video/mp4", "movie.bin"), Kind::Video);
@@ -1502,14 +1599,23 @@ mod tests {
     /// Nem todo octet-stream é mídia; um arquivo continua arquivo.
     #[test]
     fn arquivo_sem_pista_continua_arquivo() {
-        assert_eq!(Kind::guess("application/octet-stream", "notas.pdf"), Kind::Other);
-        assert_eq!(Kind::guess("application/octet-stream", "sem-ponto"), Kind::Other);
+        assert_eq!(
+            Kind::guess("application/octet-stream", "notas.pdf"),
+            Kind::Other
+        );
+        assert_eq!(
+            Kind::guess("application/octet-stream", "sem-ponto"),
+            Kind::Other
+        );
     }
 
     #[test]
     fn blank_nicknames_fall_back_to_username_across_api_user_types() {
         for nickname in [None, Some(""), Some("   ")] {
-            assert_eq!(resolved_display_name(nickname, "jenosmobile"), "jenosmobile");
+            assert_eq!(
+                resolved_display_name(nickname, "jenosmobile"),
+                "jenosmobile"
+            );
         }
         assert_eq!(resolved_display_name(Some("Jeno"), "jenosmobile"), "Jeno");
 
@@ -1602,7 +1708,8 @@ mod tests {
             "results": [{ "type": "message", "id": "m1", "content": null,
                 "channel_id": "c1", "channel_name": "Chat", "author_id": "u1",
                 "created_at": "2026-10-18T00:00:00Z" }], "has_more": false
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(response.results.len(), 1);
         assert!(response.results[0].content.is_empty());
     }
@@ -1697,7 +1804,8 @@ mod embed_contract_tests {
 
     #[test]
     fn backend_embeds_deserialize_with_custom_fields_and_null_lists() {
-        let message: Message = serde_json::from_str(r##"{
+        let message: Message = serde_json::from_str(
+            r##"{
             "id":"m1","channel_id":"c1","author_id":"u1",
             "content":null,"created_at":"2026-10-09T00:00:00Z",
             "edited_at":null,"reply_to":null,"attachments":null,
@@ -1707,15 +1815,18 @@ mod embed_contract_tests {
                 "fields":[{"position":0,"name":"Status","value":"Ready","inline":true}],
                 "footer":{"text":"End"}}],
             "reactions":null,"user_reactions":null
-        }"##).unwrap();
+        }"##,
+        )
+        .unwrap();
         assert_eq!(message.previews.len(), 1);
         let embed = &message.previews[0];
         assert_eq!(embed.source_type.as_deref(), Some("custom"));
         assert_eq!(embed.fields[0].value, "Ready");
-        assert_eq!(embed.author.as_ref().and_then(|a| a.name.as_deref()), Some("System"));
+        assert_eq!(
+            embed.author.as_ref().and_then(|a| a.name.as_deref()),
+            Some("System")
+        );
     }
-
-
 }
 
 /// Management metadata contains neither the token nor its stored hash.

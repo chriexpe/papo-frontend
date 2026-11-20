@@ -41,7 +41,6 @@ pub struct CachedDraft {
     pub updated_at: i64,
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewCacheState {
     Ready,
@@ -127,7 +126,6 @@ pub struct NotificationLedgerStats {
     pub delivered: i64,
     pub suppressed: i64,
 }
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutgoingState {
@@ -389,9 +387,7 @@ impl CachedMessage {
                     thumbnail_id: attachment.thumbnail_id.clone(),
                     thumbnail_width: attachment.thumbnail_width,
                     thumbnail_height: attachment.thumbnail_height,
-                    created_at: attachment
-                        .created_at
-                        .map(|at| at.timestamp_millis()),
+                    created_at: attachment.created_at.map(|at| at.timestamp_millis()),
                     moderation_status: attachment.moderation_status.clone(),
                 })
                 .collect(),
@@ -468,7 +464,8 @@ impl CachedMessage {
             external_author: self.external_author.clone().map(Box::new),
             content: self.content.clone(),
             at: DateTime::from_timestamp(self.created_at.div_euclid(1000), self.created_at_nanos)
-                .map(|at| at.with_timezone(&Local)).unwrap_or_else(|| millis_to_local(self.created_at)),
+                .map(|at| at.with_timezone(&Local))
+                .unwrap_or_else(|| millis_to_local(self.created_at)),
             edited: self.edited,
             reply_to: self.reply_to.clone(),
             attachments: self
@@ -605,7 +602,10 @@ pub enum CacheOp {
     /// Atualização de ícone autoritativa; None remove uma imagem antiga.
     SetServerIcon(Option<String>),
     /// Uma resposta de perfil, inclusive ausência explícita do avatar.
-    SetAvatar { user_id: String, blob: Option<String> },
+    SetAvatar {
+        user_id: String,
+        blob: Option<String>,
+    },
     UpsertReadState(CachedReadState),
     ReplaceChannelSnapshot {
         channel_id: String,
@@ -626,11 +626,19 @@ pub enum CacheOp {
     },
     /// Extend proven coverage only if the page's boundary is still in the DB.
     /// A dropped earlier write must never create a new disconnected segment.
-    AppendChannelHistory { channel_id: String, anchor_id: String, messages: Vec<CachedMessage>, reconcile: bool, complete: bool },
+    AppendChannelHistory {
+        channel_id: String,
+        anchor_id: String,
+        messages: Vec<CachedMessage>,
+        reconcile: bool,
+        complete: bool,
+    },
     UpsertMessage(CachedMessage),
     /// A standalone pin/send confirmation does not establish timeline coverage.
     UpsertDetachedMessage(CachedMessage),
-    DeleteMessage { message_id: String },
+    DeleteMessage {
+        message_id: String,
+    },
     /// Snapshot autoritativo de fixadas. Converge também linhas que a Store
     /// não tem carregadas: uma fixada antiga que saiu da janela precisa ser
     /// desafixada para a retenção poder removê-la.
@@ -682,7 +690,6 @@ fn millis_to_local(ms: i64) -> DateTime<Local> {
         .map(|at| at.with_timezone(&Local))
         .unwrap_or_else(Local::now)
 }
-
 
 #[cfg(test)]
 mod outgoing_state_tests {

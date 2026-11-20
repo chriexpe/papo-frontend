@@ -1,47 +1,62 @@
-# Android call fixture
+# GStreamer SFU proof
 
-An isolated REST/WebSocket server and Pion SFU for the Compose call tests. It uses
-synthetic VP8 video, Opus silence and the emulator's synthetic cameras. No real
-server, account, microphone on the host, or external participant is contacted.
+The Go fixture runs on loopback. It generates VP8 colour and frame-counter
+patterns and 440 Hz and 880 Hz Opus tones. The Rust proof client owns typed
+REST and gateway signalling outside the GStreamer engine. Both capture
+sources and the speaker output are synthetic.
 
-Requires Go (the version in `go.mod`), ffmpeg with libvpx, and a phone emulator
-with host access through `10.0.2.2`. From the repository root:
+Requires Go, FFmpeg with libvpx and libopus, Rust, and the GStreamer WebRTC,
+Opus and VP8 plugins.
 
 ```sh
 tests/call-sfu/run.sh
 ```
 
-The listener defaults to `127.0.0.1:18765`; ICE advertises `10.0.2.2`. Override
-`-listen` and `-advertise` when using a different test environment. Keep it on a
-trusted local interface: its accounts and control endpoints are test-only.
-
-Build/install the debug app and test APK with the normal Compose Gradle tasks.
-Grant the test app CAMERA and RECORD_AUDIO; Android 17 also requires
-ACCESS_LOCAL_NETWORK. Select the **phone** serial explicitly, for example:
+In another shell, from the repository root:
 
 ```sh
-adb -s emulator-5554 shell pm grant io.github.chriexpe.papo.compose android.permission.RECORD_AUDIO
-adb -s emulator-5554 shell pm grant io.github.chriexpe.papo.compose android.permission.CAMERA
-adb -s emulator-5554 shell pm grant io.github.chriexpe.papo.compose android.permission.ACCESS_LOCAL_NETWORK
-adb -s emulator-5554 shell am instrument -w -r \
-  -e class io.github.chriexpe.papo.compose.CallTransportTest,io.github.chriexpe.papo.compose.CallLifecycleTest \
-  io.github.chriexpe.papo.compose.test/androidx.test.runner.AndroidJUnitRunner
+PAPO_CALL_PROOF_ADDRESS=http://127.0.0.1:18765 cargo run --locked -p papo-call-proof
+curl -fsS http://127.0.0.1:18765/stats | python3 -c '
+import json, sys
+stats = json.load(sys.stdin)
+assert stats["audio"] > 0 and stats["video"] > 0
+print("Upstream RTP verified for audio and camera")
+'
 ```
 
-`CallTransportTest` uses an independent native handle, in-memory credentials and
-a temporary database. It checks SDP/ICE/DTLS/SRTP, remote camera **and** screen
-frames, local camera capture/switching, audio playback settings, cancellation
-during ICE discovery, delayed leave/rejoin ordering, stale controls and socket
-loss without automatic rejoining.
+The proof checks offer layout and RFC 6464, duplex RTP, several cameras and
+a distinct screen, and PCM tone energy after the audio slot assignment changes.
+The fixture rejects the first subscription to the replacement camera, then
+reuses the old slot with a late packet whose sequence precedes `first_seq`.
 
-`CallLifecycleTest` temporarily adds **only this fixture** to the process-owned
-client, verifies service/audio focus, browsing, Activity recreation, PiP and
-notification controls, then forgets that fixture and restores the previous
-server selection. It skips when a real call is already active or the fixture is
-already saved. Run these tests sequentially against a single fixture.
+## Pinned backend
 
-`/stats` reports received outgoing audio/video packet counts and joins/leaves.
-`/control/ice-delay?ms=200` delays ICE discovery; leave acknowledgements are always
-delayed 250 ms. `/control/disconnect` closes the fixture socket. A successful test
-proves actual transport and decoded frames, not audible speech quality or
-physical Bluetooth hardware behavior.
+Supply a disposable, empty loopback PostgreSQL database via `DATABASE_URL`
+and a policy-compliant generated password via `PAPO_PROOF_PASSWORD`. Use a
+fresh database for each codec. The runner verifies the backend checkout against
+the SDK's protocol pin.
+
+```sh
+python3 scripts/papo-backend-proof.py --backend .papo/backend-voice --media-codec vp8
+python3 scripts/papo-backend-proof.py --backend .papo/backend-voice --media-codec h264
+```
+
+The client checks negotiated WebRTC, duplex PCM, camera publication and
+decoding, publisher churn, subscription rejection, reused slot attribution,
+and drain. Its diagnostics show the encoder and decoder factory names.
+
+## Lease pressure and resource counts
+
+```sh
+cargo test --locked -p papo-call
+cargo test --locked -p papo-call --test lease resources_plateau -- --ignored --nocapture
+```
+
+The Linux lease test measures threads and file descriptors after 100 warmed-up
+cycles. Run the negotiated variant against the synthetic Go fixture to include
+ICE, camera and microphone capture, and repeated leave/rejoin on the same socket.
+
+```sh
+PAPO_CALL_PROOF_ADDRESS=http://127.0.0.1:18765 PAPO_CALL_PROOF_PLATEAU=1 \
+    cargo run --locked -p papo-call-proof
+```
