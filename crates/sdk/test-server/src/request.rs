@@ -300,7 +300,9 @@ fn route(
     cookie: Option<&str>,
     body: &[u8],
 ) -> Reply {
-    if let Some(reply) =
+    if let Some(reply) = crate::voice::handle_rest(state, method, path, user_id) {
+        reply
+    } else if let Some(reply) =
         crate::operation_requests::handle(state, method, path, query, user_id, body)
     {
         reply

@@ -49,6 +49,8 @@ fn script_waits_for_its_matching_request_and_is_consumed_once() {
         silent_outgoing: false,
         notification_search: crate::notification_search::NotificationSearch::default(),
         media: crate::encoded_media::Media::default(),
+        next_client_id: 0,
+        voice: crate::voice::VoiceState::default(),
     };
     assert!(take_step(&mut state, "POST", "/auth/login").is_none());
     assert_eq!(take_step(&mut state, "GET", "/server").unwrap().delay_ms, 7);

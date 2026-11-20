@@ -9,8 +9,13 @@ pub use search::{SearchService, SearchSubscription, SearchUpdate};
 mod notifications;
 pub use notifications::{AccountInbox, NotificationClient, NotificationItem};
 mod activity;
+mod calls;
 mod expressions;
 pub use activity::{ActivityService, ActivitySubscription, ActivityView, TypingItem};
+pub use calls::{
+    ActiveCallView, CallParticipantItem, CallParticipantKey, CallService, CallSubscription,
+    CallView, ParticipantVideoBinding, RoomParticipantItem, VoiceCapability, VoiceRoomView,
+};
 pub use expressions::{
     ExpressionId, ExpressionItem, ExpressionLibraryService, ExpressionLibrarySubscription,
     ExpressionLibraryUpdate, ExpressionLibraryView,

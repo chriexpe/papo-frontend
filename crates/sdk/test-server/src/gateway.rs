@@ -52,7 +52,33 @@ fn inbound(raw: &[u8]) -> Option<Value> {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn serve<S>(
+    stream: S,
+    presence: Value,
+    updates: tokio::sync::broadcast::Receiver<crate::presence::Update>,
+    script: &[GatewayStep],
+    ignore_heartbeats: bool,
+    disconnects: tokio::sync::broadcast::Receiver<()>,
+    user_id: &str,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    serve_with_state(
+        stream,
+        presence,
+        updates,
+        script,
+        ignore_heartbeats,
+        disconnects,
+        user_id,
+        "",
+        None,
+    )
+    .await;
+}
+
+pub(crate) async fn serve_with_state<S>(
     stream: S,
     presence: Value,
     mut updates: tokio::sync::broadcast::Receiver<crate::presence::Update>,
@@ -60,6 +86,8 @@ pub(crate) async fn serve<S>(
     ignore_heartbeats: bool,
     mut disconnects: tokio::sync::broadcast::Receiver<()>,
     user_id: &str,
+    client_id: &str,
+    state: Option<std::sync::Arc<tokio::sync::Mutex<crate::server::State>>>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -128,7 +156,7 @@ pub(crate) async fn serve<S>(
             _ = disconnects.recv() => return,
             update = updates.recv() => {
                 let Ok(update) = update else { let _ = socket.close(None).await; return; };
-                if update.visible_to(user_id) && socket.send(Message::text(update.payload.to_string())).await.is_err() { return; }
+                if update.visible_to_client(user_id, client_id) && socket.send(Message::text(update.payload.to_string())).await.is_err() { return; }
             }
             () = tokio::time::sleep_until(wake_at) => {
                 let now = tokio::time::Instant::now();
@@ -142,11 +170,11 @@ pub(crate) async fn serve<S>(
             message = socket.next() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(reply) = reply(text.as_bytes(), ignore_heartbeats)
+                        if let Some(reply) = handle_frame(text.as_bytes(), ignore_heartbeats, user_id, client_id, state.as_ref()).await
                             && socket.send(Message::text(reply.to_string())).await.is_err() { return; }
                     }
                     Some(Ok(Message::Binary(bytes))) => {
-                        if let Some(reply) = reply(&bytes, ignore_heartbeats)
+                        if let Some(reply) = handle_frame(&bytes, ignore_heartbeats, user_id, client_id, state.as_ref()).await
                             && socket.send(Message::text(reply.to_string())).await.is_err() { return; }
                     }
                     Some(Ok(Message::Pong(_))) => {
@@ -161,6 +189,26 @@ pub(crate) async fn serve<S>(
             }
         }
     }
+}
+
+async fn handle_frame(
+    raw: &[u8],
+    ignore_heartbeats: bool,
+    user_id: &str,
+    client_id: &str,
+    state: Option<&std::sync::Arc<tokio::sync::Mutex<crate::server::State>>>,
+) -> Option<Value> {
+    if let Some(state) = state
+        && let Ok(event) = serde_json::from_slice::<Value>(raw)
+    {
+        let mut guard = state.lock().await;
+        match crate::voice::handle_ws(&mut guard, user_id, client_id, &event) {
+            crate::voice::VoiceWsOutcome::NotVoice => {}
+            crate::voice::VoiceWsOutcome::Handled => return None,
+            crate::voice::VoiceWsOutcome::Error(frame) => return Some(frame),
+        }
+    }
+    reply(raw, ignore_heartbeats)
 }
 
 fn reply(raw: &[u8], ignore_heartbeats: bool) -> Option<Value> {

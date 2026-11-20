@@ -115,6 +115,9 @@ pub enum KnownEvent {
     /// Backend `voice_audio_routes` event.
     #[serde(rename = "voice_audio_routes")]
     VoiceAudioRoutes(Box<VoiceAudioRoutesEvent>),
+    /// Backend `voice_video_routes` event.
+    #[serde(rename = "voice_video_routes")]
+    VoiceVideoRoutes(Box<VoiceVideoRoutesEvent>),
 }
 impl KnownEvent {
     /// Static event kind, safe for diagnostic output.
@@ -150,6 +153,7 @@ impl KnownEvent {
             Self::VoiceLeave(_) => "voice_leave",
             Self::ActiveSpeakerUpdate(_) => "active_speaker_update",
             Self::VoiceAudioRoutes(_) => "voice_audio_routes",
+            Self::VoiceVideoRoutes(_) => "voice_video_routes",
         }
     }
     /// Whether this discriminator belongs to the pinned outbound protocol.
@@ -186,6 +190,7 @@ impl KnownEvent {
                 | "voice_leave"
                 | "active_speaker_update"
                 | "voice_audio_routes"
+                | "voice_video_routes"
         )
     }
 }
@@ -225,6 +230,7 @@ mod tests {
             KnownEvent::VoiceLeave(Box::default()),
             KnownEvent::ActiveSpeakerUpdate(Box::default()),
             KnownEvent::VoiceAudioRoutes(Box::default()),
+            KnownEvent::VoiceVideoRoutes(Box::default()),
         ];
         for event in events {
             let kind = event.kind();

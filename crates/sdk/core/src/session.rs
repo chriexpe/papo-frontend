@@ -46,8 +46,10 @@ pub(crate) struct SessionInner {
     pub detached: crate::search::DetachedStore,
     pub notifications: crate::notifications::Notifications,
     pub expression_changes: watch::Sender<u64>,
+    pub calls: Arc<crate::calls::SessionCalls>,
 }
 impl SessionInner {
+    #[cfg(test)]
     pub fn new(
         account: AccountId,
         address: ServerAddress,
@@ -56,9 +58,32 @@ impl SessionInner {
         root: CancellationToken,
         auth_state: AuthState,
     ) -> Arc<Self> {
+        Self::new_with_calls(
+            account,
+            address,
+            key,
+            next,
+            root,
+            auth_state,
+            crate::CallConfig::default(),
+            Arc::new(crate::calls::ClientCallLease::default()),
+        )
+    }
+
+    pub fn new_with_calls(
+        account: AccountId,
+        address: ServerAddress,
+        key: SecretKey,
+        next: Arc<AtomicU64>,
+        root: CancellationToken,
+        auth_state: AuthState,
+        call_config: crate::CallConfig,
+        call_lease: Arc<crate::calls::ClientCallLease>,
+    ) -> Arc<Self> {
         let driver_cancel = root.child_token();
         let epochs = Epochs::new(next, root.clone());
         let generation = epochs.current().generation;
+        let calls = crate::calls::SessionCalls::new(account, generation, call_config, call_lease);
         Arc::new(Self {
             account,
             address,
@@ -95,9 +120,13 @@ impl SessionInner {
             detached: crate::search::DetachedStore::default(),
             notifications: crate::notifications::Notifications::default(),
             expression_changes: watch::channel(0).0,
+            calls,
         })
     }
     pub async fn stop(&self) {
+        self.calls
+            .stop_and_drain(crate::CallEndReason::Shutdown)
+            .await;
         self.root.cancel();
         drop(self.outgoing.files_serial.lock().await);
         self.history.close_all().await;
@@ -138,7 +167,12 @@ impl SessionInner {
             .version
             .checked_add(1)
             .ok_or(ClientError::Closed)?;
-        self.resources.send_replace(Arc::new(snapshot));
+        let published = Arc::new(snapshot);
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        // A resource watcher may join a newly admitted voice channel immediately.
+        self.calls
+            .on_resources_updated(&published, runtime.as_ref());
+        self.resources.send_replace(published);
         Ok(())
     }
     pub fn status(
@@ -150,6 +184,10 @@ impl SessionInner {
             if state != ConnectionState::Online {
                 crate::activity::clear(self, generation);
             }
+            let resources = self.resources.borrow().clone();
+            let runtime = tokio::runtime::Handle::try_current().ok();
+            self.calls
+                .on_connection_status(generation, state, &resources, runtime.as_ref());
             self.connection
                 .send_replace(ConnectionStatus { generation, state })
         })?;
@@ -257,6 +295,13 @@ impl Session {
         }
         self.inner.epochs.replace(None, |generation| {
             crate::activity::clear(&self.inner, generation);
+            let resources = self.inner.resources.borrow().clone();
+            self.inner.calls.on_connection_status(
+                generation,
+                ConnectionState::Connecting,
+                &resources,
+                Some(&self.client.inner.runtime),
+            );
         })?;
         crate::connection_driver::start(self.client.clone(), Arc::clone(&self.inner));
         Ok(())

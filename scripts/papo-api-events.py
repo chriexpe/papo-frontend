@@ -52,18 +52,25 @@ for name, fields in structs.items():
         short = name.removesuffix('Outbound')
         manifest[names[short]] = {'name': short + 'Event', 'fields': fields}
 for name in ['VoiceJoined', 'VoiceAnswer', 'VoiceOffer', 'VoiceICECandidate', 'VoiceStateUpdate',
-             'VoiceLeave', 'ActiveSpeakerUpdate', 'VoiceAudioRoutes']:
+             'VoiceLeave', 'ActiveSpeakerUpdate', 'VoiceAudioRoutes', 'VoiceVideoRoutes']:
     manifest[names[name]] = {'name': name + 'Event', 'fields': structs[name]}
-for name in ['PresenceMember', 'VoiceState', 'VoiceAudioRoute']:
+for name in ['PresenceMember', 'VoiceState', 'VoiceAudioRoute', 'VoiceVideoRoute']:
     manifest['_' + name] = {'name': name, 'fields': structs[name]}
+# VoiceError shares the "error" discriminator with ErrorOutbound and adds optional voice scope fields.
+existing_error_fields = {field for field, _, _ in manifest['error']['fields']}
+for field, typ, opts in structs['VoiceError']:
+    if field not in existing_error_fields:
+        opt_typ = typ if typ.startswith('*') else '*' + typ
+        manifest['error']['fields'].append([field, opt_typ, opts])
 
-scalar = {'string': 'String', 'int': 'i64', 'bool': 'bool', 'time.Time': 'String',
+scalar = {'string': 'String', 'int': 'i64', 'uint16': 'u16', 'uint64': 'u64',
+          'bool': 'bool', 'time.Time': 'String',
           'models.MessageAttachment': 'crate::wire::Attachment',
           'models.ExternalAuthor': 'crate::wire::ExternalAuthor',
           'models.Embed': 'crate::wire::Embed',
           'models.DirectConversation': 'crate::wire::DirectConversation',
           'models.VoiceState': 'VoiceState', 'PresenceMember': 'PresenceMember',
-          'VoiceAudioRoute': 'VoiceAudioRoute'}
+          'VoiceAudioRoute': 'VoiceAudioRoute', 'VoiceVideoRoute': 'VoiceVideoRoute'}
 
 def rust_type(typ):
     if typ.startswith('*'):
@@ -128,7 +135,7 @@ files[API / 'src/gateway/known.rs'] = text
 failed = False
 for path, text in files.items():
     # Records only need imports for cross-record references.
-    imports = [name for name in ['PresenceMember', 'VoiceState', 'VoiceAudioRoute'] if f'Vec<{name}>' in text and f'pub struct {name} ' not in text]
+    imports = [name for name in ['PresenceMember', 'VoiceState', 'VoiceAudioRoute', 'VoiceVideoRoute'] if f'Vec<{name}>' in text and f'pub struct {name} ' not in text]
     text = text.replace('use super::*;\n', ('use super::{' + ', '.join(imports) + '};\n') if imports else '')
     text = subprocess.run(['rustfmt', '--edition', '2024', '--emit', 'stdout'], input=text,
                           text=True, capture_output=True, check=True).stdout

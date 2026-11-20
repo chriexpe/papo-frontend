@@ -60,6 +60,9 @@ mod resources;
 mod response;
 mod rest_hold;
 mod server;
+mod voice;
+mod voice_ws;
+mod voice_ws_slots;
 
 pub use config::{Config, Failure, GatewayStep, RestStep};
 pub use history_seed::HistorySeed;
@@ -68,6 +71,7 @@ pub use member_requests::MemberRequestCounts;
 pub use read_requests::ReadRequestCounts;
 pub use rest_hold::RestHold;
 pub use server::TestServer;
+pub use voice::{RecordedVoiceCommand, VoiceFault};
 
 /// Sanitized failures; no input, credential, address or event payload is retained.
 #[derive(Debug, thiserror::Error)]

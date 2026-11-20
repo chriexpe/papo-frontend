@@ -4,6 +4,10 @@
 pub struct VoiceJoinedEvent {
     /// Backend `channel_id` field.
     pub channel_id: String,
+    /// Backend `peer_id` field.
+    pub peer_id: String,
+    /// Backend `video_codec` field.
+    pub video_codec: String,
     /// Backend `members` field.
     #[serde(default, deserialize_with = "crate::gateway::nullable_list")]
     pub members: Vec<VoiceState>,
@@ -16,6 +20,8 @@ pub struct VoiceJoinedEvent {
 pub struct VoiceAnswerEvent {
     /// Backend `channel_id` field.
     pub channel_id: String,
+    /// Backend `peer_id` field.
+    pub peer_id: String,
     /// Backend `sdp` field.
     pub sdp: String,
 }
@@ -24,6 +30,8 @@ pub struct VoiceAnswerEvent {
 pub struct VoiceOfferEvent {
     /// Backend `channel_id` field.
     pub channel_id: String,
+    /// Backend `peer_id` field.
+    pub peer_id: String,
     /// Backend `sdp` field.
     pub sdp: String,
 }
@@ -32,6 +40,8 @@ pub struct VoiceOfferEvent {
 pub struct VoiceICECandidateEvent {
     /// Backend `channel_id` field.
     pub channel_id: String,
+    /// Backend `peer_id` field.
+    pub peer_id: String,
     /// Backend `candidate` field.
     pub candidate: String,
     /// Backend `sdp_mid` field.
@@ -62,6 +72,8 @@ pub struct VoiceLeaveEvent {
     pub channel_id: String,
     /// Backend `user_id` field.
     pub user_id: String,
+    /// Backend `peer_id` field.
+    pub peer_id: String,
 }
 /// Backend `active_speaker_update` payload; contains no client state.
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -77,9 +89,26 @@ pub struct ActiveSpeakerUpdateEvent {
 pub struct VoiceAudioRoutesEvent {
     /// Backend `channel_id` field.
     pub channel_id: String,
+    /// Backend `peer_id` field.
+    pub peer_id: String,
+    /// Backend `revision` field.
+    pub revision: u64,
     /// Backend `routes` field.
     #[serde(default, deserialize_with = "crate::gateway::nullable_list")]
     pub routes: Vec<VoiceAudioRoute>,
+}
+/// Backend `voice_video_routes` payload; contains no client state.
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct VoiceVideoRoutesEvent {
+    /// Backend `channel_id` field.
+    pub channel_id: String,
+    /// Backend `peer_id` field.
+    pub peer_id: String,
+    /// Backend `revision` field.
+    pub revision: u64,
+    /// Backend `routes` field.
+    #[serde(default, deserialize_with = "crate::gateway::nullable_list")]
+    pub routes: Vec<VoiceVideoRoute>,
 }
 /// Backend `_VoiceState` payload; contains no client state.
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -100,4 +129,17 @@ pub struct VoiceAudioRoute {
     pub track_id: String,
     /// Backend `user_id` field.
     pub user_id: String,
+}
+/// Backend `_VoiceVideoRoute` payload; contains no client state.
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct VoiceVideoRoute {
+    /// Backend `track_id` field.
+    pub track_id: String,
+    /// Backend `user_id` field.
+    pub user_id: String,
+    /// Backend `kind` field.
+    pub kind: String,
+    /// Backend `first_seq` field.
+    #[serde(default)]
+    pub first_seq: Option<u16>,
 }

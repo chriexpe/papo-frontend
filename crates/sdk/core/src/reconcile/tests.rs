@@ -141,3 +141,31 @@ fn publication_checks_epoch_and_version_as_one_operation() {
     assert_eq!(snapshot.version, 2);
     assert_eq!(snapshot.generation, new.generation);
 }
+
+#[test]
+fn resource_watch_publishes_after_call_admission_is_updated() {
+    let session = session();
+    let generation = session.epochs.current().generation;
+    let resources = session.resources.subscribe();
+    let rooms = session.calls.rooms_cell.subscribe();
+    let rooms_snapshot = rooms.borrow();
+
+    std::thread::scope(|scope| {
+        let publisher = scope.spawn(|| {
+            session
+                .publish_resources(ResourceSnapshot::empty(generation))
+                .unwrap();
+        });
+        // The held room snapshot pauses the call coordinator inside resource admission.
+        while session.calls.state.try_lock().is_ok() {
+            assert!(!publisher.is_finished());
+            std::thread::yield_now();
+        }
+        let published_early = resources.has_changed().unwrap();
+        drop(rooms_snapshot);
+        publisher.join().unwrap();
+        assert!(!published_early);
+    });
+
+    assert!(resources.has_changed().unwrap());
+}

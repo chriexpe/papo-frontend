@@ -18,7 +18,9 @@ import (
 	"github.com/labstack/echo/v4"
 	"papo/internal/config"
 	"papo/internal/handlers"
+	"papo/internal/services"
 	"papo/internal/storage"
+	"papo/internal/webrtc"
 	"papo/internal/websocket"
 )
 
@@ -46,6 +48,10 @@ func run() error {
 		return err
 	}
 	if err := os.Setenv("HMAC_SECRET", hex.EncodeToString(secret[32:])); err != nil {
+		return err
+	}
+	// Use ephemeral ICE UDP ports so the proof never collides with a host UDP mux port.
+	if err := os.Setenv("VOICE_ICE_UDP_PORT", "0"); err != nil {
 		return err
 	}
 	cfg := config.LoadConfig()
@@ -76,12 +82,30 @@ func run() error {
 	cfg.BaseURL = "http://" + listener.Addr().String()
 	hub := websocket.GetHub()
 	go hub.Run()
+	voiceMgr := webrtc.NewManager(cfg, webrtc.Signaler{
+		SendToUser:       hub.SendToUser,
+		SendToClient:     hub.SendToClient,
+		BroadcastToUsers: func(allowed map[string]bool, event any) { hub.BroadcastToUsers(event, allowed) },
+		VoiceAudience: func(channelID string) map[string]bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			allowed, err := services.VoiceConnectors(ctx, channelID, hub.OnlineUserIDs())
+			if err != nil {
+				return map[string]bool{}
+			}
+			return allowed
+		},
+	})
+	defer voiceMgr.Shutdown()
+	hub.SetOnClientOffline(voiceMgr.ClientOffline)
+	hub.SetOnUserOffline(voiceMgr.UserOffline)
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
 	handlers.RegisterAuthRoutes(e, cfg)
 	handlers.RegisterServerRoutes(e, cfg)
 	handlers.RegisterChannelRoutes(e, cfg)
+	handlers.RegisterVoiceRoutes(e, cfg)
 	handlers.RegisterMessageRoutes(e, cfg)
 	handlers.RegisterEmbedRoutes(e, cfg)
 	handlers.RegisterUserRoutes(e, cfg)

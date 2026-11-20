@@ -44,6 +44,8 @@ pub(crate) struct State {
     pub(crate) notification_search: crate::notification_search::NotificationSearch,
     pub(crate) media: crate::encoded_media::Media,
     pub(crate) operations: crate::operation_requests::Operations,
+    pub(crate) voice: crate::voice::VoiceState,
+    pub(crate) next_client_id: u64,
 }
 
 /// A running in-memory backend bound exclusively to IPv4 loopback.
@@ -100,6 +102,8 @@ impl TestServer {
             notification_search: crate::notification_search::NotificationSearch::default(),
             media: crate::encoded_media::Media::default(),
             operations: crate::operation_requests::Operations::default(),
+            voice: crate::voice::VoiceState::default(),
+            next_client_id: 1,
         }));
         let (stop, stopped) = oneshot::channel();
         let (stop_accept, accept_stopped) = oneshot::channel();
@@ -313,8 +317,17 @@ async fn connection(
     if let Ok((pending, user_id)) = upgrade.try_recv()
         && let Ok(upgraded) = pending.await
     {
-        let (snapshot, updates) = gateway_state.lock().await.presence.join(&user_id);
-        gateway::serve(
+        let (client_id, snapshot, updates) = {
+            let mut locked = gateway_state.lock().await;
+            let seq = locked.next_client_id;
+            locked.next_client_id = locked.next_client_id.saturating_add(1);
+            let client_id = format!("client-{seq}");
+            let state_ref = &mut *locked;
+            let voice_by_user = state_ref.voice.all_user_voice_channels();
+            let (snapshot, updates) = state_ref.presence.join_with_voice(&user_id, &voice_by_user);
+            (client_id, snapshot, updates)
+        };
+        gateway::serve_with_state(
             TokioIo::new(upgraded),
             snapshot,
             updates,
@@ -322,9 +335,16 @@ async fn connection(
             config.ignore_heartbeats,
             disconnects,
             &user_id,
+            &client_id,
+            Some(Arc::clone(&gateway_state)),
         )
         .await;
-        gateway_state.lock().await.presence.leave(&user_id);
+        let mut locked = gateway_state.lock().await;
+        let state_ref = &mut *locked;
+        state_ref
+            .voice
+            .client_offline(&state_ref.presence, &user_id, &client_id);
+        state_ref.presence.leave(&user_id);
     }
 }
 
