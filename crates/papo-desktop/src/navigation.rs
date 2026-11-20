@@ -1,0 +1,245 @@
+//! Where the person is in the app: the selected server and, per server, the
+//! selected channel; the rail's order while a reorder is on its way to the
+//! SDK or a tile is being dragged; the open menu and the remove confirmation.
+//!
+//! Owns these transitions and nothing the SDK holds: the server list itself
+//! comes from `server_list`, and reordering or removing is sent to the SDK by
+//! the shell. Selection is per window and not saved yet (D2 keeps it).
+
+use std::collections::HashMap;
+
+use papo_sdk::ServerId;
+
+use crate::design::{RAIL_TILE_PT, SPACE_MD_PT};
+use crate::menu::OpenMenu;
+use crate::server_list::{ServerEntry, ServerList};
+
+/// The distance from one rail tile to the next, in points.
+pub(crate) const RAIL_STEP_PT: f32 = RAIL_TILE_PT + SPACE_MD_PT;
+
+/// The app's navigation state.
+#[derive(Default)]
+pub(crate) struct Navigation {
+    servers: ServerList,
+    selected: Option<ServerId>,
+    /// The channel picked on each server, by the server's channel id.
+    channels: HashMap<ServerId, String>,
+    /// The order sent to the SDK, shown until the registry has it.
+    pending_order: Option<Vec<ServerId>>,
+    drag: Option<RailDrag>,
+    pub(crate) menu: Option<OpenMenu>,
+    /// The server whose removal waits for the person to confirm.
+    pub(crate) removing: Option<ServerId>,
+}
+
+/// A rail tile being dragged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RailDrag {
+    pub(crate) server: ServerId,
+    /// Its place when the drag started.
+    from: usize,
+    /// Where it would land now.
+    to: usize,
+    /// The pointer's travel since the press, in points.
+    dy_pt: f32,
+}
+
+impl Navigation {
+    pub(crate) fn servers(&self) -> &ServerList {
+        &self.servers
+    }
+
+    /// Takes the SDK's newest server list. A server that went away takes its
+    /// selection with it: the first server is selected instead.
+    pub(crate) fn servers_changed(&mut self, list: ServerList) {
+        if self.pending_order.as_deref() == Some(list.order().as_slice()) {
+            self.pending_order = None;
+        }
+        self.servers = list;
+        let order = self.servers.order();
+        self.channels.retain(|server, _| order.contains(server));
+        if self
+            .selected
+            .is_none_or(|selected| !order.contains(&selected))
+        {
+            self.selected = order.first().copied();
+        }
+        if let Some(removing) = self.removing
+            && !order.contains(&removing)
+        {
+            self.removing = None;
+        }
+    }
+
+    /// The rail in the order to draw: a drag's preview, else the order on its
+    /// way to the SDK, else the saved order.
+    pub(crate) fn shown(&self) -> Vec<&ServerEntry> {
+        let order = self.order_shown();
+        order
+            .iter()
+            .filter_map(|id| self.servers.get(*id))
+            .collect()
+    }
+
+    fn order_shown(&self) -> Vec<ServerId> {
+        let mut order = self.order();
+        if let Some(drag) = self.drag {
+            moved(&mut order, drag.from, drag.to);
+        }
+        order
+    }
+
+    /// The order as last sent or saved, without a drag in progress.
+    fn order(&self) -> Vec<ServerId> {
+        let saved = self.servers.order();
+        match &self.pending_order {
+            // Only while it still names exactly the saved servers.
+            Some(pending) if same_servers(pending, &saved) => pending.clone(),
+            _ => saved,
+        }
+    }
+
+    pub(crate) fn selected(&self) -> Option<&ServerEntry> {
+        self.selected.and_then(|id| self.servers.get(id))
+    }
+
+    pub(crate) fn select_server(&mut self, id: ServerId) {
+        if self.servers.get(id).is_some() {
+            self.selected = Some(id);
+        }
+    }
+
+    /// The selected server's channel: the one picked, else its first text
+    /// channel.
+    pub(crate) fn selected_channel(&self) -> Option<&str> {
+        let server = self.selected()?;
+        let picked = self.channels.get(&server.id).filter(|picked| {
+            server
+                .text_channels
+                .iter()
+                .chain(&server.voice_channels)
+                .any(|channel| &channel.id == *picked)
+        });
+        picked.map(String::as_str).or_else(|| {
+            server
+                .text_channels
+                .first()
+                .map(|channel| channel.id.as_str())
+        })
+    }
+
+    pub(crate) fn select_channel(&mut self, channel: &str) {
+        if let Some(server) = self.selected {
+            self.channels.insert(server, channel.to_owned());
+        }
+    }
+
+    /// Moves `server` one place up (`-1`) or down (`1`). Returns the order to
+    /// send to the SDK, or `None` when it cannot move that way.
+    pub(crate) fn nudge(&mut self, server: ServerId, by: isize) -> Option<Vec<ServerId>> {
+        let order = self.order();
+        let from = order.iter().position(|id| *id == server)?;
+        let to = from.checked_add_signed(by).filter(|to| *to < order.len())?;
+        self.commit_move(order, from, to)
+    }
+
+    /// A drag on `server`'s tile moved by `dy_pt` since the press.
+    pub(crate) fn drag_moved(&mut self, server: ServerId, dy_pt: f32) {
+        let order = self.order();
+        let Some(from) = order.iter().position(|id| *id == server) else {
+            return;
+        };
+        let to = target(from, dy_pt, order.len());
+        self.drag = Some(RailDrag {
+            server,
+            from,
+            to,
+            dy_pt,
+        });
+    }
+
+    /// The drag ended. Returns the order to send when the tile moved. Its
+    /// place is found again by server, in case the list changed meanwhile.
+    pub(crate) fn drag_ended(&mut self) -> Option<Vec<ServerId>> {
+        let drag = self.drag.take()?;
+        let order = self.order();
+        let from = order.iter().position(|id| *id == drag.server)?;
+        let to = target(from, drag.dy_pt, order.len());
+        self.commit_move(order, from, to)
+    }
+
+    /// The drag was cancelled (Escape, or a modal took the pointer): the tile
+    /// goes back and nothing is sent.
+    pub(crate) fn drag_cancelled(&mut self) {
+        self.drag = None;
+    }
+
+    /// Clears what a newly opened screen covers: a drag, the menu and the
+    /// remove confirmation.
+    pub(crate) fn dismiss_overlays(&mut self) {
+        self.drag = None;
+        self.menu = None;
+        self.removing = None;
+    }
+
+    /// How far the dragged tile is drawn from its place in the preview, in
+    /// points, so it stays under the pointer.
+    pub(crate) fn drag_offset(&self, server: ServerId) -> f32 {
+        match self.drag {
+            Some(drag) if drag.server == server => {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a rail holds far fewer than 2^23 servers"
+                )]
+                let moved_pt = (drag.to as f32 - drag.from as f32) * RAIL_STEP_PT;
+                drag.dy_pt - moved_pt
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// The SDK refused the order sent: show the saved one again.
+    pub(crate) fn reorder_failed(&mut self) {
+        self.pending_order = None;
+    }
+
+    fn commit_move(
+        &mut self,
+        mut order: Vec<ServerId>,
+        from: usize,
+        to: usize,
+    ) -> Option<Vec<ServerId>> {
+        if from == to {
+            return None;
+        }
+        moved(&mut order, from, to);
+        self.pending_order = Some(order.clone());
+        Some(order)
+    }
+}
+
+/// Where a tile dragged `dy_pt` from place `from` lands, among `count`.
+fn target(from: usize, dy_pt: f32, count: usize) -> usize {
+    let steps = (dy_pt / RAIL_STEP_PT).round();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a rail holds far fewer servers than an isize counts"
+    )]
+    let steps = steps as isize;
+    from.saturating_add_signed(steps)
+        .min(count.saturating_sub(1))
+}
+
+fn moved(order: &mut Vec<ServerId>, from: usize, to: usize) {
+    if from < order.len() && to < order.len() {
+        let server = order.remove(from);
+        order.insert(to, server);
+    }
+}
+
+fn same_servers(a: &[ServerId], b: &[ServerId]) -> bool {
+    a.len() == b.len() && a.iter().all(|id| b.contains(id))
+}
+
+#[cfg(test)]
+mod tests;

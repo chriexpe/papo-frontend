@@ -10,6 +10,8 @@ use super::{COMPOSER_KEY, Shell, view};
 use crate::account_watch::{Accounts, Credentials, SignedOut};
 use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 
+mod navigation;
+
 const SIZE_PT: (f32, f32) = (1000.0, 700.0);
 const FRAME_S: f64 = 1.0 / 60.0;
 

@@ -52,7 +52,8 @@ fn sign_in_sends_the_trimmed_username_and_the_password_as_typed() {
     assert_eq!(
         effects,
         [Effect::Finish {
-            server: "Lumen".to_owned()
+            id: server_id(),
+            name: "Lumen".to_owned()
         }]
     );
 }

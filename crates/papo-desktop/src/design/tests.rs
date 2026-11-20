@@ -11,6 +11,10 @@ fn text_meets_its_contrast_floor_on_every_surface_it_sits_on() {
         for (surface, name) in [
             (palette.surface_content, "content"),
             (palette.surface_pill, "pill"),
+            (palette.surface_sidebar, "sidebar"),
+            (palette.surface_rail, "rail"),
+            (palette.surface_hover, "hover"),
+            (palette.surface_selected, "selected"),
         ] {
             let primary = contrast(palette.text_primary, surface);
             let secondary = contrast(palette.text_secondary, surface);

@@ -60,6 +60,9 @@ impl Theme {
     fn lightness(self) -> Lightness {
         match self {
             Theme::Oled => Lightness {
+                surface_rail: 0.000,
+                surface_sidebar: 0.000,
+                surface_hover: 0.195,
                 surface_content: 0.000,
                 surface_pill: 0.175,
                 surface_code: 0.135,
@@ -71,6 +74,9 @@ impl Theme {
                 text_muted: 0.645,
             },
             Theme::Graphite => Lightness {
+                surface_rail: 0.205,
+                surface_sidebar: 0.228,
+                surface_hover: 0.275,
                 surface_content: 0.252,
                 surface_pill: 0.270,
                 surface_code: 0.222,
@@ -82,6 +88,9 @@ impl Theme {
                 text_muted: 0.665,
             },
             Theme::Light => Lightness {
+                surface_rail: 0.952,
+                surface_sidebar: 0.972,
+                surface_hover: 0.940,
                 surface_content: 1.000,
                 surface_pill: 1.000,
                 surface_code: 0.968,
@@ -93,6 +102,9 @@ impl Theme {
                 text_muted: 0.520,
             },
             Theme::SoftLight => Lightness {
+                surface_rail: 0.925,
+                surface_sidebar: 0.950,
+                surface_hover: 0.918,
                 surface_content: 0.975,
                 surface_pill: 1.000,
                 surface_code: 0.945,
@@ -109,6 +121,9 @@ impl Theme {
 
 /// OKLCH lightness of the neutral tokens a theme defines.
 struct Lightness {
+    surface_rail: f32,
+    surface_sidebar: f32,
+    surface_hover: f32,
     surface_content: f32,
     surface_pill: f32,
     surface_code: f32,
@@ -146,6 +161,14 @@ const POPUP_SHADOW_ALPHA: f32 = 0.45;
 /// A theme's colours, ready to draw with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Palette {
+    /// The server rail.
+    pub(crate) surface_rail: Color,
+    /// The channel list.
+    pub(crate) surface_sidebar: Color,
+    /// A row under the pointer.
+    pub(crate) surface_hover: Color,
+    /// The selected channel: the accent mixed into the sidebar.
+    pub(crate) surface_selected: Color,
     /// The message list.
     pub(crate) surface_content: Color,
     /// Floating pills: the header pills and the composer.
@@ -172,8 +195,12 @@ pub(crate) struct Palette {
     pub(crate) text_selection: Color,
     /// Links: the accent's hue, lighter on dark themes.
     pub(crate) link: Color,
-    /// Errors: a feedback line, an invalid field's outline.
+    /// Errors: a feedback line, an invalid field's outline, a button that
+    /// destroys something.
     pub(crate) danger: Color,
+    /// Text drawn on the danger colour: black or white, whichever contrasts
+    /// more.
+    pub(crate) danger_on: Color,
     /// Warnings: a feedback line that lets the person go on.
     pub(crate) warning: Color,
     /// Success: a met requirement.
@@ -193,9 +220,16 @@ impl Palette {
         let accent = oklch(accent_lightness, ACCENT_CHROMA, ACCENT_HUE_DEGREES);
         let link_lightness = if dark { 0.76 } else { 0.50 };
         let danger_lightness = if dark { 0.74 } else { 0.52 };
+        let danger = oklch(danger_lightness, DANGER_CHROMA, DANGER_HUE_DEGREES);
         let success_lightness = if dark { 0.76 } else { 0.50 };
         let (warning_lightness, warning_hue) = if dark { (0.82, 80.0) } else { (0.50, 65.0) };
+        let sidebar = neutral(lightness.surface_sidebar);
+        let selected_share = if dark { 0.10 } else { 0.09 };
         Palette {
+            surface_rail: neutral(lightness.surface_rail),
+            surface_sidebar: sidebar,
+            surface_hover: neutral(lightness.surface_hover),
+            surface_selected: mix_oklab(sidebar, accent, selected_share),
             surface_content: neutral(lightness.surface_content),
             surface_pill: neutral(lightness.surface_pill),
             surface_code: neutral(lightness.surface_code),
@@ -209,13 +243,26 @@ impl Palette {
             accent_on: text_on(accent),
             text_selection: accent.alpha(TEXT_SELECTION_ALPHA),
             link: oklch(link_lightness, LINK_CHROMA, ACCENT_HUE_DEGREES),
-            danger: oklch(danger_lightness, DANGER_CHROMA, DANGER_HUE_DEGREES),
+            danger,
+            danger_on: text_on(danger),
             warning: oklch(warning_lightness, WARNING_CHROMA, warning_hue),
             success: oklch(success_lightness, SUCCESS_CHROMA, SUCCESS_HUE_DEGREES),
             scrim: Color::BLACK.alpha(SCRIM_ALPHA),
             popup_shadow: Color::BLACK.alpha(POPUP_SHADOW_ALPHA),
         }
     }
+}
+
+/// `share` of the way from `base` to `tint`, in `OKLab`, so the mix keeps
+/// close to the base's perceived lightness and the text on it stays
+/// readable.
+fn mix_oklab(base: Color, tint: Color, share: f32) -> Color {
+    let (from, to) = (base.to_oklab(), tint.to_oklab());
+    let mut mixed = [0.0; 4];
+    for (channel, (a, b)) in mixed.iter_mut().zip(from.iter().zip(to.iter())) {
+        *channel = a + (b - a) * share;
+    }
+    Color::from_oklab(mixed)
 }
 
 /// Black or white, whichever contrasts more with `background`.
@@ -266,6 +313,12 @@ pub(crate) const TYPE_SMALL_MEDIUM: TextStyle = type_scaled(12.0 / 13.0, WEIGHT_
 pub(crate) const TYPE_SMALL: TextStyle = type_scaled(12.0 / 13.0, WEIGHT_REGULAR);
 /// `type.caption`: sub-lines, a server's address, a field's hint.
 pub(crate) const TYPE_CAPTION: TextStyle = type_scaled(11.0 / 13.0, WEIGHT_REGULAR);
+/// `type.title` at weight 600: a rail letter, the server card's name.
+pub(crate) const TYPE_TITLE: TextStyle = type_scaled(14.0 / 13.0, WEIGHT_SEMIBOLD);
+/// `type.caption` at weight 500: a group label in the channel list.
+pub(crate) const TYPE_CAPTION_MEDIUM: TextStyle = type_scaled(11.0 / 13.0, WEIGHT_MEDIUM);
+/// `type.body` at weight 500: the selected channel, the account's name.
+pub(crate) const TYPE_BODY_MEDIUM: TextStyle = type_scaled(1.0, WEIGHT_MEDIUM);
 /// `type.display` at weight 600: a screen's title, a large server initial.
 pub(crate) const TYPE_DISPLAY: TextStyle = type_scaled(18.0 / 13.0, WEIGHT_SEMIBOLD);
 
@@ -292,46 +345,8 @@ pub(crate) const RADIUS_PILL_PT: f32 = 14.0;
 /// The header pills' height in points.
 pub(crate) const HEADER_PILL_HEIGHT_PT: f32 = 36.0;
 
-/// The server and account screens' column width, in points, in both hosts.
-pub(crate) const FORM_WIDTH_PT: f32 = 340.0;
-/// A form field's and a primary button's height, in points.
-pub(crate) const FIELD_HEIGHT_PT: f32 = 40.0;
-/// A form field's and a primary button's corner radius, in points.
-pub(crate) const RADIUS_FIELD_PT: f32 = 10.0;
-/// The height of a button inside a field (Show, Hide), in points.
-pub(crate) const FIELD_BUTTON_HEIGHT_PT: f32 = 28.0;
-/// The width of a field's outline, in points.
-pub(crate) const FIELD_OUTLINE_PT: f32 = 1.0;
-/// The opacity of a field that cannot take input while a request runs.
-pub(crate) const FIELD_BUSY_OPACITY: f32 = 0.6;
-/// The opacity of a button that cannot be pressed yet.
-pub(crate) const BUTTON_DISABLED_OPACITY: f32 = 0.45;
-/// The server's icon above the account steps, in points square.
-pub(crate) const SERVER_ICON_PT: f32 = 56.0;
-/// The server icon's corner radius, in points.
-pub(crate) const RADIUS_SERVER_ICON_PT: f32 = 16.0;
-/// A busy button's spinner, in points square.
-pub(crate) const SPINNER_PT: f32 = 14.0;
-/// The time a busy button's spinner takes to turn once, in seconds.
-pub(crate) const SPINNER_PERIOD_S: f64 = 0.8;
-/// The popup that hosts the server and account screens in the app, in points.
-pub(crate) const POPUP_SIZE_PT: (f32, f32) = (460.0, 580.0);
-/// The popup's padding, in points.
-pub(crate) const POPUP_PADDING_PT: f32 = 32.0;
-/// The popup's corner radius, in points.
-pub(crate) const RADIUS_POPUP_PT: f32 = 16.0;
-/// The popup's close button, in points square.
-pub(crate) const POPUP_CLOSE_PT: f32 = 32.0;
-/// The popup's close button's inset from the popup's corner, in points.
-pub(crate) const POPUP_CLOSE_INSET_PT: f32 = 10.0;
-/// The popup's shadow: its drop and its blur, in points.
-pub(crate) const POPUP_SHADOW_PT: (f32, f32) = (24.0, 70.0);
-/// A close cross inside its button, in points square.
-pub(crate) const CROSS_PT: f32 = 16.0;
-/// The close cross in a pill, in points square.
-pub(crate) const PILL_CROSS_PT: f32 = 14.0;
-/// A keyboard focus ring: its width and its gap from the control, in points.
-pub(crate) const FOCUS_RING_PT: (f32, f32) = (2.0, 2.0);
-
+mod sizes;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use sizes::*;

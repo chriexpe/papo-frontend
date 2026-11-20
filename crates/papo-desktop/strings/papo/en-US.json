@@ -49,5 +49,19 @@
   "sign_in.notice.access_expired": "Access expired. Enter the password again.",
   "sign_in.notice.session_expired": "Session expired. Sign in again.",
   "toast.connected": "Connected to {{server}}",
-  "toast.dismiss": "Dismiss"
+  "toast.dismiss": "Dismiss",
+  "rail.label": "Servers",
+  "rail.add_server": "Add server",
+  "rail.move_hint": "Alt+Up or Alt+Down moves it.",
+  "channels.label": "Channels",
+  "channels.text": "TEXT CHANNELS",
+  "channels.voice": "VOICE CHANNELS",
+  "server_card.owner": "by {{name}}",
+  "server_card.options": "Server options",
+  "server_menu.remove": "Remove server",
+  "remove.title": "Remove {{server}}?",
+  "remove.body": "You'll be signed out on this device.",
+  "remove.cancel": "Cancel",
+  "remove.confirm": "Remove",
+  "account.handle": "@{{username}}"
 }

@@ -27,12 +27,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use papo_sdk::{AccountId, AuthService, ServerId};
 use rune::{Image, TextEdit};
 
-pub(crate) use address::{AddressCheck, AddressProblem};
+pub(crate) use address::{AddressCheck, AddressProblem, shown as shown_address};
 pub(crate) use events::{Created, Discovery, Effect, Event, Failure, Probe, ProbeFailure};
 pub(crate) use feedback::{AlreadyAdded, Line, LineAction, SavedAccounts, Tone};
 pub(crate) use requests::{remove_left_server, run};
 pub(crate) use transitions::{can_submit, password_rules_met};
-pub(crate) use view::{CROSS, popup, screen};
+pub(crate) use view::{popup, screen};
 
 use crate::account_watch::{Credentials, SignedOut};
 
@@ -205,6 +205,11 @@ impl SignIn {
 
     pub(crate) fn host(&self) -> Host {
         self.host
+    }
+
+    /// Whether the flow signs a saved account in again.
+    pub(crate) fn is_renewing(&self) -> bool {
+        matches!(&self.screen, Screen::Account { server, .. } if server.renewing.is_some())
     }
 
     /// The person closed the screens. Returns the server they leave behind

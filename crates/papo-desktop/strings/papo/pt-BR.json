@@ -49,5 +49,19 @@
   "sign_in.notice.access_expired": "O acesso expirou. Digite a senha de novo.",
   "sign_in.notice.session_expired": "Sessão expirada. Entre de novo.",
   "toast.connected": "Conectado a {{server}}",
-  "toast.dismiss": "Dispensar"
+  "toast.dismiss": "Dispensar",
+  "rail.label": "Servidores",
+  "rail.add_server": "Adicionar servidor",
+  "rail.move_hint": "Alt+Cima ou Alt+Baixo move o servidor.",
+  "channels.label": "Canais",
+  "channels.text": "CANAIS DE TEXTO",
+  "channels.voice": "CANAIS DE VOZ",
+  "server_card.owner": "de {{name}}",
+  "server_card.options": "Opções do servidor",
+  "server_menu.remove": "Remover servidor",
+  "remove.title": "Remover {{server}}?",
+  "remove.body": "Você vai sair da conta neste dispositivo.",
+  "remove.cancel": "Cancelar",
+  "remove.confirm": "Remover",
+  "account.handle": "@{{username}}"
 }
