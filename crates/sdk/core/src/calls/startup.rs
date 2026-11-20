@@ -93,6 +93,9 @@ pub(crate) fn spawn_prepare(
         let pump_rt = rt_handle.clone();
         rt_handle.spawn(async move {
             while let Some(report) = report_rx.recv().await {
+                if report.attempt != attempt {
+                    continue;
+                }
                 let is_drained = matches!(report.kind, super::media_port::MediaReportKind::Drained);
                 pump_calls.on_media_report(report, &pump_rt);
                 if is_drained {
@@ -210,7 +213,6 @@ fn finish_media_start(
         Ok(lease) => {
             let lease: Arc<dyn super::media_port::MediaLease> = Arc::from(lease);
             let mut effects = SideEffects::default();
-            let mut late_cancelled_lease = None;
             let mut join_cancel = None;
             {
                 let mut guard = calls
@@ -252,18 +254,8 @@ fn finish_media_start(
                     }
                 } else {
                     guard.draining_attempts.insert(attempt);
-                    late_cancelled_lease = Some(lease);
+                    effects.stop_leases.push((attempt, lease));
                 }
-            }
-            if let Some(late_lease) = late_cancelled_lease {
-                let _ = late_lease.send(MediaCommand::Stop);
-                spawn_drain_watchdog(
-                    Arc::clone(&calls.client_lease),
-                    attempt,
-                    calls.config.drain_timeout,
-                    rt_handle,
-                );
-                return;
             }
             calls.execute_effects(effects, rt_handle);
             if let Some(join_cancel) = join_cancel {
@@ -292,19 +284,19 @@ fn sync_pre_start_controls(
             });
         effects.drain_media = true;
     }
-    if active.settings.camera_on != initial_settings.camera_on {
-        active
-            .pending_media_commands
-            .push_back(MediaCommand::SetCamera {
-                on: active.settings.camera_on,
-            });
-        effects.drain_media = true;
-    }
     if active.settings.camera_facing != initial_settings.camera_facing {
         active
             .pending_media_commands
             .push_back(MediaCommand::SetCameraFacing {
                 facing: active.settings.camera_facing,
+            });
+        effects.drain_media = true;
+    }
+    if active.settings.camera_on != initial_settings.camera_on {
+        active
+            .pending_media_commands
+            .push_back(MediaCommand::SetCamera {
+                on: active.settings.camera_on,
             });
         effects.drain_media = true;
     }
@@ -391,6 +383,6 @@ pub(crate) fn spawn_subscription_wakeup(
             () = cancel.cancelled() => return,
             () = tokio::time::sleep_until(at) => {}
         }
-        calls.on_subscription_wakeup(attempt, &rt_handle);
+        calls.on_subscription_wakeup(attempt, at, &rt_handle);
     });
 }

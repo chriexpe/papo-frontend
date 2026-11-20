@@ -13,8 +13,8 @@ use tokio::sync::{Notify, oneshot};
 use super::{
     media_port::{
         IceServerConfig, InitialMediaSettings, MediaCommand, MediaEngineFactory, MediaLease,
-        MediaLeaseError, MediaReport, MediaReportKind, MediaReportSink, MediaStartError,
-        MediaStartFuture, VideoDestination, VideoDestinationId,
+        MediaLeaseError, MediaReport, MediaReportKind, MediaReportSink, MediaReportSinkError,
+        MediaStartError, MediaStartFuture, VideoDestination, VideoDestinationId,
     },
     model::CallAttemptId,
 };
@@ -39,6 +39,7 @@ pub struct FakeMediaLeaseHandle {
     pub settings: InitialMediaSettings,
     reports: MediaReportSink,
     commands: Arc<Mutex<Vec<MediaCommand>>>,
+    command_error: Arc<Mutex<Option<MediaLeaseError>>>,
     command_notify: Arc<Notify>,
     auto_drain: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
@@ -77,13 +78,21 @@ impl FakeMediaLeaseHandle {
             .clone()
     }
 
-    /// True after `MediaCommand::Stop` has been received.
+    /// Sets the error returned by subsequent ordinary commands, if any.
+    pub fn set_command_error(&self, error: Option<MediaLeaseError>) {
+        *self
+            .command_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = error;
+    }
+
+    /// True after the lease has received a stop request.
     #[must_use]
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }
 
-    /// Controls whether `MediaCommand::Stop` automatically emits `MediaReportKind::Drained`.
+    /// Controls whether stopping automatically emits `MediaReportKind::Drained`.
     pub fn set_auto_drain(&self, auto_drain: bool) {
         self.auto_drain.store(auto_drain, Ordering::Release);
     }
@@ -98,35 +107,67 @@ impl FakeMediaLeaseHandle {
             notified.await;
         }
     }
+
+    /// Waits until the lease has received a stop request.
+    pub async fn wait_stopped(&self) {
+        loop {
+            let notified = self.command_notify.notified();
+            if self.is_stopped() {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 struct FakeMediaLease {
     attempt: CallAttemptId,
     reports: MediaReportSink,
     commands: Arc<Mutex<Vec<MediaCommand>>>,
+    command_error: Arc<Mutex<Option<MediaLeaseError>>>,
     command_notify: Arc<Notify>,
     auto_drain: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    runtime: tokio::runtime::Handle,
 }
 
 impl MediaLease for FakeMediaLease {
     fn send(&self, command: MediaCommand) -> Result<(), MediaLeaseError> {
-        let is_stop = matches!(command, MediaCommand::Stop);
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(MediaLeaseError::Closed);
+        }
+        if let Some(error) = *self
+            .command_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Err(error);
+        }
         self.commands
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(command);
         self.command_notify.notify_waiters();
-        if is_stop {
-            self.stopped.store(true, Ordering::Release);
-            if self.auto_drain.load(Ordering::Acquire) {
-                let _ = self.reports.try_send(MediaReport {
-                    attempt: self.attempt,
-                    kind: MediaReportKind::Drained,
+        Ok(())
+    }
+
+    fn stop(&self) {
+        if self.stopped.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.command_notify.notify_waiters();
+        if self.auto_drain.load(Ordering::Acquire) {
+            let report = MediaReport {
+                attempt: self.attempt,
+                kind: MediaReportKind::Drained,
+            };
+            if let Err(MediaReportSinkError::Full) = self.reports.try_send(report.clone()) {
+                let reports = self.reports.clone();
+                self.runtime.spawn(async move {
+                    let _ = reports.send(report).await;
                 });
             }
         }
-        Ok(())
     }
 }
 
@@ -151,7 +192,7 @@ impl Default for FakeMediaFactory {
 }
 
 impl FakeMediaFactory {
-    /// Creates a fake factory that starts immediately and auto-drains on `Stop`.
+    /// Creates a fake factory that starts immediately and auto-drains on stop.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -165,7 +206,7 @@ impl FakeMediaFactory {
         }
     }
 
-    /// Sets whether newly created leases automatically emit `Drained` upon `Stop`.
+    /// Sets whether newly created leases automatically emit `Drained` upon stop.
     pub fn set_auto_drain(&self, auto_drain: bool) {
         self.inner
             .auto_drain_default
@@ -267,6 +308,7 @@ impl MediaEngineFactory for FakeMediaFactory {
                 },
             }
             let commands = Arc::new(Mutex::new(Vec::new()));
+            let command_error = Arc::new(Mutex::new(None));
             let command_notify = Arc::new(Notify::new());
             let auto_drain = Arc::new(AtomicBool::new(
                 inner.auto_drain_default.load(Ordering::Acquire),
@@ -278,6 +320,7 @@ impl MediaEngineFactory for FakeMediaFactory {
                 settings,
                 reports: reports.clone(),
                 commands: Arc::clone(&commands),
+                command_error: Arc::clone(&command_error),
                 command_notify: Arc::clone(&command_notify),
                 auto_drain: Arc::clone(&auto_drain),
                 stopped: Arc::clone(&stopped),
@@ -292,9 +335,11 @@ impl MediaEngineFactory for FakeMediaFactory {
                 attempt,
                 reports,
                 commands,
+                command_error,
                 command_notify,
                 auto_drain,
                 stopped,
+                runtime: tokio::runtime::Handle::current(),
             }) as Box<dyn MediaLease>)
         })
     }

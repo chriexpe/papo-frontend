@@ -2,7 +2,8 @@
 
 use crate::Generation;
 use papo_api::gateway::Command;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 use super::model::CallAttemptId;
 
@@ -15,7 +16,7 @@ pub(crate) struct QueuedVoiceCommand {
     pub attempt: CallAttemptId,
     /// Wire command to serialize and send.
     pub command: Command,
-    /// True only for teardown `voice_leave` once `voice_join` was queued for this attempt.
+    /// True only for teardown `voice_leave` once `voice_join` was transmitted for this attempt.
     pub allow_after_end: bool,
 }
 
@@ -31,39 +32,61 @@ pub(crate) enum EnqueueError {
 /// Sender half of the bounded voice command FIFO held by the session's call coordinator.
 #[derive(Clone)]
 pub(crate) struct VoiceCommandSender {
-    tx: mpsc::Sender<QueuedVoiceCommand>,
+    tx: mpsc::Sender<(QueuedVoiceCommand, Option<OwnedSemaphorePermit>)>,
+    ordinary_slots: Arc<Semaphore>,
 }
 
 /// Receiver half attached to one `AccountSocket` connection.
 pub(crate) struct VoiceCommandReceiver {
-    rx: mpsc::Receiver<QueuedVoiceCommand>,
+    rx: mpsc::Receiver<(QueuedVoiceCommand, Option<OwnedSemaphorePermit>)>,
 }
 
 /// Creates a bounded FIFO with the requested capacity (minimum 1).
 #[must_use]
 pub(crate) fn channel(capacity: usize) -> (VoiceCommandSender, VoiceCommandReceiver) {
-    let (tx, rx) = mpsc::channel(capacity.max(1));
-    (VoiceCommandSender { tx }, VoiceCommandReceiver { rx })
+    let capacity = capacity.clamp(1, Semaphore::MAX_PERMITS - 1);
+    // Before the writer can transmit a replacement join, it must dequeue the
+    // previous leave. One slot therefore suffices for teardown in the same FIFO.
+    let (tx, rx) = mpsc::channel(capacity + 1);
+    let ordinary_slots = Arc::new(Semaphore::new(capacity));
+    (
+        VoiceCommandSender { tx, ordinary_slots },
+        VoiceCommandReceiver { rx },
+    )
 }
 
 impl VoiceCommandSender {
     /// Non-blocking enqueue; never stalls a caller or Tokio worker, returning `Full` on overflow.
     pub(crate) fn try_send(&self, item: QueuedVoiceCommand) -> Result<(), EnqueueError> {
-        self.tx.try_send(item).map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) => EnqueueError::Full,
-            mpsc::error::TrySendError::Closed(_) => EnqueueError::Closed,
-        })
+        if self.tx.is_closed() {
+            return Err(EnqueueError::Closed);
+        }
+        let permit = if item.allow_after_end {
+            None
+        } else {
+            Some(
+                Arc::clone(&self.ordinary_slots)
+                    .try_acquire_owned()
+                    .map_err(|_| EnqueueError::Full)?,
+            )
+        };
+        self.tx
+            .try_send((item, permit))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => EnqueueError::Full,
+                mpsc::error::TrySendError::Closed(_) => EnqueueError::Closed,
+            })
     }
 }
 
 impl VoiceCommandReceiver {
     /// Receives the next queued voice command in strict FIFO order.
     pub(crate) async fn recv(&mut self) -> Option<QueuedVoiceCommand> {
-        self.rx.recv().await
+        self.rx.recv().await.map(|(item, _permit)| item)
     }
 
     #[cfg(test)]
     pub(crate) fn try_recv(&mut self) -> Option<QueuedVoiceCommand> {
-        self.rx.try_recv().ok()
+        self.rx.try_recv().ok().map(|(item, _permit)| item)
     }
 }

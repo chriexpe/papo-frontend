@@ -6,6 +6,7 @@ use crate::{
     permissions::{VoiceAccess, voice_access},
 };
 use std::sync::{Arc, atomic::Ordering};
+use tokio::time::Instant;
 
 use super::{
     attempt::SideEffects,
@@ -161,6 +162,7 @@ impl SessionCalls {
     pub(crate) fn on_subscription_wakeup(
         self: &Arc<Self>,
         attempt: CallAttemptId,
+        at: Instant,
         runtime: &tokio::runtime::Handle,
     ) {
         let mut effects = SideEffects::default();
@@ -172,7 +174,7 @@ impl SessionCalls {
             if let Some(active) = guard
                 .active
                 .as_mut()
-                .filter(|active| active.attempt == attempt && active.phase.is_active())
+                .filter(|active| active.attempt == attempt && active.scheduled_wakeup == Some(at))
             {
                 active.scheduled_wakeup = None;
                 self.reconcile_subscriptions_locked(&mut guard, &mut effects);

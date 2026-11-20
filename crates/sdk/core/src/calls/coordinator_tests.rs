@@ -7,12 +7,12 @@ use super::{
     handle::CallHandle,
     lease::ClientCallLease,
     media_port::{
-        CaptureState, IceServerConfig, MediaEngineFactory, MediaReportKind, MediaTransportState,
-        MediaWarning, VideoDestinationId,
+        CaptureState, IceServerConfig, MediaCommand, MediaEngineFactory, MediaLeaseError,
+        MediaReportKind, MediaTransportState, MediaWarning, VideoDestination, VideoDestinationId,
     },
     model::{
-        CallConfig, CallEndReason, CallError, CallPhase, CallWarning, HostLeaseKind, SpeakingState,
-        VideoCodec, VideoKind, VideoTarget,
+        CallConfig, CallEndReason, CallError, CallPhase, CallWarning, SpeakingState, VideoCodec,
+        VideoKind, VideoTarget,
     },
     startup::{IceFetchFuture, IceFetcher},
 };
@@ -27,8 +27,9 @@ use papo_api::gateway::{
     VoiceVideoRoute, VoiceVideoRoutesEvent,
 };
 use std::{
+    any::Any,
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{Arc, Barrier, Mutex},
     time::Duration,
 };
 use tokio::sync::oneshot;
@@ -282,6 +283,7 @@ async fn cancel_during_media_start_and_late_success_stops_lease_and_sends_nothin
     let mut h = Harness::new(me, role, vec![(c1, ChannelKind::Voice, false, true)]);
     let (tx, rx) = oneshot::channel();
     h.media.push_start(FakeStartBehavior::Gated(rx));
+    h.media.set_auto_drain(false);
 
     let handle = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
     h.media.wait_starts(1).await;
@@ -294,9 +296,199 @@ async fn cancel_during_media_start_and_late_success_stops_lease_and_sends_nothin
     // Late media start completion after cancel is immediately stopped and never sends voice_join.
     let _ = tx.send(Ok(()));
     let lease = h.media.wait_lease(1).await;
-    lease.wait_commands(1).await;
-    assert!(lease.is_stopped());
+    lease.wait_stopped().await;
+    assert!(lease.commands().is_empty());
     assert!(h.drain_sent_commands().is_empty());
+
+    h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    tokio::task::yield_now().await;
+    assert_eq!(h.media.start_count(), 1);
+    lease.emit(MediaReportKind::Drained);
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+    assert_eq!(h.media.start_count(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn full_media_queue_ends_call_and_stops_lease() {
+    assert_media_command_failure(MediaLeaseError::Full).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn closed_media_queue_ends_call_and_stops_lease() {
+    assert_media_command_failure(MediaLeaseError::Closed).await;
+}
+
+async fn assert_media_command_failure(error: MediaLeaseError) {
+    let (me, role, c1) = (id(10), id(20), id(30));
+    let mut h = Harness::with_config(
+        me,
+        role,
+        vec![(c1, ChannelKind::Voice, false, true)],
+        CallConfig {
+            command_queue_capacity: 1,
+            ..CallConfig::default()
+        },
+    );
+    h.media.set_auto_drain(false);
+    let call = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+    let lease = h.media.wait_lease(1).await;
+    h.deliver(KnownEvent::VoiceJoined(Box::new(VoiceJoinedEvent {
+        channel_id: c1.to_string(),
+        peer_id: "p1".into(),
+        video_codec: "vp8".into(),
+        members: Vec::new(),
+        active_speakers: Vec::new(),
+    })));
+    let delivered = lease.commands().len();
+    lease.set_command_error(Some(error));
+
+    call.set_muted(false).unwrap();
+
+    assert_eq!(
+        call.snapshot().phase,
+        CallPhase::Ended(CallEndReason::MediaCommandFailed(error))
+    );
+    assert_eq!(lease.commands().len(), delivered);
+    assert!(lease.is_stopped());
+    assert!(matches!(
+        h.drain_sent_commands().as_slice(),
+        [Command::VoiceLeave { .. }]
+    ));
+
+    let replacement = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    lease.emit_for(replacement.attempt(), MediaReportKind::Drained);
+    tokio::task::yield_now().await;
+    assert_eq!(h.media.start_count(), 1);
+    lease.emit(MediaReportKind::Drained);
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+    assert_eq!(h.media.start_count(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn superseded_subscription_wakeup_preserves_current_deadline() {
+    let (me, role, channel) = (id(10), id(20), id(30));
+    let h = Harness::new(me, role, vec![(channel, ChannelKind::Voice, false, true)]);
+    let call = h.join_with(channel, FakeIceFetcher::immediate()).unwrap();
+    let now = tokio::time::Instant::now();
+    let current_at = now + Duration::from_secs(1);
+    let superseded_at = now + Duration::from_secs(2);
+    h.calls
+        .state
+        .lock()
+        .unwrap()
+        .active
+        .as_mut()
+        .unwrap()
+        .scheduled_wakeup = Some(current_at);
+
+    h.calls.on_subscription_wakeup(
+        call.attempt(),
+        superseded_at,
+        &tokio::runtime::Handle::current(),
+    );
+
+    assert_eq!(
+        h.calls
+            .state
+            .lock()
+            .unwrap()
+            .active
+            .as_ref()
+            .unwrap()
+            .scheduled_wakeup,
+        Some(current_at)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_rejects_replacement_while_holding_the_device_lease() {
+    let (me, role, channel) = (id(10), id(20), id(30));
+    let mut h = Harness::new(me, role, vec![(channel, ChannelKind::Voice, false, true)]);
+    h.media.set_auto_drain(false);
+    let old = h.join_with(channel, FakeIceFetcher::immediate()).unwrap();
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+    let lease = h.media.wait_lease(1).await;
+    let calls = Arc::clone(&h.calls);
+    let shutdown = tokio::spawn(async move { calls.stop_and_drain(CallEndReason::Shutdown).await });
+    lease.wait_stopped().await;
+
+    assert!(matches!(
+        h.join_with(channel, FakeIceFetcher::immediate()),
+        Err(CallError::Closed)
+    ));
+    assert_eq!(
+        old.snapshot().phase,
+        CallPhase::Ended(CallEndReason::Shutdown)
+    );
+    assert!(!shutdown.is_finished());
+    lease.emit(MediaReportKind::Drained);
+    shutdown.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn queued_leave_is_discarded_when_its_socket_generation_ends() {
+    let (me, role, channel) = (id(10), id(20), id(30));
+    let channels = vec![(channel, ChannelKind::Voice, false, true)];
+    let mut h = Harness::new(me, role, channels.clone());
+    let call = h.join_with(channel, FakeIceFetcher::immediate()).unwrap();
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+    call.leave();
+    let leave = h.fifo.try_recv().unwrap();
+    assert!(matches!(leave.command, Command::VoiceLeave { .. }));
+
+    let generation = Generation::for_test(2);
+    h.calls.on_connection_status(
+        generation,
+        ConnectionState::Online,
+        &voice_resources(generation, me, role, channels),
+        None,
+    );
+
+    assert!(!h.calls.should_send(&leave, h.gen_id));
+}
+
+#[tokio::test(start_paused = true)]
+async fn replacement_join_can_queue_behind_leave_with_one_ordinary_slot() {
+    let (me, role, channel) = (id(10), id(20), id(30));
+    let mut h = Harness::with_config(
+        me,
+        role,
+        vec![(channel, ChannelKind::Voice, false, true)],
+        CallConfig {
+            command_queue_capacity: 1,
+            ..CallConfig::default()
+        },
+    );
+    h.join_with(channel, FakeIceFetcher::immediate()).unwrap();
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+
+    let replacement = h.join_with(channel, FakeIceFetcher::immediate()).unwrap();
+    h.media.wait_lease(2).await;
+
+    assert_eq!(replacement.snapshot().phase, CallPhase::Joining);
+    assert!(matches!(
+        h.drain_sent_commands().as_slice(),
+        [Command::VoiceLeave { .. }, Command::VoiceJoin { .. },]
+    ));
 }
 
 #[tokio::test(start_paused = true)]
@@ -660,12 +852,11 @@ fn assert_video_reassignment(
 }
 
 #[tokio::test(start_paused = true)]
-async fn video_bindings_interest_local_playback_and_stale_host_callbacks() {
+async fn video_bindings_interest_and_local_playback() {
     let (me, ana, beto, role, c1) = (id(10), id(11), id(12), id(20), id(30));
     let mut h = Harness::new(me, role, vec![(c1, ChannelKind::Voice, false, true)]);
 
     let call1 = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
-    let lease_token1 = call1.acquire_host_lease(HostLeaseKind::AudioFocus).unwrap();
     assert!(matches!(
         h.next_sent_command().await,
         Command::VoiceJoin { .. }
@@ -759,16 +950,196 @@ async fn video_bindings_interest_local_playback_and_stale_host_callbacks() {
     call1.on_audio_focus_regained().unwrap();
     assert!(call1.snapshot().settings.muted);
 
-    // Switch to call2: old destinations are revoked, and stale host callbacks from call1 are ignored!
-    let call2 = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    call1.leave();
     assert!(dest_ana.is_revoked());
     assert!(dest_beto.is_revoked());
+}
+
+#[tokio::test(start_paused = true)]
+async fn stale_handle_is_inert_after_rejoin() {
+    let (me, role, c1) = (id(10), id(20), id(30));
+    let h = Harness::new(me, role, vec![(c1, ChannelKind::Voice, false, true)]);
+
+    let call1 = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    let call2 = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    assert_eq!(call1.account(), call2.account());
+    assert_ne!(call1.attempt(), call2.attempt());
+    assert_eq!(
+        call1.snapshot().phase,
+        CallPhase::Ended(CallEndReason::Switched)
+    );
     call2.set_muted(false).unwrap();
-    assert!(!lease_token1.release());
+    assert_eq!(call1.set_camera(true), Err(CallError::Ended));
+    call1.leave();
     assert_eq!(call1.on_audio_focus_lost(), Err(CallError::Ended));
     assert_eq!(call1.on_host_terminated(), Err(CallError::Ended));
     assert!(!call2.snapshot().settings.muted);
+    assert!(!call2.snapshot().settings.camera_on);
     assert!(call2.snapshot().phase.is_active());
+}
+
+struct PausedRevocation {
+    entered: Barrier,
+    resume: Barrier,
+}
+
+impl PausedRevocation {
+    fn new() -> Self {
+        Self {
+            entered: Barrier::new(2),
+            resume: Barrier::new(2),
+        }
+    }
+}
+
+impl VideoDestination for PausedRevocation {
+    fn id(&self) -> VideoDestinationId {
+        VideoDestinationId::from_raw(1)
+    }
+
+    fn revoke(&self) {
+        self.entered.wait();
+        self.resume.wait();
+    }
+
+    fn as_any(&self) -> &(dyn Any + Send + Sync) {
+        self
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn deferred_video_unbind_cannot_send_to_replacement_lease() {
+    let (me, remote, role, c1) = (id(10), id(11), id(20), id(30));
+    let mut h = Harness::new(me, role, vec![(c1, ChannelKind::Voice, false, true)]);
+    let old = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+    let destination = Arc::new(PausedRevocation::new());
+    old.bind_video(
+        remote,
+        VideoKind::Camera,
+        Arc::clone(&destination) as Arc<dyn VideoDestination>,
+    )
+    .unwrap();
+
+    let worker = std::thread::spawn(move || old.unbind_video(remote, VideoKind::Camera));
+    destination.entered.wait();
+    let new = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceLeave { .. }
+    ));
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+    let lease = h.media.wait_lease(2).await;
+    new.set_muted(false).unwrap();
+    destination.resume.wait();
+    worker.join().unwrap().unwrap();
+
+    assert!(matches!(
+        lease.commands().as_slice(),
+        [MediaCommand::SetMuted { muted: false }]
+    ));
+    assert!(
+        h.calls
+            .active_cell
+            .borrow()
+            .as_ref()
+            .is_some_and(|snap| { snap.attempt == new.attempt() && !snap.settings.muted })
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn deferred_permission_teardown_cannot_overwrite_newer_active_or_rooms_snapshot() {
+    let (me, remote, role, c1) = (id(10), id(11), id(20), id(30));
+    let allowed = vec![(c1, ChannelKind::Voice, false, true)];
+    let mut h = Harness::new(me, role, allowed.clone());
+    let old = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+    let destination = Arc::new(PausedRevocation::new());
+    old.bind_video(
+        remote,
+        VideoKind::Camera,
+        Arc::clone(&destination) as Arc<dyn VideoDestination>,
+    )
+    .unwrap();
+
+    let calls = Arc::clone(&h.calls);
+    let denied = voice_resources(
+        h.gen_id,
+        me,
+        role,
+        vec![(c1, ChannelKind::Voice, false, false)],
+    );
+    let worker = std::thread::spawn(move || calls.on_resources_updated(&denied, None));
+    destination.entered.wait();
+    h.calls
+        .on_resources_updated(&voice_resources(h.gen_id, me, role, allowed), None);
+    let new = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    let rooms_version = h.calls.rooms_cell.borrow().version;
+    destination.resume.wait();
+    worker.join().unwrap();
+
+    assert_eq!(
+        old.snapshot().phase,
+        CallPhase::Ended(CallEndReason::Forbidden)
+    );
+    assert_eq!(h.calls.rooms_cell.borrow().version, rooms_version);
+    assert_eq!(
+        h.calls
+            .active_cell
+            .borrow()
+            .as_ref()
+            .map(|snap| snap.attempt),
+        Some(new.attempt())
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn deferred_unbind_does_not_reorder_video_commands() {
+    let (me, remote, role, c1) = (id(10), id(11), id(20), id(30));
+    let mut h = Harness::new(me, role, vec![(c1, ChannelKind::Voice, false, true)]);
+    let call = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
+    let destination = Arc::new(PausedRevocation::new());
+    call.bind_video(
+        remote,
+        VideoKind::Camera,
+        Arc::clone(&destination) as Arc<dyn VideoDestination>,
+    )
+    .unwrap();
+
+    let old = call.clone();
+    let worker = std::thread::spawn(move || old.unbind_video(remote, VideoKind::Camera));
+    destination.entered.wait();
+    call.bind_video(
+        remote,
+        VideoKind::Camera,
+        Arc::new(FakeVideoDestination::new(VideoDestinationId::from_raw(2))),
+    )
+    .unwrap();
+    destination.resume.wait();
+    worker.join().unwrap().unwrap();
+
+    let lease = h.media.wait_lease(1).await;
+    assert!(matches!(
+        lease.commands().as_slice(),
+        [
+            MediaCommand::SetVideoSlotPlan { revision: 1, .. },
+            MediaCommand::SetVideoSlotPlan { revision: 2, .. },
+            MediaCommand::SetVideoSlotPlan { revision: 3, .. },
+        ]
+    ));
 }
 
 #[tokio::test(start_paused = true)]
@@ -809,10 +1180,10 @@ async fn camera_intent_is_queued_ahead_of_local_offer_in_fifo() {
 async fn disconnect_ends_call_without_auto_rejoin_and_fifo_overflow_ends_call() {
     let (me, role, c1) = (id(10), id(20), id(30));
     let config = CallConfig {
-        command_queue_capacity: 2,
+        command_queue_capacity: 1,
         ..CallConfig::default()
     };
-    let h = Harness::with_config(
+    let mut h = Harness::with_config(
         me,
         role,
         vec![(c1, ChannelKind::Voice, false, true)],
@@ -820,7 +1191,10 @@ async fn disconnect_ends_call_without_auto_rejoin_and_fifo_overflow_ends_call() 
     );
 
     let call = h.join_with(c1, FakeIceFetcher::immediate()).unwrap();
-    tokio::task::yield_now().await;
+    assert!(matches!(
+        h.next_sent_command().await,
+        Command::VoiceJoin { .. }
+    ));
     h.deliver(KnownEvent::VoiceJoined(Box::new(VoiceJoinedEvent {
         channel_id: c1.to_string(),
         peer_id: "p1".into(),
@@ -833,13 +1207,17 @@ async fn disconnect_ends_call_without_auto_rejoin_and_fifo_overflow_ends_call() 
         }],
         active_speakers: Vec::new(),
     })));
-    // Fill bounded FIFO (capacity 2; VoiceJoin already occupies slot 1) until overflow.
+    // Fill the voice FIFO through the normal control path while the writer is paused.
     call.set_muted(false).unwrap();
     assert_eq!(call.set_muted(true), Err(CallError::Ended));
     assert_eq!(
         call.snapshot().phase,
         CallPhase::Ended(CallEndReason::CommandOverflow)
     );
+    assert!(matches!(
+        h.drain_sent_commands().as_slice(),
+        [Command::VoiceLeave { .. }]
+    ));
 
     // Reconnect never auto-rejoins.
     let gen2 = Generation::for_test(2);

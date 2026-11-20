@@ -132,14 +132,18 @@ impl SessionCalls {
         let Ok(channel) = payload.channel_id.parse::<Uuid>() else {
             return;
         };
-        if let Some(pos) = guard.abandoned_joins.iter().position(|ch| *ch == channel) {
+        if let Some(pos) = guard
+            .abandoned_joins
+            .iter()
+            .position(|join| join.channel == channel && !join.join_rejected)
+        {
             guard.abandoned_joins.remove(pos);
             return;
         }
         let Some(active_channel) = guard
             .active
             .as_ref()
-            .filter(|active| active.phase == CallPhase::Joining)
+            .filter(|active| active.join_state == JoinDispatchState::Transmitted)
             .map(|active| active.channel)
         else {
             return;
@@ -343,28 +347,28 @@ impl SessionCalls {
             None => None,
         };
 
-        // Consume a join-phase error belonging to an abandoned join without swallowing a real
-        // channel-scoped error (such as `voice-room-closed`) for an active Joined/Connected call.
-        if !has_peer_scope
-            && matches!(
-                classify_voice_error(code, true),
-                VoiceErrorDisposition::Fatal(_)
-            )
-            && !guard.abandoned_joins.is_empty()
-        {
-            if let Some(ch) = err_channel {
-                let active_live_on_ch = guard.active.as_ref().is_some_and(|active| {
-                    active.channel == ch
-                        && matches!(active.phase, CallPhase::Joined | CallPhase::Connected)
-                });
-                if !active_live_on_ch
-                    && let Some(pos) = guard.abandoned_joins.iter().position(|entry| *entry == ch)
-                {
-                    guard.abandoned_joins.remove(pos);
-                    return;
-                }
-            } else {
+        // The pinned backend sends join rejections without a channel or peer. A scoped
+        // room closure applies to the channel even if a replacement join is still pending.
+        let unscoped = !has_peer_scope && err_channel.is_none();
+        let can_reject_join = matches!(
+            code,
+            VoiceErrorCode::Forbidden
+                | VoiceErrorCode::RoomFull
+                | VoiceErrorCode::AlreadyInRoom
+                | VoiceErrorCode::RateLimited
+                | VoiceErrorCode::RoomClosed
+        );
+        // An ordered unscoped not-found can also be the explicit leave rejecting an
+        // abandoned join that never acquired a peer or sent a typed join reply.
+        if unscoped && let Some(join) = guard.abandoned_joins.front_mut() {
+            if code == VoiceErrorCode::NotFound
+                || (join.join_rejected && code == VoiceErrorCode::RateLimited)
+            {
                 guard.abandoned_joins.pop_front();
+                return;
+            }
+            if can_reject_join && !join.join_rejected {
+                join.join_rejected = true;
                 return;
             }
         }
@@ -382,6 +386,12 @@ impl SessionCalls {
             return;
         };
         if !active.phase.is_active() {
+            return;
+        }
+        if unscoped
+            && active.join_state != JoinDispatchState::Acknowledged
+            && !(active.join_state == JoinDispatchState::Transmitted && can_reject_join)
+        {
             return;
         }
         let joining = active.phase == CallPhase::Joining;

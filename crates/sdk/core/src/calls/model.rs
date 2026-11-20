@@ -161,6 +161,8 @@ pub enum CallEndReason {
     NegotiationFailed,
     /// The bounded voice command FIFO overflowed.
     CommandOverflow,
+    /// A required command was rejected by the media lease.
+    MediaCommandFailed(super::media_port::MediaLeaseError),
     /// Waiting for a prior call's media drain missed its deadline.
     ReleasePending,
     /// The gateway connection was lost or replaced; calls never auto-rejoin.
@@ -277,14 +279,4 @@ impl Default for CallSettings {
             camera_facing: CameraFacing::Front,
         }
     }
-}
-
-/// Platform host lease categories compared against the attempt on release.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[non_exhaustive]
-pub enum HostLeaseKind {
-    /// OS audio focus / audio session ownership.
-    AudioFocus,
-    /// OS foreground service / background call execution lease.
-    ForegroundService,
 }

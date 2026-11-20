@@ -1,5 +1,5 @@
-//! Handle-based public API (`Calls`, `CallHandle`, `HostLease`) over `SessionCalls`.
-//! Every `CallHandle` and `HostLease` belongs to one attempt and becomes inert when it ends.
+//! Handle-based public API (`Calls`, `CallHandle`) over `SessionCalls`.
+//! Each `CallHandle` belongs to one attempt and becomes inert when it ends.
 
 use crate::{AccountId, ClientHandle, Session, Uuid, observable::StateCell};
 use std::sync::Arc;
@@ -10,8 +10,8 @@ use super::{
     coordinator::SessionCalls,
     media_port::VideoDestination,
     model::{
-        CallAttemptId, CallEndReason, CallError, CallSnapshot, CameraFacing, HostLeaseKind,
-        RoomsSnapshot, VideoKind, VideoTarget,
+        CallAttemptId, CallEndReason, CallError, CallSnapshot, CameraFacing, RoomsSnapshot,
+        VideoKind, VideoTarget,
     },
     startup::SessionIceFetcher,
 };
@@ -30,12 +30,15 @@ impl Calls {
     /// Subscribes to live voice rooms for this account, filtered by admitted `connect_voice`.
     ///
     /// Accounts without a media engine factory can still watch voice rooms.
+    /// Clone the snapshot or drop its watch borrow before calling SDK controls.
     #[must_use]
     pub fn subscribe_rooms(&self) -> watch::Receiver<RoomsSnapshot> {
         self.session.inner.calls.rooms_cell.subscribe()
     }
 
     /// Subscribes to this session's active call snapshot (`None` when idle or ended).
+    ///
+    /// Clone the snapshot or drop its watch borrow before calling SDK controls.
     #[must_use]
     pub fn subscribe_active(&self) -> watch::Receiver<Option<CallSnapshot>> {
         self.session.inner.calls.active_cell.subscribe()
@@ -87,6 +90,11 @@ impl Calls {
 }
 
 /// Handle to a single call attempt; goes permanently inert when that attempt ends.
+///
+/// Release platform-owned resources such as audio focus and the foreground service through
+/// an ownership-checked operation scoped to the acquiring [account](Self::account) and
+/// [attempt](Self::attempt). A callback from an older attempt must never release resources
+/// owned by a newer call.
 #[derive(Clone)]
 pub struct CallHandle {
     account: AccountId,
@@ -120,7 +128,8 @@ impl CallHandle {
         self.account
     }
 
-    /// Unique identifier for this call attempt.
+    /// Identifies this attempt. Compare it together with [account](Self::account) when
+    /// checking ownership of a platform resource.
     #[must_use]
     pub const fn attempt(&self) -> CallAttemptId {
         self.attempt
@@ -133,6 +142,8 @@ impl CallHandle {
     }
 
     /// Subscribes to state updates for this attempt; closes once `CallPhase::Ended` is published.
+    ///
+    /// Clone the snapshot or drop its watch borrow before calling SDK controls.
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<CallSnapshot> {
         self.snapshot_cell.subscribe()
@@ -259,51 +270,6 @@ impl CallHandle {
         } else {
             Err(CallError::Ended)
         }
-    }
-
-    /// Registers a compare-on-release host lease (e.g. audio focus or foreground service) for this attempt.
-    ///
-    /// # Errors
-    /// Returns `CallError::Ended` if this attempt has already ended.
-    pub fn acquire_host_lease(&self, kind: HostLeaseKind) -> Result<HostLease, CallError> {
-        let lease_id = controls::acquire_host_lease(&self.calls, self.attempt, kind)?;
-        Ok(HostLease {
-            attempt: self.attempt,
-            kind,
-            lease_id,
-            calls: Arc::clone(&self.calls),
-        })
-    }
-}
-
-/// Compare-on-release host lease token bound to one call attempt.
-///
-/// Releasing a stale lease from an earlier attempt never touches a newer call.
-pub struct HostLease {
-    attempt: CallAttemptId,
-    kind: HostLeaseKind,
-    lease_id: u64,
-    calls: Arc<SessionCalls>,
-}
-
-impl HostLease {
-    /// Attempt this host lease belongs to.
-    #[must_use]
-    pub const fn attempt(&self) -> CallAttemptId {
-        self.attempt
-    }
-
-    /// Lease category.
-    #[must_use]
-    pub const fn kind(&self) -> HostLeaseKind {
-        self.kind
-    }
-
-    /// Releases this host lease if and only if it still belongs to the active attempt.
-    /// Returns `true` if released, or `false` if this lease was already stale/superseded.
-    #[must_use]
-    pub fn release(self) -> bool {
-        controls::release_host_lease(&self.calls, self.attempt, self.kind, self.lease_id)
     }
 }
 

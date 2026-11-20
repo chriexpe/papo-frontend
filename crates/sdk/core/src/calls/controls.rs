@@ -1,4 +1,4 @@
-//! Attempt-fenced control operations backing `CallHandle` and `HostLease`.
+//! Attempt-fenced control operations backing `CallHandle`.
 
 use crate::Uuid;
 use papo_api::gateway::Command;
@@ -9,8 +9,8 @@ use super::{
     fifo::QueuedVoiceCommand,
     media_port::{MediaCommand, VideoDestination},
     model::{
-        CallAttemptId, CallEndReason, CallError, CallPhase, CameraFacing, HostLeaseKind,
-        PlaybackSettings, VideoKind, VideoTarget,
+        CallAttemptId, CallEndReason, CallError, CallPhase, CameraFacing, PlaybackSettings,
+        VideoKind, VideoTarget,
     },
 };
 
@@ -300,52 +300,4 @@ pub(crate) fn leave_attempt(
     };
     calls.execute_effects(effects, runtime);
     ended
-}
-
-/// Acquires a compare-on-release host lease token scoped to `(attempt, kind)`.
-pub(crate) fn acquire_host_lease(
-    calls: &Arc<SessionCalls>,
-    attempt: CallAttemptId,
-    kind: HostLeaseKind,
-) -> Result<u64, CallError> {
-    let mut guard = calls
-        .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let state = &mut *guard;
-    let active = state
-        .active
-        .as_mut()
-        .filter(|active| active.attempt == attempt && active.phase.is_active())
-        .ok_or(CallError::Ended)?;
-    let id = state.next_host_lease_id;
-    state.next_host_lease_id = state.next_host_lease_id.saturating_add(1);
-    active.host_leases.insert(kind, id);
-    Ok(id)
-}
-
-/// Releases a host lease ONLY if `(attempt, kind, lease_id)` still matches the current attempt.
-pub(crate) fn release_host_lease(
-    calls: &Arc<SessionCalls>,
-    attempt: CallAttemptId,
-    kind: HostLeaseKind,
-    lease_id: u64,
-) -> bool {
-    let mut guard = calls
-        .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let Some(active) = guard
-        .active
-        .as_mut()
-        .filter(|active| active.attempt == attempt && active.phase.is_active())
-    else {
-        return false;
-    };
-    if active.host_leases.get(&kind).copied() == Some(lease_id) {
-        active.host_leases.remove(&kind);
-        true
-    } else {
-        false
-    }
 }

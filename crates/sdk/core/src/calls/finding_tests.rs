@@ -9,7 +9,8 @@ use super::{
     lease::ClientCallLease,
     media_port::{
         IceServerConfig, InitialMediaSettings, MediaCommand, MediaEngineFactory, MediaLease,
-        MediaLeaseError, MediaReportSink, MediaStartFuture, VideoDestinationId,
+        MediaLeaseError, MediaReport, MediaReportKind, MediaReportSink, MediaStartFuture,
+        VideoDestinationId,
     },
     model::{CallAttemptId, CallConfig, CallEndReason, CallError, CallPhase, VideoKind},
     startup::{IceFetchFuture, IceFetcher},
@@ -237,6 +238,9 @@ async fn replacing_call_before_socket_drains_voice_join_does_not_swallow_replace
 
 /// Custom lease that pauses the first `SetMuted` call via a barrier to force concurrent dispatch overlap.
 struct InterleavingLease {
+    attempt: CallAttemptId,
+    reports: MediaReportSink,
+    stopped: AtomicBool,
     commands: Arc<Mutex<Vec<MediaCommand>>>,
     pause_first_mute: Arc<AtomicBool>,
     first_mute_entered: Arc<Barrier>,
@@ -245,6 +249,9 @@ struct InterleavingLease {
 
 impl MediaLease for InterleavingLease {
     fn send(&self, command: MediaCommand) -> Result<(), MediaLeaseError> {
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(MediaLeaseError::Closed);
+        }
         let should_pause = matches!(command, MediaCommand::SetMuted { .. })
             && self.pause_first_mute.swap(false, Ordering::AcqRel);
         if should_pause {
@@ -253,6 +260,17 @@ impl MediaLease for InterleavingLease {
         }
         self.commands.lock().unwrap().push(command);
         Ok(())
+    }
+
+    fn stop(&self) {
+        if !self.stopped.swap(true, Ordering::AcqRel) {
+            self.reports
+                .try_send(MediaReport {
+                    attempt: self.attempt,
+                    kind: MediaReportKind::Drained,
+                })
+                .unwrap();
+        }
     }
 }
 
@@ -266,12 +284,15 @@ struct InterleavingFactory {
 impl MediaEngineFactory for InterleavingFactory {
     fn start(
         &self,
-        _attempt: CallAttemptId,
+        attempt: CallAttemptId,
         _ice_servers: Vec<IceServerConfig>,
         _settings: InitialMediaSettings,
-        _reports: MediaReportSink,
+        reports: MediaReportSink,
     ) -> MediaStartFuture {
         let lease = InterleavingLease {
+            attempt,
+            reports,
+            stopped: AtomicBool::new(false),
             commands: Arc::clone(&self.commands),
             pause_first_mute: Arc::clone(&self.pause_first_mute),
             first_mute_entered: Arc::clone(&self.first_mute_entered),

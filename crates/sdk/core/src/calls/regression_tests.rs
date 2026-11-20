@@ -217,7 +217,7 @@ async fn rejoin_during_preparing_before_media_start_never_wedges_lease() {
         CallPhase::Ended(CallEndReason::Switched)
     );
     assert!(matches!(
-        next_sent(&calls, gen1, &mut rx).await,
+        tokio::time::timeout(CallConfig::default().drain_timeout, next_sent(&calls, gen1, &mut rx)).await.unwrap(),
         Command::VoiceJoin { ref channel_id } if channel_id == &ch_b.to_string()
     ));
     assert_eq!(h2.snapshot().phase, CallPhase::Joining);
@@ -323,6 +323,25 @@ fn deliver_joined(
     );
 }
 
+fn deliver_error(
+    calls: &Arc<SessionCalls>,
+    generation: Generation,
+    code: &str,
+    channel: Option<Uuid>,
+    rt: &tokio::runtime::Handle,
+) {
+    calls.on_gateway_event(
+        generation,
+        &Event::Known(KnownEvent::Error(Box::new(ErrorEvent {
+            message: code.into(),
+            code: Some(code.into()),
+            channel_id: channel.map(|id| id.to_string()),
+            peer_id: None,
+        }))),
+        rt,
+    );
+}
+
 fn join_now(
     calls: &Arc<SessionCalls>,
     media: &Arc<FakeMediaFactory>,
@@ -379,6 +398,9 @@ async fn rejoin_after_join_timeout_and_room_closed_not_swallowed_by_abandoned_jo
         next_sent(&calls, gen1, &mut rx).await,
         Command::VoiceLeave { .. }
     ));
+    // If the first join never acquired a peer, the ordered leave returns not-found.
+    deliver_error(&calls, gen1, "voice-not-found", None, &rt);
+    assert!(calls.state.lock().unwrap().abandoned_joins.is_empty());
 
     // 2. Rejoin ch_a -> leave while Joining (creates abandoned join on ch_a), then join ch_b.
     let h2 = join_now(&calls, &media, ch_a, &root, &rt);
@@ -415,20 +437,203 @@ async fn rejoin_after_join_timeout_and_room_closed_not_swallowed_by_abandoned_jo
     assert_eq!(h3.snapshot().phase, CallPhase::Joined);
 
     // 3. Real voice-room-closed for active ch_b MUST end h3 even though ch_a has an abandoned join.
-    calls.on_gateway_event(
-        gen1,
-        &Event::Known(KnownEvent::Error(Box::new(ErrorEvent {
-            message: "room closed".into(),
-            code: Some("voice-room-closed".into()),
-            channel_id: Some(ch_b.to_string()),
-            peer_id: None,
-        }))),
-        &rt,
-    );
+    deliver_error(&calls, gen1, "voice-room-closed", Some(ch_b), &rt);
     assert_eq!(
         h3.snapshot().phase,
         CallPhase::Ended(CallEndReason::RoomClosed)
     );
+
+    // The same channel-scoped closure also applies to a join awaiting its acknowledgement.
+    let h4 = join_now(&calls, &media, ch_a, &root, &rt);
+    assert!(matches!(
+        next_sent(&calls, gen1, &mut rx).await,
+        Command::VoiceJoin { .. }
+    ));
+    deliver_error(&calls, gen1, "voice-room-closed", Some(ch_a), &rt);
+    assert_eq!(
+        h4.snapshot().phase,
+        CallPhase::Ended(CallEndReason::RoomClosed)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn late_join_reply_after_timeout_cannot_admit_replacement() {
+    let rt = tokio::runtime::Handle::current();
+    let generation = Generation::for_test(1);
+    let acct = account(10);
+    let channel = id(100);
+    let config = CallConfig {
+        join_timeout: Duration::from_millis(200),
+        ..CallConfig::default()
+    };
+    let calls = SessionCalls::new(
+        acct,
+        generation,
+        config,
+        Arc::new(ClientCallLease::default()),
+    );
+    let mut rx = calls.attach_socket(generation);
+    calls.on_connection_status(
+        generation,
+        ConnectionState::Online,
+        &resources(generation, acct.user(), id(20), &[channel]),
+        Some(&rt),
+    );
+    let media = Arc::new(FakeMediaFactory::new());
+    let root = CancellationToken::new();
+
+    let old = join_now(&calls, &media, channel, &root, &rt);
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceJoin { .. }
+    ));
+    tokio::time::advance(config.join_timeout + Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        old.snapshot().phase,
+        CallPhase::Ended(CallEndReason::JoinTimeout)
+    );
+
+    let new = join_now(&calls, &media, channel, &root, &rt);
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceLeave { .. }
+    ));
+    media.wait_lease(2).await;
+    assert_eq!(new.snapshot().phase, CallPhase::Joining);
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceJoin { .. }
+    ));
+    deliver_joined(&calls, generation, channel, "peer-old", Vec::new(), &rt);
+    assert_eq!(new.snapshot().peer_id, None);
+    deliver_joined(&calls, generation, channel, "peer-new", Vec::new(), &rt);
+    assert_eq!(new.snapshot().peer_id.as_deref(), Some("peer-new"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn stale_negotiation_error_does_not_consume_abandoned_join_or_end_replacement() {
+    let rt = tokio::runtime::Handle::current();
+    let generation = Generation::for_test(1);
+    let acct = account(10);
+    let channel = id(100);
+    let calls = SessionCalls::new(
+        acct,
+        generation,
+        CallConfig::default(),
+        Arc::new(ClientCallLease::default()),
+    );
+    let mut rx = calls.attach_socket(generation);
+    calls.on_connection_status(
+        generation,
+        ConnectionState::Online,
+        &resources(generation, acct.user(), id(20), &[channel]),
+        Some(&rt),
+    );
+    let media = Arc::new(FakeMediaFactory::new());
+    let root = CancellationToken::new();
+
+    let old = join_now(&calls, &media, channel, &root, &rt);
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceJoin { .. }
+    ));
+    let new = join_now(&calls, &media, channel, &root, &rt);
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceLeave { .. }
+    ));
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceJoin { .. }
+    ));
+    assert_eq!(
+        old.snapshot().phase,
+        CallPhase::Ended(CallEndReason::Switched)
+    );
+
+    for peer in ["peer-old", "peer-new"] {
+        deliver_error(&calls, generation, "voice-invalid-sdp", None, &rt);
+        assert_eq!(new.snapshot().phase, CallPhase::Joining);
+        deliver_joined(&calls, generation, channel, peer, Vec::new(), &rt);
+        if peer == "peer-old" {
+            assert_eq!(new.snapshot().phase, CallPhase::Joining);
+        }
+    }
+    assert_eq!(new.snapshot().peer_id.as_deref(), Some("peer-new"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn rejected_join_and_its_leave_do_not_consume_the_next_abandoned_join() {
+    let rt = tokio::runtime::Handle::current();
+    let generation = Generation::for_test(1);
+    let acct = account(10);
+    let (first_channel, next_channel) = (id(100), id(101));
+    let calls = SessionCalls::new(
+        acct,
+        generation,
+        CallConfig::default(),
+        Arc::new(ClientCallLease::default()),
+    );
+    let mut rx = calls.attach_socket(generation);
+    calls.on_connection_status(
+        generation,
+        ConnectionState::Online,
+        &resources(
+            generation,
+            acct.user(),
+            id(20),
+            &[first_channel, next_channel],
+        ),
+        Some(&rt),
+    );
+    let media = Arc::new(FakeMediaFactory::new());
+    let root = CancellationToken::new();
+
+    let _first = join_now(&calls, &media, first_channel, &root, &rt);
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceJoin { .. }
+    ));
+    let _second = join_now(&calls, &media, next_channel, &root, &rt);
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceLeave { .. }
+    ));
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceJoin { .. }
+    ));
+    let current = join_now(&calls, &media, next_channel, &root, &rt);
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceLeave { .. }
+    ));
+    assert!(matches!(
+        next_sent(&calls, generation, &mut rx).await,
+        Command::VoiceJoin { .. }
+    ));
+
+    deliver_error(&calls, generation, "voice-forbidden", None, &rt);
+    deliver_error(&calls, generation, "voice-not-found", None, &rt);
+    deliver_joined(
+        &calls,
+        generation,
+        next_channel,
+        "peer-second",
+        Vec::new(),
+        &rt,
+    );
+    assert_eq!(current.snapshot().phase, CallPhase::Joining);
+    deliver_joined(
+        &calls,
+        generation,
+        next_channel,
+        "peer-current",
+        Vec::new(),
+        &rt,
+    );
+    assert_eq!(current.snapshot().peer_id.as_deref(), Some("peer-current"));
 }
 
 #[tokio::test(start_paused = true)]
@@ -464,20 +669,12 @@ async fn unsubscribe_race_with_stale_video_routes_never_sticks_target_requested(
         gen1,
         ch,
         "p1",
-        vec![
-            VoiceState {
-                user_id: acct.user().to_string(),
-                muted: true,
-                camera_on: false,
-                screen_sharing: false,
-            },
-            VoiceState {
-                user_id: alice.to_string(),
-                muted: false,
-                camera_on: true,
-                screen_sharing: false,
-            },
-        ],
+        vec![VoiceState {
+            user_id: alice.to_string(),
+            muted: false,
+            camera_on: true,
+            screen_sharing: false,
+        }],
         &rt,
     );
     media
@@ -535,8 +732,9 @@ async fn unsubscribe_race_with_stale_video_routes_never_sticks_target_requested(
     // Re-requesting Alice after rate-limit interval MUST emit TrackSubscribe again.
     tokio::time::advance(Duration::from_millis(250)).await;
     handle.set_video_interest(vec![target]).unwrap();
+    let command = tokio::time::timeout(Duration::from_secs(1), next_sent(&calls, gen1, &mut rx));
     assert!(matches!(
-        next_sent(&calls, gen1, &mut rx).await,
+        command.await.unwrap(),
         Command::TrackSubscribe { .. }
     ));
 }
@@ -614,30 +812,30 @@ async fn controls_during_in_flight_media_start_sync_to_lease_on_install() {
         next_sent(&calls, gen1, &mut rx).await,
         Command::VoiceJoin { .. }
     ));
+    deliver_joined(&calls, gen1, ch, "peer-live", Vec::new(), &rt);
+    assert!(matches!(
+        next_sent(&calls, gen1, &mut rx).await,
+        Command::VoiceMute { muted: false, .. }
+    ));
+    assert!(matches!(
+        next_sent(&calls, gen1, &mut rx).await,
+        Command::VoiceCamera { on: true, .. }
+    ));
     let lease = media.latest_lease().unwrap();
     let cmds = lease.commands();
-    assert!(
-        cmds.iter()
-            .any(|c| matches!(c, MediaCommand::SetMuted { muted: false }))
-    );
-    assert!(
-        cmds.iter()
-            .any(|c| matches!(c, MediaCommand::SetCamera { on: true }))
-    );
-    assert!(cmds.iter().any(|c| matches!(
-        c,
+    assert!(matches!(cmds.as_slice(), [
+        MediaCommand::SetMuted { muted: false },
         MediaCommand::SetCameraFacing {
             facing: CameraFacing::Back
-        }
-    )));
-    assert!(cmds.iter().any(|c| matches!(
-        c,
+        },
+        MediaCommand::SetCamera { on: true },
         MediaCommand::SetPlayback {
             user,
             playback: PlaybackSettings {
                 gain_percent: 140,
                 muted: true
             }
-        } if *user == remote
-    )));
+        },
+        MediaCommand::StartNegotiation { .. },
+    ] if *user == remote));
 }

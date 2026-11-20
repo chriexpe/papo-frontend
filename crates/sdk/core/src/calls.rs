@@ -36,7 +36,7 @@ mod regression_tests;
 pub use errors::{
     VoiceErrorCode, VoiceErrorDisposition, classify_voice_error, is_fatal_voice_code,
 };
-pub use handle::{CallHandle, Calls, HostLease};
+pub use handle::{CallHandle, Calls};
 pub use media_port::{
     AudioRoute, CaptureState, IceServerConfig, InitialMediaSettings, MEDIA_REPORT_CHANNEL_CAPACITY,
     MediaCommand, MediaEngineFactory, MediaFatalError, MediaLease, MediaLeaseError, MediaReport,
@@ -45,9 +45,9 @@ pub use media_port::{
 };
 pub use model::{
     CallAttemptId, CallConfig, CallEndReason, CallError, CallParticipant, CallPhase, CallSettings,
-    CallSnapshot, CallWarning, CameraFacing, HostLeaseKind, MAX_PLAYBACK_GAIN_PERCENT,
-    PlaybackSettings, RoomMember, RoomsSnapshot, SpeakingState, VideoBinding, VideoCodec,
-    VideoKind, VideoTarget, VoiceDeviceState, VoiceRoom,
+    CallSnapshot, CallWarning, CameraFacing, MAX_PLAYBACK_GAIN_PERCENT, PlaybackSettings,
+    RoomMember, RoomsSnapshot, SpeakingState, VideoBinding, VideoCodec, VideoKind, VideoTarget,
+    VoiceDeviceState, VoiceRoom,
 };
 
 #[cfg(any(test, feature = "test-support"))]

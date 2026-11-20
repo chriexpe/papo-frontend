@@ -17,7 +17,7 @@ use super::{
     },
     model::{
         CallAttemptId, CallParticipant, CallPhase, CallSettings, CallSnapshot, CallWarning,
-        HostLeaseKind, PlaybackSettings, VideoBinding, VideoCodec, VideoKind,
+        PlaybackSettings, VideoBinding, VideoCodec, VideoKind,
     },
     reducer::VoiceReducer,
     subscriptions::VideoSubscriptionPlanner,
@@ -34,6 +34,13 @@ pub(crate) enum JoinDispatchState {
     Transmitted,
     /// `voice_joined` was received and accepted for this attempt.
     Acknowledged,
+}
+
+/// A transmitted join that ended locally before the backend acknowledged it.
+pub(crate) struct AbandonedJoin {
+    pub channel: Uuid,
+    /// A rejected join can still produce a separate error for its ordered leave.
+    pub join_rejected: bool,
 }
 
 /// Active attempt owned by a session.
@@ -59,7 +66,6 @@ pub(crate) struct ActiveAttempt {
     pub media_start_in_flight: bool,
     pub join_state: JoinDispatchState,
     pub host_audio_focus: bool,
-    pub host_leases: BTreeMap<HostLeaseKind, u64>,
     pub cancel: CancellationToken,
     pub snapshot_cell: Arc<StateCell<CallSnapshot>>,
     pub version: u64,
@@ -118,7 +124,6 @@ impl ActiveAttempt {
             media_start_in_flight: false,
             join_state: JoinDispatchState::NotQueued,
             host_audio_focus: true,
-            host_leases: BTreeMap::new(),
             cancel,
             snapshot_cell: Arc::clone(&cell),
             version: 1,
@@ -235,7 +240,6 @@ pub(crate) struct CoordinatorState {
     pub rooms_version: u64,
     pub active: Option<ActiveAttempt>,
     pub draining_attempts: BTreeSet<CallAttemptId>,
-    pub abandoned_joins: VecDeque<Uuid>,
+    pub abandoned_joins: VecDeque<AbandonedJoin>,
     pub command_sender: Option<(Generation, VoiceCommandSender)>,
-    pub next_host_lease_id: u64,
 }

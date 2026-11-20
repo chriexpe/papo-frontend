@@ -415,28 +415,22 @@ async fn post_join_subscribe_rejection_retries_with_backoff_on_fake_clock() {
     ));
 
     // Post-join voice-rate-limited error is non-fatal and triggers backoff retry.
-    calls.on_gateway_event(
-        gen1,
-        &Event::Known(KnownEvent::Error(Box::new(ErrorEvent {
-            message: "rate limited".into(),
-            code: Some("voice-rate-limited".into()),
-            channel_id: Some(ch.to_string()),
-            peer_id: Some("peer-sub".into()),
-        }))),
-        &rt,
-    );
-    assert_eq!(handle.snapshot().phase, CallPhase::Joined);
-
-    // Before backoff elapses, no retry command is queued.
-    tokio::time::advance(Duration::from_millis(100)).await;
-    tokio::task::yield_now().await;
-    assert!(rx.try_recv().is_none());
-
-    // After backoff elapses (500ms initial), retry TrackSubscribe is emitted.
-    tokio::time::advance(Duration::from_millis(500)).await;
-    tokio::task::yield_now().await;
-    assert!(matches!(
-        drain_one(&calls, gen1, &mut rx).await,
-        Command::TrackSubscribe { .. }
-    ));
+    let rejection = Event::Known(KnownEvent::Error(Box::new(ErrorEvent {
+        message: "rate limited".into(),
+        code: Some("voice-rate-limited".into()),
+        channel_id: Some(ch.to_string()),
+        peer_id: Some("peer-sub".into()),
+    })));
+    for (before_retry_ms, remaining_ms) in [(100, 150), (300, 200)] {
+        calls.on_gateway_event(gen1, &rejection, &rt);
+        assert_eq!(handle.snapshot().phase, CallPhase::Joined);
+        tokio::time::advance(Duration::from_millis(before_retry_ms)).await;
+        tokio::task::yield_now().await;
+        assert!(rx.try_recv().is_none());
+        tokio::time::advance(Duration::from_millis(remaining_ms)).await;
+        assert!(matches!(
+            drain_one(&calls, gen1, &mut rx).await,
+            Command::TrackSubscribe { .. }
+        ));
+    }
 }

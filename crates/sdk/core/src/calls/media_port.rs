@@ -225,6 +225,16 @@ pub trait MediaLease: Send + Sync + 'static {
     /// # Errors
     /// Returns `Closed` after stop or `Full` if the engine's bounded queue is saturated.
     fn send(&self, command: MediaCommand) -> Result<(), MediaLeaseError>;
+
+    /// Requests teardown without blocking. The request is idempotent and must always
+    /// be delivered, even if the command queue is full or closed.
+    ///
+    /// In response, after all workers and devices are released, deliver this attempt's
+    /// [`MediaReportKind::Drained`] through the report sink. If the report queue is
+    /// full, wait for capacity asynchronously. Report drain even if the command
+    /// executor had already exited. The SDK holds the device lease until it receives
+    /// the report.
+    fn stop(&self);
 }
 
 /// Future returned by `MediaEngineFactory::start`.

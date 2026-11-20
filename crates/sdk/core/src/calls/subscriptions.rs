@@ -157,7 +157,6 @@ impl VideoSubscriptionPlanner {
             {
                 break;
             }
-            self.retry_after.remove(&target);
             self.requested.insert(target);
             self.next_subscribe_at = Some(now + SUBSCRIBE_MIN_INTERVAL);
             commands.push(Command::TrackSubscribe {

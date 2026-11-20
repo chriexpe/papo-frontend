@@ -125,7 +125,7 @@ pub enum MediaCommand {
     },
     /// Replace active SFU audio slot-to-user routes.
     SetAudioRoutes {
-        /// Monotonic revision from `voice_audio_routes`.
+        /// Revision from `voice_audio_routes`. A departure can remove routes at the same revision.
         revision: u64,
         /// Full replacement snapshot of active audio routes.
         routes: Vec<AudioRoute>,
@@ -138,8 +138,6 @@ pub enum MediaCommand {
         /// Full replacement snapshot of active video slot bindings.
         slots: Vec<VideoSlotBinding>,
     },
-    /// Begin teardown and emit `MediaReportKind::Drained` once every worker and device is released.
-    Stop,
 }
 
 impl fmt::Debug for MediaCommand {
@@ -188,7 +186,6 @@ impl fmt::Debug for MediaCommand {
                 .field("revision", revision)
                 .field("slots", slots)
                 .finish(),
-            Self::Stop => f.write_str("Stop"),
         }
     }
 }

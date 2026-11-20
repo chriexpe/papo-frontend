@@ -21,9 +21,10 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) use super::attempt::{ActiveAttempt, CoordinatorState, JoinDispatchState, SideEffects};
 use super::{
+    attempt::AbandonedJoin,
     fifo::{EnqueueError, QueuedVoiceCommand, VoiceCommandReceiver},
     lease::ClientCallLease,
-    media_port::{MediaCommand, MediaEngineFactory},
+    media_port::{MediaCommand, MediaEngineFactory, MediaLease},
     model::{
         CallAttemptId, CallConfig, CallEndReason, CallError, CallPhase, CallSnapshot, RoomsSnapshot,
     },
@@ -39,8 +40,8 @@ pub(crate) struct SessionCalls {
     pub rooms_cell: Arc<StateCell<RoomsSnapshot>>,
     pub active_cell: Arc<StateCell<Option<CallSnapshot>>>,
     pub state: Mutex<CoordinatorState>,
-    /// Serializes external `MediaLease::send` calls outside `state` so delivery order strictly
-    /// matches state-mutation order. Lock hierarchy: `media_dispatch` → `state` (never reversed).
+    /// Serializes media sends and stops outside `state`. If both locks are needed, acquire
+    /// `media_dispatch` first.
     media_dispatch: Mutex<()>,
     pub closed: AtomicU64,
 }
@@ -71,7 +72,6 @@ impl SessionCalls {
                 draining_attempts: BTreeSet::new(),
                 abandoned_joins: VecDeque::new(),
                 command_sender: None,
-                next_host_lease_id: 1,
             }),
             media_dispatch: Mutex::new(()),
             closed: AtomicU64::new(0),
@@ -98,13 +98,16 @@ impl SessionCalls {
         if item.generation != socket_gen {
             return false;
         }
-        if item.allow_after_end {
-            return true;
-        }
         let mut guard = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.generation != socket_gen {
+            return false;
+        }
+        if item.allow_after_end {
+            return true;
+        }
         let Some(active) = guard.active.as_mut() else {
             return false;
         };
@@ -147,16 +150,23 @@ impl SessionCalls {
         runtime: &tokio::runtime::Handle,
         session_root: &CancellationToken,
     ) -> Result<(CallAttemptId, Arc<StateCell<CallSnapshot>>), CallError> {
-        if self.closed.load(Ordering::Acquire) != 0 || session_root.is_cancelled() {
-            return Err(CallError::Closed);
-        }
-        let media_factory = media_factory.ok_or(CallError::MediaUnavailable)?;
-
-        let (attempt, generation, wait_drain, attempt_cancel, snapshot_cell, effects) = {
+        let (
+            media_factory,
+            attempt,
+            generation,
+            wait_drain,
+            attempt_cancel,
+            snapshot_cell,
+            effects,
+        ) = {
             let mut guard = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.closed.load(Ordering::Acquire) != 0 || session_root.is_cancelled() {
+                return Err(CallError::Closed);
+            }
+            let media_factory = media_factory.ok_or(CallError::MediaUnavailable)?;
             if !guard.online {
                 return Err(CallError::Offline);
             }
@@ -196,7 +206,15 @@ impl SessionCalls {
             active.snapshot_cell.send_replace(snap.clone());
             self.active_cell.send_replace(Some(snap));
             guard.active = Some(active);
-            (attempt, generation, wait_drain, cancel, cell, effects)
+            (
+                media_factory,
+                attempt,
+                generation,
+                wait_drain,
+                cancel,
+                cell,
+                effects,
+            )
         };
 
         self.execute_effects(effects, runtime);
@@ -245,12 +263,7 @@ impl SessionCalls {
             Ok(()) => true,
             Err(EnqueueError::Full) => {
                 if !allow_after_end && guard.active.is_some() {
-                    self.finish_active_locked(
-                        guard,
-                        CallEndReason::CommandOverflow,
-                        false,
-                        effects,
-                    );
+                    self.finish_active_locked(guard, CallEndReason::CommandOverflow, true, effects);
                 }
                 false
             }
@@ -350,10 +363,11 @@ impl SessionCalls {
             JoinDispatchState::Transmitted | JoinDispatchState::Acknowledged
         );
         if send_leave && transmitted_join {
-            if active.join_state == JoinDispatchState::Transmitted
-                && reason != CallEndReason::JoinTimeout
-            {
-                guard.abandoned_joins.push_back(active.channel);
+            if active.join_state == JoinDispatchState::Transmitted {
+                guard.abandoned_joins.push_back(AbandonedJoin {
+                    channel: active.channel,
+                    join_rejected: false,
+                });
             }
             let _ = self.enqueue_wire_locked(
                 guard,
@@ -432,11 +446,30 @@ impl SessionCalls {
         effects: SideEffects,
         runtime: Option<&tokio::runtime::Handle>,
     ) {
-        for destination in effects.revoke_destinations {
+        self.execute_teardown(effects.revoke_destinations, effects.stop_leases, runtime);
+        if effects.drain_media
+            && let Some(failure) = self.drain_media_commands()
+        {
+            self.execute_teardown(failure.revoke_destinations, failure.stop_leases, runtime);
+        }
+        if let Some((attempt, at, cancel)) = effects.schedule_retry_at
+            && let Some(rt) = runtime
+        {
+            startup::spawn_subscription_wakeup(Arc::clone(self), attempt, at, cancel, rt);
+        }
+    }
+
+    fn execute_teardown(
+        &self,
+        destinations: Vec<Arc<dyn super::media_port::VideoDestination>>,
+        leases: Vec<(CallAttemptId, Arc<dyn MediaLease>)>,
+        runtime: Option<&tokio::runtime::Handle>,
+    ) {
+        for destination in destinations {
             destination.revoke();
         }
-        for (attempt, lease) in effects.stop_leases {
-            let _ = lease.send(MediaCommand::Stop);
+        for (attempt, lease) in leases {
+            self.stop_media(lease.as_ref());
             if let Some(rt) = runtime {
                 startup::spawn_drain_watchdog(
                     Arc::clone(&self.client_lease),
@@ -446,18 +479,19 @@ impl SessionCalls {
                 );
             }
         }
-        if effects.drain_media {
-            self.drain_media_commands();
-        }
-        if let Some((attempt, at, cancel)) = effects.schedule_retry_at
-            && let Some(rt) = runtime
-        {
-            startup::spawn_subscription_wakeup(Arc::clone(self), attempt, at, cancel, rt);
-        }
+    }
+
+    /// Stops a lease after any in-flight send returns.
+    fn stop_media(&self, lease: &dyn MediaLease) {
+        let _dispatch_guard = self
+            .media_dispatch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lease.stop();
     }
 
     /// Drains queued active-attempt media commands serially outside `self.state`.
-    fn drain_media_commands(&self) {
+    fn drain_media_commands(&self) -> Option<SideEffects> {
         let _dispatch_guard = self
             .media_dispatch
             .lock()
@@ -471,13 +505,30 @@ impl SessionCalls {
                 guard.active.as_mut().and_then(|active| {
                     let lease = active.media_lease.as_ref().map(Arc::clone)?;
                     let cmd = active.pending_media_commands.pop_front()?;
-                    Some((lease, cmd))
+                    Some((active.attempt, lease, cmd))
                 })
             };
-            let Some((lease, cmd)) = next else {
-                break;
-            };
-            let _ = lease.send(cmd);
+            let (attempt, lease, cmd) = next?;
+            if let Err(error) = lease.send(cmd) {
+                let mut guard = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if guard
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.attempt == attempt)
+                {
+                    let mut effects = SideEffects::default();
+                    self.finish_active_locked(
+                        &mut guard,
+                        CallEndReason::MediaCommandFailed(error),
+                        true,
+                        &mut effects,
+                    );
+                    return Some(effects);
+                }
+            }
         }
     }
 }
