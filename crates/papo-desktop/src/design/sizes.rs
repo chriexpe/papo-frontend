@@ -37,10 +37,19 @@ pub(crate) const SIDEBAR_WIDTH_PT: f32 = 232.0;
 pub(crate) const CHANNEL_ROW_HEIGHT_PT: f32 = 32.0;
 /// A channel row's # or speaker, in points square.
 pub(crate) const CHANNEL_ICON_PT: f32 = 14.0;
-/// An icon button inside a pill (⚙), in points square.
+/// The icon inside a pill's buttons (⇄, ⚙), in points square.
 pub(crate) const PILL_ICON_PT: f32 = 16.0;
 /// The avatar in the server card and the account pill, in points square.
 pub(crate) const PILL_AVATAR_PT: f32 = 24.0;
+/// The server and account pills' height (`docs/design.md` §8: one height for
+/// both, so what grows from them sits one gap away).
+pub(crate) const PANE_PILL_HEIGHT_PT: f32 = 48.0;
+/// A pill's icon buttons (⇄, ⚙), square.
+pub(crate) const PILL_BUTTON_PT: f32 = 28.0;
+/// The account count on the server pill's ⇄: its height and least width.
+pub(crate) const ACCOUNT_COUNT_PT: f32 = 14.0;
+/// How far the account count sits out past the ⇄'s top-right corner.
+pub(crate) const ACCOUNT_COUNT_OVERHANG_PT: f32 = 4.0;
 /// The width of the line between panes, in points.
 pub(crate) const PANE_EDGE_PT: f32 = 1.0;
 /// One row of a menu, in points tall.

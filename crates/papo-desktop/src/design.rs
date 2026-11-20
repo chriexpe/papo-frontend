@@ -334,6 +334,12 @@ pub(crate) const TYPE_BADGE: TextStyle = {
     let size = TYPE_BODY_PT * 11.0 / 13.0;
     TextStyle::new(size, WEIGHT_SEMIBOLD).lh(size)
 };
+/// 9/13 of `type.body` at weight 600, its line as tall as its size: the
+/// account count on the server pill's ⇄ (the mock's 9 px count).
+pub(crate) const TYPE_COUNT: TextStyle = {
+    let size = TYPE_BODY_PT * 9.0 / 13.0;
+    TextStyle::new(size, WEIGHT_SEMIBOLD).lh(size)
+};
 /// `type.caption` at weight 500: a group label in the channel list.
 pub(crate) const TYPE_CAPTION_MEDIUM: TextStyle = type_scaled(11.0 / 13.0, WEIGHT_MEDIUM);
 /// `type.body` at weight 500: the selected channel, the account's name.
