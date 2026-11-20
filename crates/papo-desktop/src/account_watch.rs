@@ -113,10 +113,8 @@ fn summarize(
                 std::future::pending::<()>().await;
             }
         });
-        let credentials = match state {
-            AuthState::SignedOut => Credentials::Missing,
-            _ if must_sign_in(state) => Credentials::Kept,
-            _ => continue,
+        let Some(credentials) = lapse(state) else {
+            continue;
         };
         let server = registry
             .servers
@@ -134,6 +132,16 @@ fn summarize(
     Accounts {
         saved: registry.accounts.len(),
         signed_out,
+    }
+}
+
+/// What an account in `state` needs before it works: nothing (`None`), or
+/// signing in again, with its credentials kept or missing.
+pub(crate) fn lapse(state: AuthState) -> Option<Credentials> {
+    match state {
+        AuthState::SignedOut => Some(Credentials::Missing),
+        _ if must_sign_in(state) => Some(Credentials::Kept),
+        _ => None,
     }
 }
 

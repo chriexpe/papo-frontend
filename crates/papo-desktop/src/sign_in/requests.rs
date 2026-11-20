@@ -12,15 +12,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use papo_sdk::{
     AccountId, AuthFailure, AuthService, ClientError, ClientHandle, DiscoveryFailure, LoginRequest,
-    LoginServerRequest, RegisterRequest, ServerAddress, ServerDiscovery, ServerId, UnixMicros,
+    LoginServerRequest, RegisterRequest, RegistrySnapshot, ServerAddress, ServerDiscovery,
+    ServerId, UnixMicros,
 };
 use rune::machine::Effects;
 
 use super::{
     AlreadyAdded, Created, Discovery, Effect, Event, Failure, Probe, ProbeFailure, Renewing,
-    Screen, SignIn,
+    SavedAccounts, Screen, SignIn,
 };
-use crate::account_watch::Credentials;
+use crate::account_watch::{self, Credentials, SignedOut};
 use crate::sdk_bridge::Sdk;
 use crate::shell::Shell;
 
@@ -243,10 +244,7 @@ async fn probe(client: ClientHandle, address: String, abandoned: &AtomicBool) ->
         .iter()
         .any(|saved| saved.address.id() == id)
     {
-        let has_account = registry
-            .accounts
-            .iter()
-            .any(|account| account.id.server() == id);
+        let saved = saved_accounts(&client, &registry, id, &address);
         let discovery = client.discover(&address).await.ok();
         let shown = super::address::shown(&address).to_owned();
         return Probe::AlreadyAdded(AlreadyAdded {
@@ -256,7 +254,7 @@ async fn probe(client: ClientHandle, address: String, abandoned: &AtomicBool) ->
                 .and_then(|found| found.name.clone())
                 .unwrap_or_else(|| shown.clone()),
             address: shown,
-            has_account,
+            saved,
             public: discovery.as_ref().is_none_or(|found| found.public),
             icon: discovery
                 .and_then(|found| found.icon)
@@ -283,6 +281,40 @@ async fn probe(client: ClientHandle, address: String, abandoned: &AtomicBool) ->
             })
         }
     }
+}
+
+/// What the accounts saved for server `id` let Open do: a working one wins,
+/// else the first signed-out one signs in again.
+fn saved_accounts(
+    client: &ClientHandle,
+    registry: &RegistrySnapshot,
+    id: ServerId,
+    address: &str,
+) -> SavedAccounts {
+    let mut saved = SavedAccounts::None;
+    for account in registry
+        .accounts
+        .iter()
+        .filter(|account| account.id.server() == id)
+    {
+        // An account without a session yet is one just signed in.
+        let lapse = client
+            .session(account.id)
+            .ok()
+            .and_then(|session| account_watch::lapse(session.auth().state()));
+        let Some(credentials) = lapse else {
+            return SavedAccounts::Working;
+        };
+        if saved == SavedAccounts::None {
+            saved = SavedAccounts::SignedOut(SignedOut {
+                id: account.id,
+                credentials,
+                address: address.to_owned(),
+                username: account.username.clone(),
+            });
+        }
+    }
+    saved
 }
 
 /// Signs in; when `expected` names the account signing in again, another

@@ -29,7 +29,7 @@ use rune::{Image, TextEdit};
 
 pub(crate) use address::{AddressCheck, AddressProblem};
 pub(crate) use events::{Created, Discovery, Effect, Event, Failure, Probe, ProbeFailure};
-pub(crate) use feedback::{AlreadyAdded, Line, LineAction, Tone};
+pub(crate) use feedback::{AlreadyAdded, Line, LineAction, SavedAccounts, Tone};
 pub(crate) use requests::{remove_left_server, run};
 pub(crate) use transitions::{can_submit, password_rules_met};
 pub(crate) use view::{CROSS, popup, screen};
@@ -191,27 +191,9 @@ impl SignIn {
         account: &SignedOut,
         fields: &mut Fields,
     ) -> (SignIn, Effect) {
-        fields.username.replace_text(account.username.clone());
-        fields.password.focused = true;
-        let address = address::shown(&account.address).to_owned();
-        let server = Server {
-            id: account.id.server(),
-            name: address.clone(),
-            address,
-            icon: None,
-            unlocked: false,
-            renewing: Some(Renewing {
-                account: account.id,
-                credentials: account.credentials,
-            }),
-        };
         let flow = SignIn {
             host,
-            screen: Screen::Account {
-                server,
-                form: Form::Account(AccountForm::SignIn),
-                phase: Phase::Editing(None),
-            },
+            screen: renewing_screen(account, fields),
             auth: None,
             abandoned: Arc::default(),
         };
@@ -272,5 +254,29 @@ impl SignIn {
             } => Some(Line::Unencrypted),
             AddressCheck::Valid { .. } | AddressCheck::Empty => None,
         }
+    }
+}
+
+/// Sign in for `account` again: its username filled in, the password
+/// focused, its address standing in for the name until the server gives one.
+fn renewing_screen(account: &SignedOut, fields: &mut Fields) -> Screen {
+    fields.username.replace_text(account.username.clone());
+    fields.password.focused = true;
+    let address = address::shown(&account.address).to_owned();
+    let server = Server {
+        id: account.id.server(),
+        name: address.clone(),
+        address,
+        icon: None,
+        unlocked: false,
+        renewing: Some(Renewing {
+            account: account.id,
+            credentials: account.credentials,
+        }),
+    };
+    Screen::Account {
+        server,
+        form: Form::Account(AccountForm::SignIn),
+        phase: Phase::Editing(None),
     }
 }

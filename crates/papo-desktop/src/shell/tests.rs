@@ -8,7 +8,7 @@ use rune::{Env, Ime, Key, KeyEvent, Mods, Runtime};
 
 use super::{COMPOSER_KEY, Shell, view};
 use crate::account_watch::{Accounts, Credentials, SignedOut};
-use crate::sign_in::{Discovery, Event, Probe};
+use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 
 const SIZE_PT: (f32, f32) = (1000.0, 700.0);
 const FRAME_S: f64 = 1.0 / 60.0;
@@ -326,4 +326,34 @@ fn a_session_that_expires_behind_another_screen_is_offered_once_it_closes() {
         "{}",
         tree(&rt)
     );
+}
+
+#[test]
+fn open_on_an_already_added_server_signs_its_signed_out_account_in_again() {
+    let mut rt = app();
+    rt.update(|shell, _tx| shell.add_server());
+    rt.frame(FRAME_S);
+    type_text(&mut rt, "papo.example.invalid");
+    press(&mut rt, Key::Enter);
+    let already = AlreadyAdded {
+        id: server_id(),
+        name: "Lumen".to_owned(),
+        address: "papo.example.invalid".to_owned(),
+        saved: SavedAccounts::SignedOut(expired()),
+        public: true,
+        icon: None,
+    };
+    post(&mut rt, Event::Probed(Probe::AlreadyAdded(already)));
+    assert!(
+        tree(&rt).contains("You already added Lumen."),
+        "{}",
+        tree(&rt)
+    );
+    rt.accessibility_action("feedback-open", rune::accesskit::Action::Click, None);
+    rt.frame(FRAME_S);
+    let tree = tree(&rt);
+    assert!(rt.find("sign-in-popup").is_some(), "still in the popup");
+    assert!(tree.contains("Session expired. Sign in again."), "{tree}");
+    assert!(!tree.contains("\"Change server\""), "{tree}");
+    assert_eq!(rt.state.fields.username.text, "ana");
 }

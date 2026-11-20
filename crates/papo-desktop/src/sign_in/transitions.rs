@@ -11,7 +11,7 @@ use super::feedback::line_for;
 use super::{
     AccountForm, AddressCheck, Created, Discovery, Effect, Event, Failure, Fields, Form, Line,
     NEW_PASSWORD_MIN_CHARS, NEW_USERNAME_MIN_CHARS, PASSWORD_MAX_CHARS, Phase, Probe, ProbeFailure,
-    Screen, Server, SignIn, USERNAME_MAX_CHARS, address,
+    SavedAccounts, Screen, Server, SignIn, USERNAME_MAX_CHARS, address, renewing_screen,
 };
 
 impl SignIn {
@@ -103,8 +103,8 @@ impl SignIn {
         }
     }
 
-    /// The already-added line's Open: the app if the server has an account,
-    /// else its account steps.
+    /// The already-added line's Open: the app when an account works, signing
+    /// in again when none does, else the server's account steps.
     fn open(&mut self, fields: &mut Fields) -> Effects<Effect> {
         let Screen::Address {
             phase: Phase::Editing(Some(Line::AlreadyAdded(added))),
@@ -113,19 +113,29 @@ impl SignIn {
         else {
             return Effects::none();
         };
-        if added.has_account {
-            return Effects::one(Effect::OpenServer(added.id));
-        }
         let added = added.as_ref().clone();
-        let server = Server {
-            id: added.id,
-            name: added.name,
-            address: added.address,
-            icon: None,
-            unlocked: false,
-            renewing: None,
+        let mut effects = match added.saved {
+            SavedAccounts::Working => return Effects::one(Effect::OpenServer(added.id)),
+            SavedAccounts::SignedOut(account) => {
+                self.auth = None;
+                self.screen = renewing_screen(&account, fields);
+                if let Screen::Account { server, .. } = &mut self.screen {
+                    server.name = added.name;
+                }
+                Effects::none()
+            }
+            SavedAccounts::None => {
+                let server = Server {
+                    id: added.id,
+                    name: added.name,
+                    address: added.address,
+                    icon: None,
+                    unlocked: false,
+                    renewing: None,
+                };
+                self.enter_account(fields, server, added.public)
+            }
         };
-        let mut effects = self.enter_account(fields, server, added.public);
         if let Some(icon) = added.icon {
             effects.push(Effect::LoadIcon(icon));
         }

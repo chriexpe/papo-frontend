@@ -211,30 +211,71 @@ fn an_account_created_but_not_signed_in_moves_to_sign_in_with_its_credentials() 
     assert_eq!(line(&flow), Some(Line::NoResponse));
 }
 
-#[test]
-fn an_already_added_server_opens_the_app_or_its_account_steps() {
-    let already = |has_account| AlreadyAdded {
+fn already_added(saved: SavedAccounts) -> AlreadyAdded {
+    AlreadyAdded {
         id: server_id(),
         name: "Lumen".to_owned(),
         address: "papo.example.invalid".to_owned(),
-        has_account,
+        saved,
         public: true,
         icon: None,
-    };
+    }
+}
+
+/// The server step's answer that the server is saved, and Open pressed.
+fn open_already_added(saved: SavedAccounts) -> (SignIn, Fields, Vec<Effect>) {
     let (mut flow, mut fields) = typed("papo.example.invalid");
     step(&mut flow, &mut fields, Event::Submit);
-    let probe = Probe::AlreadyAdded(already(true));
+    let probe = Probe::AlreadyAdded(already_added(saved));
     step(&mut flow, &mut fields, Event::Probed(probe));
     assert_eq!(line(&flow).unwrap().action(), Some(LineAction::Open));
     let effects = step(&mut flow, &mut fields, Event::Open);
-    assert_eq!(effects, [Effect::OpenServer(server_id())]);
+    (flow, fields, effects)
+}
 
-    let (mut flow, mut fields) = typed("papo.example.invalid");
-    step(&mut flow, &mut fields, Event::Submit);
-    let probe = Probe::AlreadyAdded(already(false));
-    step(&mut flow, &mut fields, Event::Probed(probe));
-    assert_eq!(step(&mut flow, &mut fields, Event::Open), NOTHING);
+#[test]
+fn open_on_a_server_with_a_working_account_shows_the_app() {
+    let (_, _, effects) = open_already_added(SavedAccounts::Working);
+    assert_eq!(effects, [Effect::OpenServer(server_id())]);
+}
+
+#[test]
+fn open_on_a_server_without_an_account_shows_its_account_steps() {
+    let (flow, _, effects) = open_already_added(SavedAccounts::None);
+    assert_eq!(effects, NOTHING);
     assert_eq!(form(&flow), Form::Account(AccountForm::SignIn));
+}
+
+#[test]
+fn open_on_a_server_whose_account_is_signed_out_signs_it_in_again() {
+    let account = SignedOut {
+        id: AccountId::new(server_id(), Uuid::nil()),
+        credentials: Credentials::Missing,
+        address: "https://papo.example.invalid".to_owned(),
+        username: "ana".to_owned(),
+    };
+    let (mut flow, mut fields, effects) =
+        open_already_added(SavedAccounts::SignedOut(account.clone()));
+    assert_eq!(effects, NOTHING);
+    let Screen::Account { server, form, .. } = flow.screen() else {
+        panic!("on the server step");
+    };
+    assert_eq!(*form, Form::Account(AccountForm::SignIn));
+    assert_eq!(server.name, "Lumen");
+    assert_eq!(
+        server.renewing,
+        Some(Renewing {
+            account: account.id,
+            credentials: Credentials::Missing
+        })
+    );
+    assert_eq!(fields.username.text, "ana");
+    assert!(fields.password.focused);
+    assert_eq!(
+        step(&mut flow, &mut fields, Event::ChangeServer),
+        NOTHING,
+        "the same account: no Change server"
+    );
 }
 
 #[test]

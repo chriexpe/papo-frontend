@@ -7,6 +7,7 @@
 use papo_sdk::ServerId;
 
 use super::{AddressProblem, Failure};
+use crate::account_watch::SignedOut;
 
 /// The feedback line: under the address field on the server step, above the
 /// button on the account steps (`docs/design.md` §7, Messages).
@@ -40,9 +41,20 @@ pub(crate) struct AlreadyAdded {
     pub(crate) address: String,
     /// Whether an account is saved for it: Open then shows the app instead of
     /// the account steps.
-    pub(crate) has_account: bool,
+    pub(crate) saved: SavedAccounts,
     pub(crate) public: bool,
     pub(crate) icon: Option<Vec<u8>>,
+}
+
+/// What the accounts saved for an already-added server let Open do.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum SavedAccounts {
+    /// None: Open shows the server's account steps.
+    None,
+    /// One works: Open shows the app.
+    Working,
+    /// None works: Open signs this one in again.
+    SignedOut(SignedOut),
 }
 
 /// How a line is coloured, and how assistive technology announces it.
@@ -94,7 +106,7 @@ impl std::fmt::Debug for AlreadyAdded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AlreadyAdded")
             .field("id", &self.id)
-            .field("has_account", &self.has_account)
+            .field("saved", &self.saved)
             .field("public", &self.public)
             .finish_non_exhaustive()
     }
