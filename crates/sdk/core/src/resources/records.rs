@@ -204,7 +204,9 @@ pub struct UserRecord {
     pub typing: Option<String>,
     /// Backend `created_at` field.
     pub created_at: Option<String>,
-    /// Backend `roles` field.
+    /// The signed-in account's assignments come from roster or targeted member evidence.
+    /// For a peer, the newest accepted member, profile, DM or block summary that supplies
+    /// assignments updates this display field. An explicit empty list clears it.
     pub roles: Option<Vec<Uuid>>,
 }
 

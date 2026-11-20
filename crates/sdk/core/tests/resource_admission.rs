@@ -13,6 +13,8 @@ mod defects;
 mod fixture;
 #[path = "resource_admission_cases/rejection.rs"]
 mod rejection;
+#[path = "resource_admission_cases/writer_recovery.rs"]
+mod writer_recovery;
 
 use fixture::{Fixture, Result, login, register, wait_for};
 use papo_api::{HistoryOrder, HistoryQuery, Uuid};

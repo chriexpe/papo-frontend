@@ -36,6 +36,8 @@ pub struct ResourceSnapshot {
     pub dms: ResourceTable<DirectRecord>,
     /// Ordered block relationships.
     pub blocks: ResourceIds,
+    // Rejected observations can publish gaps before the first cache load.
+    pub(crate) has_display_baseline: bool,
     pub(crate) gaps: EvidenceGaps,
 }
 
@@ -55,6 +57,7 @@ impl ResourceSnapshot {
             profiles: ResourceTable::default(),
             dms: ResourceTable::default(),
             blocks: ResourceIds::default(),
+            has_display_baseline: false,
             gaps: EvidenceGaps::default(),
         }
     }

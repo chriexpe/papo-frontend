@@ -7,6 +7,7 @@ use super::{
 };
 use crate::{
     ClientError, MessageKey, ResourceSnapshot, Session,
+    history::access::ChannelAdmission,
     read_points::{ServerReadPoint, UploadedPoint},
     reconcile::ResourceConnection,
     session::SessionInner,
@@ -53,12 +54,16 @@ pub(crate) async fn resources(
             &retained,
         )
         .await?;
-        session
-            .reading
-            .positions
-            .clear_revocations(&admitted.allowed, snapshot.generation);
     }
-    install_resources(session, connection, image, heads, unresolved).await?;
+    install_resources(
+        session,
+        connection,
+        image,
+        heads,
+        unresolved,
+        snapshot.server.is_some(),
+    )
+    .await?;
     drop(serial);
     refresh(&handle).await?;
     resume_uploads(&handle).await;
@@ -209,34 +214,82 @@ async fn save_resolved(
         known_point: state.uploaded_point.max(point),
     };
     if saved != Some(&uploaded) {
-        handle
-            .client
-            .inner
-            .registry
-            .save_uploaded_read(Arc::clone(&handle.inner), channel, generation, uploaded)
-            .await?;
+        save_admitted_mark(handle, channel, generation, uploaded).await?;
     }
     Ok(())
+}
+
+async fn save_admitted_mark(
+    session: &Session,
+    channel: Uuid,
+    generation: crate::Generation,
+    uploaded: UploadedPoint,
+) -> Result<bool, ClientError> {
+    let expected_epoch = {
+        let admissions = session.inner.history.admission.read().await;
+        if admissions.channel(channel) != Some(ChannelAdmission::Allowed) {
+            return Ok(false);
+        }
+        session.inner.reading.positions.revocation_epoch(channel)
+    };
+    session
+        .client
+        .inner
+        .registry
+        .save_uploaded_read_at(
+            Arc::clone(&session.inner),
+            channel,
+            generation,
+            uploaded,
+            expected_epoch,
+        )
+        .await
 }
 
 async fn install_resources(
     session: &SessionInner,
     connection: &ResourceConnection,
-    image: super::ReadingSnapshot,
-    heads: BTreeMap<Uuid, MessageKey>,
-    unresolved: BTreeMap<Uuid, ServerReadPoint>,
+    mut image: super::ReadingSnapshot,
+    mut heads: BTreeMap<Uuid, MessageKey>,
+    mut unresolved: BTreeMap<Uuid, ServerReadPoint>,
+    has_server: bool,
 ) -> Result<(), ClientError> {
-    {
-        let mut stored_heads = session.reading.heads.lock().await;
-        let mut stored_unresolved = session.reading.unresolved.lock().await;
-        let mut stored_connection = session.reading.connection.lock().await;
-        session.epochs.apply(image.generation, || {
-            *stored_heads = heads;
-            *stored_unresolved = unresolved;
-            *stored_connection = Some((image.generation, connection.clone()));
-        })?;
-    }
-    session.reading.publish(session, image)
+    let mut stored_heads = session.reading.heads.lock().await;
+    let mut stored_unresolved = session.reading.unresolved.lock().await;
+    let mut stored_connection = session.reading.connection.lock().await;
+    // A backend denial can finish while reading resolves a mark or waits for storage.
+    // Hold R1 across the final fence update and publication, with all awaits completed.
+    let admissions = session.history.admission.read().await;
+    let last_good = session.reading.image.borrow().clone();
+    image
+        .channels
+        .retain(|id, state| match admissions.channel(*id) {
+            Some(ChannelAdmission::Allowed) => true,
+            Some(ChannelAdmission::Quarantined) => {
+                if let Some(previous) = last_good.channels.get(id) {
+                    state.clone_from(previous);
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(ChannelAdmission::Denied(_)) | None => false,
+        });
+    let allowed = admissions.allowed();
+    heads.retain(|id, _| allowed.contains(id));
+    unresolved.retain(|id, _| allowed.contains(id));
+    session.epochs.apply(image.generation, || {
+        if has_server {
+            session
+                .reading
+                .positions
+                .clear_revocations(&allowed, image.generation);
+        }
+        *stored_heads = heads;
+        *stored_unresolved = unresolved;
+        *stored_connection = Some((image.generation, connection.clone()));
+        session.reading.publish_current(image)
+    })?
 }
 
 fn start(session: &Session) {
@@ -294,21 +347,14 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
                     .into_iter()
                     .find(|point| point.message_id == server.message_id);
                 if let Some(point) = point {
-                    session
-                        .client
-                        .inner
-                        .registry
-                        .save_uploaded_read(
-                            Arc::clone(&session.inner),
-                            *channel,
-                            generation,
-                            UploadedPoint {
-                                server: server.clone(),
-                                created_at_us: Some(point.created_at_us),
-                                known_point: state.uploaded_point.max(Some(point)),
-                            },
-                        )
-                        .await?;
+                    let mark = UploadedPoint {
+                        server: server.clone(),
+                        created_at_us: Some(point.created_at_us),
+                        known_point: state.uploaded_point.max(Some(point)),
+                    };
+                    if !save_admitted_mark(session, *channel, generation, mark).await? {
+                        continue;
+                    }
                     session.inner.epochs.validate(generation)?;
                     state.uploaded_point = state.uploaded_point.max(Some(point));
                     unresolved.remove(channel);
@@ -323,7 +369,7 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
     }
     drop((heads, unresolved));
     if previous != image.channels || old_generation != generation {
-        session.inner.reading.publish(&session.inner, image)?;
+        session.inner.reading.publish(&session.inner, image).await?;
     }
     super::catch_up_sync::reconcile_catch_up_snapshots(session, generation, &snapshots).await?;
     drop(serial);
@@ -334,3 +380,6 @@ pub(crate) async fn refresh(session: &Session) -> Result<(), ClientError> {
         .await;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

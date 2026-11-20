@@ -1,7 +1,7 @@
 //! Socket-side reconciliation and bounded event journaling; fetching, cache SQL and UI diffs live elsewhere.
 
 use crate::{
-    AccountCache, ClientError, ClientHandle, ConnectionState, Generated,
+    AccountCache, ClientError, ClientHandle, ConnectionState, Generated, Generation,
     connection_driver::Socket,
     generation::Epoch,
     history::access::Refetch,
@@ -24,6 +24,33 @@ pub(crate) struct ResourceConnection {
     pub cache: Arc<AccountCache>,
 }
 
+impl ResourceConnection {
+    /// Install the switched cache revision as display data. A resident image already
+    /// includes partial profile writes, so only failed installation requires reloading it.
+    pub(crate) async fn bootstrap_display(
+        &self,
+        session: &SessionInner,
+        generation: Generation,
+        _guard: &resource_commit::Reservation,
+    ) -> Result<(), ClientError> {
+        session.epochs.validate(generation)?;
+        let held = session.resources.borrow().clone();
+        let reload = !held.has_display_baseline || session.resource_recovery.borrow().is_some();
+        let mut snapshot = if reload {
+            let mut disk = self.cache.load(generation).await?;
+            disk.gaps = held.gaps.clone();
+            disk
+        } else if held.generation != generation || held.channel_census_complete {
+            (*held).clone()
+        } else {
+            return Ok(());
+        };
+        snapshot.generation = generation;
+        snapshot.channel_census_complete = false;
+        session.publish_resources(snapshot)
+    }
+}
+
 pub(crate) async fn run(
     session: &Arc<SessionInner>,
     epoch: &Epoch,
@@ -32,21 +59,10 @@ pub(crate) async fn run(
 ) -> Result<(), ClientError> {
     let mut journal = VecDeque::new();
     collect(session, epoch, socket, &mut journal, async {
-        let _guard = session.resource_serial.lock().await;
-        let held = session.resources.borrow().clone();
-        // A resident coherent image preserves entity identity and rejected-evidence causes
-        // across warm reconnect. A failed post-switch install must reload the visible revision.
-        let warm = crate::history::access::warm(session).await;
-        let mut snapshot = if !warm || session.resource_recovery.borrow().is_some() {
-            let mut disk = connection.cache.load(epoch.generation).await?;
-            disk.gaps = held.gaps.clone();
-            disk
-        } else {
-            (*held).clone()
-        };
-        snapshot.generation = epoch.generation;
-        snapshot.channel_census_complete = false;
-        session.publish_resources(snapshot)
+        let guard = resource_commit::reserve(session).await;
+        connection
+            .bootstrap_display(session, epoch.generation, &guard)
+            .await
     })
     .await?;
     collect(session, epoch, socket, &mut journal, async {

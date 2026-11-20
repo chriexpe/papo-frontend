@@ -37,10 +37,10 @@ pub struct ChannelListItem {
     pub badges: Option<Arc<papo_sdk::ChannelBadges>>,
 }
 
-/// One complete resource publication projected onto channel metadata.
+/// One visible change to channel metadata, read state or badges.
 ///
 /// Apply `diffs` in order as one batch, then advance both version and generation.
-/// Commits affecting other resources can produce empty batches. Skipped versions reconcile against the last delivered image.
+/// Unchanged projections stay silent. Coalesced source images reconcile against the last delivered rows.
 /// A generation change starts a fresh baseline with one `Reset`.
 #[derive(Clone, Debug)]
 pub struct ChannelListUpdate {

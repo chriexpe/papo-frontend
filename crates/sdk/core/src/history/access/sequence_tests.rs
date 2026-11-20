@@ -386,6 +386,7 @@ fn completed_backend_denial_during_a_transition_is_not_reopened_by_its_older_evi
                 &harness.client.handle(),
                 &harness.connection.cache,
                 RESTRICTED,
+                None,
                 HistoryClosedReason::Forbidden,
                 generation,
             )

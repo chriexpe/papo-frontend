@@ -81,6 +81,11 @@ impl Session {
         let mut profiles = Vec::new();
         for ids in users.chunks(50) {
             let guard = resource_commit::reserve(&self.inner).await;
+            if !self.inner.resources.borrow().has_display_baseline {
+                connection
+                    .bootstrap_display(&self.inner, epoch.generation, &guard)
+                    .await?;
+            }
             let stamp =
                 FetchStamp::capture(&self.inner, epoch.generation, Refetch::Partial).await?;
             let request = ProfileBatchRequest {

@@ -170,13 +170,44 @@ impl Registry {
         generation: Generation,
         uploaded: UploadedPoint,
     ) -> Result<(), ClientError> {
+        let expected_epoch = session.reading.positions.revocation_epoch(channel);
+        if let Some(fence) = session
+            .reading
+            .positions
+            .check_current_channel(channel, generation)
+        {
+            return Err(crate::HistoryError::from(fence).into());
+        }
+        if self
+            .save_uploaded_read_at(session, channel, generation, uploaded, expected_epoch)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(ClientError::Superseded)
+        }
+    }
+
+    /// A denial ordered before this FULL transaction makes its old mark inapplicable.
+    /// A denial ordered after it enqueues its delete on the same writer.
+    pub(crate) async fn save_uploaded_read_at(
+        &self,
+        session: Arc<SessionInner>,
+        channel: Uuid,
+        generation: Generation,
+        uploaded: UploadedPoint,
+        expected_epoch: u64,
+    ) -> Result<bool, ClientError> {
         let bytes = serde_json::to_vec(&uploaded).map_err(|_| StorageError::InvalidState)?;
         self.writer.write(move |tx| {
             session.epochs.apply(generation, || {
+                if expected_epoch != session.reading.positions.revocation_epoch(channel) {
+                    return Ok(false);
+                }
                 let account = session.account;
                 require_visible_account(tx, account)?;
                 tx.execute("INSERT INTO read_points(server_id,user_id,channel_id,uploaded_point) VALUES(?1,?2,?3,?4) ON CONFLICT(server_id,user_id,channel_id) DO UPDATE SET uploaded_point=excluded.uploaded_point",params![account.server().as_bytes(), account.user().as_bytes(), channel.as_bytes(), bytes])?;
-                Ok::<_,ReadWriteError>(())
+                Ok::<_,ReadWriteError>(true)
             })?
         }).await.map_err(ClientError::from)
     }

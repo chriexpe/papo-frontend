@@ -147,7 +147,11 @@ async fn publish_reported(p: ReportedPublish<'_>) -> Result<(), ReadingError> {
         {
             counts::unresolved(state);
         }
-        p.session.inner.reading.publish(&p.session.inner, image)?;
+        p.session
+            .inner
+            .reading
+            .publish(&p.session.inner, image)
+            .await?;
         upload::schedule(p.session, p.channel).await;
     }
     Ok(())

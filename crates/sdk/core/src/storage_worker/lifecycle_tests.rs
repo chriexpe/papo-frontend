@@ -363,3 +363,53 @@ fn state_writer_rejects_rebuildable_lifecycle_operations() {
     });
     assert_eq!(finish(&mut worker).failures, [] as [DatabaseFailure; 0]);
 }
+
+#[test]
+fn terminal_write_receipt_waits_for_the_failed_sqlite_connection_to_close() {
+    struct Closing {
+        entered: mpsc::Sender<()>,
+        resume: mpsc::Receiver<()>,
+    }
+
+    impl Drop for Closing {
+        fn drop(&mut self) {
+            let _ = self.entered.send(());
+            let _ = self.resume.recv();
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = runtime();
+    let mut worker = StorageWorker::shared(WorkerConfig::default()).unwrap();
+    let (entered, closing) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let hook = Mutex::new(Some(Closing { entered, resume }));
+    let writer = worker
+        .register(directory.path().join("failed.sqlite"), move |connection| {
+            schema(connection)?;
+            connection.execute_batch(
+                "CREATE TRIGGER fail_insert BEFORE INSERT ON fixture BEGIN SELECT RAISE(ABORT, 'fixture'); END",
+            )?;
+            let close = hook.lock().unwrap().take().unwrap();
+            // SQLite destroys its registered hook during connection close.
+            connection.update_hook(Some(move |_, _: &str, _: &str, _: i64| {
+                let _ = &close;
+            }))?;
+            Ok(())
+        })
+        .unwrap();
+
+    let receipt = runtime.block_on(writer.submit(batch())).unwrap();
+    closing.recv().unwrap();
+    let mut result = pin!(receipt.committed());
+    let pending = runtime.block_on(poll_fn(|context| {
+        Poll::Ready(result.as_mut().poll(context).is_pending())
+    }));
+    release.send(()).unwrap();
+    assert!(pending);
+    assert!(matches!(
+        runtime.block_on(result),
+        Err(WorkerError::Sqlite { .. })
+    ));
+    finish(&mut worker);
+}

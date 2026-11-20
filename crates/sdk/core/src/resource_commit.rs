@@ -161,27 +161,12 @@ async fn apply(
             None
         };
 
-        if !changed.is_empty() || complete {
-            let groups = if complete {
-                &crate::account_cache::ALL_RESOURCES[..]
-            } else {
-                &changed
-            };
-            if connection
-                .cache
-                .update_resources(&snapshot, groups)
-                .await?
-                .is_some()
-            {
-                connection
-                    .client
-                    .inner
-                    .disk_status
-                    .send_replace(crate::DiskStatus::Fault(
-                        crate::DiskFault::ResourceMaintenance,
-                    ));
-            }
-        }
+        let groups = if complete {
+            &crate::account_cache::ALL_RESOURCES[..]
+        } else {
+            &changed
+        };
+        let needs_new_writer = persist(connection, &snapshot, groups).await?;
         install(
             session,
             connection,
@@ -191,24 +176,59 @@ async fn apply(
             visibility_changed,
             &changed,
         )
-        .await
+        .await?;
+        Ok(needs_new_writer)
     }
     .await;
     match result {
-        Ok(()) => {
-            if complete {
+        Ok(needs_new_writer) => {
+            if needs_new_writer {
+                // Cleanup can fail after a valid switch and a successful in-memory install.
+                // The next connection needs a fresh writer before accepting partial updates.
+                session
+                    .resource_recovery
+                    .send_replace(Some(stamp.generation));
+            } else if complete {
                 session.resource_recovery.send_replace(None);
             }
             Ok(Outcome::Accepted)
         }
         Err(error) => {
-            access::quarantine_failed_install(session).await;
+            let quarantine = access::quarantine_failed_install(session).await;
             session
                 .resource_recovery
                 .send_replace(Some(stamp.generation));
+            quarantine?;
             Err(error)
         }
     }
+}
+
+/// Report a cleanup fault after a successful switch and return whether the writer needs renewal.
+async fn persist(
+    connection: &ResourceConnection,
+    snapshot: &ResourceSnapshot,
+    groups: &[CacheResource],
+) -> Result<bool, ClientError> {
+    if groups.is_empty() {
+        return Ok(false);
+    }
+    if connection
+        .cache
+        .update_resources(snapshot, groups)
+        .await?
+        .is_some()
+    {
+        connection
+            .client
+            .inner
+            .disk_status
+            .send_replace(crate::DiskStatus::Fault(
+                crate::DiskFault::ResourceMaintenance,
+            ));
+        return Ok(connection.cache.writer_failed());
+    }
+    Ok(false)
 }
 
 async fn install(

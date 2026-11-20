@@ -158,21 +158,69 @@ impl Reading {
         self.positions.close();
     }
 
-    pub fn publish(
+    pub async fn publish(
         &self,
         session: &crate::session::SessionInner,
         mut image: ReadingSnapshot,
     ) -> Result<(), ClientError> {
+        // Resource and backend denials install the position fences under R1. Preserve
+        // those fences even if this image was built before the denial's durable cleanup.
+        let admissions = session.history.admission.read().await;
         session.epochs.apply(image.generation, || {
-            image.version = self
-                .image
-                .borrow()
-                .version
-                .checked_add(1)
-                .ok_or(ClientError::Closed)?;
-            self.image.send_replace(Arc::new(image));
+            self.positions
+                .restrict_reading(&mut image, &self.image.borrow(), |id| {
+                    admissions.channel(id)
+                        == Some(crate::history::access::ChannelAdmission::Allowed)
+                });
+            self.publish_current(image)
+        })?
+    }
+
+    /// Clear denied read state without taking the reading writer's async mutex.
+    /// A rebuild may already own that mutex while it waits for a backend readback.
+    pub(super) async fn remove_revoked(
+        &self,
+        session: &crate::session::SessionInner,
+        generation: Generation,
+        channels: &[Uuid],
+    ) -> Result<(), ClientError> {
+        let admissions = session.history.admission.read().await;
+        session.epochs.apply(generation, || {
+            let current = self.image.borrow().clone();
+            let mut next = None;
+            for &id in channels {
+                if current.channels.contains_key(&id)
+                    && !matches!(
+                        admissions.channel(id),
+                        Some(
+                            crate::history::access::ChannelAdmission::Allowed
+                                | crate::history::access::ChannelAdmission::Quarantined
+                        )
+                    )
+                {
+                    next.get_or_insert_with(|| (*current).clone())
+                        .channels
+                        .remove(&id);
+                }
+            }
+            if let Some(mut image) = next {
+                image.generation = generation;
+                self.publish_current(image)?;
+            }
             Ok(())
         })?
+    }
+
+    /// Caller holds the generation fence while installing all inputs for this image.
+    fn publish_current(&self, mut image: ReadingSnapshot) -> Result<(), ClientError> {
+        image.version = self
+            .image
+            .borrow()
+            .version
+            .checked_add(1)
+            .ok_or(ClientError::Closed)?;
+        self.image.send_replace(Arc::new(image));
+        Ok(())
     }
 }
 

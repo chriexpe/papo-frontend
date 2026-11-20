@@ -82,6 +82,7 @@ impl AdmittedMutation {
         let mut next = base.clone();
         let mut orphan_candidates = HashSet::new();
         if self.complete {
+            next.has_display_baseline = true;
             next.channel_census_complete = true;
             orphan_candidates.extend(next.profiles.ids());
             next.profiles = super::ResourceTable::default();

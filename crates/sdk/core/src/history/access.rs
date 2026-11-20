@@ -87,11 +87,6 @@ impl Transition {
             self.generation,
         )
         .await?;
-        *session.history.connection.write().await = Some(super::channel::CacheConnection {
-            cache: std::sync::Arc::clone(&connection.cache),
-            rest: connection.rest.clone(),
-            generation: self.generation,
-        });
         Ok(self.sealed || granted)
     }
 }
@@ -111,32 +106,34 @@ async fn seal(
     let sealed = {
         let mut channels = store.channels.lock().await;
         let mut admissions = store.admission.write().await;
-        let sealed = admissions.seal(decisions, &channels);
-        // A quarantined incarnation stays so the same handle resumes on a grant.
-        channels.retain(|_, channel| !channel.is_closed());
-        session.reading.positions.quarantine(&sealed.quarantined);
-        for (id, reason) in &sealed.denied {
-            session
-                .reading
-                .positions
-                .revoke(&[*id], generation, *reason);
-        }
-        for (id, reason) in &sealed.retained_denied {
-            session
-                .reading
-                .positions
-                .retain_revoked(*id, generation, *reason);
-        }
-        crate::badges::restrict(
-            session,
-            &sealed.quarantined,
+        session.epochs.apply(generation, || {
+            let sealed = admissions.seal(decisions, &channels);
+            // A quarantined incarnation stays so the same handle resumes on a grant.
+            channels.retain(|_, channel| !channel.is_closed());
+            session.reading.positions.quarantine(&sealed.quarantined);
+            for (id, reason) in &sealed.denied {
+                session
+                    .reading
+                    .positions
+                    .revoke(&[*id], generation, *reason);
+            }
+            for (id, reason) in &sealed.retained_denied {
+                session
+                    .reading
+                    .positions
+                    .retain_revoked(*id, generation, *reason);
+            }
+            crate::badges::restrict(
+                session,
+                &sealed.quarantined,
+                sealed
+                    .denied
+                    .iter()
+                    .chain(&sealed.retained_denied)
+                    .map(|(id, _)| *id),
+            );
             sealed
-                .denied
-                .iter()
-                .chain(&sealed.retained_denied)
-                .map(|(id, _)| *id),
-        );
-        sealed
+        })?
     };
     let changed = !sealed.quarantined.is_empty() || !sealed.denied.is_empty();
     revoke(
@@ -193,35 +190,44 @@ async fn grant(
     {
         let mut channels = store.channels.lock().await;
         let mut admissions = store.admission.write().await;
-        for id in allowed {
-            // Evidence fetched before a later denial (for example a 403 that completed while
-            // this producer was fetching or writing) cannot reopen the channel.
-            if !admissions.may_grant(id, evidence) {
-                continue;
-            }
-            match admissions.get(id) {
-                // Already allowed; or a 403/404 or deletion that landed while this grant was
-                // revoking, with no confirmed marker yet: it stays denied until a later grant
-                // revokes it.
-                Some(Admission::Allowed | Admission::Denied { durable: false, .. }) => continue,
-                Some(Admission::Quarantined) => resumed.push(id),
-                Some(Admission::Denied { durable: true, .. }) | None => {
-                    // Nothing admitted may already hold state for this channel: an Arc made
-                    // outside admission could carry the old set, so it never becomes the grant.
-                    if let Some(stray) = channels.remove(&id) {
-                        stray.close(HistoryClosedReason::ChannelRemoved);
+        let mut stored_connection = store.connection.write().await;
+        // A reconnect can advance the epoch while any of these locks is contended.
+        session.epochs.apply(generation, || {
+            for id in allowed {
+                // Evidence fetched before a later denial (for example a 403 that completed while
+                // this producer was fetching or writing) cannot reopen the channel.
+                if !admissions.may_grant(id, evidence) {
+                    continue;
+                }
+                match admissions.get(id) {
+                    // Already allowed; or a 403/404 or deletion that landed while this grant was
+                    // revoking, with no confirmed marker yet: it stays denied until a later grant
+                    // revokes it.
+                    Some(Admission::Allowed | Admission::Denied { durable: false, .. }) => continue,
+                    Some(Admission::Quarantined) => resumed.push(id),
+                    Some(Admission::Denied { durable: true, .. }) | None => {
+                        // Nothing admitted may already hold state for this channel: an Arc made
+                        // outside admission could carry the old set, so it never becomes the grant.
+                        if let Some(stray) = channels.remove(&id) {
+                            stray.close(HistoryClosedReason::ChannelRemoved);
+                        }
                     }
                 }
+                changed = true;
+                admissions.grant(id);
             }
-            changed = true;
-            admissions.grant(id);
-        }
-        session.reading.positions.release(&resumed);
-        for id in &resumed {
-            if let Some(channel) = channels.get(id) {
-                channel.release();
+            session.reading.positions.release(&resumed);
+            for id in &resumed {
+                if let Some(channel) = channels.get(id) {
+                    channel.release();
+                }
             }
-        }
+            *stored_connection = Some(super::channel::CacheConnection {
+                cache: std::sync::Arc::clone(&connection.cache),
+                rest: connection.rest.clone(),
+                generation,
+            });
+        })?;
     }
     for id in resumed {
         resume(session, id, generation).await?;
@@ -253,25 +259,38 @@ async fn resume(
 }
 
 /// Seal one channel after a backend 403/404 or gateway deletion and make it durable.
-/// The caller has already closed the incarnation.
+/// A history response can only close the incarnation that issued its request.
 pub(super) async fn deny(
     session: &SessionInner,
     client: &ClientHandle,
     cache: &Arc<AccountCache>,
     channel: Uuid,
+    expected: Option<&Arc<super::channel::Channel>>,
     reason: HistoryClosedReason,
     generation: Generation,
 ) -> Result<(), ClientError> {
     {
         let mut channels = session.history.channels.lock().await;
         let mut admissions = session.history.admission.write().await;
-        admissions.deny(channel, reason);
-        channels.retain(|_, channel| !channel.is_closed());
-        session
-            .reading
-            .positions
-            .revoke(&[channel], generation, reason);
-        crate::badges::restrict(session, &[], std::iter::once(channel));
+        session.epochs.apply(generation, || {
+            if let Some(expected) = expected
+                && !channels
+                    .get(&channel)
+                    .is_some_and(|current| Arc::ptr_eq(current, expected))
+            {
+                return Err(ClientError::Superseded);
+            }
+            if let Some(current) = channels.remove(&channel) {
+                current.close(reason);
+            }
+            admissions.deny(channel, reason);
+            session
+                .reading
+                .positions
+                .revoke(&[channel], generation, reason);
+            crate::badges::restrict(session, &[], std::iter::once(channel));
+            Ok(())
+        })??;
     }
     let listed = reason != HistoryClosedReason::ChannelDeleted;
     revoke(
@@ -342,11 +361,6 @@ async fn revoke(
         }
     }
     Ok(())
-}
-
-/// Whether any generation of this running session has installed live resource evidence.
-pub(crate) async fn warm(session: &SessionInner) -> bool {
-    session.history.connection.read().await.is_some()
 }
 
 /// Whether this generation already admitted a fetched snapshot. Until then the published

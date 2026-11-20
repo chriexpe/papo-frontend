@@ -1,6 +1,9 @@
 //! Read and badge overlays for channel metadata; canonical evidence and policy stay in the SDK.
 
-use futures_util::{StreamExt, stream};
+use futures_util::{
+    StreamExt,
+    stream::{self, FusedStream},
+};
 use imbl::Vector;
 use papo_sdk::{BadgesSnapshot, ReadingSnapshot};
 use std::sync::Arc;
@@ -78,7 +81,7 @@ pub(crate) fn subscribe(
     let receiver = publisher.subscribe(1);
     let changes = stream::unfold(
         (
-            metadata.stream,
+            metadata.stream.fuse(),
             reading,
             badges,
             metadata.snapshot,
@@ -87,19 +90,22 @@ pub(crate) fn subscribe(
         ),
         |(mut metadata, mut reading, mut badges, mut raw, mut publisher, mut receiver)| async move {
             loop {
+                if metadata.is_terminated() {
+                    return None;
+                }
                 let update = tokio::select! {
                     biased;
-                    update = metadata.next() => Some(update?),
+                    update = metadata.next() => {
+                        // The final metadata image may have been silent. Drain any pending
+                        // overlay once before ending the account subscription.
+                        if update.is_none() && !reading.borrow().has_changed() && !badges.borrow().has_changed() {
+                            return None;
+                        }
+                        update
+                    },
                     result = reading.changed() => { result.ok()?; None },
                     result = badges.changed() => { result.ok()?; None },
                 };
-                if update.as_ref().is_some_and(|update| {
-                    update.generation == publisher.generation && update.diffs.is_empty()
-                }) && !reading.has_changed().unwrap_or(false)
-                    && !badges.has_changed().unwrap_or(false)
-                {
-                    continue;
-                }
                 let previous_metadata = raw.clone();
                 let reset = if let Some(update) = update {
                     let reset = update.generation != publisher.generation

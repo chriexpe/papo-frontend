@@ -307,13 +307,16 @@ fn unrelated_resource_updates_skip_all_500_channels_and_one_read_clones_one_row(
         )
         .unwrap();
     changed.version = 1;
-    resources.send_replace(Arc::new(changed));
+    resources.send_replace(Arc::new(changed.clone()));
     VISITS.set(0);
     ROW_CLONES.set(0);
     assert!(subscription.stream.next().now_or_never().is_none());
     assert_eq!(VISITS.get(), 0);
     assert_eq!(ROW_CLONES.get(), 0);
 
+    // A new silent resource image and a pending overlay must drain in one pull.
+    changed.version += 1;
+    resources.send_replace(Arc::new(changed));
     let before = subscription.snapshot.clone();
     read_sender.send_replace(self::reading(2, generation, 1));
     let update = subscription.stream.next().now_or_never().unwrap().unwrap();
@@ -333,4 +336,14 @@ fn unrelated_resource_updates_skip_all_500_channels_and_one_read_clones_one_row(
             .count(),
         499
     );
+
+    drop(resources);
+    read_sender.send_replace(self::reading(3, generation, 2));
+    drop(read_sender);
+    let final_update = subscription.stream.next().now_or_never().unwrap().unwrap();
+    assert!(matches!(
+        final_update.diffs.as_slice(),
+        [eyeball_im::VectorDiff::Set { index: 0, value }] if value.unread.as_ref().unwrap().unread_count == UnreadCount::Exact(2)
+    ));
+    assert!(subscription.stream.next().now_or_never().unwrap().is_none());
 }

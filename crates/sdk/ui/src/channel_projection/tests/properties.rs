@@ -73,7 +73,12 @@ fn every_delivered_batch_reconstructs_the_next_snapshot() {
                     version += 1;
                     sender.send_replace(source(version, generation, channels.clone()));
                 }
-                let update = subscription.stream.next().now_or_never().unwrap().unwrap();
+                let update = subscription.stream.next().now_or_never();
+                if action != 4 && previous == expected(&channels) {
+                    prop_assert!(update.is_none());
+                    continue;
+                }
+                let update = update.unwrap().unwrap();
                 prop_assert_eq!(
                     (update.version, update.generation),
                     (version, Generation::for_test(generation))

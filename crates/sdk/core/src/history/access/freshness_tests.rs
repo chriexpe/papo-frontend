@@ -31,6 +31,7 @@ fn backend_denial_is_cleared_only_by_a_complete_refetch_that_started_after_it() 
                 &harness.client.handle(),
                 &harness.connection.cache,
                 RESTRICTED,
+                None,
                 HistoryClosedReason::Forbidden,
                 generation,
             )
@@ -87,6 +88,7 @@ fn a_forgotten_deleted_channel_is_not_regranted_by_evidence_from_before_its_dele
                 &harness.client.handle(),
                 &harness.connection.cache,
                 RESTRICTED,
+                None,
                 HistoryClosedReason::ChannelDeleted,
                 generation,
             )
@@ -152,6 +154,138 @@ fn an_abandoned_revoke_commits_before_a_newer_one_and_never_hides_the_regranted_
                 harness.admission(RESTRICTED).await,
                 Some(Admission::Allowed)
             );
+        })
+        .unwrap();
+    harness.finish();
+}
+
+#[test]
+fn grant_waiting_for_the_channel_map_cannot_make_a_superseded_connection_warm() {
+    let directory = tempfile::tempdir().unwrap();
+    let harness = Harness::open(&directory);
+    harness
+        .client
+        .block_on(async {
+            let allowed = snapshot(harness.generation, Evidence::Allowed);
+            let evidence = super::evidence(&harness.session, Refetch::Complete).await;
+            let transition =
+                Transition::begin(&harness.session, &harness.connection, &allowed, evidence)
+                    .await
+                    .unwrap();
+            harness.connection.cache.replace(&allowed).await.unwrap();
+
+            let channels = harness.session.history.channels.lock().await;
+            let mut grant = Box::pin(transition.finish(&harness.session, &harness.connection));
+            assert!(super::tests::poll_once(&mut grant).is_pending());
+            harness.session.epochs.advance().unwrap();
+            drop(channels);
+
+            assert!(matches!(grant.await, Err(crate::ClientError::Superseded)));
+            assert_eq!(harness.admission(RESTRICTED).await, None);
+            assert!(harness.session.history.connection.read().await.is_none());
+        })
+        .unwrap();
+    harness.finish();
+}
+
+#[test]
+fn seal_waiting_for_the_channel_map_cannot_revoke_the_next_epochs_warm_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let harness = Harness::open(&directory);
+    harness
+        .client
+        .block_on(async {
+            harness
+                .accept(&snapshot(harness.generation, Evidence::Allowed))
+                .await
+                .unwrap();
+            let set = harness.set(RESTRICTED).await;
+            let channel = harness
+                .session
+                .history
+                .verified_channel(RESTRICTED)
+                .await
+                .unwrap();
+            let denied = snapshot(harness.generation, Evidence::Denied);
+            let evidence = super::evidence(&harness.session, Refetch::Complete).await;
+            let channels = harness.session.history.channels.lock().await;
+            let mut seal = Box::pin(Transition::begin(
+                &harness.session,
+                &harness.connection,
+                &denied,
+                evidence,
+            ));
+            assert!(super::tests::poll_once(&mut seal).is_pending());
+            harness.session.epochs.advance().unwrap();
+            drop(channels);
+
+            assert!(matches!(seal.await, Err(crate::ClientError::Superseded)));
+            assert_eq!(
+                harness.admission(RESTRICTED).await,
+                Some(Admission::Allowed)
+            );
+            assert!(channel.check().is_ok());
+            assert_eq!(harness.set(RESTRICTED).await, set);
+        })
+        .unwrap();
+    harness.finish();
+}
+
+#[test]
+fn delayed_history_refusal_cannot_revoke_a_replacement_channel_or_epoch() {
+    let directory = tempfile::tempdir().unwrap();
+    let harness = Harness::open(&directory);
+    harness
+        .client
+        .block_on(async {
+            let allowed = snapshot(harness.generation, Evidence::Allowed);
+            harness.accept(&allowed).await.unwrap();
+            let previous = harness
+                .session
+                .history
+                .verified_channel(RESTRICTED)
+                .await
+                .unwrap();
+            harness
+                .accept(&snapshot(harness.generation, Evidence::Denied))
+                .await
+                .unwrap();
+            harness.accept(&allowed).await.unwrap();
+            let current = harness
+                .session
+                .history
+                .verified_channel(RESTRICTED)
+                .await
+                .unwrap();
+            let set = harness.set(RESTRICTED).await;
+
+            let refusal = |incarnation| {
+                super::deny(
+                    &harness.session,
+                    &harness.connection.client,
+                    &harness.connection.cache,
+                    RESTRICTED,
+                    Some(incarnation),
+                    HistoryClosedReason::Forbidden,
+                    harness.generation,
+                )
+            };
+            assert!(matches!(
+                refusal(&previous).await,
+                Err(crate::ClientError::Superseded)
+            ));
+            let channels = harness.session.history.channels.lock().await;
+            let mut pending = Box::pin(refusal(&current));
+            assert!(super::tests::poll_once(&mut pending).is_pending());
+            harness.session.epochs.advance().unwrap();
+            drop(channels);
+            assert!(matches!(pending.await, Err(crate::ClientError::Superseded)));
+            assert_eq!(
+                harness.admission(RESTRICTED).await,
+                Some(Admission::Allowed)
+            );
+            assert!(current.check().is_ok());
+            assert_eq!(harness.set(RESTRICTED).await, set);
         })
         .unwrap();
     harness.finish();

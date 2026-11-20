@@ -91,6 +91,7 @@ pub(super) async fn load(
         let own = account.user();
         let admit = Admission::for_disk(own, &diagnostics);
         let mut base = ResourceSnapshot::empty(generation);
+        base.has_display_baseline = true;
         if let Some(rows) = roles
             && let Ok(rows) = admit.roles(RoleListResponse {
                 roles: Some(rows.values),

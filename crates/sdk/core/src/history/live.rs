@@ -128,14 +128,12 @@ async fn select(
     if let Some(id) = channel_id {
         let id = Uuid::from_bytes(Model::id(id)?);
         if matches!(event, KnownEvent::ChannelDelete(_)) {
-            if let Some(channel) = session.history.channels.lock().await.get(&id) {
-                channel.close(HistoryClosedReason::ChannelDeleted);
-            }
             super::access::deny(
                 session,
                 &connection.client,
                 &connection.cache,
                 id,
+                None,
                 HistoryClosedReason::ChannelDeleted,
                 generation,
             )

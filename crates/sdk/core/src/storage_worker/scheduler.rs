@@ -180,12 +180,15 @@ pub(super) fn run(shared: &Shared, open: &mut HashMap<u64, OpenConnection>) {
         } else {
             result
         };
-        state.inflight = None;
-        let mut failed_connection = None;
         let failed = matches!(&result, Err(error) if *error != WorkerError::TransactionRejected);
         if let Err(error) = &result
             && *error != WorkerError::TransactionRejected
         {
+            // Closing the last writer can hold SQLite's WAL lock. Release it before
+            // waking any failed receipt whose caller may immediately load the visible revision.
+            drop(state);
+            drop(open.remove(&database_id));
+            state = shared.lock();
             state.unpersisted.push(UnpersistedWrite {
                 database_id,
                 command_id: command.id,
@@ -196,11 +199,10 @@ pub(super) fn run(shared: &Shared, open: &mut HashMap<u64, OpenConnection>) {
                 },
             });
             fail(&mut state, database_id, error.clone());
-            failed_connection = open.remove(&database_id);
         }
+        state.inflight = None;
         drop(state);
         command.job.respond(result);
-        drop(failed_connection);
         if failed {
             lifecycle::complete(shared, database_id, Ok(()));
         }

@@ -80,7 +80,7 @@ impl Connector for ApiConnector {
             }
             crate::notifications::backend::remember(session, epoch.generation, who.settings)?;
             *session.verified_rest.lock().await = Some((epoch.generation, rest.clone()));
-            let cache = self.0.inner.caches.open(session.account).await?;
+            let cache = self.0.inner.caches.for_reconcile(session.account).await?;
             session.epochs.validate(epoch.generation)?;
             let gateway =
                 tokio::time::timeout(self.0.inner.config.request_timeout, Gateway::connect(&rest))

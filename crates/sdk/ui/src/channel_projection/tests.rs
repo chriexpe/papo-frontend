@@ -142,9 +142,14 @@ fn coalesced_equal_values_keep_the_baseline_and_emit_no_edits() {
     for version in 1..=1000 {
         sender.send_replace(source(version, 1, vec![channel(1, 0)]));
     }
+    assert!(subscription.stream.next().now_or_never().is_none());
+    sender.send_replace(source(1001, 1, vec![channel(1, 0), channel(2, 0)]));
     let update = subscription.stream.next().now_or_never().unwrap().unwrap();
-    assert_eq!(update.version, 1000);
-    assert_eq!(update.diffs.len(), 0);
+    assert_eq!(update.version, 1001);
+    assert!(matches!(
+        update.diffs.as_slice(),
+        [VectorDiff::PushBack { .. }]
+    ));
     for diff in update.diffs {
         diff.apply(&mut subscription.snapshot);
     }
@@ -169,13 +174,12 @@ fn consecutive_version_with_new_generation_resets_unchanged_items() {
 }
 
 #[test]
-fn unrelated_resource_commit_emits_empty_batch_at_new_version() {
+fn unrelated_final_resource_commit_stays_silent_and_closes_the_stream() {
     let (sender, receiver) = watch::channel(source(0, 1, vec![channel(1, 0)]));
     let mut subscription = subscribe(receiver);
     sender.send_replace(source(1, 1, vec![channel(1, 0)]));
-    let update = subscription.stream.next().now_or_never().unwrap().unwrap();
-    assert_eq!(update.version, 1);
-    assert_eq!(update.diffs, vec![]);
+    drop(sender);
+    assert!(subscription.stream.next().now_or_never().unwrap().is_none());
 }
 
 #[test]
@@ -192,8 +196,7 @@ fn backend_permission_and_read_fields_do_not_become_list_policy() {
             ..channel(1, 0)
         }],
     ));
-    let update = subscription.stream.next().now_or_never().unwrap().unwrap();
-    assert_eq!(update.diffs, vec![]);
+    assert!(subscription.stream.next().now_or_never().is_none());
 }
 
 #[test]

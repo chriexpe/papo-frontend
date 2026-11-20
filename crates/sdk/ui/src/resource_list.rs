@@ -15,12 +15,13 @@ pub struct PeopleListSubscription<T: Clone> {
     pub generation: Generation,
     /// Initial view-ready items. Unchanged items keep their Arc in subsequent updates.
     pub snapshot: Vector<Arc<T>>,
-    /// Sequential edits from the last observed image. A generation change resets the baseline.
+    /// Edits for visible list changes. Unrelated source publications are silent.
+    /// A generation change always resets the baseline.
     pub stream: Pin<Box<dyn Stream<Item = PeopleListUpdate<T>> + Send>>,
 }
 /// One complete list transition.
 pub struct PeopleListUpdate<T: Clone> {
-    /// Resource version after applying the entire batch.
+    /// Resource version represented by this batch. Versions can skip over unrelated or coalesced publications.
     pub version: u64,
     /// Connection epoch owning these items.
     pub generation: Generation,
@@ -101,16 +102,21 @@ where
     let snapshot = items.clone();
     let changes = stream::unfold(
         (source, items, baseline),
-        move |(mut source, mut items, baseline)| async move {
-            source.changed().await.ok()?;
-            let current = Arc::clone(&source.borrow_and_update());
-            let diffs = reconcile(list, &baseline, &current, &mut items, project);
-            let update = PeopleListUpdate {
-                version: current.version,
-                generation: current.generation,
-                diffs,
-            };
-            Some((update, (source, items, current)))
+        move |(mut source, mut items, mut baseline)| async move {
+            loop {
+                source.changed().await.ok()?;
+                let current = Arc::clone(&source.borrow_and_update());
+                let diffs = reconcile(list, &baseline, &current, &mut items, project);
+                baseline = current;
+                if !diffs.is_empty() {
+                    let update = PeopleListUpdate {
+                        version: baseline.version,
+                        generation: baseline.generation,
+                        diffs,
+                    };
+                    return Some((update, (source, items, baseline)));
+                }
+            }
         },
     );
     PeopleListSubscription {

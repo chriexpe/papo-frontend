@@ -262,3 +262,79 @@ fn gateway_and_operation_refresh_join_the_same_user_in_each_relationship() -> Re
     })??;
     fixture.finish()
 }
+
+#[test]
+fn peer_roles_reject_an_inflight_social_read_then_accept_a_new_social_observation() -> Result {
+    use papo_api::gateway::UserJoinEvent;
+    use papo_sdk::{RefreshFault, RefreshStatus, operations::MetadataScope};
+    use serde_json::json;
+
+    let fixture = Fixture::new(Config::default())?;
+    fixture.run(async {
+        let peer = member(22);
+        let id: Uuid = peer.id.as_deref().ok_or("peer ID")?.parse()?;
+        fixture.server().set_profile(peer).await?;
+        let session = signed_in(&fixture, "peer-precedence").await?;
+        let mut snapshots = session.subscribe_resources();
+        assert!(snapshots.borrow().members.contains(id));
+
+        // The block endpoint keeps returning this same embedded copy across both requests.
+        let social_summary =
+            serde_json::from_value(json!({"id": id, "roles": [], "banned": false}))?;
+        fixture
+            .server()
+            .set_blocks(&session.account().user().to_string(), vec![social_summary])
+            .await;
+        let mut held = fixture
+            .server()
+            .hold_next_rest("GET", "/users/blocks")
+            .await?;
+        let operations = session.operations();
+        let older =
+            tokio::spawn(async move { operations.refresh_metadata(MetadataScope::Social).await });
+        held.wait_started().await?;
+
+        let role = Uuid::from_u128(83);
+        fixture
+            .server()
+            .queue_operation_response(
+                "POST",
+                "/users/user_summary_batch",
+                200,
+                json!([{"id": id, "roles": [{"id": role}], "banned": true}]),
+            )
+            .await?;
+        fixture
+            .server()
+            .emit_event(KnownEvent::UserJoin(Box::new(UserJoinEvent {
+                user_id: id.to_string(),
+            })))
+            .await?;
+        let changed = resources(&mut snapshots, |root| {
+            root.users.get(id).and_then(|user| user.roles.as_deref()) == Some(&[role])
+        })
+        .await?;
+
+        held.release();
+        assert_eq!(
+            older.await??.value,
+            RefreshStatus::Warning(RefreshFault::ConcurrentChange)
+        );
+        assert!(Arc::ptr_eq(&changed, &snapshots.borrow()));
+        assert!(!changed.blocks.contains(id));
+
+        // No backend revision distinguishes a stale embedded value in a newly started request.
+        let newer = session
+            .operations()
+            .refresh_metadata(MetadataScope::Social)
+            .await?;
+        assert_eq!(newer.value, RefreshStatus::Updated);
+        let accepted = snapshots.borrow();
+        let peer = accepted.users.get(id).ok_or("missing peer")?;
+        assert_eq!(peer.roles.as_deref(), Some([].as_slice()));
+        assert_eq!(peer.banned, Some(true));
+        assert!(accepted.members.contains(id) && accepted.blocks.contains(id));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}

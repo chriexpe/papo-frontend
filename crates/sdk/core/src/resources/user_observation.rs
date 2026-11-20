@@ -20,7 +20,8 @@ pub(crate) struct UserObservation {
 
 impl UserObservation {
     /// Social and profile results cannot confer own assignments or change an
-    /// authoritative membership ban. Unobserved fields fall through to better evidence.
+    /// authoritative membership ban. A peer's supplied assignments are display evidence.
+    /// The commit fence rejects observations started before a newer accepted readback.
     pub fn sparse(mut self, base: &ResourceSnapshot, own: Uuid) -> Self {
         if self.id == own {
             self.roles = None;

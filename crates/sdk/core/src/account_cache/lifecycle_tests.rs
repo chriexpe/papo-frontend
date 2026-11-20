@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     ServerAddress,
-    storage_worker::{SqlMutation, StorageWorker, WorkerConfig},
+    storage_worker::{SqlBatch, SqlMutation, StorageWorker, WorkerConfig},
 };
 use papo_api::Uuid;
 use std::{

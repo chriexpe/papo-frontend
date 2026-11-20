@@ -117,8 +117,7 @@ fn exercise(size: u128, measure: bool) {
     edited.version = 4;
     sender.send_replace(Arc::new(edited));
     PROJECTED.set(0);
-    let update = subscription.stream.next().now_or_never().unwrap().unwrap();
-    assert_eq!(update.diffs.len(), 0);
+    assert!(subscription.stream.next().now_or_never().is_none());
     assert_eq!(PROJECTED.get(), 0);
     if let (Some(mutation), Some(projection), Some(role_projection)) =
         (mutation, projection, role_projection)

@@ -1,5 +1,7 @@
 //! A live resource writer owns installation even after its caller drops or its epoch changes.
 
+mod bootstrap;
+
 use super::*;
 use crate::{Session, Uuid, notifications::tests::fixture, resource_admission::Admission};
 use papo_api::wire::{Channel, ChannelList, Server, UserSummary};
@@ -166,12 +168,32 @@ fn failure_after_revision_switch_blocks_partial_writes_and_preserves_the_disk_im
                 inner: stale,
             };
             let generation = orphan.generation();
+            let pool = &session.client.inner.pool;
+            pool.insert(Arc::clone(&orphan.inner)).await;
+            let mut initially_empty = complete(&orphan);
+            initially_empty.channels = Some(Vec::new());
+            submit(&orphan, &connection, initially_empty).await.unwrap();
+            let mut resources = orphan.subscribe_resources();
+            assert!(resources.borrow_and_update().channel_census_complete);
+            pool.insert(Arc::clone(&session.inner)).await;
+
             let result = submit(&orphan, &connection, complete(&orphan)).await;
             assert!(matches!(result, Err(ClientError::Superseded)));
 
             assert_eq!(*orphan.inner.resource_recovery.borrow(), Some(generation));
             assert_eq!(orphan.generation(), generation);
-            assert!(orphan.inner.resources.borrow().channels.is_empty());
+            resources.changed().await.unwrap();
+            let redacted = resources.borrow_and_update().clone();
+            assert!(redacted.channels.is_empty());
+            assert!(!redacted.channel_census_complete);
+
+            // The lazy worker starts after quarantine, so this is a fresh recount from
+            // the retained, empty resource image. No per-channel gate can guard its total.
+            let mut badges = orphan.subscribe_badges();
+            while badges.borrow_and_update().version == 0 {
+                badges.changed().await.unwrap();
+            }
+            assert!(!badges.borrow().channels_complete);
             let channel = Uuid::from_u128(2);
             assert_eq!(
                 orphan.inner.history.admission.read().await.channel(channel),

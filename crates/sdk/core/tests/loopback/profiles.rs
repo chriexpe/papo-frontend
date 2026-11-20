@@ -5,11 +5,11 @@ use papo_api::{
     gateway::{AvatarUpdateEvent, KnownEvent},
     wire::UserProfile,
 };
-use papo_sdk::ClientError;
+use papo_sdk::{Backoff, ClientError, ConnectionState, HistoryError};
 use papo_test_server::Config;
 
 use super::{
-    fixture::{Fixture, Result},
+    fixture::{Fixture, Result, wait_for},
     reconcile::{online, resources, signed_in},
 };
 
@@ -20,6 +20,86 @@ fn profile(index: u128) -> UserProfile {
         nickname: "before-invalidation".into(),
         ..UserProfile::default()
     }
+}
+
+#[test]
+fn first_profile_request_after_restart_preserves_other_profiles_without_a_history_grant() -> Result
+{
+    let backoff = std::time::Duration::from_secs(3600);
+    let mut fixture = Fixture::with_backoff(
+        Config::default(),
+        Backoff {
+            initial: backoff,
+            maximum: backoff,
+        },
+    )?;
+    let mut first = profile(71);
+    let second = profile(72);
+    let first_id = Uuid::parse_str(first.id.as_deref().unwrap())?;
+    let second_id = Uuid::parse_str(second.id.as_deref().unwrap())?;
+    let (account, channel) = fixture.run(async {
+        let channel = fixture.server().create_channel("cold-profiles").await?;
+        let channel = Uuid::parse_str(channel.id.as_deref().unwrap())?;
+        fixture.server().set_profile(first.clone()).await?;
+        fixture.server().set_profile(second).await?;
+        let session = signed_in(&fixture, "cold-profile").await?;
+        session.profiles(&[first_id, second_id]).await?;
+        session.history(channel).await?;
+        fixture.server().set_gateway_accepting(false).await;
+        Ok::<_, Box<dyn std::error::Error>>((session.account(), channel))
+    })??;
+
+    fixture.reopen()?;
+    let mut complete = fixture.run(async {
+        let session = fixture.client().handle().session(account)?;
+        wait_for(&mut session.subscribe_connection(), |status| {
+            matches!(status.state, ConnectionState::Backoff { .. })
+        })
+        .await?;
+        assert_eq!(session.subscribe_resources().borrow().version, 0);
+        first.description = Some("fresh detail".into());
+        fixture.server().set_profile(first).await?;
+        session.profiles(&[first_id]).await?;
+        let display = session.subscribe_resources().borrow().clone();
+        assert!(display.profiles.get(second_id).is_some());
+        assert!(display.channels.get(channel).is_some());
+        assert!(!display.channel_census_complete);
+        assert!(matches!(
+            session.history(channel).await,
+            Err(HistoryError::Unverified)
+        ));
+        fixture.server().set_gateway_accepting(true).await;
+        Ok::<_, Box<dyn std::error::Error>>(
+            fixture.server().hold_next_rest("GET", "/channels").await?,
+        )
+    })??;
+
+    // Hold the first complete fetch so this image can only come from the switched revision.
+    fixture.reopen()?;
+    fixture.run(async {
+        complete.wait_started().await?;
+        let session = fixture.client().handle().session(account)?;
+        let display = session.subscribe_resources().borrow().clone();
+        assert_eq!(
+            display
+                .profiles
+                .get(first_id)
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("fresh detail")
+        );
+        assert!(display.profiles.get(second_id).is_some());
+        assert!(!display.channel_census_complete);
+        assert!(matches!(
+            session.history(channel).await,
+            Err(HistoryError::Unverified)
+        ));
+        complete.release();
+        online(&session).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
 }
 
 #[test]

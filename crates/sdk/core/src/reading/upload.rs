@@ -309,5 +309,5 @@ async fn confirm(
         }
     }
     image.generation = generation;
-    session.inner.reading.publish(&session.inner, image)
+    session.inner.reading.publish(&session.inner, image).await
 }

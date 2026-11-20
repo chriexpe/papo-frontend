@@ -35,12 +35,22 @@ pub(crate) async fn quarantine_rejected(
 
 /// The failed writer still owns `resource_serial`. Even if its epoch ended during the
 /// switch, no newer resource grant can have been installed; retain stronger backend denials.
-pub(crate) async fn quarantine_failed_install(session: &SessionInner) {
+pub(crate) async fn quarantine_failed_install(session: &SessionInner) -> Result<(), ClientError> {
     let channels = session.history.channels.lock().await;
     let mut admissions = session.history.admission.write().await;
     let allowed = admissions.allowed();
     quarantine(session, &mut admissions, &channels, &allowed);
     crate::badges::invalidate_census(session);
+
+    // A recount may already hold the last complete image, even when it contains no
+    // channels to quarantine. Wake it under the same admission fence with the lost proof.
+    let previous = session.resources.borrow().clone();
+    if previous.channel_census_complete {
+        let mut snapshot = (*previous).clone();
+        snapshot.channel_census_complete = false;
+        session.publish_resources(snapshot)?;
+    }
+    Ok(())
 }
 
 fn quarantine(
