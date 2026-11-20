@@ -5,11 +5,15 @@
 //! that is not in the source catalog fails the build. Views take their text
 //! from these accessors and never write a user-visible literal themselves.
 
+#[expect(
+    clippy::unreadable_literal,
+    reason = "rune-i18n's generated plural table writes its empty marker as a bare u32"
+)]
 mod catalog {
     include!(concat!(env!("OUT_DIR"), "/i18n.rs"));
 }
 
-use rune_i18n::{I18n, Key};
+use rune_i18n::{I18n, Key, PluralKey};
 
 static I18N: I18n = I18n::new(&catalog::CATALOG);
 
@@ -21,11 +25,20 @@ macro_rules! text {
     }};
 }
 
-/// The current locale's template for `$key` with its `{{$name}}` filled in.
+/// The current locale's template for `$key` with each `{{$name}}` filled in.
 macro_rules! template {
-    ($key:literal, $name:literal => $value:expr) => {{
+    ($key:literal, $($name:literal => $value:expr),+) => {{
         const KEY: Key = Key::named(catalog::KEYS, $key);
-        I18N.format(KEY, &[($name, &$value)])
+        I18N.format(KEY, &[$(($name, &$value)),+])
+    }};
+}
+
+/// The current locale's form of `$key` for `$count`, with `{{count}}`
+/// filled in.
+macro_rules! plural {
+    ($key:literal, $count:expr) => {{
+        const KEY: PluralKey = PluralKey::named(catalog::PLURALS, $key);
+        I18N.plural_format(KEY, $count, &[])
     }};
 }
 
@@ -362,6 +375,31 @@ pub(crate) fn remove_title(server: &str) -> String {
     template!("remove.title", "server" => server)
 }
 
+/// What assistive technology adds for an unread channel or server.
+pub(crate) fn badge_unread() -> &'static str {
+    text!("badge.unread")
+}
+
+/// "3 mentions", for assistive technology.
+pub(crate) fn badge_mentions(count: u64) -> String {
+    plural!("badge.mentions", count)
+}
+
+/// "at least 3 mentions", when the SDK knows only a lower bound.
+pub(crate) fn badge_mentions_at_least(count: u64) -> String {
+    plural!("badge.mentions_at_least", count)
+}
+
+/// A count shown as a lower bound: "3+", and "99+" past the cap.
+pub(crate) fn badge_count_more(count: u64) -> String {
+    template!("badge.count_more", "count" => count)
+}
+
+/// A row's or tile's name followed by what its badge says.
+pub(crate) fn badge_labelled(name: &str, badge: &str) -> String {
+    template!("badge.labelled", "name" => name, "badge" => badge)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -373,6 +411,13 @@ mod tests {
             panic!("a catalog is a JSON object");
         };
         messages.into_iter().map(|(key, _)| key).collect()
+    }
+
+    #[test]
+    fn plurals_pick_the_form_for_the_count() {
+        // Tests run in the source locale, en-US; nothing switches it.
+        assert_eq!(super::badge_mentions(1), "1 mention");
+        assert_eq!(super::badge_mentions(2), "2 mentions");
     }
 
     #[test]

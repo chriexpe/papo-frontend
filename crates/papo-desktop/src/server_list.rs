@@ -4,18 +4,23 @@
 //! Owns the projection from the SDK's registry and each account session's
 //! resources ([`project`]) and the watch that posts it whenever it changes.
 //! The SDK owns the registry, sessions and resources; this keeps only what
-//! the rail and the channel list draw. Badges are D1c's: nothing here reads
-//! read state or mentions.
+//! the rail and the channel list draw, badges included: each channel's from
+//! its account's badge image, each server's from the SDK's aggregate for the
+//! same account.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use papo_sdk::{
-    AccountId, ChannelKind, ChannelRecord, ClientHandle, MAX_ICON_BYTES, MediaSource,
-    RegistrySnapshot, ResourceSnapshot, SavedAccount, ServerId, Session,
+    AccountId, BadgesSnapshot, ChannelKind, ChannelRecord, ClientHandle, MAX_ICON_BYTES,
+    MediaSource, RegistrySnapshot, ResourceSnapshot, SavedAccount, ServerId, Session,
 };
+use papo_sdk_ui::{AccountBadges, ServerListService};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 
+use crate::badges::Badge;
 use crate::sdk_bridge::Updates;
 use crate::sign_in::shown_address;
 
@@ -62,6 +67,8 @@ pub(crate) struct ServerEntry {
     pub(crate) text_channels: Vec<ChannelEntry>,
     /// Voice channels in the server's order.
     pub(crate) voice_channels: Vec<ChannelEntry>,
+    /// The server's badge: its shown account's unread and mentions.
+    pub(crate) badge: Badge,
 }
 
 /// The account a server's channel list belongs to.
@@ -79,6 +86,7 @@ pub(crate) struct ChannelEntry {
     /// The server's identity for it: the row's key.
     pub(crate) id: String,
     pub(crate) name: String,
+    pub(crate) badge: Badge,
 }
 
 /// What one account session's resources say about its server.
@@ -96,6 +104,7 @@ pub(crate) struct ServerResources {
 pub(crate) fn project(
     registry: &RegistrySnapshot,
     resources: &HashMap<AccountId, ServerResources>,
+    account_badges: &BTreeMap<AccountId, Arc<AccountBadges>>,
 ) -> ServerList {
     let servers = registry
         .servers
@@ -125,6 +134,12 @@ pub(crate) fn project(
                 voice_channels: found
                     .map(|found| found.voice_channels.clone())
                     .unwrap_or_default(),
+                // The shown account's aggregate, so the tile always agrees
+                // with the rows below it, active account or not.
+                badge: account
+                    .and_then(|account| account_badges.get(&account.id))
+                    .map(|badges| Badge::of_aggregate(&badges.all))
+                    .unwrap_or_default(),
             }
         })
         .collect();
@@ -139,9 +154,11 @@ fn shown_account(accounts: &[SavedAccount], id: ServerId) -> Option<&SavedAccoun
     on_server.find(|account| account.active).or(first)
 }
 
-/// Groups named text and voice channels, preserving backend order within each group.
-fn channels<'a>(
+/// Groups named text and voice channels, preserving backend order within each
+/// group, each with its badge from `badges` (none without an image).
+pub(crate) fn channels<'a>(
     all: impl IntoIterator<Item = &'a ChannelRecord>,
+    badges: Option<&BadgesSnapshot>,
 ) -> (Vec<ChannelEntry>, Vec<ChannelEntry>) {
     let mut text = Vec::new();
     let mut voice = Vec::new();
@@ -154,9 +171,14 @@ fn channels<'a>(
             ChannelKind::Voice => &mut voice,
             ChannelKind::Category => continue,
         };
+        let badge = badges
+            .and_then(|badges| badges.channels.get(&channel.id))
+            .map(|badges| Badge::of_channel(badges))
+            .unwrap_or_default();
         rows.push(ChannelEntry {
             id: channel.id.to_string(),
             name: name.clone(),
+            badge,
         });
     }
     (text, voice)
@@ -172,6 +194,9 @@ pub(crate) async fn run<S: 'static>(
 ) {
     let mut registry = client.subscribe_registry();
     let mut sessions = client.subscribe_session_changes();
+    let badges = ServerListService::new(client.clone()).subscribe_badges();
+    let mut account_badges = badges.snapshot.accounts;
+    let mut badge_changes = badges.stream;
     let mut icons = Icons::default();
     let mut posted = None;
     loop {
@@ -180,7 +205,7 @@ pub(crate) async fn run<S: 'static>(
         // Rebuilt on every pass; dropping the old set stops its waits.
         let mut resource_changes = JoinSet::new();
         let resources = read_resources(&client, &snapshot, &mut icons, &mut resource_changes);
-        let list = project(&snapshot, &resources);
+        let list = project(&snapshot, &resources, &account_badges);
         if posted.as_ref() != Some(&list) {
             posted = Some(list.clone());
             updates.send(move |state| apply(state, list));
@@ -188,6 +213,14 @@ pub(crate) async fn run<S: 'static>(
         tokio::select! {
             changed = registry.changed() => if changed.is_err() { return },
             changed = sessions.changed() => if changed.is_err() { return },
+            // One badge change wakes both this stream and the shown
+            // account's badge watch: two passes, the second one complete. The
+            // stream keeps its pending read across select! rounds.
+            update = badge_changes.next() => match update {
+                Some(update) => account_badges = update.snapshot.accounts,
+                // The client closed: the subscription ends with it.
+                None => return,
+            },
             Some(_) = resource_changes.join_next(), if !resource_changes.is_empty() => {}
             Some(fetched) = icons.fetches.join_next(), if !icons.fetches.is_empty() => {
                 if let Ok(fetch) = fetched {
@@ -274,24 +307,42 @@ fn read_resources(
         let Ok(session) = client.session(account.id) else {
             continue;
         };
-        let mut watch = session.subscribe_resources();
-        let snapshot = Arc::clone(&watch.borrow_and_update());
-        changes.spawn(async move {
-            if watch.changed().await.is_err() {
-                // A closed session never changes again; the session change
-                // that closed it wakes the loop instead.
-                std::future::pending::<()>().await;
-            }
-        });
+        let snapshot = Arc::clone(&wait_for_change(session.subscribe_resources(), changes));
+        let badges = Arc::clone(&wait_for_change(session.subscribe_badges(), changes));
+        // An image from an earlier connection is stale until the SDK
+        // recounts for this one, as the aggregate already treats it.
+        let current = (badges.version != 0 && badges.generation == session.generation())
+            .then_some(badges.as_ref());
         let icon = icons.for_account(account.id, &session);
-        found.insert(account.id, resources(&snapshot, icon));
+        found.insert(account.id, resources(&snapshot, current, icon));
     }
     found
 }
 
-fn resources(snapshot: &ResourceSnapshot, icon: Option<Arc<[u8]>>) -> ServerResources {
+/// The watch's current value, with a wait for its next change queued in
+/// `changes`.
+fn wait_for_change<T: Clone + Send + Sync + 'static>(
+    mut watch: watch::Receiver<T>,
+    changes: &mut JoinSet<()>,
+) -> T {
+    let current = watch.borrow_and_update().clone();
+    changes.spawn(async move {
+        if watch.changed().await.is_err() {
+            // A closed session never changes again; the session change that
+            // closed it wakes the loop instead.
+            std::future::pending::<()>().await;
+        }
+    });
+    current
+}
+
+fn resources(
+    snapshot: &ResourceSnapshot,
+    badges: Option<&BadgesSnapshot>,
+    icon: Option<Arc<[u8]>>,
+) -> ServerResources {
     let server = snapshot.server.as_deref();
-    let (text_channels, voice_channels) = channels(snapshot.channels.iter());
+    let (text_channels, voice_channels) = channels(snapshot.channels.iter(), badges);
     ServerResources {
         name: server
             .and_then(|server| server.name.clone())

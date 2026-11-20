@@ -4,19 +4,20 @@
 //!
 //! Owns the pane's look and its keyboard and accessibility: the channels are
 //! one list the arrows move through, with the selected one as its Tab stop.
-//! What a channel shows is D3's; badges are D1c's, and a row leaves room for
-//! one at its end.
+//! What a channel shows is D3's. An unread row is bold with a dot at its
+//! end, and mentions take the dot's place as a red badge.
 
 use std::collections::HashMap;
 
 use papo_sdk::ServerId;
 use rune::{El, Icon, Image, ScrollSpec, col, el, icon, row, text};
 
+use crate::badges::mention_pill;
 use crate::design::{
     CHANNEL_ICON_PT, CHANNEL_ROW_HEIGHT_PT, FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, PILL_AVATAR_PT,
     PILL_ICON_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT, SIDEBAR_WIDTH_PT,
-    SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION,
-    TYPE_CAPTION_MEDIUM, TYPE_TITLE,
+    SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_BODY_STRONG,
+    TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_TITLE, UNREAD_DOT_PT,
 };
 use crate::icons::{GEAR, HASH, SPEAKER};
 use crate::navigation::Navigation;
@@ -200,10 +201,24 @@ fn channel_row(
     palette: &Palette,
 ) -> El {
     let id = channel.id.clone();
-    let (style, color, mark_color) = if selected {
-        (TYPE_BODY_MEDIUM, palette.text_primary, palette.accent)
+    let unread = channel.badge.is_unread();
+    // Unread wins the weight; selection keeps its colours.
+    let style = if unread {
+        TYPE_BODY_STRONG
+    } else if selected {
+        TYPE_BODY_MEDIUM
     } else {
-        (TYPE_BODY, palette.text_secondary, palette.text_muted)
+        TYPE_BODY
+    };
+    let color = if unread || selected {
+        palette.text_primary
+    } else {
+        palette.text_secondary
+    };
+    let mark_color = if selected {
+        palette.accent
+    } else {
+        palette.text_muted
     };
     let mut row_el = row()
         .key(channel_key(&channel.id))
@@ -215,7 +230,7 @@ fn channel_row(
         .radius(RADIUS_CONTROL_PT)
         .hover(palette.surface_hover)
         .role("option")
-        .label(channel.name.as_str())
+        .label(channel.badge.label(&channel.name))
         .focusable(true)
         .focus_selected(selected)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
@@ -229,6 +244,17 @@ fn channel_row(
                 .grow(1.0)
                 .min_w(0.0),
         );
+    // The mention pill takes the unread dot's place.
+    if let Some(count) = channel.badge.mentions() {
+        row_el = row_el.child(mention_pill(count, None, palette));
+    } else if unread {
+        row_el = row_el.child(
+            el().size(UNREAD_DOT_PT, UNREAD_DOT_PT)
+                .radius(UNREAD_DOT_PT / 2.0)
+                .fill(palette.text_primary)
+                .a11y_hidden(),
+        );
+    }
     if selected {
         row_el = row_el.fill(palette.surface_selected);
     }

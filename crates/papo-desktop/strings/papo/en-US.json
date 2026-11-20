@@ -63,5 +63,12 @@
   "remove.body": "You'll be signed out on this device.",
   "remove.cancel": "Cancel",
   "remove.confirm": "Remove",
-  "account.handle": "@{{username}}"
+  "account.handle": "@{{username}}",
+  "badge.unread": "unread messages",
+  "badge.mentions.one": "{{count}} mention",
+  "badge.mentions.other": "{{count}} mentions",
+  "badge.mentions_at_least.one": "at least {{count}} mention",
+  "badge.mentions_at_least.other": "at least {{count}} mentions",
+  "badge.count_more": "{{count}}+",
+  "badge.labelled": "{{name}}, {{badge}}"
 }

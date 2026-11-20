@@ -4,6 +4,7 @@
 use papo_sdk::ServerAddress;
 
 use super::*;
+use crate::badges::Badge;
 use crate::server_list::ChannelEntry;
 
 fn id(name: &str) -> ServerId {
@@ -24,9 +25,11 @@ fn server(name: &str, channels: &[&str]) -> ServerEntry {
             .map(|channel| ChannelEntry {
                 id: format!("{name}-{channel}"),
                 name: (*channel).to_owned(),
+                badge: Badge::default(),
             })
             .collect(),
         voice_channels: Vec::new(),
+        badge: Badge::default(),
     }
 }
 

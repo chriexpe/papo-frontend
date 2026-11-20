@@ -143,6 +143,10 @@ const ACCENT_CHROMA: f32 = 0.18;
 const TEXT_SELECTION_ALPHA: f32 = 0.3;
 /// A link's OKLCH chroma; it takes the accent's hue.
 const LINK_CHROMA: f32 = 0.15;
+/// The mention red's OKLCH hue in degrees (`docs/design.md` §4).
+const MENTION_HUE_DEGREES: f32 = 25.0;
+/// The mention red's OKLCH chroma, as the mock draws it.
+const MENTION_CHROMA: f32 = 0.20;
 /// The danger colour's OKLCH hue in degrees: the mention red's.
 const DANGER_HUE_DEGREES: f32 = 25.0;
 /// The success colour's OKLCH hue in degrees: the online green's.
@@ -205,6 +209,11 @@ pub(crate) struct Palette {
     pub(crate) warning: Color,
     /// Success: a met requirement.
     pub(crate) success: Color,
+    /// Mentions of you: the badges' count pill.
+    pub(crate) mention: Color,
+    /// The count drawn on the mention colour: white, by Christian's choice
+    /// (`docs/design.md` §3, Badges), held to 3:1.
+    pub(crate) mention_on: Color,
     /// What dims the app behind a popup.
     pub(crate) scrim: Color,
     /// A popup's shadow.
@@ -221,6 +230,8 @@ impl Palette {
         let link_lightness = if dark { 0.76 } else { 0.50 };
         let danger_lightness = if dark { 0.74 } else { 0.52 };
         let danger = oklch(danger_lightness, DANGER_CHROMA, DANGER_HUE_DEGREES);
+        let mention_lightness = if dark { 0.66 } else { 0.60 };
+        let mention = oklch(mention_lightness, MENTION_CHROMA, MENTION_HUE_DEGREES);
         let success_lightness = if dark { 0.76 } else { 0.50 };
         let (warning_lightness, warning_hue) = if dark { (0.82, 80.0) } else { (0.50, 65.0) };
         let sidebar = neutral(lightness.surface_sidebar);
@@ -247,6 +258,8 @@ impl Palette {
             danger_on: text_on(danger),
             warning: oklch(warning_lightness, WARNING_CHROMA, warning_hue),
             success: oklch(success_lightness, SUCCESS_CHROMA, SUCCESS_HUE_DEGREES),
+            mention,
+            mention_on: Color::WHITE,
             scrim: Color::BLACK.alpha(SCRIM_ALPHA),
             popup_shadow: Color::BLACK.alpha(POPUP_SHADOW_ALPHA),
         }
@@ -315,6 +328,12 @@ pub(crate) const TYPE_SMALL: TextStyle = type_scaled(12.0 / 13.0, WEIGHT_REGULAR
 pub(crate) const TYPE_CAPTION: TextStyle = type_scaled(11.0 / 13.0, WEIGHT_REGULAR);
 /// `type.title` at weight 600: a rail letter, the server card's name.
 pub(crate) const TYPE_TITLE: TextStyle = type_scaled(14.0 / 13.0, WEIGHT_SEMIBOLD);
+/// `type.caption` at weight 600, its line exactly as tall as its size, so it
+/// centres in a badge: a mention count.
+pub(crate) const TYPE_BADGE: TextStyle = {
+    let size = TYPE_BODY_PT * 11.0 / 13.0;
+    TextStyle::new(size, WEIGHT_SEMIBOLD).lh(size)
+};
 /// `type.caption` at weight 500: a group label in the channel list.
 pub(crate) const TYPE_CAPTION_MEDIUM: TextStyle = type_scaled(11.0 / 13.0, WEIGHT_MEDIUM);
 /// `type.body` at weight 500: the selected channel, the account's name.

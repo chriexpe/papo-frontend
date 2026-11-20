@@ -4207,9 +4207,11 @@ name = "papo-desktop"
 version = "0.9.0"
 dependencies = [
  "env_logger",
+ "futures-util",
  "log",
  "oo7",
  "papo-sdk",
+ "papo-sdk-ui",
  "rune",
  "rune-i18n",
  "serde_json",
