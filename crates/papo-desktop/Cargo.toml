@@ -26,8 +26,12 @@ papo-sdk = { path = "../sdk/core" }
 papo-sdk-ui = { path = "../sdk/ui" }
 # Reads that subscription's stream; the version the SDK locks.
 futures-util = "0.3"
-# Drives the SDK client's own runtime from the bridge thread; the locked version.
-tokio = { version = "1", features = ["rt", "sync", "macros"] }
+# Drives the SDK client's own runtime from the bridge thread, and the lifecycle
+# thread's runtime (SIGTERM and SIGINT, the handoff's deadlines); the locked version.
+tokio = { version = "1", features = ["rt", "sync", "macros", "signal", "time"] }
+# The session and system buses: the single-instance name and handoff, logind's
+# sleep signal and the network monitor. zbus 6, which Rune and oo7 already lock.
+zbus = { version = "6.3", default-features = false, features = ["tokio", "proxy", "service"] }
 # The OS keyring: the Secret Service on a Linux host, the Secret portal inside
 # Flatpak. Uses zbus 6, the version Rune already locks.
 oo7 = { version = "0.7.2", default-features = false, features = ["tokio", "native_crypto"] }
