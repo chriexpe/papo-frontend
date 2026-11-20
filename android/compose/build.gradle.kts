@@ -266,7 +266,8 @@ val composeFormatter by configurations.creating {
 }
 
 dependencies {
-    composeFormatter("com.facebook:ktfmt:0.64:with-dependencies") { isTransitive = false }
+    // The bundled CLI has no runtime dependencies to resolve from Maven metadata.
+    composeFormatter("com.facebook:ktfmt:0.64:with-dependencies@jar")
 }
 
 val composeKotlinSources = fileTree("src") { include("**/*.kt") } + files("build.gradle.kts")
