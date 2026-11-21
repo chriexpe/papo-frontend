@@ -204,6 +204,8 @@ impl CallHandle {
     }
 
     /// Updates the ordered set of remote video streams currently wanted by the UI.
+    /// Withdrawn streams detach locally without waiting for the server; bindings are retained
+    /// for later visibility, and audio playback is unaffected.
     ///
     /// # Errors
     /// Returns `CallError::Ended` if this attempt has already ended.

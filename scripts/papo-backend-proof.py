@@ -14,7 +14,11 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--backend', type=pathlib.Path, required=True)
 parser.add_argument('--media-codec', choices=('h264', 'vp8'),
                     help='run the real GStreamer SFU proof on a fresh PostgreSQL database')
+parser.add_argument('--rune-proof', action='store_true',
+                    help='display fenced RTP in the Rune native window')
 args = parser.parse_args()
+if args.rune_proof and not args.media_codec:
+    parser.error('--rune-proof also requires --media-codec')
 backend = args.backend.resolve()
 pin = (ROOT / 'crates/sdk/api/protocol/backend-commit').read_text().strip()
 actual = subprocess.check_output(['git', '-C', str(backend), 'rev-parse', 'HEAD'], text=True).strip()
@@ -53,8 +57,11 @@ with tempfile.TemporaryDirectory(prefix='papo-backend-proof-') as directory:
                 raise RuntimeError('Backend readiness timed out')
             if args.media_codec:
                 env.update(PAPO_CALL_PROOF_ADDRESS=address, PAPO_CALL_PROOF_CODEC=args.media_codec)
-                subprocess.run(['cargo', 'run', '--locked', '-p', 'papo-call-proof'],
-                               cwd=ROOT, env=env, check=True, timeout=300)
+                command = ['cargo', 'run', '--locked', '-p', 'papo-call-proof']
+                if args.rune_proof:
+                    command += ['--features', 'rune-proof']
+                    env['PAPO_CALL_PROOF_RUNE'] = '1'
+                subprocess.run(command, cwd=ROOT, env=env, check=True, timeout=300)
                 raise SystemExit(0)
             env['PAPO_BACKEND_PROOF_ADDRESS'] = address
             subprocess.run(['cargo', 'test', '--locked', '-p', 'papo-api', '--test', 'postgres', '--', '--ignored'], cwd=ROOT, env=env, check=True, timeout=300)

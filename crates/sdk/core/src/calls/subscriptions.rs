@@ -35,13 +35,20 @@ pub(crate) struct VideoSubscriptionPlanner {
 
 impl VideoSubscriptionPlanner {
     /// Updates ordered UI video interest, preserving priority and deduplicating entries.
-    pub(crate) fn set_interest(&mut self, targets: Vec<VideoTarget>) {
+    pub(crate) fn set_interest(&mut self, targets: Vec<VideoTarget>) -> bool {
+        let previous: BTreeSet<_> = self.interest.iter().copied().collect();
         let mut seen = BTreeSet::new();
         self.interest = targets
             .into_iter()
             .filter(|target| seen.insert(*target))
             .collect();
         self.retry_after.retain(|target, _| seen.contains(target));
+        previous != seen
+    }
+
+    /// Whether the UI currently wants this target, independent of wire state.
+    pub(crate) fn is_interested(&self, target: VideoTarget) -> bool {
+        self.interest.contains(&target)
     }
 
     /// Marks the first remote SDP answer received, unlocking `track_subscribe` commands.

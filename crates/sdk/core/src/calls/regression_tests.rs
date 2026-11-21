@@ -2,11 +2,13 @@
 
 use super::{
     coordinator::SessionCalls,
-    fake_media::{FakeMediaFactory, FakeStartBehavior},
+    fake_media::{FakeMediaFactory, FakeStartBehavior, FakeVideoDestination},
     fifo::VoiceCommandReceiver,
     handle::CallHandle,
     lease::ClientCallLease,
-    media_port::{IceServerConfig, MediaCommand, MediaEngineFactory, MediaReportKind},
+    media_port::{
+        IceServerConfig, MediaCommand, MediaEngineFactory, MediaReportKind, VideoDestinationId,
+    },
     model::{
         CallConfig, CallEndReason, CallPhase, CallWarning, CameraFacing, PlaybackSettings,
         VideoKind, VideoTarget,
@@ -743,13 +745,23 @@ async fn delayed_leave_for_known_peer_preserves_newer_abandoned_join() {
     );
 }
 
-#[tokio::test(start_paused = true)]
-async fn unsubscribe_race_with_stale_video_routes_never_sticks_target_requested() {
+const VIDEO_TEST_GENERATION: Generation = Generation::for_test(1);
+const VIDEO_TEST_PARTICIPANT: Uuid = Uuid::from_u128(11);
+const VIDEO_TEST_CHANNEL: Uuid = Uuid::from_u128(100);
+
+struct VideoTestCall {
+    calls: Arc<SessionCalls>,
+    handle: CallHandle,
+    media: Arc<FakeMediaFactory>,
+    rx: VoiceCommandReceiver,
+}
+
+async fn joined_video_receiver() -> VideoTestCall {
     let rt = tokio::runtime::Handle::current();
-    let gen1 = Generation::for_test(1);
+    let gen1 = VIDEO_TEST_GENERATION;
     let acct = account(10);
-    let alice = id(11);
-    let ch = id(100);
+    let alice = VIDEO_TEST_PARTICIPANT;
+    let ch = VIDEO_TEST_CHANNEL;
     let calls = SessionCalls::new(
         acct,
         gen1,
@@ -804,6 +816,27 @@ async fn unsubscribe_race_with_stale_video_routes_never_sticks_target_requested(
         &rt,
     );
 
+    VideoTestCall {
+        calls,
+        handle,
+        media,
+        rx,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn unsubscribe_race_with_stale_video_routes_never_sticks_target_requested() {
+    let VideoTestCall {
+        calls,
+        handle,
+        media,
+        mut rx,
+    } = joined_video_receiver().await;
+    let lease = media.latest_lease().unwrap();
+    let rt = tokio::runtime::Handle::current();
+    let gen1 = VIDEO_TEST_GENERATION;
+    let ch = VIDEO_TEST_CHANNEL;
+    let alice = VIDEO_TEST_PARTICIPANT;
     let target = VideoTarget {
         participant: alice,
         kind: VideoKind::Camera,
@@ -813,30 +846,59 @@ async fn unsubscribe_race_with_stale_video_routes_never_sticks_target_requested(
         next_sent(&calls, gen1, &mut rx).await,
         Command::TrackSubscribe { .. }
     ));
+    handle
+        .bind_video(
+            alice,
+            VideoKind::Camera,
+            Arc::new(FakeVideoDestination::new(VideoDestinationId::from_raw(1))),
+        )
+        .unwrap();
+    handle.set_playback(alice, 140, false).unwrap();
+    let route = VoiceVideoRoute {
+        track_id: "papo-video-0".into(),
+        user_id: alice.to_string(),
+        kind: "video".into(),
+        first_seq: None,
+        rtp_route_id: Some(1),
+        rtp_route_ext_id: Some(14),
+    };
+    deliver_video_routes(&calls, gen1, ch, "p1", 1, vec![route.clone()], &rt);
+    let plan = |commands: Vec<MediaCommand>| {
+        commands
+            .into_iter()
+            .rev()
+            .find_map(|command| match command {
+                MediaCommand::SetVideoSlotPlan { revision, slots } => Some((revision, slots)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (visible_revision, visible_slots) = plan(lease.commands());
+    assert!(visible_slots[0].destination.is_some());
+    let count = lease.commands().len();
+    handle.set_video_interest(vec![target, target]).unwrap();
+    assert_eq!(lease.commands().len(), count);
     handle.set_video_interest(Vec::new()).unwrap();
+    let (hidden_revision, hidden_slots) = plan(lease.commands());
+    assert!(hidden_revision > visible_revision);
+    assert!(hidden_slots[0].destination.is_none());
+    assert!(handle.snapshot().video_bindings[0].destination_id.is_none());
+    assert_eq!(
+        handle.snapshot().playback.get(&alice),
+        Some(&PlaybackSettings::new(140, false))
+    );
     assert!(matches!(
         next_sent(&calls, gen1, &mut rx).await,
         Command::TrackUnsubscribe { .. }
     ));
+    let mut late_route = route.clone();
+    late_route.rtp_route_id = Some(2);
+    deliver_video_routes(&calls, gen1, ch, "p1", 2, vec![late_route], &rt);
+    let (late_revision, late_slots) = plan(lease.commands());
+    assert!(late_revision > hidden_revision);
+    assert!(late_slots[0].destination.is_none());
 
-    // Late rev 1 carrying Alice, followed by rev 2 empty.
-    deliver_video_routes(
-        &calls,
-        gen1,
-        ch,
-        "p1",
-        1,
-        vec![VoiceVideoRoute {
-            track_id: "papo-video-0".into(),
-            user_id: alice.to_string(),
-            kind: "video".into(),
-            first_seq: None,
-            rtp_route_id: Some(1),
-            rtp_route_ext_id: Some(14),
-        }],
-        &rt,
-    );
-    deliver_video_routes(&calls, gen1, ch, "p1", 2, Vec::new(), &rt);
+    deliver_video_routes(&calls, gen1, ch, "p1", 3, Vec::new(), &rt);
 
     // Re-requesting Alice after rate-limit interval MUST emit TrackSubscribe again.
     tokio::time::advance(Duration::from_millis(250)).await;
@@ -846,6 +908,14 @@ async fn unsubscribe_race_with_stale_video_routes_never_sticks_target_requested(
         command.await.unwrap(),
         Command::TrackSubscribe { .. }
     ));
+    deliver_video_routes(&calls, gen1, ch, "p1", 4, vec![route], &rt);
+    let (shown_revision, shown_slots) = plan(lease.commands());
+    assert!(shown_revision > late_revision);
+    assert!(shown_slots[0].destination.is_some());
+    assert_eq!(
+        handle.snapshot().playback.get(&alice),
+        Some(&PlaybackSettings::new(140, false))
+    );
 }
 
 fn deliver_video_routes(
