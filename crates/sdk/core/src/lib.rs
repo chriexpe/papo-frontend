@@ -50,8 +50,8 @@ mod history;
 pub use history::{
     HistoryBudget, HistoryChunk, HistoryClosedReason, HistoryCoverage, HistoryDiagnostics,
     HistoryError, HistoryGap, HistoryHandle, HistoryPage, HistoryRange, HistorySnapshot,
-    HistorySource, HistorySubscription, HistoryUpdate, HistoryWork, InvalidMessageKey, MessageKey,
-    ResolvedKey, authored_by_other, parse_message_timestamp_us,
+    HistorySource, HistorySubscription, HistoryUpdate, HistoryWork, InvalidMessageKey,
+    LocatedMessage, MessageKey, ResolvedKey, authored_by_other, parse_message_timestamp_us,
 };
 pub use papo_api::wire::Message;
 pub use papo_api::{HistoryCursor, HistoryOrder, HistoryQuery, Uuid};

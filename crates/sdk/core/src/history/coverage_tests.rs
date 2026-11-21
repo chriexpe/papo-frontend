@@ -18,7 +18,7 @@ use proptest::{
 
 use crate::Generation;
 
-use super::{message_key::MessageKey, ordering::Point};
+use super::{LocatedMessage, message_key::MessageKey, ordering::Point};
 use simulation::{
     CHANNEL, INITIAL_MESSAGES, Simulation, cursor_for, key, message, message_point, publish,
     server_page, synthetic_point, ticket,
@@ -335,5 +335,31 @@ fn a_page_beyond_a_lagging_gateway_retires_the_live_edge_instead_of_joining_it()
             .iter()
             .any(|gap| gap.order == HistoryOrder::Desc
                 && MessageKey::from_cursor(&gap.cursor).unwrap() == fetched_oldest)
+    );
+}
+
+#[test]
+fn a_bare_id_locates_a_held_message_a_known_deletion_or_nothing() {
+    let mut simulation = Simulation::new();
+    let newest = INITIAL_MESSAGES - 1;
+    simulation.page(None, HistoryOrder::Desc, 3);
+    let held = key(&message_point(newest - 1));
+    let snapshot = publish(&simulation.model, simulation.generation);
+    assert_eq!(
+        snapshot.locate(held.message_id).unwrap(),
+        LocatedMessage::Held {
+            key: held,
+            index: 1
+        }
+    );
+    // Never fetched: nothing is known, and nothing is guessed.
+    let unheld = key(&message_point(newest - 5)).message_id;
+    assert_eq!(snapshot.locate(unheld).unwrap(), LocatedMessage::Unknown);
+
+    simulation.delete(newest - 1);
+    let snapshot = publish(&simulation.model, simulation.generation);
+    assert_eq!(
+        snapshot.locate(held.message_id).unwrap(),
+        LocatedMessage::Deleted
     );
 }

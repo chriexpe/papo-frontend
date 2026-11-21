@@ -63,8 +63,12 @@ pub enum TimelineError {
     /// The displayed window version or generation is no longer current.
     StaleSnapshot,
     /// The exact focused target was absent, deleted, or outside the server's returned neighborhood;
-    /// or a `live_at` anchor was not cached, was deleted, or lay too far back.
+    /// or an anchor opened by ID is not cached and cannot be found without a GET-by-ID route.
     FocusMissing,
+    /// An anchor opened by ID is known deleted in this cache incarnation.
+    AnchorDeleted,
+    /// A cached anchor lies further back than a live window reaches; open it focused instead.
+    AnchorTooFar,
     /// Lifecycle revocation is terminal for this window.
     Closed(HistoryClosedReason),
     /// Publication version cannot advance safely.
@@ -198,12 +202,13 @@ impl Timeline {
     /// `message_id`), a message in this channel's cache once the newest page is fetched, at most
     /// 20 pages behind the newest cached message. The window spans up to one page older than the
     /// anchor through the newest message, every cached message between included, and follows new
-    /// messages as [`Timeline::live`] does; unknown coverage between shows as gaps. The anchor is
-    /// checked once, at open: like any message it can be deleted afterwards, and then leaves the
-    /// window. Fetching never acknowledges.
+    /// messages as [`Timeline::live`] does; a cached anchor proves no continuity, so unknown
+    /// coverage between shows as gaps. The anchor is checked at open: like any message it can be
+    /// deleted afterwards, and then leaves the window. Fetching never acknowledges, and no outcome
+    /// changes the saved reading position.
     /// # Errors
-    /// Returns `FocusMissing` when the anchor is not cached, was deleted, or lies further back;
-    /// otherwise as `live`.
+    /// `AnchorTooFar` for a cached anchor further back (open it with [`Timeline::focused_at`]),
+    /// `AnchorDeleted` for one known deleted, `FocusMissing` for one not cached; otherwise as `live`.
     pub async fn live_at(
         session: Session,
         channel: Uuid,
@@ -211,6 +216,22 @@ impl Timeline {
         config: TimelineConfig,
     ) -> Result<Self, TimelineError> {
         Self::open(session, channel, Opening::LiveAt(anchor), config).await
+    }
+
+    /// Open a bounded focused neighborhood around `anchor`, a message in this channel's cache once
+    /// the newest page is fetched, however far back: the restoration path for a saved reading
+    /// position [`Timeline::live_at`] cannot reach. Like [`Timeline::focused`] it never follows
+    /// new messages; the client opens a live window when the reader goes to the newest.
+    /// # Errors
+    /// `AnchorDeleted` for an anchor known deleted, `FocusMissing` for one not cached or missing
+    /// from the server's neighborhood; otherwise as `focused`.
+    pub async fn focused_at(
+        session: Session,
+        channel: Uuid,
+        anchor: Uuid,
+        config: TimelineConfig,
+    ) -> Result<Self, TimelineError> {
+        Self::open(session, channel, Opening::FocusedAt(anchor), config).await
     }
 
     /// Open an independent focused neighborhood from an exact pin, reply or search cursor.
@@ -239,16 +260,10 @@ impl Timeline {
             papo_sdk::MessageKey::from_cursor(cursor)?;
         }
         let history = session.history(channel).await?;
-        let mut messages = opening::first_messages(&history, &opening, config.page_size).await?;
-        let subscription = history.subscribe().await?;
-        if let Opening::LiveAt(anchor) = opening {
-            // Searched after subscribing, in the snapshot the window starts from, so the anchor
-            // found is in the window's history and the newest page fetched above is in it too.
-            let reached =
-                opening::reach_back(&history, &subscription.snapshot, anchor, config.page_size)
-                    .await?;
-            messages.extend(reached);
-        }
+        let opening::Loaded {
+            messages,
+            subscription,
+        } = opening::load(&history, &opening, config.page_size).await?;
         let live = opening.is_live();
         let reading = session.subscribe_reading();
         let catch_up = session.subscribe_catch_up();
@@ -272,6 +287,12 @@ impl Timeline {
             );
         }
         state.refresh(&config)?;
+        // A deletion that landed while the anchor's pages were fetched.
+        if let Some(anchor) = opening.anchor()
+            && state.raw.locate(anchor)? == papo_sdk::LocatedMessage::Deleted
+        {
+            return Err(TimelineError::AnchorDeleted);
+        }
         let reading_overlay = crate::timeline_reading::ReadingOverlay::new(
             &session,
             channel,

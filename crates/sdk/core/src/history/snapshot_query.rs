@@ -1,12 +1,13 @@
-//! The two coverage queries on a published `HistorySnapshot` and the gaps it publishes.
+//! The coverage queries on a published `HistorySnapshot`, the lookup of a bare message ID, and
+//! the gaps it publishes.
 //!
-//! Every consumer that needs "which message does this key denote" or "is anything unknown
-//! between these keys" asks here. Every binary search over snapshot messages lives in this
+//! Every consumer that needs "which message does this key (or ID) denote" or "is anything
+//! unknown between these keys" asks here. Every binary search over snapshot messages lives in this
 //! module. Interval rules, unread counting and arrival tracking stay with their owners.
 
 use std::ops::Range;
 
-use papo_api::{HistoryOrder, wire::Message};
+use papo_api::{HistoryOrder, Uuid, wire::Message};
 
 use crate::Generation;
 
@@ -30,6 +31,23 @@ pub struct ResolvedKey {
     pub index: Option<usize>,
     /// The key names a message this cache incarnation knows was deleted.
     pub deleted: bool,
+}
+
+/// What a bare message ID denotes in one snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocatedMessage {
+    /// Held at `index` into `HistorySnapshot::messages`, with its exact key.
+    Held {
+        /// The held message's exact key.
+        key: MessageKey,
+        /// Index into `HistorySnapshot::messages`.
+        index: usize,
+    },
+    /// This cache incarnation knows the message was deleted.
+    Deleted,
+    /// Not held: never fetched, evicted, or deleted before this cache incarnation. There is no
+    /// GET-by-ID route, so nothing more can be learned about it.
+    Unknown,
 }
 
 /// The held messages strictly between two keys, and whether none can be missing.
@@ -62,6 +80,31 @@ impl HistorySnapshot {
             snapshot: self,
             components: Components::build(extents),
         })
+    }
+
+    /// Locates a message known only by its ID (a saved reading position keeps no timestamp).
+    /// An ID carries no position, so this is linear in the held messages, newest first; a caller
+    /// holding a full key asks `coverage()?.resolve(key)` instead. Locating a message proves
+    /// nothing about coverage around it.
+    /// # Errors
+    /// Returns `InvalidMessageKey` if the matching message lacks a valid key.
+    pub fn locate(&self, id: Uuid) -> Result<LocatedMessage, InvalidMessageKey> {
+        let held = self.messages.iter().enumerate().rev().find(|(_, message)| {
+            message
+                .id
+                .as_deref()
+                .is_some_and(|held| held.parse::<Uuid>().is_ok_and(|held| held == id))
+        });
+        if let Some((index, message)) = held {
+            return Ok(LocatedMessage::Held {
+                key: MessageKey::from_message(message)?,
+                index,
+            });
+        }
+        if self.tombstones.contains(&id) {
+            return Ok(LocatedMessage::Deleted);
+        }
+        Ok(LocatedMessage::Unknown)
     }
 }
 
