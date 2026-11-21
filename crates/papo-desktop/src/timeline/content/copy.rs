@@ -113,26 +113,8 @@ fn message_text(runs: &[&Run], selected: &[(usize, Range<usize>)], several: bool
 /// hidden spoiler it touches whole, as `||text||`.
 pub(super) fn run_text(run: &Run, range: Range<usize>) -> String {
     let end = range.end.min(run.text.len());
-    let mut at = range.start.min(end);
-    let mut text = String::new();
-    let mut hidden: Vec<Range<usize>> = run
-        .hidden()
-        .filter(|spoiler| spoiler.start < end && at < spoiler.end)
-        .collect();
-    hidden.sort_by_key(|spoiler| spoiler.start);
-    for spoiler in hidden {
-        // A spoiler inside one already copied.
-        if spoiler.end <= at {
-            continue;
-        }
-        text.push_str(&unpadded(run, at..spoiler.start.max(at)));
-        text.push_str("||");
-        text.push_str(&unpadded(run, spoiler.clone()));
-        text.push_str("||");
-        at = spoiler.end;
-    }
-    text.push_str(&unpadded(run, at..end));
-    text
+    let start = range.start.min(end);
+    join(run, start..end, |words| format!("||{words}||"))
 }
 
 /// What assistive technology reads for `run`, when that differs from its
@@ -144,23 +126,34 @@ pub(super) fn spoken(run: &Run) -> Option<String> {
         .marks
         .iter()
         .any(|mark| matches!(mark, Mark::Pad { .. }));
-    if !padded {
-        return None;
-    }
-    let mut hidden: Vec<Range<usize>> = run.hidden().collect();
-    hidden.sort_by_key(|spoiler| spoiler.start);
+    padded.then(|| {
+        join(run, 0..run.text.len(), |_| {
+            strings::spoiler_hidden().to_owned()
+        })
+    })
+}
+
+/// Bytes `range` of `run` without chips' padding, each hidden spoiler it
+/// touches taken whole and written by `hidden` from its words.
+fn join(run: &Run, range: Range<usize>, hidden: impl Fn(&str) -> String) -> String {
+    let mut spoilers: Vec<Range<usize>> = run
+        .hidden()
+        .filter(|spoiler| spoiler.start < range.end && range.start < spoiler.end)
+        .collect();
+    spoilers.sort_by_key(|spoiler| spoiler.start);
     let mut text = String::new();
-    let mut at = 0;
-    for spoiler in hidden {
+    let mut at = range.start;
+    for spoiler in spoilers {
+        // A spoiler inside one already taken.
         if spoiler.end <= at {
             continue;
         }
         text.push_str(&unpadded(run, at..spoiler.start.max(at)));
-        text.push_str(strings::spoiler_hidden());
+        text.push_str(&hidden(&unpadded(run, spoiler.clone())));
         at = spoiler.end;
     }
-    text.push_str(&unpadded(run, at..run.text.len()));
-    Some(text)
+    text.push_str(&unpadded(run, at..range.end.max(at)));
+    text
 }
 
 /// Bytes `range` of `run` less its chips' padding.

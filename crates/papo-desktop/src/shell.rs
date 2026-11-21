@@ -394,6 +394,7 @@ mod navigate;
 #[cfg(test)]
 mod tests;
 mod timeline;
+mod timeline_host;
 mod view;
 
 pub(crate) use view::view;

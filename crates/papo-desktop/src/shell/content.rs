@@ -23,9 +23,9 @@ pub(crate) struct Reading {
     /// The link waiting for the reader's answer.
     pub(crate) link: Option<Prompt>,
     pub(crate) trusted: Trusted,
-    /// The message under the pointer: Ctrl+A selects it when no text is
-    /// selected.
-    hovered: Option<Uuid>,
+    /// The message under the pointer, in its timeline: Ctrl+A selects it
+    /// when no text is selected.
+    hovered: Option<(TimelineKey, Uuid)>,
 }
 
 impl Reading {
@@ -65,7 +65,7 @@ impl Shell {
             .get(key.account.server())
             .and_then(|server| server.host.as_deref());
         match links::decide(&url, server_host, &self.reading.trusted) {
-            Decision::Open => open(&url, tx),
+            Decision::Open(address) => open(&address, tx),
             Decision::Ask { host } => {
                 self.reading.link = Some(Prompt {
                     url,
@@ -130,8 +130,8 @@ impl Shell {
             return;
         }
         if hovered {
-            self.reading.hovered = Some(message);
-        } else if self.reading.hovered == Some(message) {
+            self.reading.hovered = Some((key, message));
+        } else if self.reading.hovered == Some((key, message)) {
             self.reading.hovered = None;
         }
     }
@@ -141,12 +141,16 @@ impl Shell {
     /// the whole timeline. A selection elsewhere keeps its own Ctrl+A.
     pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
         let plain = !key.mods.shift && !key.mods.alt;
-        if !key.is_command('a')
-            || !plain
-            || self.tabs.shown().is_none()
-            || self.reading.link.is_some()
-        {
+        let Some(shown) = self.tabs.shown().map(|open| open.key) else {
             return false;
+        };
+        if !key.is_command('a') || !plain {
+            return false;
+        }
+        if self.popup_shown() {
+            // A popup's own text keeps its Ctrl+A; without one the key is
+            // spent, never selecting the timeline behind the popup.
+            return tx.text_selection().is_none();
         }
         let message = match tx.text_selection() {
             Some(selection) => {
@@ -163,12 +167,23 @@ impl Shell {
             // Nothing under the pointer: the key is spent rather than
             // selecting every loaded message.
             None => match self.reading.hovered {
-                Some(message) => message,
-                None => return true,
+                Some((key, message)) if key == shown => message,
+                _ => return true,
             },
         };
         tx.select_all_text(rows::anchor_key(message));
         true
+    }
+}
+
+impl Shell {
+    /// Whether a popup is over the app: a menu, a confirmation or the
+    /// server and account screens.
+    fn popup_shown(&self) -> bool {
+        let flow = matches!(&self.stage, super::Stage::Running { flow: Some(_), .. });
+        flow || self.reading.link.is_some()
+            || self.nav.menu.is_some()
+            || self.nav.removing.is_some()
     }
 }
 

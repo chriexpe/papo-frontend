@@ -79,8 +79,6 @@ pub(crate) struct OpenTimeline {
     pub(crate) keys_version: u64,
     /// The account's resources, for author and mention names.
     pub(crate) resources: Option<Arc<ResourceSnapshot>>,
-    /// Changes whenever `resources` does, so rows naming people redraw.
-    pub(crate) resources_version: u64,
     /// The spoilers revealed in each message: they stay revealed while the
     /// timeline is open.
     pub(crate) revealed: imbl::HashMap<Uuid, Vec<u32>>,
@@ -127,7 +125,6 @@ impl OpenTimeline {
             version: 0,
             keys_version: 0,
             resources: None,
-            resources_version: 0,
             revealed: imbl::HashMap::new(),
             copied: None,
             older: Paging::Idle,
@@ -264,12 +261,6 @@ impl OpenTimeline {
             self.keys_version += 1;
         }
         self.version = update.version;
-    }
-
-    /// The account's resources changed.
-    pub(crate) fn set_resources(&mut self, resources: Arc<ResourceSnapshot>) {
-        self.resources = Some(resources);
-        self.resources_version += 1;
     }
 
     /// The spoilers revealed in message `id`.

@@ -57,12 +57,14 @@ pub(super) fn text<S: TimelineHost>(
                 .size(trailer.font.size)
                 .color(trailer.ink),
         );
-        links.push(
-            Link::new(range.start + 1..range.end, Press::Edited.id())
-                .role("note")
-                .label(trailer.help.clone())
-                .help(trailer.help.clone()),
-        );
+        if let Some(help) = &trailer.help {
+            links.push(
+                Link::new(range.start + 1..range.end, Press::Edited.id())
+                    .role("note")
+                    .label(help.clone())
+                    .help(help.clone()),
+            );
+        }
         uncopied.push(range);
     }
     let (key, message) = (draw.key, draw.message);
@@ -105,7 +107,8 @@ pub(super) struct Trailer {
     pub(super) words: String,
     pub(super) font: TextStyle,
     pub(super) ink: Color,
-    pub(super) help: String,
+    /// What hovering or focusing it explains; none takes neither.
+    pub(super) help: Option<String>,
 }
 
 /// A run's marks as Rune draws them.
@@ -185,7 +188,14 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
                         .color(Color::TRANSPARENT)
                         .bg(palette.line_strong, SPOILER_PAD_PT),
                 );
-                drawn.links.push(spoiler_press(run, range, *index, palette));
+                // One inside another hidden one takes no press until the
+                // outer is revealed: it cannot be seen.
+                let enclosed = run.hidden().any(|outer| {
+                    outer != *range && outer.start <= range.start && range.end <= outer.end
+                });
+                if !enclosed {
+                    drawn.links.push(spoiler_press(run, range, *index, palette));
+                }
             }
             Mark::Spoiler { range, .. } => {
                 drawn.spans.push(

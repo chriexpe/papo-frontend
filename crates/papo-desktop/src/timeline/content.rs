@@ -2,7 +2,7 @@
 //! as blocks of selectable rich text, with spoilers, highlighted code, mentions,
 //! links, tables, jumbo emoji and the "(edited)" marker.
 //!
-//! `doc` lays the content out, purely; `blocks`, `text`, `code` and `table`
+//! `doc` lays the content out, purely; `blocks`, `inline`, `code` and `table`
 //! draw it; `copy` turns a selection back into text from the same layout.
 //! What a press asks for (open a link, reveal a spoiler, copy code) is the
 //! host's: the view only names it.
@@ -20,7 +20,7 @@ mod tests;
 use papo_sdk::Uuid;
 use rune::{El, col, text};
 
-pub(crate) use self::doc::{Context, Doc};
+pub(crate) use self::doc::{Context, Doc, mention_names};
 use self::inline::Trailer;
 use super::{TimelineHost, TimelineKey};
 use crate::design::{MESSAGE_BLOCK_GAP_PT, Palette, TYPE_CAPTION};
@@ -66,18 +66,24 @@ pub(crate) struct Draw<'a> {
     pub(crate) message: Uuid,
     /// The code block, by its text's index, whose Copy reads "Copied".
     pub(crate) copied: Option<usize>,
-    /// When the message was edited, as its hint says it.
-    pub(crate) edited: Option<String>,
+    /// Set when the message was edited.
+    pub(crate) edited: Option<Edited>,
+}
+
+/// A message was edited.
+pub(crate) struct Edited {
+    /// When, as the marker's hint says it; none when the time does not read.
+    pub(crate) hint: Option<String>,
 }
 
 /// The body of a message laid out as `doc`.
 pub(crate) fn body<S: TimelineHost>(doc: &Doc, draw: &Draw<'_>) -> El {
     let palette = draw.palette;
-    let marker = draw.edited.as_ref().map(|help| Trailer {
+    let marker = draw.edited.as_ref().map(|edited| Trailer {
         words: strings::edited().to_owned(),
         font: TYPE_CAPTION,
         ink: palette.text_muted,
-        help: help.clone(),
+        help: edited.hint.clone(),
     });
     let inline_marker = marker.as_ref().filter(|_| doc.ends_in_text());
     let mut body = col()
@@ -93,16 +99,15 @@ pub(crate) fn body<S: TimelineHost>(doc: &Doc, draw: &Draw<'_>) -> El {
     // After a code block, a table, a list or a quote, the marker takes a
     // line of its own.
     if let Some(marker) = marker.filter(|_| !doc.ends_in_text()) {
-        body = body.child(
-            text(marker.words)
-                .key("edited")
-                .font(marker.font)
-                .color(marker.ink)
-                .role("note")
-                .label(marker.help.clone())
-                .focusable(true)
-                .help(marker.help),
-        );
+        let mut edited = text(marker.words)
+            .key("edited")
+            .font(marker.font)
+            .color(marker.ink)
+            .role("note");
+        if let Some(help) = marker.help {
+            edited = edited.label(help.clone()).focusable(true).help(help);
+        }
+        body = body.child(edited);
     }
     body
 }

@@ -10,12 +10,12 @@
 use std::ops::Range;
 
 use papo_sdk::{MentionTarget, ResourceSnapshot};
-use papo_sdk_ui::message_content::{
-    Block, Inline, ListItem, MessageContent, TableAlignment, TextStyle,
-};
+use papo_sdk_ui::message_content::{Block, Inline, MessageContent, TableAlignment};
 
+use self::build::{Builder, mention_name};
 use super::emoji;
-use crate::strings;
+
+mod build;
 
 /// Space a chip keeps on each side of its words: two narrow no-break
 /// spaces, which `draw` sizes to the chip's padding and a copy leaves out.
@@ -217,6 +217,50 @@ impl Doc {
     }
 }
 
+/// The names `content`'s mentions of people show, in order ("@Lia", none
+/// for a person the account does not know): what its drawing reads from
+/// the account's resources, so a row redraws when they change and not when
+/// anything else in them does.
+pub(crate) fn mention_names(
+    content: &MessageContent,
+    resources: Option<&ResourceSnapshot>,
+) -> Vec<Option<String>> {
+    let mut names = Vec::new();
+    let mut inlines: Vec<&[Inline]> = Vec::new();
+    let mut blocks: Vec<&[Block]> = vec![content.blocks()];
+    while let Some(level) = blocks.pop() {
+        for block in level {
+            match block {
+                Block::Paragraph(line) | Block::Heading { inlines: line, .. } => inlines.push(line),
+                Block::BlockQuote(inner) => blocks.push(inner),
+                Block::List { items, .. } => {
+                    blocks.extend(items.iter().map(|item| item.blocks.as_slice()));
+                }
+                Block::Table { header, rows, .. } => {
+                    inlines.extend(header.iter().map(Vec::as_slice));
+                    for row in rows {
+                        inlines.extend(row.iter().map(Vec::as_slice));
+                    }
+                }
+                Block::CodeBlock { .. } | Block::ThematicBreak | Block::BlankLine => {}
+            }
+        }
+    }
+    while let Some(line) = inlines.pop() {
+        for inline in line {
+            match inline {
+                Inline::Mention {
+                    target: target @ MentionTarget::User(_),
+                    ..
+                } => names.push(mention_name(*target, resources)),
+                Inline::Spoiler(inner) => inlines.push(inner),
+                _ => {}
+            }
+        }
+    }
+    names
+}
+
 fn collect<'a>(nodes: &'a [Node], runs: &mut Vec<&'a Run>) {
     for node in nodes {
         match node {
@@ -237,238 +281,6 @@ fn collect<'a>(nodes: &'a [Node], runs: &mut Vec<&'a Run>) {
                 }
             }
             Node::Rule | Node::Blank => {}
-        }
-    }
-}
-
-/// Numbers texts and spoilers as it lays blocks out.
-struct Builder<'a, 'c> {
-    context: &'a Context<'c>,
-    texts: usize,
-    spoilers: u32,
-}
-
-impl Builder<'_, '_> {
-    fn blocks(&mut self, blocks: &[Block], lists: usize) -> Vec<Node> {
-        blocks
-            .iter()
-            .map(|block| self.block(block, lists))
-            .collect()
-    }
-
-    fn block(&mut self, block: &Block, lists: usize) -> Node {
-        match block {
-            Block::Paragraph(inlines) => Node::Paragraph(self.run(inlines, Joint::Line)),
-            Block::Heading { level, inlines } => Node::Heading {
-                level: (*level).clamp(1, 6),
-                run: self.run(inlines, Joint::Line),
-            },
-            Block::BlockQuote(blocks) => Node::Quote(self.blocks(blocks, lists)),
-            Block::List { start, items } => Node::List(self.list(*start, items, lists)),
-            Block::CodeBlock { info, text } => Node::Code {
-                language: info
-                    .as_deref()
-                    .and_then(|info| info.split_whitespace().next())
-                    .map(str::to_owned),
-                run: self.plain(text.clone(), Joint::Line),
-            },
-            Block::ThematicBreak => Node::Rule,
-            Block::Table {
-                alignments,
-                header,
-                rows,
-            } => Node::Table {
-                alignments: alignments.clone(),
-                header: self.cells(header),
-                rows: rows.iter().map(|row| self.cells(row)).collect(),
-            },
-            Block::BlankLine => Node::Blank,
-        }
-    }
-
-    fn list(&mut self, start: Option<u64>, items: &[ListItem], lists: usize) -> Vec<Item> {
-        let width = start.map_or(0, |start| {
-            let last = start.saturating_add(items.len().saturating_sub(1) as u64);
-            last.to_string().len()
-        });
-        items
-            .iter()
-            .enumerate()
-            .map(|(n, item)| {
-                let marker = match (item.task, start) {
-                    (Some(done), _) => Marker::Task { done },
-                    (None, Some(start)) => Marker::Number {
-                        value: start.saturating_add(n as u64),
-                        width,
-                    },
-                    (None, None) => Marker::Bullet(lists),
-                };
-                let first = self.texts;
-                let mut nodes = self.blocks(&item.blocks, lists + 1);
-                if let Some(run) = first_run(&mut nodes).filter(|run| run.index == first) {
-                    run.prefix = Some(format!("{} ", marker.text()));
-                }
-                Item { marker, nodes }
-            })
-            .collect()
-    }
-
-    fn cells(&mut self, cells: &[Vec<Inline>]) -> Vec<Run> {
-        cells
-            .iter()
-            .enumerate()
-            .map(|(column, inlines)| {
-                let joint = if column == 0 { Joint::Line } else { Joint::Tab };
-                self.run(inlines, joint)
-            })
-            .collect()
-    }
-
-    /// A text without marks.
-    fn plain(&mut self, text: String, joint: Joint) -> Run {
-        let index = self.next_text();
-        Run {
-            index,
-            text,
-            marks: Vec::new(),
-            prefix: None,
-            joint,
-        }
-    }
-
-    fn run(&mut self, inlines: &[Inline], joint: Joint) -> Run {
-        let index = self.next_text();
-        let mut run = Run {
-            index,
-            text: String::new(),
-            marks: Vec::new(),
-            prefix: None,
-            joint,
-        };
-        self.inlines(&mut run, inlines);
-        run
-    }
-
-    fn next_text(&mut self) -> usize {
-        self.texts += 1;
-        self.texts - 1
-    }
-
-    /// Appends `inlines` to `run`.
-    fn inlines(&mut self, run: &mut Run, inlines: &[Inline]) {
-        for inline in inlines {
-            match inline {
-                Inline::Text {
-                    text, style, link, ..
-                } => {
-                    let range = push(run, text);
-                    styles(run, &range, *style);
-                    if let Some(url) = link {
-                        run.marks.push(Mark::Link {
-                            range,
-                            url: url.clone(),
-                        });
-                    }
-                }
-                Inline::Code(code) => {
-                    pad(run, Pad::Chip);
-                    let range = push(run, code);
-                    run.marks.push(Mark::Code(range));
-                    pad(run, Pad::Chip);
-                }
-                Inline::LineBreak => {
-                    push(run, "\n");
-                }
-                Inline::Spoiler(inner) => {
-                    let index = self.spoilers;
-                    self.spoilers += 1;
-                    let shut = !self.context.revealed.contains(&index);
-                    pad(run, Pad::Spoiler);
-                    let start = run.text.len();
-                    self.inlines(run, inner);
-                    let range = start..run.text.len();
-                    pad(run, Pad::Spoiler);
-                    run.marks.push(Mark::Spoiler {
-                        range,
-                        index,
-                        hidden: shut,
-                    });
-                }
-                Inline::Mention { target, style, .. } => {
-                    let name = mention_name(*target, self.context.resources);
-                    pad(run, Pad::Chip);
-                    let label = name.as_deref().unwrap_or_else(|| strings::unknown_person());
-                    let range = push(run, label);
-                    run.marks.push(Mark::Mention {
-                        range: range.clone(),
-                        known: name.is_some(),
-                        bold: style.bold,
-                    });
-                    styles(
-                        run,
-                        &range,
-                        TextStyle {
-                            bold: false,
-                            ..*style
-                        },
-                    );
-                    pad(run, Pad::Chip);
-                }
-                // Custom emoji wait for the emoji subsystem: the shortcode
-                // shows as written.
-                Inline::CustomEmoji { raw, .. } => {
-                    push(run, raw);
-                }
-            }
-        }
-    }
-}
-
-/// The first text of `nodes`, if it opens them.
-fn first_run(nodes: &mut [Node]) -> Option<&mut Run> {
-    match nodes.first_mut()? {
-        Node::Paragraph(run) | Node::Heading { run, .. } | Node::Code { run, .. } => Some(run),
-        Node::Quote(nodes) => first_run(nodes),
-        Node::List(items) => first_run(&mut items.first_mut()?.nodes),
-        Node::Table { header, .. } => header.first_mut(),
-        Node::Rule | Node::Blank | Node::Jumbo(_) => None,
-    }
-}
-
-fn push(run: &mut Run, text: &str) -> Range<usize> {
-    let start = run.text.len();
-    run.text.push_str(text);
-    start..run.text.len()
-}
-
-fn pad(run: &mut Run, pad_pt: Pad) {
-    let range = push(run, PAD);
-    run.marks.push(Mark::Pad { range, pad_pt });
-}
-
-fn styles(run: &mut Run, range: &Range<usize>, style: TextStyle) {
-    if range.is_empty() {
-        return;
-    }
-    if style.bold {
-        run.marks.push(Mark::Bold(range.clone()));
-    }
-    if style.italic {
-        run.marks.push(Mark::Italic(range.clone()));
-    }
-    if style.strikethrough {
-        run.marks.push(Mark::Strike(range.clone()));
-    }
-}
-
-/// "@Marina", "@everyone", or none for a person the account does not know.
-fn mention_name(target: MentionTarget, resources: Option<&ResourceSnapshot>) -> Option<String> {
-    match target {
-        MentionTarget::Everyone => Some("@everyone".to_owned()),
-        MentionTarget::User(id) => {
-            let user = resources?.users.get(id)?;
-            let name = user.nickname.as_ref().or(user.username.as_ref())?;
-            Some(format!("@{name}"))
         }
     }
 }

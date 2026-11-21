@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 
 use rune::prefs::Prefs;
 use rune::{El, Span, col, el, icon, rich, row, text};
+use url::Position;
 
 use crate::design::{
     CONFIRM_WIDTH_PT, FIELD_HEIGHT_PT, FIELD_OUTLINE_PT, FOCUS_RING_PT, PILL_OUTLINE_PT,
@@ -27,14 +28,18 @@ use crate::window::APP_ID;
 /// The settings file's key for the trusted domains.
 const TRUSTED_KEY: &str = "trusted_domains";
 
+/// The `mailto:` fields a mail app is given: what to fill in, never an
+/// `attach` or another parameter that reaches the reader's files.
+const MAIL_FIELDS: [&str; 4] = ["subject", "body", "cc", "bcc"];
+
 /// What a press on a link does.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Decision {
-    Open,
+    /// Open this address: the link's own, or a `mailto:` link without the
+    /// fields a mail app should not take from a message.
+    Open(String),
     /// Ask first: the link goes to `host`, which is not trusted.
-    Ask {
-        host: String,
-    },
+    Ask { host: String },
     /// Not a link the app opens (the SDK passes only safe ones).
     Refuse,
 }
@@ -46,19 +51,42 @@ pub(crate) fn decide(url: &str, server_host: Option<&str>, trusted: &Trusted) ->
     };
     match parsed.scheme() {
         // Only opens the mail app, which asks before sending anything.
-        "mailto" => Decision::Open,
+        "mailto" => Decision::Open(mail_only(&parsed)),
         "http" | "https" => {
             let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
                 return Decision::Refuse;
             };
             if server_host == Some(host.as_str()) || trusted.contains(&host) {
-                Decision::Open
+                Decision::Open(url.to_owned())
             } else {
                 Decision::Ask { host }
             }
         }
         _ => Decision::Refuse,
     }
+}
+
+/// `mail` with only the [`MAIL_FIELDS`] of its query, as written.
+fn mail_only(mail: &url::Url) -> String {
+    let kept: Vec<&str> = mail
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .filter(|field| {
+            // The name as a mail app decodes it, so `%61ttach` is `attach`.
+            url::form_urlencoded::parse(field.as_bytes())
+                .next()
+                .is_some_and(|(name, _)| {
+                    MAIL_FIELDS
+                        .iter()
+                        .any(|kept| name.eq_ignore_ascii_case(kept))
+                })
+        })
+        .collect();
+    let mut mail = mail.clone();
+    mail.set_query((!kept.is_empty()).then(|| kept.join("&")).as_deref());
+    mail.set_fragment(None);
+    mail.into()
 }
 
 /// The hosts whose links open without asking: this device's preference.
@@ -168,13 +196,17 @@ pub(crate) fn confirm(prompt: &Prompt, palette: &Palette) -> El {
         .child(frame)
 }
 
-/// The whole address in mono, its host in bold.
+/// The whole address in mono, as the URL parser reads it, its host in
+/// bold: the host that opens, never a look-alike inside the user name.
 fn address(prompt: &Prompt, palette: &Palette) -> El {
-    let start = prompt.url.find("://").map_or(0, |at| at + 3);
-    let host = prompt.url[start..]
-        .to_ascii_lowercase()
-        .find(&prompt.host)
-        .map(|at| start + at..start + at + prompt.host.len());
+    let parsed = url::Url::parse(&prompt.url).ok();
+    let shown = parsed
+        .as_ref()
+        .map_or_else(|| prompt.url.clone(), |url| url.as_str().to_owned());
+    let host = parsed.as_ref().map(|url| {
+        let start = url[..Position::BeforeHost].len();
+        start..start + url[Position::BeforeHost..Position::AfterHost].len()
+    });
     let spans = host
         .map(|host| {
             vec![
@@ -191,7 +223,7 @@ fn address(prompt: &Prompt, palette: &Palette) -> El {
         .radius(RADIUS_CONTROL_PT)
         .fill(palette.surface_code)
         .child(
-            rich(prompt.url.clone(), spans)
+            rich(shown, spans)
                 .font(TYPE_CODE)
                 .color(palette.text_secondary)
                 .wrap_anywhere()
@@ -254,22 +286,40 @@ fn button(key: &'static str, label: &'static str, palette: &Palette) -> El {
 mod tests {
     use super::{Decision, Trusted, decide};
 
+    fn open(url: &str) -> Decision {
+        Decision::Open(url.to_owned())
+    }
+
     #[test]
     fn the_servers_own_links_and_mail_open_at_once() {
         let trusted = Trusted::default();
         let server = Some("papo.example.com");
+        let invite = "https://papo.example.com/invite";
+        assert_eq!(decide(invite, server, &trusted), open(invite));
+        let upper = "https://PAPO.example.com/";
         assert_eq!(
-            decide("https://papo.example.com/invite", server, &trusted),
-            Decision::Open
-        );
-        assert_eq!(
-            decide("https://PAPO.example.com/", server, &trusted),
-            Decision::Open,
+            decide(upper, server, &trusted),
+            open(upper),
             "hosts compare without case"
         );
+        let mail = "mailto:lia@example.com?subject=Hi%20there&body=See%20you";
+        assert_eq!(decide(mail, server, &trusted), open(mail));
+    }
+
+    #[test]
+    fn mail_never_takes_fields_that_reach_the_readers_files() {
+        let trusted = Trusted::default();
         assert_eq!(
-            decide("mailto:lia@example.com", server, &trusted),
-            Decision::Open
+            decide(
+                "mailto:lia@example.com?attach=/etc/passwd&subject=Hi&%61ttachment=~/.ssh/id_ed25519",
+                None,
+                &trusted
+            ),
+            open("mailto:lia@example.com?subject=Hi")
+        );
+        assert_eq!(
+            decide("mailto:lia@example.com?attach=/etc/passwd", None, &trusted),
+            open("mailto:lia@example.com")
         );
     }
 
@@ -277,18 +327,13 @@ mod tests {
     fn other_hosts_ask_until_trusted() {
         let mut trusted = Trusted::default();
         let server = Some("papo.example.com");
+        let guide = "https://lumen.example.org/guide";
         let ask = Decision::Ask {
             host: "lumen.example.org".to_owned(),
         };
-        assert_eq!(
-            decide("https://lumen.example.org/guide", server, &trusted),
-            ask
-        );
+        assert_eq!(decide(guide, server, &trusted), ask);
         trusted.add("lumen.example.org".to_owned());
-        assert_eq!(
-            decide("https://lumen.example.org/guide", server, &trusted),
-            Decision::Open
-        );
+        assert_eq!(decide(guide, server, &trusted), open(guide));
         assert_eq!(
             decide("https://docs.lumen.example.org/", server, &trusted),
             Decision::Ask {

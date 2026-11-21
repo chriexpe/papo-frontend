@@ -2,8 +2,10 @@
 //! never copies, hidden spoilers copy as their markup, mentions name people,
 //! list items carry their markers.
 
-use papo_sdk::{MentionTarget, Uuid};
-use papo_sdk_ui::message_content::MessageContent;
+use std::ops::Range;
+
+use papo_sdk::Uuid;
+use papo_sdk_ui::message_content::{Block, Inline, MessageContent, TextStyle};
 
 use super::Press;
 use super::copy::{run_text, spoken};
@@ -75,9 +77,43 @@ fn assistive_technology_hears_a_hidden_spoiler_announced_not_read() {
 }
 
 #[test]
-fn a_spoiler_inside_a_hidden_one_copies_inside_it() {
-    let doc = doc("||outer ||inner|| end||", &[]);
-    assert_eq!(whole(doc.runs()[0]), "||outer ||inner|| end||");
+fn a_spoiler_inside_a_hidden_one_copies_inside_it_and_comes_second() {
+    // The SDK's parser does not nest spoilers today, but its model can.
+    let text = |words: &str| Inline::Text {
+        text: words.to_owned(),
+        style: TextStyle::default(),
+        link: None,
+        allow_tokens: true,
+    };
+    let content = MessageContent {
+        blocks: vec![Block::Paragraph(vec![Inline::Spoiler(vec![
+            text("a "),
+            Inline::Spoiler(vec![text("b")]),
+            text(" c"),
+        ])])],
+    };
+    let doc = Doc::new(
+        &content,
+        &Context {
+            resources: None,
+            revealed: &[],
+            jumbo: true,
+        },
+    );
+    let run = doc.runs()[0];
+    let spoilers: Vec<(u32, Range<usize>)> = run
+        .marks
+        .iter()
+        .filter_map(|mark| match mark {
+            Mark::Spoiler { index, range, .. } => Some((*index, range.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(spoilers.len(), 2, "two spoilers, one inside the other");
+    let (outer, inner) = (&spoilers[0].1, &spoilers[1].1);
+    assert!(outer.start < inner.start && inner.end < outer.end);
+    assert_eq!(spoilers[0].0, 0, "the outer is met first");
+    assert_eq!(whole(run), "||a b c||");
 }
 
 #[test]
@@ -94,7 +130,6 @@ fn a_mention_the_server_does_not_know_is_unknown_never_its_token() {
     );
     let everyone = self::doc("@everyone look", &[]);
     assert_eq!(whole(everyone.runs()[0]), "@everyone look");
-    let _ = MentionTarget::Everyone;
 }
 
 #[test]

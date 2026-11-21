@@ -3,7 +3,7 @@
 //! modules. Blocks are 4 points apart and add no margin of their own.
 
 use rune::text::measure;
-use rune::{Align, Color, El, col, el, icon, row, text};
+use rune::{Align, Color, El, TextStyle, col, el, icon, row, text};
 
 use super::doc::{Item, Marker, Node};
 use super::inline::{Trailer, text as run_text};
@@ -15,6 +15,9 @@ use crate::design::{
 };
 use crate::strings;
 use crate::timeline::TimelineHost;
+
+/// A list's numbers: body text with figures all one width.
+const TYPE_NUMBER: TextStyle = TYPE_BODY.features("'tnum' 1");
 
 /// `nodes`, their text in `ink`. `trailer` follows the last one's last
 /// line when that is a paragraph or a heading. A block that is one text
@@ -67,12 +70,14 @@ fn node_el<S: TimelineHost>(
             .border_sides([0.0, 0.0, 0.0, QUOTE_BAR_PT], palette.line_strong)
             .role("blockquote")
             .children(nodes::<S>(inner, draw, palette.text_secondary, None)),
-        Node::List(items) => col().w_full().gap(LIST_ITEM_GAP_PT).role("list").children(
-            items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| item_el::<S>(item, draw, ink).key(format!("i{index}"))),
-        ),
+        Node::List(items) => {
+            let column_pt = marker_column_pt(items);
+            col().w_full().gap(LIST_ITEM_GAP_PT).role("list").children(
+                items.iter().enumerate().map(|(index, item)| {
+                    item_el::<S>(item, column_pt, draw, ink).key(format!("i{index}"))
+                }),
+            )
+        }
         Node::Code { language, run } => code::block::<S>(language.as_deref(), run, draw),
         Node::Rule => el()
             .w_full()
@@ -89,8 +94,19 @@ fn node_el<S: TimelineHost>(
     }
 }
 
-/// A list item: its marker in a column of its own, then its blocks.
-fn item_el<S: TimelineHost>(item: &Item, draw: &Draw<'_>, ink: Color) -> El {
+/// The marker column's width for `items`: 1.4 em, or as wide as the widest
+/// number and its gap, so "9." and "10." share their dot.
+fn marker_column_pt(items: &[Item]) -> f32 {
+    let Some(Marker::Number { width, .. }) = items.first().map(|item| item.marker) else {
+        return LIST_MARKER_PT;
+    };
+    let widest = format!("{}.", "0".repeat(width));
+    let number_pt = measure(&widest, &[], TYPE_NUMBER, None).0;
+    (number_pt + LIST_NUMBER_GAP_PT).max(LIST_MARKER_PT)
+}
+
+/// A list item: its marker in a column `column_pt` wide, then its blocks.
+fn item_el<S: TimelineHost>(item: &Item, column_pt: f32, draw: &Draw<'_>, ink: Color) -> El {
     let palette = draw.palette;
     let ink = match item.marker {
         Marker::Task { done: true } => palette.text_secondary,
@@ -100,7 +116,7 @@ fn item_el<S: TimelineHost>(item: &Item, draw: &Draw<'_>, ink: Color) -> El {
         .w_full()
         .items_start()
         .role("listitem")
-        .child(marker_el(item.marker, draw))
+        .child(marker_el(item.marker, column_pt, draw))
         .child(
             col()
                 .grow(1.0)
@@ -112,31 +128,23 @@ fn item_el<S: TimelineHost>(item: &Item, draw: &Draw<'_>, ink: Color) -> El {
 
 /// The marker column: a bullet centred, a number right-aligned so the
 /// numbers share their dot, or a task's box, on the item's first line.
-fn marker_el(marker: Marker, draw: &Draw<'_>) -> El {
+fn marker_el(marker: Marker, column_pt: f32, draw: &Draw<'_>) -> El {
     let palette = draw.palette;
     let line = TYPE_BODY.line_height;
-    let column = row().key("marker").h(line).center_y();
+    let column = row().key("marker").w(column_pt).h(line).center_y();
     match marker {
-        Marker::Bullet(_) => column.w(LIST_MARKER_PT).justify_center().child(
+        Marker::Bullet(_) => column.justify_center().child(
             text(marker.text())
                 .font(TYPE_BODY)
                 .color(palette.text_secondary)
                 .a11y_hidden(),
         ),
-        Marker::Number { width, .. } => {
-            let widest = format!("{}.", "0".repeat(width));
-            let number_pt = measure(&widest, &[], TYPE_BODY, None).0;
-            column
-                .w((number_pt + LIST_NUMBER_GAP_PT).max(LIST_MARKER_PT))
-                .justify_end()
-                .pr(LIST_NUMBER_GAP_PT)
-                .child(
-                    text(marker.text())
-                        .font(TYPE_BODY.features("'tnum' 1"))
-                        .color(palette.text_secondary)
-                        .align(Align::End),
-                )
-        }
+        Marker::Number { .. } => column.justify_end().pr(LIST_NUMBER_GAP_PT).child(
+            text(marker.text())
+                .font(TYPE_NUMBER)
+                .color(palette.text_secondary)
+                .align(Align::End),
+        ),
         Marker::Task { done } => {
             let square = el()
                 .size(TASK_BOX_PT, TASK_BOX_PT)
@@ -156,7 +164,7 @@ fn marker_el(marker: Marker, draw: &Draw<'_>) -> El {
             } else {
                 square.border(TASK_BOX_OUTLINE_PT, palette.line_strong)
             };
-            column.w(LIST_MARKER_PT).child(square)
+            column.child(square)
         }
     }
 }

@@ -162,12 +162,6 @@ const WARNING_CHROMA: f32 = 0.09;
 const MENTION_ROW_HUE_DEGREES: f32 = 82.0;
 /// The mention-row marker's OKLCH chroma, as the design project draws it.
 const MENTION_ROW_CHROMA: f32 = 0.15;
-/// A code token's OKLCH chroma (`docs/design.md` §9).
-const CODE_TOKEN_CHROMA: f32 = 0.12;
-/// The contrast a code token keeps on `surface.code`.
-const CODE_TOKEN_FLOOR: f32 = 4.5;
-/// How far a code token's lightness moves per step towards its floor.
-const CODE_TOKEN_STEP: f32 = 0.01;
 /// The opacity of the black that dims the app behind a popup.
 const SCRIM_ALPHA: f32 = 0.5;
 /// The opacity of a popup's black shadow.
@@ -312,52 +306,6 @@ fn mix_oklab(base: Color, tint: Color, share: f32) -> Color {
     Color::from_oklab(mixed)
 }
 
-/// Highlighted code's token colours (`docs/design.md` §9). Comments take
-/// `text.muted` and everything else `text.primary`, so only these five have
-/// colours of their own.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct CodeInk {
-    /// Keywords: the accent's hue.
-    pub(crate) keyword: Color,
-    pub(crate) string: Color,
-    /// Numbers and constants.
-    pub(crate) number: Color,
-    pub(crate) type_name: Color,
-    pub(crate) function: Color,
-}
-
-impl CodeInk {
-    fn new(dark: bool, surface_code: Color) -> CodeInk {
-        let token = |hue: f32| code_token(hue, dark, surface_code);
-        // Numbers move to 80° under the Orange accent and functions to 256°
-        // under Teal, so no token shares the keyword's hue; the accent
-        // choice is not built yet, and Blue clashes with neither.
-        CodeInk {
-            keyword: token(ACCENT_HUE_DEGREES),
-            string: token(150.0),
-            number: token(52.0),
-            type_name: token(300.0),
-            function: token(196.0),
-        }
-    }
-}
-
-/// A code token of `hue`: lightness 0.78 on dark themes and 0.48 on light
-/// ones, moved away from `surface_code` until it reaches 4.5:1 on it.
-fn code_token(hue: f32, dark: bool, surface_code: Color) -> Color {
-    let (mut lightness, step) = if dark {
-        (0.78, CODE_TOKEN_STEP)
-    } else {
-        (0.48, -CODE_TOKEN_STEP)
-    };
-    let mut colour = oklch(lightness, CODE_TOKEN_CHROMA, hue);
-    while contrast(colour, surface_code) < CODE_TOKEN_FLOOR && (0.0..=1.0).contains(&lightness) {
-        lightness += step;
-        colour = oklch(lightness, CODE_TOKEN_CHROMA, hue);
-    }
-    colour
-}
-
 /// Black or white, whichever contrasts more with `background`.
 fn text_on(background: Color) -> Color {
     let (black, white) = (Color::BLACK, Color::WHITE);
@@ -450,12 +398,14 @@ pub(crate) const RADIUS_PILL_PT: f32 = 14.0;
 /// The header pills' height in points.
 pub(crate) const HEADER_PILL_HEIGHT_PT: f32 = 36.0;
 
+mod code_ink;
 mod content;
 mod density;
 mod sizes;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use code_ink::CodeInk;
 pub(crate) use content::*;
 pub(crate) use density::*;
 pub(crate) use sizes::*;

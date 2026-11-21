@@ -16,8 +16,9 @@ use papo_sdk_ui::message_content::MessageContent;
 use rune::{El, col, el, memo, row, text};
 
 use super::OpenTimeline;
-use super::content::{self, Context, Doc, Draw};
+use super::content::{self, Context, Doc, Draw, Edited, mention_names};
 use super::grouping::continues;
+use super::local_time::LocalTime;
 use super::rows::{MESSAGE_PART, message_key};
 use super::view::{Style, TimelineHost};
 use crate::design::{
@@ -33,15 +34,19 @@ use crate::strings;
 struct Parts<'a> {
     name: String,
     time: String,
+    /// The message's source, which its content is parsed from: the content
+    /// changes with it.
     body: &'a str,
+    /// The names its mentions show.
+    mentions: Vec<Option<String>>,
     /// It continues the group above: no header, the within-group distance.
     continued: bool,
     /// Extra compact shows the time once per minute.
     show_time: bool,
     /// It mentions the reader or everyone.
     mentions_me: bool,
-    /// When it was edited, as the "(edited)" hint says it.
-    edited: Option<String>,
+    /// When it was edited, as the wire says it.
+    edited_at: Option<&'a str>,
 }
 
 /// Message `id`'s row. It reports where its top is, for the anchor.
@@ -69,26 +74,18 @@ pub(super) fn message_row<S: TimelineHost>(
         name: author_name(message, open.resources.as_deref()),
         time: at_us.map_or_else(String::new, |at_us| style.time.time_label(at_us)),
         body: message.content.as_deref().unwrap_or_default(),
+        mentions: mention_names(content, open.resources.as_deref()),
         continued,
         show_time,
         mentions_me: mentions(message, open.key.account.user()),
-        edited: message
-            .edited_at
-            .as_deref()
-            .and_then(|at| parse_message_timestamp_us(at).ok())
-            .map(|at_us| style.time.edited_label(at_us)),
+        edited_at: message.edited_at.as_deref(),
     };
     let key = open.key;
     let revealed = open.revealed(id);
     let copied = open.copied(id);
-    let version = (
-        style.theme,
-        layout,
-        &parts,
-        revealed,
-        copied,
-        open.resources_version,
-    );
+    // The key too: two accounts on one server can show the same message,
+    // and the row's handlers name their timeline.
+    let version = (key, style.theme, layout, &parts, revealed, copied);
     memo(message_key(id), version, || {
         let doc = Doc::new(
             content,
@@ -103,7 +100,9 @@ pub(super) fn message_row<S: TimelineHost>(
             key,
             message: id,
             copied,
-            edited: parts.edited.clone(),
+            edited: parts.edited_at.map(|at| Edited {
+                hint: edited_hint(at, &style.time),
+            }),
         };
         let body = content::body::<S>(&doc, &draw);
         build(&parts, body, style, |message| {
@@ -119,6 +118,14 @@ pub(super) fn message_row<S: TimelineHost>(
                 })
         })
     })
+}
+
+/// The "(edited)" marker's hint: when, or nothing to add when the time
+/// does not read.
+fn edited_hint(edited_at: &str, time: &LocalTime) -> Option<String> {
+    parse_message_timestamp_us(edited_at)
+        .ok()
+        .map(|at_us| time.edited_label(at_us))
 }
 
 /// Whether `message` mentions `me` or everyone, as the server's
