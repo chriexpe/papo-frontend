@@ -47,6 +47,19 @@ impl LocalTime {
         self.day_of((self.now_us)())
     }
 
+    /// Seconds until the current local day ends.
+    pub(crate) fn seconds_left_today(&self) -> f64 {
+        let passed_s = self
+            .local_seconds((self.now_us)())
+            .rem_euclid(SECONDS_PER_DAY);
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "at most a day's seconds, exact in an f64"
+        )]
+        let left_s = (SECONDS_PER_DAY - passed_s) as f64;
+        left_s
+    }
+
     /// The civil day of a Unix time in microseconds, as the SDK counts it.
     pub(crate) fn day_of(&self, at_us: i64) -> i64 {
         self.local_seconds(at_us).div_euclid(SECONDS_PER_DAY)
@@ -215,6 +228,12 @@ mod tests {
         let east = at(13 * 3600);
         assert_eq!(east.time_label(NOON_US), "01:00");
         assert_eq!(east.day_of(NOON_US), at(0).day_of(NOON_US) + 1);
+    }
+
+    #[test]
+    fn the_day_ends_at_local_midnight() {
+        // Noon UTC is 15:00 three hours east: nine hours left.
+        assert_eq!(at(3 * 3600).seconds_left_today(), 9.0 * 3600.0);
     }
 
     #[test]

@@ -72,9 +72,9 @@ pub(crate) struct Tracker {
     at_bottom: bool,
     /// The visible message rows, top to bottom, as last reported.
     visible: Vec<Uuid>,
-    /// Each reporting message's top and bottom, in window points. Only
-    /// rows visible at the last report are kept: an unmounted row stops
-    /// reporting, and its last place would be stale.
+    /// Each reporting message's top and bottom, in window points. Rows
+    /// that were not visible at the last report are dropped then: an
+    /// unmounted row stops reporting, and its last place would be stale.
     edges_pt: HashMap<Uuid, (f32, f32)>,
 }
 
@@ -107,12 +107,13 @@ impl Tracker {
         self.visible = visible;
     }
 
-    /// The anchor the reports give: the newest while the bottom shows,
-    /// else the first message that shows below the viewport's top. A row
-    /// whose message is above it, only the distance below it showing, is
-    /// not the one being read. `None` before the rows have reported.
-    pub(crate) fn anchor(&self) -> Option<Anchor> {
-        if self.at_bottom {
+    /// The anchor the reports give: the newest while the bottom of a window
+    /// that `follows_newest` shows, else the first message that shows
+    /// below the viewport's top. A row whose message is above it, only the
+    /// distance below it showing, is not the one being read. `None` before
+    /// the rows have reported.
+    pub(crate) fn anchor(&self, follows_newest: bool) -> Option<Anchor> {
+        if self.at_bottom && follows_newest {
             return Some(Anchor::Newest);
         }
         let viewport_top_pt = self.viewport_top_pt?;
@@ -134,7 +135,7 @@ mod tests {
 
     #[test]
     fn a_new_viewport_follows_the_newest() {
-        assert_eq!(Tracker::new().anchor(), Some(Anchor::Newest));
+        assert_eq!(Tracker::new().anchor(true), Some(Anchor::Newest));
     }
 
     #[test]
@@ -144,10 +145,10 @@ mod tests {
         tracker.bottom_shown(false);
         tracker.viewport_moved(100.0);
         tracker.rows_visible(vec![a, b]);
-        assert_eq!(tracker.anchor(), None);
+        assert_eq!(tracker.anchor(true), None);
         tracker.row_moved(b, 130.0, 130.0 + 20.0);
         assert_eq!(
-            tracker.anchor(),
+            tracker.anchor(true),
             Some(Anchor::Message {
                 id: b,
                 offset_pt: 30.0
@@ -155,10 +156,27 @@ mod tests {
         );
         tracker.row_moved(a, 80.0, 120.0);
         assert_eq!(
-            tracker.anchor(),
+            tracker.anchor(true),
             Some(Anchor::Message {
                 id: a,
                 offset_pt: -20.0
+            })
+        );
+    }
+
+    #[test]
+    fn the_bottom_of_a_window_that_does_not_follow_is_a_message() {
+        let a = Uuid::from_u128(1);
+        let mut tracker = Tracker::new();
+        tracker.viewport_moved(0.0);
+        tracker.rows_visible(vec![a]);
+        tracker.row_moved(a, 10.0, 30.0);
+        assert_eq!(tracker.anchor(true), Some(Anchor::Newest));
+        assert_eq!(
+            tracker.anchor(false),
+            Some(Anchor::Message {
+                id: a,
+                offset_pt: 10.0
             })
         );
     }
@@ -176,7 +194,7 @@ mod tests {
         // `a` returns with a stale top until it reports again.
         tracker.rows_visible(vec![a, b]);
         assert_eq!(
-            tracker.anchor(),
+            tracker.anchor(true),
             Some(Anchor::Message {
                 id: b,
                 offset_pt: 40.0

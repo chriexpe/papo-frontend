@@ -64,8 +64,9 @@ pub(crate) enum Showing {
     Nothing,
     /// A window to open.
     Open(Opening),
-    /// An open timeline shown again: the scroll back to its place.
-    Again(Anchor),
+    /// An open timeline shown again: its place is restored by the next
+    /// `OpenTimeline::take_restore`.
+    Again,
 }
 
 impl Tabs {
@@ -116,14 +117,19 @@ impl Tabs {
                 shown: Showing::Nothing,
             });
         };
-        let shown = match self.open.iter().position(|open| open.key == key) {
-            Some(index) => {
-                let open = self.open.remove(index);
+        let kept = self.open.iter().position(|open| open.key == key);
+        let shown = match kept.map(|index| self.open.remove(index)) {
+            // A window that failed or was closed opens anew, at its place.
+            Some(gone) if gone.is_gone() => {
+                if let Some(place) = gone.kept_place() {
+                    self.keep_place(key, place);
+                }
+                Showing::Open(self.open_new(key))
+            }
+            Some(mut open) => {
+                open.shown_again();
                 self.open.push(open);
-                self.open
-                    .last_mut()
-                    .and_then(OpenTimeline::shown_again)
-                    .map_or(Showing::Nothing, Showing::Again)
+                Showing::Again
             }
             None => Showing::Open(self.open_new(key)),
         };
@@ -145,7 +151,9 @@ impl Tabs {
             // Hidden already, so its place is current; dropping it stops its
             // watch.
             let closed = self.open.remove(0);
-            self.keep_place(closed.key, closed.anchor);
+            if let Some(place) = closed.kept_place() {
+                self.keep_place(closed.key, place);
+            }
         }
         Opening {
             key,
@@ -223,9 +231,10 @@ mod tests {
         assert!(tabs.show(Some(key(1))).is_none(), "already shown");
         tabs.show(Some(key(2)));
         let back = tabs.show(Some(key(1))).expect("shown again");
+        assert!(matches!(back.shown, Showing::Again));
         assert!(
-            matches!(back.shown, Showing::Nothing),
-            "still opening: nothing to scroll"
+            tabs.shown_mut().expect("shown").take_restore().is_none(),
+            "still opening: the opening restores it"
         );
         assert_eq!(tabs.open_count(), 2);
     }
@@ -233,16 +242,44 @@ mod tests {
     #[test]
     fn past_the_bound_the_least_recently_shown_closes_and_keeps_its_place() {
         let mut tabs = Tabs::default();
-        for n in 0..=OPEN_TIMELINES as u128 {
+        let place = Anchor::Message {
+            id: Uuid::from_u128(40),
+            offset_pt: 12.0,
+        };
+        tabs.show(Some(key(0)));
+        let reading = tabs.shown_mut().expect("shown");
+        *reading = OpenTimeline::loaded(key(0), imbl::Vector::new());
+        reading.anchor = place;
+        reading.tracker.bottom_shown(false);
+        // Never opened, no place of its own.
+        tabs.show(Some(key(1)));
+        for n in 2..=OPEN_TIMELINES as u128 + 1 {
             tabs.show(Some(key(n)));
         }
         assert_eq!(tabs.open_count(), OPEN_TIMELINES);
-        let again = tabs.show(Some(key(0))).expect("shown");
-        let Showing::Open(opening) = again.shown else {
+        let Showing::Open(opening) = tabs.show(Some(key(0))).expect("shown").shown else {
             panic!("closed, so it opens again");
         };
-        assert_eq!(opening.anchor, Some(Anchor::Newest));
-        assert_eq!(tabs.open_count(), OPEN_TIMELINES);
+        assert_eq!(opening.anchor, Some(place));
+        let Showing::Open(opening) = tabs.show(Some(key(1))).expect("shown").shown else {
+            panic!("closed, so it opens again");
+        };
+        assert_eq!(
+            opening.anchor, None,
+            "it never had a place: the SDK's saved one stands"
+        );
+    }
+
+    #[test]
+    fn a_window_that_failed_opens_anew_when_shown() {
+        let mut tabs = Tabs::default();
+        tabs.show(Some(key(1)));
+        let failed = tabs.shown_mut().expect("shown");
+        failed.phase = crate::timeline::Phase::Failed;
+        tabs.show(Some(key(2)));
+        let again = tabs.show(Some(key(1))).expect("shown");
+        assert!(matches!(again.shown, Showing::Open(_)));
+        assert_eq!(tabs.open_count(), 2);
     }
 
     #[test]
@@ -295,11 +332,9 @@ mod tests {
             })
         );
         let back = tabs.show(Some(key(1))).expect("switched back");
-        let Showing::Again(anchor) = back.shown else {
-            panic!("still open: it scrolls back");
-        };
+        assert!(matches!(back.shown, Showing::Again), "still open");
         assert_eq!(
-            anchor,
+            tabs.shown().expect("shown").current_anchor(),
             Anchor::Message {
                 id: message,
                 offset_pt: -5.0

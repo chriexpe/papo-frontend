@@ -1,8 +1,8 @@
 //! The watch that keeps one timeline's items current, on the SDK's runtime:
-//! it opens the SDK window (at the anchor when the cache holds it: live when
-//! it is near the newest, focused around it when far), posts the baseline, then every batch of diffs and every change to the
-//! account's resources, until the timeline is dropped or the SDK closes the
-//! window.
+//! it opens the SDK window (at the anchor when the cache holds it: live
+//! when it is near the newest, focused around it when far), posts the
+//! baseline, then every batch of diffs and every change to the account's
+//! resources, until the timeline is dropped or the SDK closes the window.
 //!
 //! Every post carries the timeline's key and ticket; the shell drops posts
 //! from an opening it no longer holds.
@@ -12,7 +12,8 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use imbl::Vector;
 use papo_sdk::{
-    ClientHandle, Generation, HistoryError, ReadingPosition, ResourceSnapshot, Session, Uuid,
+    ClientHandle, HistoryClosedReason, HistoryError, ReadingPosition, ResourceSnapshot, Session,
+    Uuid,
 };
 use papo_sdk_ui::{
     Timeline, TimelineConfig, TimelineError, TimelineEvent, TimelineItem, TimelineUpdate,
@@ -35,7 +36,6 @@ pub(crate) struct Opened {
     /// around a distant anchor.
     pub(crate) live: bool,
     pub(crate) version: u64,
-    pub(crate) generation: Generation,
     pub(crate) items: Vector<Arc<TimelineItem>>,
     /// The SDK's saved reading position for the channel.
     pub(crate) saved: Option<Anchor>,
@@ -60,9 +60,9 @@ pub(crate) type Apply<S> = fn(&mut S, TimelineKey, u64, Posted, &mut Tx) -> bool
 pub(crate) struct Watch<S> {
     pub(crate) key: TimelineKey,
     pub(crate) ticket: u64,
-    /// The message to reach back to: the timeline's own anchor, else none
-    /// and the SDK's saved position is used.
-    pub(crate) anchor: Option<Uuid>,
+    /// Where to open: the timeline's own place, else none and the SDK's
+    /// saved reading position is used. `Newest` opens live at the newest.
+    pub(crate) anchor: Option<Anchor>,
     pub(crate) offsets: Arc<dyn UtcOffsetProvider>,
     pub(crate) apply: Apply<S>,
 }
@@ -116,7 +116,6 @@ impl<S: 'static> Watch<S> {
             handle,
             live,
             version: subscription.version,
-            generation: subscription.generation,
             items: subscription.items,
             saved: saved.map(|position| Anchor::from_saved(Some(position))),
         }));
@@ -155,11 +154,12 @@ impl<S: 'static> Watch<S> {
 /// window asked for at startup, before the session reconnects, waits for
 /// the account's resources or its connection to change and tries again.
 /// Opens at `anchor`, else at the SDK's saved reading position. Returns the
-/// outcome and that saved position, or `None` once `stopped` fires.
+/// outcome and that saved position, or `None` once `stopped` fires. A
+/// session that closes meanwhile closes the window too.
 async fn open_when_allowed(
     session: &Session,
     channel: Uuid,
-    anchor: Option<Uuid>,
+    anchor: Option<Anchor>,
     config: TimelineConfig,
     stopped: &mut oneshot::Receiver<()>,
 ) -> Option<(
@@ -170,7 +170,10 @@ async fn open_when_allowed(
     let mut connection = session.subscribe_connection();
     loop {
         let saved = session.reading_position(channel);
-        let reach_back = anchor.or(saved.map(|position| position.message_id));
+        let reach_back = match anchor {
+            Some(anchor) => anchor.message(),
+            None => saved.map(|position| position.message_id),
+        };
         let opened = tokio::select! {
             biased;
             _ = &mut *stopped => return None,
@@ -185,11 +188,15 @@ async fn open_when_allowed(
             return Some((opened, saved));
         }
         log::debug!("a timeline waits until its channel can be read");
-        tokio::select! {
+        let session_open = tokio::select! {
             biased;
             _ = &mut *stopped => return None,
-            changed = resources.changed() => changed.ok()?,
-            changed = connection.changed() => changed.ok()?,
+            changed = resources.changed() => changed.is_ok(),
+            changed = connection.changed() => changed.is_ok(),
+        };
+        if !session_open {
+            let closed = TimelineError::Closed(HistoryClosedReason::AccountClosed);
+            return Some((Err(closed), saved));
         }
     }
 }

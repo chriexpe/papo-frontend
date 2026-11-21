@@ -95,7 +95,7 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
         theme,
         palette: *palette,
         time: shell.local_time.clone(),
-        today: shell.local_time.today(),
+        today: shell.today,
     };
     let conversation = col()
         .key("conversation")

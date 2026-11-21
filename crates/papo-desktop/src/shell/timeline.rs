@@ -17,7 +17,6 @@ use rune::Tx;
 
 use super::Shell;
 use crate::tabs::{Opening, Showing};
-use crate::timeline::anchor::Anchor;
 use crate::timeline::watch::{Posted, Watch};
 use crate::timeline::{OpenTimeline, Request, TimelineHost, TimelineKey, scroll_to};
 
@@ -41,8 +40,8 @@ impl Shell {
 
     /// Shows the timeline the navigation now calls for: hides the one
     /// shown, saving its place, and opens or scrolls back to the next.
-    /// Without `tx` (a handler that has none) a timeline shown again opens
-    /// at its bottom.
+    /// Without `tx` (a handler that has none) a timeline shown again
+    /// returns to its place on the next frame (`poll`).
     pub(crate) fn sync_timeline(&mut self, tx: Option<&mut Tx>) {
         if self.sdk.is_none() {
             return;
@@ -56,9 +55,10 @@ impl Shell {
         match switch.shown {
             Showing::Nothing => {}
             Showing::Open(opening) => self.start_watch(opening),
-            Showing::Again(anchor) => {
+            // Without a `tx` the place stays pending for the next poll.
+            Showing::Again => {
                 if let Some(tx) = tx {
-                    scroll_to(anchor, tx);
+                    self.restore_shown(tx);
                 }
             }
         }
@@ -90,7 +90,7 @@ impl Shell {
         let watch = Watch {
             key,
             ticket,
-            anchor: anchor.and_then(Anchor::message),
+            anchor,
             offsets: Arc::clone(&self.local_time.offsets),
             apply: Shell::timeline_posted,
         };
@@ -139,9 +139,23 @@ impl Shell {
         shown
     }
 
-    /// Sends the history requests the shown timeline's rows call for.
+    /// Scrolls the shown timeline back to its place, when one is pending
+    /// and its rows are there. Returns whether it did.
+    fn restore_shown(&mut self, tx: &mut Tx) -> bool {
+        let place = self.tabs.shown_mut().and_then(OpenTimeline::take_restore);
+        if let Some(place) = place {
+            scroll_to(place, tx);
+        }
+        place.is_some()
+    }
+
+    /// Sends timeline `key`'s history requests, on its current window.
     fn send_requests(&self, key: TimelineKey, requests: Vec<Request>) {
-        let (Some(sdk), Some(open)) = (&self.sdk, self.tabs.shown()) else {
+        if requests.is_empty() {
+            return;
+        }
+        let (Some(sdk), Some(open)) = (&self.sdk, self.tabs.shown().filter(|open| open.key == key))
+        else {
             return;
         };
         let (Some(handle), ticket) = (open.handle().cloned(), open.ticket) else {
@@ -156,15 +170,18 @@ impl Shell {
         }
     }
 
-    /// A history request came back. Returns whether the view changed.
+    /// A history request came back. After a success the rows last seen
+    /// may call for the next page or gap, so those requests go too.
+    /// Returns whether the view changed.
     fn timeline_answered(&mut self, key: TimelineKey, ticket: u64, answer: Answer) -> bool {
+        let shown = self.tabs.is_shown(key);
         let Some(open) = self.tabs.get_mut(key, ticket) else {
             return false;
         };
-        match answer {
+        let (succeeded, changed) = match answer {
             Answer::Older(page) => {
                 open.older_loaded(page.as_ref());
-                false
+                (page.is_some(), false)
             }
             Answer::Newer(page) => {
                 if open.newer_loaded(page.as_ref())
@@ -172,14 +189,24 @@ impl Shell {
                 {
                     log::debug!("a focused timeline reached the newest; reopening it live");
                     self.start_watch(opening);
+                    return false;
                 }
-                false
+                (page.is_some(), false)
             }
             Answer::GapFilled(filled) => {
                 open.gap_filled(filled);
-                true
+                (filled, true)
             }
+        };
+        if succeeded && shown {
+            let requests = self
+                .tabs
+                .get_mut(key, ticket)
+                .map(OpenTimeline::requests_due)
+                .unwrap_or_default();
+            self.send_requests(key, requests);
         }
+        changed
     }
 
     /// Saves where the shown timeline's reader is, when it moved since the
@@ -198,7 +225,9 @@ impl Shell {
         let Some(sdk) = &self.sdk else {
             return;
         };
-        sdk.run(move |client| async move {
+        // A save the window's closing asks for still lands: the exit fence
+        // waits for it.
+        sdk.finish(move |client| async move {
             let Ok(session) = client.session(key.account) else {
                 return;
             };
@@ -208,13 +237,37 @@ impl Shell {
         });
     }
 
-    /// The window's poll: saves the reader's place once it has rested.
-    pub(crate) fn poll(&mut self, clock_s: f64, _tx: &mut Tx) -> bool {
-        if self.save_due_s.is_some_and(|due_s| due_s <= clock_s) {
-            self.save_due_s = None;
-            self.save_shown_position();
+    /// The window's poll: returns a timeline shown again to its place,
+    /// saves the reader's place once it has rested, and names the new day
+    /// once one starts. Returns whether the view changed.
+    pub(crate) fn poll(&mut self, clock_s: f64, tx: &mut Tx) -> bool {
+        let restored = self.restore_shown(tx);
+        if let Some(due_s) = self.save_due_s {
+            if due_s <= clock_s {
+                self.save_due_s = None;
+                self.save_shown_position();
+            } else {
+                // Moved since this wake was asked for: wait out the rest.
+                tx.wake_after(Duration::from_secs_f64(due_s - clock_s));
+            }
         }
-        false
+        let new_day = self.follow_the_day(clock_s, tx);
+        restored || new_day
+    }
+
+    /// Keeps `today` current: checks once the local day should have ended,
+    /// so "Today" and "Yesterday" move on at midnight. Returns whether the
+    /// day changed.
+    fn follow_the_day(&mut self, clock_s: f64, tx: &mut Tx) -> bool {
+        if self.day_ends_s.is_some_and(|ends_s| ends_s > clock_s) {
+            return false;
+        }
+        let today = self.local_time.today();
+        let changed = std::mem::replace(&mut self.today, today) != today;
+        let left_s = self.local_time.seconds_left_today();
+        self.day_ends_s = Some(clock_s + left_s);
+        tx.wake_after(Duration::from_secs_f64(left_s));
+        changed
     }
 
     /// The window closes: the shown timeline's place is saved now.
@@ -222,12 +275,14 @@ impl Shell {
         self.save_shown_position();
     }
 
-    /// The reader's place moved: it is saved once it rests.
+    /// The reader's place moved: it is saved once it has rested for
+    /// [`SAVE_AFTER_S`]. One wake is asked for; each move pushes the due
+    /// time on, and the wake waits out the rest.
     fn place_moved(&mut self, tx: &mut Tx) {
         if self.save_due_s.is_none() {
-            self.save_due_s = Some(tx.clock() + SAVE_AFTER_S);
             tx.wake_after(Duration::from_secs_f64(SAVE_AFTER_S));
         }
+        self.save_due_s = Some(tx.clock() + SAVE_AFTER_S);
     }
 
     fn shown_timeline_mut(&mut self, key: TimelineKey) -> Option<&mut OpenTimeline> {
@@ -285,6 +340,7 @@ impl TimelineHost for Shell {
         if let Some(gap) = open.retry_gap(cursor_id) {
             self.send_requests(key, vec![Request::FillGap(gap)]);
         }
+        // Otherwise another fill runs; this one is due once it answers.
     }
 }
 

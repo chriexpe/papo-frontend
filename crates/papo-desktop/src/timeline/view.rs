@@ -108,7 +108,9 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .scroll(ScrollSpec { stick_bottom: true })
+        .scroll(ScrollSpec {
+            stick_bottom: open.follows_newest(),
+        })
         .label(strings::timeline_label())
         .on_at_bottom_if(move |host: &mut S, at_bottom| host.bottom_shown(key, at_bottom))
         .on_layout_tx(move |host: &mut S, rect, tx| {
@@ -143,7 +145,7 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
             gap_failed::<S>(open.key, &gap.cursor.id, style)
         }
         // A gap being filled shows its own skeleton already.
-        TimelineItem::Loading(_) if open.has_fill() => el().w_full(),
+        TimelineItem::Loading(_) if open.fills_beside(index) => el().w_full(),
         // A gap fills itself as it nears; its skeleton stands for it.
         TimelineItem::Gap(_) | TimelineItem::Loading(_) => skeleton(style),
         // The unread marker is D3c's; a local echo comes with the composer.

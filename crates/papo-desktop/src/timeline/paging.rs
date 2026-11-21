@@ -53,6 +53,7 @@ impl OpenTimeline {
     /// The rows `range` are visible: records them for the anchor and
     /// returns the history requests the reader's place calls for.
     pub(crate) fn rows_visible(&mut self, range: Range<usize>) -> Vec<Request> {
+        self.visible_rows = range.clone();
         let visible = self
             .items
             .iter()
@@ -133,8 +134,22 @@ impl OpenTimeline {
         Some(gap)
     }
 
-    /// Whether a gap is being filled.
-    pub(crate) fn has_fill(&self) -> bool {
-        self.filling.is_some()
+    /// Whether the gap being filled sits right beside row `index`: the
+    /// loading row of that fill, whose place the gap's skeleton holds.
+    pub(crate) fn fills_beside(&self, index: usize) -> bool {
+        let Some(filling) = &self.filling else {
+            return false;
+        };
+        let is_filling = |at: Option<usize>| {
+            at.and_then(|at| self.items.get(at))
+                .is_some_and(|item| matches!(item.as_ref(), TimelineItem::Gap(gap) if gap.cursor.id == filling.cursor.id))
+        };
+        is_filling(index.checked_sub(1)) || is_filling(index.checked_add(1))
+    }
+
+    /// The requests the rows last seen call for now: after an answer, the
+    /// next page or gap may be due without the reader moving.
+    pub(crate) fn requests_due(&mut self) -> Vec<Request> {
+        self.rows_visible(self.visible_rows.clone())
     }
 }
