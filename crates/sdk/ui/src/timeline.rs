@@ -223,8 +223,8 @@ impl Timeline {
     /// position [`Timeline::live_at`] cannot reach. Like [`Timeline::focused`] it never follows
     /// new messages; the client opens a live window when the reader goes to the newest.
     /// # Errors
-    /// `AnchorDeleted` for an anchor known deleted, `FocusMissing` for one not cached or missing
-    /// from the server's neighborhood; otherwise as `focused`.
+    /// `AnchorDeleted` for an anchor known deleted, `FocusMissing` for one not cached; otherwise
+    /// as `focused`.
     pub async fn focused_at(
         session: Session,
         channel: Uuid,
@@ -287,11 +287,14 @@ impl Timeline {
             );
         }
         state.refresh(&config)?;
-        // A deletion that landed while the anchor's pages were fetched.
-        if let Some(anchor) = opening.anchor()
-            && state.raw.locate(anchor)? == papo_sdk::LocatedMessage::Deleted
-        {
-            return Err(TimelineError::AnchorDeleted);
+        // The anchor must still be held once its pages are in: a deletion or an eviction may
+        // have landed while they were fetched.
+        if let Some(anchor) = opening.anchor() {
+            match state.raw.locate(anchor)? {
+                papo_sdk::LocatedMessage::Held { .. } => {}
+                papo_sdk::LocatedMessage::Deleted => return Err(TimelineError::AnchorDeleted),
+                papo_sdk::LocatedMessage::Unknown => return Err(TimelineError::FocusMissing),
+            }
         }
         let reading_overlay = crate::timeline_reading::ReadingOverlay::new(
             &session,

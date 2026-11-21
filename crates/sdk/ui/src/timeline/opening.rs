@@ -68,17 +68,18 @@ pub(super) async fn load(
             let subscription = history.subscribe().await?;
             let (message, newer) = held(&subscription.snapshot, *anchor)?;
             let cursor = message.cursor().ok_or(TimelineError::InvalidCursor)?;
-            let messages = if matches!(opening, Opening::LiveAt(_)) {
+            let mut messages = if matches!(opening, Opening::LiveAt(_)) {
                 if newer >= MAX_REACH_BACK_PAGES * usize::from(page_size) {
                     return Err(TimelineError::AnchorTooFar);
                 }
-                let mut messages = newest;
-                messages.extend(older(history, &cursor, page_size).await?);
-                messages.push(message);
-                messages
+                newest
             } else {
-                neighborhood(history, &cursor, page_size).await?
+                // The held anchor seeds its own neighborhood: paging both ways from its exact
+                // cursor never has to find it again, even offline at the edge of a cached run.
+                page(history, Some(&cursor), HistoryOrder::Asc, page_size).await?
             };
+            messages.extend(older(history, &cursor, page_size).await?);
+            messages.push(message);
             return Ok(Loaded {
                 messages,
                 subscription,

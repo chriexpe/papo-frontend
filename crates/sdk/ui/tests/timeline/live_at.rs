@@ -114,8 +114,8 @@ fn a_cached_anchor_past_the_live_reach_opens_in_a_bounded_neighborhood() -> Resu
         let focused = Timeline::focused_at(session, channel(), beyond, config()).await?;
         let neighborhood = ids(&focused.subscribe()?);
         assert!(neighborhood.contains(&beyond));
-        // A page either side of the anchor, never the 80 messages up to the newest.
-        assert!(neighborhood.len() <= 2 * usize::from(config().page_size));
+        // The anchor and a page either side, never the 80 messages up to the newest.
+        assert!(neighborhood.len() <= 2 * usize::from(config().page_size) + 1);
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()
@@ -157,13 +157,13 @@ fn an_unknown_anchor_is_missing_and_a_deleted_one_says_so() -> Result {
     fixture.finish()
 }
 
-#[test]
-fn an_anchor_deleted_while_its_window_opens_is_reported_deleted() -> Result {
+/// Deletes the anchor while the page older than it is held, after the anchor was located.
+fn deleted_while_opening(username: &str, focused: bool) -> Result {
     let fixture = Fixture::new(40, vec![])?;
     fixture.run(async {
-        let session = fixture.signed_in("live-at-race").await?;
-        // Opening refetches the newest page, then the page older than message 36: both are
-        // held, so the deletion lands after the anchor was located.
+        let session = fixture.signed_in(username).await?;
+        // The newest page (36 to 39) is cached. Opening at 36 refetches it, then fetches the
+        // uncached page older than 36: both are held.
         let reader = Timeline::live(session.clone(), channel(), config()).await?;
         let mut newest_page = fixture
             .server()
@@ -174,21 +174,67 @@ fn an_anchor_deleted_while_its_window_opens_is_reported_deleted() -> Result {
             .hold_next_rest("GET", &message_path())
             .await?;
         let anchor = id(&fixture.messages[36])?;
-        let opening = tokio::spawn(Timeline::live_at(
-            session.clone(),
-            channel(),
-            anchor,
-            config(),
-        ));
+        let opening = tokio::spawn({
+            let session = session.clone();
+            async move {
+                if focused {
+                    Timeline::focused_at(session, channel(), anchor, config()).await
+                } else {
+                    Timeline::live_at(session, channel(), anchor, config()).await
+                }
+            }
+        });
         newest_page.wait_started().await?;
         newest_page.release();
-        // The anchor was located; the page older than it is on its way.
         older_page.wait_started().await?;
         assert!(fixture.server().delete_message(&anchor.to_string()).await?);
-        let mut newest = reader.subscribe()?;
-        until(&mut newest, |state| !ids(state).contains(&anchor)).await?;
+        let mut seen = reader.subscribe()?;
+        until(&mut seen, |state| !ids(state).contains(&anchor)).await?;
         older_page.release();
         assert!(matches!(opening.await?, Err(TimelineError::AnchorDeleted)));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}
+
+#[test]
+fn an_anchor_deleted_while_its_live_window_opens_is_reported_deleted() -> Result {
+    deleted_while_opening("live-at-race", false)
+}
+
+#[test]
+fn an_anchor_deleted_while_its_focused_window_opens_is_reported_deleted() -> Result {
+    deleted_while_opening("focused-at-race", true)
+}
+
+#[test]
+fn focused_at_opens_offline_at_the_edge_of_a_cached_run() -> Result {
+    let fixture = Fixture::new(40, vec![])?;
+    fixture.run(async {
+        let session = fixture.signed_in("live-at-offline").await?;
+        // Two cached runs: around message 5, and the newest page (36 to 39). The anchor opens
+        // the newer run; nothing older than it is cached next to it.
+        let around = fixture.messages[5]
+            .cursor()
+            .ok_or("fixture cursor missing")?;
+        let _reply = Timeline::focused(session.clone(), channel(), around, config()).await?;
+        let _reader = Timeline::live(session.clone(), channel(), config()).await?;
+        fixture.server().set_gateway_accepting(false).await;
+        let mut status = session.subscribe_connection();
+        fixture.server().disconnect_gateways();
+        while !matches!(
+            status.borrow_and_update().state,
+            papo_sdk::ConnectionState::Backoff { .. }
+        ) {
+            status.changed().await?;
+        }
+
+        let anchor = id(&fixture.messages[36])?;
+        let timeline = Timeline::focused_at(session, channel(), anchor, config()).await?;
+        assert_eq!(
+            ids(&timeline.subscribe()?),
+            id_range(&fixture.messages[36..])?
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     fixture.finish()
