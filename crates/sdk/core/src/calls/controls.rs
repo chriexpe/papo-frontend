@@ -159,7 +159,16 @@ pub(crate) fn set_video_interest(
 ) -> Result<(), CallError> {
     control_attempt(calls, attempt, runtime, |this, guard, effects| {
         let active = guard.active.as_mut().ok_or(CallError::Ended)?;
-        active.subscriptions.set_interest(targets);
+        let changed = active.subscriptions.set_interest(targets);
+        if changed {
+            let (revision, slots) = active.next_slot_plan(&guard.reducer);
+            SessionCalls::enqueue_media_locked(
+                guard,
+                MediaCommand::SetVideoSlotPlan { revision, slots },
+                effects,
+            );
+            this.publish_active_locked(guard);
+        }
         this.reconcile_subscriptions_locked(guard, effects);
         Ok(())
     })
@@ -176,12 +185,13 @@ pub(crate) fn bind_video(
 ) -> Result<(), CallError> {
     control_attempt(calls, attempt, runtime, |this, guard, effects| {
         let active = guard.active.as_mut().ok_or(CallError::Ended)?;
-        let new_id = destination.id();
-        if let Some(old) = active.destinations.insert((participant, kind), destination)
-            && old.id() != new_id
+        let key = (participant, kind);
+        if let Some(old) = active.destinations.get(&key)
+            && !Arc::ptr_eq(old, &destination)
         {
-            effects.revoke_destinations.push(old);
+            effects.revoke_destinations.push(Arc::clone(old));
         }
+        active.destinations.insert(key, destination);
         let (revision, slots) = active.next_slot_plan(&guard.reducer);
         SessionCalls::enqueue_media_locked(
             guard,

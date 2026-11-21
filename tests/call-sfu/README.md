@@ -49,6 +49,26 @@ The client checks negotiated WebRTC, duplex PCM, camera publication and
 decoding, publisher churn, subscription rejection, reused slot attribution,
 and drain. Its diagnostics show the encoder and decoder factory names.
 
+## Native presenters and CPU packing
+
+Use a disposable database as above. The opt-in Rune mode displays the named
+fixture publisher, then draws decoded RTP. A bounded run exits after the
+requested number of distinct GPU-completed uploads and drains the call:
+
+```sh
+PAPO_CALL_PROOF_RUNE_FRAMES=48 python3 scripts/papo-backend-proof.py \
+    --backend .papo/backend-voice --media-codec vp8 --rune-proof
+```
+
+Without the frame limit, close the proof window to stop it. The Rune proof
+creates one surface key per source upload and waits for draw completion before
+advancing; it does not claim texture reuse or measured GPU acceleration.
+
+For isolated CPU packing costs, with no decode or rendering, run
+`cargo run --locked -p papo-call --example video_pack_cost -- 720p bgra`.
+Profiles are `360p`, `720p`, `1080p` and `four` (four 720p planes per batch);
+paths are `nv12` and `bgra`. These measurements exclude rendering and decode.
+
 ## Lease pressure and resource counts
 
 ```sh

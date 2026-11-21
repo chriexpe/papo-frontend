@@ -13,7 +13,7 @@ use papo_sdk::{
     AudioRoute, CallAttemptId, CameraFacing, InitialMediaSettings, MediaCommand,
     MediaEngineFactory, MediaLease, MediaReport, MediaReportKind, MediaReportSink,
     MediaTransportState, Uuid, VideoCodec, VideoDestinationId, VideoKind, VideoRouteFence,
-    VideoSlotBinding,
+    VideoSlotBinding, VideoTarget,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
@@ -352,9 +352,15 @@ impl Endpoint {
         let publisher_id = who.to_string();
         let command = if on {
             let id = VideoDestinationId::from_raw(u64::try_from(self.video.len())? + 1);
-            self.video
-                .entry((who, kind))
-                .or_insert_with(|| Arc::new(CpuVideoDestination::new(id)));
+            self.video.entry((who, kind)).or_insert_with(|| {
+                Arc::new(CpuVideoDestination::new(
+                    id,
+                    VideoTarget {
+                        participant: who,
+                        kind,
+                    },
+                ))
+            });
             Command::TrackSubscribe {
                 channel_id,
                 publisher_id,

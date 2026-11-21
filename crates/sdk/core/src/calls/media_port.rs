@@ -99,7 +99,8 @@ impl VideoDestinationId {
 ///
 /// Platform presenters (14c) implement this trait and downcast via `as_any` inside `papo-call`.
 pub trait VideoDestination: Send + Sync + 'static {
-    /// Stable identity distinguishing bindings for the same `(participant, kind)`.
+    /// Stable ID for host correlation. A different destination object still replaces this
+    /// binding even if the host reuses its ID.
     fn id(&self) -> VideoDestinationId;
 
     /// Revokes frame delivery when the call ends or this destination is unbound/replaced.

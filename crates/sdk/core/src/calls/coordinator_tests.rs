@@ -965,6 +965,19 @@ async fn video_bindings_interest_and_local_playback() {
         Command::TrackSubscribe { .. }
     ));
 
+    call1
+        .set_video_interest(vec![
+            VideoTarget {
+                participant: ana,
+                kind: VideoKind::Camera,
+            },
+            VideoTarget {
+                participant: beto,
+                kind: VideoKind::Camera,
+            },
+        ])
+        .unwrap();
+
     // Bind destinations for ana and beto, then verify video route reassignment moves slot to beto.
     let (dest_ana, dest_beto) = assert_video_reassignment(&h, &call1, c1, ana, beto);
 
