@@ -426,6 +426,10 @@ pub(crate) fn badge_labelled(name: &str, badge: &str) -> String {
     template!("badge.labelled", "name" => name, "badge" => badge)
 }
 
+mod timeline;
+
+pub(crate) use timeline::*;
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;

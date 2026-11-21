@@ -17,7 +17,7 @@ use rune::{Color, TextStyle, oklch};
 
 /// The colour theme. It is a setting of its own, not the system's light or
 /// dark preference.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Theme {
     /// True black on every large surface.
     #[cfg_attr(
@@ -370,8 +370,10 @@ pub(crate) const RADIUS_PILL_PT: f32 = 14.0;
 /// The header pills' height in points.
 pub(crate) const HEADER_PILL_HEIGHT_PT: f32 = 36.0;
 
+mod density;
 mod sizes;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use density::*;
 pub(crate) use sizes::*;

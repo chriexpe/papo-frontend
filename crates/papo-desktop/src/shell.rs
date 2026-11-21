@@ -7,7 +7,8 @@
 //! screens are open, the "Connected to" pill) and the link to the SDK client.
 //! Server, account and message state come from the SDK and are never copied
 //! here: the account watch posts only what the shell decides with. Sending is
-//! not wired: the field keeps what is typed.
+//! not wired: the field keeps what is typed. The shown channel's timeline is
+//! drawn above the composer (`shell/timeline.rs`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,11 +17,14 @@ use papo_sdk::{AccountId, AuthService, ServerId};
 use rune::{Image, ImageCache, TextEdit};
 
 use crate::account_watch::{self, Accounts};
+use crate::design::MessageLayout;
 use crate::navigation::Navigation;
 use crate::reconnect_hints;
 use crate::sdk_bridge::{BridgeHost, OpenFailure, RequestSlot, Sdk};
 use crate::server_list;
 use crate::sign_in::{self, Event, Fields, Host, SignIn};
+use crate::tabs::Tabs;
+use crate::timeline::local_time::LocalTime;
 
 /// The element key of the composer's text field.
 pub(crate) const COMPOSER_KEY: &str = "composer";
@@ -51,6 +55,22 @@ pub(crate) struct Shell {
     /// The newest reorder sent; only its answer counts.
     reorder_requests: RequestSlot,
     reorder: Reorder,
+    /// The open timelines and the places of closed ones.
+    tabs: Tabs,
+    /// How messages are laid out: Normal until the Appearance settings.
+    message_layout: MessageLayout,
+    /// The time zone and clock message times are read in.
+    local_time: LocalTime,
+    /// When the shown timeline's place is next saved, on the window's
+    /// clock; set while it moves.
+    save_due_s: Option<f64>,
+    /// When the wake asked for that save arrives; one at a time.
+    save_wake_s: Option<f64>,
+    /// The current local day, as days since 1970-01-01: date separators
+    /// name it "Today".
+    today: i64,
+    /// When, on the window's clock, the day is checked again.
+    day_ends_s: Option<f64>,
 }
 
 /// The reorder on its way to the SDK, and the newest one waiting for it.
@@ -95,6 +115,13 @@ impl Default for Shell {
             icon_bytes: HashMap::new(),
             reorder_requests: RequestSlot::default(),
             reorder: Reorder::default(),
+            tabs: Tabs::default(),
+            message_layout: MessageLayout::default(),
+            local_time: LocalTime::system(),
+            save_due_s: None,
+            save_wake_s: None,
+            today: LocalTime::system().today(),
+            day_ends_s: None,
         }
     }
 }
@@ -266,6 +293,7 @@ impl Shell {
         self.end_sign_in();
         if added {
             self.nav.select_server(server);
+            self.sync_timeline(None);
         }
         if let Stage::Running { connected, .. } = &mut self.stage {
             *connected = Some(name);
@@ -359,6 +387,7 @@ mod accounts;
 mod navigate;
 #[cfg(test)]
 mod tests;
+mod timeline;
 mod view;
 
 pub(crate) use view::view;

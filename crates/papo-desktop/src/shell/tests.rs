@@ -12,6 +12,7 @@ use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 
 mod accounts;
 mod navigation;
+mod timeline;
 
 const SIZE_PT: (f32, f32) = (1000.0, 700.0);
 const FRAME_S: f64 = 1.0 / 60.0;

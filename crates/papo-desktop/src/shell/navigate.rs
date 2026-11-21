@@ -19,7 +19,7 @@ use crate::strings;
 impl Shell {
     /// Takes the SDK's newest server list, and decodes the icons that
     /// changed.
-    pub(crate) fn servers_changed(&mut self, list: ServerList) -> bool {
+    pub(crate) fn servers_changed(&mut self, list: ServerList, tx: &mut Tx) -> bool {
         if let Some(images) = &self.images {
             self.icons
                 .retain(|id, _| list.get(*id).is_some_and(|server| server.icon.is_some()));
@@ -40,15 +40,19 @@ impl Shell {
             self.icon_bytes.retain(|id, _| self.icons.contains_key(id));
         }
         self.nav.servers_changed(list);
+        self.retain_timelines();
+        self.sync_timeline(Some(tx));
         true
     }
 
-    pub(crate) fn select_server(&mut self, server: ServerId) {
+    pub(crate) fn select_server(&mut self, server: ServerId, tx: &mut Tx) {
         self.nav.select_server(server);
+        self.sync_timeline(Some(tx));
     }
 
-    pub(crate) fn select_channel(&mut self, channel: &str) {
+    pub(crate) fn select_channel(&mut self, channel: &str, tx: &mut Tx) {
         self.nav.select_channel(channel);
+        self.sync_timeline(Some(tx));
     }
 
     /// Alt+↑ or Alt+↓ on a focused tile.
@@ -184,5 +188,6 @@ impl Shell {
     pub(crate) fn open_server(&mut self, server: ServerId) {
         self.end_sign_in();
         self.nav.select_server(server);
+        self.sync_timeline(None);
     }
 }

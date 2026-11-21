@@ -319,7 +319,7 @@ fn channel_row(
         .focusable(true)
         .focus_selected(selected)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
-        .on_press(move |shell: &mut Shell| shell.select_channel(&id))
+        .on_press_tx(move |shell: &mut Shell, tx| shell.select_channel(&id, tx))
         .child(icon(mark, CHANNEL_ICON_PT).color(mark_color).a11y_hidden())
         .child(
             text(channel.name.as_str())
