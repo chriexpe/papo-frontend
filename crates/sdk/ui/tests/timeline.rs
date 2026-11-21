@@ -12,6 +12,8 @@ mod catch_up_arrivals_live;
 mod content;
 #[path = "timeline/lifecycle.rs"]
 mod lifecycle;
+#[path = "timeline/live_at.rs"]
+mod live_at;
 #[path = "timeline/outgoing.rs"]
 mod outgoing;
 #[path = "timeline/outgoing_faults.rs"]
