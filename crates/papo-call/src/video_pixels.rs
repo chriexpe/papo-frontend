@@ -255,6 +255,7 @@ mod tests {
                 VideoTransferFunction::Bt709,
                 VideoColorPrimaries::Bt709,
             ),
+            pts_ns: None,
             bytes: vec![
                 255, 16, 21, 26, 255, 255, 31, 36, 41, 255, 255, 46, 51, 56, 255, 255, 255, 255,
                 128, 128, 128, 128, 255, 255, 128, 128, 128, 128,

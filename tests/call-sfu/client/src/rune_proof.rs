@@ -277,7 +277,7 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
         .child(picture)
 }
 
-fn pack(frame: &CpuVideoFrame) -> Option<ByteFrame> {
+pub(super) fn pack(frame: &CpuVideoFrame) -> Option<ByteFrame> {
     let transfer = match frame.colorimetry.transfer() {
         // GStreamer defines the BT.601 and BT.709 transfer curves as equivalent.
         VideoTransferFunction::Bt601 | VideoTransferFunction::Bt709 => Transfer::Bt709,
@@ -341,6 +341,7 @@ mod tests {
                 VideoTransferFunction::Bt709,
                 VideoColorPrimaries::Bt709,
             ),
+            pts_ns: None,
             bytes: vec![0, 16, 16, 0, 16, 16, 0, 0, 128, 128],
         }
     }

@@ -13,6 +13,8 @@ pub mod platform;
 mod receive_audio;
 mod receive_video;
 mod slots;
+#[cfg(feature = "benchmark-telemetry")]
+pub mod telemetry;
 mod video_pixels;
 mod video_route;
 

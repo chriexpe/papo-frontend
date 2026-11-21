@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 offsets: [0, y_len],
                 strides: [i32::try_from(stride)?; 2],
                 colorimetry,
+                pts_ns: None,
                 bytes,
             })
         })

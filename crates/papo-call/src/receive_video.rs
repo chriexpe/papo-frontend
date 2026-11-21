@@ -20,6 +20,17 @@ use std::{
     sync::Arc,
 };
 
+const RTP_INTAKE_QUEUE_NS: u64 = 250_000_000;
+const RTP_INTAKE_MAX_BYTES: u32 = 4 * 1024 * 1024;
+
+fn intake_queue() -> MediaResult<gst::Element> {
+    // A single 720p/1080p keyframe bursts 30–60+ RTP packets at once; capping by small buffer
+    // count tears frames before depayload and drops the whole GOP. Bound by time and bytes.
+    let intake = queue(0, RTP_INTAKE_QUEUE_NS)?;
+    intake.set_property("max-size-bytes", RTP_INTAKE_MAX_BYTES);
+    Ok(intake)
+}
+
 #[derive(Default)]
 pub(crate) struct ReceiveVideo {
     ports: HashMap<gst::Pad, Port>,
@@ -205,9 +216,17 @@ fn branch(
             diagnostics::video_destination_mismatch();
             return None;
         }
-        Some((Arc::clone(destination), cpu.reset(), fence))
+        Some((
+            Arc::clone(destination),
+            cpu.reset(),
+            fence,
+            VideoTarget {
+                participant: route.participant,
+                kind: route.kind,
+            },
+        ))
     });
-    let Some((destination, generation, fence)) = destination else {
+    let Some((destination, generation, fence, target)) = destination else {
         let drain = element("fakesink")?;
         drain.set_property("async", false);
         drain.set_property("sync", false);
@@ -232,15 +251,21 @@ fn branch(
                 .new_sample(move |sink| {
                     let sample = sink.pull_sample().map_err(|_| gst::FlowError::Flushing)?;
                     if let Some(cpu) = cpu_destination(destination.as_ref()) {
-                        cpu.put(generation, &sample);
+                        let accepted = cpu.put(generation, &sample);
+                        #[cfg(feature = "benchmark-telemetry")]
+                        if accepted {
+                            crate::telemetry::record_decoded_frame();
+                        }
+                        #[cfg(not(feature = "benchmark-telemetry"))]
+                        let _ = accepted;
                     }
                     Ok(gst::FlowSuccess::Ok)
                 })
                 .build(),
         )
         .build();
-    let intake = queue(8, 0)?;
-    gate_decoder_input(&pad(&intake, "sink")?, fence);
+    let intake = intake_queue()?;
+    gate_decoder_input(&pad(&intake, "sink")?, target, fence);
     let mut elements = vec![intake, depay];
     if codec == Codec::H264 {
         elements.push(element("h264parse")?);
@@ -257,6 +282,8 @@ fn branch(
     ]);
     let result = Branch::attach(graph, elements, Some(source), None)?;
     diagnostics::codec_selected(&decoder, "decoder");
+    #[cfg(feature = "benchmark-telemetry")]
+    crate::telemetry::record_decoder(&decoder);
     Ok(Some(result))
 }
 
@@ -326,5 +353,92 @@ mod tests {
         let original = binding();
         assert!(equivalent(Some(&original), Some(&original.clone())));
         assert!(!equivalent(Some(&original), Some(&binding())));
+    }
+
+    #[test]
+    fn intake_queue_preserves_multi_packet_keyframe_bursts_without_tearing() {
+        use gstreamer_rtp::prelude::RTPBufferExt as _;
+
+        gst::init().unwrap();
+        let pipeline = gst::Pipeline::new();
+        let src = app::AppSrc::builder()
+            .caps(
+                &gst::Caps::builder("application/x-rtp")
+                    .field("media", "video")
+                    .field("clock-rate", 90_000_i32)
+                    .field("encoding-name", "VP8")
+                    .field("payload", 96_i32)
+                    .build(),
+            )
+            .format(gst::Format::Time)
+            .build();
+        let intake = intake_queue().unwrap();
+        let depay = element("rtpvp8depay").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sink = app::AppSink::builder()
+            .sync(false)
+            .async_(false)
+            .callbacks(
+                app::AppSinkCallbacks::builder()
+                    .new_sample(move |sink| {
+                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Flushing)?;
+                        let _ = tx.send(sample.buffer().map_or(0, |b| b.size()));
+                        Ok(gst::FlowSuccess::Ok)
+                    })
+                    .build(),
+            )
+            .build();
+        pipeline
+            .add_many([src.upcast_ref(), &intake, &depay, sink.upcast_ref()])
+            .unwrap();
+        gst::Element::link_many([src.upcast_ref(), &intake, &depay, sink.upcast_ref()]).unwrap();
+        let block = PadProbe::block(&intake.static_pad("src").unwrap());
+        pipeline.set_state(gst::State::Playing).unwrap();
+
+        // Push a 40-packet VP8 keyframe burst (packets 0..39, same PTS=0, marker on packet 39).
+        for idx in 0_u16..40 {
+            let payload_len = if idx == 0 { 16 } else { 100 };
+            let mut buffer = gst::Buffer::new_rtp_with_sizes(payload_len, 0, 0).unwrap();
+            {
+                let mut rtp =
+                    gstreamer_rtp::RTPBuffer::from_buffer_writable(buffer.get_mut().unwrap())
+                        .unwrap();
+                rtp.set_payload_type(96);
+                rtp.set_seq(100 + idx);
+                rtp.set_timestamp(90_000);
+                rtp.set_marker(idx == 39);
+                let payload = rtp.payload_mut().unwrap();
+                // RFC 7741 VP8 payload descriptor: S=1 (start of partition) on packet 0 only,
+                // and VP8 uncompressed keyframe header (bit 0 == 0) in first frame byte.
+                payload[0] = if idx == 0 { 0x10 } else { 0x00 };
+                if idx == 0 {
+                    payload[1] = 0x00;
+                    payload[4] = 0x9d;
+                    payload[5] = 0x01;
+                    payload[6] = 0x2a;
+                }
+            }
+            buffer
+                .get_mut()
+                .unwrap()
+                .set_pts(gst::ClockTime::from_nseconds(0));
+            src.push_buffer(buffer).unwrap();
+        }
+        // Wait for the burst to back up inside intake before releasing downstream.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while intake.property::<u32>("current-level-buffers") < 39
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(intake.property::<u32>("current-level-buffers") >= 39);
+        drop(block);
+        src.end_of_stream().unwrap();
+
+        let assembled_bytes = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("complete 40-packet VP8 keyframe must survive intake queue");
+        assert!(assembled_bytes > 3500);
+        pipeline.set_state(gst::State::Null).unwrap();
     }
 }

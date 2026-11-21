@@ -21,6 +21,8 @@ pub struct CpuVideoFrame {
     pub strides: [i32; 2],
     /// GStreamer colorimetry, including range. The CPU path preserves source orientation.
     pub colorimetry: video::VideoColorimetry,
+    /// Presentation timestamp in nanoseconds from GStreamer, if present.
+    pub pts_ns: Option<u64>,
     /// Frame bytes including any per-plane padding.
     pub bytes: Vec<u8>,
 }
@@ -42,6 +44,7 @@ struct Mailbox {
     format: Option<Format>,
     pending: Option<CpuVideoFrame>,
     in_flight: bool,
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 fn lock(mailbox: &Mutex<Mailbox>) -> MutexGuard<'_, Mailbox> {
@@ -65,6 +68,20 @@ impl CpuVideoDestination {
             target,
             mailbox: Arc::default(),
         }
+    }
+
+    /// Installs or clears a notification callback invoked outside the mailbox lock when a new frame arrives.
+    pub fn set_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+        let (old, rejected) = {
+            let mut state = lock(&self.mailbox);
+            if state.revoked {
+                (None, waker)
+            } else {
+                (std::mem::replace(&mut state.waker, waker), None)
+            }
+        };
+        drop(old);
+        drop(rejected);
     }
 
     /// Takes the newest pending frame if no lease is outstanding.
@@ -97,36 +114,36 @@ impl CpuVideoDestination {
         state.generation
     }
 
-    pub(crate) fn put(&self, generation: u64, sample: &gst::Sample) {
+    pub(crate) fn put(&self, generation: u64, sample: &gst::Sample) -> bool {
         {
             let state = lock(&self.mailbox);
             if state.revoked || state.generation != generation {
-                return;
+                return false;
             }
         }
-        self.copy_sample(generation, sample);
+        self.copy_sample(generation, sample)
     }
 
-    fn copy_sample(&self, generation: u64, sample: &gst::Sample) {
+    fn copy_sample(&self, generation: u64, sample: &gst::Sample) -> bool {
         use video::VideoFrameExt as _;
         let Some(info) = sample
             .caps()
             .and_then(|caps| video::VideoInfo::from_caps(caps).ok())
         else {
-            return;
+            return false;
         };
         let Some(buffer) = sample.buffer() else {
-            return;
+            return false;
         };
         let Ok(mapped) = video::VideoFrameRef::from_buffer_ref_readable(buffer, &info) else {
-            return;
+            return false;
         };
         let strides = mapped.plane_stride();
         let (Some(&y_stride), Some(&uv_stride)) = (strides.first(), strides.get(1)) else {
-            return;
+            return false;
         };
         let (Ok(y), Ok(uv)) = (mapped.plane_data(0), mapped.plane_data(1)) else {
-            return;
+            return false;
         };
         let format = Format {
             width_px: info.width(),
@@ -135,29 +152,33 @@ impl CpuVideoDestination {
             plane_bytes: [y.len(), uv.len()],
             strides: [y_stride, uv_stride],
         };
-        let epoch = {
+        let (epoch, cleared) = {
             let mut state = lock(&self.mailbox);
             if state.revoked || state.generation != generation {
-                return;
+                return false;
             }
+            let mut cleared = None;
             if state.format.as_ref() != Some(&format) {
                 let Some(epoch) = state.format_epoch.checked_add(1) else {
                     state.revoked = true;
-                    state.pending = None;
-                    return;
+                    let dropped = state.pending.take();
+                    drop(state);
+                    drop(dropped);
+                    return false;
                 };
                 state.format_epoch = epoch;
                 state.format = Some(format);
-                state.pending = None;
+                cleared = state.pending.take();
             }
-            state.format_epoch
+            (state.format_epoch, cleared)
         };
+        drop(cleared);
         let Some(size) = y.len().checked_add(uv.len()) else {
-            return;
+            return false;
         };
         let mut bytes = Vec::new();
         if bytes.try_reserve_exact(size).is_err() {
-            return;
+            return false;
         }
         bytes.extend_from_slice(y);
         bytes.extend_from_slice(uv);
@@ -167,12 +188,23 @@ impl CpuVideoDestination {
             offsets: [0, y.len()],
             strides: [y_stride, uv_stride],
             colorimetry: info.colorimetry(),
+            pts_ns: buffer.pts().map(gst::ClockTime::nseconds),
             bytes,
         };
-        let mut state = lock(&self.mailbox);
-        if !state.revoked && state.generation == generation && state.format_epoch == epoch {
-            state.pending = Some(frame);
+        let (accepted, replaced, wake) = {
+            let mut state = lock(&self.mailbox);
+            if !state.revoked && state.generation == generation && state.format_epoch == epoch {
+                let old = state.pending.replace(frame);
+                (true, old, state.waker.clone())
+            } else {
+                (false, Some(frame), None)
+            }
+        };
+        drop(replaced);
+        if let Some(wake) = wake {
+            wake();
         }
+        accepted
     }
 }
 
@@ -184,9 +216,13 @@ impl VideoDestination for CpuVideoDestination {
         self
     }
     fn revoke(&self) {
-        let mut state = lock(&self.mailbox);
-        state.revoked = true;
-        state.pending = None;
+        let (pending, waker) = {
+            let mut state = lock(&self.mailbox);
+            state.revoked = true;
+            (state.pending.take(), state.waker.take())
+        };
+        drop(pending);
+        drop(waker);
     }
 }
 
@@ -362,12 +398,53 @@ mod tests {
     fn revocation_invalidates_lease_and_rejects_new_samples() {
         let dest = destination();
         let generation = dest.reset();
-        dest.put(generation, &sample(4, 1));
+        assert!(dest.put(generation, &sample(4, 1)));
         let lease = dest.take().unwrap();
         dest.revoke();
         assert!(!lease.is_current());
-        dest.put(generation, &sample(4, 2));
+        assert!(!dest.put(generation, &sample(4, 2)));
+        let sentinel = Arc::new(());
+        let weak = Arc::downgrade(&sentinel);
+        let waker_sentinel = Arc::clone(&sentinel);
+        drop(sentinel);
+        dest.set_waker(Some(Arc::new(move || {
+            let _keep = &waker_sentinel;
+        })));
+        assert_eq!(weak.strong_count(), 0);
         drop(lease);
         assert!(dest.take().is_none());
+    }
+
+    #[test]
+    fn pts_and_lock_free_waker_survive_delivery() {
+        gst::init().unwrap();
+        let dest = Arc::new(destination());
+        let generation = dest.reset();
+        let woke = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dest_for_waker = Arc::clone(&dest);
+        let woke_for_waker = Arc::clone(&woke);
+        dest.set_waker(Some(Arc::new(move || {
+            // Reentering take() from the waker proves the mailbox lock is released first.
+            let taken = dest_for_waker.take().expect("pending frame available");
+            assert_eq!(taken.pts_ns, Some(123_456_789));
+            woke_for_waker.store(true, std::sync::atomic::Ordering::Relaxed);
+        })));
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("format", "NV12")
+            .field("width", 4_i32)
+            .field("height", 4_i32)
+            .field("framerate", gst::Fraction::new(30, 1))
+            .build();
+        let info = video::VideoInfo::from_caps(&caps).unwrap();
+        let mut buffer = gst::Buffer::with_size(info.size()).unwrap();
+        {
+            let buf_mut = buffer.get_mut().unwrap();
+            buf_mut.set_pts(gst::ClockTime::from_nseconds(123_456_789));
+            buf_mut.map_writable().unwrap().as_mut_slice().fill(7);
+        }
+        let samp = gst::Sample::builder().caps(&caps).buffer(&buffer).build();
+        dest.put(generation, &samp);
+        assert!(woke.load(std::sync::atomic::Ordering::Relaxed));
+        dest.set_waker(None);
     }
 }
