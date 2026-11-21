@@ -126,7 +126,7 @@ fn runtime(items: Vector<Arc<TimelineItem>>, layout: MessageLayout) -> Runtime<H
         system_dark: true,
         scale: 1.0,
     };
-    let mut rt = Runtime::new(host, host_view, SIZE_PT, env);
+    let mut rt = Runtime::with_text(host, host_view, SIZE_PT, env, crate::fonts::text_system());
     rt.frame(0.0);
     until_idle(&mut rt);
     rt

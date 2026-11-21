@@ -12,6 +12,7 @@ mod account_watch;
 mod badges;
 mod channel_pane;
 mod design;
+mod fonts;
 mod icons;
 mod keyring;
 mod lifecycle;
