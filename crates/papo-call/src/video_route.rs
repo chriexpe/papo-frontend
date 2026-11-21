@@ -3,7 +3,7 @@
 use gstreamer as gst;
 use gstreamer_rtp::RTPBuffer;
 use gstreamer_sdp as sdp;
-use papo_sdk::VideoRouteFence;
+use papo_sdk::{VideoRouteFence, VideoTarget};
 
 const URI: &str = "urn:papo:rtp-hdrext:video-route-v1";
 const OFFER_ID: u8 = 14;
@@ -28,8 +28,11 @@ pub(crate) fn negotiated_extension(media: &sdp::SDPMediaRef) -> Option<u8> {
     })
 }
 
-pub(crate) fn gate_decoder_input(pad: &gst::Pad, fence: VideoRouteFence) {
+pub(crate) fn gate_decoder_input(pad: &gst::Pad, target: VideoTarget, fence: VideoRouteFence) {
     use gst::prelude::*;
+
+    #[cfg(not(feature = "benchmark-telemetry"))]
+    let _ = target;
 
     // This probe belongs to the branch's sink pad and survives for exactly that pad's life.
     // It is downstream of internal jitter/FEC/RTX buffering, before our queue. A buffer that
@@ -42,6 +45,20 @@ pub(crate) fn gate_decoder_input(pad: &gst::Pad, fence: VideoRouteFence) {
                 || info
                     .buffer_list()
                     .is_some_and(|list| list.iter().all(accepts));
+            #[cfg(feature = "benchmark-telemetry")]
+            {
+                if accepted {
+                    if let Some(buffer) = info.buffer() {
+                        record_accepted_packet(buffer, target, fence);
+                    } else if let Some(list) = info.buffer_list() {
+                        for buffer in list.iter() {
+                            record_accepted_packet(buffer, target, fence);
+                        }
+                    }
+                } else {
+                    crate::telemetry::record_fence_rejected();
+                }
+            }
             if accepted {
                 gst::PadProbeReturn::Ok
             } else {
@@ -49,6 +66,19 @@ pub(crate) fn gate_decoder_input(pad: &gst::Pad, fence: VideoRouteFence) {
             }
         },
     );
+}
+
+#[cfg(feature = "benchmark-telemetry")]
+fn record_accepted_packet(buffer: &gst::BufferRef, target: VideoTarget, fence: VideoRouteFence) {
+    if let Ok(packet) = RTPBuffer::from_buffer_readable(buffer) {
+        crate::telemetry::record_fence_accepted(
+            target,
+            fence.assignment_id,
+            packet.timestamp(),
+            packet.is_marker(),
+            buffer.pts().map(gst::ClockTime::nseconds),
+        );
+    }
 }
 
 fn accepts_assignment(buffer: &gst::BufferRef, fence: VideoRouteFence) -> bool {

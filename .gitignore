@@ -20,3 +20,6 @@ AGENTS.md
 
 # Local working files: plans, design and reference notes.
 /docs/
+
+# Proof-only Vulkan instrumentation shared object built by tests/call-sfu/present-timing-layer/build.sh.
+/tests/call-sfu/present-timing-layer/libVkLayer_papo_present_timing.so

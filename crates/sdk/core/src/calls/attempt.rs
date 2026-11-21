@@ -17,9 +17,9 @@ use super::{
     },
     model::{
         CallAttemptId, CallParticipant, CallPhase, CallSettings, CallSnapshot, CallWarning,
-        PlaybackSettings, VideoBinding, VideoCodec, VideoKind,
+        PlaybackSettings, VideoBinding, VideoCodec, VideoKind, VideoTarget,
     },
-    reducer::VoiceReducer,
+    reducer::{ReducedVideoRoute, VoiceReducer},
     subscriptions::VideoSubscriptionPlanner,
 };
 
@@ -164,11 +164,7 @@ impl ActiveAttempt {
                 participant: route.participant,
                 kind: route.kind,
                 first_seq: route.first_seq,
-                destination_id: route.fence.and_then(|_| {
-                    self.destinations
-                        .get(&(route.participant, route.kind))
-                        .map(|dest| dest.id())
-                }),
+                destination_id: self.visible_video_destination(route).map(|dest| dest.id()),
             })
             .collect();
         CallSnapshot {
@@ -194,6 +190,21 @@ impl ActiveAttempt {
         }
     }
 
+    fn visible_video_destination(
+        &self,
+        route: &ReducedVideoRoute,
+    ) -> Option<&Arc<dyn VideoDestination>> {
+        route.fence?;
+        let target = VideoTarget {
+            participant: route.participant,
+            kind: route.kind,
+        };
+        if !self.subscriptions.is_interested(target) {
+            return None;
+        }
+        self.destinations.get(&(target.participant, target.kind))
+    }
+
     /// Advances the monotonic per-attempt slot-plan revision and projects `SetVideoSlotPlan`.
     pub(crate) fn next_slot_plan(
         &mut self,
@@ -208,11 +219,7 @@ impl ActiveAttempt {
                 participant: route.participant,
                 kind: route.kind,
                 fence: route.fence,
-                destination: route.fence.and_then(|_| {
-                    self.destinations
-                        .get(&(route.participant, route.kind))
-                        .cloned()
-                }),
+                destination: self.visible_video_destination(route).cloned(),
             })
             .collect();
         (self.video_slot_plan_revision, slots)

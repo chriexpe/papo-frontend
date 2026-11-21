@@ -7,6 +7,9 @@ license = "AGPL-3.0-or-later"
 publish = false
 description = "UI-independent GStreamer WebRTC call engine for Papo clients"
 
+[features]
+benchmark-telemetry = []
+
 [dependencies]
 papo-sdk = { path = "../sdk/core" }
 gstreamer = "0.24"

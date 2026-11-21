@@ -1,0 +1,15 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_PAPO_present_timing",
+        "type": "GLOBAL",
+        "library_path": "./libVkLayer_papo_present_timing.so",
+        "api_version": "1.4.363",
+        "implementation_version": "1",
+        "description": "Papo proof-only VK_EXT_present_timing instrumentation layer",
+        "functions": {
+            "vkGetInstanceProcAddr": "papo_pt_GetInstanceProcAddr",
+            "vkGetDeviceProcAddr": "papo_pt_GetDeviceProcAddr"
+        }
+    }
+}

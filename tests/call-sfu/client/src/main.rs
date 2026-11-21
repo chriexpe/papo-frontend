@@ -1,6 +1,18 @@
 //! Loopback real-media proof. Signalling is typed and intentionally lives outside papo-call.
 
+#[cfg(feature = "rune-proof")]
+mod bench_audio;
+#[cfg(feature = "rune-proof")]
+mod bench_profile;
+#[cfg(feature = "rune-proof")]
+mod bench_report;
+#[cfg(feature = "rune-proof")]
+mod bench_session;
 mod endpoint;
+#[cfg(feature = "rune-proof")]
+mod rune_bench;
+#[cfg(feature = "rune-proof")]
+mod rune_proof;
 
 use endpoint::Endpoint;
 use papo_api::{
@@ -172,7 +184,10 @@ async fn fixture(address: &str) -> Result {
     Ok(())
 }
 
-async fn backend(address: &str, password: &str, codec: VideoCodec) -> Result {
+async fn backend_room(
+    address: &str,
+    password: &str,
+) -> Result<(RestClient, RestClient, Uuid, String)> {
     let a = login(address, "publisher", password, true).await?;
     a.create_server(&CreateServerRequest {
         name: "Call proof".into(),
@@ -196,6 +211,11 @@ async fn backend(address: &str, password: &str, codec: VideoCodec) -> Result {
         .await?
         .id
         .ok_or("channel missing")?;
+    Ok((a, b, owner, channel))
+}
+
+async fn backend(address: &str, password: &str, codec: VideoCodec) -> Result {
+    let (a, b, owner, channel) = backend_room(address, password).await?;
     let mut publisher = Endpoint::join(&a, &channel, 520.0, "red").await?;
     let mut receiver = Endpoint::join(&b, &channel, 760.0, "green").await?;
     while !publisher.connected || !receiver.connected {
@@ -368,7 +388,19 @@ impl log::Log for CodecLog {
 async fn main() -> Result {
     log::set_logger(&CodecLog).map_err(|_| "logger already installed")?;
     log::set_max_level(log::LevelFilter::Info);
+    #[cfg(feature = "rune-proof")]
+    if std::env::var_os("PAPO_CALL_BENCH_STARVE_AUDIO").is_some() {
+        return bench_audio::run_audio_starvation_self_test();
+    }
     let address = std::env::var("PAPO_CALL_PROOF_ADDRESS")?;
+    #[cfg(feature = "rune-proof")]
+    if std::env::var_os("PAPO_CALL_BENCH_PROFILE").is_some() {
+        return rune_bench::run(address);
+    }
+    #[cfg(feature = "rune-proof")]
+    if std::env::var_os("PAPO_CALL_PROOF_RUNE").is_some() {
+        return rune_proof::run(address, std::env::var("PAPO_PROOF_PASSWORD")?);
+    }
     #[cfg(target_os = "linux")]
     if std::env::var_os("PAPO_CALL_PROOF_PLATEAU").is_some() {
         return tokio::time::timeout(Duration::from_secs(150), plateau(&address)).await?;
