@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Papo"
-include(":compose", ":sdk-proof")
+include(":compose", ":sdk-proof", ":video-proof")

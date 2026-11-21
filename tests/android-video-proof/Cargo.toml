@@ -1,0 +1,22 @@
+[package]
+name = "papo-android-video-proof"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gstreamer = "0.24"
+jni = "0.21.1"
+papo-api = { path = "../../crates/sdk/api" }
+papo-call = { path = "../../crates/papo-call", features = ["benchmark-telemetry"] }
+papo-sdk = { path = "../../crates/sdk/core" }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-sys = { version = "0.6", features = ["nativewindow"] }
