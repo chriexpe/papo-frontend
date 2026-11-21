@@ -157,6 +157,17 @@ const DANGER_CHROMA: f32 = 0.11;
 const SUCCESS_CHROMA: f32 = 0.09;
 /// The warning colour's OKLCH chroma; its hue moves with the theme.
 const WARNING_CHROMA: f32 = 0.09;
+/// The mention-row marker's OKLCH hue in degrees: amber (`docs/design.md`
+/// §4).
+const MENTION_ROW_HUE_DEGREES: f32 = 82.0;
+/// The mention-row marker's OKLCH chroma, as the design project draws it.
+const MENTION_ROW_CHROMA: f32 = 0.15;
+/// A code token's OKLCH chroma (`docs/design.md` §9).
+const CODE_TOKEN_CHROMA: f32 = 0.12;
+/// The contrast a code token keeps on `surface.code`.
+const CODE_TOKEN_FLOOR: f32 = 4.5;
+/// How far a code token's lightness moves per step towards its floor.
+const CODE_TOKEN_STEP: f32 = 0.01;
 /// The opacity of the black that dims the app behind a popup.
 const SCRIM_ALPHA: f32 = 0.5;
 /// The opacity of a popup's black shadow.
@@ -214,6 +225,17 @@ pub(crate) struct Palette {
     /// The count drawn on the mention colour: white, by Christian's choice
     /// (`docs/design.md` §3, Badges), held to 3:1.
     pub(crate) mention_on: Color,
+    /// A mention's chip, behind its text in the link colour: the accent
+    /// mixed into `surface.content` in OKLab, 20 % dark and 12 % light.
+    pub(crate) accent_soft: Color,
+    /// The bar on the left of a message that mentions you: amber.
+    pub(crate) mention_bar: Color,
+    /// The background of a message that mentions you: the bar's amber mixed
+    /// into `surface.content` in OKLab, 4 % dark and 13 % light, the most
+    /// every theme's text floors allow (Christian, 2026-11-21).
+    pub(crate) mention_row: Color,
+    /// Highlighted code's token colours.
+    pub(crate) code: CodeInk,
     /// What dims the app behind a popup.
     pub(crate) scrim: Color,
     /// A popup's shadow.
@@ -235,15 +257,23 @@ impl Palette {
         let success_lightness = if dark { 0.76 } else { 0.50 };
         let (warning_lightness, warning_hue) = if dark { (0.82, 80.0) } else { (0.50, 65.0) };
         let sidebar = neutral(lightness.surface_sidebar);
+        let content = neutral(lightness.surface_content);
+        let code = neutral(lightness.surface_code);
+        let mention_bar_lightness = if dark { 0.78 } else { 0.70 };
+        let mention_bar = oklch(
+            mention_bar_lightness,
+            MENTION_ROW_CHROMA,
+            MENTION_ROW_HUE_DEGREES,
+        );
         let selected_share = if dark { 0.10 } else { 0.09 };
         Palette {
             surface_rail: neutral(lightness.surface_rail),
             surface_sidebar: sidebar,
             surface_hover: neutral(lightness.surface_hover),
             surface_selected: mix_oklab(sidebar, accent, selected_share),
-            surface_content: neutral(lightness.surface_content),
+            surface_content: content,
             surface_pill: neutral(lightness.surface_pill),
-            surface_code: neutral(lightness.surface_code),
+            surface_code: code,
             line_subtle: neutral(lightness.line_subtle),
             line_strong: neutral(lightness.line_strong),
             line_pill: neutral(lightness.line_pill),
@@ -260,6 +290,10 @@ impl Palette {
             success: oklch(success_lightness, SUCCESS_CHROMA, SUCCESS_HUE_DEGREES),
             mention,
             mention_on: Color::WHITE,
+            accent_soft: mix_oklab(content, accent, if dark { 0.20 } else { 0.12 }),
+            mention_bar,
+            mention_row: mix_oklab(content, mention_bar, if dark { 0.04 } else { 0.13 }),
+            code: CodeInk::new(dark, code),
             scrim: Color::BLACK.alpha(SCRIM_ALPHA),
             popup_shadow: Color::BLACK.alpha(POPUP_SHADOW_ALPHA),
         }
@@ -276,6 +310,52 @@ fn mix_oklab(base: Color, tint: Color, share: f32) -> Color {
         *channel = a + (b - a) * share;
     }
     Color::from_oklab(mixed)
+}
+
+/// Highlighted code's token colours (`docs/design.md` §9). Comments take
+/// `text.muted` and everything else `text.primary`, so only these five have
+/// colours of their own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CodeInk {
+    /// Keywords: the accent's hue.
+    pub(crate) keyword: Color,
+    pub(crate) string: Color,
+    /// Numbers and constants.
+    pub(crate) number: Color,
+    pub(crate) type_name: Color,
+    pub(crate) function: Color,
+}
+
+impl CodeInk {
+    fn new(dark: bool, surface_code: Color) -> CodeInk {
+        let token = |hue: f32| code_token(hue, dark, surface_code);
+        // Numbers move to 80° under the Orange accent and functions to 256°
+        // under Teal, so no token shares the keyword's hue; the accent
+        // choice is not built yet, and Blue clashes with neither.
+        CodeInk {
+            keyword: token(ACCENT_HUE_DEGREES),
+            string: token(150.0),
+            number: token(52.0),
+            type_name: token(300.0),
+            function: token(196.0),
+        }
+    }
+}
+
+/// A code token of `hue`: lightness 0.78 on dark themes and 0.48 on light
+/// ones, moved away from `surface_code` until it reaches 4.5:1 on it.
+fn code_token(hue: f32, dark: bool, surface_code: Color) -> Color {
+    let (mut lightness, step) = if dark {
+        (0.78, CODE_TOKEN_STEP)
+    } else {
+        (0.48, -CODE_TOKEN_STEP)
+    };
+    let mut colour = oklch(lightness, CODE_TOKEN_CHROMA, hue);
+    while contrast(colour, surface_code) < CODE_TOKEN_FLOOR && (0.0..=1.0).contains(&lightness) {
+        lightness += step;
+        colour = oklch(lightness, CODE_TOKEN_CHROMA, hue);
+    }
+    colour
 }
 
 /// Black or white, whichever contrasts more with `background`.
@@ -299,7 +379,7 @@ fn contrast(a: Color, b: Color) -> f32 {
 
 /// `type.body` in points: message text and channel names. Every other text
 /// size is a ratio of it.
-const TYPE_BODY_PT: f32 = 14.0;
+pub(crate) const TYPE_BODY_PT: f32 = 14.0;
 /// Text's line height, as a multiple of its size.
 const BODY_LINE_HEIGHT: f32 = 1.45;
 
@@ -312,9 +392,9 @@ const fn type_scaled(ratio: f32, weight: f32) -> TextStyle {
 /// Weight 400: running text.
 const WEIGHT_REGULAR: f32 = 400.0;
 /// Weight 500: selected and secondary emphasis.
-const WEIGHT_MEDIUM: f32 = 500.0;
+pub(crate) const WEIGHT_MEDIUM: f32 = 500.0;
 /// Weight 600: names, titles, unread channels.
-const WEIGHT_SEMIBOLD: f32 = 600.0;
+pub(crate) const WEIGHT_SEMIBOLD: f32 = 600.0;
 
 /// Message text and channel names, at weight 400.
 pub(crate) const TYPE_BODY: TextStyle = type_scaled(1.0, WEIGHT_REGULAR);
@@ -370,10 +450,12 @@ pub(crate) const RADIUS_PILL_PT: f32 = 14.0;
 /// The header pills' height in points.
 pub(crate) const HEADER_PILL_HEIGHT_PT: f32 = 36.0;
 
+mod content;
 mod density;
 mod sizes;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use content::*;
 pub(crate) use density::*;
 pub(crate) use sizes::*;

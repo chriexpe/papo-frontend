@@ -18,6 +18,7 @@ fn server(name: &str, channels: &[&str]) -> ServerEntry {
         id: id(name),
         name: name.to_owned(),
         address: format!("{name}.example.invalid"),
+        host: None,
         owner: None,
         icon: None,
         account: None,

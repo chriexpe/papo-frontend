@@ -50,6 +50,16 @@ imbl = "=7.0.2"
 # The system's time zone at each message's time, for its local day and minute;
 # the version the SDK locks, with the clock for the local zone.
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+# Jumbo emoji: a message's graphemes, and which of them draw as emoji, by
+# the same Unicode properties Rune routes to the colour emoji font with; the
+# versions and features Rune already locks.
+unicode-segmentation = "1.13"
+icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
+# Code blocks' syntax colours: Rune's highlighter, at Rune's revision.
+rune-highlights = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+# Links' hosts, parsed as the SDK checks them (WHATWG URLs), for the
+# open-link confirmation; the version the SDK locks.
+url = "2.5"
 log = "0.4"
 env_logger = "0.11"
 

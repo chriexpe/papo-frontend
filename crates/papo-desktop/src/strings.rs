@@ -426,8 +426,10 @@ pub(crate) fn badge_labelled(name: &str, badge: &str) -> String {
     template!("badge.labelled", "name" => name, "badge" => badge)
 }
 
+mod links;
 mod timeline;
 
+pub(crate) use links::*;
 pub(crate) use timeline::*;
 
 #[cfg(test)]

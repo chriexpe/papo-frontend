@@ -27,6 +27,7 @@ pub(super) fn entry(name: &str, channels: &[&str]) -> ServerEntry {
         id: named(name),
         name: name.to_owned(),
         address: format!("{name}.example.invalid"),
+        host: None,
         owner: Some("nadia".to_owned()),
         icon: None,
         account: Some(ana(name)),

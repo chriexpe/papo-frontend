@@ -58,6 +58,8 @@ pub(crate) struct ServerEntry {
     pub(crate) name: String,
     /// Its address as shown: without `https://` or a trailing slash.
     pub(crate) address: String,
+    /// Its address's host, lowercase: a link to it opens without asking.
+    pub(crate) host: Option<String>,
     /// Its owner's username, when the resource names one.
     pub(crate) owner: Option<String>,
     /// Its icon's encoded bytes from the account's media store, at most
@@ -138,6 +140,9 @@ pub(crate) fn project(
                     .and_then(|found| found.name.clone())
                     .unwrap_or_else(|| address.clone()),
                 address,
+                host: url::Url::parse(saved.address.as_str())
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_ascii_lowercase)),
                 owner: found.and_then(|found| found.owner.clone()),
                 icon: found.and_then(|found| found.icon.clone()),
                 account: account.map(AccountEntry::of),

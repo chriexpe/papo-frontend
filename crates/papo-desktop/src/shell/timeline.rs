@@ -17,6 +17,7 @@ use rune::Tx;
 
 use super::Shell;
 use crate::tabs::{Opening, Showing};
+use crate::timeline::content::Press;
 use crate::timeline::watch::{Posted, Watch};
 use crate::timeline::{OpenTimeline, Request, TimelineHost, TimelineKey, scroll_to};
 
@@ -132,7 +133,7 @@ impl Shell {
                     }
                 }
             }
-            Posted::Resources(resources) => open.resources = Some(resources),
+            Posted::Resources(resources) => open.set_resources(resources),
             Posted::Failed => open.phase = crate::timeline::Phase::Failed,
             Posted::Closed => open.phase = crate::timeline::Phase::Closed,
         }
@@ -238,8 +239,9 @@ impl Shell {
     }
 
     /// The window's poll: returns a timeline shown again to its place,
-    /// saves the reader's place once it has rested, and names the new day
-    /// once one starts. Returns whether the view changed.
+    /// saves the reader's place once it has rested, ends a code block's
+    /// "Copied", and names the new day once one starts. Returns whether the
+    /// view changed.
     pub(crate) fn poll(&mut self, clock_s: f64, tx: &mut Tx) -> bool {
         let restored = self.restore_shown(tx);
         if self.save_wake_s.is_some_and(|wake_s| wake_s <= clock_s) {
@@ -257,8 +259,9 @@ impl Shell {
                 None => {}
             }
         }
+        let copied_ended = self.end_copied(clock_s);
         let new_day = self.follow_the_day(clock_s, tx);
-        restored || new_day
+        restored || copied_ended || new_day
     }
 
     /// Keeps `today` current: checks once the local day should have ended,
@@ -340,6 +343,18 @@ impl TimelineHost for Shell {
             open.tracker.bottom_shown(at_bottom);
         }
         false
+    }
+
+    fn content_pressed(&mut self, key: TimelineKey, message: Uuid, press: Press, tx: &mut Tx) {
+        self.content_pressed_in(key, message, press, tx);
+    }
+
+    fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx) {
+        self.code_copied_in(key, message, index, tx);
+    }
+
+    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) {
+        self.message_hovered_in(key, message, hovered);
     }
 
     fn retry_gap(&mut self, key: TimelineKey, cursor_id: &str) {

@@ -14,13 +14,15 @@ use papo_sdk::Uuid;
 use papo_sdk_ui::TimelineItem;
 use rune::{El, GrowthSpec, ScrollSpec, Tx, col, el, memo, row, text};
 
+use super::content::Press;
+use super::content::copy::{self, Source};
 use super::local_time::{LocalTime, day_label};
 use super::message_row::message_row;
 use super::{OpenTimeline, Phase, TimelineKey, row_key};
 use crate::design::{
-    DATE_RULE_GAP_PT, DATE_RULE_PT, FOCUS_RING_PT, Lead, MessageLayout, Palette, RADIUS_AVATAR_PT,
-    RADIUS_CONTROL_PT, SKELETON_BAR_PT, SKELETON_WIDTHS, SPACE_SM_PT, TIMELINE_INSET_PT,
-    TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM, Theme,
+    DATE_RULE_GAP_PT, DATE_RULE_PT, Density, FOCUS_RING_PT, Lead, MessageLayout, Palette,
+    RADIUS_AVATAR_PT, RADIUS_CONTROL_PT, SKELETON_BAR_PT, SKELETON_WIDTHS, SPACE_SM_PT,
+    TIMELINE_INSET_PT, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM, Theme,
 };
 use crate::strings;
 
@@ -46,6 +48,13 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn bottom_shown(&mut self, key: TimelineKey, at_bottom: bool) -> bool;
     /// Retry on the failed gap with this cursor.
     fn retry_gap(&mut self, key: TimelineKey, cursor_id: &str);
+    /// A press inside message `message`'s content.
+    fn content_pressed(&mut self, key: TimelineKey, message: Uuid, press: Press, tx: &mut Tx);
+    /// Code block `index` (its text's index) of message `message` was
+    /// copied.
+    fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx);
+    /// The pointer entered or left message `message`.
+    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool);
 }
 
 /// How the rows look: the same for every row of one view.
@@ -82,8 +91,20 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         }
         Phase::Failed | Phase::Closed => return el().w_full().grow(1.0),
     }
+    let source = Source {
+        items: open.items.clone(),
+        resources: open.resources.clone(),
+        revealed: open.revealed.clone(),
+        jumbo: style.layout.density != Density::ExtraCompact,
+        time: style.time.clone(),
+        today: style.today,
+    };
     let rows = col()
         .key("rows")
+        // Every message's text is one selection, which copies as the
+        // messages show (`content::copy`).
+        .selection_group(true)
+        .selection_copy(move |selection| copy::text_of(&source, selection))
         .w_full()
         .px(TIMELINE_INSET_PT)
         .pb(TIMELINE_INSET_PT)
@@ -137,9 +158,11 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
         .and_then(|before| open.items.get(before))
         .map(AsRef::as_ref);
     match item.as_ref() {
-        TimelineItem::Message { id, message, .. } => {
-            message_row::<S>(open, *id, message, previous, style)
-        }
+        TimelineItem::Message {
+            id,
+            message,
+            content,
+        } => message_row::<S>(open, *id, message, content, previous, style),
         TimelineItem::DateSeparator { day, before } => date_row(*day, *before, style),
         TimelineItem::Gap(gap) if open.failed_gaps.contains(&gap.cursor.id) => {
             gap_failed::<S>(open.key, &gap.cursor.id, style)

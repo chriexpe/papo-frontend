@@ -71,6 +71,27 @@ impl LocalTime {
         strings::time(&format!("{hour:02}"), &format!("{minute:02}"))
     }
 
+    /// "09:04" for a time on `today`, else its date too: "20 November,
+    /// 09:04", with the year only outside the current year.
+    pub(crate) fn moment_label(&self, at_us: i64, today: i64) -> String {
+        let time = self.time_label(at_us);
+        let day = self.day_of(at_us);
+        if day == today {
+            return time;
+        }
+        let date = Civil::of(day);
+        let year = (date.year != Civil::of(today).year).then_some(date.year);
+        strings::date_time(&strings::day_month(date.day, date.month, year), &time)
+    }
+
+    /// "Edited on 21 November 2026, 13:02": when a message was edited, at
+    /// a Unix time in microseconds.
+    pub(crate) fn edited_label(&self, at_us: i64) -> String {
+        let date = Civil::of(self.day_of(at_us));
+        let day = strings::day_month(date.day, date.month, Some(date.year));
+        strings::edited_on(&day, &self.time_label(at_us))
+    }
+
     /// The local minute of a Unix time in microseconds, counted from
     /// 1970-01-01: two messages in the same minute share it.
     pub(crate) fn minute_of(&self, at_us: i64) -> i64 {

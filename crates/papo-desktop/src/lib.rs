@@ -16,6 +16,7 @@ mod fonts;
 mod icons;
 mod keyring;
 mod lifecycle;
+mod links;
 mod menu;
 mod navigation;
 #[cfg(test)]

@@ -3,24 +3,26 @@
 //! and the "Connected to" pill. Pure: reads the shell and the system's light
 //! or dark preference.
 
-use rune::{Cx, El, col, el, icon, row, text, text_input};
+use rune::{Cx, El, HelpLook, col, el, icon, row, text, text_input};
 
 use super::{COMPOSER_KEY, Shell, Stage};
 use crate::design::{
-    COMPOSER_HEIGHT_PT, FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, PANE_EDGE_PT, PILL_CROSS_PT,
-    PILL_OUTLINE_PT, Palette, RADIUS_COMPOSER_PT, RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT,
-    SPACE_SM_PT, SPACE_XL_PT, TYPE_BODY, Theme,
+    COMPOSER_HEIGHT_PT, FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, HINT_DELAY_S, HINT_GAP_PT,
+    HINT_MAX_WIDTH_PT, HINT_PAD_PT, HINT_RADIUS_PT, PANE_EDGE_PT, PILL_CROSS_PT, PILL_OUTLINE_PT,
+    Palette, RADIUS_COMPOSER_PT, RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT, SPACE_SM_PT,
+    SPACE_XL_PT, TYPE_BODY, TYPE_HINT, Theme,
 };
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
 use crate::strings;
-use crate::{channel_pane, menu, rail, remove_server, timeline};
+use crate::{channel_pane, links, menu, rail, remove_server, timeline};
 
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
 pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
     let theme = Theme::following_system(cx.system_dark());
     let palette = Palette::new(theme);
+    cx.help_look(hint_look(&palette, cx.system_dark()));
     let surface = col().w_full().h_full().fill(palette.surface_content);
     match &shell.stage {
         Stage::Starting => surface,
@@ -59,6 +61,9 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(server) = removing {
                     app = app.child(remove_server::confirm(&server.name, &palette));
                 }
+                if let Some(prompt) = &shell.reading.link {
+                    app = app.child(links::confirm(prompt, &palette));
+                }
                 if let Some(flow) = flow {
                     app = app.child(sign_in::popup(flow, &shell.fields, &palette));
                 }
@@ -66,6 +71,23 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
             }
         },
     }
+}
+
+/// Every hint's pill (`docs/design.md` §9, Links): a link's full address,
+/// and when a message was edited. Rune keeps one look per window, so both
+/// take the address's mono.
+fn hint_look(palette: &Palette, dark: bool) -> HelpLook {
+    let (vertical, horizontal) = HINT_PAD_PT;
+    HelpLook::system(dark)
+        .fill(palette.surface_pill)
+        .ink(palette.text_secondary)
+        .ring(PILL_OUTLINE_PT, palette.line_pill)
+        .radius(HINT_RADIUS_PT)
+        .padding(horizontal, vertical)
+        .font(TYPE_HINT)
+        .max_width(Some(HINT_MAX_WIDTH_PT))
+        .gap(HINT_GAP_PT)
+        .delay(HINT_DELAY_S)
 }
 
 /// The rail, the channel pane and the conversation with the composer pill
