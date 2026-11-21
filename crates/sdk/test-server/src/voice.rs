@@ -50,11 +50,8 @@ pub(crate) struct VoicePeer {
     pub(crate) camera_on: bool,
     pub(crate) screen_sharing: bool,
     pub(crate) routes_revision: u64,
-    /// Slot index -> `(publisher_id, kind, first_seq)`.
-    pub(crate) video_slots: Vec<Option<(String, String, Option<u16>)>>,
-    /// Tracks whether a video slot ever carried an occupant before (`first_seq` boundary).
-    pub(crate) video_slot_used: Vec<bool>,
-    pub(crate) video_slot_seq: Vec<u16>,
+    /// Slot index -> `(publisher_id, kind, assignment_id)`.
+    pub(crate) video_slots: Vec<Option<(String, String, u64)>>,
 }
 
 #[derive(Default)]
@@ -235,8 +232,6 @@ impl TestServer {
                 screen_sharing,
                 routes_revision: 0,
                 video_slots: vec![None; 6],
-                video_slot_used: vec![false; 6],
-                video_slot_seq: vec![1000; 6],
             },
         );
     }

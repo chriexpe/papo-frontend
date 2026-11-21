@@ -12,7 +12,8 @@ use papo_call::{CpuVideoDestination, GstreamerMediaFactory, MediaDevices, Receiv
 use papo_sdk::{
     AudioRoute, CallAttemptId, CameraFacing, InitialMediaSettings, MediaCommand,
     MediaEngineFactory, MediaLease, MediaReport, MediaReportKind, MediaReportSink,
-    MediaTransportState, Uuid, VideoCodec, VideoDestinationId, VideoKind, VideoSlotBinding,
+    MediaTransportState, Uuid, VideoCodec, VideoDestinationId, VideoKind, VideoRouteFence,
+    VideoSlotBinding,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
@@ -275,7 +276,15 @@ impl Endpoint {
                             track_id: route.track_id,
                             participant,
                             kind,
-                            first_seq: route.first_seq,
+                            fence: match (route.rtp_route_ext_id, route.rtp_route_id) {
+                                (Some(extension_id @ 1..=14), Some(assignment_id @ 1..)) => {
+                                    Some(VideoRouteFence {
+                                        extension_id,
+                                        assignment_id,
+                                    })
+                                }
+                                _ => None,
+                            },
                             destination: self
                                 .video
                                 .get(&(participant, kind))

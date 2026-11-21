@@ -831,6 +831,8 @@ async fn unsubscribe_race_with_stale_video_routes_never_sticks_target_requested(
             user_id: alice.to_string(),
             kind: "video".into(),
             first_seq: None,
+            rtp_route_id: Some(1),
+            rtp_route_ext_id: Some(14),
         }],
         &rt,
     );

@@ -442,6 +442,8 @@ fn audio_and_video_routes_compare_revision_per_type_and_enforce_peer_id() {
                         user_id: ana.to_string(),
                         kind: "video".into(),
                         first_seq: None,
+                        rtp_route_id: Some(1),
+                        rtp_route_ext_id: Some(14),
                     },
                     // Ghost is not in room -> dropped.
                     VoiceVideoRoute {
@@ -449,6 +451,8 @@ fn audio_and_video_routes_compare_revision_per_type_and_enforce_peer_id() {
                         user_id: ghost.to_string(),
                         kind: "video".into(),
                         first_seq: None,
+                        rtp_route_id: Some(1),
+                        rtp_route_ext_id: Some(14),
                     },
                 ],
             },
@@ -514,6 +518,8 @@ fn video_routes_handle_reassignment_departed_member_and_release() {
                     user_id: beto.to_string(),
                     kind: "screen".into(),
                     first_seq: Some(4200),
+                    rtp_route_id: Some(1),
+                    rtp_route_ext_id: Some(14),
                 }],
             },
         ),

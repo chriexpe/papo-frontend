@@ -1,25 +1,26 @@
 //! Receives SDP-identified SFU slots. SDK routes alone select a participant's output. Route changes
-//! discard the old decoder and gate the replacement near its RTP sequence boundary.
+//! discard the old decoder; each branch only accepts packets for its own assignment.
 
 use crate::{
     camera::android_codecs,
     diagnostics,
     negotiation::Codec,
-    pipeline::{Branch, MediaResult, PadProbe, RequestedPad, element, filter, queue, ready_codec},
+    pipeline::{
+        Branch, MediaResult, PadProbe, RequestedPad, element, filter, pad, queue, ready_codec,
+    },
+    video_route::gate_decoder_input,
 };
 use gst::prelude::*;
 use gstreamer as gst;
 use gstreamer_app as app;
-use gstreamer_rtp as rtp;
 use gstreamer_video as video;
-use papo_sdk::{MediaFatalError, VideoDestination, VideoDestinationId, VideoSlotBinding};
+use papo_sdk::{
+    MediaFatalError, VideoDestination, VideoDestinationId, VideoRouteFence, VideoSlotBinding,
+};
 use std::{
     any::Any,
     collections::HashMap,
-    sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicU32, Ordering},
-    },
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 /// Owned NV12 frame. Offsets and strides are in bytes and describe the actual buffer layout.
@@ -139,9 +140,7 @@ struct Port {
     branch: Option<Branch>,
     output: RequestedPad,
     _inlet: Branch,
-    gate: Arc<SequenceGate>,
-    wire_pad: gst::Pad,
-    _wire_probe: PadProbe,
+    route_extension: Option<u8>,
 }
 
 impl ReceiveVideo {
@@ -151,21 +150,14 @@ impl ReceiveVideo {
         pad: &gst::Pad,
         track: String,
         codec: Codec,
+        route_extension: Option<u8>,
     ) -> MediaResult<()> {
         let binding = self.plan.get(&track);
-        let gate = Arc::new(SequenceGate::new(binding.and_then(|route| route.first_seq)));
         let tee = element("tee")?;
         tee.set_property("allow-not-linked", true);
         let inlet = Branch::attach(graph, vec![tee.clone()], Some(pad), None)?;
         let output = RequestedPad::new(&tee, "src_%u")?;
-        let wire = wire_sequence_pad(pad);
-        if wire != *pad && binding.is_some_and(|route| route.first_seq.is_some()) {
-            // The pad-added fence may already be holding one resequenced buffer.
-            // Only the buffers examined at the wire pad can enter this new route.
-            PadProbe::discard_one(pad);
-        }
-        let wire_probe = gate.install(&wire);
-        let branch = branch(graph, &output.pad, codec, binding)?;
+        let branch = branch(graph, &output.pad, codec, binding, route_extension)?;
         self.ports.insert(
             pad.clone(),
             Port {
@@ -174,9 +166,7 @@ impl ReceiveVideo {
                 branch,
                 output,
                 _inlet: inlet,
-                gate,
-                wire_pad: wire,
-                _wire_probe: wire_probe,
+                route_extension,
             },
         );
         Ok(())
@@ -211,17 +201,14 @@ impl ReceiveVideo {
                 clear(port.binding.as_ref());
             }
         }
-        for port in self.ports.values_mut() {
+        for (source, port) in &mut self.ports {
             let next = self.plan.get(&port.track);
             if equivalent(port.binding.as_ref(), next) {
                 continue;
             }
-            let _idle = PadProbe::idle(&port.wire_pad).await?;
+            let _idle = PadProbe::idle(source).await?;
             port.branch = None;
-            if route_identity(port.binding.as_ref()) != route_identity(next) {
-                port.gate.arm(next.and_then(|route| route.first_seq));
-            }
-            port.branch = branch(graph, &port.output.pad, codec, next)?;
+            port.branch = branch(graph, &port.output.pad, codec, next, port.route_extension)?;
             port.binding = next.cloned();
         }
         Ok(())
@@ -242,30 +229,10 @@ impl ReceiveVideo {
     }
 }
 
-// webrtcbin may expose an rtpbin pad backed by rtpulpfecdec. That element
-// resequences packets even in passthrough. first_seq is in SFU wire sequence space.
-fn wire_sequence_pad(exposed: &gst::Pad) -> gst::Pad {
-    let mut pad = exposed.clone();
-    while let Some(target) = pad
-        .downcast_ref::<gst::GhostPad>()
-        .and_then(gst::GhostPad::target)
-    {
-        pad = target;
-    }
-    pad.parent_element()
-        .filter(|element| {
-            element
-                .factory()
-                .is_some_and(|factory| factory.name() == "rtpulpfecdec")
-        })
-        .and_then(|element| element.static_pad("sink"))
-        .unwrap_or_else(|| exposed.clone())
-}
-
 fn route_identity(
     route: Option<&VideoSlotBinding>,
-) -> Option<(papo_sdk::Uuid, papo_sdk::VideoKind, Option<u16>)> {
-    route.map(|route| (route.participant, route.kind, route.first_seq))
+) -> Option<(papo_sdk::Uuid, papo_sdk::VideoKind, Option<VideoRouteFence>)> {
+    route.map(|route| (route.participant, route.kind, route.fence))
 }
 
 fn equivalent(previous: Option<&VideoSlotBinding>, next: Option<&VideoSlotBinding>) -> bool {
@@ -298,13 +265,17 @@ fn branch(
     source: &gst::Pad,
     codec: Codec,
     binding: Option<&VideoSlotBinding>,
+    route_extension: Option<u8>,
 ) -> MediaResult<Option<Branch>> {
-    let destination = binding
-        .and_then(|route| route.destination.as_ref())
-        .and_then(|destination| {
-            cpu_destination(destination.as_ref()).map(|cpu| (Arc::clone(destination), cpu.reset()))
-        });
-    let Some((destination, generation)) = destination else {
+    let destination = binding.and_then(|route| {
+        let fence = route.fence.filter(|fence| {
+            fence.assignment_id != 0 && Some(fence.extension_id) == route_extension
+        })?;
+        let destination = route.destination.as_ref()?;
+        let cpu = cpu_destination(destination.as_ref())?;
+        Some((Arc::clone(destination), cpu.reset(), fence))
+    });
+    let Some((destination, generation, fence)) = destination else {
         let drain = element("fakesink")?;
         drain.set_property("async", false);
         drain.set_property("sync", false);
@@ -336,7 +307,9 @@ fn branch(
                 .build(),
         )
         .build();
-    let mut elements = vec![queue(8, 0)?, depay];
+    let intake = queue(8, 0)?;
+    gate_decoder_input(&pad(&intake, "sink")?, fence);
+    let mut elements = vec![intake, depay];
     if codec == Codec::H264 {
         elements.push(element("h264parse")?);
     }
@@ -376,78 +349,4 @@ fn h264_decoder() -> MediaResult<gst::Element> {
         }
     }
     element("openh264dec").map_err(|_| MediaFatalError::UnsupportedCodec)
-}
-
-struct SequenceGate(AtomicU32);
-
-impl SequenceGate {
-    fn new(first: Option<u16>) -> Self {
-        Self(AtomicU32::new(first.map_or(u32::MAX, u32::from)))
-    }
-
-    fn arm(&self, first: Option<u16>) {
-        self.0
-            .store(first.map_or(u32::MAX, u32::from), Ordering::Relaxed);
-    }
-
-    fn install(self: &Arc<Self>, pad: &gst::Pad) -> PadProbe {
-        let gate = Arc::clone(self);
-        PadProbe::data(pad, move |_, info| {
-            if gate.0.load(Ordering::Relaxed) == u32::MAX {
-                return gst::PadProbeReturn::Ok;
-            }
-            let accepts = |buffer: &gst::BufferRef| {
-                rtp::RTPBuffer::from_buffer_readable(buffer)
-                    .is_ok_and(|packet| gate.accept(packet.seq()))
-            };
-            let ok = info.buffer().is_some_and(|buffer| accepts(buffer))
-                || info
-                    .buffer_list()
-                    .is_some_and(|list| list.iter().all(accepts));
-            if ok {
-                gst::PadProbeReturn::Ok
-            } else {
-                gst::PadProbeReturn::Drop
-            }
-        })
-    }
-
-    fn accept(&self, seq: u16) -> bool {
-        let Ok(first) = u16::try_from(self.0.load(Ordering::Relaxed)) else {
-            return true;
-        };
-        let distance = seq.wrapping_sub(first);
-        if distance >= 0x8000 {
-            return false;
-        }
-        // Retain a short window past the switch for late retransmissions, then
-        // retire the comparison before the sequence space can wrap again.
-        const SWITCH_WINDOW_PACKETS: u16 = 128;
-        if distance >= SWITCH_WINDOW_PACKETS {
-            let _ = self.0.compare_exchange(
-                u32::from(first),
-                u32::MAX,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            );
-        }
-        true
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn first_sequence_gate_retires_after_crossing_the_wraparound_boundary() {
-        let gate = SequenceGate::new(Some(1));
-        assert!(!gate.accept(u16::MAX));
-        assert!(!gate.accept(0));
-        assert!(gate.accept(1));
-        assert!(!gate.accept(u16::MAX));
-        assert!(gate.accept(129));
-        assert!(gate.accept(33_000));
-        assert!(gate.accept(0));
-    }
 }

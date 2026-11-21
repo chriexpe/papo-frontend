@@ -60,25 +60,22 @@ pub(crate) fn handle_subscribe(
     else {
         return Some(voice_error("voice-not-found"));
     };
-    let slot_idx = sub
+    if sub
         .video_slots
         .iter()
-        .position(|slot| {
-            slot.as_ref()
-                .is_some_and(|(pub_id, k, _)| pub_id == publisher_id && k == kind)
-        })
-        .or_else(|| sub.video_slots.iter().position(Option::is_none));
-    let Some(index) = slot_idx else {
+        .flatten()
+        .any(|(pub_id, k, _)| pub_id == publisher_id && k == kind)
+    {
+        emit_video_routes(&state.presence, channel_id, sub);
+        return None;
+    }
+    let Some(index) = sub.video_slots.iter().position(Option::is_none) else {
         return Some(voice_error("voice-room-full"));
     };
-    let first_seq = if sub.video_slot_used[index] {
-        sub.video_slot_seq[index] = sub.video_slot_seq[index].wrapping_add(10);
-        Some(sub.video_slot_seq[index])
-    } else {
-        sub.video_slot_used[index] = true;
-        None
+    let Some(assignment_id) = sub.routes_revision.checked_add(1) else {
+        return Some(voice_error("voice-room-full"));
     };
-    sub.video_slots[index] = Some((publisher_id.to_owned(), kind.to_owned(), first_seq));
+    sub.video_slots[index] = Some((publisher_id.to_owned(), kind.to_owned(), assignment_id));
     emit_video_routes(&state.presence, channel_id, sub);
     None
 }
@@ -129,16 +126,14 @@ fn emit_video_routes(presence: &Presence, channel_id: &str, sub: &mut VoicePeer)
         .iter()
         .enumerate()
         .filter_map(|(index, slot)| {
-            let (pub_id, kind, first_seq) = slot.as_ref()?;
-            let mut entry = json!({
+            let (pub_id, kind, assignment_id) = slot.as_ref()?;
+            Some(json!({
                 "track_id": format!("papo-video-{index}"),
                 "user_id": pub_id,
                 "kind": kind,
-            });
-            if let Some(seq) = first_seq {
-                entry["first_seq"] = json!(seq);
-            }
-            Some(entry)
+                "rtp_route_id": assignment_id,
+                "rtp_route_ext_id": 14,
+            }))
         })
         .collect();
     presence.emit_to_client(

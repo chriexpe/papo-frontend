@@ -109,6 +109,15 @@ pub trait VideoDestination: Send + Sync + 'static {
     fn as_any(&self) -> &(dyn Any + Send + Sync);
 }
 
+/// RTP extension and assignment IDs for a single SFU video slot assignment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VideoRouteFence {
+    /// RFC 8285 one-byte extension ID (1–14).
+    pub extension_id: u8,
+    /// Nonzero assignment ID, stable until the slot is reused or rebound.
+    pub assignment_id: u64,
+}
+
 /// One slot entry in the media engine's active video slot plan.
 #[derive(Clone)]
 pub struct VideoSlotBinding {
@@ -118,9 +127,9 @@ pub struct VideoSlotBinding {
     pub participant: Uuid,
     /// Media kind (`Camera` or `Screen`).
     pub kind: VideoKind,
-    /// First translated RTP sequence number for this occupant when the slot was reused.
-    pub first_seq: Option<u16>,
-    /// Bound host destination for `(participant, kind)`, if any.
+    /// Validated wire fence, or `None` for legacy or invalid routes.
+    pub fence: Option<VideoRouteFence>,
+    /// Bound host destination for `(participant, kind)`, only with a valid fence.
     pub destination: Option<Arc<dyn VideoDestination>>,
 }
 
@@ -130,7 +139,7 @@ impl fmt::Debug for VideoSlotBinding {
             .field("track_id", &self.track_id)
             .field("participant", &self.participant)
             .field("kind", &self.kind)
-            .field("first_seq", &self.first_seq)
+            .field("fence", &self.fence)
             .field(
                 "destination_id",
                 &self.destination.as_ref().map(|dest| dest.id()),

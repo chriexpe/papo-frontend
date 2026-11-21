@@ -144,7 +144,7 @@ fn voice_leave_state_update_and_speakers_decode_all_fields() {
 }
 
 #[test]
-fn voice_audio_and_video_routes_decode_revisions_and_optional_first_seq() {
+fn voice_audio_and_video_routes_decode_revisions_and_optional_fences() {
     let audio = json!({
         "type": "voice_audio_routes",
         "channel_id": "c1",
@@ -170,7 +170,8 @@ fn voice_audio_and_video_routes_decode_revisions_and_optional_first_seq() {
         "revision": 8,
         "routes": [
             {"track_id": "papo-video-0", "user_id": "u1", "kind": "video"},
-            {"track_id": "papo-video-1", "user_id": "u2", "kind": "screen", "first_seq": 65535}
+            {"track_id": "papo-video-1", "user_id": "u2", "kind": "screen", "first_seq": 65535, "rtp_route_id": u64::MAX, "rtp_route_ext_id": 14},
+            {"track_id": "papo-video-2", "user_id": "u3", "kind": "video", "rtp_route_id": "bad", "rtp_route_ext_id": 256}
         ]
     });
     let Event::Known(KnownEvent::VoiceVideoRoutes(event)) =
@@ -180,13 +181,19 @@ fn voice_audio_and_video_routes_decode_revisions_and_optional_first_seq() {
     };
     assert_eq!(event.peer_id, "p1");
     assert_eq!(event.revision, 8);
-    assert_eq!(event.routes.len(), 2);
+    assert_eq!(event.routes.len(), 3);
     assert_eq!(event.routes[0].track_id, "papo-video-0");
     assert_eq!(event.routes[0].kind, "video");
     assert_eq!(event.routes[0].first_seq, None);
     assert_eq!(event.routes[1].track_id, "papo-video-1");
     assert_eq!(event.routes[1].kind, "screen");
     assert_eq!(event.routes[1].first_seq, Some(65535));
+    assert_eq!(event.routes[0].rtp_route_id, None);
+    assert_eq!(event.routes[0].rtp_route_ext_id, None);
+    assert_eq!(event.routes[1].rtp_route_id, Some(u64::MAX));
+    assert_eq!(event.routes[1].rtp_route_ext_id, Some(14));
+    assert_eq!(event.routes[2].rtp_route_id, None);
+    assert_eq!(event.routes[2].rtp_route_ext_id, None);
 }
 
 #[test]

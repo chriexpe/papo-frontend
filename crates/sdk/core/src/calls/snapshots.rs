@@ -160,9 +160,9 @@ pub struct VideoBinding {
     pub participant: Uuid,
     /// Source kind (`Camera` or `Screen`).
     pub kind: VideoKind,
-    /// First translated RTP sequence number for this occupant when the slot was reused.
+    /// Legacy translated RTP sequence hint; not an assignment fence.
     pub first_seq: Option<u16>,
-    /// Currently bound host video destination identity, if attached by the client.
+    /// Host video destination identity, if attached and the route has a valid fence.
     pub destination_id: Option<VideoDestinationId>,
 }
 

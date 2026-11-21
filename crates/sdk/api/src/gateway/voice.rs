@@ -142,4 +142,18 @@ pub struct VoiceVideoRoute {
     /// Backend `first_seq` field.
     #[serde(default)]
     pub first_seq: Option<u16>,
+    /// Backend `rtp_route_id` field.
+    #[serde(
+        default,
+        deserialize_with = "crate::gateway::optional_route_number",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rtp_route_id: Option<u64>,
+    /// Backend `rtp_route_ext_id` field.
+    #[serde(
+        default,
+        deserialize_with = "crate::gateway::optional_route_number",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rtp_route_ext_id: Option<u8>,
 }

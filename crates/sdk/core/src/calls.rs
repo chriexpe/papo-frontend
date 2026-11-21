@@ -41,7 +41,8 @@ pub use media_port::{
     AudioRoute, CaptureState, IceServerConfig, InitialMediaSettings, MEDIA_REPORT_CHANNEL_CAPACITY,
     MediaCommand, MediaEngineFactory, MediaFatalError, MediaLease, MediaLeaseError, MediaReport,
     MediaReportKind, MediaReportSink, MediaReportSinkError, MediaStartError, MediaStartFuture,
-    MediaTransportState, MediaWarning, VideoDestination, VideoDestinationId, VideoSlotBinding,
+    MediaTransportState, MediaWarning, VideoDestination, VideoDestinationId, VideoRouteFence,
+    VideoSlotBinding,
 };
 pub use model::{
     CallAttemptId, CallConfig, CallEndReason, CallError, CallParticipant, CallPhase, CallSettings,

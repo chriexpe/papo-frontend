@@ -21,6 +21,16 @@ where
     <Option<Vec<T>> as serde::Deserialize>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
+fn optional_route_number<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    // Keep the route snapshot authoritative even if one fence field is malformed.
+    Ok(serde_json::from_value(value).ok())
+}
+
 /// A future event retains its exact JSON without being confused with malformed known events.
 #[derive(Clone)]
 pub struct UnknownEvent {

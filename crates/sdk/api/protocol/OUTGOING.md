@@ -16,8 +16,12 @@ updates the older fork revision; it does not include unmerged plugin/app work.
 | Response additions | Nullable attachment video/thumbnail dimensions; search/notification external authors | Preserve metadata; unknown dimensions remain unknown |
 | Channel additions | `parent_id` in REST and create/update events; atomic `access_roles` on creation and initial role `users` | Regenerate the complete contract; fixture emits category-only changes too |
 | Voice peer identity and codec | `voice_joined` carries opaque `peer_id` and `video_codec`; owner-scoped events (`voice_answer`, `voice_offer`, `voice_ice_candidate`, `voice_audio_routes`, `voice_video_routes`, async `error`) and `voice_leave` carry `peer_id`; `error` also carries optional `channel_id` | Drop owner-scoped events and self-`voice_leave` whose `peer_id` differs from the current peer; leave and rejoin back-to-back on the same socket without a barrier timer |
-| Voice video routes | `voice_video_routes` mirrors `voice_audio_routes` with `peer_id`, per-peer `revision` and `routes: { track_id, user_id, kind, first_seq? }[]`; `revision` is compared per event type (audio vs video) | Drive video slot bindings directly from `voice_video_routes` without client-side slot prediction; drop stale revisions per route event kind |
+| Voice video routes | `voice_video_routes` mirrors `voice_audio_routes` with `peer_id`, per-peer `revision` and `routes: { track_id, user_id, kind, first_seq?, rtp_route_id?, rtp_route_ext_id? }[]`; `revision` is compared per event type (audio vs video) | Drive video slot bindings directly from `voice_video_routes` without client-side slot prediction; drop stale revisions per route event kind. Route fences require both a nonzero `u64` assignment ID and an extension ID in `1..=14`; missing or invalid pairs leave the route without a video destination. `first_seq` is legacy metadata only |
 | Voice leave audience | `voice_leave` reaches users with `connect_voice` and always reaches the departing owner connection even after permission revocation | Cold `presence_sync.user_voice` is still unfiltered on the backend and is filtered by admitted voice permission in the SDK |
+
+A video slot keeps its assignment ID until reused or rebound. The negotiated
+`urn:papo:rtp-hdrext:video-route-v1` extension carries the ID as eight big-endian
+bytes in an RFC 8285 one-byte header extension.
 
 The transport performs one attempt and disables redirects and request retries.
 A decoded successful message response supplies the authoritative message ID;

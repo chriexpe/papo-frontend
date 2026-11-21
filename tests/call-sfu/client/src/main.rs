@@ -127,6 +127,7 @@ async fn fixture(address: &str) -> Result {
             result = client.step() => result?,
             () = tokio::time::sleep(Duration::from_millis(20)) => {}
         }
+        frame_chroma(&client, red, VideoKind::Camera, (90, 240))?;
         if frame_chroma(&client, blue, VideoKind::Camera, (202, 222))? && client.audio_revision >= 2
         {
             let (track, first_seq) = &client.publisher_tracks[&(blue, VideoKind::Camera)];

@@ -1,6 +1,9 @@
 //! Owns one SDP transaction at a time and defers trickle ICE until its remote SDP is applied.
 
-use crate::pipeline::{MediaResult, RequestedPad};
+use crate::{
+    pipeline::{MediaResult, RequestedPad},
+    video_route::{negotiated_extension, offer_extension},
+};
 use gst::{glib, prelude::*};
 use gstreamer as gst;
 use gstreamer_sdp as sdp;
@@ -15,6 +18,14 @@ pub(crate) struct Candidate {
     pub text: String,
     pub mid: Option<String>,
     pub index: Option<i64>,
+}
+
+pub(crate) enum ReceiveTrack {
+    Audio(String),
+    Video {
+        id: String,
+        route_extension: Option<u8>,
+    },
 }
 
 pub(crate) struct Negotiation {
@@ -144,14 +155,9 @@ impl Negotiation {
         }
     }
 
-    pub fn track(&self, pad: &gst::Pad) -> Option<(bool, String)> {
+    pub fn track(&self, pad: &gst::Pad) -> Option<ReceiveTrack> {
         let line = pad.property::<Option<rtc::WebRTCRTPTransceiver>>("transceiver")?;
         let media = self.remote.as_ref()?.sdp().media(line.mlineindex())?;
-        let video = match media.media()? {
-            "video" => true,
-            "audio" => false,
-            _ => return None,
-        };
         let track = media.attribute_val("msid").and_then(track_id).or_else(|| {
             media
                 .attributes()
@@ -161,7 +167,14 @@ impl Negotiation {
                     track_id(msid)
                 })
         })?;
-        Some((video, track.to_owned()))
+        match media.media()? {
+            "video" => Some(ReceiveTrack::Video {
+                id: track.to_owned(),
+                route_extension: negotiated_extension(media),
+            }),
+            "audio" => Some(ReceiveTrack::Audio(track.to_owned())),
+            _ => None,
+        }
     }
 }
 
@@ -305,6 +318,12 @@ impl Codec {
                 .field("level-asymmetry-allowed", "1")
                 .build(),
         }
+    }
+
+    pub fn receive_caps(self) -> gst::Caps {
+        let mut caps = self.caps();
+        offer_extension(caps.make_mut());
+        caps
     }
 
     fn validate_remote(self, sdp: &sdp::SDPMessageRef) -> MediaResult<()> {

@@ -27,7 +27,11 @@ print("Upstream RTP verified for audio and camera")
 The proof checks offer layout and RFC 6464, duplex RTP, several cameras and
 a distinct screen, and PCM tone energy after the audio slot assignment changes.
 The fixture rejects the first subscription to the replacement camera, then
-reuses the old slot with a late packet whose sequence precedes `first_seq`.
+reuses the old slot, writes a replacement keyframe before publishing the route,
+and later writes an old RTP packet with its original assignment extension. The
+client checks that the old destination never renders replacement colour. The
+media unit test separately exercises exact RTP arrival order without relying
+on transport timing.
 
 ## Pinned backend
 
