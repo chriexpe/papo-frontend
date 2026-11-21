@@ -1,6 +1,7 @@
 //! Independent observable channel windows over public SDK history/read APIs; transport and durable policy stay in core.
 
 mod echoes;
+mod opening;
 mod paging;
 mod state;
 mod subscription;
@@ -10,9 +11,10 @@ use crate::timeline_item::{TimelineDirection, TimelineItem, UtcOffset, UtcOffset
 use eyeball_im::VectorDiff;
 use futures_util::Stream;
 use imbl::Vector;
+use opening::Opening;
 use papo_sdk::{
-    Generation, HistoryClosedReason, HistoryCursor, HistoryError, HistoryHandle, HistoryOrder,
-    HistoryQuery, ReadingError, Session, Uuid,
+    Generation, HistoryClosedReason, HistoryCursor, HistoryError, HistoryHandle, ReadingError,
+    Session, Uuid,
 };
 use state::WindowState;
 use std::{
@@ -60,8 +62,13 @@ pub enum TimelineError {
     InvalidConfig,
     /// The displayed window version or generation is no longer current.
     StaleSnapshot,
-    /// The exact focused target was absent, deleted, or outside the server's returned neighborhood.
+    /// The exact focused target was absent, deleted, or outside the server's returned neighborhood;
+    /// or an anchor opened by ID is not cached and cannot be found without a GET-by-ID route.
     FocusMissing,
+    /// An anchor opened by ID is known deleted in this cache incarnation.
+    AnchorDeleted,
+    /// A cached anchor lies further back than a live window reaches; open it focused instead.
+    AnchorTooFar,
     /// Lifecycle revocation is terminal for this window.
     Closed(HistoryClosedReason),
     /// Publication version cannot advance safely.
@@ -188,7 +195,43 @@ impl Timeline {
         channel: Uuid,
         config: TimelineConfig,
     ) -> Result<Self, TimelineError> {
-        Self::open(session, channel, None, config).await
+        Self::open(session, channel, Opening::Live, config).await
+    }
+
+    /// Open a live window that also reaches back to `anchor` (a saved `ReadingPosition`'s
+    /// `message_id`), a message in this channel's cache once the newest page is fetched, at most
+    /// 20 pages behind the newest cached message. The window spans up to one page older than the
+    /// anchor through the newest message, every cached message between included, and follows new
+    /// messages as [`Timeline::live`] does; a cached anchor proves no continuity, so unknown
+    /// coverage between shows as gaps. The anchor is checked at open: like any message it can be
+    /// deleted afterwards, and then leaves the window. Fetching never acknowledges, and no outcome
+    /// changes the saved reading position.
+    /// # Errors
+    /// `AnchorTooFar` for a cached anchor further back (open it with [`Timeline::focused_at`]),
+    /// `AnchorDeleted` for one known deleted, `FocusMissing` for one not cached; otherwise as `live`.
+    pub async fn live_at(
+        session: Session,
+        channel: Uuid,
+        anchor: Uuid,
+        config: TimelineConfig,
+    ) -> Result<Self, TimelineError> {
+        Self::open(session, channel, Opening::LiveAt(anchor), config).await
+    }
+
+    /// Open a bounded focused neighborhood around `anchor`, a message in this channel's cache once
+    /// the newest page is fetched, however far back: the restoration path for a saved reading
+    /// position [`Timeline::live_at`] cannot reach. Like [`Timeline::focused`] it never follows
+    /// new messages; the client opens a live window when the reader goes to the newest.
+    /// # Errors
+    /// `AnchorDeleted` for an anchor known deleted, `FocusMissing` for one not cached; otherwise
+    /// as `focused`.
+    pub async fn focused_at(
+        session: Session,
+        channel: Uuid,
+        anchor: Uuid,
+        config: TimelineConfig,
+    ) -> Result<Self, TimelineError> {
+        Self::open(session, channel, Opening::FocusedAt(anchor), config).await
     }
 
     /// Open an independent focused neighborhood from an exact pin, reply or search cursor.
@@ -201,50 +244,27 @@ impl Timeline {
         cursor: HistoryCursor,
         config: TimelineConfig,
     ) -> Result<Self, TimelineError> {
-        Self::open(session, channel, Some(cursor), config).await
+        Self::open(session, channel, Opening::Focused(cursor), config).await
     }
 
     async fn open(
         session: Session,
         channel: Uuid,
-        focus: Option<HistoryCursor>,
+        opening: Opening,
         config: TimelineConfig,
     ) -> Result<Self, TimelineError> {
         if config.page_size == 0 || config.page_size > 100 || config.subscriber_capacity == 0 {
             return Err(TimelineError::InvalidConfig);
         }
-        if let Some(cursor) = &focus {
+        if let Opening::Focused(cursor) = &opening {
             papo_sdk::MessageKey::from_cursor(cursor)?;
         }
         let history = session.history(channel).await?;
-        let first = history
-            .page(HistoryQuery {
-                cursor: focus.as_ref(),
-                order: HistoryOrder::Desc,
-                limit: Some(config.page_size),
-            })
-            .await?;
-        let mut messages = first.messages;
-        if let Some(focus) = &focus {
-            // The pin has no GET-by-ID route. Fetching forward from its nearest older row includes
-            // the target using only exact server-supplied cursors, including equal-time UUID ties.
-            let before = messages.first().and_then(|message| message.cursor());
-            let after = history
-                .page(HistoryQuery {
-                    cursor: before.as_ref(),
-                    order: HistoryOrder::Asc,
-                    limit: Some(config.page_size),
-                })
-                .await?;
-            messages.extend(after.messages);
-            if !messages
-                .iter()
-                .any(|message| message.cursor().as_ref() == Some(focus))
-            {
-                return Err(TimelineError::FocusMissing);
-            }
-        }
-        let subscription = history.subscribe().await?;
+        let opening::Loaded {
+            messages,
+            subscription,
+        } = opening::load(&history, &opening, config.page_size).await?;
+        let live = opening.is_live();
         let reading = session.subscribe_reading();
         let catch_up = session.subscribe_catch_up();
         let observer = session.reading_observer();
@@ -252,12 +272,12 @@ impl Timeline {
             subscription,
             reading.clone(),
             messages,
-            focus.is_none(),
+            live,
             Some(session.account()),
             channel,
             &config,
         )?;
-        if focus.is_none() {
+        if live {
             state.outgoing = Some(
                 session
                     .outgoing()
@@ -267,6 +287,15 @@ impl Timeline {
             );
         }
         state.refresh(&config)?;
+        // The anchor must still be held once its pages are in: a deletion or an eviction may
+        // have landed while they were fetched.
+        if let Some(anchor) = opening.anchor() {
+            match state.raw.locate(anchor)? {
+                papo_sdk::LocatedMessage::Held { .. } => {}
+                papo_sdk::LocatedMessage::Deleted => return Err(TimelineError::AnchorDeleted),
+                papo_sdk::LocatedMessage::Unknown => return Err(TimelineError::FocusMissing),
+            }
+        }
         let reading_overlay = crate::timeline_reading::ReadingOverlay::new(
             &session,
             channel,
