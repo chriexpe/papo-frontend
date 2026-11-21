@@ -33,6 +33,10 @@ pub(crate) fn codec_selected(element: &gst::Element, direction: &str) {
     }
 }
 
+pub(crate) fn video_destination_mismatch() {
+    log::warn!("Call video destination rejected: target does not match the route");
+}
+
 pub(crate) fn fatal(error: MediaFatalError) {
     log::warn!("Call media stopped: {error:?}");
 }

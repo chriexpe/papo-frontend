@@ -469,10 +469,17 @@ async fn local_destination_bind_and_unbind_increment_slot_plan_revision_monotoni
         &rt,
     );
     let dest1 = Arc::new(FakeVideoDestination::new(VideoDestinationId::from_raw(1)));
-    let dest2 = Arc::new(FakeVideoDestination::new(VideoDestinationId::from_raw(2)));
-    handle.bind_video(alice, VideoKind::Camera, dest1).unwrap();
-    handle.bind_video(alice, VideoKind::Camera, dest2).unwrap();
+    let dest2 = Arc::new(FakeVideoDestination::new(VideoDestinationId::from_raw(1)));
+    handle
+        .bind_video(alice, VideoKind::Camera, dest1.clone())
+        .unwrap();
+    handle
+        .bind_video(alice, VideoKind::Camera, dest2.clone())
+        .unwrap();
+    assert!(dest1.is_revoked());
+    assert!(!dest2.is_revoked());
     handle.unbind_video(alice, VideoKind::Camera).unwrap();
+    assert!(dest2.is_revoked());
 
     let lease = media.latest_lease().unwrap();
     let revisions: Vec<u64> = lease

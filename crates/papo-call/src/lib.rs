@@ -2,6 +2,7 @@
 
 mod audio;
 mod camera;
+mod cpu_video;
 mod diagnostics;
 mod engine;
 mod ice;
@@ -12,11 +13,13 @@ pub mod platform;
 mod receive_audio;
 mod receive_video;
 mod slots;
+mod video_pixels;
 mod video_route;
 
+pub use cpu_video::{CpuVideoDestination, CpuVideoFrame, CpuVideoFrameLease};
 pub use platform::MediaDevices;
-pub use receive_video::{CpuVideoDestination, CpuVideoFrame};
 pub use slots::ReceiveSlots;
+pub use video_pixels::{PackedBgra, PackedNv12, VideoPixelsError, VideoRotation};
 
 use engine::{Engine, QUEUE_CAPACITY};
 use papo_sdk::{
