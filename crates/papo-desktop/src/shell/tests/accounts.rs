@@ -23,10 +23,13 @@ fn two_accounts() -> Runtime<Shell> {
     let mut rt = app();
     let mut lumen = entry("Lumen", &["general"]);
     lumen.accounts.push(bia());
-    rt.update(|shell, _tx| {
-        shell.servers_changed(ServerList {
-            servers: vec![lumen],
-        });
+    rt.update(|shell, tx| {
+        shell.servers_changed(
+            ServerList {
+                servers: vec![lumen],
+            },
+            tx,
+        );
     });
     rt.frame(FRAME_S);
     rt

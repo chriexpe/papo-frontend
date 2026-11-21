@@ -209,7 +209,7 @@ pub(crate) fn channels<'a>(
 pub(crate) async fn run<S: 'static>(
     client: ClientHandle,
     updates: Updates<S>,
-    apply: fn(&mut S, ServerList) -> bool,
+    apply: fn(&mut S, ServerList, &mut rune::Tx) -> bool,
 ) {
     let mut registry = client.subscribe_registry();
     let mut sessions = client.subscribe_session_changes();
@@ -227,7 +227,7 @@ pub(crate) async fn run<S: 'static>(
         let list = project(&snapshot, &resources, &account_badges);
         if posted.as_ref() != Some(&list) {
             posted = Some(list.clone());
-            updates.send(move |state| apply(state, list));
+            updates.send_tx(move |state, tx| apply(state, list, tx));
         }
         tokio::select! {
             changed = registry.changed() => if changed.is_err() { return },

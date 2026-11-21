@@ -99,3 +99,18 @@ pub(crate) const CROSS_PT: f32 = 16.0;
 pub(crate) const PILL_CROSS_PT: f32 = 14.0;
 /// A keyboard focus ring: its width and its gap from the control, in points.
 pub(crate) const FOCUS_RING_PT: (f32, f32) = (2.0, 2.0);
+/// `radius.avatar`: a message avatar's corner radius (a rounded square), in
+/// points.
+pub(crate) const RADIUS_AVATAR_PT: f32 = 11.0;
+/// The timeline's padding around its rows, in points (the mock's 12 px
+/// sides).
+pub(crate) const TIMELINE_INSET_PT: f32 = 12.0;
+/// A date separator's hairlines, in points thick.
+pub(crate) const DATE_RULE_PT: f32 = 1.0;
+/// From a date separator's hairlines to its label, in points.
+pub(crate) const DATE_RULE_GAP_PT: f32 = 12.0;
+/// A skeleton row's text bars: their height and corner radius, in points.
+pub(crate) const SKELETON_BAR_PT: (f32, f32) = (10.0, 5.0);
+/// The widths of a skeleton row's name bar and text bar, as fractions of its
+/// content column, for each of the three placeholder rows.
+pub(crate) const SKELETON_WIDTHS: [(f32, f32); 3] = [(0.18, 0.62), (0.14, 0.45), (0.22, 0.7)];

@@ -14,12 +14,13 @@ use crate::design::{
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
 use crate::strings;
-use crate::{channel_pane, menu, rail, remove_server};
+use crate::{channel_pane, menu, rail, remove_server, timeline};
 
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
 pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
-    let palette = Palette::new(Theme::following_system(cx.system_dark()));
+    let theme = Theme::following_system(cx.system_dark());
+    let palette = Palette::new(theme);
     let surface = col().w_full().h_full().fill(palette.surface_content);
     match &shell.stage {
         Stage::Starting => surface,
@@ -44,7 +45,7 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 .padding(SPACE_LG_PT)
                 .child(sign_in::screen(flow, &shell.fields, &palette)),
             _ => {
-                let mut app = app(shell, &palette);
+                let mut app = app(shell, theme, &palette);
                 if let Some(server) = connected {
                     app = app.child(connected_pill(server, &palette));
                 }
@@ -69,7 +70,7 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
 
 /// The rail, the channel pane and the conversation with the composer pill
 /// at its foot.
-fn app(shell: &Shell, palette: &Palette) -> El {
+fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
     let field = text_input(&shell.composer, TYPE_BODY)
         .key(COMPOSER_KEY)
         .label(strings::composer_label())
@@ -89,15 +90,21 @@ fn app(shell: &Shell, palette: &Palette) -> El {
         .fill(palette.surface_pill)
         .border(PILL_OUTLINE_PT, palette.line_pill)
         .child(field);
+    let style = timeline::Style {
+        layout: shell.message_layout,
+        theme,
+        palette: *palette,
+        time: shell.local_time.clone(),
+        today: shell.local_time.today(),
+    };
     let conversation = col()
         .key("conversation")
         .grow(1.0)
         .min_w(0.0)
         .h_full()
-        .justify_end()
-        .padding(SPACE_LG_PT)
         .fill(palette.surface_content)
-        .child(pill);
+        .child(timeline::view(shell, style))
+        .child(col().w_full().padding(SPACE_LG_PT).child(pill));
     let edge = || el().w(PANE_EDGE_PT).h_full().fill(palette.line_subtle);
     row()
         .w_full()

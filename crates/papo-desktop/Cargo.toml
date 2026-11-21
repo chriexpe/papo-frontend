@@ -35,6 +35,13 @@ zbus = { version = "6.3", default-features = false, features = ["tokio", "proxy"
 # The OS keyring: the Secret Service on a Linux host, the Secret portal inside
 # Flatpak. Uses zbus 6, the version Rune already locks.
 oo7 = { version = "0.7.2", default-features = false, features = ["tokio", "native_crypto"] }
+# The timeline's items and the SDK's diffs to them (papo_sdk_ui::TimelineUpdate),
+# at the versions the SDK pins.
+eyeball-im = "=0.9.1"
+imbl = "=7.0.2"
+# The system's time zone at each message's time, for its local day and minute;
+# the version the SDK locks, with the clock for the local zone.
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 log = "0.4"
 env_logger = "0.11"
 

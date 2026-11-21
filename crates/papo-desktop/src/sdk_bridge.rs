@@ -155,6 +155,20 @@ impl<S: 'static> Updates<S> {
     pub(crate) fn send(&self, change: impl FnOnce(&mut S) -> bool + Send + 'static) {
         self.post.post(Box::new(move |state, _tx| change(state)));
     }
+
+    /// [`Updates::send`] for a change that also asks Rune for something,
+    /// such as a scroll.
+    pub(crate) fn send_tx(&self, change: impl FnOnce(&mut S, &mut Tx) -> bool + Send + 'static) {
+        self.post.post(Box::new(change));
+    }
+}
+
+impl<S> Clone for Updates<S> {
+    fn clone(&self) -> Self {
+        Updates {
+            post: Arc::clone(&self.post),
+        }
+    }
 }
 
 /// What the bridge thread needs to open the client.

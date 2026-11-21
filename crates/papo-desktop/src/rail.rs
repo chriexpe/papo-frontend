@@ -115,7 +115,7 @@ impl Tile<'_> {
             .focusable(true)
             .focus_selected(self.selected)
             .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
-            .on_press(move |shell: &mut Shell| shell.select_server(id))
+            .on_press_tx(move |shell: &mut Shell, tx| shell.select_server(id, tx))
             .on_drag(move |shell: &mut Shell, drag: &mut Drag, tx| shell.drag_server(id, drag, tx))
             .on_key(move |shell: &mut Shell, key: &KeyEvent, _tx| move_key(shell, id, key))
             .on_secondary_press(move |shell: &mut Shell, _press, _tx| {

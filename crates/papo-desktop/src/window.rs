@@ -20,6 +20,7 @@ pub(crate) fn spec() -> AppSpec<Shell> {
     AppSpec {
         min_size: Some(MIN_SIZE_PT),
         setup: Some(|shell, waker| shell.set_image_cache(rune::ImageCache::new(waker))),
+        poll: Some(Shell::poll),
         ..AppSpec::new(
             strings::window_title(),
             INITIAL_SIZE_PT,
