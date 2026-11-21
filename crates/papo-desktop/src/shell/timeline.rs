@@ -242,13 +242,19 @@ impl Shell {
     /// once one starts. Returns whether the view changed.
     pub(crate) fn poll(&mut self, clock_s: f64, tx: &mut Tx) -> bool {
         let restored = self.restore_shown(tx);
-        if let Some(due_s) = self.save_due_s {
-            if due_s <= clock_s {
-                self.save_due_s = None;
-                self.save_shown_position();
-            } else {
+        if self.save_wake_s.is_some_and(|wake_s| wake_s <= clock_s) {
+            self.save_wake_s = None;
+            match self.save_due_s {
+                Some(due_s) if due_s <= clock_s => {
+                    self.save_due_s = None;
+                    self.save_shown_position();
+                }
                 // Moved since this wake was asked for: wait out the rest.
-                tx.wake_after(Duration::from_secs_f64(due_s - clock_s));
+                Some(due_s) => {
+                    self.save_wake_s = Some(due_s);
+                    tx.wake_after(Duration::from_secs_f64(due_s - clock_s));
+                }
+                None => {}
             }
         }
         let new_day = self.follow_the_day(clock_s, tx);
@@ -276,13 +282,16 @@ impl Shell {
     }
 
     /// The reader's place moved: it is saved once it has rested for
-    /// [`SAVE_AFTER_S`]. One wake is asked for; each move pushes the due
-    /// time on, and the wake waits out the rest.
+    /// [`SAVE_AFTER_S`]. Each move pushes the due time on; one wake is
+    /// outstanding at a time, and one that arrives early asks for the
+    /// rest.
     fn place_moved(&mut self, tx: &mut Tx) {
-        if self.save_due_s.is_none() {
+        let due_s = tx.clock() + SAVE_AFTER_S;
+        self.save_due_s = Some(due_s);
+        if self.save_wake_s.is_none() {
+            self.save_wake_s = Some(due_s);
             tx.wake_after(Duration::from_secs_f64(SAVE_AFTER_S));
         }
-        self.save_due_s = Some(tx.clock() + SAVE_AFTER_S);
     }
 
     fn shown_timeline_mut(&mut self, key: TimelineKey) -> Option<&mut OpenTimeline> {

@@ -64,6 +64,8 @@ pub(crate) struct Shell {
     /// When the shown timeline's place is next saved, on the window's
     /// clock; set while it moves.
     save_due_s: Option<f64>,
+    /// When the wake asked for that save arrives; one at a time.
+    save_wake_s: Option<f64>,
     /// The current local day, as days since 1970-01-01: date separators
     /// name it "Today".
     today: i64,
@@ -117,6 +119,7 @@ impl Default for Shell {
             message_layout: MessageLayout::default(),
             local_time: LocalTime::system(),
             save_due_s: None,
+            save_wake_s: None,
             today: LocalTime::system().today(),
             day_ends_s: None,
         }
