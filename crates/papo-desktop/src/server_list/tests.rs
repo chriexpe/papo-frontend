@@ -237,3 +237,46 @@ fn a_server_takes_the_aggregate_of_the_account_its_rows_show() {
         "no aggregate: nothing claimed"
     );
 }
+
+#[test]
+fn an_icon_fetch_without_an_answer_is_asked_again_only_after_a_change() {
+    let account = AccountId::new(
+        server("https://papo.example.invalid").address.id(),
+        Uuid::nil(),
+    );
+    let mut icons = Icons::default();
+    icons.asked.insert(account);
+    icons.fetch_ended(IconFetch {
+        account,
+        bytes: None,
+        answered: false,
+    });
+    // The fetch's own end wakes the watch; that is not a change, and asking
+    // again then is what spun.
+    assert!(
+        icons.asked.contains(&account),
+        "not asked again on its own end"
+    );
+    icons.ask_unanswered_again();
+    assert!(
+        !icons.asked.contains(&account),
+        "asked again after a change"
+    );
+}
+
+#[test]
+fn an_answered_fetch_without_an_icon_is_not_asked_again() {
+    let account = AccountId::new(
+        server("https://papo.example.invalid").address.id(),
+        Uuid::nil(),
+    );
+    let mut icons = Icons::default();
+    icons.asked.insert(account);
+    icons.fetch_ended(IconFetch {
+        account,
+        bytes: None,
+        answered: true,
+    });
+    icons.ask_unanswered_again();
+    assert!(icons.asked.contains(&account));
+}
