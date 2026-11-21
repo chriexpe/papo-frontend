@@ -209,7 +209,7 @@ pub(crate) fn channels<'a>(
 pub(crate) async fn run<S: 'static>(
     client: ClientHandle,
     updates: Updates<S>,
-    apply: fn(&mut S, ServerList) -> bool,
+    apply: fn(&mut S, ServerList, &mut rune::Tx) -> bool,
 ) {
     let mut registry = client.subscribe_registry();
     let mut sessions = client.subscribe_session_changes();
@@ -227,36 +227,44 @@ pub(crate) async fn run<S: 'static>(
         let list = project(&snapshot, &resources, &account_badges);
         if posted.as_ref() != Some(&list) {
             posted = Some(list.clone());
-            updates.send(move |state| apply(state, list));
+            updates.send_tx(move |state, tx| apply(state, list, tx));
         }
-        tokio::select! {
-            changed = registry.changed() => if changed.is_err() { return },
-            changed = sessions.changed() => if changed.is_err() { return },
+        let woken = tokio::select! {
+            changed = registry.changed() => if changed.is_err() { return } else { Wake::Change },
+            changed = sessions.changed() => if changed.is_err() { return } else { Wake::Change },
             // One badge change wakes both this stream and the shown
             // account's badge watch: two passes, the second one complete. The
             // stream keeps its pending read across select! rounds.
             update = badge_changes.next() => match update {
-                Some(update) => account_badges = update.snapshot.accounts,
+                Some(update) => {
+                    account_badges = update.snapshot.accounts;
+                    Wake::Change
+                }
                 // The client closed: the subscription ends with it.
                 None => return,
             },
-            Some(_) = resource_changes.join_next(), if !resource_changes.is_empty() => {}
+            Some(_) = resource_changes.join_next(), if !resource_changes.is_empty() => Wake::Change,
             Some(fetched) = icons.fetches.join_next(), if !icons.fetches.is_empty() => {
                 if let Ok(fetch) = fetched {
-                    match fetch.bytes {
-                        Some(bytes) => {
-                            icons.fetched.insert(fetch.account, bytes);
-                        }
-                        // No answer (signed out, offline): ask again next time.
-                        None if !fetch.answered => {
-                            icons.asked.remove(&fetch.account);
-                        }
-                        None => {}
-                    }
+                    icons.fetch_ended(fetch);
                 }
+                Wake::IconFetched
             }
+        };
+        if woken == Wake::Change {
+            icons.ask_unanswered_again();
         }
     }
+}
+
+/// What woke the watch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wake {
+    /// The registry, the sessions, a badge or an account's resources.
+    Change,
+    /// An icon fetch ended. It changes nothing to ask again for: a fetch
+    /// that fails at once would otherwise ask, and fail, in a busy loop.
+    IconFetched,
 }
 
 /// Each shown account's server icon, fetched through its media store once
@@ -266,6 +274,8 @@ pub(crate) async fn run<S: 'static>(
 struct Icons {
     /// Accounts whose icon was asked for, fetched or not.
     asked: HashSet<AccountId>,
+    /// Accounts whose fetch got no answer: asked again on the next change.
+    unanswered: HashSet<AccountId>,
     fetched: HashMap<AccountId, Arc<[u8]>>,
     /// Fetches still running; kept across passes.
     fetches: JoinSet<IconFetch>,
@@ -281,6 +291,26 @@ struct IconFetch {
 }
 
 impl Icons {
+    fn fetch_ended(&mut self, fetch: IconFetch) {
+        match fetch.bytes {
+            Some(bytes) => {
+                self.fetched.insert(fetch.account, bytes);
+            }
+            // No answer (signed out, offline): asked again on the next change.
+            None if !fetch.answered => {
+                self.unanswered.insert(fetch.account);
+            }
+            None => {}
+        }
+    }
+
+    /// Something changed: the icons that got no answer are asked again.
+    fn ask_unanswered_again(&mut self) {
+        for account in self.unanswered.drain() {
+            self.asked.remove(&account);
+        }
+    }
+
     /// The icon fetched for `account`, asking for it the first time.
     fn for_account(&mut self, account: AccountId, session: &Session) -> Option<Arc<[u8]>> {
         if self.asked.insert(account) {

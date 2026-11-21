@@ -257,3 +257,20 @@ fn requests_after_the_fence_are_dropped() {
         "nothing ran after the fence"
     );
 }
+
+#[test]
+fn work_sent_to_finish_lands_before_the_fence_ends() {
+    let root = tempfile::tempdir().unwrap();
+    let harness = open(&root);
+    let sdk = harness.rt.state.sdk.clone().unwrap();
+    let landed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&landed);
+    // Sent right before the window closes: still queued, or just started,
+    // when the fence begins.
+    sdk.finish(move |_client| async move {
+        tokio::task::yield_now().await;
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    harness.bridge.shutdown();
+    assert!(landed.load(std::sync::atomic::Ordering::SeqCst));
+}

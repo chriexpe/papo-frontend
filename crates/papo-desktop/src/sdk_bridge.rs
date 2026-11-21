@@ -65,10 +65,21 @@ pub(crate) enum OpenFailure {
 /// A request's work, given the client, run on the client's runtime.
 type Job = Box<dyn FnOnce(ClientHandle) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
+/// A job on its way to the bridge, and what the exit fence does with it.
+struct Queued {
+    job: Job,
+    /// The fence lets it finish, up to [`FINISH_DEADLINE`], rather than
+    /// cancelling it.
+    finish: bool,
+}
+
+/// How long the exit fence waits for the jobs sent with [`Sdk::finish`].
+const FINISH_DEADLINE: Duration = Duration::from_secs(2);
+
 /// The UI's way to send requests to the open client. Cloned freely; requests
 /// sent after the exit fence are dropped.
 pub(crate) struct Sdk<S> {
-    jobs: mpsc::UnboundedSender<Job>,
+    jobs: mpsc::UnboundedSender<Queued>,
     post: Arc<dyn Post<S>>,
 }
 
@@ -110,7 +121,7 @@ impl<S: 'static> Sdk<S> {
                 }));
             })
         });
-        self.send(job);
+        self.send(job, false);
     }
 
     /// Runs `work` on the client's runtime until it returns or the exit fence
@@ -125,7 +136,10 @@ impl<S: 'static> Sdk<S> {
         let updates = Updates {
             post: Arc::clone(&self.post),
         };
-        self.send(Box::new(move |client| Box::pin(work(client, updates))));
+        self.send(
+            Box::new(move |client| Box::pin(work(client, updates))),
+            false,
+        );
     }
 
     /// Runs `work` on the client's runtime for its effect alone: the UI waits
@@ -134,11 +148,21 @@ impl<S: 'static> Sdk<S> {
     where
         Work: Future<Output = ()> + Send + 'static,
     {
-        self.send(Box::new(move |client| Box::pin(work(client))));
+        self.send(Box::new(move |client| Box::pin(work(client))), false);
     }
 
-    fn send(&self, job: Job) {
-        if self.jobs.send(job).is_err() {
+    /// [`Sdk::run`] for work that must land, such as a save: sent before
+    /// the exit fence, the fence lets it finish (up to a deadline) instead
+    /// of cancelling it.
+    pub(crate) fn finish<Work>(&self, work: impl FnOnce(ClientHandle) -> Work + Send + 'static)
+    where
+        Work: Future<Output = ()> + Send + 'static,
+    {
+        self.send(Box::new(move |client| Box::pin(work(client))), true);
+    }
+
+    fn send(&self, job: Job, finish: bool) {
+        if self.jobs.send(Queued { job, finish }).is_err() {
             log::debug!("dropped a request sent after the SDK shut down");
         }
     }
@@ -154,6 +178,20 @@ impl<S: 'static> Updates<S> {
     /// Queues `change`, which returns whether it changed what the view reads.
     pub(crate) fn send(&self, change: impl FnOnce(&mut S) -> bool + Send + 'static) {
         self.post.post(Box::new(move |state, _tx| change(state)));
+    }
+
+    /// [`Updates::send`] for a change that also asks Rune for something,
+    /// such as a scroll.
+    pub(crate) fn send_tx(&self, change: impl FnOnce(&mut S, &mut Tx) -> bool + Send + 'static) {
+        self.post.post(Box::new(change));
+    }
+}
+
+impl<S> Clone for Updates<S> {
+    fn clone(&self) -> Self {
+        Updates {
+            post: Arc::clone(&self.post),
+        }
     }
 }
 
@@ -282,35 +320,70 @@ fn serve<S: BridgeHost>(profile: Profile, post: &Arc<dyn Post<S>>, stopped: ones
     }
 }
 
-/// Runs every job on the client's runtime until the fence stops the bridge,
-/// then cancels the jobs still running.
+/// Runs every job on the client's runtime until the fence stops the bridge.
+/// Then the jobs sent with [`Sdk::finish`], queued ones included, get up to
+/// [`FINISH_DEADLINE`] to land, and the rest are cancelled.
 async fn run_jobs(
     client: ClientHandle,
-    mut queue: mpsc::UnboundedReceiver<Job>,
+    mut queue: mpsc::UnboundedReceiver<Queued>,
     mut stopped: oneshot::Receiver<()>,
 ) {
     let mut running = JoinSet::new();
+    let mut finishing = JoinSet::new();
     loop {
         tokio::select! {
             biased;
             // A dropped `Bridge` stops the bridge as `shutdown` does.
             _ = &mut stopped => break,
-            job = queue.recv() => {
-                let Some(job) = job else {
+            queued = queue.recv() => {
+                let Some(queued) = queued else {
                     // The UI dropped every `Sdk`; nothing more can arrive.
                     let _ = (&mut stopped).await;
                     break;
                 };
-                running.spawn(job(client.clone()));
+                spawn(&client, queued, &mut running, &mut finishing);
             }
-            Some(done) = running.join_next(), if !running.is_empty() => {
-                if done.is_err_and(|error| error.is_panic()) {
-                    log::error!("an SDK request panicked; its result never arrives");
-                }
-            }
+            Some(done) = running.join_next(), if !running.is_empty() => report(done),
+            Some(done) = finishing.join_next(), if !finishing.is_empty() => report(done),
         }
     }
+    // Sent before the fence, so still owed: the window's last saves.
+    while let Ok(queued) = queue.try_recv() {
+        if queued.finish {
+            spawn(&client, queued, &mut running, &mut finishing);
+        }
+    }
+    let landed = tokio::time::timeout(FINISH_DEADLINE, async {
+        while let Some(done) = finishing.join_next().await {
+            report(done);
+        }
+    })
+    .await;
+    if landed.is_err() {
+        log::warn!("the exit fence cancelled work that did not finish in time");
+    }
+    finishing.shutdown().await;
     running.shutdown().await;
+}
+
+fn spawn(
+    client: &ClientHandle,
+    queued: Queued,
+    running: &mut JoinSet<()>,
+    finishing: &mut JoinSet<()>,
+) {
+    let work = (queued.job)(client.clone());
+    if queued.finish {
+        finishing.spawn(work);
+    } else {
+        running.spawn(work);
+    }
+}
+
+fn report(done: Result<(), tokio::task::JoinError>) {
+    if done.is_err_and(|error| error.is_panic()) {
+        log::error!("an SDK request panicked; its result never arrives");
+    }
 }
 
 fn open_failure(error: &ClientError) -> OpenFailure {

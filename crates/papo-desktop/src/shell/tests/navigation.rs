@@ -51,13 +51,16 @@ pub(super) fn entry(name: &str, channels: &[&str]) -> ServerEntry {
 /// The app with two servers in the rail.
 pub(super) fn with_servers() -> Runtime<Shell> {
     let mut rt = app();
-    rt.update(|shell, _tx| {
-        shell.servers_changed(ServerList {
-            servers: vec![
-                entry("Lumen", &["general", "media"]),
-                entry("Mirante", &["avisos"]),
-            ],
-        });
+    rt.update(|shell, tx| {
+        shell.servers_changed(
+            ServerList {
+                servers: vec![
+                    entry("Lumen", &["general", "media"]),
+                    entry("Mirante", &["avisos"]),
+                ],
+            },
+            tx,
+        );
     });
     rt.frame(FRAME_S);
     rt
@@ -300,10 +303,13 @@ fn with_badges() -> Runtime<Shell> {
     let mut mirante = entry("Mirante", &["avisos"]);
     mirante.badge = Badge::new(None, UnreadCount::AtLeast(0));
     let mut rt = app();
-    rt.update(|shell, _tx| {
-        shell.servers_changed(ServerList {
-            servers: vec![lumen, mirante],
-        });
+    rt.update(|shell, tx| {
+        shell.servers_changed(
+            ServerList {
+                servers: vec![lumen, mirante],
+            },
+            tx,
+        );
     });
     rt.frame(FRAME_S);
     rt

@@ -28,6 +28,8 @@ mod server_list;
 mod shell;
 mod sign_in;
 mod strings;
+mod tabs;
+mod timeline;
 mod window;
 
 use std::cell::RefCell;
@@ -62,7 +64,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the exit fence below runs after the window is gone.
     rune::orderly_exit();
     let keyring = Arc::new(Keyring::start(SecretService::default)?);
-    let app = rune::App::new(window::spec());
+    let app = rune::App::new(window::spec()).on_close(Shell::window_closing);
     let post = Arc::new(app.handle());
     lifecycle.attach(Arc::new(app.handle()));
     let bridge = Rc::new(RefCell::new(BridgeSlot::NotStarted));
