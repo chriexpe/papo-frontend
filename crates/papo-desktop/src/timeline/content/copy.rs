@@ -135,6 +135,34 @@ pub(super) fn run_text(run: &Run, range: Range<usize>) -> String {
     text
 }
 
+/// What assistive technology reads for `run`, when that differs from its
+/// words: without chips' padding, and each hidden spoiler as "Hidden
+/// spoiler. Press to reveal." rather than its words. None reads the words
+/// as they are.
+pub(super) fn spoken(run: &Run) -> Option<String> {
+    let padded = run
+        .marks
+        .iter()
+        .any(|mark| matches!(mark, Mark::Pad { .. }));
+    if !padded {
+        return None;
+    }
+    let mut hidden: Vec<Range<usize>> = run.hidden().collect();
+    hidden.sort_by_key(|spoiler| spoiler.start);
+    let mut text = String::new();
+    let mut at = 0;
+    for spoiler in hidden {
+        if spoiler.end <= at {
+            continue;
+        }
+        text.push_str(&unpadded(run, at..spoiler.start.max(at)));
+        text.push_str(strings::spoiler_hidden());
+        at = spoiler.end;
+    }
+    text.push_str(&unpadded(run, at..run.text.len()));
+    Some(text)
+}
+
 /// Bytes `range` of `run` less its chips' padding.
 fn unpadded(run: &Run, range: Range<usize>) -> String {
     let mut text = String::new();

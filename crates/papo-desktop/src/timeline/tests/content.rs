@@ -12,7 +12,7 @@ use papo_sdk_ui::message_content::MessageContent;
 use rune::clipboard::memory;
 use rune::{Key, KeyEvent, Mods, Runtime};
 
-use super::{Host, assert_near, key, message, part, runtime, until_idle};
+use super::{Host, assert_near, find_part, key, message, part, runtime, until_idle};
 use crate::design::{
     CODE_BLOCK_MAX_LINES, Density, MessageLayout, TYPE_BODY, TYPE_CODE_BLOCK, TYPE_JUMBO,
 };
@@ -158,6 +158,20 @@ fn a_wide_table_scrolls_inside_its_message() {
         .map(|column| part(&rt, 1, &format!("r0/c{column}"))[2])
         .sum();
     assert!(cells > body[2], "the columns keep their width: {cells}");
+}
+
+#[test]
+fn a_tables_header_fill_ends_with_its_last_column() {
+    let body = "| a | b |\n|---|---|\n| 1 | 2 |";
+    let items = Vector::from(vec![message(1, "ana", 0, body)]);
+    let rt = runtime(items, normal());
+    let header = find_part(&rt, 1, "r0").expect("the header row");
+    assert_eq!(
+        header.fill.a, 0.0,
+        "the row, as wide as the message, has no fill"
+    );
+    let cell = find_part(&rt, 1, "r0/c1").expect("a header cell");
+    assert!(cell.fill.a > 0.0, "the cells carry the header's fill");
 }
 
 #[test]

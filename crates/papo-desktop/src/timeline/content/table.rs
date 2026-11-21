@@ -49,16 +49,16 @@ pub(super) fn table<S: TimelineHost>(
             .border_layout()
             .child(run_text::<S>(run, font, ink, draw, None).align(align))
     };
+    // The cells carry the header's fill: the row is as wide as the
+    // scroll area, past the last column.
     let header_row = row()
         .key("r0")
-        .fill(palette.surface_sidebar)
         .role("row")
-        .children(
-            header
-                .iter()
-                .enumerate()
-                .map(|(column, run)| cell(run, 0, column, header_font).role("columnheader")),
-        );
+        .children(header.iter().enumerate().map(|(column, run)| {
+            cell(run, 0, column, header_font)
+                .fill(palette.surface_sidebar)
+                .role("columnheader")
+        }));
     let body = rows.iter().enumerate().map(|(index, cells)| {
         row().key(format!("r{}", index + 1)).role("row").children(
             cells

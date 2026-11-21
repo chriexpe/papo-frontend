@@ -12,6 +12,7 @@ use std::ops::Range;
 
 use rune::{Color, El, Link, LinkPaint, Span, TextStyle, rich};
 
+use super::copy::spoken;
 use super::doc::{Mark, PAD, Pad, Run};
 use super::{Draw, Press};
 use crate::design::{
@@ -78,6 +79,13 @@ pub(super) fn text<S: TimelineHost>(
         .selection_color(draw.palette.text_selection);
     for range in uncopied {
         el = el.uncopied(range);
+    }
+    if let Some(spoken) = spoken(run) {
+        let spoken = match trailer {
+            Some(trailer) => format!("{spoken} {}", trailer.words),
+            None => spoken,
+        };
+        el = el.label(spoken.clone()).a11y_value(spoken);
     }
     if !links.is_empty() {
         for link in links {

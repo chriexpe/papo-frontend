@@ -6,7 +6,7 @@ use papo_sdk::{MentionTarget, Uuid};
 use papo_sdk_ui::message_content::MessageContent;
 
 use super::Press;
-use super::copy::run_text;
+use super::copy::{run_text, spoken};
 use super::doc::{Context, Doc, Mark, Marker, Node, Run};
 
 fn doc(source: &str, revealed: &[u32]) -> Doc {
@@ -57,6 +57,21 @@ fn a_hidden_spoiler_copies_whole_even_when_half_selected() {
 
 fn doc_revealed(source: &str) -> Doc {
     doc(source, &[0])
+}
+
+#[test]
+fn assistive_technology_hears_a_hidden_spoiler_announced_not_read() {
+    let hidden = doc("ends ||the butler|| and `code`", &[]);
+    assert_eq!(
+        spoken(hidden.runs()[0]).as_deref(),
+        Some("ends Hidden spoiler. Press to reveal. and code")
+    );
+    let revealed = doc("ends ||the butler|| and `code`", &[0]);
+    assert_eq!(
+        spoken(revealed.runs()[0]).as_deref(),
+        Some("ends the butler and code")
+    );
+    assert_eq!(spoken(doc("plain words", &[]).runs()[0]), None);
 }
 
 #[test]
