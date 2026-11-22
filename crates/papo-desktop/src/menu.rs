@@ -32,6 +32,10 @@ pub(crate) enum MenuAction {
     },
     /// Drop your unsent message `local`.
     DiscardSend { key: TimelineKey, local: Uuid },
+    /// Send your failed edit `local` again.
+    RetryChange { key: TimelineKey, local: Uuid },
+    /// Drop your failed edit `local`: the confirmed text stays.
+    DiscardChange { key: TimelineKey, local: Uuid },
 }
 
 /// Where an open menu sits.

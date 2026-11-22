@@ -13,7 +13,7 @@ use std::ops::Range;
 
 use papo_sdk::Uuid;
 use papo_sdk_ui::TimelineItem;
-use rune::{El, GrowthSpec, ScrollSpec, Tx, col, el, memo, row, text};
+use rune::{El, GrowthSpec, KeyEvent, ScrollSpec, Tx, col, el, memo, row, text};
 
 use super::content::Press;
 use super::content::copy::{self, Source};
@@ -21,7 +21,8 @@ use super::controls::{jump_stack, seeking_pill};
 use super::echoes::SendState;
 use super::grouping::previous_message;
 use super::local_time::{LocalTime, day_label};
-use super::message_row::{Origin, RowMessage, message_row};
+use super::message_row::message_row;
+use super::row_parts::{Origin, RowMessage};
 use super::{OpenTimeline, Phase, TimelineKey, row_key};
 use crate::design::{
     DATE_RULE_GAP_PT, DATE_RULE_PT, Density, FOCUS_RING_PT, Lead, MESSAGE_ROW_INSET_PT,
@@ -69,6 +70,16 @@ pub(crate) trait TimelineHost: Sized + 'static {
     /// The mark of your unsent message `local`, in state `state`, was
     /// pressed: its menu opens.
     fn send_state_pressed(&mut self, key: TimelineKey, local: Uuid, state: SendState);
+    /// A key on the focused message `id`. Returns whether it was taken.
+    fn message_key(&mut self, key: TimelineKey, id: Uuid, event: &KeyEvent, tx: &mut Tx) -> bool;
+    /// A reply line was pressed: its original `original` is shown.
+    fn reply_line_pressed(&mut self, key: TimelineKey, original: Uuid, tx: &mut Tx);
+    /// The ⚠ of your failed edit `local` was pressed: its menu opens.
+    fn change_mark_pressed(&mut self, key: TimelineKey, local: Uuid);
+    /// Try again on your failed change `local`.
+    fn change_retried(&mut self, key: TimelineKey, local: Uuid);
+    /// Dismiss on your failed change `local`: it is dropped.
+    fn change_discarded(&mut self, key: TimelineKey, local: Uuid);
 }
 
 /// How the rows look: the same for every row of one view.
@@ -82,6 +93,9 @@ pub(crate) struct Style {
     pub(crate) today: i64,
     /// The "Unread hourglass" setting: ⌛ and the skipped block's edges.
     pub(crate) hourglass: bool,
+    /// The message the composer points at (a reply's original, or the
+    /// message being edited): it wears `highlight.selected`.
+    pub(crate) selected: Option<Uuid>,
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and
@@ -122,6 +136,10 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         .then(|| seeking_pill::<S>(key, &style.palette));
     let rows = col()
         .key("rows")
+        // Its messages are the list ↑ and ↓ move along (`docs/design.md`
+        // §12); a focused one takes R, E and Delete.
+        .role("list")
+        .focus_group()
         // Every message's text is one selection, which copies as the
         // messages show (`content::copy`).
         .selection_group(true)
@@ -191,22 +209,25 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
             id,
             message,
             content,
+            reply,
             ..
         } => {
             let row = RowMessage {
                 id: *id,
                 message,
                 content,
+                reply: reply.as_ref(),
                 origin: Origin::History,
             };
             message_row::<S>(open, &row, previous, style)
         }
-        TimelineItem::LocalEcho { id, .. } => match open.echoes.get(*id) {
+        TimelineItem::LocalEcho { id, reply, .. } => match open.echoes.get(*id) {
             Some(echo) => {
                 let row = RowMessage {
                     id: *id,
                     message: &echo.message,
                     content: &echo.content,
+                    reply: reply.as_ref(),
                     origin: Origin::Echo(echo.state),
                 };
                 message_row::<S>(open, &row, previous, style)

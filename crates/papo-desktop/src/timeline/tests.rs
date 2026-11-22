@@ -106,6 +106,32 @@ impl TimelineHost for Host {
     fn send_state_pressed(&mut self, _key: TimelineKey, _local: Uuid, _state: SendState) {
         self.controls.push("send-state");
     }
+
+    fn message_key(
+        &mut self,
+        _key: TimelineKey,
+        _id: Uuid,
+        _event: &rune::KeyEvent,
+        _tx: &mut Tx,
+    ) -> bool {
+        false
+    }
+
+    fn reply_line_pressed(&mut self, _key: TimelineKey, _original: Uuid, _tx: &mut Tx) {
+        self.controls.push("reply-line");
+    }
+
+    fn change_mark_pressed(&mut self, _key: TimelineKey, _local: Uuid) {
+        self.controls.push("change-mark");
+    }
+
+    fn change_retried(&mut self, _key: TimelineKey, _local: Uuid) {
+        self.controls.push("change-retried");
+    }
+
+    fn change_discarded(&mut self, _key: TimelineKey, _local: Uuid) {
+        self.controls.push("change-discarded");
+    }
 }
 
 fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
@@ -117,6 +143,7 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
         today: time.today(),
         time,
         hourglass: host.hourglass,
+        selected: None,
     };
     col().w_full().h_full().child(view(host, style))
 }
@@ -227,6 +254,7 @@ fn assert_near(actual: f32, expected: f32, what: &str) {
     );
 }
 
+mod changes;
 mod content;
 mod controls;
 mod echoes;

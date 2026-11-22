@@ -64,7 +64,7 @@ pub(super) fn load(rt: &mut Runtime<Shell>, draft: &str) {
     let draft = draft.to_owned();
     rt.update(move |shell, _tx| {
         let key = shown(shell);
-        shell.composer.loaded(key, plain(draft));
+        shell.composer.loaded(key, plain(draft), None, true);
     });
     rt.frame(FRAME_S);
 }
@@ -259,7 +259,9 @@ fn a_failed_send_puts_the_text_back_and_says_so() {
     press(&mut rt, Key::Enter);
     rt.update(|shell, _tx| {
         let key = shown(shell);
-        shell.composer.send_failed(key, plain("oi".to_owned()));
+        shell
+            .composer
+            .send_failed(key, plain("oi".to_owned()), None, true);
     });
     rt.frame(FRAME_S);
     assert_eq!(field(&rt), "oi");

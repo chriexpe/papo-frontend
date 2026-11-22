@@ -11,6 +11,8 @@
 
 pub(crate) mod anchor;
 mod boundary;
+pub(crate) mod change_marks;
+pub(crate) mod changes;
 pub(crate) mod content;
 mod controls;
 pub(crate) mod echoes;
@@ -19,9 +21,13 @@ pub(crate) mod local_time;
 mod message_row;
 mod paging;
 pub(crate) mod reading;
+pub(crate) mod replies;
+pub(crate) mod reply_line;
 pub(crate) mod reports;
+mod row_parts;
 pub(crate) mod rows;
 pub(crate) mod send_mark;
+pub(crate) mod standalone;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -36,11 +42,14 @@ use papo_sdk::{AccountId, Generation, HistoryGap, ResourceSnapshot, Uuid};
 use papo_sdk_ui::{Timeline, TimelineItem, TimelineUpdate};
 use tokio::sync::oneshot;
 
+pub(crate) use self::anchor::scroll_to;
 use self::anchor::{Anchor, Tracker};
+use self::changes::Changes;
 use self::echoes::Echoes;
 use self::paging::Paging;
 pub(crate) use self::paging::Request;
 use self::reading::Reading;
+pub(crate) use self::reading::Seek;
 use self::reports::Reports;
 pub(crate) use self::rows::row_key;
 pub(crate) use self::view::{Style, TimelineHost, view, viewport_key};
@@ -84,6 +93,11 @@ pub(crate) struct OpenTimeline {
     pub(crate) items: Vector<Arc<TimelineItem>>,
     /// The local echoes among them, drawn as messages.
     pub(crate) echoes: Echoes,
+    /// Your edits and deletions in flight on them.
+    pub(crate) changes: Changes,
+    /// A message a jump just landed on, and until when on the window's
+    /// clock it wears `highlight.selected`.
+    pub(crate) flash: Option<(Uuid, f64)>,
     version: u64,
     /// The connection generation the items were read in; none while no
     /// window is open (before the first, between a reopen and the next).
@@ -125,22 +139,6 @@ pub(crate) struct OpenTimeline {
     pub(crate) seek: Option<Seek>,
 }
 
-/// ⌛'s paging toward the skipped block. Dropping it stops the paging.
-#[derive(Debug)]
-pub(crate) struct Seek {
-    /// Which press it is: an answer for another is dropped.
-    pub(crate) id: u64,
-    _stop: oneshot::Sender<()>,
-}
-
-impl Seek {
-    /// A seek, with the receiver its task stops on once it is dropped.
-    pub(crate) fn new(id: u64) -> (Seek, oneshot::Receiver<()>) {
-        let (stop, stopped) = oneshot::channel();
-        (Seek { id, _stop: stop }, stopped)
-    }
-}
-
 impl OpenTimeline {
     /// A timeline whose window is opening, at `anchor`. Returns the
     /// receiver its watch stops on.
@@ -159,6 +157,8 @@ impl OpenTimeline {
             live: true,
             items: Vector::new(),
             echoes: Echoes::default(),
+            changes: Changes::default(),
+            flash: None,
             version: 0,
             generation: None,
             keys_version: 0,
@@ -187,6 +187,7 @@ impl OpenTimeline {
         let (mut open, _stopped) = OpenTimeline::opening(key, 0, None);
         open.items = items;
         open.echoes.refresh(&open.items, key.account.user());
+        open.changes.refresh(&open.items);
         open.phase = Phase::Open;
         open.generation = Some(Generation::for_test(1));
         open.reading.items_changed(&open.items, true);
@@ -210,6 +211,7 @@ impl OpenTimeline {
         self.generation = Some(generation);
         self.items = items;
         self.echoes.refresh(&self.items, self.key.account.user());
+        self.changes.refresh(&self.items);
         // Only rows reported from these items count.
         self.reports.jumped();
         self.reading
@@ -323,6 +325,7 @@ impl OpenTimeline {
             self.keys_version += 1;
         }
         self.echoes.refresh(&self.items, self.key.account.user());
+        self.changes.refresh(&self.items);
         self.version = update.version;
         self.generation = Some(update.generation);
         let sees_bottom = watched && self.tracker.at_bottom();
@@ -387,14 +390,5 @@ fn changes_keys(items: &Vector<Arc<TimelineItem>>, diff: &VectorDiff<Arc<Timelin
             .get(*index)
             .is_none_or(|old| row_key(old) != row_key(value)),
         _ => true,
-    }
-}
-
-/// Scrolls the shown viewport so `anchor`'s message is where the anchor
-/// says: after a switch back, a reset, or a change of density. Following
-/// the newest needs none, as a new viewport opens at its bottom.
-pub(crate) fn scroll_to(anchor: Anchor, tx: &mut rune::Tx) {
-    if let Anchor::Message { id, offset_pt } = anchor {
-        tx.scroll_key_to(rows::anchor_key(id), offset_pt);
     }
 }

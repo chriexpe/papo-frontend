@@ -196,7 +196,7 @@ impl Shell {
 
     /// Shows message `id`: in place when the window holds it, else in a
     /// window opened around it.
-    fn jump_to(&mut self, key: TimelineKey, id: Uuid, tx: &mut Tx) {
+    pub(super) fn jump_to(&mut self, key: TimelineKey, id: Uuid, tx: &mut Tx) {
         let Some(open) = self.shown_timeline_mut(key) else {
             return;
         };

@@ -57,11 +57,20 @@ pub(crate) fn previous_message<'a>(
 
 /// Whether `message` continues the group of `previous`, the message just
 /// above it (`previous_message`): the same author, at most five minutes
-/// apart.
+/// apart, and not a reply.
 pub(crate) fn continues(previous: Option<&Message>, message: &Message) -> bool {
     let Some(previous) = previous else {
         return false;
     };
+    // A reply always starts a new group: its reply line needs the header
+    // and avatar it hangs from (`docs/design.md` §11).
+    if message
+        .reply_to
+        .as_deref()
+        .is_some_and(|reply| !reply.is_empty())
+    {
+        return false;
+    }
     let same_author = match (author(previous), author(message)) {
         (Some(a), Some(b)) => a == b,
         _ => false,

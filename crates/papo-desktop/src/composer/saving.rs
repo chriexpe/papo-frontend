@@ -53,8 +53,11 @@ impl Composer {
 
     /// The save of `key`'s buffer, when it has changes; it counts as saved
     /// from now on.
+    /// An edit is never saved: the stored draft keeps the field as it was
+    /// before the edit.
     pub(super) fn save(&mut self, key: TimelineKey) -> Option<Effect> {
-        if !self.drafts.get(&key)?.state.unsaved() {
+        let draft = self.drafts.get(&key)?;
+        if !draft.state.unsaved() || draft.mode.editing().is_some() {
             return None;
         }
         let seq = self.next_seq();
@@ -68,6 +71,7 @@ impl Composer {
                 .into_iter()
                 .map(|binding| binding.id)
                 .collect(),
+            reply_to: draft.mode.reply().map(|reply| reply.id),
             seq,
         })
     }

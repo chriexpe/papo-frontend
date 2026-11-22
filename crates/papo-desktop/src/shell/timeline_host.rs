@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use papo_sdk::Uuid;
-use rune::Tx;
+use rune::{KeyEvent, Tx};
 
 use super::Shell;
 use crate::timeline::content::Press;
@@ -95,6 +95,26 @@ impl TimelineHost for Shell {
 
     fn send_state_pressed(&mut self, key: TimelineKey, local: Uuid, state: SendState) {
         self.open_send_menu(key, local, state);
+    }
+
+    fn message_key(&mut self, key: TimelineKey, id: Uuid, event: &KeyEvent, tx: &mut Tx) -> bool {
+        Shell::message_key(self, key, id, event, tx)
+    }
+
+    fn reply_line_pressed(&mut self, key: TimelineKey, original: Uuid, tx: &mut Tx) {
+        self.jump_to_original(key, original, tx);
+    }
+
+    fn change_mark_pressed(&mut self, key: TimelineKey, local: Uuid) {
+        self.open_change_menu(key, local);
+    }
+
+    fn change_retried(&mut self, key: TimelineKey, local: Uuid) {
+        self.retry_change(key, local);
+    }
+
+    fn change_discarded(&mut self, key: TimelineKey, local: Uuid) {
+        self.discard_change(key, local);
     }
 
     fn retry_gap(&mut self, key: TimelineKey, cursor_id: &str) {

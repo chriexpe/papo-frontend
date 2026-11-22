@@ -96,6 +96,11 @@ fn build(operation: &Arc<Operation>, me: Uuid) -> Option<Echo> {
             id: Some(operation.id.to_string()),
             author_id: Some(me.to_string()),
             content: Some(outgoing.content.clone()),
+            reply_to: outgoing.reply_to.map(|target| match target {
+                papo_sdk::MessageTarget::Remote(id) | papo_sdk::MessageTarget::Local(id) => {
+                    id.to_string()
+                }
+            }),
             created_at: key.to_cursor().ok().map(|cursor| cursor.created_at),
             ..Message::default()
         })

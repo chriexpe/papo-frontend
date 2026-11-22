@@ -9,6 +9,7 @@ use papo_sdk_ui::message_content::{
 use rune::TextEdit;
 
 use super::mentions;
+use super::mode::Mode;
 use super::pairs::Pairs;
 
 /// One channel's buffer.
@@ -23,6 +24,8 @@ pub(crate) struct Draft {
     /// The text's length as sent, in characters: a mention counts as its
     /// token, not its name.
     pub(super) wire_chars: usize,
+    /// A new message, a reply or an edit.
+    pub(crate) mode: Mode,
 }
 
 /// Where a buffer stands against the SDK's stored draft.
@@ -59,6 +62,7 @@ impl Draft {
             pairs: Pairs::default(),
             preview: Vec::new(),
             wire_chars: 0,
+            mode: Mode::default(),
         }
     }
 

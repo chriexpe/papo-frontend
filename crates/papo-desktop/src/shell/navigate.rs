@@ -186,6 +186,15 @@ impl Shell {
                 // The row goes with it.
                 tx.focus(COMPOSER_KEY, false);
             }
+            MenuAction::RetryChange { key, local } => {
+                self.retry_change(key, local);
+                // The mark becomes the waiting clock: back to writing.
+                tx.focus(COMPOSER_KEY, false);
+            }
+            MenuAction::DiscardChange { key, local } => {
+                self.discard_change(key, local);
+                tx.focus(COMPOSER_KEY, false);
+            }
         }
     }
 

@@ -4,81 +4,44 @@
 //! the between-group or within-group spacing; the row's own padding is the
 //! same either way, so every message is its own row with its own identity.
 //!
-//! The body is `content`'s. A message that mentions the reader (or
-//! everyone) has the mention background and the amber bar on its left. The
-//! author's name comes from the account's members, a bridged author's from
-//! the message. A reading boundary (`boundary`) is drawn over the distance
-//! above the row; the new-messages divider also starts a new group. A local
-//! echo of your own message draws the same way, its send's mark
-//! (`send_mark`) in the time's place and, while it waits, its text in the
-//! secondary colour.
+//! The body is `content`'s. A reply has its reply line over it
+//! (`reply_line`). The row's background is §4's: `highlight.selected` for
+//! the message the composer points at or a jump just landed on, else
+//! `highlight.mention` for one that mentions you or everyone, or replies to
+//! you; no bar beside it. The author's name comes from the account's
+//! members, a bridged author's from the message. A reading boundary
+//! (`boundary`) is drawn over the distance above the row. A local echo of
+//! your own message draws the same way, its send's mark (`send_mark`) in
+//! the time's place and, while it waits, its text in the secondary colour;
+//! your edits and deletions in flight draw by `change_marks`.
+//!
+//! A message from history is a focusable row: keys on it reach the host
+//! (R reply, E edit, Delete, Escape), and it shows focus by `surface.hover`
+//! and the focus ring on its outer edge, which takes no layout. What the
+//! row shows is gathered by `row_parts`.
 
-use papo_sdk::mentions::{contains_everyone_mention, contains_user_mention};
 use papo_sdk::{Message, MessageKey, ResourceSnapshot, Uuid, parse_message_timestamp_us};
-use papo_sdk_ui::message_content::MessageContent;
 use rune::{El, col, el, memo, row, text};
 
 use super::OpenTimeline;
 use super::boundary::boundary as boundary_line;
-use super::content::{self, Context, Doc, Draw, Edited, mention_names};
+use super::change_marks::{change_mark, delete_failed_line};
+use super::changes::ChangeState;
+use super::content::{self, Context, Doc, Draw, Edited};
 use super::echoes::SendState;
-use super::grouping::continues;
 use super::local_time::LocalTime;
-use super::reading::Boundary;
+use super::reply_line::reply_line;
+use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
 use super::rows::{MESSAGE_PART, echo_key, message_key};
 use super::send_mark::send_mark;
 use super::view::{Style, TimelineHost};
 use crate::design::{
-    Density, Lead, MENTION_BAR_PT, MENTION_ROW_RADIUS_PT, MESSAGE_BLOCK_GAP_PT,
+    DELETING_OPACITY, Density, FOCUS_RING_PT, HIGHLIGHT_ROW_RADIUS_PT, Lead, MESSAGE_BLOCK_GAP_PT,
     MESSAGE_HEADER_GAP_PT, MESSAGE_NAME_GAP_PT, MESSAGE_ROW_INSET_PT, Palette, RADIUS_AVATAR_PT,
     TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
 };
 use crate::rail::initial;
 use crate::strings;
-
-/// What a message row shows, read from the message and its neighbour.
-#[derive(Hash)]
-struct Parts<'a> {
-    name: String,
-    time: String,
-    /// The message's source, which its content is parsed from: the content
-    /// changes with it.
-    body: &'a str,
-    /// The names its mentions show.
-    mentions: Vec<Option<String>>,
-    /// It continues the group above: no header, the within-group distance.
-    continued: bool,
-    /// Extra compact shows the time once per minute.
-    show_time: bool,
-    /// It mentions the reader or everyone.
-    mentions_me: bool,
-    /// When it was edited, as the wire says it.
-    edited_at: Option<&'a str>,
-    /// The reading boundary over the distance above it.
-    boundary: Option<Boundary>,
-    /// An unsent message of yours: where its send stands.
-    sending: Option<SendState>,
-}
-
-/// Where a row's message comes from.
-#[derive(Clone, Copy)]
-pub(super) enum Origin {
-    /// The channel's history: the row reports where it is, for the anchor
-    /// and Ctrl+A.
-    History,
-    /// A local echo of yours, with where its send stands (none once sent).
-    /// It is no anchor: the SDK knows no such message yet.
-    Echo(Option<SendState>),
-}
-
-/// The message a row draws.
-pub(super) struct RowMessage<'a> {
-    /// The message's ID, or an echo's local identity.
-    pub(super) id: Uuid,
-    pub(super) message: &'a Message,
-    pub(super) content: &'a MessageContent,
-    pub(super) origin: Origin,
-}
 
 /// A message's row. A message from history reports where its top is, for
 /// the anchor. `previous` is the message drawn above it, if any.
@@ -88,52 +51,20 @@ pub(super) fn message_row<S: TimelineHost>(
     previous: Option<&Message>,
     style: &Style,
 ) -> El {
-    let RowMessage {
-        id,
-        message,
-        content,
-        origin,
-    } = *row_message;
+    let id = row_message.id;
     let layout = style.layout;
-    let boundary = open.reading.boundary(id, style.hourglass);
-    // Only the divider, held for the visit, splits a group: the block's
-    // edges move as the SDK covers what is read, and a split that moved
-    // with them would move rows.
-    let splits = boundary == Some(Boundary::NewMessages);
-    let continued = layout.grouped && !splits && continues(previous, message);
-    let at_us = created_us(message);
-    let show_time = match previous {
-        Some(previous) if layout.density == Density::ExtraCompact => {
-            let minute = |at_us: Option<i64>| at_us.map(|at_us| style.time.minute_of(at_us));
-            minute(created_us(previous)) != minute(at_us)
-        }
-        _ => true,
-    };
-    let sending = match origin {
-        Origin::Echo(state) => state,
-        Origin::History => None,
-    };
-    let parts = Parts {
-        name: author_name(message, open.resources.as_deref()),
-        time: at_us.map_or_else(String::new, |at_us| style.time.time_label(at_us)),
-        body: message.content.as_deref().unwrap_or_default(),
-        mentions: mention_names(content, open.resources.as_deref()),
-        continued,
-        show_time,
-        mentions_me: mentions(message, open.key.account.user()),
-        edited_at: message.edited_at.as_deref(),
-        boundary,
-        sending,
-    };
+    let history = matches!(row_message.origin, Origin::History);
+    let (parts, content) = parts(open, row_message, previous, style);
     let key = open.key;
     let revealed = open.revealed(id);
     let copied = open.copied(id);
     // The key too: two accounts on one server can show the same message,
     // and the row's handlers name their timeline.
     let version = (key, style.theme, layout, &parts, revealed, copied);
-    let row_key = match origin {
-        Origin::History => message_key(id),
-        Origin::Echo(_) => echo_key(id),
+    let row_key = if history {
+        message_key(id)
+    } else {
+        echo_key(id)
     };
     memo(row_key, version, || {
         let doc = Doc::new(
@@ -145,8 +76,12 @@ pub(super) fn message_row<S: TimelineHost>(
             },
         );
         let mut palette = style.palette;
-        if parts.sending == Some(SendState::Pending) {
-            // A message still waiting reads quieter until it is sent.
+        let quiet = matches!(
+            parts.change,
+            Some((_, ChangeState::Saving | ChangeState::EditFailed))
+        );
+        if parts.sending == Some(SendState::Pending) || quiet {
+            // A message or edit still on its way reads quieter.
             palette.text_primary = palette.text_secondary;
         }
         let draw = Draw {
@@ -158,13 +93,27 @@ pub(super) fn message_row<S: TimelineHost>(
                 hint: edited_hint(at, &style.time),
             }),
         };
-        let body = content::body::<S>(&doc, &draw);
-        let mark = parts
-            .sending
-            .map(|state| send_mark::<S>(key, id, state, &style.palette));
-        build(&parts, body, mark, style, |message| match origin {
-            Origin::Echo(_) => message,
-            Origin::History => message
+        let mut body = content::body::<S>(&doc, &draw);
+        if let Some((local, ChangeState::DeleteFailed)) = parts.change {
+            body = col()
+                .gap(MESSAGE_BLOCK_GAP_PT)
+                .child(body)
+                .child(delete_failed_line::<S>(key, local, &style.palette));
+        }
+        let mark = match (parts.sending, parts.change) {
+            (Some(state), _) => Some(send_mark::<S>(key, id, state, &style.palette)),
+            (None, Some((local, state))) => change_mark::<S>(key, local, state, &style.palette),
+            (None, None) => None,
+        };
+        let line = parts.reply.as_ref().map(|line| {
+            let spacing = layout.density.spacing();
+            reply_line::<S>(key, line, spacing.lead, spacing.lead_gap_pt, &style.palette)
+        });
+        build(&parts, line, body, mark, style, |message| {
+            if !history {
+                return message;
+            }
+            message
                 .on_layout_tx(move |host: &mut S, rect, tx| {
                     host.row_moved(key, id, [rect[1], rect[1] + rect[3]], tx);
                     tx.live_only();
@@ -173,7 +122,12 @@ pub(super) fn message_row<S: TimelineHost>(
                 .on_hover_change(move |host: &mut S, hovered, tx| {
                     host.message_hovered(key, id, hovered);
                     tx.live_only();
-                }),
+                })
+                .focusable(true)
+                // Only the keyboard focuses a message (Christian,
+                // 2026-11-22): a click leaves the keyboard where it was.
+                .preserve_focus_on_press(true)
+                .on_key(move |host: &mut S, event, tx| host.message_key(key, id, event, tx))
         })
     })
 }
@@ -186,21 +140,13 @@ fn edited_hint(edited_at: &str, time: &LocalTime) -> Option<String> {
         .map(|at_us| time.edited_label(at_us))
 }
 
-/// Whether `message` mentions `me` or everyone, as the server's
-/// notifications decide it.
-fn mentions(message: &Message, me: Uuid) -> bool {
-    let Some(body) = message.content.as_deref() else {
-        return false;
-    };
-    contains_user_mention(body, me) || contains_everyone_mention(body)
-}
-
-/// The row: the distance above it, then the message itself, which
-/// `report` makes report its top. The message's top, not the row's, is the
-/// anchor, so a change of the distance above leaves the text in place.
-/// `mark` takes the time's place: in the header, else in the lead column.
+/// The row: the distance above it, then the message itself (its reply line
+/// and its row), whose top is the anchor, so a change of the distance above
+/// leaves the text in place. `mark` takes the time's place: in the header,
+/// else in the lead column.
 fn build(
     parts: &Parts<'_>,
+    line: Option<El>,
     body: El,
     mark: Option<El>,
     style: &Style,
@@ -275,20 +221,35 @@ fn build(
             (lead, content)
         }
     };
-    let mut message = row()
-        .key(MESSAGE_PART)
+    let row_part = row()
         .w_full()
-        .px(MESSAGE_ROW_INSET_PT)
-        .py(spacing.row_padding_pt)
         .gap(spacing.lead_gap_pt)
         .items_start()
         .child(lead)
         .child(content.key("content").grow(1.0).min_w(0.0));
-    if parts.mentions_me {
+    let mut message = col()
+        .key(MESSAGE_PART)
+        .w_full()
+        .px(MESSAGE_ROW_INSET_PT)
+        .py(spacing.row_padding_pt)
+        .radius(HIGHLIGHT_ROW_RADIUS_PT)
+        .role("listitem")
+        // Keyboard focus: the ring on the outer edge, and the hover tone on
+        // a row without a highlight of its own (Christian, 2026-11-22: a
+        // highlight stays), neither of which moves anything.
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .children(line)
+        .child(row_part);
+    message = match parts.highlight {
+        Highlight::Selected => message.fill(palette.surface_selected),
+        Highlight::Mention => message.fill(palette.highlight_mention),
+        Highlight::None => message.focus_fill(palette.surface_hover),
+    };
+    if matches!(parts.change, Some((_, ChangeState::Deleting))) {
         message = message
-            .radius(MENTION_ROW_RADIUS_PT)
-            .fill(palette.mention_row)
-            .border_sides([0.0, 0.0, 0.0, MENTION_BAR_PT], palette.mention_bar);
+            .opacity(DELETING_OPACITY)
+            .busy(true)
+            .label(strings::delete_deleting());
     }
     let row = col().w_full().pt(above_pt).child(report(message));
     match parts.boundary {
@@ -298,7 +259,7 @@ fn build(
 }
 
 /// The first letter of `name` on a rounded square.
-fn avatar(name: &str, size_pt: f32, palette: &Palette) -> El {
+pub(super) fn avatar(name: &str, size_pt: f32, palette: &Palette) -> El {
     el().key("lead")
         .size(size_pt, size_pt)
         .radius(RADIUS_AVATAR_PT)

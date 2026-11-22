@@ -9,6 +9,7 @@
 
 use papo_sdk::{MessageKey, Uuid};
 use papo_sdk_ui::{TimelineCatchUp, TimelineItem, TimelineReadingState};
+use tokio::sync::oneshot;
 
 use super::OpenTimeline;
 
@@ -239,3 +240,19 @@ fn first_unread(items: &imbl::Vector<std::sync::Arc<TimelineItem>>) -> Option<Uu
 
 #[cfg(test)]
 mod tests;
+
+/// ⌛'s paging toward the skipped block. Dropping it stops the paging.
+#[derive(Debug)]
+pub(crate) struct Seek {
+    /// Which press it is: an answer for another is dropped.
+    pub(crate) id: u64,
+    _stop: oneshot::Sender<()>,
+}
+
+impl Seek {
+    /// A seek, with the receiver its task stops on once it is dropped.
+    pub(crate) fn new(id: u64) -> (Seek, oneshot::Receiver<()>) {
+        let (stop, stopped) = oneshot::channel();
+        (Seek { id, _stop: stop }, stopped)
+    }
+}
