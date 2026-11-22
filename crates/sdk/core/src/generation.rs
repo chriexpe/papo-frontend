@@ -12,6 +12,15 @@ use tokio_util::sync::CancellationToken;
 pub struct Generation(pub(crate) u64);
 
 impl Generation {
+    /// Reconstructs an epoch tag from a raw SDK-issued value across FFI/intent boundaries.
+    ///
+    /// This tag is never an authorization capability; `Epochs::validate` and active windows
+    /// reject stale or fabricated values.
+    #[must_use]
+    pub const fn from_raw(value: u64) -> Self {
+        Self(value)
+    }
+
     /// Construct a deterministic epoch for isolated projection tests, never session admission.
     #[cfg(feature = "test-support")]
     #[must_use]
@@ -174,6 +183,11 @@ mod tests {
         ));
         assert_eq!(epochs.apply(new.generation, || 7).unwrap(), 7);
     }
+    #[test]
+    fn from_raw_round_trips_epoch_number() {
+        assert_eq!(Generation::from_raw(42).get(), 42);
+    }
+
     #[test]
     fn removal_rejects_current_generation_and_new_admission() {
         let root = CancellationToken::new();

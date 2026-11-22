@@ -232,9 +232,12 @@ impl Session {
         self.inner.reading.image.subscribe()
     }
 
-    /// Returns this account's last published state for one channel, if known.
+    /// Returns this account's last published state for one channel, if known and session is active.
     #[must_use]
     pub fn reading_state(&self, channel: Uuid) -> Option<ReadState> {
+        if self.is_closed() {
+            return None;
+        }
         self.inner
             .reading
             .image
@@ -276,9 +279,12 @@ impl Session {
         self.inner.reading.position_image.subscribe()
     }
 
-    /// Returns the last committed reading position for `channel`, if one exists.
+    /// Returns the last committed reading position for `channel`, if one exists and session is active.
     #[must_use]
     pub fn reading_position(&self, channel: Uuid) -> Option<ReadingPosition> {
+        if self.is_closed() {
+            return None;
+        }
         self.inner
             .reading
             .position_image

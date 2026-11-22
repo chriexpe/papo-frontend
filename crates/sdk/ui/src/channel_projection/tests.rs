@@ -331,4 +331,30 @@ fn pending_pull_is_woken_by_later_publication() {
     assert_eq!(update.version, 1);
 }
 
+#[test]
+fn parent_category_and_notification_settings_updates_emit_set_diffs() {
+    let parent = uuid(90);
+    let (sender, receiver) = watch::channel(source(0, 1, vec![channel(1, 0)]));
+    let mut subscription = subscribe(receiver);
+    assert_eq!(subscription.snapshot[0].parent_id, None);
+    assert_eq!(subscription.snapshot[0].notification_settings, None);
+
+    sender.send_replace(source(
+        1,
+        1,
+        vec![Channel {
+            parent_id: Some(parent.to_string()),
+            notification_settings: Some("only_mentions".into()),
+            ..channel(1, 0)
+        }],
+    ));
+    let update = subscription.stream.next().now_or_never().unwrap().unwrap();
+    assert!(matches!(
+        update.diffs.as_slice(),
+        [VectorDiff::Set { index: 0, value }]
+            if value.parent_id == Some(parent)
+                && value.notification_settings == Some(papo_sdk::BackendMode::OnlyMentions)
+    ));
+}
+
 mod properties;

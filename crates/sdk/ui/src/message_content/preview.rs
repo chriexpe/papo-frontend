@@ -2,13 +2,14 @@
 
 use std::{borrow::Cow, ops::Range};
 
-use papo_sdk::MentionTarget;
+use papo_sdk::{MentionTarget, Uuid};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 
 use crate::message_content::{
     composer_mentions::ComposerMentionBinding,
-    model::MAX_NESTING_DEPTH,
+    model::{CustomEmojiRef, MAX_NESTING_DEPTH},
     preprocess::{heading_level, is_safe_href, markdown_options, odd_trailing_backslashes},
+    tokens::match_custom_emoji_at,
 };
 
 const MAX_PREVIEW_BYTES: usize = 128 * 1024;
@@ -37,6 +38,8 @@ pub enum PreviewSpanKind {
     BlockQuote,
     /// Canonical or bound mention token highlighted in the composer.
     Mention(MentionTarget),
+    /// Recognized server custom emoji `:shortcode:` matched outside code/links.
+    CustomEmoji(Uuid),
 }
 
 /// One composer preview span with both UTF-8 byte offsets and UTF-16 code-unit offsets.
@@ -63,6 +66,17 @@ pub fn preview_spans_with_bindings(
     source: &str,
     bindings: &[ComposerMentionBinding],
 ) -> Vec<PreviewSpan> {
+    preview_spans_with_bindings_and_emojis(source, bindings, &[])
+}
+
+/// Computes live preview spans while masking bound display mentions and recognizing `:shortcode:`
+/// spans from `custom_emojis` outside code blocks, inline code, and links.
+#[must_use]
+pub fn preview_spans_with_bindings_and_emojis(
+    source: &str,
+    bindings: &[ComposerMentionBinding],
+    custom_emojis: &[CustomEmojiRef],
+) -> Vec<PreviewSpan> {
     if source.len() > MAX_PREVIEW_BYTES || source.is_empty() {
         return Vec::new();
     }
@@ -73,7 +87,7 @@ pub fn preview_spans_with_bindings(
     let Some(mut raw) = collect_markdown_spans(parse_source) else {
         return Vec::new();
     };
-    if !append_spoiler_and_mention_spans(source, parse_source, bindings, &mut raw) {
+    if !append_spoiler_and_mention_spans(source, parse_source, bindings, custom_emojis, &mut raw) {
         return Vec::new();
     }
 
@@ -140,6 +154,7 @@ fn append_spoiler_and_mention_spans(
     original: &str,
     parse_source: &str,
     bindings: &[ComposerMentionBinding],
+    custom_emojis: &[CustomEmojiRef],
     spans: &mut Vec<(PreviewSpanKind, Range<usize>)>,
 ) -> bool {
     let mut in_ignored = 0usize;
@@ -151,7 +166,7 @@ fn append_spoiler_and_mention_spans(
                           out: &mut Vec<(PreviewSpanKind, Range<usize>)>|
      -> bool {
         if let Some(range) = pending.take() {
-            return scan_mentions_in_range(parse_source, range, out);
+            return scan_mentions_in_range(parse_source, range, custom_emojis, out);
         }
         true
     };
@@ -292,34 +307,44 @@ fn scan_spoiler_delims_in_range(
 fn scan_mentions_in_range(
     source: &str,
     range: Range<usize>,
+    custom_emojis: &[CustomEmojiRef],
     spans: &mut Vec<(PreviewSpanKind, Range<usize>)>,
 ) -> bool {
     let slice = &source[range.clone()];
     let bytes = slice.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i] != b'@' {
-            i += 1;
-            continue;
-        }
         let abs = range.start + i;
-        if let Some((id, end)) = papo_sdk::mentions::parse_user_mention_at(source, abs)
+        if bytes[i] == b'@' {
+            if let Some((id, end)) = papo_sdk::mentions::parse_user_mention_at(source, abs)
+                && end <= range.end
+            {
+                if spans.len() >= MAX_PREVIEW_SPANS {
+                    return false;
+                }
+                spans.push((PreviewSpanKind::Mention(MentionTarget::User(id)), abs..end));
+                i = end - range.start;
+                continue;
+            }
+            if let Some(end) = papo_sdk::mentions::parse_everyone_at(source, abs, true)
+                && end <= range.end
+            {
+                if spans.len() >= MAX_PREVIEW_SPANS {
+                    return false;
+                }
+                spans.push((PreviewSpanKind::Mention(MentionTarget::Everyone), abs..end));
+                i = end - range.start;
+                continue;
+            }
+        } else if bytes[i] == b':'
+            && !custom_emojis.is_empty()
+            && let Some((emoji, end)) = match_custom_emoji_at(source, abs, custom_emojis)
             && end <= range.end
         {
             if spans.len() >= MAX_PREVIEW_SPANS {
                 return false;
             }
-            spans.push((PreviewSpanKind::Mention(MentionTarget::User(id)), abs..end));
-            i = end - range.start;
-            continue;
-        }
-        if let Some(end) = papo_sdk::mentions::parse_everyone_at(source, abs, true)
-            && end <= range.end
-        {
-            if spans.len() >= MAX_PREVIEW_SPANS {
-                return false;
-            }
-            spans.push((PreviewSpanKind::Mention(MentionTarget::Everyone), abs..end));
+            spans.push((PreviewSpanKind::CustomEmoji(emoji.id), abs..end));
             i = end - range.start;
             continue;
         }

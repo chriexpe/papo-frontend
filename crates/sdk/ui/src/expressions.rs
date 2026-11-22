@@ -23,6 +23,8 @@ pub struct ExpressionItem {
     pub name: String,
     /// GIF encoded source; sticker sources resolve through the current emoji metadata page by ID.
     pub media: Option<MediaSource>,
+    /// Provider attribution page URL for GIFs (`Gif::page_url`); `None` for server stickers.
+    pub page_url: Option<String>,
 }
 /// Durable expression presentation without native picker, decoder or animation ownership.
 #[derive(Clone, Default)]
@@ -84,6 +86,7 @@ fn gif(value: &Gif) -> ExpressionItem {
         id: ExpressionId::Gif(value.id.clone()),
         name: value.title.clone(),
         media: Some(MediaSource::External(value.url.clone())),
+        page_url: Some(value.page_url.clone()),
     }
 }
 fn sticker(value: &Sticker) -> ExpressionItem {
@@ -91,6 +94,7 @@ fn sticker(value: &Sticker) -> ExpressionItem {
         id: ExpressionId::Sticker(value.id),
         name: value.name.clone(),
         media: None,
+        page_url: None,
     }
 }
 fn view(snapshot: &ExpressionSnapshot) -> ExpressionLibraryView {
@@ -112,5 +116,30 @@ fn project(update: &ExpressionUpdate) -> ExpressionLibraryUpdate {
         }
         ExpressionUpdate::Fault(fault) => ExpressionLibraryUpdate::Fault(*fault),
         _ => ExpressionLibraryUpdate::Closed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Verifies GIF attribution preservation without network or database I/O.
+    use super::*;
+
+    #[test]
+    fn gif_projection_retains_page_url_and_sticker_leaves_it_none() {
+        let gif_item = gif(&Gif {
+            id: "gif-1".into(),
+            url: "https://media.example/1.gif".into(),
+            page_url: "https://giphy.example/gifs/1".into(),
+            title: "Wave".into(),
+        });
+        assert_eq!(
+            gif_item.page_url.as_deref(),
+            Some("https://giphy.example/gifs/1")
+        );
+        let sticker_item = sticker(&Sticker {
+            id: papo_sdk::Uuid::from_u128(1),
+            name: "wave".into(),
+        });
+        assert_eq!(sticker_item.page_url, None);
     }
 }

@@ -3,6 +3,170 @@
 use super::{MediaError, MediaSource, index::Reference};
 use crate::{Session, generation::Epoch};
 
+pub(super) enum StreamBody {
+    Api(papo_api::media::MediaStream),
+    External {
+        response: reqwest::Response,
+        received: usize,
+    },
+}
+
+impl StreamBody {
+    pub(super) async fn next_chunk(&mut self) -> Result<Option<bytes::Bytes>, MediaError> {
+        match self {
+            Self::Api(stream) => Ok(stream.next_chunk().await?),
+            Self::External { response, received } => {
+                let chunk = response
+                    .chunk()
+                    .await
+                    .map_err(|_| MediaError::Unavailable)?;
+                if let Some(bytes) = &chunk {
+                    if bytes.len() > (100 * 1024 * 1024_usize).saturating_sub(*received) {
+                        return Err(MediaError::TooLarge);
+                    }
+                    *received += bytes.len();
+                }
+                Ok(chunk)
+            }
+        }
+    }
+}
+
+pub(super) enum StreamedResponse {
+    Stream {
+        status: u16,
+        headers: reqwest::header::HeaderMap,
+        body: Box<StreamBody>,
+    },
+    Inline(papo_api::media::MediaResponse),
+}
+
+impl StreamedResponse {
+    pub(super) fn status(&self) -> u16 {
+        match self {
+            Self::Stream { status, .. } => *status,
+            Self::Inline(response) => response.status,
+        }
+    }
+}
+
+pub(super) async fn download_stream(
+    session: &Session,
+    epoch: &Epoch,
+    source: &MediaSource,
+    previous: Option<&Reference>,
+) -> Result<StreamedResponse, MediaError> {
+    if let MediaSource::External(url) = source {
+        return external_stream(url, &epoch.cancel).await;
+    }
+    let rest = authenticated(session, epoch).await?;
+    let work = async {
+        let streamed = match source {
+            MediaSource::Range {
+                source,
+                start_bytes,
+                end_bytes,
+            } => {
+                let range = Some(papo_api::media::ByteRange::Bounded {
+                    start_bytes: *start_bytes,
+                    end_bytes: *end_bytes,
+                });
+                let stream = match source.as_ref() {
+                    MediaSource::Blob(id) => rest.media_stream(id, range).await?,
+                    MediaSource::Attachment(id) => rest.attachment_stream(*id, range).await?,
+                    MediaSource::EmbedVideo(id) => rest.embed_video_stream(*id, range).await?,
+                    _ => return Err(MediaError::InvalidData),
+                };
+                stream_of(stream)
+            }
+            MediaSource::ServerIcon => {
+                use base64::Engine;
+                let server = rest.server().await.map_err(crate::ClientError::from)?;
+                let raw = server.icon_blob.ok_or(MediaError::Unavailable)?;
+                if raw.len() > 100 * 1024 * 1024 {
+                    return Err(MediaError::TooLarge);
+                }
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(raw)
+                    .map_err(|_| MediaError::InvalidData)?;
+                StreamedResponse::Inline(papo_api::media::MediaResponse {
+                    status: 200,
+                    bytes,
+                    headers: reqwest::header::HeaderMap::new(),
+                })
+            }
+            MediaSource::Blob(id) => stream_of(rest.media_stream(id, None).await?),
+            MediaSource::Attachment(id) => stream_of(rest.attachment_stream(*id, None).await?),
+            MediaSource::Thumbnail(id) => stream_of(rest.attachment_thumbnail_stream(*id).await?),
+            MediaSource::EmbedVideo(id) => stream_of(rest.embed_video_stream(*id, None).await?),
+            MediaSource::UserAvatar { user: id, .. }
+            | MediaSource::WebhookAvatar { webhook: id, .. } => stream_of(
+                rest.conditional_avatar_stream(
+                    *id,
+                    matches!(source, MediaSource::WebhookAvatar { .. }),
+                    previous.and_then(|r| r.etag.as_deref()),
+                    previous.and_then(|r| r.modified.as_deref()),
+                )
+                .await?,
+            ),
+            MediaSource::External(_) | MediaSource::Emoji { .. } => {
+                return Err(MediaError::Unavailable);
+            }
+        };
+        Ok(streamed)
+    };
+    tokio::select! {
+        biased;
+        () = epoch.cancel.cancelled() => Err(crate::ClientError::Superseded.into()),
+        result = tokio::time::timeout(session.client.inner.config.request_timeout, work) => result.map_err(|_| crate::ClientError::Timeout)?,
+    }
+}
+
+fn stream_of(stream: papo_api::media::MediaStream) -> StreamedResponse {
+    StreamedResponse::Stream {
+        status: stream.status(),
+        headers: stream.headers().clone(),
+        body: Box::new(StreamBody::Api(stream)),
+    }
+}
+
+async fn external_stream(
+    url: &str,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<StreamedResponse, MediaError> {
+    let url = url::Url::parse(url).map_err(|_| MediaError::InvalidData)?;
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return Err(MediaError::InvalidData);
+    }
+    let work = async {
+        let response = anonymous_client()?
+            .get(url)
+            .send()
+            .await
+            .map_err(|_| MediaError::Unavailable)?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(MediaError::Unavailable);
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > 100 * 1024 * 1024)
+        {
+            return Err(MediaError::TooLarge);
+        }
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        Ok(StreamedResponse::Stream {
+            status,
+            headers,
+            body: Box::new(StreamBody::External {
+                response,
+                received: 0,
+            }),
+        })
+    };
+    tokio::select! { biased; ()=cancel.cancelled()=>Err(crate::ClientError::Superseded.into()), result=work=>result }
+}
+
 pub(super) async fn download(
     session: &Session,
     epoch: &Epoch,

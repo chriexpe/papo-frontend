@@ -4247,8 +4247,15 @@ name = "papo-ffi"
 version = "0.1.0"
 dependencies = [
  "eyeball-im",
+ "futures-util",
+ "papo-sdk",
  "papo-sdk-ui",
+ "papo-test-server",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
  "uniffi",
 ]
 

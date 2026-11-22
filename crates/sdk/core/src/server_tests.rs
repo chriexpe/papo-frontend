@@ -1,6 +1,6 @@
 //! Frozen identity vectors and validation contracts; no transport is exercised here.
 
-use super::{ServerAddress, ServerAddressError};
+use super::{ServerAddress, ServerAddressError, ServerId, ServerIdParseError};
 
 #[test]
 fn server_id_v1_golden_vectors_never_change() {
@@ -152,5 +152,23 @@ fn digest_bytes_match_lowercase_hex_display() {
             0x1d, 0x09, 0x0a, 0xdb, 0x04, 0xff, 0x7c, 0xd6, 0x01, 0xbb, 0x93, 0x48, 0x0c, 0xff,
             0x00, 0x0d
         ]
+    );
+    assert_eq!(ServerId::from_bytes(*id.as_bytes()), id);
+    assert_eq!(id.to_string().parse::<ServerId>().unwrap(), id);
+}
+
+#[test]
+fn server_id_parsing_rejects_wrong_length_or_non_lowercase_hex() {
+    assert_eq!(
+        "1d090adb".parse::<ServerId>(),
+        Err(ServerIdParseError::InvalidLength)
+    );
+    assert_eq!(
+        "1D090ADB04FF7CD601BB93480CFF000D".parse::<ServerId>(),
+        Err(ServerIdParseError::InvalidHex)
+    );
+    assert_eq!(
+        "1d090adb04ff7cd601bb93480cff000g".parse::<ServerId>(),
+        Err(ServerIdParseError::InvalidHex)
     );
 }

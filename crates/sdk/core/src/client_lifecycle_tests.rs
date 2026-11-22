@@ -141,3 +141,108 @@ fn server_removal_closes_bootstrap_auth_even_after_same_server_is_added_again() 
     assert!(handle.auth(id).is_ok());
     client.shutdown().unwrap();
 }
+
+#[test]
+fn reorder_accounts_and_closed_session_guards_behave_safely() {
+    let directory = tempfile::tempdir().unwrap();
+    let server = crate::ServerAddress::parse("https://example.invalid")
+        .unwrap()
+        .id();
+    let u1 = crate::Uuid::from_u128(101);
+    let u2 = crate::Uuid::from_u128(102);
+    let a1 = crate::AccountId::new(server, u1);
+    let a2 = crate::AccountId::new(server, u2);
+    {
+        let mut client = Client::open(
+            DataRoot::new(directory.path()),
+            Arc::new(ScriptedSecretStore::default()),
+            ClientConfig::default(),
+        )
+        .unwrap();
+        let handle = client.handle();
+        let addr = crate::ServerAddress::parse("https://example.invalid").unwrap();
+        client
+            .block_on(async {
+                handle
+                    .inner
+                    .registry
+                    .add_server(addr.clone(), crate::UnixMicros(0))
+                    .await
+                    .unwrap();
+                handle
+                    .inner
+                    .registry
+                    .add_account(a1, "one".into(), None, None, true, crate::UnixMicros(1))
+                    .await
+                    .unwrap();
+                handle
+                    .inner
+                    .registry
+                    .add_account(a2, "two".into(), None, None, false, crate::UnixMicros(2))
+                    .await
+                    .unwrap();
+                handle.inner.publish_registry().await.unwrap();
+            })
+            .unwrap();
+
+        client
+            .block_on(handle.reorder_accounts(server, vec![a2, a1]))
+            .unwrap()
+            .unwrap();
+        let order: Vec<_> = handle
+            .subscribe_registry()
+            .borrow()
+            .accounts
+            .iter()
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(order, vec![a2, a1]);
+        client.shutdown().unwrap();
+    }
+
+    // Check persisted order and closed-session guards using a restored session.
+    let mut reopened = Client::open(
+        DataRoot::new(directory.path()),
+        Arc::new(ScriptedSecretStore::default()),
+        ClientConfig::default(),
+    )
+    .unwrap();
+    let h2 = reopened.handle();
+    let s1 = h2.session(a1).unwrap();
+    let ch = crate::Uuid::from_u128(555);
+    assert!(s1.reading_state(ch).is_none());
+    assert!(s1.reading_position(ch).is_none());
+    let empty_snapshot = |generation| crate::HistorySnapshot {
+        version: 0,
+        generation,
+        messages: imbl::Vector::new(),
+        tombstones: imbl::HashSet::new(),
+        chunks: Vec::new(),
+        gaps: Vec::new(),
+        empty_complete: false,
+        server_live_complete: false,
+        live_arrival_start: None,
+    };
+    let empty_hist = empty_snapshot(s1.generation());
+    assert!(s1.catch_up_view(ch, &empty_hist).unwrap().is_none());
+    let prior_epoch_hist = empty_snapshot(crate::Generation::from_raw(
+        s1.generation().get().saturating_sub(1),
+    ));
+    assert!(s1.catch_up_view(ch, &prior_epoch_hist).unwrap().is_none());
+    reopened.shutdown().unwrap();
+
+    // Now closed: reading accessors return None, catch_up_view returns Closed, subscribe_badges does not mark started.
+    assert!(s1.reading_state(ch).is_none());
+    assert!(s1.reading_position(ch).is_none());
+    assert!(matches!(
+        s1.catch_up_view(ch, &empty_hist),
+        Err(crate::ReadingError::Session(ClientError::Closed))
+    ));
+    let _ = s1.subscribe_badges();
+    assert!(
+        !s1.inner
+            .badges
+            .started
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+}

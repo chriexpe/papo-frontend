@@ -320,3 +320,21 @@ fn preview_and_pair_closing_edge_cases_stay_sound() {
     let jumped = skip_pair_closer(shifted, 5, &mut p).unwrap();
     assert_eq!(jumped.text, "x**oi** ");
 }
+
+#[test]
+fn preview_spans_recognizes_custom_emojis_outside_code_and_ignores_masked_mentions() {
+    let emoji_id = Uuid::from_u128(0x777);
+    let catalog = vec![CustomEmojiRef {
+        id: emoji_id,
+        name: "wave".into(),
+    }];
+    let text = "hi :wave: `:wave:` :unknown:";
+    let spans = preview_spans_with_bindings_and_emojis(text, &[], &catalog);
+    let emoji_spans: Vec<_> = spans
+        .iter()
+        .filter(|span| matches!(span.kind, PreviewSpanKind::CustomEmoji(id) if id == emoji_id))
+        .collect();
+    assert_eq!(emoji_spans.len(), 1);
+    assert_eq!(&text[emoji_spans[0].byte_range.clone()], ":wave:");
+    assert_eq!(emoji_spans[0].utf16_range, 3..9);
+}

@@ -395,3 +395,149 @@ fn conditional_avatar_refresh_repairs_missing_content_and_denial_retires_the_ref
     })??;
     f.finish()
 }
+
+#[derive(Clone)]
+struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn streaming_writer_export_verifies_digest_handles_304_and_writes_zero_on_tamper() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let (session, _) = accounts(&f).await?;
+        let user = session.account().user();
+        let avatar = MediaSource::UserAvatar {
+            user,
+            revision: "stream-v1".into(),
+        };
+        let path = format!("/users/{user}/avatar");
+        let payload: Vec<u8> = (0..130_000)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        f.server()
+            .set_encoded_media(EncodedMedia {
+                path: path.clone(),
+                bytes: payload.clone(),
+                users: BTreeSet::new(),
+                etag: Some("etag-1".into()),
+                status: 200,
+                content_range: None,
+            })
+            .await?;
+
+        // Miss -> download stream -> cache -> writer receives exact bytes.
+        let miss_buf = SharedBuf(std::sync::Arc::default());
+        let miss_meta = session
+            .media()
+            .fetch_to_writer(avatar.clone(), false, miss_buf.clone())
+            .await?;
+        assert_eq!(miss_meta.value.size_bytes, payload.len() as u64);
+        assert_eq!(*miss_buf.0.lock().unwrap(), payload);
+
+        // Refresh returning 304 writes cached bytes ONCE.
+        let revalidated_buf = SharedBuf(std::sync::Arc::default());
+        let revalidated_meta = session
+            .media()
+            .fetch_to_writer(avatar.clone(), true, revalidated_buf.clone())
+            .await?;
+        assert_eq!(revalidated_meta.value.size_bytes, payload.len() as u64);
+        assert_eq!(*revalidated_buf.0.lock().unwrap(), payload);
+
+        // Refresh returning updated payload must write ONLY updated bytes.
+        let updated: Vec<u8> = vec![42; 70_000];
+        f.server()
+            .set_encoded_media(EncodedMedia {
+                path: path.clone(),
+                bytes: updated.clone(),
+                users: BTreeSet::new(),
+                etag: Some("etag-2".into()),
+                status: 200,
+                content_range: None,
+            })
+            .await?;
+        let updated_buf = SharedBuf(std::sync::Arc::default());
+        let updated_meta = session
+            .media()
+            .fetch_to_writer(avatar.clone(), true, updated_buf.clone())
+            .await?;
+        assert_eq!(updated_meta.value.size_bytes, updated.len() as u64);
+        assert_eq!(*updated_buf.0.lock().unwrap(), updated);
+
+        // Cache hit via cached_to_writer works offline / without network.
+        let cached_buf = SharedBuf(std::sync::Arc::default());
+        session
+            .media()
+            .cached_to_writer(avatar.clone(), cached_buf.clone())
+            .await?;
+        assert_eq!(*cached_buf.0.lock().unwrap(), updated);
+
+        // Corrupt cached file on disk -> cached_to_writer fails and writes ZERO bytes.
+        let media_dir = f.profile.path().join("media");
+        for prefix in std::fs::read_dir(&media_dir)? {
+            let prefix = prefix?;
+            if prefix.file_type()?.is_dir() {
+                for file in std::fs::read_dir(prefix.path())? {
+                    std::fs::write(file?.path(), b"tampered-bytes")?;
+                }
+            }
+        }
+        let tamper_buf = SharedBuf(std::sync::Arc::default());
+        let tamper_err = session
+            .media()
+            .cached_to_writer(avatar.clone(), tamper_buf.clone())
+            .await;
+        assert!(matches!(tamper_err, Err(MediaError::InvalidData)));
+        assert!(tamper_buf.0.lock().unwrap().is_empty());
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn streaming_writer_range_slice_exports_exact_subrange() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let (session, _) = accounts(&f).await?;
+        let user = session.account().user();
+        // Range 200 slicing streams exact subrange without holding full body in writer.
+        let range_src = MediaSource::Range {
+            source: Box::new(MediaSource::Attachment(Uuid::from_u128(9911))),
+            start_bytes: 100,
+            end_bytes: 299,
+        };
+        let attach_path = format!("/attachments/{}", Uuid::from_u128(9911));
+        f.server()
+            .set_encoded_media(EncodedMedia {
+                path: attach_path,
+                bytes: (0..500_u16)
+                    .map(|i| u8::try_from(i % 256).unwrap())
+                    .collect(),
+                users: BTreeSet::from([user.to_string()]),
+                etag: None,
+                status: 200,
+                content_range: None,
+            })
+            .await?;
+        let range_buf = SharedBuf(std::sync::Arc::default());
+        let range_meta = session
+            .media()
+            .fetch_to_writer(range_src, false, range_buf.clone())
+            .await?;
+        assert_eq!(range_meta.value.size_bytes, 200);
+        let written = range_buf.0.lock().unwrap();
+        assert_eq!(written.len(), 200);
+        assert_eq!(written[0], 100);
+        assert_eq!(written[199], u8::try_from(299_u16 % 256).unwrap());
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}

@@ -85,6 +85,18 @@ impl fmt::Debug for ServerAddress {
     }
 }
 
+/// Rejected `ServerId` string parsing input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ServerIdParseError {
+    /// Expected 32 lowercase hexadecimal characters.
+    #[error("server id must be 32 lowercase hexadecimal characters")]
+    InvalidLength,
+    /// Encountered a character outside lowercase ASCII hexadecimal (`0-9`, `a-f`).
+    #[error("server id contains non-hexadecimal or uppercase characters")]
+    InvalidHex,
+}
+
 /// First 16 bytes of SHA-256 over the v1 domain tag and canonical address.
 ///
 /// Display is exactly 32 lowercase hexadecimal characters. These bytes are an
@@ -93,10 +105,42 @@ impl fmt::Debug for ServerAddress {
 pub struct ServerId([u8; 16]);
 
 impl ServerId {
+    /// Reconstructs a `ServerId` from its 16 digest bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
     /// Returns the 16 identity bytes in digest order.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
+    }
+}
+
+impl std::str::FromStr for ServerId {
+    type Err = ServerIdParseError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let raw = text.as_bytes();
+        if raw.len() != 32 {
+            return Err(ServerIdParseError::InvalidLength);
+        }
+        let mut bytes = [0_u8; 16];
+        for (index, out) in bytes.iter_mut().enumerate() {
+            let hi = lower_hex_nibble(raw[index * 2]).ok_or(ServerIdParseError::InvalidHex)?;
+            let lo = lower_hex_nibble(raw[index * 2 + 1]).ok_or(ServerIdParseError::InvalidHex)?;
+            *out = (hi << 4) | lo;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+const fn lower_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
     }
 }
 

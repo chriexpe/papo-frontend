@@ -352,3 +352,28 @@ fn two_accounts_keep_own_reactions_and_pins_independent_without_cross_account_ca
     })??;
     fixture.finish()
 }
+
+#[test]
+fn cached_pins_retains_pins_when_online_refresh_fails() -> Result {
+    let fixture = Fixture::new(config(0))?;
+    fixture.run(async {
+        let session = signed_in(&fixture, "pins-cache").await?;
+        fixture.server().seed_history(recipe(5)).await?;
+        fixture.server().set_message_pin(FIRST, Some(AT)).await?;
+        let history = session.history(channel()).await?;
+        let initial = history.pins().await?;
+        assert_eq!(initial.value.len(), 1);
+
+        fixture
+            .server()
+            .fail_next_rest("GET", &format!("/channels/{}/pinned", channel()), 503)
+            .await?;
+        assert!(history.pins().await.is_err());
+
+        let cached = history.cached_pins().await?;
+        assert_eq!(cached.value.len(), 1);
+        assert_eq!(cached.value[0].id.as_deref(), Some(FIRST));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}

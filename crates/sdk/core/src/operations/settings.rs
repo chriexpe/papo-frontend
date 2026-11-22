@@ -3,7 +3,8 @@
 use papo_api::Uuid;
 
 pub use papo_api::wire::{
-    ChannelUserSetting, UpdateChannelUserSettingRequest, UpdateUserSettingsRequest, UserSettings,
+    ChannelUserSetting, Display, Notifications, UpdateChannelUserSettingRequest,
+    UpdateUserSettingsRequest, UserConfig, UserSettings,
 };
 
 use super::{OperationError, OperationReceipt, Operations, Refresh};

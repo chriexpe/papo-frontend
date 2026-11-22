@@ -1,4 +1,4 @@
-//! Translates deterministic VectorDiff fixtures across UniFFI on a worker thread.
+//! Translates deterministic `VectorDiff` fixtures across `UniFFI` on a worker thread.
 //! This opt-in proof owns no subscriptions, timeline policy or platform list state.
 
 use std::thread;

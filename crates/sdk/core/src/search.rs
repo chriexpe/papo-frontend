@@ -120,6 +120,11 @@ impl Session {
         self.inner.epochs.validate(hit.generation)?;
         let result = &hit.result;
         let channel = parse_id(result.channel_id.as_deref())?;
+        if crate::reading::evidence::channel_gate_sync(&self.inner, channel, hit.generation)
+            != crate::reading::evidence::ChannelGate::Proceed
+        {
+            return Err(SearchError::InvalidData);
+        }
         let resources = self.inner.resources.borrow();
         if resources.generation != hit.generation
             || resources.channels.get(channel).is_none() && resources.dms.get(channel).is_none()

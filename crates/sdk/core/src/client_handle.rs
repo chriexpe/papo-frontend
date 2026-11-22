@@ -136,6 +136,22 @@ impl ClientHandle {
         })
         .await
     }
+    /// Reorders exactly the visible accounts for one visible server in one FULL commit.
+    /// # Errors
+    /// Returns invalid-order, not-found, closed, or storage errors.
+    pub async fn reorder_accounts(
+        &self,
+        server: ServerId,
+        order: Vec<AccountId>,
+    ) -> Result<(), ClientError> {
+        let this = self.clone();
+        self.dispatch(async move {
+            let _guard = this.inner.mutation.lock().await;
+            this.inner.registry.reorder_accounts(server, order).await?;
+            this.inner.publish_registry().await
+        })
+        .await
+    }
     /// Selects this server's active account without merging account sessions or caches.
     /// # Errors
     /// Returns invalid identity, closed, or durable commit failures.

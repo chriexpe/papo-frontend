@@ -46,10 +46,14 @@ class MetadataTests(unittest.TestCase):
 
 class DependencyTests(unittest.TestCase):
     def test_downward_dependencies_pass(self):
-        graph = metadata({"papo-ffi": [("papo-sdk-ui", None)],
+        graph = metadata({"papo-ffi": [("papo-sdk-ui", None), ("papo-sdk", None)],
                           "papo-sdk-ui": [("papo-sdk", None)],
                           "papo-sdk": [("papo-api", None)], "papo-api": []})
         self.assertEqual(CHECK.dependency_violations(graph), [])
+
+    def test_ffi_cannot_bypass_core_to_api(self):
+        graph = metadata({"papo-ffi": [("papo-api", None)], "papo-api": []})
+        self.assertTrue(CHECK.dependency_violations(graph))
 
     def test_renamed_upward_dependency_fails(self):
         graph = metadata({"papo-api": [("papo-sdk-ui", None)]})

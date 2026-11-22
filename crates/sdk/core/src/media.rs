@@ -12,6 +12,7 @@ mod pins;
 mod race_tests;
 mod ranges;
 mod service;
+mod stream_io;
 #[cfg(test)]
 mod tests;
 
@@ -74,6 +75,17 @@ pub enum MediaSource {
         /// Exact backend creation timestamp.
         revision: String,
     },
+}
+
+/// Metadata returned when streaming an encoded object to a caller-supplied writer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaMetadata {
+    /// Backend/provider content type, if present.
+    pub content_type: Option<String>,
+    /// Validated partial representation boundaries; `None` denotes a complete object.
+    pub range: Option<MediaRange>,
+    /// Exact encoded byte length written after digest verification.
+    pub size_bytes: u64,
 }
 
 /// Encoded bytes and representation metadata; no filesystem path or digest grants are exported.

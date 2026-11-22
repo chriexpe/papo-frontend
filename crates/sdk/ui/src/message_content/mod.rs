@@ -14,6 +14,7 @@ mod preprocess;
 mod preview;
 mod selection_format;
 mod spoiler;
+mod spoiler_filename;
 mod tokens;
 
 #[cfg(test)]
@@ -39,7 +40,13 @@ pub use pair_closing::{
     PairClosing, PairEdit, TextChangeSource, on_pair_change, skip_pair_closer, track_pair_change,
 };
 pub use preprocess::{is_plain, is_safe_href};
-pub use preview::{PreviewSpan, PreviewSpanKind, preview_spans, preview_spans_with_bindings};
+pub use preview::{
+    PreviewSpan, PreviewSpanKind, preview_spans, preview_spans_with_bindings,
+    preview_spans_with_bindings_and_emojis,
+};
 pub use selection_format::{
     InvalidSelection, SelectionEdit, SelectionFormat, apply_selection_format,
+};
+pub use spoiler_filename::{
+    SPOILER_FILENAME_PREFIX, is_spoiler_filename, with_spoiler_prefix, without_spoiler_prefix,
 };

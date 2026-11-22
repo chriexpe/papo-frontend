@@ -37,7 +37,7 @@ struct Computed {
 }
 
 pub(super) fn start(session: &Session) {
-    if session.inner.badges.started.swap(true, Ordering::AcqRel) {
+    if session.is_closed() || session.inner.badges.started.swap(true, Ordering::AcqRel) {
         return;
     }
     let sources = Sources {
