@@ -6,9 +6,10 @@
 //! Pure: it reads the composer and hands Enter, Shift+Enter, edits and Send
 //! to the shell.
 
-use rune::{El, Key, KeyEvent, auto_grow, col, icon, row, text, text_input};
+use rune::{El, KeyEvent, PillStyle, auto_grow, col, icon, row, text, text_input};
 
 use super::Composer;
+use super::picker::row_key;
 use crate::design::{
     COMPOSER_HEIGHT_PT, COMPOSER_MAX_LINES, FOCUS_RING_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
     RADIUS_COMPOSER_PT, RADIUS_SEND_PT, SEND_BUTTON_PT, SPACE_LG_PT, SPACE_SM_PT, TYPE_BODY,
@@ -31,6 +32,8 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         return col();
     };
     let loading = composer.is_loading();
+    let style = composer.field_style(palette);
+    let (chip, ink) = (palette.accent_soft, palette.link);
     let mut field = text_input(&draft.edit, TYPE_BODY)
         .key(COMPOSER_KEY)
         .label(strings::composer_label())
@@ -40,7 +43,14 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         .grow(1.0)
         .color(palette.text_primary)
         .placeholder(strings::composer_placeholder(channel), palette.text_muted)
-        .caret(palette.accent, palette.text_selection);
+        .caret(palette.accent, palette.text_selection)
+        .spans(style.spans)
+        .strikes(style.strikes)
+        // Every pill is a mention, drawn as a message draws one.
+        .pill_style(move |_| PillStyle::default().bg(chip).fg(ink));
+    if let Some(picker) = composer.picker() {
+        field = field.active_descendant(row_key(picker.selected()));
+    }
     if loading {
         // No `on_edit` while the draft loads: typing waits for it.
         field = field.busy(true);
@@ -48,22 +58,12 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         field = field
             .on_edit(|shell: &mut Shell| shell.composer.field_mut())
             .on_input_change(Shell::composer_edited)
+            .on_selection_change(|shell: &mut Shell, _, _| shell.composer_moved())
             // With "Enter to send" on, plain Enter submits and Shift+Enter
             // is the editor's own line break.
             .on_submit(Shell::composer_send)
             .on_input_key(move |shell: &mut Shell, key: &KeyEvent, tx| {
-                if enter_sends || key.key != Key::Enter {
-                    return false;
-                }
-                // Off, the keys swap. Plain Enter is taken here, not on
-                // submit, so a held Enter adds a line per repeat as typing
-                // does (Rune submits once per press).
-                if key.mods.shift {
-                    shell.composer_send(tx);
-                } else {
-                    shell.composer_new_line(tx);
-                }
-                true
+                shell.composer_key(key, enter_sends, tx)
             });
     }
     let line_pt = TYPE_BODY.line_px();

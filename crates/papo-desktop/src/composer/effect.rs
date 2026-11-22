@@ -11,15 +11,18 @@ use crate::timeline::TimelineKey;
 pub(crate) enum Effect {
     /// Read the channel's draft from the SDK.
     Load(TimelineKey),
-    /// Save `text` as the channel's draft. `seq` orders writes: one older
+    /// Save `text` (its wire form, mentions as tokens) as the channel's
+    /// draft, with the people it mentions. `seq` orders writes: one older
     /// than the last written for the channel is dropped.
     Save {
         key: TimelineKey,
         text: String,
+        mentions: Vec<Uuid>,
         seq: u64,
     },
-    /// Queue `text` as a new message with local identity `local`, then
-    /// clear the stored draft unless a newer save (`seq`) landed first.
+    /// Queue `text` (its wire form) as a new message with local identity
+    /// `local`, then clear the stored draft unless a newer save (`seq`)
+    /// landed first.
     Send {
         key: TimelineKey,
         text: String,

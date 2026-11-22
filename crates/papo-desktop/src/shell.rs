@@ -212,6 +212,7 @@ impl Shell {
 
 mod accounts;
 mod composer;
+mod composer_input;
 mod content;
 mod navigate;
 mod outgoing;

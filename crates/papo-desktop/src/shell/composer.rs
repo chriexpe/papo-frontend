@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use papo_sdk::{
     DraftBody, OperationKind, OutgoingError, OutgoingMessage, Session, UnixMicros, Uuid,
 };
+use papo_sdk_ui::message_content::{DecodedComposerMentions, decode_composer_mentions};
 use rune::Tx;
 use tokio::sync::Mutex;
 
@@ -64,6 +65,7 @@ impl Shell {
     pub(crate) fn composer_edited(&mut self, tx: &mut Tx) {
         let effects = self.composer.edited(tx.clock());
         self.run_composer(effects, Some(tx));
+        self.refresh_picker();
     }
 
     /// Send, or the Enter that sends: the text leaves the field and is
@@ -108,7 +110,7 @@ impl Shell {
     /// and the poll ask for one, and both have it. Without an SDK (before
     /// it opens; headless tests) nothing reaches the bridge: no channel
     /// shows before the SDK lists one.
-    fn run_composer(&mut self, effects: Vec<Effect>, mut tx: Option<&mut Tx>) {
+    pub(super) fn run_composer(&mut self, effects: Vec<Effect>, mut tx: Option<&mut Tx>) {
         for effect in effects {
             match effect {
                 Effect::WakeAfter(after_s) => {
@@ -133,18 +135,15 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
             let updates = sdk.updates();
             sdk.run(move |client| async move {
                 let read = match client.session(key.account) {
-                    Ok(session) => session
-                        .outgoing()
-                        .draft(key.channel)
-                        .await
-                        .map(|draft| draft.map(|draft| draft.body.message.content)),
+                    Ok(session) => session.outgoing().draft(key.channel).await.map(|draft| {
+                        let wire = draft.map(|draft| draft.body.message.content);
+                        decode(Some(&session), &wire.unwrap_or_default())
+                    }),
                     Err(error) => Err(error.into()),
                 };
                 match read {
-                    Ok(text) => {
-                        updates.send(move |shell| {
-                            shell.composer.loaded(key, text.unwrap_or_default())
-                        });
+                    Ok(decoded) => {
+                        updates.send(move |shell| shell.composer.loaded(key, decoded));
                     }
                     Err(error) => {
                         log::warn!("a draft was not read: {error}");
@@ -153,7 +152,12 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
                 }
             });
         }
-        Effect::Save { key, text, seq } => {
+        Effect::Save {
+            key,
+            text,
+            mentions,
+            seq,
+        } => {
             let lane = writes.lane(key);
             let updates = sdk.updates();
             sdk.finish(move |client| async move {
@@ -162,7 +166,7 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
                     return;
                 }
                 let saved = match client.session(key.account) {
-                    Ok(session) => save_draft(&session, key.channel, text).await,
+                    Ok(session) => save_draft(&session, key.channel, text, mentions).await,
                     Err(error) => Err(error.into()),
                 };
                 match saved {
@@ -188,17 +192,19 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
                 let mut lane = lane.lock().await;
                 let session = match client.session(key.account) {
                     Ok(session) => session,
-                    Err(error) => return send_failed(&updates, key, text, &error.into()),
+                    Err(error) => {
+                        return send_failed(&updates, key, decode(None, &text), &error.into());
+                    }
                 };
                 if let Err(error) = queue_message(&session, key.channel, local, &text).await {
-                    return send_failed(&updates, key, text, &error);
+                    return send_failed(&updates, key, decode(Some(&session), &text), &error);
                 }
                 // The queue holds the message; the stored draft may still
                 // hold its text, unless something newer was saved since.
                 if !lane.admits(seq) {
                     return;
                 }
-                match save_draft(&session, key.channel, String::new()).await {
+                match save_draft(&session, key.channel, String::new(), Vec::new()).await {
                     Ok(()) => lane.landed(seq),
                     Err(error) => log::warn!("a sent draft was not cleared: {error}"),
                 }
@@ -220,23 +226,45 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
 /// The SDK did not queue `text`: it goes back in the field. A send refused
 /// as the window closes cannot come back; its text survives only as far as
 /// the stored draft held it (saved up to a second before).
-fn send_failed(updates: &Updates<Shell>, key: TimelineKey, text: String, error: &OutgoingError) {
+fn send_failed(
+    updates: &Updates<Shell>,
+    key: TimelineKey,
+    decoded: DecodedComposerMentions,
+    error: &OutgoingError,
+) {
     log::warn!("a message was not queued: {error}");
     updates.send(move |shell| {
-        let effects = shell.composer.send_failed(key, text);
+        let effects = shell.composer.send_failed(key, decoded);
         shell.run_composer(effects, None);
         true
     });
 }
 
-/// Stores `text` as the channel's draft; empty clears it.
-async fn save_draft(session: &Session, channel: Uuid, text: String) -> Result<(), OutgoingError> {
+/// `wire` (a draft or message as stored) as the field shows it: each
+/// mention token the person's name, from `session`'s roster. A person the
+/// account does not know keeps the token.
+fn decode(session: Option<&Session>, wire: &str) -> DecodedComposerMentions {
+    let snapshot = session.map(|session| session.subscribe_resources().borrow().clone());
+    decode_composer_mentions(wire, |id| {
+        let user = snapshot.as_deref()?.users.get(id)?;
+        user.nickname.as_deref().or(user.username.as_deref())
+    })
+}
+
+/// Stores `text` (its wire form) as the channel's draft, with the people it
+/// mentions; empty clears it.
+async fn save_draft(
+    session: &Session,
+    channel: Uuid,
+    text: String,
+    mentions: Vec<Uuid>,
+) -> Result<(), OutgoingError> {
     let body = DraftBody {
         message: OutgoingMessage {
             content: text,
             ..OutgoingMessage::default()
         },
-        mentions: Vec::new(),
+        mentions,
     };
     session
         .outgoing()

@@ -11,14 +11,24 @@ use crate::composer::COMPOSER_KEY;
 use crate::server_list::{ChannelEntry, ServerList};
 use crate::timeline::TimelineKey;
 
+/// A stored draft with no mentions in it.
+pub(super) fn plain(
+    text: impl Into<String>,
+) -> papo_sdk_ui::message_content::DecodedComposerMentions {
+    papo_sdk_ui::message_content::DecodedComposerMentions {
+        text: text.into(),
+        bindings: Vec::new(),
+    }
+}
+
 /// A channel's ID as the server list carries it: a UUID.
-fn channel_id(n: u128) -> String {
+pub(super) fn channel_id(n: u128) -> String {
     papo_sdk::Uuid::from_u128(n).to_string()
 }
 
 /// The app showing Lumen's #general (#media beside it), its draft still
 /// being read.
-fn in_general() -> Runtime<Shell> {
+pub(super) fn in_general() -> Runtime<Shell> {
     let mut rt = app();
     let mut lumen = entry("Lumen", &[]);
     lumen.text_channels = ["general", "media"]
@@ -43,27 +53,27 @@ fn in_general() -> Runtime<Shell> {
 }
 
 /// [`in_general`], its stored draft `draft` read.
-fn writing(draft: &str) -> Runtime<Shell> {
+pub(super) fn writing(draft: &str) -> Runtime<Shell> {
     let mut rt = in_general();
     load(&mut rt, draft);
     rt
 }
 
 /// The SDK answers the shown channel's draft read with `draft`.
-fn load(rt: &mut Runtime<Shell>, draft: &str) {
+pub(super) fn load(rt: &mut Runtime<Shell>, draft: &str) {
     let draft = draft.to_owned();
     rt.update(move |shell, _tx| {
         let key = shown(shell);
-        shell.composer.loaded(key, draft);
+        shell.composer.loaded(key, plain(draft));
     });
     rt.frame(FRAME_S);
 }
 
-fn shown(shell: &Shell) -> TimelineKey {
+pub(super) fn shown(shell: &Shell) -> TimelineKey {
     shell.composer.shown().unwrap().0
 }
 
-fn field(rt: &Runtime<Shell>) -> String {
+pub(super) fn field(rt: &Runtime<Shell>) -> String {
     rt.state.composer.shown().unwrap().1.edit.text.clone()
 }
 
@@ -249,7 +259,7 @@ fn a_failed_send_puts_the_text_back_and_says_so() {
     press(&mut rt, Key::Enter);
     rt.update(|shell, _tx| {
         let key = shown(shell);
-        shell.composer.send_failed(key, "oi".to_owned());
+        shell.composer.send_failed(key, plain("oi".to_owned()));
     });
     rt.frame(FRAME_S);
     assert_eq!(field(&rt), "oi");
