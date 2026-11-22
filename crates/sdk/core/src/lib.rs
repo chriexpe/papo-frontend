@@ -100,7 +100,7 @@ pub use account_cache::{AccountCache, AccountCaches, CacheError, CacheResource};
 pub use papo_api::media::MediaError as MediaTransportError;
 pub use papo_api::wire::{
     Attachment, ChangePasswordRequest, Channel, ChannelPermissionEntry, ChannelPermissions,
-    ConnectedDevicesResponse, Connection, DirectConversation, DropConnectionRequest,
+    ConnectedDevicesResponse, Connection, DirectConversation, Display, DropConnectionRequest,
     DropConnectionResponse, Embed, EmbedAuthor, EmbedField, EmbedFooter, EmbedInputAuthor,
     EmbedInputFieldsItem, EmbedInputFooter, EmbedMedia, ExternalAuthor, GenericResponse,
     LoginRequest, LoginServerRequest, MessageReactionSummary, MessageReactionUser,
