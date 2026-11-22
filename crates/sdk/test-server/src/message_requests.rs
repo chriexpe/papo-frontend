@@ -21,7 +21,8 @@ pub struct OutgoingRequestCounts {
     pub accepted: u64,
 }
 impl TestServer {
-    /// Suppresses create gateway delivery so HTTP receipt projection can be proved independently.
+    /// Suppresses this account's create, edit and delete gateway delivery, so HTTP receipt
+    /// projection can be proved independently.
     pub async fn set_silent_outgoing(&self, silent: bool) {
         self.state.lock().await.silent_outgoing = silent;
     }
@@ -178,14 +179,16 @@ fn mutate(state: &mut State, user: &str, method: &str, path: &str, body: &[u8]) 
         let channel = message.channel_id.clone().unwrap_or_default();
         if method == "DELETE" {
             state.history.remove(id);
-            let _ = crate::history_controls::emit_channel(
-                state,
-                &channel,
-                KnownEvent::MessageDelete(Box::new(MessageDeleteEvent {
-                    id: id.to_string(),
-                    channel_id: channel.clone(),
-                })),
-            );
+            if !state.silent_outgoing {
+                let _ = crate::history_controls::emit_channel(
+                    state,
+                    &channel,
+                    KnownEvent::MessageDelete(Box::new(MessageDeleteEvent {
+                        id: id.to_string(),
+                        channel_id: channel.clone(),
+                    })),
+                );
+            }
             return Reply::empty();
         }
         let Ok(request) = serde_json::from_slice::<UpdateMessageRequest>(body) else {
@@ -197,16 +200,18 @@ fn mutate(state: &mut State, user: &str, method: &str, path: &str, body: &[u8]) 
         message.content = Some(request.content.clone());
         message.edited_at = Some("2026-02-02T00:00:00Z".into());
         let reply = Reply::json(200, json!(message));
-        let _ = crate::history_controls::emit_channel(
-            state,
-            &channel,
-            KnownEvent::MessageEdit(Box::new(MessageEditEvent {
-                id: id.to_string(),
-                channel_id: channel.clone(),
-                content: request.content,
-                edited_at: "2026-02-02T00:00:00Z".into(),
-            })),
-        );
+        if !state.silent_outgoing {
+            let _ = crate::history_controls::emit_channel(
+                state,
+                &channel,
+                KnownEvent::MessageEdit(Box::new(MessageEditEvent {
+                    id: id.to_string(),
+                    channel_id: channel.clone(),
+                    content: request.content,
+                    edited_at: "2026-02-02T00:00:00Z".into(),
+                })),
+            );
+        }
         return reply;
     }
     // SDK tests assert the resolved message ID via the same authoritative history map.

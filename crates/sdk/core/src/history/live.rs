@@ -183,28 +183,61 @@ async fn project_receipt(
     message: &papo_api::wire::Message,
     live: bool,
 ) -> Result<(), ClientError> {
-    let epoch = session.inner.epochs.current();
-    session.inner.epochs.validate(generation)?;
-    let id = Uuid::from_bytes(Model::id(
+    let channel = Uuid::from_bytes(Model::id(
         message
             .channel_id
             .as_deref()
             .ok_or(ClientError::ResourceData)?,
     )?);
+    mutate(session, generation, channel, |model| {
+        model
+            .receipt(message, if live { generation.get() } else { 0 })
+            .map(|()| true)
+    })
+    .await
+}
+
+/// Settles a confirmed edit or deletion of this account's into history through the same rules
+/// a socket event follows, so the outcome never waits for the echo of its own event: an older
+/// edit never replaces a newer one, and a deletion is final. Applying it twice changes nothing.
+pub(crate) async fn settle(
+    session: &crate::Session,
+    generation: Generation,
+    channel: Uuid,
+    event: &KnownEvent,
+) -> Result<(), ClientError> {
+    mutate(session, generation, channel, |model| {
+        model.event(event, generation.get())
+    })
+    .await
+}
+
+/// Runs `apply` on the verified channel's model, then persists and publishes it when it
+/// reports a change.
+async fn mutate(
+    session: &crate::Session,
+    generation: Generation,
+    channel_id: Uuid,
+    apply: impl FnOnce(&mut Model) -> Result<bool, super::HistoryError>,
+) -> Result<(), ClientError> {
+    let epoch = session.inner.epochs.current();
+    session.inner.epochs.validate(generation)?;
     let cache = session.client.inner.caches.open(session.account()).await?;
     let channel = session
         .inner
         .history
-        .verified_channel(id)
+        .verified_channel(channel_id)
         .await
         .map_err(|_| ClientError::ResourceData)?;
     channel.check()?;
     let mut state = channel.state.lock().await;
     session.inner.epochs.validate(generation)?;
-    state.ensure(&cache, *id.as_bytes(), generation).await?;
     state
-        .model
-        .receipt(message, if live { generation.get() } else { 0 })?;
+        .ensure(&cache, *channel_id.as_bytes(), generation)
+        .await?;
+    if !apply(&mut state.model)? {
+        return Ok(());
+    }
     persist_and_publish(
         &session.inner,
         &cache,

@@ -88,8 +88,11 @@ pub(super) async fn send(
             .flatten();
         super::receipt::message(message, operation.channel_id, author, expected)
     } else {
+        // A deletion is projected once history has settled it; a reaction has nothing to
+        // settle, its totals stay the backend's.
+        let deletion = matches!(operation.kind.as_ref(), OperationKind::Delete { .. });
         Ok(Outcome {
-            projected: true,
+            projected: !deletion,
             message_id: target,
             message: None,
         })

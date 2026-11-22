@@ -234,3 +234,100 @@ fn pending_receipt(deleted: bool) -> Result {
     })??;
     f.finish()
 }
+
+#[test]
+fn a_confirmed_edit_and_delete_settle_history_without_their_gateway_events() -> Result {
+    let f = Fixture::new(10, vec![])?;
+    f.run(async {
+        let session = f.signed_in("receipt-edit").await?;
+        f.server().set_silent_outgoing(true).await;
+        let timeline = Timeline::live(session.clone(), channel(), config()).await?;
+        let mut stream = timeline.subscribe()?;
+        let queue = session.outgoing();
+        let body = OutgoingMessage {
+            content: "synthetic".into(),
+            ..Default::default()
+        };
+        queue
+            .enqueue(
+                channel(),
+                local(),
+                OperationKind::Message(body),
+                UnixMicros(0),
+            )
+            .await?;
+        let mut image = queue.subscribe().await?;
+        let remote = loop {
+            let sent = image
+                .borrow_and_update()
+                .operations
+                .iter()
+                .find(|op| op.id == local() && op.state == OperationState::Sent)
+                .and_then(|op| op.message_id);
+            if let Some(remote) = sent {
+                break remote;
+            }
+            image.changed().await?;
+        };
+        let text_of = |items: &imbl::Vector<std::sync::Arc<TimelineItem>>| {
+            items.iter().find_map(|item| match item.as_ref() {
+                TimelineItem::Message { id, message, .. } if *id == remote => {
+                    message.content.clone()
+                }
+                _ => None,
+            })
+        };
+        until(&mut stream, |s| {
+            text_of(&s.items).as_deref() == Some("synthetic")
+        })
+        .await?;
+
+        let edit = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0011);
+        queue
+            .enqueue(
+                channel(),
+                edit,
+                OperationKind::Edit {
+                    target: papo_sdk::MessageTarget::Remote(remote),
+                    content: "synthetic-edit".into(),
+                    embeds: None,
+                },
+                UnixMicros(1),
+            )
+            .await?;
+        until(&mut stream, |s| {
+            text_of(&s.items).as_deref() == Some("synthetic-edit")
+        })
+        .await?;
+
+        let delete = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0012);
+        queue
+            .enqueue(
+                channel(),
+                delete,
+                OperationKind::Delete {
+                    target: papo_sdk::MessageTarget::Remote(remote),
+                },
+                UnixMicros(2),
+            )
+            .await?;
+        until(&mut stream, |s| text_of(&s.items).is_none()).await?;
+        let history = session.history(channel()).await?;
+        let snapshot = history.subscribe().await?.snapshot;
+        assert_eq!(snapshot.locate(remote)?, papo_sdk::LocatedMessage::Deleted);
+        // Each operation is marked projected only after history has settled it.
+        loop {
+            let settled = image
+                .borrow_and_update()
+                .operations
+                .iter()
+                .all(|op| op.state == OperationState::Sent && op.history_projected);
+            if settled {
+                break;
+            }
+            image.changed().await?;
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
