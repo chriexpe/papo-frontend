@@ -4,7 +4,7 @@
 
 use super::{I18N, Key, PluralKey, catalog};
 
-/// The divider's chip: "New messages ↓".
+/// The divider's chip, before its ↓: "New messages".
 pub(crate) fn new_messages() -> &'static str {
     text!("reading.new_messages")
 }
@@ -14,22 +14,17 @@ pub(crate) fn new_messages_spoken() -> &'static str {
     text!("reading.new_messages_spoken")
 }
 
-/// The chip before a skipped block's first unread message: "Unread ↓".
-pub(crate) fn unread_below() -> &'static str {
-    text!("reading.unread_below")
+/// A skipped block's chips, before their ↓ or ↑: "Unread".
+pub(crate) fn unread() -> &'static str {
+    text!("reading.unread")
 }
 
-/// What assistive technology announces for "Unread ↓".
+/// What assistive technology announces for "Unread" and its ↓.
 pub(crate) fn unread_below_spoken() -> &'static str {
     text!("reading.unread_below_spoken")
 }
 
-/// The chip before the message that ends a skipped block: "Unread ↑".
-pub(crate) fn unread_above() -> &'static str {
-    text!("reading.unread_above")
-}
-
-/// What assistive technology announces for "Unread ↑".
+/// What assistive technology announces for "Unread" and its ↑.
 pub(crate) fn unread_above_spoken() -> &'static str {
     text!("reading.unread_above_spoken")
 }

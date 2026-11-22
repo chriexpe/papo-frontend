@@ -120,7 +120,7 @@ pub(crate) fn code_copy() -> &'static str {
     text!("timeline.code_copy")
 }
 
-/// A code block's Copy button just after a press.
+/// A code block's Copy button just after a press, after its ✓.
 pub(crate) fn code_copied() -> &'static str {
     text!("timeline.code_copied")
 }

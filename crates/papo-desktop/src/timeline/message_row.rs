@@ -36,9 +36,9 @@ use super::rows::{MESSAGE_PART, echo_key, message_key};
 use super::send_mark::send_mark;
 use super::view::{Style, TimelineHost};
 use crate::design::{
-    DELETING_OPACITY, Density, FOCUS_RING_PT, HIGHLIGHT_ROW_RADIUS_PT, Lead, MESSAGE_BLOCK_GAP_PT,
-    MESSAGE_HEADER_GAP_PT, MESSAGE_NAME_GAP_PT, MESSAGE_ROW_INSET_PT, Palette, RADIUS_AVATAR_PT,
-    TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
+    AVATAR_TOP_PT, DELETING_OPACITY, Density, FOCUS_RING_PT, HIGHLIGHT_ROW_RADIUS_PT, Lead,
+    MESSAGE_BLOCK_GAP_PT, MESSAGE_HEADER_GAP_PT, MESSAGE_NAME_GAP_PT, MESSAGE_ROW_INSET_PT,
+    Palette, RADIUS_AVATAR_PT, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
 };
 use crate::rail::initial;
 use crate::strings;
@@ -237,7 +237,7 @@ fn build(
         // Keyboard focus: the ring on the outer edge, and the hover tone on
         // a row without a highlight of its own (Christian, 2026-11-22: a
         // highlight stays), neither of which moves anything.
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .children(line)
         .child(row_part);
     message = match parts.highlight {
@@ -258,19 +258,24 @@ fn build(
     }
 }
 
-/// The first letter of `name` on a rounded square.
+/// The first letter of `name` on a rounded square, `AVATAR_TOP_PT` below
+/// the top of its lead box (`docs/design.md` §5, Distances are measured to
+/// what is seen). The box is as tall as the avatar alone, so the offset
+/// never makes a row taller than it was.
 pub(super) fn avatar(name: &str, size_pt: f32, palette: &Palette) -> El {
-    el().key("lead")
-        .size(size_pt, size_pt)
-        .radius(RADIUS_AVATAR_PT)
-        .center()
-        .fill(palette.surface_hover)
-        .a11y_hidden()
-        .child(
-            text(initial(name))
-                .font(TYPE_CAPTION_MEDIUM)
-                .color(palette.text_secondary),
-        )
+    el().key("lead").size(size_pt, size_pt).a11y_hidden().child(
+        el().key("avatar")
+            .absolute(0.0, AVATAR_TOP_PT)
+            .size(size_pt, size_pt)
+            .radius(RADIUS_AVATAR_PT)
+            .center()
+            .fill(palette.surface_hover)
+            .child(
+                text(initial(name))
+                    .font(TYPE_CAPTION_MEDIUM)
+                    .color(palette.text_secondary),
+            ),
+    )
 }
 
 /// The author's name: a member's nickname or username, a bridged author's

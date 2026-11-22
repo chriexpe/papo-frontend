@@ -98,7 +98,7 @@ fn round_button(
         .role("button")
         .label(label.to_owned())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .child(
             icon(glyph, JUMP_ICON_PT)
                 .color(palette.text_secondary)
@@ -116,7 +116,7 @@ pub(super) fn seeking_pill<S: TimelineHost>(key: TimelineKey, palette: &Palette)
         .role("button")
         .focusable(true)
         .radius(RADIUS_CONTROL_PT)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(move |host: &mut S| host.seek_cancelled(key));
     let pill = row()
         .key("seeking")

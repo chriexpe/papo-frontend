@@ -11,15 +11,13 @@
 use std::collections::BTreeSet;
 
 use rune::prefs::Prefs;
-use rune::{El, Span, col, el, icon, rich, row, text};
+use rune::{El, Span, el, icon, rich, row, text};
 use url::Position;
 
+use crate::confirm::{Question, confirm as ask};
 use crate::design::{
-    CONFIRM_WIDTH_PT, FIELD_HEIGHT_PT, FIELD_OUTLINE_PT, FOCUS_RING_PT, PILL_OUTLINE_PT,
-    POPUP_PADDING_PT, POPUP_SHADOW_PT, Palette, RADIUS_CONTROL_PT, RADIUS_FIELD_PT,
-    RADIUS_POPUP_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, SPACE_XXL_PT, TASK_BOX_OUTLINE_PT,
-    TASK_BOX_PT, TASK_BOX_RADIUS_PT, TASK_CHECK_PT, TYPE_BODY_STRONG, TYPE_CODE, TYPE_DISPLAY,
-    TYPE_SMALL, WEIGHT_SEMIBOLD,
+    FOCUS_RING_PT, Palette, RADIUS_CONTROL_PT, SPACE_MD_PT, SPACE_SM_PT, TASK_BOX_OUTLINE_PT,
+    TASK_BOX_PT, TASK_BOX_RADIUS_PT, TASK_CHECK_PT, TYPE_CODE, TYPE_SMALL, WEIGHT_SEMIBOLD,
 };
 use crate::shell::Shell;
 use crate::strings;
@@ -138,62 +136,24 @@ pub(crate) struct Prompt {
     pub(crate) always: bool,
 }
 
-/// "Open this link?" over the dimmed app: the address with its host in
-/// bold, the box, Cancel and Open. Escape and Cancel keep it closed.
+/// "Open this link?" over the dimmed app, in the one shape of a
+/// confirmation (`docs/design.md` §10): the address with its host in bold,
+/// the box as the foot row's note, Cancel (focused) and Open. Escape,
+/// Return and Cancel keep it closed.
 pub(crate) fn confirm(prompt: &Prompt, palette: &Palette) -> El {
-    let (drop, blur) = POPUP_SHADOW_PT;
-    let cancel = button("open-link-cancel", strings::link_cancel(), palette)
-        .border(FIELD_OUTLINE_PT, palette.line_strong)
-        .on_press(Shell::cancel_link)
-        .child(
-            text(strings::link_cancel())
-                .font(TYPE_BODY_STRONG)
-                .color(palette.text_primary),
-        );
-    let open = button("open-link-confirm", strings::link_open(), palette)
-        .fill(palette.accent)
-        .default_button()
-        .on_press_tx(Shell::confirm_link)
-        .child(
-            text(strings::link_open())
-                .font(TYPE_BODY_STRONG)
-                .color(palette.accent_on),
-        );
-    let frame = col()
-        .key("open-link")
-        .w(CONFIRM_WIDTH_PT)
-        .padding(POPUP_PADDING_PT)
-        .gap(SPACE_LG_PT)
-        .radius(RADIUS_POPUP_PT)
-        .fill(palette.surface_content)
-        .border(PILL_OUTLINE_PT, palette.line_subtle)
-        .shadow(drop, blur, palette.popup_shadow)
-        .role("alertdialog")
-        .label(strings::link_title())
-        .modal(false, Shell::cancel_link)
-        .child(
-            text(strings::link_title())
-                .font(TYPE_DISPLAY)
-                .color(palette.text_primary)
-                .role("heading")
-                .level(2)
-                .wrap(),
-        )
-        .child(address(prompt, palette))
-        .child(always_box(prompt, palette))
-        .child(
-            row()
-                .w_full()
-                .justify_end()
-                .gap(SPACE_MD_PT)
-                .child(cancel)
-                .child(open),
-        );
-    el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .center()
-        .padding(SPACE_XXL_PT)
-        .fill(palette.scrim)
-        .child(frame)
+    let question = Question {
+        key: "open-link",
+        title: strings::link_title(),
+        body: None,
+        shown: Some(address(prompt, palette)),
+        note: Some(always_box(prompt, palette)),
+        cancel_key: "open-link-cancel",
+        cancel: strings::link_cancel(),
+        confirm_key: "open-link-confirm",
+        confirm: strings::link_open(),
+        danger: true,
+    };
+    ask(question, Shell::cancel_link, Shell::confirm_link, palette)
 }
 
 /// The whole address in mono, as the URL parser reads it, its host in
@@ -248,8 +208,12 @@ fn always_box(prompt: &Prompt, palette: &Palette) -> El {
     } else {
         square.border(TASK_BOX_OUTLINE_PT, palette.line_strong)
     };
+    // As wide as the foot row leaves it, so the label wraps beside Cancel
+    // instead of running under it.
     row()
         .key("open-link-always")
+        .w_full()
+        .min_w(0.0)
         .gap(SPACE_MD_PT)
         .center_y()
         .radius(RADIUS_CONTROL_PT)
@@ -258,28 +222,18 @@ fn always_box(prompt: &Prompt, palette: &Palette) -> El {
         .checked(prompt.always)
         .label(label.clone())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(Shell::toggle_trust_link)
         .child(square)
         .child(
             text(label)
+                .key("open-link-always-label")
                 .font(TYPE_SMALL)
                 .color(palette.text_secondary)
+                .grow(1.0)
+                .min_w(0.0)
                 .wrap(),
         )
-}
-
-fn button(key: &'static str, label: &'static str, palette: &Palette) -> El {
-    row()
-        .key(key)
-        .h(FIELD_HEIGHT_PT)
-        .px(SPACE_LG_PT)
-        .center()
-        .radius(RADIUS_FIELD_PT)
-        .role("button")
-        .label(label)
-        .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
 }
 
 #[cfg(test)]

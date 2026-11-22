@@ -38,8 +38,6 @@ pub(crate) const TYPE_BODY: TextStyle = type_scaled(1.0, WEIGHT_REGULAR);
 pub(crate) const TYPE_BODY_STRONG: TextStyle = type_scaled(1.0, WEIGHT_SEMIBOLD);
 /// `type.small` at weight 500: field labels, links under a form.
 pub(crate) const TYPE_SMALL_MEDIUM: TextStyle = type_scaled(12.0 / 13.0, WEIGHT_MEDIUM);
-/// `type.small` at weight 600: a name in a reply line or bar.
-pub(crate) const TYPE_SMALL_STRONG: TextStyle = type_scaled(12.0 / 13.0, WEIGHT_SEMIBOLD);
 /// `type.small` at weight 400: a feedback line.
 pub(crate) const TYPE_SMALL: TextStyle = type_scaled(12.0 / 13.0, WEIGHT_REGULAR);
 /// `type.caption`: sub-lines, a server's address, a field's hint.
@@ -67,6 +65,8 @@ pub(crate) const TYPE_DISPLAY: TextStyle = type_scaled(18.0 / 13.0, WEIGHT_SEMIB
 
 /// `radius.composer`, the message field's corner radius in points.
 pub(crate) const RADIUS_COMPOSER_PT: f32 = 16.0;
+/// `space.xs` in points.
+pub(crate) const SPACE_XS_PT: f32 = 2.0;
 /// `space.sm` in points.
 pub(crate) const SPACE_SM_PT: f32 = 4.0;
 /// `space.md` in points.
@@ -100,6 +100,7 @@ mod code_ink;
 mod colour;
 mod content;
 mod density;
+mod lightness_rule;
 mod reading;
 mod replies;
 mod sizes;

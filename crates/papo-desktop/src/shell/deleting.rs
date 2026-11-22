@@ -13,7 +13,7 @@ use rune::{El, ScrollSpec, Tx, col};
 use super::Shell;
 use super::replies::item_actions;
 use crate::composer::COMPOSER_KEY;
-use crate::confirm::{Question, confirm};
+use crate::confirm::{self, Question, confirm};
 use crate::design::CONFIRM_MESSAGE_MAX_PT;
 use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::strings;
@@ -169,7 +169,8 @@ pub(super) fn delete_confirm(shell: &Shell, style: &Style) -> Option<El> {
         DeleteAs::Moderator => strings::delete_title_other(&open.author_of(id)),
         _ => strings::delete_title_own().to_owned(),
     };
-    let note = (as_who == DeleteAs::Moderator).then(strings::delete_audit);
+    let note = (as_who == DeleteAs::Moderator)
+        .then(|| confirm::note(strings::delete_audit(), &style.palette));
     let question = Question {
         key: DELETE_KEY,
         title: &title,

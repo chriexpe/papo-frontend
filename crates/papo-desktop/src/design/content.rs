@@ -54,7 +54,7 @@ pub(crate) const COPY_BUTTON_HEIGHT_PT: f32 = 26.0;
 pub(crate) const COPY_BUTTON_PAD_PT: f32 = 8.0;
 pub(crate) const COPY_BUTTON_RADIUS_PT: f32 = 7.0;
 pub(crate) const COPY_BUTTON_INSET_PT: f32 = 6.0;
-/// How long the Copy button reads "✓ Copied", in seconds.
+/// How long the Copy button reads ✓ "Copied", in seconds.
 pub(crate) const COPIED_FOR_S: f64 = 1.5;
 
 /// A list's marker column, in points (1.4 em of the text).

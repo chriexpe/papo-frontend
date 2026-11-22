@@ -12,7 +12,9 @@ use crate::composer::COMPOSER_KEY;
 use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 
 mod accounts;
+mod channel_keys;
 mod composer;
+mod links;
 mod navigation;
 mod outgoing;
 mod replying;
@@ -35,6 +37,8 @@ fn runtime_with(accounts: Accounts) -> Runtime<Shell> {
         scale: 1.0,
     };
     let mut rt = Runtime::with_text(shell, view, SIZE_PT, env, crate::fonts::text_system());
+    // The window's keys, as `window::spec` hands them to Rune.
+    rt.on_key = Some(Shell::on_key);
     rt.frame(0.0);
     rt
 }

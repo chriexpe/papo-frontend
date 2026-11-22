@@ -45,7 +45,7 @@ pub(super) fn send_mark<S: TimelineHost>(
             mark.role("button")
                 .label(strings::outgoing_options(words))
                 .focusable(true)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
                 .on_press(move |host: &mut S| host.send_state_pressed(key, local, state))
                 .child(icon(&WARNING, SEND_STATE_ICON_PT).color(palette.danger))
         }

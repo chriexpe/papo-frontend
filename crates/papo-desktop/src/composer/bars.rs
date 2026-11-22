@@ -12,11 +12,11 @@ use rune::{El, Span, el, icon, row, text};
 
 use super::mode::Mode;
 use crate::design::{
-    FOCUS_RING_PT, MENTION_SWITCH_PT, PILL_OUTLINE_PT, Palette, RADIUS_COMPOSER_PT,
+    CHIP_ICON_PT, FOCUS_RING_PT, MENTION_SWITCH_PT, PILL_OUTLINE_PT, Palette, RADIUS_COMPOSER_PT,
     RADIUS_CONTROL_PT, REPLY_BAR_HEIGHT_PT, REPLY_BAR_ICON_PT, SPACE_LG_PT, SPACE_MD_PT,
-    SPACE_SM_PT, TYPE_SMALL, TYPE_SMALL_STRONG, WEIGHT_SEMIBOLD,
+    SPACE_SM_PT, TYPE_SMALL, WEIGHT_SEMIBOLD,
 };
-use crate::icons::{CROSS, EDIT, REPLY};
+use crate::icons::{AT, EDIT, REPLY, X};
 use crate::shell::Shell;
 use crate::strings;
 use crate::timeline::replies::OriginalText;
@@ -161,13 +161,9 @@ fn mention_switch(name: &str, on: bool, palette: &Palette) -> El {
         .label(strings::reply_mention(name))
         .checked(on)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(Shell::reply_mention_toggled)
-        .child(text("@").font(TYPE_SMALL_STRONG).color(if on {
-            palette.link
-        } else {
-            palette.text_muted
-        }));
+        .child(icon(&AT, CHIP_ICON_PT).color(if on { palette.link } else { palette.text_muted }));
     if on {
         switch.fill(palette.accent_soft)
     } else {
@@ -187,7 +183,7 @@ fn close(label: &'static str, pressed: fn(&mut Shell), palette: &Palette) -> El 
         .role("button")
         .label(label)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(pressed)
-        .child(icon(&CROSS, REPLY_BAR_ICON_PT).color(palette.text_secondary))
+        .child(icon(&X, REPLY_BAR_ICON_PT).color(palette.text_secondary))
 }

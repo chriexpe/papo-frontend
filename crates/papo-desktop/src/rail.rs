@@ -15,10 +15,10 @@ use rune::{Drag, El, Image, Key, KeyEvent, ScrollSpec, col, el, icon, row, text}
 
 use crate::badges::mention_pill;
 use crate::design::{
-    ADD_TILE_DASH_PT, ADD_TILE_OUTLINE_PT, ADD_TILE_PLUS_PT, FOCUS_RING_PT,
-    MENTION_PILL_OVERHANG_PT, MENTION_PILL_RING_PT, PILL_OUTLINE_PT, Palette, RADIUS_ICON_PT,
-    RADIUS_INDICATOR_PT, RAIL_INDICATOR_PT, RAIL_TILE_PT, RAIL_UNREAD_BAR_PT, RAIL_WIDTH_PT,
-    SPACE_MD_PT, TYPE_TITLE,
+    ADD_TILE_DASH_PT, ADD_TILE_OUTLINE_PT, FOCUS_RING_PT, MENTION_PILL_OVERHANG_PT,
+    MENTION_PILL_RING_PT, PILL_OUTLINE_PT, Palette, RADIUS_ICON_PT, RADIUS_INDICATOR_PT,
+    RAIL_ICON_PT, RAIL_INDICATOR_PT, RAIL_TILE_PT, RAIL_UNREAD_BAR_PT, RAIL_WIDTH_PT, SPACE_MD_PT,
+    TYPE_TITLE,
 };
 use crate::icons::PLUS;
 use crate::navigation::Navigation;
@@ -114,7 +114,7 @@ impl Tile<'_> {
             .description(strings::rail_move_hint())
             .focusable(true)
             .focus_selected(self.selected)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
             .on_press_tx(move |shell: &mut Shell, tx| shell.select_server(id, tx))
             .on_drag(move |shell: &mut Shell, drag: &mut Drag, tx| shell.drag_server(id, drag, tx))
             .on_key(move |shell: &mut Shell, key: &KeyEvent, _tx| move_key(shell, id, key))
@@ -190,9 +190,9 @@ fn add_tile(palette: &Palette) -> El {
         .role("button")
         .label(strings::rail_add_server())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(Shell::add_server)
-        .child(icon(&PLUS, ADD_TILE_PLUS_PT).color(palette.text_muted))
+        .child(icon(&PLUS, RAIL_ICON_PT).color(palette.text_muted))
 }
 
 /// A server without an icon: the first letter of its name.

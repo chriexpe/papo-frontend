@@ -14,7 +14,7 @@ use crate::design::{
     POPUP_PADDING_PT, POPUP_SHADOW_PT, POPUP_SIZE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_POPUP_PT,
     SPACE_LG_PT, SPACE_SM_PT, SPACE_XL_PT, SPACE_XXL_PT, TYPE_CAPTION,
 };
-use crate::icons::CROSS;
+use crate::icons::X;
 use crate::shell::Shell;
 use crate::strings;
 
@@ -63,9 +63,9 @@ pub(crate) fn popup(flow: &SignIn, fields: &Fields, palette: &Palette) -> El {
         .role("button")
         .label(strings::close())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(Shell::close_sign_in)
-        .child(icon(&CROSS, CROSS_PT).color(palette.text_secondary));
+        .child(icon(&X, CROSS_PT).color(palette.text_secondary));
     let frame = col()
         .key("sign-in-popup")
         .size(POPUP_SIZE_PT.0, POPUP_SIZE_PT.1)

@@ -13,8 +13,8 @@ use rune::{El, col, el, icon, row, text};
 
 use crate::channel_pane::avatar;
 use crate::design::{
-    FOCUS_RING_PT, PANE_EDGE_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT,
-    RADIUS_PILL_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION,
+    FOCUS_RING_PT, PANE_EDGE_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT,
+    ROW_ICON_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION,
     TYPE_CAPTION_MEDIUM,
 };
 use crate::icons::{CHECK, PLUS};
@@ -121,7 +121,7 @@ fn account_row(account: &AccountEntry, shown: bool, palette: &Palette) -> El {
         .child(avatar(&account.name, None, palette))
         .child(names);
     if shown {
-        line = line.child(icon(&CHECK, PILL_ICON_PT).color(palette.accent));
+        line = line.child(icon(&CHECK, ROW_ICON_PT).color(palette.accent));
     }
     line
 }
@@ -131,7 +131,7 @@ fn add_account(palette: &Palette) -> El {
         .role("button")
         .label(strings::add_account())
         .on_press(Shell::add_account)
-        .child(icon(&PLUS, PILL_ICON_PT).color(palette.text_secondary))
+        .child(icon(&PLUS, ROW_ICON_PT).color(palette.text_secondary))
         .child(
             text(strings::add_account())
                 .font(TYPE_BODY)
@@ -151,5 +151,5 @@ fn choice(key: String, palette: &Palette) -> El {
         .radius(RADIUS_CONTROL_PT)
         .hover(palette.surface_hover)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
 }

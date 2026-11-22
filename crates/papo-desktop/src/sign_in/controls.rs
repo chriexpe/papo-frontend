@@ -77,7 +77,7 @@ pub(crate) fn password_field(
         .role("button")
         .label(spoken)
         .focusable(!field.busy)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(toggle)
         .child(
             text(word)
@@ -162,7 +162,7 @@ pub(crate) fn primary_button(
         .role("button")
         .label(if busy { busy_label } else { label })
         .disabled(!enabled)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent);
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring);
     if enabled {
         button = button.focusable(true).on_press(press).default_button();
     } else {
@@ -212,7 +212,7 @@ fn link_styled(
         .role("button")
         .label(label)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(press)
         .child(text(label).font(style).color(color))
 }

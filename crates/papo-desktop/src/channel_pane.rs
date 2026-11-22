@@ -15,13 +15,13 @@ use rune::{El, Icon, Image, ScrollSpec, col, el, icon, row, text};
 use crate::account_switch;
 use crate::badges::mention_pill;
 use crate::design::{
-    ACCOUNT_COUNT_OVERHANG_PT, ACCOUNT_COUNT_PT, CHANNEL_ICON_PT, CHANNEL_ROW_HEIGHT_PT,
-    FOCUS_RING_PT, PANE_PILL_HEIGHT_PT, PILL_AVATAR_PT, PILL_BUTTON_PT, PILL_ICON_PT,
-    PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT, SIDEBAR_WIDTH_PT, SPACE_LG_PT,
-    SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_BODY_STRONG, TYPE_CAPTION,
-    TYPE_CAPTION_MEDIUM, TYPE_COUNT, TYPE_TITLE, UNREAD_DOT_PT,
+    ACCOUNT_COUNT_OVERHANG_PT, ACCOUNT_COUNT_PT, CHANNEL_ROW_HEIGHT_PT, FOCUS_RING_PT,
+    PANE_PILL_HEIGHT_PT, PILL_AVATAR_PT, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
+    RADIUS_CONTROL_PT, RADIUS_PILL_PT, ROW_ICON_PT, SIDEBAR_WIDTH_PT, SPACE_LG_PT, SPACE_MD_PT,
+    SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
+    TYPE_COUNT, TYPE_TITLE, UNREAD_DOT_PT,
 };
-use crate::icons::{GEAR, HASH, SPEAKER, SWAP};
+use crate::icons::{GEAR, HASH, SPEAKER, SWITCH};
 use crate::navigation::Navigation;
 use crate::rail::initial;
 use crate::server_list::{AccountEntry, ChannelEntry, ServerEntry};
@@ -120,7 +120,7 @@ fn switch_button(server: &ServerEntry, accounts_open: bool, palette: &Palette) -
     } else {
         strings::switch_account().to_owned()
     };
-    let mut button = pill_button(SWITCH_ACCOUNT_KEY, &SWAP, palette)
+    let mut button = pill_button(SWITCH_ACCOUNT_KEY, &SWITCH, palette)
         .label(label)
         .expanded(accounts_open)
         .on_press_tx(|shell: &mut Shell, tx| shell.toggle_accounts(tx));
@@ -165,7 +165,7 @@ fn pill_button(key: &'static str, glyph: &'static Icon, palette: &Palette) -> El
         .hover(palette.surface_hover)
         .role("button")
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .child(icon(glyph, PILL_ICON_PT).color(palette.text_secondary))
 }
 
@@ -318,9 +318,9 @@ fn channel_row(
         .label(channel.badge.label(&channel.name))
         .focusable(true)
         .focus_selected(selected)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press_tx(move |shell: &mut Shell, tx| shell.select_channel(&id, tx))
-        .child(icon(mark, CHANNEL_ICON_PT).color(mark_color).a11y_hidden())
+        .child(icon(mark, ROW_ICON_PT).color(mark_color).a11y_hidden())
         .child(
             text(channel.name.as_str())
                 .font(style)

@@ -5,18 +5,19 @@
 
 use std::cell::RefCell;
 
-use rune::{El, Span, col, rich, row, text};
+use rune::{El, Span, col, icon, rich, row, text};
 use rune_highlights::{Highlighter, Lang, Token};
 
 use super::Draw;
 use super::doc::Run;
 use super::inline::text_key;
 use crate::design::{
-    CODE_BLOCK_MAX_LINES, CODE_BLOCK_OUTLINE_PT, CODE_BLOCK_PAD_PT, CODE_BLOCK_RADIUS_PT,
-    CODE_LABEL_GAP_PT, COPY_BUTTON_HEIGHT_PT, COPY_BUTTON_INSET_PT, COPY_BUTTON_PAD_PT,
-    COPY_BUTTON_RADIUS_PT, CodeInk, FOCUS_RING_PT, Palette, TYPE_CAPTION_MEDIUM, TYPE_CODE_BLOCK,
-    TYPE_SMALL,
+    CHIP_ICON_PT, CODE_BLOCK_MAX_LINES, CODE_BLOCK_OUTLINE_PT, CODE_BLOCK_PAD_PT,
+    CODE_BLOCK_RADIUS_PT, CODE_LABEL_GAP_PT, COPY_BUTTON_HEIGHT_PT, COPY_BUTTON_INSET_PT,
+    COPY_BUTTON_PAD_PT, COPY_BUTTON_RADIUS_PT, CodeInk, FOCUS_RING_PT, Palette, SPACE_XS_PT,
+    TYPE_CAPTION_MEDIUM, TYPE_CODE_BLOCK, TYPE_SMALL,
 };
+use crate::icons::CHECK;
 use crate::strings;
 use crate::timeline::TimelineHost;
 
@@ -42,7 +43,7 @@ pub(super) fn block<S: TimelineHost>(language: Option<&str>, run: &Run, draw: &D
         .scroll_xy()
         // The keyboard scrolls it once focused.
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .child(code);
     let mut inside = col().w_full().gap(CODE_LABEL_GAP_PT);
     // A fence that names no language gets no label: the client never
@@ -70,7 +71,7 @@ pub(super) fn block<S: TimelineHost>(language: Option<&str>, run: &Run, draw: &D
         .child(copy_button::<S>(run, draw, copied))
 }
 
-/// "Copy" in the block's top-right corner, "✓ Copied" for a moment after
+/// "Copy" in the block's top-right corner, ✓ "Copied" for a moment after
 /// a press.
 fn copy_button<S: TimelineHost>(run: &Run, draw: &Draw<'_>, copied: bool) -> El {
     let palette = draw.palette;
@@ -98,11 +99,13 @@ fn copy_button<S: TimelineHost>(run: &Run, draw: &Draw<'_>, copied: bool) -> El 
         .role("button")
         .label(strings::copy_code_label())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press_tx(move |host: &mut S, tx| {
             tx.copy(code.clone());
             host.code_copied(key, message, index, tx);
         })
+        .gap(SPACE_XS_PT)
+        .children(copied.then(|| icon(&CHECK, CHIP_ICON_PT).color(palette.text_secondary)))
         .child(
             text(label)
                 .font(TYPE_CAPTION_MEDIUM)

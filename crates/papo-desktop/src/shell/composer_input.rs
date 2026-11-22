@@ -2,8 +2,9 @@
 //! place" and "Composer surfaces"), and the @ picker kept in step with the
 //! field's text.
 //!
-//! The field asks here first. In order: the open picker's keys; Tab past a
-//! closer; a delimiter or shortcut over a selection; Enter by the "Enter to
+//! The field asks here first. In order: the open picker's keys; Alt+↑/↓
+//! to another channel (the field's editor would take them otherwise), not
+//! while a composition is open; Tab past a closer; a delimiter or shortcut over a selection; Enter by the "Enter to
 //! send" setting. Anything else is the field's own, and every key is marked
 //! on its way: only a typed character or Backspace may close a pair.
 
@@ -58,7 +59,11 @@ impl Shell {
             _ => None,
         };
         self.composer.key_reached(tx.clock(), typed);
-        if self.picker_key(key, tx) {
+        let composing = self
+            .composer
+            .shown()
+            .is_some_and(|(_, draft)| draft.edit.is_composing());
+        if self.picker_key(key, tx) || (!composing && self.channel_step_key(key, tx)) {
             return true;
         }
         let bare = !key.mods.ctrl && !key.mods.cmd && !key.mods.alt && !key.mods.shift;

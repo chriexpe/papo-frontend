@@ -293,7 +293,7 @@ fn gap_failed<S: TimelineHost>(key: TimelineKey, cursor_id: &str, style: &Style)
         .role("button")
         .focusable(true)
         .radius(RADIUS_CONTROL_PT)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(move |host: &mut S| host.retry_gap(key, &cursor));
     row()
         .w_full()

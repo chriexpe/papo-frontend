@@ -9,7 +9,7 @@ use super::outgoing::resend_confirm;
 use super::{Shell, Stage};
 use crate::design::{
     FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, HINT_DELAY_S, HINT_GAP_PT, HINT_MAX_WIDTH_PT,
-    HINT_PAD_PT, HINT_RADIUS_PT, PANE_EDGE_PT, PILL_CROSS_PT, PILL_OUTLINE_PT, Palette,
+    HINT_PAD_PT, HINT_RADIUS_PT, PANE_EDGE_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
     RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT, SPACE_SM_PT, SPACE_XL_PT, TYPE_BODY, TYPE_HINT,
     Theme,
 };
@@ -180,9 +180,9 @@ fn connected_pill(server: &str, palette: &Palette) -> El {
         .role("button")
         .label(strings::dismiss())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .on_press(Shell::dismiss_connected)
-        .child(icon(&crate::icons::CROSS, PILL_CROSS_PT).color(palette.text_secondary));
+        .child(icon(&crate::icons::X, PILL_ICON_PT).color(palette.text_secondary));
     let pill = row()
         .key("connected")
         .h(HEADER_PILL_HEIGHT_PT)
