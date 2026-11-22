@@ -306,68 +306,79 @@ impl ClientHandle {
         account: AccountId,
         channel: Uuid,
     ) -> Result<CallHandle, CallError> {
-        if self.is_closed() {
-            return Err(CallError::Closed);
-        }
-        if self.inner.config.media_engine.is_none() {
-            return Err(CallError::MediaUnavailable);
-        }
-        if self.inner.call_lease.is_release_pending() {
-            return Err(CallError::ReleasePending);
-        }
-        let target = self.session(account).map_err(|error| match error {
-            crate::ClientError::Closed => CallError::Closed,
-            _ => CallError::AccountNotFound,
-        })?;
-        // Verify target session is online and authorized before tearing down an existing call.
-        {
-            let status = *target.subscribe_connection().borrow();
-            if status.state != crate::ConnectionState::Online
-                || status.generation != target.generation()
-            {
-                return Err(CallError::Offline);
-            }
-            let resources = target.subscribe_resources().borrow().clone();
-            if resources.generation != status.generation {
-                return Err(CallError::PermissionUnknown);
-            }
-            match crate::permissions::voice_access(&resources, account.user(), channel) {
-                crate::permissions::VoiceAccess::Allowed => {}
-                crate::permissions::VoiceAccess::NotVoiceChannel => {
-                    return Err(CallError::NotVoiceChannel);
+        let this = self.clone();
+        self.dispatch(async move {
+            let result = async {
+                if this.is_closed() {
+                    return Err(CallError::Closed);
                 }
-                crate::permissions::VoiceAccess::Denied => return Err(CallError::Forbidden),
-                crate::permissions::VoiceAccess::Unknown => {
-                    return Err(CallError::PermissionUnknown);
+                if this.inner.config.media_engine.is_none() {
+                    return Err(CallError::MediaUnavailable);
                 }
-            }
-        }
-
-        if let Some(current) = self.inner.call_lease.active()
-            && current.account != account
-            && let Ok(old_session) = self.session(current.account)
-        {
-            let draining = old_session
-                .inner
-                .calls
-                .end_active(CallEndReason::Switched, Some(&self.inner.runtime));
-            if let Some(prev_attempt) = draining {
-                let waited = tokio::time::timeout(
-                    self.inner.config.call.drain_timeout,
-                    self.inner.call_lease.wait_drained(prev_attempt),
-                )
-                .await;
-                match waited {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => return Err(error),
-                    Err(_) => {
-                        self.inner.call_lease.mark_release_pending(prev_attempt);
-                        return Err(CallError::ReleasePending);
+                if this.inner.call_lease.is_release_pending() {
+                    return Err(CallError::ReleasePending);
+                }
+                let target = this.session(account).map_err(|error| match error {
+                    crate::ClientError::Closed => CallError::Closed,
+                    _ => CallError::AccountNotFound,
+                })?;
+                // Verify target session is online and authorized before tearing down an existing call.
+                {
+                    let status = *target.subscribe_connection().borrow();
+                    if status.state != crate::ConnectionState::Online
+                        || status.generation != target.generation()
+                    {
+                        return Err(CallError::Offline);
+                    }
+                    let resources = target.subscribe_resources().borrow().clone();
+                    if resources.generation != status.generation {
+                        return Err(CallError::PermissionUnknown);
+                    }
+                    match crate::permissions::voice_access(&resources, account.user(), channel) {
+                        crate::permissions::VoiceAccess::Allowed => {}
+                        crate::permissions::VoiceAccess::NotVoiceChannel => {
+                            return Err(CallError::NotVoiceChannel);
+                        }
+                        crate::permissions::VoiceAccess::Denied => {
+                            return Err(CallError::Forbidden);
+                        }
+                        crate::permissions::VoiceAccess::Unknown => {
+                            return Err(CallError::PermissionUnknown);
+                        }
                     }
                 }
-            }
-        }
 
-        target.calls().join(channel)
+                if let Some(current) = this.inner.call_lease.active()
+                    && current.account != account
+                    && let Ok(old_session) = this.session(current.account)
+                {
+                    let draining = old_session
+                        .inner
+                        .calls
+                        .end_active(CallEndReason::Switched, Some(&this.inner.runtime));
+                    if let Some(prev_attempt) = draining {
+                        let waited = tokio::time::timeout(
+                            this.inner.config.call.drain_timeout,
+                            this.inner.call_lease.wait_drained(prev_attempt),
+                        )
+                        .await;
+                        match waited {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => return Err(error),
+                            Err(_) => {
+                                this.inner.call_lease.mark_release_pending(prev_attempt);
+                                return Err(CallError::ReleasePending);
+                            }
+                        }
+                    }
+                }
+
+                target.calls().join(channel)
+            }
+            .await;
+            Ok(result)
+        })
+        .await
+        .unwrap_or(Err(CallError::Closed))
     }
 }

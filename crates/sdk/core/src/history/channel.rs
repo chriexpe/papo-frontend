@@ -311,11 +311,31 @@ impl HistoryHandle {
         }).await.map_err(HistoryError::from)?
     }
 
+    /// Reads the cached pinned messages for this channel without performing network requests.
+    ///
+    /// Intended for offline views and preserving cached pins when a live [`Self::pins`]
+    /// refresh fails; cache authorization and channel access are still strictly validated.
+    ///
+    /// # Errors
+    /// Returns revoked, unverified, stale-generation, or cache failures.
+    pub async fn cached_pins(
+        &self,
+    ) -> Result<Generated<Vec<Arc<papo_api::wire::Message>>>, HistoryError> {
+        self.pins_inner(false).await
+    }
+
     /// Read the separate pin snapshot without making detached pins chronological members.
     /// The newest-page fetch and reconnect refresh this snapshot from the pinned list.
     /// # Errors
     /// Returns revoked, unverified, stale-generation or cache failures.
     pub async fn pins(&self) -> Result<Generated<Vec<Arc<papo_api::wire::Message>>>, HistoryError> {
+        self.pins_inner(true).await
+    }
+
+    async fn pins_inner(
+        &self,
+        refresh_online: bool,
+    ) -> Result<Generated<Vec<Arc<papo_api::wire::Message>>>, HistoryError> {
         let handle = self.clone();
         let token = self.session.inner.tasks.token();
         self.session
@@ -326,7 +346,8 @@ impl HistoryHandle {
                 let work = async {
                     let generation = epoch.generation;
                     let connection = handle.connection().await?;
-                    if connection.generation == generation
+                    if refresh_online
+                        && connection.generation == generation
                         && matches!(
                             handle.session.inner.connection.borrow().state,
                             ConnectionState::Online

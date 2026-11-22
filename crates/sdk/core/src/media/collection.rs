@@ -84,12 +84,31 @@ impl Scan {
             let Some(name) = name.to_str() else {
                 continue;
             };
+            let file_type = prefix.file_type().map_err(|_| MediaError::Filesystem)?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_file() && name.starts_with("download-") && name.ends_with(".partial") {
+                let metadata = match fs::symlink_metadata(prefix.path()) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(_) => return Err(MediaError::Filesystem),
+                };
+                let age = now
+                    .duration_since(metadata.modified().map_err(|_| MediaError::Filesystem)?)
+                    .unwrap_or_default();
+                if age >= grace {
+                    candidates.push(Candidate {
+                        path: prefix.path(),
+                        digest: [0; 32],
+                        partial: true,
+                    });
+                }
+                continue;
+            }
             if name.len() != 2
                 || !name.bytes().all(|b| b.is_ascii_hexdigit())
-                || !prefix
-                    .file_type()
-                    .map_err(|_| MediaError::Filesystem)?
-                    .is_dir()
+                || !file_type.is_dir()
             {
                 continue;
             }

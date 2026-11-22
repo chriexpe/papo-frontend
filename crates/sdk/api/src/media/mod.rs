@@ -1,7 +1,12 @@
 //! Owns byte-only media downloads and range metadata; decoding and storage belong to callers.
 
+mod stream;
+
 use crate::{Error, RestClient, Uuid, routes};
 use reqwest::header;
+
+use stream::MAX_MEDIA_BYTES;
+pub use stream::MediaStream;
 
 /// A single inclusive HTTP byte range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,6 +76,75 @@ pub struct MediaResponse {
 }
 
 impl RestClient {
+    /// Streams a content-addressed avatar, banner, icon or other backend media blob.
+    ///
+    /// # Errors
+    /// Returns invalid input, transport failure or backend rejection.
+    pub async fn media_stream(
+        &self,
+        media_id: &str,
+        range: Option<ByteRange>,
+    ) -> Result<MediaStream, MediaError> {
+        validate_media_id(media_id)?;
+        self.download_stream(
+            &routes::GET_MEDIA_SHA_HASH,
+            &[media_id.to_owned()],
+            range,
+            false,
+        )
+        .await
+    }
+
+    /// Streams an attachment after backend channel authorization.
+    ///
+    /// # Errors
+    /// Returns invalid input, transport failure or backend rejection.
+    pub async fn attachment_stream(
+        &self,
+        id: Uuid,
+        range: Option<ByteRange>,
+    ) -> Result<MediaStream, MediaError> {
+        self.download_stream(
+            &routes::GET_ATTACHMENTS_FILE_ID,
+            &[id.to_string()],
+            range,
+            false,
+        )
+        .await
+    }
+
+    /// Streams an attachment thumbnail. The pinned backend ignores range requests here.
+    ///
+    /// # Errors
+    /// Returns transport failure or backend rejection.
+    pub async fn attachment_thumbnail_stream(&self, id: Uuid) -> Result<MediaStream, MediaError> {
+        self.download_stream(
+            &routes::GET_ATTACHMENTS_FILE_ID_THUMBNAIL,
+            &[id.to_string()],
+            None,
+            false,
+        )
+        .await
+    }
+
+    /// Streams video relayed by the backend for an accessible embed.
+    ///
+    /// # Errors
+    /// Returns invalid input, transport failure or backend rejection.
+    pub async fn embed_video_stream(
+        &self,
+        id: Uuid,
+        range: Option<ByteRange>,
+    ) -> Result<MediaStream, MediaError> {
+        self.download_stream(
+            &routes::GET_EMBEDS_EMBED_ID_VIDEO,
+            &[id.to_string()],
+            range,
+            false,
+        )
+        .await
+    }
+
     /// Fetches a content-addressed avatar, banner, icon or other backend media blob.
     ///
     /// # Errors
@@ -80,14 +154,7 @@ impl RestClient {
         media_id: &str,
         range: Option<ByteRange>,
     ) -> Result<MediaResponse, MediaError> {
-        validate_media_id(media_id)?;
-        self.download_bytes(
-            &routes::GET_MEDIA_SHA_HASH,
-            &[media_id.to_owned()],
-            range,
-            false,
-        )
-        .await
+        self.media_stream(media_id, range).await?.collect().await
     }
 
     /// Fetches an attachment after backend channel authorization.
@@ -99,13 +166,7 @@ impl RestClient {
         id: Uuid,
         range: Option<ByteRange>,
     ) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(
-            &routes::GET_ATTACHMENTS_FILE_ID,
-            &[id.to_string()],
-            range,
-            false,
-        )
-        .await
+        self.attachment_stream(id, range).await?.collect().await
     }
 
     /// Fetches an attachment thumbnail. The pinned backend ignores range requests here.
@@ -113,13 +174,7 @@ impl RestClient {
     /// # Errors
     /// Returns transport failure or backend rejection.
     pub async fn attachment_thumbnail_bytes(&self, id: Uuid) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(
-            &routes::GET_ATTACHMENTS_FILE_ID_THUMBNAIL,
-            &[id.to_string()],
-            None,
-            false,
-        )
-        .await
+        self.attachment_thumbnail_stream(id).await?.collect().await
     }
 
     /// Fetches video relayed by the backend for an accessible embed.
@@ -131,13 +186,7 @@ impl RestClient {
         id: Uuid,
         range: Option<ByteRange>,
     ) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(
-            &routes::GET_EMBEDS_EMBED_ID_VIDEO,
-            &[id.to_string()],
-            range,
-            false,
-        )
-        .await
+        self.embed_video_stream(id, range).await?.collect().await
     }
 
     /// Fetches a public user avatar without sending session cookies.
@@ -145,12 +194,14 @@ impl RestClient {
     /// # Errors
     /// Returns transport failure or backend rejection.
     pub async fn public_user_avatar_bytes(&self, id: Uuid) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(
+        self.download_stream(
             &routes::GET_USERS_USER_ID_AVATAR,
             &[id.to_string()],
             None,
             true,
         )
+        .await?
+        .collect()
         .await
     }
 
@@ -159,22 +210,24 @@ impl RestClient {
     /// # Errors
     /// Returns transport failure or backend rejection.
     pub async fn public_webhook_avatar_bytes(&self, id: Uuid) -> Result<MediaResponse, MediaError> {
-        self.download_bytes(
+        self.download_stream(
             &routes::GET_WEBHOOKS_WEBHOOK_ID_AVATAR,
             &[id.to_string()],
             None,
             true,
         )
+        .await?
+        .collect()
         .await
     }
 
-    async fn download_bytes(
+    async fn download_stream(
         &self,
         route: &routes::Route,
         values: &[String],
         range: Option<ByteRange>,
         anonymous: bool,
-    ) -> Result<MediaResponse, MediaError> {
+    ) -> Result<MediaStream, MediaError> {
         let range = range.map(ByteRange::header_value).transpose()?;
         let mut request = if anonymous {
             self.anonymous_route_request(route, values)?
@@ -189,49 +242,23 @@ impl RestClient {
         } else {
             self.response(request).await?
         };
-        let status = response.status().as_u16();
-        let headers = representation_headers(response.headers());
-        let bytes = bounded_body(response, 100 * 1024 * 1024).await?;
-        Ok(MediaResponse {
-            status,
-            bytes,
-            headers,
-        })
+        MediaStream::from_response(response, false, MAX_MEDIA_BYTES)
     }
-}
-
-/// Read encoded media incrementally; a dishonest or absent Content-Length cannot bypass the limit.
-async fn bounded_body(
-    mut response: reqwest::Response,
-    limit_bytes: usize,
-) -> Result<Vec<u8>, MediaError> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit_bytes as u64)
-    {
-        return Err(MediaError::TooLarge);
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| Error::Transport)? {
-        if chunk.len() > limit_bytes.saturating_sub(bytes.len()) {
-            return Err(MediaError::TooLarge);
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
 }
 
 impl RestClient {
-    /// Conditionally fetch an anonymous mutable avatar. A 304 has no body; callers retain their scoped representation.
+    /// Conditionally streams an anonymous mutable avatar. A 304 produces an empty stream;
+    /// callers retain their scoped representation.
+    ///
     /// # Errors
-    /// Returns transport/backend rejection or a bounded-body failure. No session cookies are attached.
-    pub async fn conditional_avatar_bytes(
+    /// Returns transport/backend rejection or a size-limit failure. No session cookies are attached.
+    pub async fn conditional_avatar_stream(
         &self,
         id: Uuid,
         webhook: bool,
         etag: Option<&str>,
         modified: Option<&str>,
-    ) -> Result<MediaResponse, MediaError> {
+    ) -> Result<MediaStream, MediaError> {
         let route = if webhook {
             &routes::GET_WEBHOOKS_WEBHOOK_ID_AVATAR
         } else {
@@ -252,17 +279,27 @@ impl RestClient {
             }
             .into());
         }
-        let headers = representation_headers(response.headers());
-        let bytes = if status == reqwest::StatusCode::NOT_MODIFIED {
-            Vec::new()
-        } else {
-            bounded_body(response, 100 * 1024 * 1024).await?
-        };
-        Ok(MediaResponse {
-            status: status.as_u16(),
-            bytes,
-            headers,
-        })
+        MediaStream::from_response(
+            response,
+            status == reqwest::StatusCode::NOT_MODIFIED,
+            MAX_MEDIA_BYTES,
+        )
+    }
+
+    /// Conditionally fetch an anonymous mutable avatar. A 304 has no body; callers retain their scoped representation.
+    /// # Errors
+    /// Returns transport/backend rejection or a bounded-body failure. No session cookies are attached.
+    pub async fn conditional_avatar_bytes(
+        &self,
+        id: Uuid,
+        webhook: bool,
+        etag: Option<&str>,
+        modified: Option<&str>,
+    ) -> Result<MediaResponse, MediaError> {
+        self.conditional_avatar_stream(id, webhook, etag, modified)
+            .await?
+            .collect()
+            .await
     }
 }
 

@@ -1,11 +1,20 @@
 //! Account-bound observable search pages; core owns grammar/backend requests and clients own navigation/Back state.
 
 use papo_sdk::{
-    SearchCursor, SearchError, SearchHit, SearchPage, SearchQuery, SearchRequestHandle,
-    SearchTarget, Session,
+    DetachedMessageRequest, SearchCursor, SearchError, SearchHit, SearchNames, SearchPage,
+    SearchQuery, SearchRequestHandle, SearchTarget, Session, Uuid,
 };
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
+
+/// Matching user and channel identities resolved against current session resources.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchMatches {
+    /// Matching backend user UUIDs.
+    pub users: Vec<Uuid>,
+    /// Matching backend channel UUIDs.
+    pub channels: Vec<Uuid>,
+}
 
 /// Complete detached page state; never contains or changes the active timeline window.
 #[derive(Clone)]
@@ -107,11 +116,51 @@ impl SearchService {
         }
         self.updates.send_replace(SearchUpdate::Idle);
     }
+    /// Parses `raw` into a typed `SearchQuery` using this session's current admitted resources.
+    ///
+    /// # Errors
+    /// Returns [`SearchError::InvalidData`] for empty, malformed, or ambiguous filter syntax, or
+    /// [`SearchError::Session`] if the session is closed or unverified.
+    pub fn parse_query(&self, raw: &str) -> Result<SearchQuery, SearchError> {
+        if self.session.is_closed() {
+            return Err(papo_sdk::ClientError::Closed.into());
+        }
+        let resources = self.session.subscribe_resources();
+        let snapshot = resources.borrow();
+        let names = SearchNames {
+            resources: &snapshot,
+        };
+        SearchQuery::parse(raw, &names)
+    }
+
+    /// Finds matching user and channel IDs for composer autocomplete using current resources.
+    #[must_use]
+    pub fn local_matches(&self, text: &str) -> SearchMatches {
+        if self.session.is_closed() {
+            return SearchMatches::default();
+        }
+        let resources = self.session.subscribe_resources();
+        let snapshot = resources.borrow();
+        let names = SearchNames {
+            resources: &snapshot,
+        };
+        let (channels, users) = names.matching(text);
+        SearchMatches { users, channels }
+    }
+
     /// Revalidates the result's original account/channel; clients keep query/results for Back.
     /// # Errors
     /// Rejects stale/foreign identity. Does not fetch history or mark read.
     pub fn target(&self, hit: &SearchHit) -> Result<SearchTarget, SearchError> {
         self.session.search_target(hit)
+    }
+
+    /// Starts detached context hydration around `hit` without altering canonical timeline windows.
+    ///
+    /// # Errors
+    /// Rejects stale/foreign hits or closed sessions.
+    pub fn hydrate(&self, hit: &SearchHit) -> Result<DetachedMessageRequest, SearchError> {
+        self.session.hydrate_search_hit(hit)
     }
     async fn load(
         &self,

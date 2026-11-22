@@ -1,12 +1,14 @@
 //! Revocable media capabilities and credential-separated fetching; immutable files and refs live below.
 
 use super::{
-    MediaData, MediaError, MediaSource,
-    download::{denied, download},
+    MediaData, MediaError, MediaMetadata, MediaSource,
+    cached::CachedWrite,
+    download::{denied, download, download_stream},
     index::Reference,
+    stream_io::{install_temp_file, stage_response},
 };
 use crate::{Generated, Session, generation::Epoch};
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
 
 /// Account-scoped encoded media service. No API accepts a local digest as proof of access.
 #[derive(Clone)]
@@ -136,6 +138,106 @@ impl MediaService {
         .await
     }
 
+    /// Streams this account's previously authorized cached representation into `writer` without
+    /// buffering the whole object in memory.
+    ///
+    /// **Integrity & publication contract:** For cached reads, this verifies local on-disk
+    /// integrity by checking SHA-256 against the previously committed `reference.digest` before
+    /// writing any bytes to `writer`. Callers exporting to a user-visible path must still write
+    /// to a private temporary file and only atomically rename/publish after `Ok(Generated<MediaMetadata>)`,
+    /// because concurrent revocation or I/O failure can abort.
+    ///
+    /// # Errors
+    /// Returns unavailable, damaged content/index, filesystem, or revoked/stale session failures.
+    pub async fn cached_to_writer<W: Write + Send + 'static>(
+        &self,
+        source: MediaSource,
+        writer: W,
+    ) -> Result<Generated<MediaMetadata>, MediaError> {
+        self.run(move |session, epoch| async move {
+            let store = &session.client.inner.media;
+            read_cached_hit(store, &session, &epoch, &source, writer).await
+        })
+        .await
+    }
+
+    /// Streams a scoped cached representation or downloads into temporary disk storage and copies
+    /// the stored file to `writer` in bounded 64 KiB chunks.
+    ///
+    /// **Integrity & publication contract:**
+    /// - **Cached hit:** verifies local on-disk integrity by checking SHA-256 against the
+    ///   previously committed `reference.digest` before writing any bytes to `writer`.
+    /// - **Newly fetched download:** authenticated by session/transport/range/byte-cap checks;
+    ///   local SHA-256 serves content-addressing and post-install disk consistency, **not**
+    ///   verification of the backend's opaque HMAC media ID.
+    /// - **Caller publication:** Callers exporting to a user-visible path MUST write to a private
+    ///   temporary file and atomically rename/publish only after `Ok(Generated<MediaMetadata>)`,
+    ///   because concurrent revocation or I/O failure can abort mid-stream.
+    ///
+    /// When `refresh` is `true`, previously cached bytes are written only if revalidation returns
+    /// HTTP 304; otherwise `writer` receives only the updated representation.
+    ///
+    /// # Errors
+    /// Returns lifecycle, backend/provider, size, filesystem, or rebuildable storage failures.
+    pub async fn fetch_to_writer<W: Write + Send + 'static>(
+        &self,
+        source: MediaSource,
+        refresh: bool,
+        mut writer: W,
+    ) -> Result<Generated<MediaMetadata>, MediaError> {
+        self.run(move |session, epoch| async move {
+            let store = &session.client.inner.media;
+            let _admission = Arc::clone(&store.fetches)
+                .acquire_owned()
+                .await
+                .map_err(|_| MediaError::TaskStopped)?;
+            let previous = if refresh {
+                store
+                    .verify_reference_metadata(&session, &epoch, &source, true)
+                    .await?
+            } else {
+                match store
+                    .cached_reference_to_writer(&session, &epoch, &source, true, writer)
+                    .await?
+                {
+                    CachedWrite::Hit(reference, size_bytes) => {
+                        return Ok(Generated {
+                            generation: epoch.generation,
+                            value: MediaMetadata {
+                                content_type: reference.content_type,
+                                range: reference.range,
+                                size_bytes,
+                            },
+                        });
+                    }
+                    CachedWrite::Miss(returned_writer) => {
+                        writer = returned_writer;
+                        None
+                    }
+                }
+            };
+            let response = match download_stream(&session, &epoch, &source, previous.as_ref()).await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    if denied(&error) {
+                        store
+                            .revoke_denied(&session, epoch.generation, &source)
+                            .await?;
+                    }
+                    return Err(error);
+                }
+            };
+            session.inner.epochs.validate(epoch.generation)?;
+            if response.status() == 304 {
+                return read_cached_hit(store, &session, &epoch, &source, writer).await;
+            }
+            let _pin = stage_and_grant(&session, &epoch, &source, response).await?;
+            read_cached_hit(store, &session, &epoch, &source, writer).await
+        })
+        .await
+    }
+
     /// Collects unreferenced encoded files after the 24-hour recovery grace period.
     /// # Errors
     /// Returns revoked session or filesystem/index failures.
@@ -205,4 +307,71 @@ impl super::MediaStore {
         session.inner.epochs.validate(generation)?;
         self.revoke_family(session, generation, source).await
     }
+}
+
+/// Streams an already-granted and SHA-256-verified cached representation into `writer`.
+async fn read_cached_hit<W: Write + Send + 'static>(
+    store: &super::MediaStore,
+    session: &Session,
+    epoch: &Epoch,
+    source: &MediaSource,
+    writer: W,
+) -> Result<Generated<MediaMetadata>, MediaError> {
+    match store
+        .cached_reference_to_writer(session, epoch, source, false, writer)
+        .await?
+    {
+        CachedWrite::Hit(reference, size_bytes) => {
+            session.inner.epochs.validate(epoch.generation)?;
+            Ok(Generated {
+                generation: epoch.generation,
+                value: MediaMetadata {
+                    content_type: reference.content_type,
+                    range: reference.range,
+                    size_bytes,
+                },
+            })
+        }
+        CachedWrite::Miss(_) => Err(MediaError::Unavailable),
+    }
+}
+
+/// Stages a downloaded stream off-gate, promotes it atomically under the media gate, pins the
+/// digest before dropping the gate, and commits the account reference grant.
+async fn stage_and_grant(
+    session: &Session,
+    epoch: &Epoch,
+    source: &MediaSource,
+    response: super::download::StreamedResponse,
+) -> Result<super::pins::ReadPin, MediaError> {
+    let store = &session.client.inner.media;
+    let staged = stage_response(
+        store,
+        source,
+        response,
+        session.client.inner.config.request_timeout,
+        &epoch.cancel,
+    )
+    .await?;
+    let gate = Arc::clone(&store.gate).lock_owned().await;
+    session.inner.epochs.validate(epoch.generation)?;
+    let digest = install_temp_file(store, staged.temp, staged.digest).await?;
+    let pin = store.pins.pin(digest);
+    store
+        .grant(
+            session.clone(),
+            epoch.generation,
+            source.clone(),
+            Reference {
+                digest,
+                content_type: staged.content_type,
+                etag: staged.etag,
+                modified: staged.modified,
+                range: staged.range,
+            },
+        )
+        .await?;
+    session.inner.epochs.validate(epoch.generation)?;
+    drop(gate);
+    Ok(pin)
 }

@@ -251,3 +251,43 @@ fn detached_hydration_resumes_after_four_pages_without_mutating_canonical_snapsh
     })??;
     f.finish()
 }
+
+#[test]
+fn search_target_rejects_channel_after_read_access_is_denied() -> Result {
+    let f = Fixture::new(papo_test_server::Config::default())?;
+    f.run(async {
+        let (session, channel) = setup(&f).await?;
+        f.server()
+            .set_search_results(session.account().user(), vec![row(1, channel)])
+            .await?;
+        let hit = session
+            .search(SearchQuery {
+                channel: Some(channel),
+                ..SearchQuery::default()
+            })?
+            .page(None)
+            .await?
+            .hits
+            .remove(0);
+        assert!(session.search_target(&hit).is_ok());
+
+        // Revoke read access for this user while the channel remains listed in resources.
+        f.server()
+            .set_channel_readable(
+                &session.account().user().to_string(),
+                &channel.to_string(),
+                false,
+            )
+            .await?;
+        let history = session.history(channel).await?;
+        let err = history.page(papo_sdk::HistoryQuery::default()).await;
+        assert!(err.is_err());
+
+        assert!(matches!(
+            session.search_target(&hit),
+            Err(SearchError::InvalidData)
+        ));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}

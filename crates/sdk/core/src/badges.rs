@@ -52,7 +52,7 @@ pub struct BadgesSnapshot {
 
 pub(crate) struct Badges {
     pub image: Arc<crate::observable::StateCell<Arc<BadgesSnapshot>>>,
-    started: AtomicBool,
+    pub(crate) started: AtomicBool,
 }
 impl Badges {
     pub fn new(generation: Generation) -> Self {

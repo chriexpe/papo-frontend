@@ -217,6 +217,9 @@ pub(super) fn resolve_view(
     channel: Uuid,
     snapshot: &HistorySnapshot,
 ) -> Result<Option<CatchUpView>, ReadingError> {
+    if session.is_closed() {
+        return Err(crate::ClientError::Closed.into());
+    }
     let Some(state) = session
         .inner
         .reading

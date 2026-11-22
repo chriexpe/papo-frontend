@@ -26,6 +26,8 @@ fn expected(channels: &[Channel]) -> Vector<Arc<ChannelListItem>> {
                 kind: papo_sdk::ChannelKind::Text,
                 position: channel.position,
                 topic: channel.topic.clone(),
+                parent_id: None,
+                notification_settings: None,
                 created_at: channel.created_at.clone(),
                 unread: None,
                 badges: None,

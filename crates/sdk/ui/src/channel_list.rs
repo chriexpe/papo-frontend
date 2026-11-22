@@ -29,6 +29,10 @@ pub struct ChannelListItem {
     pub position: Option<i64>,
     /// Backend topic metadata.
     pub topic: Option<String>,
+    /// Parent category channel UUID, if nested under a category.
+    pub parent_id: Option<Uuid>,
+    /// Backend notification mode override stored on this channel record.
+    pub notification_settings: Option<papo_sdk::BackendMode>,
     /// Exact backend timestamp string, without reparsing or precision loss.
     pub created_at: Option<String>,
     /// SDK read-point/coverage projection. Absent until this generation has verified read state.

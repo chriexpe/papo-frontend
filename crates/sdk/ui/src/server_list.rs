@@ -172,6 +172,18 @@ impl ServerListService {
         self.handle.reorder_servers(servers).await
     }
 
+    /// Commits the requested complete account order for one server through SDK.
+    ///
+    /// # Errors
+    /// Forwards SDK invalid-order, not-found, persistence and closed-client errors unchanged.
+    pub async fn reorder_accounts(
+        &self,
+        server: ServerId,
+        accounts: Vec<AccountId>,
+    ) -> Result<(), ClientError> {
+        self.handle.reorder_accounts(server, accounts).await
+    }
+
     /// Starts the SDK's recoverable server removal, hiding entries after commit.
     ///
     /// # Errors

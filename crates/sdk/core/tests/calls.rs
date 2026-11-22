@@ -717,3 +717,78 @@ fn missing_factory_still_watches_admitted_cold_presence_and_filters_denied_chann
     })??;
     h.finish()
 }
+
+fn block_on_non_tokio<F: std::future::Future>(future: F) -> F::Output {
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct ThreadWaker(std::thread::Thread);
+    impl Wake for ThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    assert!(tokio::runtime::Handle::try_current().is_err());
+    let waker = Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => std::thread::park(),
+        }
+    }
+}
+
+#[test]
+fn switch_call_polls_cleanly_from_non_tokio_thread_including_drain_timeout() -> Result {
+    let media = FakeMediaFactory::new();
+    let h = CallHarness::open(Some(media.clone()), CallConfig::default())?;
+    let (s2_account, ch, lease1) = h.run(async {
+        let client = h.client().handle();
+        let server_id = client
+            .add_server(&h.server().base_url(), UnixMicros(0))
+            .await?
+            .id;
+        let auth = client.auth(server_id)?;
+        register(&auth, "ext-one").await?;
+        let s1 = login(&auth, "ext-one").await?;
+        online(&s1).await?;
+
+        register(&auth, "ext-two").await?;
+        let s2 = login(&auth, "ext-two").await?;
+        online(&s2).await?;
+
+        let ch: Uuid = h
+            .server()
+            .create_voice_channel("external-switch")
+            .await?
+            .id
+            .ok_or("ch")?
+            .parse()?;
+        wait_for_channel(&s1, ch).await?;
+        wait_for_channel(&s2, ch).await?;
+
+        let call1 = s1.calls().join(ch)?;
+        wait_phase(&call1, |p| p == CallPhase::Joined).await?;
+        let lease1 = media.latest_lease().ok_or("lease1")?;
+        lease1.set_auto_drain(false);
+        Ok::<_, Box<dyn std::error::Error>>((s2.account(), ch, lease1))
+    })??;
+
+    let switch_client = h.client().handle();
+    let external =
+        std::thread::spawn(move || block_on_non_tokio(switch_client.switch_call(s2_account, ch)));
+    while !lease1.is_stopped() {
+        std::thread::yield_now();
+    }
+    lease1.emit(MediaReportKind::Drained);
+    let call2 = external
+        .join()
+        .map_err(|_| "non-tokio switch_call thread panicked")??;
+    assert_eq!(call2.account(), s2_account);
+    call2.leave();
+    h.finish()
+}

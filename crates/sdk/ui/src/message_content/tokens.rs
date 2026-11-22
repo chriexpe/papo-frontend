@@ -266,7 +266,7 @@ fn flush_plain(text: &str, range: std::ops::Range<usize>, style: TextStyle, out:
     }
 }
 
-fn match_custom_emoji_at<'a>(
+pub(crate) fn match_custom_emoji_at<'a>(
     text: &str,
     start: usize,
     catalog: &'a [CustomEmojiRef],

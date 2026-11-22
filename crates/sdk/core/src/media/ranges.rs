@@ -14,6 +14,124 @@ pub struct MediaRange {
     pub total_bytes: Option<u64>,
 }
 
+/// Validated byte-range expectation computed from response status/headers before reading the body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StreamRange {
+    Full,
+    Slice { start_bytes: u64, end_bytes: u64 },
+    Exact206(MediaRange),
+}
+
+pub(super) fn stream_plan(
+    source: &MediaSource,
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+) -> Result<StreamRange, MediaError> {
+    let MediaSource::Range {
+        source: inner,
+        start_bytes,
+        end_bytes,
+    } = source
+    else {
+        if status != 200 || headers.contains_key(reqwest::header::CONTENT_RANGE) {
+            return Err(MediaError::InvalidData);
+        }
+        return Ok(StreamRange::Full);
+    };
+    if start_bytes > end_bytes
+        || !matches!(
+            inner.as_ref(),
+            MediaSource::Blob(_) | MediaSource::Attachment(_) | MediaSource::EmbedVideo(_)
+        )
+    {
+        return Err(MediaError::InvalidData);
+    }
+    if status == 200 {
+        if headers.contains_key(reqwest::header::CONTENT_RANGE) {
+            return Err(MediaError::InvalidData);
+        }
+        return Ok(StreamRange::Slice {
+            start_bytes: *start_bytes,
+            end_bytes: *end_bytes,
+        });
+    }
+    if status != 206 {
+        return Err(MediaError::InvalidData);
+    }
+    let header = headers
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|h| h.to_str().ok())
+        .ok_or(MediaError::InvalidData)?;
+    let (span, total) = header
+        .strip_prefix("bytes ")
+        .and_then(|h| h.split_once('/'))
+        .ok_or(MediaError::InvalidData)?;
+    let (start, end) = span.split_once('-').ok_or(MediaError::InvalidData)?;
+    let parse = |text: &str| text.parse::<u64>().map_err(|_| MediaError::InvalidData);
+    let start = parse(start)?;
+    let end = parse(end)?;
+    let total = if total == "*" {
+        None
+    } else {
+        Some(parse(total)?)
+    };
+    if start != *start_bytes
+        || end < start
+        || end > *end_bytes
+        || total.is_some_and(|total| end >= total)
+        || (end < *end_bytes && total != end.checked_add(1))
+    {
+        return Err(MediaError::InvalidData);
+    }
+    Ok(StreamRange::Exact206(MediaRange {
+        start_bytes: start,
+        end_bytes: end,
+        total_bytes: total,
+    }))
+}
+
+pub(super) fn finalize_stream_range(
+    plan: StreamRange,
+    received_total: u64,
+    written: u64,
+) -> Result<Option<MediaRange>, MediaError> {
+    match plan {
+        StreamRange::Full => Ok(None),
+        StreamRange::Slice {
+            start_bytes,
+            end_bytes,
+        } => {
+            if start_bytes >= received_total {
+                return Err(MediaError::InvalidData);
+            }
+            let last = end_bytes.min(received_total - 1);
+            let expected = last
+                .checked_sub(start_bytes)
+                .and_then(|n| n.checked_add(1))
+                .ok_or(MediaError::InvalidData)?;
+            if written != expected {
+                return Err(MediaError::InvalidData);
+            }
+            Ok(Some(MediaRange {
+                start_bytes,
+                end_bytes: last,
+                total_bytes: Some(received_total),
+            }))
+        }
+        StreamRange::Exact206(range) => {
+            let expected = range
+                .end_bytes
+                .checked_sub(range.start_bytes)
+                .and_then(|n| n.checked_add(1))
+                .ok_or(MediaError::InvalidData)?;
+            if written != expected {
+                return Err(MediaError::InvalidData);
+            }
+            Ok(Some(range))
+        }
+    }
+}
+
 pub(super) fn normalize(
     source: &MediaSource,
     response: &mut papo_api::media::MediaResponse,

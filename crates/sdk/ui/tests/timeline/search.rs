@@ -53,3 +53,44 @@ fn search_surface_cancels_old_query_and_invalidates_idle_pages_on_reconnect_and_
     })??;
     fixture.finish()
 }
+
+#[test]
+fn search_service_parse_local_matches_and_hydrate_avoid_raw_snapshot_access() -> Result {
+    let fixture = Fixture::new(15, vec![])?;
+    fixture.run(async {
+        let session = fixture.signed_in("search-helpers").await?;
+        let service = SearchService::new(session.clone());
+        let matches = service.local_matches("history");
+        assert!(matches.channels.contains(&channel()));
+        let user_matches = service.local_matches("search-helpers");
+        assert!(user_matches.users.contains(&session.account().user()));
+        let parsed = service.parse_query("from:search-helpers hello")?;
+        assert_eq!(parsed.text.as_deref(), Some("hello"));
+        assert_eq!(parsed.author, Some(session.account().user()));
+
+        let target_id = fixture.messages[5].id.clone().unwrap();
+        let row = serde_json::json!({
+            "type": "message",
+            "id": target_id,
+            "channel_id": channel().to_string(),
+            "created_at": fixture.messages[5].created_at.clone().unwrap()
+        });
+        fixture
+            .server()
+            .set_search_results(session.account().user(), vec![serde_json::from_value(row)?])
+            .await?;
+        let page = service.search(parsed).await?;
+        let hydration = service.hydrate(&page.hits[0])?;
+        assert!(matches!(
+            hydration.next_batch().await?,
+            papo_sdk::DetachedMessageUpdate::Ready(msg)
+                if msg.id.as_deref() == fixture.messages[5].id.as_deref()
+        ));
+        assert!(matches!(
+            hydration.next_batch().await?,
+            papo_sdk::DetachedMessageUpdate::Unavailable
+        ));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}

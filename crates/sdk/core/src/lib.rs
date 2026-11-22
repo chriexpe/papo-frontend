@@ -45,7 +45,8 @@ pub use expressions::{
 pub use expressions::{ExpressionFault, ExpressionUpdate};
 mod media;
 pub use media::{
-    EmojiMetadata, EmojiPage, MediaData, MediaError, MediaRange, MediaService, MediaSource,
+    EmojiMetadata, EmojiPage, MediaData, MediaError, MediaMetadata, MediaRange, MediaService,
+    MediaSource,
 };
 mod history;
 pub use history::{
@@ -96,10 +97,18 @@ mod resource_commit;
 pub use resource_admission::{AdmissionDiagnostics, AdmissionFault, DroppedRow, ResourceRejection};
 mod resources;
 pub use account_cache::{AccountCache, AccountCaches, CacheError, CacheResource};
+pub use papo_api::media::MediaError as MediaTransportError;
 pub use papo_api::wire::{
-    Channel, DirectConversation, ExternalAuthor, LoginRequest, LoginServerRequest, RegisterRequest,
-    Role, RoleSummary, UserProfile, UserSummary,
+    Attachment, ChangePasswordRequest, Channel, ChannelPermissionEntry, ChannelPermissions,
+    ConnectedDevicesResponse, Connection, DirectConversation, DropConnectionRequest,
+    DropConnectionResponse, Embed, EmbedAuthor, EmbedField, EmbedFooter, EmbedInputAuthor,
+    EmbedInputFieldsItem, EmbedInputFooter, EmbedMedia, ExternalAuthor, GenericResponse,
+    LoginRequest, LoginServerRequest, MessageReactionSummary, MessageReactionUser,
+    MessageUserReaction, Notification, Notifications, PasswordResetConsumeRequest, Problem,
+    RegisterRequest, RegisterResponse, Role, RolePermissions, RoleSummary, SearchResult, Server,
+    UserConfig, UserProfile, UserSummary,
 };
+pub use papo_api::{Error as ApiError, NullableText, ProblemKind, gateway::Error as GatewayError};
 pub use read_points::ServerReadPoint;
 pub use resources::{
     BackendMode, ChannelKind, ChannelRecord, DirectRecord, EntityTable, MessageHead, Overwrite,
@@ -162,7 +171,7 @@ pub use account::AccountId;
 pub use data_root::DataRoot;
 pub use registry::Registry;
 pub use registry_record::{SavedAccount, SavedServer, UnixMicros};
-pub use server::{ServerAddress, ServerAddressError, ServerId};
+pub use server::{ServerAddress, ServerAddressError, ServerId, ServerIdParseError};
 pub use storage_error::StorageError;
 
 #[cfg(feature = "test-support")]

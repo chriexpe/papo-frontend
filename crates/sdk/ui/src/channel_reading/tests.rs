@@ -12,6 +12,8 @@ fn channel(id: u128) -> Arc<ChannelListItem> {
         kind: papo_sdk::ChannelKind::Text,
         position: None,
         topic: None,
+        parent_id: None,
+        notification_settings: None,
         created_at: None,
         unread: None,
         badges: None,

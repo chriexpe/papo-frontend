@@ -36,6 +36,8 @@ fn project(snapshot: &ResourceSnapshot, id: Uuid) -> ChannelListItem {
         kind: channel.kind,
         position: channel.position,
         topic: channel.topic.clone(),
+        parent_id: channel.parent_id,
+        notification_settings: channel.notification_settings.clone(),
         created_at: channel.created_at.clone(),
         unread: None,
         badges: None,

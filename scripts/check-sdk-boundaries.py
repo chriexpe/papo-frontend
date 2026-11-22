@@ -17,7 +17,7 @@ SDK_EDGES = {
     "papo-api": set(),
     "papo-sdk": {"papo-api"},
     "papo-sdk-ui": {"papo-sdk"},
-    "papo-ffi": {"papo-sdk-ui"},
+    "papo-ffi": {"papo-sdk-ui", "papo-sdk"},
     "papo-test-server": {"papo-api"},
 }
 PRODUCTION = {"papo-api", "papo-sdk", "papo-sdk-ui", "papo-ffi"}
