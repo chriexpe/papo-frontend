@@ -71,6 +71,8 @@ pub(crate) struct Shell {
     today: i64,
     /// When, on the window's clock, the day is checked again.
     day_ends_s: Option<f64>,
+    /// Links waiting to open, trusted domains, the message under the pointer.
+    reading: content::Reading,
 }
 
 /// The reorder on its way to the SDK, and the newest one waiting for it.
@@ -122,6 +124,7 @@ impl Default for Shell {
             save_wake_s: None,
             today: LocalTime::system().today(),
             day_ends_s: None,
+            reading: content::Reading::default(),
         }
     }
 }
@@ -140,9 +143,11 @@ impl BridgeHost for Shell {
 }
 
 impl Shell {
-    /// Gives the shell the window's image decoder (`AppSpec::setup`).
-    pub(crate) fn set_image_cache(&mut self, images: ImageCache) {
-        self.images = Some(images);
+    /// The window starts (`AppSpec::setup`): the shell takes its image
+    /// decoder and reads this device's trusted domains.
+    pub(crate) fn setup(&mut self, waker: rune::Waker) {
+        self.images = Some(ImageCache::new(waker));
+        self.reading.load();
     }
 
     /// Takes the account watch's summary, and opens the screens it calls for.
@@ -384,10 +389,12 @@ impl Shell {
 }
 
 mod accounts;
+mod content;
 mod navigate;
 #[cfg(test)]
 mod tests;
 mod timeline;
+mod timeline_host;
 mod view;
 
 pub(crate) use view::view;

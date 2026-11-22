@@ -6,7 +6,6 @@
 //! `OpenTimeline`'s. Every post and answer names the timeline and the
 //! opening it belongs to, and is dropped when that opening is gone.
 
-use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +17,7 @@ use rune::Tx;
 use super::Shell;
 use crate::tabs::{Opening, Showing};
 use crate::timeline::watch::{Posted, Watch};
-use crate::timeline::{OpenTimeline, Request, TimelineHost, TimelineKey, scroll_to};
+use crate::timeline::{OpenTimeline, Request, TimelineKey, scroll_to};
 
 /// How long the reader's place must rest before it is saved, in seconds.
 /// Hiding the timeline or closing the window saves it at once.
@@ -150,7 +149,7 @@ impl Shell {
     }
 
     /// Sends timeline `key`'s history requests, on its current window.
-    fn send_requests(&self, key: TimelineKey, requests: Vec<Request>) {
+    pub(super) fn send_requests(&self, key: TimelineKey, requests: Vec<Request>) {
         if requests.is_empty() {
             return;
         }
@@ -238,8 +237,9 @@ impl Shell {
     }
 
     /// The window's poll: returns a timeline shown again to its place,
-    /// saves the reader's place once it has rested, and names the new day
-    /// once one starts. Returns whether the view changed.
+    /// saves the reader's place once it has rested, ends a code block's
+    /// "Copied", and names the new day once one starts. Returns whether the
+    /// view changed.
     pub(crate) fn poll(&mut self, clock_s: f64, tx: &mut Tx) -> bool {
         let restored = self.restore_shown(tx);
         if self.save_wake_s.is_some_and(|wake_s| wake_s <= clock_s) {
@@ -257,8 +257,9 @@ impl Shell {
                 None => {}
             }
         }
+        let copied_ended = self.end_copied(clock_s);
         let new_day = self.follow_the_day(clock_s, tx);
-        restored || new_day
+        restored || copied_ended || new_day
     }
 
     /// Keeps `today` current: checks once the local day should have ended,
@@ -285,7 +286,7 @@ impl Shell {
     /// [`SAVE_AFTER_S`]. Each move pushes the due time on; one wake is
     /// outstanding at a time, and one that arrives early asks for the
     /// rest.
-    fn place_moved(&mut self, tx: &mut Tx) {
+    pub(super) fn place_moved(&mut self, tx: &mut Tx) {
         let due_s = tx.clock() + SAVE_AFTER_S;
         self.save_due_s = Some(due_s);
         if self.save_wake_s.is_none() {
@@ -294,62 +295,8 @@ impl Shell {
         }
     }
 
-    fn shown_timeline_mut(&mut self, key: TimelineKey) -> Option<&mut OpenTimeline> {
+    pub(super) fn shown_timeline_mut(&mut self, key: TimelineKey) -> Option<&mut OpenTimeline> {
         self.tabs.shown_mut().filter(|open| open.key == key)
-    }
-}
-
-impl TimelineHost for Shell {
-    fn timeline(&self) -> Option<&OpenTimeline> {
-        self.tabs.shown()
-    }
-
-    fn rows_visible(&mut self, key: TimelineKey, range: Range<usize>) -> bool {
-        let Some(open) = self.shown_timeline_mut(key) else {
-            return false;
-        };
-        let requests = open.rows_visible(range);
-        let filling = requests
-            .iter()
-            .any(|request| matches!(request, Request::FillGap(_)));
-        self.send_requests(key, requests);
-        filling
-    }
-
-    fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, _tx: &mut Tx) {
-        if let Some(open) = self.shown_timeline_mut(key) {
-            open.tracker.viewport_moved(top_pt);
-        }
-    }
-
-    fn row_moved(
-        &mut self,
-        key: TimelineKey,
-        id: Uuid,
-        [top_pt, bottom_pt]: [f32; 2],
-        tx: &mut Tx,
-    ) {
-        if let Some(open) = self.shown_timeline_mut(key) {
-            open.tracker.row_moved(id, top_pt, bottom_pt);
-            self.place_moved(tx);
-        }
-    }
-
-    fn bottom_shown(&mut self, key: TimelineKey, at_bottom: bool) -> bool {
-        if let Some(open) = self.shown_timeline_mut(key) {
-            open.tracker.bottom_shown(at_bottom);
-        }
-        false
-    }
-
-    fn retry_gap(&mut self, key: TimelineKey, cursor_id: &str) {
-        let Some(open) = self.shown_timeline_mut(key) else {
-            return;
-        };
-        if let Some(gap) = open.retry_gap(cursor_id) {
-            self.send_requests(key, vec![Request::FillGap(gap)]);
-        }
-        // Otherwise another fill runs; this one is due once it answers.
     }
 }
 

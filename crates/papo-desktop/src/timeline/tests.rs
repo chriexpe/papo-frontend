@@ -14,6 +14,7 @@ use papo_sdk_ui::message_content::MessageContent;
 use papo_sdk_ui::{TimelineItem, UtcOffset};
 use rune::{Cx, El, ElementInfo, Env, Runtime, Tx, col};
 
+use super::content::Press;
 use super::local_time::LocalTime;
 use super::rows::message_key;
 use super::{OpenTimeline, Request, Style, TimelineHost, TimelineKey, view};
@@ -43,6 +44,8 @@ struct Host {
     layout: MessageLayout,
     /// History requests the visible rows asked for.
     requests: Vec<Request>,
+    /// Presses inside message content, in order.
+    presses: Vec<(Uuid, Press)>,
 }
 
 impl TimelineHost for Host {
@@ -70,6 +73,19 @@ impl TimelineHost for Host {
     }
 
     fn retry_gap(&mut self, _key: TimelineKey, _cursor_id: &str) {}
+
+    fn content_pressed(&mut self, _key: TimelineKey, message: Uuid, press: Press, _tx: &mut Tx) {
+        if let Press::Spoiler(index) = press {
+            self.open.reveal(message, index);
+        }
+        self.presses.push((message, press));
+    }
+
+    fn code_copied(&mut self, _key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx) {
+        self.open.code_copied(message, index, tx.clock() + 1.5);
+    }
+
+    fn message_hovered(&mut self, _key: TimelineKey, _message: Uuid, _hovered: bool) {}
 }
 
 fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
@@ -121,12 +137,13 @@ fn runtime(items: Vector<Arc<TimelineItem>>, layout: MessageLayout) -> Runtime<H
         open: OpenTimeline::loaded(key(), items),
         layout,
         requests: Vec::new(),
+        presses: Vec::new(),
     };
     let env = Env {
         system_dark: true,
         scale: 1.0,
     };
-    let mut rt = Runtime::new(host, host_view, SIZE_PT, env);
+    let mut rt = Runtime::with_text(host, host_view, SIZE_PT, env, crate::fonts::text_system());
     rt.frame(0.0);
     until_idle(&mut rt);
     rt
@@ -185,5 +202,6 @@ fn assert_near(actual: f32, expected: f32, what: &str) {
     );
 }
 
+mod content;
 mod reading;
 mod spacing;

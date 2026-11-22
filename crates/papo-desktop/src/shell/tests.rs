@@ -25,7 +25,7 @@ fn runtime_with(accounts: Accounts) -> Runtime<Shell> {
         system_dark: true,
         scale: 1.0,
     };
-    let mut rt = Runtime::new(shell, view, SIZE_PT, env);
+    let mut rt = Runtime::with_text(shell, view, SIZE_PT, env, crate::fonts::text_system());
     rt.frame(0.0);
     rt
 }
@@ -181,7 +181,13 @@ fn nothing_shows_before_the_sdk_says_which_accounts_are_saved() {
         system_dark: false,
         scale: 1.0,
     };
-    let mut rt = Runtime::new(Shell::default(), view, SIZE_PT, env);
+    let mut rt = Runtime::with_text(
+        Shell::default(),
+        view,
+        SIZE_PT,
+        env,
+        crate::fonts::text_system(),
+    );
     rt.frame(0.0);
     assert!(rt.find(COMPOSER_KEY).is_none());
     assert!(rt.find("sign-in").is_none());

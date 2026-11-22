@@ -4,21 +4,27 @@
 //! the between-group or within-group spacing; the row's own padding is the
 //! same either way, so every message is its own row with its own identity.
 //!
-//! Bodies are plain text here; rich content is D3b's. The author's name
-//! comes from the account's members, a bridged author's from the message.
+//! The body is `content`'s. A message that mentions the reader (or
+//! everyone) has the mention background and the amber bar on its left. The
+//! author's name comes from the account's members, a bridged author's from
+//! the message.
 
-use papo_sdk::{Message, MessageKey, ResourceSnapshot, Uuid};
+use papo_sdk::mentions::{contains_everyone_mention, contains_user_mention};
+use papo_sdk::{Message, MessageKey, ResourceSnapshot, Uuid, parse_message_timestamp_us};
 use papo_sdk_ui::TimelineItem;
+use papo_sdk_ui::message_content::MessageContent;
 use rune::{El, col, el, memo, row, text};
 
 use super::OpenTimeline;
+use super::content::{self, Context, Doc, Draw, Edited, mention_names};
 use super::grouping::continues;
+use super::local_time::LocalTime;
 use super::rows::{MESSAGE_PART, message_key};
 use super::view::{Style, TimelineHost};
 use crate::design::{
-    Density, Lead, MESSAGE_BLOCK_GAP_PT, MESSAGE_HEADER_GAP_PT, MESSAGE_NAME_GAP_PT,
-    MESSAGE_ROW_INSET_PT, Palette, RADIUS_AVATAR_PT, TYPE_BODY, TYPE_BODY_STRONG, TYPE_CAPTION,
-    TYPE_CAPTION_MEDIUM,
+    Density, Lead, MENTION_BAR_PT, MENTION_ROW_RADIUS_PT, MESSAGE_BLOCK_GAP_PT,
+    MESSAGE_HEADER_GAP_PT, MESSAGE_NAME_GAP_PT, MESSAGE_ROW_INSET_PT, Palette, RADIUS_AVATAR_PT,
+    TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
 };
 use crate::rail::initial;
 use crate::strings;
@@ -28,11 +34,19 @@ use crate::strings;
 struct Parts<'a> {
     name: String,
     time: String,
+    /// The message's source, which its content is parsed from: the content
+    /// changes with it.
     body: &'a str,
+    /// The names its mentions show.
+    mentions: Vec<Option<String>>,
     /// It continues the group above: no header, the within-group distance.
     continued: bool,
     /// Extra compact shows the time once per minute.
     show_time: bool,
+    /// It mentions the reader or everyone.
+    mentions_me: bool,
+    /// When it was edited, as the wire says it.
+    edited_at: Option<&'a str>,
 }
 
 /// Message `id`'s row. It reports where its top is, for the anchor.
@@ -40,6 +54,7 @@ pub(super) fn message_row<S: TimelineHost>(
     open: &OpenTimeline,
     id: Uuid,
     message: &Message,
+    content: &MessageContent,
     previous: Option<&TimelineItem>,
     style: &Style,
 ) -> El {
@@ -59,25 +74,73 @@ pub(super) fn message_row<S: TimelineHost>(
         name: author_name(message, open.resources.as_deref()),
         time: at_us.map_or_else(String::new, |at_us| style.time.time_label(at_us)),
         body: message.content.as_deref().unwrap_or_default(),
+        mentions: mention_names(content, open.resources.as_deref()),
         continued,
         show_time,
+        mentions_me: mentions(message, open.key.account.user()),
+        edited_at: message.edited_at.as_deref(),
     };
     let key = open.key;
-    let version = (style.theme, layout, &parts, &message.edited_at);
+    let revealed = open.revealed(id);
+    let copied = open.copied(id);
+    // The key too: two accounts on one server can show the same message,
+    // and the row's handlers name their timeline.
+    let version = (key, style.theme, layout, &parts, revealed, copied);
     memo(message_key(id), version, || {
-        build(&parts, style, |message| {
-            message.on_layout_tx(move |host: &mut S, rect, tx| {
-                host.row_moved(key, id, [rect[1], rect[1] + rect[3]], tx);
-                tx.live_only();
-            })
+        let doc = Doc::new(
+            content,
+            &Context {
+                resources: open.resources.as_deref(),
+                revealed,
+                jumbo: layout.density != Density::ExtraCompact,
+            },
+        );
+        let draw = Draw {
+            palette: &style.palette,
+            key,
+            message: id,
+            copied,
+            edited: parts.edited_at.map(|at| Edited {
+                hint: edited_hint(at, &style.time),
+            }),
+        };
+        let body = content::body::<S>(&doc, &draw);
+        build(&parts, body, style, |message| {
+            message
+                .on_layout_tx(move |host: &mut S, rect, tx| {
+                    host.row_moved(key, id, [rect[1], rect[1] + rect[3]], tx);
+                    tx.live_only();
+                })
+                // Ctrl+A selects the message under the pointer.
+                .on_hover_change(move |host: &mut S, hovered, tx| {
+                    host.message_hovered(key, id, hovered);
+                    tx.live_only();
+                })
         })
     })
+}
+
+/// The "(edited)" marker's hint: when, or nothing to add when the time
+/// does not read.
+fn edited_hint(edited_at: &str, time: &LocalTime) -> Option<String> {
+    parse_message_timestamp_us(edited_at)
+        .ok()
+        .map(|at_us| time.edited_label(at_us))
+}
+
+/// Whether `message` mentions `me` or everyone, as the server's
+/// notifications decide it.
+fn mentions(message: &Message, me: Uuid) -> bool {
+    let Some(body) = message.content.as_deref() else {
+        return false;
+    };
+    contains_user_mention(body, me) || contains_everyone_mention(body)
 }
 
 /// The row: the distance above it, then the message itself, which
 /// `report` makes report its top. The message's top, not the row's, is the
 /// anchor, so a change of the distance above leaves the text in place.
-fn build(parts: &Parts<'_>, style: &Style, report: impl FnOnce(El) -> El) -> El {
+fn build(parts: &Parts<'_>, body: El, style: &Style, report: impl FnOnce(El) -> El) -> El {
     let palette = style.palette;
     let spacing = style.layout.density.spacing();
     let above_pt = if parts.continued {
@@ -97,12 +160,6 @@ fn build(parts: &Parts<'_>, style: &Style, report: impl FnOnce(El) -> El) -> El 
             .font(TYPE_CAPTION)
             .color(palette.text_muted)
     };
-    let body = text(parts.body.to_owned())
-        .key("body")
-        .font(TYPE_BODY)
-        .color(palette.text_primary)
-        .wrap()
-        .w_full();
     let (lead, content) = match spacing.lead {
         Lead::Avatar(size_pt) => {
             let lead = if parts.continued {
@@ -151,7 +208,7 @@ fn build(parts: &Parts<'_>, style: &Style, report: impl FnOnce(El) -> El) -> El 
             (lead, content)
         }
     };
-    let message = row()
+    let mut message = row()
         .key(MESSAGE_PART)
         .w_full()
         .px(MESSAGE_ROW_INSET_PT)
@@ -160,6 +217,12 @@ fn build(parts: &Parts<'_>, style: &Style, report: impl FnOnce(El) -> El) -> El 
         .items_start()
         .child(lead)
         .child(content.key("content").grow(1.0).min_w(0.0));
+    if parts.mentions_me {
+        message = message
+            .radius(MENTION_ROW_RADIUS_PT)
+            .fill(palette.mention_row)
+            .border_sides([0.0, 0.0, 0.0, MENTION_BAR_PT], palette.mention_bar);
+    }
     col().w_full().pt(above_pt).child(report(message))
 }
 
@@ -180,7 +243,7 @@ fn avatar(name: &str, size_pt: f32, palette: &Palette) -> El {
 
 /// The author's name: a member's nickname or username, a bridged author's
 /// name, else "Someone".
-fn author_name(message: &Message, resources: Option<&ResourceSnapshot>) -> String {
+pub(super) fn author_name(message: &Message, resources: Option<&ResourceSnapshot>) -> String {
     if let Some(external) = &message.external_author {
         return external
             .name
@@ -199,7 +262,7 @@ fn author_name(message: &Message, resources: Option<&ResourceSnapshot>) -> Strin
 }
 
 /// When the message was created, in Unix microseconds.
-fn created_us(message: &Message) -> Option<i64> {
+pub(super) fn created_us(message: &Message) -> Option<i64> {
     MessageKey::from_message(message)
         .ok()
         .map(|key| key.created_at_us)

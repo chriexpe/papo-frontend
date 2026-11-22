@@ -10,6 +10,7 @@
 //! timelines stay open is `tabs`'.
 
 pub(crate) mod anchor;
+pub(crate) mod content;
 mod grouping;
 pub(crate) mod local_time;
 mod message_row;
@@ -76,8 +77,14 @@ pub(crate) struct OpenTimeline {
     /// Changes whenever a row's key may have changed at an index: Rune's
     /// `virtual_rows_version`.
     pub(crate) keys_version: u64,
-    /// The account's resources, for author names.
+    /// The account's resources, for author and mention names.
     pub(crate) resources: Option<Arc<ResourceSnapshot>>,
+    /// The spoilers revealed in each message: they stay revealed while the
+    /// timeline is open.
+    pub(crate) revealed: imbl::HashMap<Uuid, Vec<u32>>,
+    /// The code block whose Copy reads "Copied", until when (seconds on
+    /// the window's clock).
+    copied: Option<Copied>,
     older: Paging,
     newer: Paging,
     /// The gap being filled; one at a time, as the SDK pages one per
@@ -118,6 +125,8 @@ impl OpenTimeline {
             version: 0,
             keys_version: 0,
             resources: None,
+            revealed: imbl::HashMap::new(),
+            copied: None,
             older: Paging::Idle,
             newer: Paging::Idle,
             filling: None,
@@ -254,6 +263,50 @@ impl OpenTimeline {
         self.version = update.version;
     }
 
+    /// The spoilers revealed in message `id`.
+    pub(crate) fn revealed(&self, id: Uuid) -> &[u32] {
+        self.revealed.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Reveals spoiler `index` of message `id`. Returns whether it was
+    /// hidden.
+    pub(crate) fn reveal(&mut self, id: Uuid, index: u32) -> bool {
+        let revealed = self.revealed.entry(id).or_default();
+        if revealed.contains(&index) {
+            return false;
+        }
+        revealed.push(index);
+        true
+    }
+
+    /// The code block of message `id`, by its text's index, whose Copy
+    /// reads "Copied".
+    pub(crate) fn copied(&self, id: Uuid) -> Option<usize> {
+        self.copied
+            .filter(|copied| copied.message == id)
+            .map(|copied| copied.index)
+    }
+
+    /// Code block `index` of message `id` was copied: its Copy reads
+    /// "Copied" until `until_s`.
+    pub(crate) fn code_copied(&mut self, id: Uuid, index: usize, until_s: f64) {
+        self.copied = Some(Copied {
+            message: id,
+            index,
+            until_s,
+        });
+    }
+
+    /// Ends a "Copied" whose time is up at `now_s`. Returns whether one
+    /// ended.
+    pub(crate) fn end_copied(&mut self, now_s: f64) -> bool {
+        if self.copied.is_some_and(|copied| copied.until_s <= now_s) {
+            self.copied = None;
+            return true;
+        }
+        false
+    }
+
     pub(crate) fn handle(&self) -> Option<&Timeline> {
         self.handle.as_ref()
     }
@@ -296,6 +349,15 @@ impl OpenTimeline {
         self.tracker.bottom_shown(false);
         Some(anchor)
     }
+}
+
+/// A code block whose Copy reads "Copied".
+#[derive(Clone, Copy, Debug)]
+struct Copied {
+    message: Uuid,
+    /// The block's text's index in its message.
+    index: usize,
+    until_s: f64,
 }
 
 /// Whether applying `diff` to `items` can change the key at an index while

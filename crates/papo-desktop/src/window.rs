@@ -3,7 +3,7 @@
 use rune::AppSpec;
 
 use crate::shell::{self, Shell};
-use crate::strings;
+use crate::{fonts, strings};
 
 /// The application id the desktop sees (Wayland `app_id`, X11 `WM_CLASS`).
 /// It names the `.desktop` file, the icon and the Flatpak.
@@ -19,8 +19,11 @@ const MIN_SIZE_PT: (f32, f32) = (360.0, 400.0);
 pub(crate) fn spec() -> AppSpec<Shell> {
     AppSpec {
         min_size: Some(MIN_SIZE_PT),
-        setup: Some(|shell, waker| shell.set_image_cache(rune::ImageCache::new(waker))),
+        setup: Some(Shell::setup),
         poll: Some(Shell::poll),
+        on_key: Some(Shell::on_key),
+        fonts: fonts::FONTS,
+        families: fonts::FAMILIES,
         ..AppSpec::new(
             strings::window_title(),
             INITIAL_SIZE_PT,
