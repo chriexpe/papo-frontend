@@ -54,9 +54,11 @@ pub(crate) fn field_style(source: &str, preview: &[PreviewSpan], palette: &Palet
                     .bg(palette.surface_code, SPOILER_PAD_PT),
             ),
             PreviewSpanKind::CodeBlock => style.spans.push(content_span(&content).mono()),
+            // Code's chip: the pill's own surface is too close to the
+            // hover tone a sent spoiler shows (Christian, 2026-11-22).
             PreviewSpanKind::Spoiler => style
                 .spans
-                .push(content_span(&content).bg(palette.surface_hover, SPOILER_PAD_PT)),
+                .push(content_span(&content).bg(palette.surface_code, SPOILER_PAD_PT)),
             PreviewSpanKind::Link => style.spans.push(
                 content_span(&content)
                     .color(palette.link)
