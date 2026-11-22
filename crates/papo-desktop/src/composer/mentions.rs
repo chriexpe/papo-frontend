@@ -4,23 +4,18 @@
 //! form (`encode_composer_mentions`); a restored draft's wire form becomes
 //! pills again (`decode_composer_mentions`, run where the names are).
 //!
-//! Also the @ query at the caret and the people it finds, from the
-//! account's roster (`docs/design.md` §3, "Composer surfaces"). Pure.
+//! Also the @ query at the field's caret, found by the SDK's
+//! `mention_query` among the field's pills, and picking one of the SDK's
+//! ranked `mention_suggestions` (`docs/design.md` §3, "Composer surfaces").
 
 use std::ops::Range;
 
-use papo_sdk::{ResourceSnapshot, Uuid};
+use papo_sdk::{MentionTarget, Uuid};
 use papo_sdk_ui::message_content::{
     ComposerMentionBinding, DecodedComposerMentions, encode_composer_mentions, utf8_range_to_utf16,
 };
+use papo_sdk_ui::{MentionQuery, MentionSuggestion, mention_query};
 use rune::TextEdit;
-
-/// The most people the picker lists; a longer query narrows it.
-const MAX_CANDIDATES: usize = 50;
-
-/// The longest name a query matches, in characters: past it, the `@` is
-/// just text.
-const MAX_QUERY_CHARS: usize = 32;
 
 /// The text that mentions everyone.
 const EVERYONE: &str = "@everyone";
@@ -86,131 +81,31 @@ fn pill(edit: &mut TextEdit, bindings: Vec<ComposerMentionBinding>) {
     }
 }
 
-/// What a person is called: the nickname, else the username; an empty one
-/// counts as none.
-pub(crate) fn display_name<'a>(
-    nickname: Option<&'a str>,
-    username: Option<&'a str>,
-) -> Option<&'a str> {
-    nickname
-        .filter(|name| !name.is_empty())
-        .or(username.filter(|name| !name.is_empty()))
-}
-
-/// An `@` being typed: the range from the `@` to the caret, and what
-/// follows the `@`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Query {
-    pub(crate) range: Range<usize>,
-    pub(crate) text: String,
-}
-
-/// The @ query the caret ends, if any: an `@` at the start of a word, with
-/// no space between it and the caret, outside any mention already made.
-pub(crate) fn query(edit: &TextEdit) -> Option<Query> {
+/// The @ query the field's caret ends, if any: a collapsed caret, outside
+/// every mention already made.
+pub(crate) fn query(edit: &TextEdit) -> Option<MentionQuery> {
     let (start, caret) = edit.range();
     if start != caret {
         return None;
     }
-    let before = edit.text.get(..caret)?;
-    let at = before.rfind('@')?;
-    let typed = &before[at + 1..];
-    if typed.chars().any(char::is_whitespace) || typed.chars().count() > MAX_QUERY_CHARS {
-        return None;
-    }
-    // "ana@example.org" is an address, not a mention.
-    if before[..at]
-        .chars()
-        .next_back()
-        .is_some_and(char::is_alphanumeric)
-    {
-        return None;
-    }
-    if edit.pills().any(|(range, _)| range.contains(&at)) {
-        return None;
-    }
-    Some(Query {
-        range: at..caret,
-        text: typed.to_owned(),
-    })
-}
-
-/// Who a picked row mentions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Target {
-    Everyone,
-    User(Uuid),
-}
-
-/// One row of the picker.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Candidate {
-    pub(crate) target: Target,
-    /// The nickname, else the username: what the mention shows.
-    pub(crate) name: String,
-    pub(crate) username: Option<String>,
-}
-
-/// The people `query` finds in `snapshot`'s roster: names starting with it
-/// first, then names containing it, in roster order, ignoring case.
-/// @everyone leads when `everyone` allows it and it matches.
-pub(crate) fn candidates(
-    snapshot: &ResourceSnapshot,
-    query: &str,
-    everyone: bool,
-) -> Vec<Candidate> {
-    let query = query.to_lowercase();
-    let mut starting = Vec::new();
-    let mut containing = Vec::new();
-    for id in snapshot.members.iter() {
-        let Some(user) = snapshot.users.get(id) else {
-            continue;
-        };
-        let Some(name) = display_name(user.nickname.as_deref(), user.username.as_deref()) else {
-            continue;
-        };
-        let names = [Some(name), user.username.as_deref()];
-        let lowered: Vec<String> = names.iter().flatten().map(|n| n.to_lowercase()).collect();
-        let candidate = || Candidate {
-            target: Target::User(id),
-            name: name.to_owned(),
-            username: user.username.clone(),
-        };
-        if lowered.iter().any(|n| n.starts_with(&query)) {
-            starting.push(candidate());
-        } else if containing.len() < MAX_CANDIDATES && lowered.iter().any(|n| n.contains(&query)) {
-            containing.push(candidate());
-        }
-        if starting.len() >= MAX_CANDIDATES {
-            break;
-        }
-    }
-    let lead = (everyone && EVERYONE[1..].starts_with(&query)).then(|| Candidate {
-        target: Target::Everyone,
-        name: EVERYONE[1..].to_owned(),
-        username: None,
-    });
-    lead.into_iter()
-        .chain(starting)
-        .chain(containing)
-        .take(MAX_CANDIDATES)
-        .collect()
+    let pills: Vec<Range<usize>> = edit.pills().map(|(range, _)| range).collect();
+    mention_query(&edit.text, caret, &pills)
 }
 
 /// Replaces the query with the mention of `candidate` and a space after it.
-pub(crate) fn pick(edit: &mut TextEdit, query: &Query, candidate: &Candidate) {
+pub(crate) fn pick(edit: &mut TextEdit, query: &MentionQuery, candidate: &MentionSuggestion) {
     match candidate.target {
         // The mention and its space are one undo step.
-        Target::User(id) => edit.undo_group(|edit| {
+        MentionTarget::User(id) => edit.undo_group(|edit| {
             edit.replace_with_pill(
-                query.range.clone(),
+                query.byte_range.clone(),
                 id.to_string(),
                 &format!("@{}", candidate.name),
             );
             edit.insert(" ");
         }),
-        Target::Everyone => {
-            edit.set_selection(query.range.start, query.range.end);
+        MentionTarget::Everyone => {
+            edit.set_selection(query.byte_range.start, query.byte_range.end);
             edit.insert(&format!("{EVERYONE} "));
         }
     }

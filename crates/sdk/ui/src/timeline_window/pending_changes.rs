@@ -27,9 +27,10 @@ pub(crate) fn by_message(
         {
             continue;
         }
-        let target = match operation.kind.as_ref() {
-            OperationKind::Edit { target, .. } | OperationKind::Delete { target } => target,
-            _ => continue,
+        let (OperationKind::Edit { target, .. } | OperationKind::Delete { target }) =
+            operation.kind.as_ref()
+        else {
+            continue;
         };
         let message = match target {
             MessageTarget::Remote(id) => Some(*id),

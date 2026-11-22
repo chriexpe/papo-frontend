@@ -9,7 +9,6 @@
 
 use rune::{Align, Cx, El, ScrollSpec, Side, col, row, text};
 
-use super::mentions::{Candidate, Query, Target};
 use crate::channel_pane::avatar;
 use crate::design::{
     MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT,
@@ -18,6 +17,8 @@ use crate::design::{
 use crate::shell::Shell;
 use crate::strings;
 use crate::timeline::TimelineKey;
+use papo_sdk::MentionTarget;
+use papo_sdk_ui::{MentionQuery, MentionSuggestion};
 
 /// The element key of the open picker.
 pub(crate) const PICKER_KEY: &str = "mention-picker";
@@ -29,8 +30,8 @@ const VISIBLE_ROWS: f32 = 6.0;
 #[derive(Debug, PartialEq)]
 pub(crate) struct Picker {
     pub(super) key: TimelineKey,
-    pub(super) query: Query,
-    pub(super) candidates: Vec<Candidate>,
+    pub(super) query: MentionQuery,
+    pub(super) candidates: Vec<MentionSuggestion>,
     /// The highlighted row: what Enter or Tab picks.
     pub(super) selected: usize,
 }
@@ -53,11 +54,11 @@ impl Picker {
     }
 
     /// Who the highlighted row mentions.
-    pub(crate) fn chosen_target(&self) -> Option<Target> {
+    pub(crate) fn chosen_target(&self) -> Option<MentionTarget> {
         self.chosen().map(|candidate| candidate.target)
     }
 
-    pub(super) fn chosen(&self) -> Option<&Candidate> {
+    pub(super) fn chosen(&self) -> Option<&MentionSuggestion> {
         self.candidates.get(self.selected)
     }
 }
@@ -65,10 +66,10 @@ impl Picker {
 /// The element key of the row of `target`, by who it mentions, so a row
 /// keeps its identity as the query narrows. The field names the highlighted
 /// one as its active descendant, since the keyboard stays in the field.
-pub(crate) fn row_key(target: Target) -> String {
+pub(crate) fn row_key(target: MentionTarget) -> String {
     match target {
-        Target::Everyone => "mention-everyone".to_owned(),
-        Target::User(id) => format!("mention-{id}"),
+        MentionTarget::Everyone => "mention-everyone".to_owned(),
+        MentionTarget::User(id) => format!("mention-{id}"),
     }
 }
 
@@ -104,7 +105,7 @@ pub(crate) fn view(picker: &Picker, pill_key: &str, palette: &Palette, cx: &Cx<S
     panel
 }
 
-fn row_for(candidate: &Candidate, selected: bool, palette: &Palette) -> El {
+fn row_for(candidate: &MentionSuggestion, selected: bool, palette: &Palette) -> El {
     let target = candidate.target;
     let label = match &candidate.username {
         Some(username) if *username != candidate.name => {
@@ -114,10 +115,10 @@ fn row_for(candidate: &Candidate, selected: bool, palette: &Palette) -> El {
     };
     let handle = match (&candidate.target, &candidate.username) {
         // A person with no nickname shows their username once, as the name.
-        (Target::User(_), Some(username)) if *username == candidate.name => None,
-        (Target::User(_), Some(username)) => Some(format!("@{username}")),
-        (Target::Everyone, _) => Some(strings::mention_everyone_hint().to_owned()),
-        (Target::User(_), None) => None,
+        (MentionTarget::User(_), Some(username)) if *username == candidate.name => None,
+        (MentionTarget::User(_), Some(username)) => Some(format!("@{username}")),
+        (MentionTarget::Everyone, _) => Some(strings::mention_everyone_hint().to_owned()),
+        (MentionTarget::User(_), None) => None,
     };
     let mut line = row()
         .key(row_key(target))
@@ -156,8 +157,10 @@ fn row_for(candidate: &Candidate, selected: bool, palette: &Palette) -> El {
 mod tests {
     use papo_sdk::Uuid;
 
-    use super::{Candidate, Picker, Query, Target};
+    use super::Picker;
     use crate::timeline::TimelineKey;
+    use papo_sdk::MentionTarget;
+    use papo_sdk_ui::{MentionQuery, MentionSuggestion};
 
     fn picker(rows: usize) -> Picker {
         Picker {
@@ -170,13 +173,13 @@ mod tests {
                 ),
                 channel: Uuid::from_u128(1),
             },
-            query: Query {
-                range: 0..1,
+            query: MentionQuery {
+                byte_range: 0..1,
                 text: String::new(),
             },
             candidates: (0..rows)
-                .map(|n| Candidate {
-                    target: Target::User(Uuid::from_u128(n as u128)),
+                .map(|n| MentionSuggestion {
+                    target: MentionTarget::User(Uuid::from_u128(n as u128)),
                     name: format!("p{n}"),
                     username: None,
                 })

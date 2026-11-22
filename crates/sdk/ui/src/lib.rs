@@ -1,7 +1,18 @@
 //! Observable Papo UI services belong here; transport and durable state belong to `papo-sdk`.
 //! Platform widgets, navigation and translated text belong to client applications.
 
+mod message_actions;
 pub mod message_content;
+pub use message_actions::{DeleteAs, EditTarget, MessageActions, message_actions, newest_editable};
+mod message_attention;
+pub use message_attention::{Attention, attention};
+mod mention_suggestions;
+mod message_snippet;
+pub use mention_suggestions::{
+    MAX_MENTION_SUGGESTIONS, MentionQuery, MentionSuggestion, display_name, mention_query,
+    mention_suggestions,
+};
+pub use message_snippet::{Snippet, SnippetPart, snippet};
 pub mod operations;
 pub use operations::{OperationService, ReactionService};
 mod search;

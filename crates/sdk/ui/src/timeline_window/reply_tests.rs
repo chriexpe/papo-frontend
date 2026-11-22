@@ -121,7 +121,7 @@ fn an_original_before_the_window_is_held_from_history() {
         panic!("history holds the original");
     };
     assert_eq!(message.content.as_deref(), Some("text 1"));
-    assert!(!content.blocks.is_empty());
+    assert_eq!(content.blocks.len(), 1, "its content is parsed");
 }
 
 #[test]

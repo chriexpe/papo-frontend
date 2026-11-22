@@ -61,10 +61,6 @@ pub(crate) fn project(
 
 /// Projects only this window, sharing parsed `MessageContent` `Arc`s within `(AccountId, channel)`.
 /// Each message carries its reply's original and its entry in `pending` (by message ID).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one pure projection of independent inputs; a struct would only rename them"
-)]
 pub(crate) fn project_with_cache(
     raw: &HistorySnapshot,
     bounds: &Bounds,

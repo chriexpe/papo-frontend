@@ -1,40 +1,32 @@
-//! Mentions as pills, their wire form, the @ query and the people it finds.
+//! Mentions as pills, their wire form, and the @ query at the field's
+//! caret. The ranking itself is the SDK's (`mention_suggestions`).
 
-use papo_sdk::{Generation, ResourceSnapshot, UserSummary, Uuid};
+use papo_sdk::{MentionTarget, Uuid};
 use papo_sdk_ui::message_content::decode_composer_mentions;
+use papo_sdk_ui::{MentionQuery, MentionSuggestion};
 use rune::TextEdit;
 
-use super::{Candidate, Query, Target, candidates, pick, query, restore, wire};
+use super::{pick, query, restore, wire};
 
 fn id(n: u128) -> Uuid {
     Uuid::from_u128(0x1000 + n)
 }
 
-/// A roster of `names`, in order, the first one's own.
-fn roster(names: &[&str]) -> ResourceSnapshot {
-    let members = names
-        .iter()
-        .enumerate()
-        .map(|(n, name)| UserSummary {
-            id: Some(id(n as u128).to_string()),
-            username: Some((*name).to_owned()),
-            // The account's own row must say its roles.
-            roles: Some(Vec::new()),
-            ..UserSummary::default()
-        })
-        .collect();
-    ResourceSnapshot::fixture(
-        Generation::for_test(1),
-        None,
-        Vec::new(),
-        Vec::new(),
-        members,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        id(0),
-    )
-    .unwrap()
+/// The suggestion of person `n`, called `name`.
+fn person(n: u128, name: &str) -> MentionSuggestion {
+    MentionSuggestion {
+        target: MentionTarget::User(id(n)),
+        name: name.to_owned(),
+        username: Some(name.to_owned()),
+    }
+}
+
+fn everyone() -> MentionSuggestion {
+    MentionSuggestion {
+        target: MentionTarget::Everyone,
+        name: "everyone".to_owned(),
+        username: None,
+    }
 }
 
 /// A field holding `text` with the caret at its end.
@@ -44,19 +36,12 @@ fn typed(text: &str) -> TextEdit {
     edit
 }
 
-fn names(found: &[Candidate]) -> Vec<&str> {
-    found
-        .iter()
-        .map(|candidate| candidate.name.as_str())
-        .collect()
-}
-
 #[test]
 fn an_at_starting_a_word_opens_a_query() {
     assert_eq!(
         query(&typed("oi @ma")),
-        Some(Query {
-            range: 3..6,
+        Some(MentionQuery {
+            byte_range: 3..6,
             text: "ma".to_owned()
         })
     );
@@ -64,38 +49,21 @@ fn an_at_starting_a_word_opens_a_query() {
 }
 
 #[test]
-fn an_address_or_a_space_is_no_query() {
-    assert_eq!(query(&typed("ana@example")), None);
-    assert_eq!(query(&typed("@ma rina")), None);
-}
-
-#[test]
-fn names_starting_with_the_query_come_first() {
-    let snapshot = roster(&["ana", "mariana", "marina"]);
-    let found = candidates(&snapshot, "MAR", false);
-    assert_eq!(names(&found), ["mariana", "marina"]);
-    let found = candidates(&snapshot, "ana", false);
-    assert_eq!(
-        names(&found),
-        ["ana", "mariana"],
-        "then names containing it"
-    );
-}
-
-#[test]
-fn everyone_leads_only_where_allowed() {
-    let snapshot = roster(&["eva"]);
-    let found = candidates(&snapshot, "e", true);
-    assert_eq!(found[0].target, Target::Everyone);
-    assert_eq!(names(&found), ["everyone", "eva"]);
-    assert_eq!(names(&candidates(&snapshot, "e", false)), ["eva"]);
+fn a_selection_or_an_at_inside_a_mention_is_no_query() {
+    let mut selected = typed("oi @ma");
+    selected.set_selection(3, 6);
+    assert_eq!(query(&selected), None);
+    let mut edit = typed("@mar");
+    let asked = query(&edit).unwrap();
+    pick(&mut edit, &asked, &person(1, "marina"));
+    edit.set_caret(3);
+    assert_eq!(query(&edit), None, "the caret sits inside the pill");
 }
 
 #[test]
 fn a_picked_person_becomes_one_pill_and_a_space() {
-    let snapshot = roster(&["ana", "marina"]);
     let mut edit = typed("oi @mar");
-    let found = candidates(&snapshot, "mar", false);
+    let found = [person(1, "marina")];
     let asked = query(&edit).unwrap();
     pick(&mut edit, &asked, &found[0]);
     assert_eq!(edit.text, "oi @marina ");
@@ -109,20 +77,18 @@ fn a_picked_person_becomes_one_pill_and_a_space() {
 
 #[test]
 fn the_wire_form_carries_the_person_s_id() {
-    let snapshot = roster(&["ana", "marina"]);
     let mut edit = typed("@mar");
     let asked = query(&edit).unwrap();
-    pick(&mut edit, &asked, &candidates(&snapshot, "mar", false)[0]);
+    pick(&mut edit, &asked, &person(1, "marina"));
     edit.insert("olá");
     assert_eq!(wire(&edit), format!("@mention(<@{}>) olá", id(1)));
 }
 
 #[test]
 fn a_pill_moves_with_the_text_before_it() {
-    let snapshot = roster(&["marina"]);
     let mut edit = typed("@m");
     let asked = query(&edit).unwrap();
-    pick(&mut edit, &asked, &candidates(&snapshot, "m", false)[0]);
+    pick(&mut edit, &asked, &person(0, "marina"));
     edit.set_caret(0);
     edit.insert("ei ");
     assert_eq!(wire(&edit), format!("ei @mention(<@{}>) ", id(0)));
@@ -141,10 +107,9 @@ fn a_restored_draft_gets_its_pills_back_and_no_history() {
 
 #[test]
 fn everyone_is_plain_text() {
-    let snapshot = roster(&["eva"]);
     let mut edit = typed("@ev");
     let asked = query(&edit).unwrap();
-    pick(&mut edit, &asked, &candidates(&snapshot, "ev", true)[0]);
+    pick(&mut edit, &asked, &everyone());
     assert_eq!(edit.text, "@everyone ");
     assert_eq!(edit.pills().count(), 0);
 }
@@ -178,10 +143,9 @@ fn a_name_rune_cleans_never_moves_the_mentions_after_it() {
 
 #[test]
 fn a_failed_message_goes_first_and_both_keep_their_mentions() {
-    let snapshot = roster(&["ana", "marina"]);
     let mut edit = typed("@an");
     let asked = query(&edit).unwrap();
-    pick(&mut edit, &asked, &candidates(&snapshot, "an", false)[0]);
+    pick(&mut edit, &asked, &person(0, "ana"));
     let failed = format!("oi @mention(<@{}>)", id(1));
     super::prepend(
         &mut edit,
@@ -192,11 +156,4 @@ fn a_failed_message_goes_first_and_both_keep_their_mentions() {
         wire(&edit),
         format!("oi @mention(<@{}>)\n@mention(<@{}>) ", id(1), id(0))
     );
-}
-
-#[test]
-fn an_empty_nickname_falls_back_to_the_username() {
-    assert_eq!(super::display_name(Some(""), Some("ana")), Some("ana"));
-    assert_eq!(super::display_name(Some("Ana"), Some("ana")), Some("Ana"));
-    assert_eq!(super::display_name(Some(""), None), None);
 }
