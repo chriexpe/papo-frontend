@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use papo_sdk::{
-    DraftBody, OperationKind, OutgoingError, OutgoingMessage, Session, UnixMicros, Uuid,
+    DraftBody, MessageTarget, OperationKind, OutgoingError, OutgoingMessage, Session, UnixMicros,
+    Uuid,
 };
 use papo_sdk_ui::display_name;
 use papo_sdk_ui::message_content::{DecodedComposerMentions, decode_composer_mentions};
@@ -75,6 +76,11 @@ impl Shell {
         let local = (self.local_ids)();
         match self.composer.send(local) {
             Sent::Queued(effect) => self.run_composer(vec![effect], Some(tx)),
+            Sent::Edited { edit, save } => {
+                let effects = std::iter::once(edit).chain(save).collect();
+                self.run_composer(effects, Some(tx));
+            }
+            Sent::DeleteInstead { key, id } => self.ask_delete(key, id),
             Sent::Nothing | Sent::TooLong => {}
         }
     }
@@ -89,6 +95,10 @@ impl Shell {
     /// one left.
     pub(super) fn sync_composer(&mut self) {
         let shown = self.wanted_timeline();
+        // A confirmation is about the channel it was asked in.
+        if self.deleting.is_some_and(|ask| Some(ask.key) != shown) {
+            self.deleting = None;
+        }
         let effects = self.composer.show(shown);
         self.run_composer(effects, None);
     }
@@ -121,7 +131,8 @@ impl Shell {
                 }
                 effect => {
                     if let Some(sdk) = &self.sdk {
-                        run_effect(sdk, &self.draft_writes, effect);
+                        let mention = self.writing.mention_when_replying;
+                        run_effect(sdk, &self.draft_writes, effect, mention);
                     }
                 }
             }
@@ -129,34 +140,16 @@ impl Shell {
     }
 }
 
-/// Sends one SDK effect to the bridge.
-fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
+/// Sends one SDK effect to the bridge. `mention`: where a reply's @ switch
+/// starts, for a reply that comes back.
+fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect, mention: bool) {
     match effect {
-        Effect::Load(key) => {
-            let updates = sdk.updates();
-            sdk.run(move |client| async move {
-                let read = match client.session(key.account) {
-                    Ok(session) => session.outgoing().draft(key.channel).await.map(|draft| {
-                        let wire = draft.map(|draft| draft.body.message.content);
-                        decode(Some(&session), &wire.unwrap_or_default())
-                    }),
-                    Err(error) => Err(error.into()),
-                };
-                match read {
-                    Ok(decoded) => {
-                        updates.send(move |shell| shell.composer.loaded(key, decoded));
-                    }
-                    Err(error) => {
-                        log::warn!("a draft was not read: {error}");
-                        updates.send(move |shell| shell.composer.load_failed(key));
-                    }
-                }
-            });
-        }
+        Effect::Load(key) => load_draft(sdk, key, mention),
         Effect::Save {
             key,
             text,
             mentions,
+            reply_to,
             seq,
         } => {
             let lane = writes.lane(key);
@@ -167,7 +160,9 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
                     return;
                 }
                 let saved = match client.session(key.account) {
-                    Ok(session) => save_draft(&session, key.channel, text, mentions).await,
+                    Ok(session) => {
+                        save_draft(&session, key.channel, text, mentions, reply_to).await
+                    }
                     Err(error) => Err(error.into()),
                 };
                 match saved {
@@ -182,6 +177,7 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
         Effect::Send {
             key,
             text,
+            reply_to,
             local,
             seq,
         } => {
@@ -194,18 +190,29 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
                 let session = match client.session(key.account) {
                     Ok(session) => session,
                     Err(error) => {
-                        return send_failed(&updates, key, decode(None, &text), &error.into());
+                        let failed = Failed {
+                            decoded: decode(None, &text),
+                            reply_to,
+                            mention,
+                        };
+                        return send_failed(&updates, key, failed, &error.into());
                     }
                 };
-                if let Err(error) = queue_message(&session, key.channel, local, &text).await {
-                    return send_failed(&updates, key, decode(Some(&session), &text), &error);
+                let queued = queue_message(&session, key.channel, local, &text, reply_to).await;
+                if let Err(error) = queued {
+                    let failed = Failed {
+                        decoded: decode(Some(&session), &text),
+                        reply_to,
+                        mention,
+                    };
+                    return send_failed(&updates, key, failed, &error);
                 }
                 // The queue holds the message; the stored draft may still
                 // hold its text, unless something newer was saved since.
                 if !lane.admits(seq) {
                     return;
                 }
-                match save_draft(&session, key.channel, String::new(), Vec::new()).await {
+                match save_draft(&session, key.channel, String::new(), Vec::new(), None).await {
                     Ok(()) => lane.landed(seq),
                     Err(error) => log::warn!("a sent draft was not cleared: {error}"),
                 }
@@ -220,22 +227,73 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
                 log::debug!("typing was not reported: {error}");
             }
         }),
+        Effect::Edit {
+            key,
+            id,
+            text,
+            local,
+        } => super::replies::queue_edit(sdk, key, id, text, local),
         Effect::WakeAfter(_) => {}
     }
+}
+
+/// Reads `key`'s stored draft and its reply, and puts them in the field.
+/// `mention`: where a restored reply's @ switch starts.
+fn load_draft(sdk: &Sdk<Shell>, key: TimelineKey, mention: bool) {
+    let updates = sdk.updates();
+    sdk.run(move |client| async move {
+        let read = match client.session(key.account) {
+            Ok(session) => session.outgoing().draft(key.channel).await.map(|draft| {
+                let (wire, reply_to) = draft.map_or((String::new(), None), |draft| {
+                    let message = draft.body.message;
+                    (message.content, message.reply_to)
+                });
+                // A reply is to a message the server knows; a local
+                // one never reaches a draft.
+                let reply_to = reply_to.and_then(|target| match target {
+                    MessageTarget::Remote(id) => Some(id),
+                    MessageTarget::Local(_) => None,
+                });
+                (decode(Some(&session), &wire), reply_to)
+            }),
+            Err(error) => Err(error.into()),
+        };
+        match read {
+            Ok((decoded, reply_to)) => {
+                updates.send(move |shell| {
+                    let loaded = shell.composer.loaded(key, decoded, reply_to, mention);
+                    shell.resolve_replies();
+                    loaded
+                });
+            }
+            Err(error) => {
+                log::warn!("a draft was not read: {error}");
+                updates.send(move |shell| shell.composer.load_failed(key));
+            }
+        }
+    });
+}
+
+/// A message the SDK did not queue, to put back in the field.
+struct Failed {
+    decoded: DecodedComposerMentions,
+    reply_to: Option<Uuid>,
+    /// Where the @ switch starts if its reply comes back.
+    mention: bool,
 }
 
 /// The SDK did not queue `text`: it goes back in the field. A send refused
 /// as the window closes cannot come back; its text survives only as far as
 /// the stored draft held it (saved up to a second before).
-fn send_failed(
-    updates: &Updates<Shell>,
-    key: TimelineKey,
-    decoded: DecodedComposerMentions,
-    error: &OutgoingError,
-) {
+fn send_failed(updates: &Updates<Shell>, key: TimelineKey, failed: Failed, error: &OutgoingError) {
     log::warn!("a message was not queued: {error}");
+    let Failed {
+        decoded,
+        reply_to,
+        mention,
+    } = failed;
     updates.send(move |shell| {
-        let effects = shell.composer.send_failed(key, decoded);
+        let effects = shell.composer.send_failed(key, decoded, reply_to, mention);
         shell.run_composer(effects, None);
         true
     });
@@ -253,16 +311,18 @@ fn decode(session: Option<&Session>, wire: &str) -> DecodedComposerMentions {
 }
 
 /// Stores `text` (its wire form) as the channel's draft, with the people it
-/// mentions; empty clears it.
+/// mentions and the message it replies to; empty clears it.
 async fn save_draft(
     session: &Session,
     channel: Uuid,
     text: String,
     mentions: Vec<Uuid>,
+    reply_to: Option<Uuid>,
 ) -> Result<(), OutgoingError> {
     let body = DraftBody {
         message: OutgoingMessage {
             content: text,
+            reply_to: reply_to.map(MessageTarget::Remote),
             ..OutgoingMessage::default()
         },
         mentions,
@@ -274,15 +334,19 @@ async fn save_draft(
         .map(|_revision| ())
 }
 
-/// Queues `text` as a new message with identity `local`.
+/// Queues `text` as a new message with identity `local`, replying to
+/// `reply_to` when given. "Mention when replying" is not sent: the backend
+/// does not store it yet (the switch is a mock).
 async fn queue_message(
     session: &Session,
     channel: Uuid,
     local: Uuid,
     text: &str,
+    reply_to: Option<Uuid>,
 ) -> Result<(), OutgoingError> {
     let message = OutgoingMessage {
         content: text.to_owned(),
+        reply_to: reply_to.map(MessageTarget::Remote),
         ..OutgoingMessage::default()
     };
     session
@@ -293,7 +357,7 @@ async fn queue_message(
 
 /// The wall clock, as the SDK stamps drafts and intents (never to order
 /// them).
-fn now() -> UnixMicros {
+pub(super) fn now() -> UnixMicros {
     let micros = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {

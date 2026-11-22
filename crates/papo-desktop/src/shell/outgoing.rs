@@ -119,7 +119,9 @@ pub(super) fn resend_confirm(shell: &Shell, palette: &Palette) -> Option<El> {
     let question = Question {
         key: RESEND_KEY,
         title: strings::resend_title(),
-        body: strings::resend_body(),
+        body: Some(strings::resend_body()),
+        shown: None,
+        note: None,
         cancel_key: "resend-cancel",
         cancel: strings::resend_cancel(),
         confirm_key: "resend-confirm",
@@ -127,7 +129,7 @@ pub(super) fn resend_confirm(shell: &Shell, palette: &Palette) -> Option<El> {
         danger: false,
     };
     Some(confirm(
-        &question,
+        question,
         Shell::cancel_resend,
         Shell::confirm_resend,
         palette,

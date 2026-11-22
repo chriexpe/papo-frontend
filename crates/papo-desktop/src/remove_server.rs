@@ -23,7 +23,9 @@ pub(crate) fn confirm(server_name: &str, palette: &Palette) -> El {
     let question = Question {
         key: CONFIRM_KEY,
         title: &title,
-        body: strings::remove_body(),
+        body: Some(strings::remove_body()),
+        shown: None,
+        note: None,
         cancel_key: "remove-cancel",
         cancel: strings::remove_cancel(),
         confirm_key: "remove-confirm",
@@ -31,7 +33,7 @@ pub(crate) fn confirm(server_name: &str, palette: &Palette) -> El {
         danger: true,
     };
     ask(
-        &question,
+        question,
         Shell::cancel_remove_server,
         Shell::confirm_remove_server,
         palette,

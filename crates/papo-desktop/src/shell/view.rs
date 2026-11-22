@@ -76,6 +76,10 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(resend) = resend_confirm(shell, &palette) {
                     app = app.child(resend);
                 }
+                let style = timeline_style(shell, theme, &palette);
+                if let Some(delete) = super::deleting::delete_confirm(shell, &style) {
+                    app = app.child(delete);
+                }
                 if let Some(flow) = flow {
                     app = app.child(sign_in::popup(flow, &shell.fields, &palette));
                 }
@@ -102,6 +106,24 @@ fn hint_look(palette: &Palette, dark: bool) -> HelpLook {
         .delay(HINT_DELAY_S)
 }
 
+/// How the conversation's rows look, and the message a confirmation
+/// shows.
+fn timeline_style(shell: &Shell, theme: Theme, palette: &Palette) -> timeline::Style {
+    let selected = shell
+        .composer
+        .shown()
+        .and_then(|(_, draft)| draft.mode.target());
+    timeline::Style {
+        layout: shell.message_layout,
+        theme,
+        palette: *palette,
+        time: shell.local_time.clone(),
+        today: shell.today,
+        hourglass: shell.prefs.unread_hourglass,
+        selected,
+    }
+}
+
 /// The rail, the channel pane and the conversation with the composer pill
 /// at its foot.
 fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
@@ -111,15 +133,20 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
         .zip(shell.nav.selected_channel())
         .and_then(|(server, id)| server.text_channels.iter().find(|entry| entry.id == id))
         .map_or("", |entry| entry.name.as_str());
-    let composer = composer::pill(&shell.composer, channel, shell.writing.enter_sends, palette);
-    let style = timeline::Style {
-        layout: shell.message_layout,
-        theme,
-        palette: *palette,
-        time: shell.local_time.clone(),
-        today: shell.today,
-        hourglass: shell.prefs.unread_hourglass,
+    let shown = shell.composer.shown();
+    let open = shown.and_then(|(key, _)| shell.tabs.shown().filter(|open| open.key == key));
+    let original = shown.and_then(|(_, draft)| {
+        let reply = draft.mode.reply()?;
+        timeline::replies::reply_text(open, reply.id, reply.original.as_ref())
+    });
+    let context = composer::PillContext {
+        channel,
+        enter_sends: shell.writing.enter_sends,
+        original: original.as_ref(),
+        me: shown.map_or(papo_sdk::Uuid::nil(), |(key, _)| key.account.user()),
     };
+    let composer = composer::pill(&shell.composer, &context, palette);
+    let style = timeline_style(shell, theme, palette);
     let conversation = col()
         .key("conversation")
         .grow(1.0)

@@ -186,6 +186,7 @@ impl Shell {
             || self.nav.menu.is_some()
             || self.nav.removing.is_some()
             || self.resend.is_some()
+            || self.deleting.is_some()
     }
 }
 

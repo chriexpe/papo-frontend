@@ -9,19 +9,24 @@
 //! The pill is `view`'s, the Enter setting `prefs`'. Markdown, pairs and
 //! mentions in the field are `markdown`'s, `pairs`' and `mentions`'; the
 //! keys and the @ picker that use them are `editing`'s and `picker`'s.
+//! Replying and editing (the mode, its bars and its moves) are `mode`'s,
+//! `bars`' and `replying`'s.
 
+pub(crate) mod bars;
 mod draft;
 mod editing;
 mod effect;
 mod markdown;
 pub(crate) mod mentions;
+pub(crate) mod mode;
 mod pairs;
 pub(crate) mod picker;
 pub(crate) mod prefs;
+mod replying;
 mod saving;
 #[cfg(test)]
 mod tests;
-mod view;
+pub(crate) mod view;
 
 use std::collections::HashMap;
 
@@ -32,9 +37,10 @@ use rune::TextEdit;
 pub(crate) use self::draft::Draft;
 use self::draft::DraftState;
 pub(crate) use self::effect::{Effect, Sent};
+use self::mode::{Mode, Reply};
 pub(crate) use self::pairs::{Keystroke, wrap_format};
 pub(crate) use self::picker::Picker;
-pub(crate) use self::view::{COMPOSER_KEY, COMPOSER_PILL_KEY, pill};
+pub(crate) use self::view::{COMPOSER_KEY, COMPOSER_PILL_KEY, PillContext, pill};
 use crate::timeline::TimelineKey;
 
 /// How long typing must pause before the draft is saved, in seconds.
@@ -177,7 +183,13 @@ impl Composer {
     /// none, its mentions named. Only a buffer still loading takes it; the
     /// caret goes to its end. Reading it again later never replaces what
     /// was typed since.
-    pub(crate) fn loaded(&mut self, key: TimelineKey, decoded: DecodedComposerMentions) -> bool {
+    pub(crate) fn loaded(
+        &mut self,
+        key: TimelineKey,
+        decoded: DecodedComposerMentions,
+        reply_to: Option<Uuid>,
+        mention: bool,
+    ) -> bool {
         let Some(draft) = self.drafts.get_mut(&key) else {
             return false;
         };
@@ -187,6 +199,13 @@ impl Composer {
         mentions::restore(&mut draft.edit, decoded);
         draft.replaced();
         draft.state = DraftState::Saved;
+        draft.mode = Mode::Writing {
+            reply: reply_to.map(|id| Reply {
+                id,
+                original: None,
+                mention,
+            }),
+        };
         true
     }
 
@@ -245,6 +264,10 @@ impl Composer {
         let keystroke = keystroke.as_ref().map(|(_, keystroke)| keystroke);
         draft.pairs.changed(&mut draft.edit, keystroke);
         draft.refresh();
+        if draft.mode.editing().is_some() {
+            // An edit is neither saved nor reported as typing.
+            return Vec::new();
+        }
         let typing = !draft.edit.text.trim().is_empty();
         let due_s = clock_s + SAVE_AFTER_S;
         draft.state = DraftState::Unsaved { due_s };
@@ -271,6 +294,12 @@ impl Composer {
     /// with identity `local`. The stored draft keeps the text until the SDK
     /// has queued it (`Effect::Send`).
     pub(crate) fn send(&mut self, local: Uuid) -> Sent {
+        if self
+            .shown()
+            .is_some_and(|(_, draft)| draft.mode.editing().is_some())
+        {
+            return self.save_edit(local);
+        }
         if !self.can_send() {
             return if self.chars_over() > 0 {
                 Sent::TooLong
@@ -286,6 +315,8 @@ impl Composer {
             return Sent::Nothing;
         };
         let text = mentions::wire(&draft.edit);
+        let reply_to = draft.mode.reply().map(|reply| reply.id);
+        draft.mode = Mode::default();
         // A sent message never comes back through undo.
         draft.edit.replace_text("");
         draft.replaced();
@@ -298,6 +329,7 @@ impl Composer {
         Sent::Queued(Effect::Send {
             key,
             text,
+            reply_to,
             local,
             seq,
         })
@@ -309,10 +341,41 @@ impl Composer {
         &mut self,
         key: TimelineKey,
         decoded: DecodedComposerMentions,
+        reply_to: Option<Uuid>,
+        mention: bool,
     ) -> Vec<Effect> {
         let Some(draft) = self.drafts.get_mut(&key) else {
             return Vec::new();
         };
+        // During an edit, the text and its reply go to the draft the edit
+        // set aside, and come back with it.
+        if let Mode::Editing(editing) = &mut draft.mode {
+            let before = &mut editing.before;
+            mentions::prepend(&mut before.edit, decoded);
+            if let (Some(id), None) = (reply_to, &before.reply) {
+                before.reply = Some(Reply {
+                    id,
+                    original: None,
+                    mention,
+                });
+            }
+            before.send_failed = true;
+            return Vec::new();
+        }
+        // The reply comes back with its text, unless another one began.
+        if let (
+            Some(id),
+            Mode::Writing {
+                reply: reply @ None,
+            },
+        ) = (reply_to, &mut draft.mode)
+        {
+            *reply = Some(Reply {
+                id,
+                original: None,
+                mention,
+            });
+        }
         mentions::prepend(&mut draft.edit, decoded);
         draft.replaced();
         // Its query, if open, no longer points at the same text.

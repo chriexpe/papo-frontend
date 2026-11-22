@@ -6,11 +6,11 @@
 
 use rune::Icon;
 
-/// Close: a cross.
+/// Close, cancel, clear: a cross. From `papo-icons` (`docs/design.md` §13).
 pub(crate) static CROSS: Icon = Icon {
     name: "papo-cross",
-    view: 16.0,
-    body: r#"<path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/>"#,
+    view: 24.0,
+    body: r#"<path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
 
 /// Add: a plus.
@@ -34,11 +34,11 @@ pub(crate) static SWAP: Icon = Icon {
     body: r#"<path d="M3 5.5H12.5M10 3L12.5 5.5L10 8M13 10.5H3.5M6 8L3.5 10.5L6 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
 
-/// The current choice: a check mark.
+/// The current choice, a met requirement, Save edit: a check mark. From `papo-icons` (`docs/design.md` §13).
 pub(crate) static CHECK: Icon = Icon {
     name: "papo-check",
-    view: 16.0,
-    body: r#"<path d="M3 8.5L6.5 12L13 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+    view: 24.0,
+    body: r#"<path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
 
 /// A text channel: a hash.
@@ -83,16 +83,37 @@ pub(crate) static SEND: Icon = Icon {
     body: r#"<path d="M3 8H13M8.5 3.5L13 8L8.5 12.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
 
-/// Not sent yet: a clock.
+/// Waiting to be sent or saved: a clock. From `papo-icons` (`docs/design.md` §13).
 pub(crate) static CLOCK: Icon = Icon {
     name: "papo-clock",
-    view: 16.0,
-    body: r#"<circle cx="8" cy="8" r="5.8" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M8 4.8V8L10.2 9.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+    view: 24.0,
+    body: r#"<circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M12 7.5V12l3 2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
 
-/// Needs attention: a triangle with an exclamation mark.
+/// Did not go through: a warning triangle. From `papo-icons` (`docs/design.md` §13).
 pub(crate) static WARNING: Icon = Icon {
     name: "papo-warning",
-    view: 16.0,
-    body: r#"<path d="M8 2.2L14.2 13.2H1.8Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" fill="none"/><path d="M8 6.5V9.3M8 11.2V11.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/>"#,
+    view: 24.0,
+    body: r#"<path d="M10.3 5 3.2 17.5A2 2 0 0 0 5 20.5h14a2 2 0 0 0 1.8-3L13.7 5a2 2 0 0 0-3.4 0z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M12 10v4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M12 17h.01" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+
+/// Reply: an arrow turning back. From `papo-icons` (`docs/design.md` §13).
+pub(crate) static REPLY: Icon = Icon {
+    name: "papo-reply",
+    view: 24.0,
+    body: r#"<path d="M9.5 6 4 11.5 9.5 17" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M4.5 11.5H14a6 6 0 0 1 6 6v1" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+
+/// Edit a message: a pencil. From `papo-icons` (`docs/design.md` §13).
+pub(crate) static EDIT: Icon = Icon {
+    name: "papo-edit",
+    view: 24.0,
+    body: r#"<path d="M15 4.5l4.5 4.5L9 19.5H4.5V15z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M12.5 7l4.5 4.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+
+/// A reply line in Extra compact, where no elbow fits. From `papo-icons` (`docs/design.md` §13).
+pub(crate) static REPLY_LINE: Icon = Icon {
+    name: "papo-reply-line",
+    view: 24.0,
+    body: r#"<path d="M7 19.5V13a5 5 0 0 1 5-5h7.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M16 4.5 19.5 8 16 11.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };

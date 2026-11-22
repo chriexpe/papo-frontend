@@ -18,16 +18,26 @@ pub(crate) enum Effect {
         key: TimelineKey,
         text: String,
         mentions: Vec<Uuid>,
+        reply_to: Option<Uuid>,
         seq: u64,
     },
     /// Queue `text` (its wire form) as a new message with local identity
-    /// `local`, then clear the stored draft unless a newer save (`seq`)
-    /// landed first.
+    /// `local`, replying to `reply_to` when given, then clear the stored
+    /// draft unless a newer save (`seq`) landed first.
     Send {
         key: TimelineKey,
         text: String,
+        reply_to: Option<Uuid>,
         local: Uuid,
         seq: u64,
+    },
+    /// Queue an edit of your message `id` to `text` (its wire form), with
+    /// local identity `local`. The stored draft is not touched.
+    Edit {
+        key: TimelineKey,
+        id: Uuid,
+        text: String,
+        local: Uuid,
     },
     /// Tell the channel the user is typing.
     ReportTyping(TimelineKey),
@@ -44,4 +54,10 @@ pub(crate) enum Sent {
     TooLong,
     /// The text left the field; the effect queues it.
     Queued(Effect),
+    /// An edit left the field; `edit` queues it, and `save` stores the
+    /// draft that came back when it holds something not yet stored.
+    Edited { edit: Effect, save: Option<Effect> },
+    /// An edit emptied of text: the message is to be deleted instead, once
+    /// the person confirms (`docs/design.md` §11). The edit stays open.
+    DeleteInstead { key: TimelineKey, id: Uuid },
 }

@@ -12,7 +12,7 @@ rune-proof = ["dep:rune", "dep:gstreamer-video", "papo-call/benchmark-telemetry"
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = { version = "0.24", features = ["v1_18"], optional = true }
-rune = { git = "https://github.com/chriexpe/rune", rev = "235bd39d01003ebd59c03e0d1201925aa0e9e7e4", optional = true }
+rune = { git = "https://github.com/chriexpe/rune", rev = "9756364484b4204f652ab726b3a4b2e63c1cd1a0", optional = true }
 log = "0.4"
 papo-api = { path = "../../../crates/sdk/api" }
 papo-call = { path = "../../../crates/papo-call" }

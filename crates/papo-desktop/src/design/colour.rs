@@ -51,6 +51,17 @@ impl Theme {
         matches!(self, Theme::Oled | Theme::Graphite)
     }
 
+    /// Where a highlight starts (`docs/design.md` §4, Highlights): the
+    /// theme's background lightness and its fixed chroma.
+    fn highlight_start(self) -> (f32, f32) {
+        match self {
+            Theme::Oled => (0.170, 0.040),
+            Theme::Graphite => (0.262, 0.030),
+            Theme::Light => (0.962, 0.035),
+            Theme::SoftLight => (0.942, 0.040),
+        }
+    }
+
     /// The OKLCH lightness (0–1) of each neutral token in this theme.
     fn lightness(self) -> Lightness {
         match self {
@@ -152,11 +163,12 @@ const DANGER_CHROMA: f32 = 0.11;
 const SUCCESS_CHROMA: f32 = 0.09;
 /// The warning colour's OKLCH chroma; its hue moves with the theme.
 const WARNING_CHROMA: f32 = 0.09;
-/// The mention-row marker's OKLCH hue in degrees: amber (`docs/design.md`
-/// §4).
-const MENTION_ROW_HUE_DEGREES: f32 = 82.0;
-/// The mention-row marker's OKLCH chroma, as the design project draws it.
-const MENTION_ROW_CHROMA: f32 = 0.15;
+/// The mention highlight's default OKLCH hue in degrees: amber
+/// (`docs/design.md` §4; the user's to change once Settings exist).
+const MENTION_HIGHLIGHT_HUE_DEGREES: f32 = 75.0;
+/// How far a highlight's lightness moves per step while it looks for the
+/// text floors.
+const HIGHLIGHT_STEP: f32 = 0.002;
 /// The opacity of the black that dims the app behind a popup.
 const SCRIM_ALPHA: f32 = 0.5;
 /// The opacity of a popup's black shadow.
@@ -217,12 +229,9 @@ pub(crate) struct Palette {
     /// A mention's chip, behind its text in the link colour: the accent
     /// mixed into `surface.content` in OKLab, 20 % dark and 12 % light.
     pub(crate) accent_soft: Color,
-    /// The bar on the left of a message that mentions you: amber.
-    pub(crate) mention_bar: Color,
-    /// The background of a message that mentions you: the bar's amber mixed
-    /// into `surface.content` in OKLab, 4 % dark and 13 % light, the most
-    /// every theme's text floors allow (Christian, 2026-11-21).
-    pub(crate) mention_row: Color,
+    /// `highlight.mention`: the background of a message that mentions you,
+    /// with no bar beside it (§4, Highlights: the rule at the mention hue).
+    pub(crate) highlight_mention: Color,
     /// Highlighted code's token colours.
     pub(crate) code: CodeInk,
     /// What dims the app behind a popup.
@@ -248,12 +257,12 @@ impl Palette {
         let sidebar = neutral(lightness.surface_sidebar);
         let content = neutral(lightness.surface_content);
         let code = neutral(lightness.surface_code);
-        let mention_bar_lightness = if dark { 0.78 } else { 0.70 };
-        let mention_bar = oklch(
-            mention_bar_lightness,
-            MENTION_ROW_CHROMA,
-            MENTION_ROW_HUE_DEGREES,
-        );
+        let text = Text {
+            primary: neutral(lightness.text_primary),
+            secondary: neutral(lightness.text_secondary),
+            muted: neutral(lightness.text_muted),
+            link: oklch(link_lightness, LINK_CHROMA, ACCENT_HUE_DEGREES),
+        };
         let selected_share = if dark { 0.10 } else { 0.09 };
         Palette {
             surface_rail: neutral(lightness.surface_rail),
@@ -266,13 +275,13 @@ impl Palette {
             line_subtle: neutral(lightness.line_subtle),
             line_strong: neutral(lightness.line_strong),
             line_pill: neutral(lightness.line_pill),
-            text_primary: neutral(lightness.text_primary),
-            text_secondary: neutral(lightness.text_secondary),
-            text_muted: neutral(lightness.text_muted),
+            text_primary: text.primary,
+            text_secondary: text.secondary,
+            text_muted: text.muted,
             accent,
             accent_on: text_on(accent),
             text_selection: accent.alpha(TEXT_SELECTION_ALPHA),
-            link: oklch(link_lightness, LINK_CHROMA, ACCENT_HUE_DEGREES),
+            link: text.link,
             danger,
             danger_on: text_on(danger),
             warning: oklch(warning_lightness, WARNING_CHROMA, warning_hue),
@@ -280,13 +289,70 @@ impl Palette {
             mention,
             mention_on: Color::WHITE,
             accent_soft: mix_oklab(content, accent, if dark { 0.20 } else { 0.12 }),
-            mention_bar,
-            mention_row: mix_oklab(content, mention_bar, if dark { 0.04 } else { 0.13 }),
+            highlight_mention: highlight(theme, MENTION_HIGHLIGHT_HUE_DEGREES, &text),
             code: CodeInk::new(dark, code),
             scrim: Color::BLACK.alpha(SCRIM_ALPHA),
             popup_shadow: Color::BLACK.alpha(POPUP_SHADOW_ALPHA),
         }
     }
+}
+
+/// The text a highlight must keep readable.
+struct Text {
+    primary: Color,
+    secondary: Color,
+    muted: Color,
+    link: Color,
+}
+
+/// A highlight at `hue_degrees` (§4, Highlights): from the theme's
+/// background lightness and fixed chroma (lowered only where sRGB cannot
+/// hold it), the lightness moves away from the text until `text.primary`
+/// keeps 13:1, `text.secondary` 7:1, and `text.muted` and links 4.5:1.
+fn highlight(theme: Theme, hue_degrees: f32, text: &Text) -> Color {
+    let (start, chroma) = theme.highlight_start();
+    let step = if theme.is_dark() {
+        -HIGHLIGHT_STEP
+    } else {
+        HIGHLIGHT_STEP
+    };
+    let readable = |background: Color| {
+        contrast(text.primary, background) >= 13.0
+            && contrast(text.secondary, background) >= 7.0
+            && contrast(text.muted, background) >= 4.5
+            && contrast(text.link, background) >= 4.5
+    };
+    let mut lightness = start;
+    loop {
+        let colour = oklch(
+            lightness,
+            in_gamut(lightness, chroma, hue_degrees),
+            hue_degrees,
+        );
+        let next = lightness + step;
+        if readable(colour) || !(0.0..=1.0).contains(&next) {
+            return colour;
+        }
+        lightness = next;
+    }
+}
+
+/// `chroma`, or the most of it sRGB can show at this lightness and hue.
+fn in_gamut(lightness: f32, chroma: f32, hue_degrees: f32) -> f32 {
+    let mut chroma = chroma;
+    // Rune clamps an unreachable colour; one that comes back unchanged fits.
+    while chroma > 0.0 {
+        let [l, a, b, _] = oklch(lightness, chroma, hue_degrees).to_oklab();
+        let (sin, cos) = hue_degrees.to_radians().sin_cos();
+        let fits = (l - lightness).abs() < 1e-3
+            && (a - chroma * cos).abs() < 1e-3
+            && (b - chroma * sin).abs() < 1e-3;
+        if fits {
+            return chroma;
+        }
+        chroma -= 0.001;
+    }
+    0.0
 }
 
 /// `share` of the way from `base` to `tint`, in `OKLab`, so the mix keeps

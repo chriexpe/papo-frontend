@@ -145,6 +145,15 @@ impl Tracker {
     }
 }
 
+/// Scrolls the shown viewport so `anchor`'s message is where the anchor
+/// says: after a switch back, a reset, or a change of density. Following
+/// the newest needs none, as a new viewport opens at its bottom.
+pub(crate) fn scroll_to(anchor: Anchor, tx: &mut rune::Tx) {
+    if let Anchor::Message { id, offset_pt } = anchor {
+        tx.scroll_key_to(super::rows::anchor_key(id), offset_pt);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use papo_sdk::{ReadingPosition, Uuid};

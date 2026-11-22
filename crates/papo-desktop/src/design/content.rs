@@ -96,10 +96,9 @@ pub(crate) const TYPE_JUMBO: TextStyle = {
 /// The most emoji a jumbo message holds.
 pub(crate) const JUMBO_MOST: usize = 3;
 
-/// The bar on the left of a message that mentions you, and the row's
-/// corner radius, in points.
-pub(crate) const MENTION_BAR_PT: f32 = 3.0;
-pub(crate) const MENTION_ROW_RADIUS_PT: f32 = 8.0;
+/// The corner radius of a highlighted message row (a mention, the message
+/// being replied to or edited), in points.
+pub(crate) const HIGHLIGHT_ROW_RADIUS_PT: f32 = 8.0;
 
 /// The pill that shows a link's address or the edited time: padding
 /// (vertical, horizontal), radius, and its distance from what it explains,

@@ -118,6 +118,7 @@ impl Shell {
             log::debug!("dropped a post from a closed timeline");
             return false;
         };
+        let opened = matches!(posted, Posted::Opened(_));
         match posted {
             Posted::Opened(window) => {
                 open.opened(window);
@@ -147,6 +148,9 @@ impl Shell {
         }
         if shown {
             self.report_reading();
+        }
+        if opened {
+            self.resolve_replies();
         }
         shown
     }
@@ -275,7 +279,8 @@ impl Shell {
         }
         let copied_ended = self.end_copied(clock_s);
         let new_day = self.follow_the_day(clock_s, tx);
-        restored || copied_ended || new_day
+        let flash_ended = self.poll_flash(clock_s);
+        restored || copied_ended || new_day || flash_ended
     }
 
     /// Keeps `today` current: checks once the local day should have ended,

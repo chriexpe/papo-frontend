@@ -17,6 +17,34 @@ use papo_sdk::MentionTarget;
 use papo_sdk_ui::mention_suggestions;
 
 impl Shell {
+    /// The keys of replying and editing (`docs/design.md` §12), after the
+    /// picker had its turn: Escape ends an edit (the field as it was comes
+    /// back) or a reply (the text stays); in an empty field, ↑ edits your
+    /// newest message and Ctrl+↑ goes into the conversation.
+    fn mode_key(&mut self, key: &KeyEvent, bare: bool, tx: &mut Tx) -> bool {
+        let empty = self
+            .composer
+            .shown()
+            .is_some_and(|(_, draft)| draft.edit.text.is_empty());
+        let primary_only = (key.mods.cmd || key.mods.ctrl) && !key.mods.alt && !key.mods.shift;
+        match key.key {
+            Key::Escape if bare => {
+                if let Some(effects) = self.composer.cancel_edit() {
+                    self.run_composer(effects, Some(tx));
+                    return true;
+                }
+                let Some(effects) = self.composer.cancel_reply() else {
+                    return false;
+                };
+                self.run_composer(effects, Some(tx));
+                true
+            }
+            Key::Up if bare && empty => self.edit_newest(tx),
+            Key::Up if primary_only && empty => self.focus_newest_message(tx),
+            _ => false,
+        }
+    }
+
     /// A key reached the field; whether it is taken here.
     pub(crate) fn composer_key(&mut self, key: &KeyEvent, enter_sends: bool, tx: &mut Tx) -> bool {
         // AltGr (Ctrl+Alt off macOS) and Option still type; a command
@@ -34,6 +62,9 @@ impl Shell {
             return true;
         }
         let bare = !key.mods.ctrl && !key.mods.cmd && !key.mods.alt && !key.mods.shift;
+        if self.mode_key(key, bare, tx) {
+            return true;
+        }
         if key.key == Key::Tab && bare && self.composer.skip_pair() {
             self.composer_edited(tx);
             return true;

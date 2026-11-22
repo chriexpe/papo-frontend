@@ -38,6 +38,8 @@ pub(crate) const TYPE_BODY: TextStyle = type_scaled(1.0, WEIGHT_REGULAR);
 pub(crate) const TYPE_BODY_STRONG: TextStyle = type_scaled(1.0, WEIGHT_SEMIBOLD);
 /// `type.small` at weight 500: field labels, links under a form.
 pub(crate) const TYPE_SMALL_MEDIUM: TextStyle = type_scaled(12.0 / 13.0, WEIGHT_MEDIUM);
+/// `type.small` at weight 600: a name in a reply line or bar.
+pub(crate) const TYPE_SMALL_STRONG: TextStyle = type_scaled(12.0 / 13.0, WEIGHT_SEMIBOLD);
 /// `type.small` at weight 400: a feedback line.
 pub(crate) const TYPE_SMALL: TextStyle = type_scaled(12.0 / 13.0, WEIGHT_REGULAR);
 /// `type.caption`: sub-lines, a server's address, a field's hint.
@@ -99,6 +101,7 @@ mod colour;
 mod content;
 mod density;
 mod reading;
+mod replies;
 mod sizes;
 #[cfg(test)]
 mod tests;
@@ -108,4 +111,5 @@ pub(crate) use colour::{Palette, Theme};
 pub(crate) use content::*;
 pub(crate) use density::*;
 pub(crate) use reading::*;
+pub(crate) use replies::*;
 pub(crate) use sizes::*;

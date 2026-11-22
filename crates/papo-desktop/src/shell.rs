@@ -41,6 +41,8 @@ pub(crate) struct Shell {
     writing: WritingPrefs,
     /// The unsent message whose "Send again?" is open.
     resend: Option<outgoing::Resend>,
+    /// The deletion waiting for its confirmation.
+    deleting: Option<deleting::DeleteAsk>,
     sdk: Option<Sdk<Shell>>,
     stage: Stage,
     /// What the server and account screens hold. Kept outside the flow so a
@@ -125,6 +127,7 @@ impl Default for Shell {
             local_ids: papo_sdk::Uuid::new_v4,
             writing: WritingPrefs::default(),
             resend: None,
+            deleting: None,
             sdk: None,
             stage: Stage::Starting,
             fields: Fields::default(),
@@ -214,9 +217,12 @@ mod accounts;
 mod composer;
 mod composer_input;
 mod content;
+pub(crate) mod deleting;
+mod message_keys;
 mod navigate;
 mod outgoing;
 mod reading;
+mod replies;
 mod sign_in_flow;
 #[cfg(test)]
 mod tests;

@@ -19,7 +19,7 @@ fn text_meets_its_contrast_floor_on_every_surface_it_sits_on() {
             (palette.surface_hover, "hover"),
             (palette.surface_selected, "selected"),
             (palette.surface_code, "code"),
-            (palette.mention_row, "mention row"),
+            (palette.highlight_mention, "mention highlight"),
         ] {
             let primary = contrast(palette.text_primary, surface);
             let secondary = contrast(palette.text_secondary, surface);
@@ -120,10 +120,15 @@ fn code_tokens_and_mentions_are_readable_where_they_sit() {
             mention >= 4.5,
             "{theme:?} mention on its chip: {mention:.2}:1"
         );
-        let link = contrast(palette.link, palette.mention_row);
+        let link = contrast(palette.link, palette.highlight_mention);
         assert!(
             link >= 4.5,
-            "{theme:?} link on the mention row: {link:.2}:1"
+            "{theme:?} link on the mention highlight: {link:.2}:1"
+        );
+        let link = contrast(palette.link, palette.surface_selected);
+        assert!(
+            link >= 4.5,
+            "{theme:?} link on the selected highlight: {link:.2}:1"
         );
     }
 }
