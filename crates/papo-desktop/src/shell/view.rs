@@ -61,7 +61,7 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(server) = removing {
                     app = app.child(remove_server::confirm(&server.name, &palette));
                 }
-                if let Some(prompt) = &shell.reading.link {
+                if let Some(prompt) = &shell.content.link {
                     app = app.child(links::confirm(prompt, &palette));
                 }
                 if let Some(flow) = flow {
@@ -118,6 +118,7 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
         palette: *palette,
         time: shell.local_time.clone(),
         today: shell.today,
+        hourglass: shell.prefs.unread_hourglass,
     };
     let conversation = col()
         .key("conversation")

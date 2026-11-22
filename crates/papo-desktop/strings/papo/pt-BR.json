@@ -122,5 +122,20 @@
   "timeline.month.9": "setembro",
   "timeline.month.10": "outubro",
   "timeline.month.11": "novembro",
-  "timeline.month.12": "dezembro"
+  "timeline.month.12": "dezembro",
+  "reading.new_messages": "Novas mensagens ↓",
+  "reading.new_messages_spoken": "Novas mensagens",
+  "reading.unread_below": "Não lidas ↓",
+  "reading.unread_below_spoken": "Mensagens não lidas abaixo",
+  "reading.unread_above": "Não lidas ↑",
+  "reading.unread_above_spoken": "Mensagens não lidas acima",
+  "reading.hourglass": "Ir para a mensagem não lida mais antiga do bloco",
+  "reading.first_new": "Ir para a primeira mensagem nova",
+  "reading.latest": "Mensagens mais novas",
+  "reading.clear_block": "Limpar bloco de não lidas",
+  "reading.seeking": "Carregando mensagens não lidas anteriores…",
+  "reading.cancel": "Cancelar",
+  "reading.arrivals.one": "{{count}} mensagem nova",
+  "reading.arrivals.other": "{{count}} mensagens novas",
+  "reading.labelled": "{{action}}, {{arrivals}}"
 }

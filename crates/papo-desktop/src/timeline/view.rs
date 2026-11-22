@@ -1,8 +1,9 @@
 //! Draws the shown timeline: one scroll viewport per (account, channel)
 //! that follows its bottom, over Rune's index-built virtual rows keyed by
-//! the SDK items' identities. Messages are `message_row`'s; this draws the
-//! rest (date separators, gaps, loading rows) and wires the reports the
-//! anchor, paging and gap fills read.
+//! the SDK items' identities, with the reading controls floating over it
+//! (`controls`). Messages are `message_row`'s; this draws the rest (date
+//! separators, gaps, loading rows) and wires the reports the anchor,
+//! paging, gap fills and read reports read.
 //!
 //! Pure: rows read the host's state when Rune builds them, and their
 //! handlers name their timeline and item by key, never by index.
@@ -16,6 +17,7 @@ use rune::{El, GrowthSpec, ScrollSpec, Tx, col, el, memo, row, text};
 
 use super::content::Press;
 use super::content::copy::{self, Source};
+use super::controls::{jump_stack, seeking_pill};
 use super::local_time::{LocalTime, day_label};
 use super::message_row::message_row;
 use super::{OpenTimeline, Phase, TimelineKey, row_key};
@@ -38,8 +40,9 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn timeline(&self) -> Option<&OpenTimeline>;
     /// Rows `range` are visible. Returns whether the view changed.
     fn rows_visible(&mut self, key: TimelineKey, range: Range<usize>) -> bool;
-    /// The viewport's top is at `top_pt` in window points.
-    fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, tx: &mut Tx);
+    /// The viewport's top is at `top_pt` in window points, and it is
+    /// `height_pt` tall.
+    fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, height_pt: f32, tx: &mut Tx);
     /// Message `id` is laid out from `edges_pt[0]` to `edges_pt[1]`,
     /// top to bottom, in window points.
     fn row_moved(&mut self, key: TimelineKey, id: Uuid, edges_pt: [f32; 2], tx: &mut Tx);
@@ -55,6 +58,12 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx);
     /// The pointer entered or left message `message`.
     fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool);
+    /// ⌛ was pressed.
+    fn hourglass_pressed(&mut self, key: TimelineKey);
+    /// ↓ was pressed.
+    fn down_pressed(&mut self, key: TimelineKey, tx: &mut Tx);
+    /// Cancel on ⌛'s pill was pressed.
+    fn seek_cancelled(&mut self, key: TimelineKey);
 }
 
 /// How the rows look: the same for every row of one view.
@@ -66,6 +75,8 @@ pub(crate) struct Style {
     pub(crate) time: LocalTime,
     /// The current civil day, read once per view: "Today" and "Yesterday".
     pub(crate) today: i64,
+    /// The "Unread hourglass" setting: ⌛ and the skipped block's edges.
+    pub(crate) hourglass: bool,
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and
@@ -99,6 +110,11 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         time: style.time.clone(),
         today: style.today,
     };
+    let stack = jump_stack::<S>(open, &style);
+    let seeking = open
+        .seek
+        .is_some()
+        .then(|| seeking_pill::<S>(key, &style.palette));
     let rows = col()
         .key("rows")
         // Every message's text is one selection, which copies as the
@@ -124,7 +140,7 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         )
         .virtual_rows_version(open.keys_version)
         .on_visible_rows(move |host: &mut S, range| host.rows_visible(key, range));
-    col()
+    let viewport = col()
         .key(viewport_key(key))
         .w_full()
         .grow(1.0)
@@ -135,10 +151,18 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         .label(strings::timeline_label())
         .on_at_bottom_if(move |host: &mut S, at_bottom| host.bottom_shown(key, at_bottom))
         .on_layout_tx(move |host: &mut S, rect, tx| {
-            host.viewport_moved(key, rect[1], tx);
+            host.viewport_moved(key, rect[1], rect[3], tx);
             tx.live_only();
         })
-        .child(rows)
+        .child(rows);
+    col()
+        .key("timeline")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(viewport)
+        .children(stack)
+        .children(seeking)
 }
 
 /// The viewport's key: each timeline has its own, so showing another opens
@@ -153,10 +177,14 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
     let Some(item) = open.items.get(index) else {
         return el();
     };
-    let previous = index
-        .checked_sub(1)
-        .and_then(|before| open.items.get(before))
-        .map(AsRef::as_ref);
+    // The SDK's unread marker moves as rows are read; drawn as nothing,
+    // it groups nothing either, so reading moves no row. The divider held
+    // for the visit splits its group instead (`reading`).
+    let previous = (0..index)
+        .rev()
+        .filter_map(|before| open.items.get(before))
+        .map(AsRef::as_ref)
+        .find(|item| !matches!(item, TimelineItem::UnreadMarker { .. }));
     match item.as_ref() {
         TimelineItem::Message {
             id,
@@ -171,7 +199,8 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
         TimelineItem::Loading(_) if open.fills_beside(index) => el().w_full(),
         // A gap fills itself as it nears; its skeleton stands for it.
         TimelineItem::Gap(_) | TimelineItem::Loading(_) => skeleton(style),
-        // The unread marker is D3c's; a local echo comes with the composer.
+        // The unread marker shows as the divider held for the visit, over
+        // the rows; a local echo comes with the composer.
         _ => el().w_full(),
     }
 }

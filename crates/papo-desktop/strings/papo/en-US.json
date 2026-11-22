@@ -122,5 +122,20 @@
   "timeline.month.9": "September",
   "timeline.month.10": "October",
   "timeline.month.11": "November",
-  "timeline.month.12": "December"
+  "timeline.month.12": "December",
+  "reading.new_messages": "New messages ↓",
+  "reading.new_messages_spoken": "New messages",
+  "reading.unread_below": "Unread ↓",
+  "reading.unread_below_spoken": "Unread messages below",
+  "reading.unread_above": "Unread ↑",
+  "reading.unread_above_spoken": "Unread messages above",
+  "reading.hourglass": "Go to oldest unread message in catch-up block",
+  "reading.first_new": "Go to first new message",
+  "reading.latest": "Latest messages",
+  "reading.clear_block": "Clear catch-up block",
+  "reading.seeking": "Loading earlier unread messages…",
+  "reading.cancel": "Cancel",
+  "reading.arrivals.one": "{{count}} new message",
+  "reading.arrivals.other": "{{count}} new messages",
+  "reading.labelled": "{{action}}, {{arrivals}}"
 }

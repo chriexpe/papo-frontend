@@ -1,16 +1,18 @@
 //! The shown timeline in the shell: moving the reader arms the save, which
 //! fires once the place has rested, and then the window asks for nothing
-//! but the next local midnight.
+//! but the next local midnight; read reports wait while the window is off
+//! screen or a popup covers the rows.
 
 use std::sync::Arc;
 
 use imbl::Vector;
-use papo_sdk::{AccountId, Message, Uuid};
+use papo_sdk::{AccountId, Message, Uuid, VisibilityContinuity};
 use papo_sdk_ui::message_content::MessageContent;
 use papo_sdk_ui::{TimelineItem, UtcOffset};
 use rune::Runtime;
 
 use super::{FRAME_S, Shell, app, server_id};
+use crate::links::Prompt;
 use crate::timeline::local_time::LocalTime;
 use crate::timeline::{OpenTimeline, TimelineKey};
 
@@ -54,7 +56,7 @@ fn showing_a_timeline() -> Runtime<Shell> {
             account: AccountId::new(server_id(), Uuid::nil()),
             channel: Uuid::from_u128(7),
         };
-        shell.tabs.show(Some(key));
+        shell.tabs.show(Some(key), false);
         *shell.tabs.shown_mut().unwrap() = OpenTimeline::loaded(key, messages(200));
     });
     for _ in 0..30 {
@@ -83,5 +85,59 @@ fn a_moved_place_is_saved_once_it_rests_and_then_the_window_rests() {
             .is_none_or(|due_s| due_s >= clock_s - 1.0),
         "only midnight is awaited: {:?}",
         rt.wake_deadline()
+    );
+}
+
+/// The app with a timeline of 200 messages whose rows have reported, while
+/// the window is off screen.
+fn showing_a_timeline_hidden() -> Runtime<Shell> {
+    let mut rt = app();
+    rt.poll = Some(Shell::poll);
+    rt.update(|shell, tx| {
+        shell.window_visibility(false, tx);
+        let key = TimelineKey {
+            account: AccountId::new(server_id(), Uuid::nil()),
+            channel: Uuid::from_u128(7),
+        };
+        shell.tabs.show(Some(key), false);
+        *shell.tabs.shown_mut().unwrap() = OpenTimeline::loaded(key, messages(200));
+    });
+    for _ in 0..30 {
+        rt.frame(FRAME_S);
+    }
+    rt
+}
+
+#[test]
+fn no_read_report_goes_while_the_window_is_hidden_or_a_popup_covers_the_rows() {
+    let mut rt = showing_a_timeline_hidden();
+    assert!(
+        rt.state.report_due_now().is_none(),
+        "the window is off screen"
+    );
+    rt.update(|shell, _tx| {
+        shell.window_shown = true;
+        shell.content.link = Some(Prompt {
+            url: "https://example.invalid/".to_owned(),
+            host: "example.invalid".to_owned(),
+            always: false,
+        });
+    });
+    assert!(
+        rt.state.report_due_now().is_none(),
+        "a popup covers the rows"
+    );
+    rt.update(|shell, _tx| shell.content.link = None);
+    let (_, _, report) = rt
+        .state
+        .report_due_now()
+        .expect("nothing was sent while hidden or covered, so the rows are due now");
+    assert_eq!(report.continuity, VisibilityContinuity::Discontinuous);
+    let newest = Uuid::from_u128(200);
+    assert_eq!(report.ids.last(), Some(&newest), "the bottom rows show");
+    assert!(
+        report.ids.len() < 40,
+        "only the visible rows: {}",
+        report.ids.len()
     );
 }

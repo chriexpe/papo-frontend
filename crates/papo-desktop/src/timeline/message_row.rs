@@ -7,7 +7,8 @@
 //! The body is `content`'s. A message that mentions the reader (or
 //! everyone) has the mention background and the amber bar on its left. The
 //! author's name comes from the account's members, a bridged author's from
-//! the message.
+//! the message. A reading boundary (`boundary`) is drawn over the distance
+//! above the row; the new-messages divider also starts a new group.
 
 use papo_sdk::mentions::{contains_everyone_mention, contains_user_mention};
 use papo_sdk::{Message, MessageKey, ResourceSnapshot, Uuid, parse_message_timestamp_us};
@@ -16,9 +17,11 @@ use papo_sdk_ui::message_content::MessageContent;
 use rune::{El, col, el, memo, row, text};
 
 use super::OpenTimeline;
+use super::boundary::boundary as boundary_line;
 use super::content::{self, Context, Doc, Draw, Edited, mention_names};
 use super::grouping::continues;
 use super::local_time::LocalTime;
+use super::reading::Boundary;
 use super::rows::{MESSAGE_PART, message_key};
 use super::view::{Style, TimelineHost};
 use crate::design::{
@@ -47,9 +50,12 @@ struct Parts<'a> {
     mentions_me: bool,
     /// When it was edited, as the wire says it.
     edited_at: Option<&'a str>,
+    /// The reading boundary over the distance above it.
+    boundary: Option<Boundary>,
 }
 
 /// Message `id`'s row. It reports where its top is, for the anchor.
+/// `previous` is the item drawn above it.
 pub(super) fn message_row<S: TimelineHost>(
     open: &OpenTimeline,
     id: Uuid,
@@ -59,7 +65,12 @@ pub(super) fn message_row<S: TimelineHost>(
     style: &Style,
 ) -> El {
     let layout = style.layout;
-    let continued = layout.grouped && continues(previous, message);
+    let boundary = open.reading.boundary(id, style.hourglass);
+    // Only the divider, held for the visit, splits a group: the block's
+    // edges move as the SDK covers what is read, and a split that moved
+    // with them would move rows.
+    let splits = boundary == Some(Boundary::NewMessages);
+    let continued = layout.grouped && !splits && continues(previous, message);
     let at_us = created_us(message);
     let show_time = match previous {
         Some(TimelineItem::Message {
@@ -79,6 +90,7 @@ pub(super) fn message_row<S: TimelineHost>(
         show_time,
         mentions_me: mentions(message, open.key.account.user()),
         edited_at: message.edited_at.as_deref(),
+        boundary,
     };
     let key = open.key;
     let revealed = open.revealed(id);
@@ -223,7 +235,11 @@ fn build(parts: &Parts<'_>, body: El, style: &Style, report: impl FnOnce(El) -> 
             .fill(palette.mention_row)
             .border_sides([0.0, 0.0, 0.0, MENTION_BAR_PT], palette.mention_bar);
     }
-    col().w_full().pt(above_pt).child(report(message))
+    let row = col().w_full().pt(above_pt).child(report(message));
+    match parts.boundary {
+        Some(boundary) => row.child(boundary_line(boundary, above_pt, &palette)),
+        None => row,
+    }
 }
 
 /// The first letter of `name` on a rounded square.

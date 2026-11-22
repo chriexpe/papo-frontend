@@ -23,6 +23,7 @@ mod navigation;
 mod private_bus;
 mod profile_dir;
 mod rail;
+mod reading_prefs;
 mod reconnect_hints;
 mod remove_server;
 mod sdk_bridge;
@@ -66,7 +67,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the exit fence below runs after the window is gone.
     rune::orderly_exit();
     let keyring = Arc::new(Keyring::start(SecretService::default)?);
-    let app = rune::App::new(window::spec()).on_close(Shell::window_closing);
+    let app = rune::App::new(window::spec())
+        .on_close(Shell::window_closing)
+        // Read reports wait while the window is off screen.
+        .on_visibility(Shell::window_visibility);
     let post = Arc::new(app.handle());
     lifecycle.attach(Arc::new(app.handle()));
     let bridge = Rc::new(RefCell::new(BridgeSlot::NotStarted));

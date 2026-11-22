@@ -68,6 +68,8 @@ impl Anchor {
 pub(crate) struct Tracker {
     /// The viewport's top, in window points.
     viewport_top_pt: Option<f32>,
+    /// The viewport's height, in points.
+    viewport_height_pt: f32,
     /// Whether the viewport shows its bottom. A new viewport opens there.
     at_bottom: bool,
     /// The visible message rows, top to bottom, as last reported.
@@ -87,13 +89,29 @@ impl Tracker {
         }
     }
 
-    pub(crate) fn viewport_moved(&mut self, top_pt: f32) {
+    pub(crate) fn viewport_moved(&mut self, top_pt: f32, height_pt: f32) {
         self.viewport_top_pt = Some(top_pt);
+        self.viewport_height_pt = height_pt;
     }
 
     /// Returns whether it changed.
     pub(crate) fn bottom_shown(&mut self, at_bottom: bool) -> bool {
         std::mem::replace(&mut self.at_bottom, at_bottom) != at_bottom
+    }
+
+    pub(crate) fn at_bottom(&self) -> bool {
+        self.at_bottom
+    }
+
+    /// The visible message rows, top to bottom, as last reported.
+    pub(crate) fn visible(&self) -> &[Uuid] {
+        &self.visible
+    }
+
+    /// Where a message a jump lands on puts its top: a third of the way
+    /// down the viewport, as Android's jumps do.
+    pub(crate) fn jump_offset_pt(&self) -> f32 {
+        self.viewport_height_pt / 3.0
     }
 
     /// Message `id` is laid out from `top_pt` to `bottom_pt`.
@@ -143,7 +161,7 @@ mod tests {
         let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let mut tracker = Tracker::new();
         tracker.bottom_shown(false);
-        tracker.viewport_moved(100.0);
+        tracker.viewport_moved(100.0, 400.0);
         tracker.rows_visible(vec![a, b]);
         assert_eq!(tracker.anchor(true), None);
         tracker.row_moved(b, 130.0, 130.0 + 20.0);
@@ -168,7 +186,7 @@ mod tests {
     fn the_bottom_of_a_window_that_does_not_follow_is_a_message() {
         let a = Uuid::from_u128(1);
         let mut tracker = Tracker::new();
-        tracker.viewport_moved(0.0);
+        tracker.viewport_moved(0.0, 400.0);
         tracker.rows_visible(vec![a]);
         tracker.row_moved(a, 10.0, 30.0);
         assert_eq!(tracker.anchor(true), Some(Anchor::Newest));
@@ -186,7 +204,7 @@ mod tests {
         let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let mut tracker = Tracker::new();
         tracker.bottom_shown(false);
-        tracker.viewport_moved(0.0);
+        tracker.viewport_moved(0.0, 400.0);
         tracker.rows_visible(vec![a, b]);
         tracker.row_moved(a, -10.0, -10.0 + 20.0);
         tracker.row_moved(b, 40.0, 40.0 + 20.0);

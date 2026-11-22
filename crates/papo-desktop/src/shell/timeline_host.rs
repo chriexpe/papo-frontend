@@ -21,16 +21,18 @@ impl TimelineHost for Shell {
             return false;
         };
         let requests = open.rows_visible(range);
+        open.reports.rows_reported();
         let filling = requests
             .iter()
             .any(|request| matches!(request, Request::FillGap(_)));
         self.send_requests(key, requests);
+        self.report_reading();
         filling
     }
 
-    fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, _tx: &mut Tx) {
+    fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, height_pt: f32, _tx: &mut Tx) {
         if let Some(open) = self.shown_timeline_mut(key) {
-            open.tracker.viewport_moved(top_pt);
+            open.tracker.viewport_moved(top_pt, height_pt);
         }
     }
 
@@ -43,15 +45,27 @@ impl TimelineHost for Shell {
     ) {
         if let Some(open) = self.shown_timeline_mut(key) {
             open.tracker.row_moved(id, top_pt, bottom_pt);
+            // A jump that lands on the same rows reports no new range, but
+            // its rows move.
+            open.reports.rows_reported();
             self.place_moved(tx);
         }
     }
 
+    /// ↓ shows by whether the bottom does, so the view changes with it.
     fn bottom_shown(&mut self, key: TimelineKey, at_bottom: bool) -> bool {
-        if let Some(open) = self.shown_timeline_mut(key) {
-            open.tracker.bottom_shown(at_bottom);
+        let Some(open) = self.shown_timeline_mut(key) else {
+            return false;
+        };
+        let changed = open.tracker.bottom_shown(at_bottom);
+        if changed {
+            if at_bottom {
+                open.reading.reached_bottom();
+            } else {
+                open.reading.left_bottom();
+            }
         }
-        false
+        changed
     }
 
     fn content_pressed(&mut self, key: TimelineKey, message: Uuid, press: Press, tx: &mut Tx) {
@@ -64,6 +78,18 @@ impl TimelineHost for Shell {
 
     fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) {
         self.message_hovered_in(key, message, hovered);
+    }
+
+    fn hourglass_pressed(&mut self, key: TimelineKey) {
+        self.hourglass_pressed(key);
+    }
+
+    fn down_pressed(&mut self, key: TimelineKey, tx: &mut Tx) {
+        self.down_pressed(key, tx);
+    }
+
+    fn seek_cancelled(&mut self, key: TimelineKey) {
+        self.seek_cancelled(key);
     }
 
     fn retry_gap(&mut self, key: TimelineKey, cursor_id: &str) {

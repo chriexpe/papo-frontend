@@ -45,7 +45,8 @@ impl Shell {
         if self.sdk.is_none() {
             return;
         }
-        let Some(switch) = self.tabs.show(self.wanted_timeline()) else {
+        let wanted = self.wanted_timeline();
+        let Some(switch) = self.tabs.show(wanted, self.prefs.open_at_newest) else {
             return;
         };
         if let Some(save) = switch.save {
@@ -76,7 +77,7 @@ impl Shell {
             .retain_accounts(|account| accounts.contains(&account));
     }
 
-    fn start_watch(&self, opening: Opening) {
+    pub(super) fn start_watch(&self, opening: Opening) {
         let Some(sdk) = &self.sdk else {
             return;
         };
@@ -84,12 +85,14 @@ impl Shell {
             key,
             ticket,
             anchor,
+            window,
             stopped,
         } = opening;
         let watch = Watch {
             key,
             ticket,
             anchor,
+            window,
             offsets: Arc::clone(&self.local_time.offsets),
             apply: Shell::timeline_posted,
         };
@@ -105,6 +108,7 @@ impl Shell {
         tx: &mut Tx,
     ) -> bool {
         let shown = self.tabs.is_shown(key);
+        let watched = self.window_shown && !self.popup_shown();
         let Some(open) = self.tabs.get_mut(key, ticket) else {
             log::debug!("dropped a post from a closed timeline");
             return false;
@@ -122,7 +126,7 @@ impl Shell {
                     .iter()
                     .any(|diff| matches!(diff, VectorDiff::Reset { .. }));
                 let anchor = open.current_anchor();
-                open.update(update);
+                open.update(update, watched);
                 // A reset replaces every row; the reader stays where they were.
                 if reset && shown {
                     open.restore = Some(anchor);
@@ -131,9 +135,13 @@ impl Shell {
                     }
                 }
             }
+            Posted::Reading(overlay) => open.reading.overlay_changed(overlay),
             Posted::Resources(resources) => open.resources = Some(resources),
             Posted::Failed => open.phase = crate::timeline::Phase::Failed,
             Posted::Closed => open.phase = crate::timeline::Phase::Closed,
+        }
+        if shown {
+            self.report_reading();
         }
         shown
     }
@@ -184,7 +192,7 @@ impl Shell {
             }
             Answer::Newer(page) => {
                 if open.newer_loaded(page.as_ref())
-                    && let Some(opening) = self.tabs.reopen(key, ticket)
+                    && let Some(opening) = self.tabs.reopen(key, ticket, None)
                 {
                     log::debug!("a focused timeline reached the newest; reopening it live");
                     self.start_watch(opening);
@@ -237,11 +245,12 @@ impl Shell {
     }
 
     /// The window's poll: returns a timeline shown again to its place,
-    /// saves the reader's place once it has rested, ends a code block's
-    /// "Copied", and names the new day once one starts. Returns whether the
-    /// view changed.
+    /// sends a read report a popup that closed lets go, saves the reader's
+    /// place once it has rested, ends a code block's "Copied", and names
+    /// the new day once one starts. Returns whether the view changed.
     pub(crate) fn poll(&mut self, clock_s: f64, tx: &mut Tx) -> bool {
         let restored = self.restore_shown(tx);
+        self.report_reading();
         if self.save_wake_s.is_some_and(|wake_s| wake_s <= clock_s) {
             self.save_wake_s = None;
             match self.save_due_s {
