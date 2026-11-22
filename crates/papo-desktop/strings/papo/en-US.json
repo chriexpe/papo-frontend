@@ -1,7 +1,7 @@
 {
   "window.title": "Papo",
   "composer.label": "Message",
-  "composer.placeholder": "Message",
+  "composer.placeholder": "Message #{{channel}}",
   "startup.profile_in_use": "Papo is already open.",
   "startup.open_failed": "Papo couldn't open its data.",
   "sign_in.add_server": "Add a server",
@@ -137,5 +137,19 @@
   "reading.cancel": "Cancel",
   "reading.arrivals.one": "{{count}} new message",
   "reading.arrivals.other": "{{count}} new messages",
-  "reading.labelled": "{{action}}, {{arrivals}}"
+  "reading.labelled": "{{action}}, {{arrivals}}",
+  "composer.send": "Send",
+  "composer.send_failed": "Couldn't send. Your message is back in the field.",
+  "composer.too_long.one": "{{count}} character over the limit",
+  "composer.too_long.other": "{{count}} characters over the limit",
+  "outgoing.pending": "Sending",
+  "outgoing.failed": "Not sent",
+  "outgoing.unknown": "May not have arrived",
+  "outgoing.options": "{{state}}. Options",
+  "outgoing.retry": "Retry",
+  "outgoing.discard": "Discard",
+  "outgoing.resend_title": "Send again?",
+  "outgoing.resend_body": "This message may already have arrived. Sending it again could post it twice.",
+  "outgoing.resend_cancel": "Cancel",
+  "outgoing.resend_confirm": "Send again"
 }

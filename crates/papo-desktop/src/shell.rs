@@ -6,17 +6,19 @@
 //! Owns presentation state (the composer's edit buffer and focus, which
 //! screens are open, the "Connected to" pill) and the link to the SDK client.
 //! Server, account and message state come from the SDK and are never copied
-//! here: the account watch posts only what the shell decides with. Sending is
-//! not wired: the field keeps what is typed. The shown channel's timeline is
-//! drawn above the composer (`shell/timeline.rs`).
+//! here: the account watch posts only what the shell decides with. Writing is
+//! the composer's (`composer`, `shell/composer.rs`). The shown channel's
+//! timeline is drawn above the composer (`shell/timeline.rs`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use papo_sdk::{AccountId, ServerId};
-use rune::{Image, ImageCache, TextEdit};
+use rune::{Image, ImageCache};
 
 use crate::account_watch::{self, Accounts};
+use crate::composer::Composer;
+use crate::composer::prefs::WritingPrefs;
 use crate::design::MessageLayout;
 use crate::navigation::Navigation;
 use crate::reading_prefs::ReadingPrefs;
@@ -27,12 +29,18 @@ use crate::sign_in::{Fields, Host, SignIn};
 use crate::tabs::Tabs;
 use crate::timeline::local_time::LocalTime;
 
-/// The element key of the composer's text field.
-pub(crate) const COMPOSER_KEY: &str = "composer";
-
 /// The root view's state.
 pub(crate) struct Shell {
-    composer: TextEdit,
+    /// Each channel's edit buffer and where its draft stands.
+    pub(crate) composer: Composer,
+    /// Each channel's lane of draft writes, shared with the bridge's jobs.
+    draft_writes: composer::DraftWrites,
+    /// A new message's local identity: random in the app, fixed in tests.
+    local_ids: fn() -> papo_sdk::Uuid,
+    /// "Enter to send".
+    writing: WritingPrefs,
+    /// The unsent message whose "Send again?" is open.
+    resend: Option<outgoing::Resend>,
     sdk: Option<Sdk<Shell>>,
     stage: Stage,
     /// What the server and account screens hold. Kept outside the flow so a
@@ -112,7 +120,11 @@ pub(crate) enum Stage {
 impl Default for Shell {
     fn default() -> Self {
         Shell {
-            composer: TextEdit::new(""),
+            composer: Composer::default(),
+            draft_writes: composer::DraftWrites::default(),
+            local_ids: papo_sdk::Uuid::new_v4,
+            writing: WritingPrefs::default(),
+            resend: None,
             sdk: None,
             stage: Stage::Starting,
             fields: Fields::default(),
@@ -161,6 +173,7 @@ impl Shell {
         self.images = Some(ImageCache::new(waker));
         self.content.load();
         self.prefs = ReadingPrefs::load();
+        self.writing = WritingPrefs::load();
     }
 
     /// Takes the account watch's summary, and opens the screens it calls for.
@@ -174,7 +187,7 @@ impl Shell {
                     connected: None,
                     offered: Vec::new(),
                 };
-                self.composer.focused = true;
+                self.composer.focus();
             }
             Stage::Running {
                 accounts: current,
@@ -198,8 +211,10 @@ impl Shell {
 }
 
 mod accounts;
+mod composer;
 mod content;
 mod navigate;
+mod outgoing;
 mod reading;
 mod sign_in_flow;
 #[cfg(test)]

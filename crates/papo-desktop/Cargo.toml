@@ -21,14 +21,14 @@ path = "src/main.rs"
 # the `papo` branch of chriexpe/rune.
 # Rune's default features without `embedded-fonts`: the app registers its own
 # fonts (src/fonts.rs), so Rune's copy of Inter would be dead weight.
-rune = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76", default-features = false, features = [
+rune = { git = "https://github.com/chriexpe/rune", rev = "743663a98d2bb7100cf630efe39346e22c013f53", default-features = false, features = [
     "accessibility",
     "dbus",
     "metal-backend",
     "ogg-audio",
     "svg",
 ] }
-rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "743663a98d2bb7100cf630efe39346e22c013f53" }
 papo-sdk = { path = "../sdk/core" }
 # The rail's per-server badge aggregates (ServerListService::subscribe_badges).
 papo-sdk-ui = { path = "../sdk/ui" }
@@ -56,15 +56,18 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 unicode-segmentation = "1.13"
 icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # Code blocks' syntax colours: Rune's highlighter, at Rune's revision.
-rune-highlights = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76" }
+rune-highlights = { git = "https://github.com/chriexpe/rune", rev = "743663a98d2bb7100cf630efe39346e22c013f53" }
 # Links' hosts, parsed as the SDK checks them (WHATWG URLs), for the
 # open-link confirmation; the version the SDK locks.
 url = "2.5"
+# A sent message's local identity, unique per send (the outgoing queue
+# rejects a reused one); the version the SDK locks, with its random IDs.
+uuid = { version = "1.26.1", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
 
 [build-dependencies]
-rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "4273827c62d1169ce7e3ced21f757fbcfd254d76", features = ["codegen"] }
+rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "743663a98d2bb7100cf630efe39346e22c013f53", features = ["codegen"] }
 
 [dev-dependencies]
 serde_json = "1"

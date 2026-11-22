@@ -9,7 +9,7 @@ use papo_sdk_ui::{TimelineDirection, TimelineItem};
 pub(crate) fn row_key(item: &TimelineItem) -> String {
     match item {
         TimelineItem::Message { id, .. } => message_key(*id),
-        TimelineItem::LocalEcho { id, .. } => format!("e{id}"),
+        TimelineItem::LocalEcho { id, .. } => echo_key(*id),
         TimelineItem::DateSeparator { before, .. } => format!("d{before}"),
         TimelineItem::UnreadMarker { .. } => "unread".to_owned(),
         TimelineItem::Gap(gap) => {
@@ -30,6 +30,11 @@ pub(crate) fn row_key(item: &TimelineItem) -> String {
 /// The row key of message `id`.
 pub(crate) fn message_key(id: papo_sdk::Uuid) -> String {
     format!("m{id}")
+}
+
+/// The row key of the local echo with local identity `id`.
+pub(crate) fn echo_key(id: papo_sdk::Uuid) -> String {
+    format!("e{id}")
 }
 
 /// The key, inside a message's row, of the message itself: the row less

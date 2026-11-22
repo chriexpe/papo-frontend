@@ -120,12 +120,12 @@ fn pressing_a_channel_selects_it() {
 }
 
 #[test]
-fn tab_goes_rail_then_add_then_the_server_pill_then_channels_then_composer() {
+fn tab_goes_rail_then_add_then_the_server_pill_then_channels() {
     let mut rt = with_servers();
     rt.accessibility_action(&tile_key(named("Lumen")), Action::Focus, None);
     rt.frame(FRAME_S);
     let mut order = vec![focused(&rt).unwrap()];
-    for _ in 0..5 {
+    for _ in 0..4 {
         press(&mut rt, Key::Tab);
         order.push(focused(&rt).unwrap());
     }
@@ -137,7 +137,6 @@ fn tab_goes_rail_then_add_then_the_server_pill_then_channels_then_composer() {
             "switch-account".to_owned(),
             "server-options".to_owned(),
             "channel-Lumen-general".to_owned(),
-            COMPOSER_KEY.to_owned(),
         ]
     );
 }

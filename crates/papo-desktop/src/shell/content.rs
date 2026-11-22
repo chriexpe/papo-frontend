@@ -177,13 +177,15 @@ impl Shell {
 }
 
 impl Shell {
-    /// Whether a popup is over the app: a menu, a confirmation or the
-    /// server and account screens.
+    /// Whether a popup is over the app: a menu, a confirmation (removing a
+    /// server, opening a link, sending again) or the server and account
+    /// screens.
     pub(super) fn popup_shown(&self) -> bool {
         let flow = matches!(&self.stage, super::Stage::Running { flow: Some(_), .. });
         flow || self.content.link.is_some()
             || self.nav.menu.is_some()
             || self.nav.removing.is_some()
+            || self.resend.is_some()
     }
 }
 

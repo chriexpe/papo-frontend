@@ -116,7 +116,7 @@ impl Shell {
         self.fields = Fields::default();
         self.sign_in_requests.issue();
         self.server_card_requests.issue();
-        self.composer.focused = true;
+        self.composer.focus();
         self.offer_sign_in_again();
     }
 

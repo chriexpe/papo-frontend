@@ -3,8 +3,13 @@
 //! the within-group distance. Grouping is presentation only: every message
 //! stays its own row, and only its neighbour decides how it looks.
 
+use std::sync::Arc;
+
+use imbl::Vector;
 use papo_sdk::{Message, MessageKey};
 use papo_sdk_ui::TimelineItem;
+
+use super::echoes::Echoes;
 
 /// Consecutive messages further apart than this start a new group.
 const GROUP_WINDOW_US: i64 = 5 * 60 * 1_000_000;
@@ -30,14 +35,31 @@ pub(crate) fn author(message: &Message) -> Option<Author<'_>> {
     message.author_id.as_deref().map(Author::Member)
 }
 
-/// Whether `message` continues the group of `previous`, the item just
-/// before it. Only a message continues a message: a date separator (a new
-/// day), the unread marker, a gap or a loading row starts a new group.
-pub(crate) fn continues(previous: Option<&TimelineItem>, message: &Message) -> bool {
-    let Some(TimelineItem::Message {
-        message: previous, ..
-    }) = previous
-    else {
+/// The message drawn just above item `index`, which it may continue: a
+/// message, or a local echo as the message it stands for. The unread
+/// marker is drawn as nothing, so it is looked past; any other item (a date
+/// separator, a gap, a loading row) starts a new group.
+pub(crate) fn previous_message<'a>(
+    items: &'a Vector<Arc<TimelineItem>>,
+    echoes: &'a Echoes,
+    index: usize,
+) -> Option<&'a Message> {
+    let previous = (0..index)
+        .rev()
+        .filter_map(|before| items.get(before))
+        .find(|item| !matches!(item.as_ref(), TimelineItem::UnreadMarker { .. }))?;
+    match previous.as_ref() {
+        TimelineItem::Message { message, .. } => Some(message),
+        TimelineItem::LocalEcho { id, .. } => echoes.get(*id).map(|echo| echo.message.as_ref()),
+        _ => None,
+    }
+}
+
+/// Whether `message` continues the group of `previous`, the message just
+/// above it (`previous_message`): the same author, at most five minutes
+/// apart.
+pub(crate) fn continues(previous: Option<&Message>, message: &Message) -> bool {
+    let Some(previous) = previous else {
         return false;
     };
     let same_author = match (author(previous), author(message)) {
@@ -50,19 +72,23 @@ pub(crate) fn continues(previous: Option<&TimelineItem>, message: &Message) -> b
     ) else {
         return false;
     };
-    let apart_us = after.created_at_us - before.created_at_us;
-    same_author && (0..=GROUP_WINDOW_US).contains(&apart_us)
+    // Either way round: a local echo carries this device's clock, which may
+    // run a little behind the server's that stamped the message above.
+    let apart_us = after.created_at_us.abs_diff(before.created_at_us);
+    same_author && apart_us <= GROUP_WINDOW_US.unsigned_abs()
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
+    use imbl::Vector;
     use papo_sdk::{Message, Uuid};
     use papo_sdk_ui::TimelineItem;
     use papo_sdk_ui::message_content::MessageContent;
 
-    use super::continues;
+    use super::{continues, previous_message};
+    use crate::timeline::echoes::Echoes;
 
     fn message(n: u128, author: &str, at: &str) -> Message {
         Message {
@@ -96,7 +122,7 @@ mod tests {
 
     #[test]
     fn the_same_author_within_five_minutes_continues() {
-        let first = item(message(1, "ana", "2026-11-20T14:00:00Z"));
+        let first = message(1, "ana", "2026-11-20T14:00:00Z");
         assert!(continues(
             Some(&first),
             &message(2, "ana", "2026-11-20T14:05:00Z")
@@ -112,24 +138,46 @@ mod tests {
     }
 
     #[test]
+    fn a_message_stamped_a_little_earlier_still_continues() {
+        // A local echo whose device clock runs behind the server's.
+        let first = message(1, "ana", "2026-11-20T14:00:30Z");
+        assert!(continues(
+            Some(&first),
+            &message(2, "ana", "2026-11-20T14:00:10Z")
+        ));
+    }
+
+    #[test]
     fn only_a_message_is_continued() {
-        let next = message(2, "ana", "2026-11-20T14:01:00Z");
-        assert!(!continues(None, &next));
+        let first = item(message(1, "ana", "2026-11-20T14:00:00Z"));
         let separator = TimelineItem::DateSeparator {
             day: 0,
             before: Uuid::from_u128(2),
         };
-        assert!(!continues(Some(&separator), &next));
         let unread = TimelineItem::UnreadMarker {
             before: Uuid::from_u128(2),
         };
-        assert!(!continues(Some(&unread), &next));
+        let echoes = Echoes::default();
+        let items: Vector<_> = [first, unread, separator]
+            .into_iter()
+            .map(Arc::new)
+            .collect();
+        assert!(previous_message(&items, &echoes, 0).is_none());
+        assert!(
+            previous_message(&items, &echoes, 2).is_some(),
+            "the unread marker is looked past"
+        );
+        assert!(
+            previous_message(&items, &echoes, 3).is_none(),
+            "a day starts anew"
+        );
+        assert!(!continues(None, &message(2, "ana", "2026-11-20T14:01:00Z")));
     }
 
     #[test]
     fn bridged_authors_match_on_source_and_external_id() {
         let at = "2026-11-20T14:00:00Z";
-        let first = item(bridged(1, "matrix", "@ana", at));
+        let first = bridged(1, "matrix", "@ana", at);
         assert!(continues(Some(&first), &bridged(2, "matrix", "@ana", at)));
         // Same bridge account and display name, another person.
         assert!(!continues(Some(&first), &bridged(2, "matrix", "@bia", at)));

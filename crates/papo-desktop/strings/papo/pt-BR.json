@@ -1,7 +1,7 @@
 {
   "window.title": "Papo",
   "composer.label": "Mensagem",
-  "composer.placeholder": "Mensagem",
+  "composer.placeholder": "Mensagem em #{{channel}}",
   "startup.profile_in_use": "O Papo já está aberto.",
   "startup.open_failed": "O Papo não conseguiu abrir os seus dados.",
   "sign_in.add_server": "Adicionar servidor",
@@ -137,5 +137,19 @@
   "reading.cancel": "Cancelar",
   "reading.arrivals.one": "{{count}} mensagem nova",
   "reading.arrivals.other": "{{count}} mensagens novas",
-  "reading.labelled": "{{action}}, {{arrivals}}"
+  "reading.labelled": "{{action}}, {{arrivals}}",
+  "composer.send": "Enviar",
+  "composer.send_failed": "Não foi possível enviar. A mensagem voltou para o campo.",
+  "composer.too_long.one": "{{count}} caractere acima do limite",
+  "composer.too_long.other": "{{count}} caracteres acima do limite",
+  "outgoing.pending": "Enviando",
+  "outgoing.failed": "Não enviada",
+  "outgoing.unknown": "Pode não ter chegado",
+  "outgoing.options": "{{state}}. Opções",
+  "outgoing.retry": "Tentar de novo",
+  "outgoing.discard": "Descartar",
+  "outgoing.resend_title": "Enviar de novo?",
+  "outgoing.resend_body": "Esta mensagem pode já ter chegado. Enviá-la de novo pode publicá-la duas vezes.",
+  "outgoing.resend_cancel": "Cancelar",
+  "outgoing.resend_confirm": "Enviar de novo"
 }

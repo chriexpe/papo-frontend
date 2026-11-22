@@ -10,6 +10,7 @@ use rune::{Drag, Phase, Tx};
 
 use super::Shell;
 use crate::channel_pane::{SERVER_CARD_KEY, SERVER_OPTIONS_KEY};
+use crate::composer::COMPOSER_KEY;
 use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::rail::tile_key;
 use crate::remove_server;
@@ -168,6 +169,23 @@ impl Shell {
         }
         match action {
             MenuAction::RemoveServer(server) => self.nav.removing = Some(server),
+            MenuAction::RetrySend {
+                key,
+                local,
+                unknown,
+            } => {
+                self.retry_send(key, local, unknown);
+                if !unknown {
+                    // The mark becomes the waiting clock, which takes no
+                    // keyboard: back to writing.
+                    tx.focus(COMPOSER_KEY, false);
+                }
+            }
+            MenuAction::DiscardSend { key, local } => {
+                self.discard_send(key, local);
+                // The row goes with it.
+                tx.focus(COMPOSER_KEY, false);
+            }
         }
     }
 

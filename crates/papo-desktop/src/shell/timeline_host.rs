@@ -1,6 +1,6 @@
 //! The reports the timeline's rows send the shell (`TimelineHost`): rows
 //! seen, the viewport and rows moved, presses inside content, gaps to
-//! retry. Each names its timeline; one no longer shown changes nothing.
+//! retry, an unsent message's mark. Each names its timeline; one no longer shown changes nothing.
 
 use std::ops::Range;
 
@@ -9,6 +9,7 @@ use rune::Tx;
 
 use super::Shell;
 use crate::timeline::content::Press;
+use crate::timeline::echoes::SendState;
 use crate::timeline::{OpenTimeline, Request, TimelineHost, TimelineKey};
 
 impl TimelineHost for Shell {
@@ -90,6 +91,10 @@ impl TimelineHost for Shell {
 
     fn seek_cancelled(&mut self, key: TimelineKey) {
         self.seek_cancelled(key);
+    }
+
+    fn send_state_pressed(&mut self, key: TimelineKey, local: Uuid, state: SendState) {
+        self.open_send_menu(key, local, state);
     }
 
     fn retry_gap(&mut self, key: TimelineKey, cursor_id: &str) {
