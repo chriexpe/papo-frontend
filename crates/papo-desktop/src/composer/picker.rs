@@ -103,6 +103,8 @@ fn row_for(candidate: &Candidate, index: usize, selected: bool, palette: &Palett
         _ => candidate.name.clone(),
     };
     let handle = match (&candidate.target, &candidate.username) {
+        // A person with no nickname shows their username once, as the name.
+        (Target::User(_), Some(username)) if *username == candidate.name => None,
         (Target::User(_), Some(username)) => Some(format!("@{username}")),
         (Target::Everyone, _) => Some(strings::mention_everyone_hint().to_owned()),
         (Target::User(_), None) => None,
@@ -133,8 +135,9 @@ fn row_for(candidate: &Candidate, index: usize, selected: bool, palette: &Palett
         }))
         .child(row().grow(1.0))
         .pr(SPACE_LG_PT);
+    // `surface.hover` is too close to the pill's own surface to show.
     if selected {
-        line = line.fill(palette.surface_hover);
+        line = line.fill(palette.surface_selected);
     }
     line
 }
