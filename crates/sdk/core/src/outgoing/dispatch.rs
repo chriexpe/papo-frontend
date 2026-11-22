@@ -308,6 +308,8 @@ async fn finish_attempt(
     // Intent belongs to the account, not a socket generation: record a confirmed receipt
     // after reconnect, but never publish to a revoked/replaced account handle.
     let acknowledged = outcome.as_ref().and_then(|value| value.message.clone());
+    // The snapshot `operation` predates the response; the outcome holds the resolved ID.
+    let target = outcome.as_ref().and_then(|value| value.message_id);
     session
         .client
         .inner
@@ -322,7 +324,7 @@ async fn finish_attempt(
         )
         .await?;
     let projection_result = if state == OperationState::Sent {
-        super::projection::finish(service, operation, generation, acknowledged).await
+        super::projection::finish(service, operation, generation, acknowledged, target).await
     } else {
         Ok(())
     };

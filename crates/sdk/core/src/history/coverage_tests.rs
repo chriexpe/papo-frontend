@@ -363,3 +363,21 @@ fn a_bare_id_locates_a_held_message_a_known_deletion_or_nothing() {
         LocatedMessage::Deleted
     );
 }
+
+#[test]
+fn a_locator_answers_every_id_as_locate_does() {
+    let mut simulation = Simulation::new();
+    let newest = INITIAL_MESSAGES - 1;
+    simulation.page(None, HistoryOrder::Desc, 4);
+    simulation.delete(newest - 1);
+    let snapshot = publish(&simulation.model, simulation.generation);
+    let locator = snapshot.locator();
+    for point in (newest - 6)..=newest {
+        let id = key(&message_point(point)).message_id;
+        assert_eq!(
+            locator.locate(id).unwrap(),
+            snapshot.locate(id).unwrap(),
+            "message {point}"
+        );
+    }
+}

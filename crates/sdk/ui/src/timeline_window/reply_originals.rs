@@ -1,11 +1,15 @@
 //! What each reply's original is, from the window's own messages first and otherwise from the
-//! canonical `HistorySnapshot::locate`. Owns no cache and fetches nothing: an original history
-//! does not hold is `Unknown`, never a deletion. Drawing the reply is the client's.
+//! canonical lookup (`HistorySnapshot::locator`, `locate`'s answers after one indexing pass,
+//! made only once a projection needs it). Owns no cache and fetches nothing: an original
+//! history does not hold is `Unknown`, never a deletion. Drawing the reply is the client's.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use papo_sdk::{AccountId, HistorySnapshot, InvalidMessageKey, LocatedMessage, Message, Uuid};
+use papo_sdk::{
+    AccountId, HistorySnapshot, InvalidMessageKey, LocatedMessage, Message, MessageLocator, Uuid,
+};
 
 use crate::{
     content_cache::{self, ContentCacheKey},
@@ -17,9 +21,12 @@ use crate::{
 pub(crate) struct Originals<'a> {
     raw: &'a HistorySnapshot,
     cache_scope: Option<(AccountId, Uuid)>,
-    /// The window's messages seen so far. An original is older than its reply, so a window
-    /// projected oldest first has met every original it shows before the reply.
+    /// The window's messages seen so far. An original is normally older than its reply, so a
+    /// window projected oldest first has usually met it; one that has not (a skewed clock) is
+    /// still found in history.
     shown: HashMap<Uuid, (Arc<Message>, Arc<MessageContent>)>,
+    /// History's index, built on the first original the window does not show.
+    locator: OnceCell<MessageLocator<'a>>,
 }
 
 impl<'a> Originals<'a> {
@@ -28,6 +35,7 @@ impl<'a> Originals<'a> {
             raw,
             cache_scope,
             shown: HashMap::new(),
+            locator: OnceCell::new(),
         }
     }
 
@@ -65,24 +73,27 @@ impl<'a> Originals<'a> {
                 content: Arc::clone(content),
             });
         }
-        Ok(match self.raw.locate(id)? {
-            LocatedMessage::Held { index, .. } => match self.raw.messages.get(index) {
-                Some(message) => {
-                    let key = self.cache_scope.map(|(account, channel)| ContentCacheKey {
-                        account,
-                        channel,
-                        message: id,
-                    });
-                    ReplyOriginal::Held {
-                        id,
-                        message: Arc::clone(message),
-                        content: content_cache::get_or_parse(key, message),
+        let raw = self.raw;
+        Ok(
+            match self.locator.get_or_init(|| raw.locator()).locate(id)? {
+                LocatedMessage::Held { index, .. } => match self.raw.messages.get(index) {
+                    Some(message) => {
+                        let key = self.cache_scope.map(|(account, channel)| ContentCacheKey {
+                            account,
+                            channel,
+                            message: id,
+                        });
+                        ReplyOriginal::Held {
+                            id,
+                            message: Arc::clone(message),
+                            content: content_cache::get_or_parse(key, message),
+                        }
                     }
-                }
-                None => ReplyOriginal::Unknown,
+                    None => ReplyOriginal::Unknown,
+                },
+                LocatedMessage::Deleted => ReplyOriginal::Deleted,
+                LocatedMessage::Unknown => ReplyOriginal::Unknown,
             },
-            LocatedMessage::Deleted => ReplyOriginal::Deleted,
-            LocatedMessage::Unknown => ReplyOriginal::Unknown,
-        })
+        )
     }
 }

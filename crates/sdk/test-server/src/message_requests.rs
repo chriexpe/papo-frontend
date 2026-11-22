@@ -198,7 +198,12 @@ fn mutate(state: &mut State, user: &str, method: &str, path: &str, body: &[u8]) 
             return problem(404, "not-found", path);
         };
         message.content = Some(request.content.clone());
-        message.edited_at = Some("2026-02-02T00:00:00Z".into());
+        state.edits = state.edits.saturating_add(1);
+        let edited_at = format!("2026-02-02T00:00:00.{:06}Z", state.edits.min(999_999));
+        let Some(message) = state.history.message_mut(id) else {
+            return problem(404, "not-found", path);
+        };
+        message.edited_at = Some(edited_at.clone());
         let reply = Reply::json(200, json!(message));
         if !state.silent_outgoing {
             let _ = crate::history_controls::emit_channel(
@@ -208,7 +213,7 @@ fn mutate(state: &mut State, user: &str, method: &str, path: &str, body: &[u8]) 
                     id: id.to_string(),
                     channel_id: channel.clone(),
                     content: request.content,
-                    edited_at: "2026-02-02T00:00:00Z".into(),
+                    edited_at,
                 })),
             );
         }

@@ -24,6 +24,10 @@ pub(super) struct WindowState {
     pub raw: Arc<HistorySnapshot>,
     pub outgoing: Option<watch::Receiver<Arc<papo_sdk::OutgoingSnapshot>>>,
     outgoing_version: u64,
+    /// This channel's operations as last projected: an outgoing image whose ones for this
+    /// channel are the same `Arc`s (an upload's progress, another channel's send) changes
+    /// no item.
+    outgoing_ops: Vec<Arc<papo_sdk::Operation>>,
     pub bounds: Bounds,
     pub older_cursor: Option<HistoryCursor>,
     pub newer_cursor: Option<HistoryCursor>,
@@ -70,6 +74,7 @@ impl WindowState {
             raw: subscription.snapshot,
             outgoing: None,
             outgoing_version: 0,
+            outgoing_ops: Vec::new(),
             history: subscription.updates,
             reading_version,
             reading,
@@ -187,14 +192,29 @@ impl WindowState {
             _ => return Err(TimelineError::InvalidCursor),
         };
         let reading_version = self.reading.borrow_and_update().version;
-        let outgoing_version = self
-            .outgoing
-            .as_mut()
-            .map_or(0, |rx| rx.borrow_and_update().version);
+        let (outgoing_version, outgoing_ops) = self.outgoing.as_mut().map_or_else(
+            || (0, Vec::new()),
+            |rx| {
+                let image = rx.borrow_and_update();
+                let ops = image
+                    .operations
+                    .iter()
+                    .filter(|op| op.channel_id == self.channel)
+                    .cloned()
+                    .collect();
+                (image.version, ops)
+            },
+        );
         let outgoing_only = self.raw.version == next.version
             && self.raw.generation == next.generation
             && self.reading_version == reading_version;
-        if outgoing_only && self.outgoing_version == outgoing_version {
+        let same_ops = outgoing_ops.len() == self.outgoing_ops.len()
+            && outgoing_ops
+                .iter()
+                .zip(&self.outgoing_ops)
+                .all(|(a, b)| Arc::ptr_eq(a, b));
+        if outgoing_only && (self.outgoing_version == outgoing_version || same_ops) {
+            self.outgoing_version = outgoing_version;
             return Ok(());
         }
         let reset = self.raw.generation != next.generation
@@ -203,6 +223,7 @@ impl WindowState {
         self.raw = next;
         self.reading_version = reading_version;
         self.outgoing_version = outgoing_version;
+        self.outgoing_ops = outgoing_ops;
         if outgoing_only {
             let items = self.project(config)?;
             if items == self.publisher.items {

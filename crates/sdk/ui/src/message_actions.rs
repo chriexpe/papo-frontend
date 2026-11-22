@@ -117,8 +117,9 @@ pub fn newest_editable(
     })
 }
 
-/// Written by this account itself: not someone else's, and not a webhook or bridged author's.
-fn is_own(message: &Message, account_user: Uuid) -> bool {
+/// Written by this account itself: not someone else's, and not a webhook or bridged author's
+/// that happens to carry the account's ID. The one rule for "your message" in this crate.
+pub(crate) fn is_own(message: &Message, account_user: Uuid) -> bool {
     !authored_by_other(message, account_user)
         && message.webhook_id.is_none()
         && message.external_author.is_none()

@@ -147,13 +147,18 @@ struct Line {
 
 impl Line {
     fn text(&mut self, text: &str) {
-        // Only the first line of a multi-line run.
-        let mut lines = text.split('\n');
-        if let Some(first) = lines.next() {
+        let mut segments = text.split('\n');
+        if let Some(first) = segments.next() {
             self.push_text(first);
         }
-        if lines.next().is_some() && self.has_content() {
-            self.ended = true;
+        for segment in segments {
+            // A newline ends a line that holds something; blank lines before it are skipped.
+            if self.has_content() {
+                self.ended = true;
+                return;
+            }
+            self.parts.clear();
+            self.push_text(segment);
         }
     }
 

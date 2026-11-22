@@ -244,6 +244,7 @@ fn a_confirmed_edit_and_delete_settle_history_without_their_gateway_events() -> 
         let timeline = Timeline::live(session.clone(), channel(), config()).await?;
         let mut stream = timeline.subscribe()?;
         let queue = session.outgoing();
+        let faulted = watch_faults(&queue).await?;
         let body = OutgoingMessage {
             content: "synthetic".into(),
             ..Default::default()
@@ -257,18 +258,7 @@ fn a_confirmed_edit_and_delete_settle_history_without_their_gateway_events() -> 
             )
             .await?;
         let mut image = queue.subscribe().await?;
-        let remote = loop {
-            let sent = image
-                .borrow_and_update()
-                .operations
-                .iter()
-                .find(|op| op.id == local() && op.state == OperationState::Sent)
-                .and_then(|op| op.message_id);
-            if let Some(remote) = sent {
-                break remote;
-            }
-            image.changed().await?;
-        };
+        let remote = sent(&mut image, local()).await?;
         let text_of = |items: &imbl::Vector<std::sync::Arc<TimelineItem>>| {
             items.iter().find_map(|item| match item.as_ref() {
                 TimelineItem::Message { id, message, .. } if *id == remote => {
@@ -327,7 +317,144 @@ fn a_confirmed_edit_and_delete_settle_history_without_their_gateway_events() -> 
             }
             image.changed().await?;
         }
+        assert!(
+            !faulted.load(std::sync::atomic::Ordering::SeqCst),
+            "settling raised no fault"
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()
+}
+
+#[test]
+fn a_deletion_confirmed_after_its_channel_went_away_settles_and_never_holds_the_queue() -> Result {
+    use futures_util::StreamExt;
+    let f = Fixture::new(10, vec![])?;
+    f.run(async {
+        let session = f.signed_in("refused-settle").await?;
+        let other: Uuid = f
+            .server()
+            .create_channel("other")
+            .await?
+            .id
+            .unwrap()
+            .parse()?;
+        f.server().set_silent_outgoing(true).await;
+        let timeline = Timeline::live(session.clone(), channel(), config()).await?;
+        let mut stream = timeline.subscribe()?;
+        let queue = session.outgoing();
+        let mut image = queue.subscribe().await?;
+        let body = |content: &str| OutgoingMessage {
+            content: content.into(),
+            ..Default::default()
+        };
+        queue
+            .enqueue(
+                channel(),
+                local(),
+                OperationKind::Message(body("synthetic")),
+                UnixMicros(0),
+            )
+            .await?;
+        let remote = sent(&mut image, local()).await?;
+
+        // The server deletes the message, then the whole channel, before the client hears back.
+        let mut delete = f
+            .server()
+            .hold_next_rest("DELETE", &format!("/messages/{remote}"))
+            .await?;
+        let deletion = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0013);
+        queue
+            .enqueue(
+                channel(),
+                deletion,
+                OperationKind::Delete {
+                    target: papo_sdk::MessageTarget::Remote(remote),
+                },
+                UnixMicros(1),
+            )
+            .await?;
+        delete.wait_started().await?;
+        assert!(f.server().delete_channel(&channel().to_string()).await);
+        while let Some(event) = stream.stream.next().await {
+            if matches!(event, papo_sdk_ui::TimelineEvent::Closed(_)) {
+                break;
+            }
+        }
+        delete.release();
+        loop {
+            let settled = image.borrow_and_update().operations.iter().any(|op| {
+                op.id == deletion && op.state == OperationState::Sent && op.history_projected
+            });
+            if settled {
+                break;
+            }
+            image.changed().await?;
+        }
+
+        // The queue still sends elsewhere.
+        let next = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0014);
+        queue
+            .enqueue(
+                other,
+                next,
+                OperationKind::Message(body("elsewhere")),
+                UnixMicros(2),
+            )
+            .await?;
+        loop {
+            let sent = image
+                .borrow_and_update()
+                .operations
+                .iter()
+                .any(|op| op.id == next && op.state == OperationState::Sent);
+            if sent {
+                break;
+            }
+            image.changed().await?;
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+/// The backend ID of operation `id`, once it is Sent.
+async fn sent(
+    image: &mut tokio::sync::watch::Receiver<std::sync::Arc<papo_sdk::OutgoingSnapshot>>,
+    id: Uuid,
+) -> Result<Uuid> {
+    loop {
+        let sent = image
+            .borrow_and_update()
+            .operations
+            .iter()
+            .find(|op| op.id == id && op.state == OperationState::Sent)
+            .and_then(|op| op.message_id);
+        if let Some(remote) = sent {
+            return Ok(remote);
+        }
+        image.changed().await?;
+    }
+}
+
+/// Becomes true if the queue ever reports a fault. A failed settle raises one, which stays
+/// until the next attempt after a backoff, so a watcher cannot miss it. The watcher ends with
+/// the queue's image.
+async fn watch_faults(
+    queue: &papo_sdk::OutgoingService,
+) -> Result<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+    let faulted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut watch = queue.subscribe().await?;
+    let seen = std::sync::Arc::clone(&faulted);
+    tokio::spawn(async move {
+        loop {
+            if watch.borrow_and_update().fault.is_some() {
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if watch.changed().await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(faulted)
 }

@@ -38,17 +38,15 @@ pub(super) fn append(
         })
         .collect();
     for operation in &outgoing.operations {
-        if operation.channel_id != channel
-            || !matches!(operation.kind.as_ref(), OperationKind::Message(_))
-        {
+        let OperationKind::Message(message) = operation.kind.as_ref() else {
+            continue;
+        };
+        if operation.channel_id != channel {
             continue;
         }
         if operation.state == OperationState::Sent && is_sent_echo_retired(operation, history) {
             continue;
         }
-        let OperationKind::Message(message) = operation.kind.as_ref() else {
-            continue;
-        };
         let reply = match message.reply_to {
             Some(target) => Some(original(&originals, outgoing, target)?),
             None => None,
@@ -68,7 +66,8 @@ pub(super) fn append(
 }
 
 /// The original an echo replies to: a confirmed create by its backend ID, an unconfirmed one
-/// by its local identity.
+/// (or a confirmed one history does not hold yet, still shown as its echo) by its local
+/// identity.
 fn original(
     originals: &Originals<'_>,
     outgoing: &OutgoingSnapshot,
@@ -82,9 +81,9 @@ fn original(
                 .iter()
                 .find(|op| op.id == local)
                 .and_then(|op| op.message_id);
-            match confirmed {
-                Some(id) => originals.of(id),
-                None => Ok(ReplyOriginal::Unsent { local }),
+            match confirmed.map(|id| originals.of(id)).transpose()? {
+                Some(ReplyOriginal::Unknown) | None => Ok(ReplyOriginal::Unsent { local }),
+                Some(original) => Ok(original),
             }
         }
     }

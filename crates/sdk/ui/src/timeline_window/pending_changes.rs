@@ -8,8 +8,9 @@ use papo_sdk::{MessageTarget, Operation, OperationKind, OperationState, Outgoing
 
 /// The newest unsettled edit or deletion of each message in `channel`, by backend message ID.
 /// An operation is settled once it is Sent and history has taken it in; until then (Queued,
-/// Sending, Failed, Unknown, or Sent but not yet settled) the message's item carries it. An
-/// operation on a create that has no backend ID yet changes no message item.
+/// Sending, Failed, Unknown, or Sent but not yet settled) the message's item carries it. A
+/// later settled change supersedes an earlier unsettled one: history already shows newer
+/// text. An operation on a create that has no backend ID yet changes no message item.
 pub(crate) fn by_message(
     outgoing: &OutgoingSnapshot,
     channel: Uuid,
@@ -22,9 +23,7 @@ pub(crate) fn by_message(
         .collect();
     let mut pending = HashMap::new();
     for operation in &outgoing.operations {
-        if operation.channel_id != channel
-            || (operation.state == OperationState::Sent && operation.history_projected)
-        {
+        if operation.channel_id != channel {
             continue;
         }
         let (OperationKind::Edit { target, .. } | OperationKind::Delete { target }) =
@@ -36,8 +35,13 @@ pub(crate) fn by_message(
             MessageTarget::Remote(id) => Some(*id),
             MessageTarget::Local(local) => operation.message_id.or(created.get(local).copied()),
         };
-        if let Some(message) = message {
-            // Insertion order: a later operation on the same message replaces an earlier one.
+        let Some(message) = message else {
+            continue;
+        };
+        // Insertion order: a later operation on the same message replaces an earlier one.
+        if operation.state == OperationState::Sent && operation.history_projected {
+            pending.remove(&message);
+        } else {
             pending.insert(message, Arc::clone(operation));
         }
     }
@@ -145,6 +149,18 @@ mod tests {
         );
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[&Uuid::from_u128(7)].id, Uuid::from_u128(2));
+    }
+
+    #[test]
+    fn a_later_settled_edit_supersedes_an_earlier_failed_one() {
+        let pending = by_message(
+            &image(vec![
+                operation(1, edit(remote(7)), OperationState::Failed, false),
+                operation(2, edit(remote(7)), OperationState::Sent, true),
+            ]),
+            channel(),
+        );
+        assert!(pending.is_empty());
     }
 
     #[test]

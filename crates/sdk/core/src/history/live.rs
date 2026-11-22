@@ -183,13 +183,21 @@ async fn project_receipt(
     message: &papo_api::wire::Message,
     live: bool,
 ) -> Result<(), ClientError> {
-    let channel = Uuid::from_bytes(Model::id(
+    session.inner.epochs.validate(generation)?;
+    let id = Uuid::from_bytes(Model::id(
         message
             .channel_id
             .as_deref()
             .ok_or(ClientError::ResourceData)?,
     )?);
-    mutate(session, generation, channel, |model| {
+    let channel = session
+        .inner
+        .history
+        .verified_channel(id)
+        .await
+        .map_err(|_| ClientError::ResourceData)?;
+    channel.check()?;
+    mutate(session, generation, &channel, |model| {
         model
             .receipt(message, if live { generation.get() } else { 0 })
             .map(|()| true)
@@ -197,43 +205,48 @@ async fn project_receipt(
     .await
 }
 
-/// Settles a confirmed edit or deletion of this account's into history through the same rules
-/// a socket event follows, so the outcome never waits for the echo of its own event: an older
-/// edit never replaces a newer one, and a deletion is final. Applying it twice changes nothing.
+/// Settles a confirmed edit or deletion of this account's into history the way its socket
+/// event would, so the outcome never waits for that event: the same channels (allowed or
+/// quarantined), the same rules (an older edit never replaces a newer one, a deletion is
+/// final). Settling again reaches the same state. A channel the session refuses, or one
+/// sealed meanwhile, has no history to settle: that is done, never an error to retry.
 pub(crate) async fn settle(
     session: &crate::Session,
     generation: Generation,
-    channel: Uuid,
+    channel_id: Uuid,
     event: &KnownEvent,
 ) -> Result<(), ClientError> {
-    mutate(session, generation, channel, |model| {
+    session.inner.epochs.validate(generation)?;
+    let Some(channel) = session.inner.history.live_channel(channel_id).await else {
+        return Ok(());
+    };
+    if channel.is_closed() {
+        return Ok(());
+    }
+    let settled = mutate(session, generation, &channel, |model| {
         model.event(event, generation.get())
     })
-    .await
+    .await;
+    if settled.is_err() && channel.check().is_err() {
+        return Ok(());
+    }
+    settled
 }
 
-/// Runs `apply` on the verified channel's model, then persists and publishes it when it
-/// reports a change.
+/// Runs `apply` on `channel`'s model, then persists and publishes it when it reports a change.
 async fn mutate(
     session: &crate::Session,
     generation: Generation,
-    channel_id: Uuid,
+    channel: &Arc<Channel>,
     apply: impl FnOnce(&mut Model) -> Result<bool, super::HistoryError>,
 ) -> Result<(), ClientError> {
     let epoch = session.inner.epochs.current();
     session.inner.epochs.validate(generation)?;
     let cache = session.client.inner.caches.open(session.account()).await?;
-    let channel = session
-        .inner
-        .history
-        .verified_channel(channel_id)
-        .await
-        .map_err(|_| ClientError::ResourceData)?;
-    channel.check()?;
     let mut state = channel.state.lock().await;
     session.inner.epochs.validate(generation)?;
     state
-        .ensure(&cache, *channel_id.as_bytes(), generation)
+        .ensure(&cache, *channel.id.as_bytes(), generation)
         .await?;
     if !apply(&mut state.model)? {
         return Ok(());
@@ -241,7 +254,7 @@ async fn mutate(
     persist_and_publish(
         &session.inner,
         &cache,
-        &channel,
+        channel,
         &mut state,
         &epoch,
         generation,

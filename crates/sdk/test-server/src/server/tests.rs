@@ -47,6 +47,7 @@ fn script_waits_for_its_matching_request_and_is_consumed_once() {
         upload_byte_holds: Vec::new(),
         outgoing: crate::OutgoingRequestCounts::default(),
         silent_outgoing: false,
+        edits: 0,
         notification_search: crate::notification_search::NotificationSearch::default(),
         media: crate::encoded_media::Media::default(),
         next_client_id: 0,

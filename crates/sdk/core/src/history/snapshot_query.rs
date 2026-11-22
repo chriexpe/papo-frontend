@@ -108,6 +108,57 @@ impl HistorySnapshot {
     }
 }
 
+/// Answers [`HistorySnapshot::locate`] for many IDs of one snapshot after a single pass,
+/// instead of a scan per ID. The answers are `locate`'s exactly.
+pub struct MessageLocator<'a> {
+    snapshot: &'a HistorySnapshot,
+    held: std::collections::HashMap<Uuid, usize>,
+}
+
+impl HistorySnapshot {
+    /// Indexes the held messages by ID once, for repeated [`MessageLocator::locate`] calls.
+    #[must_use]
+    pub fn locator(&self) -> MessageLocator<'_> {
+        let mut held = std::collections::HashMap::with_capacity(self.messages.len());
+        // Oldest first, so a repeated ID ends on its newest copy, as `locate` finds it.
+        for (index, message) in self.messages.iter().enumerate() {
+            if let Some(id) = message
+                .id
+                .as_deref()
+                .and_then(|held| held.parse::<Uuid>().ok())
+            {
+                held.insert(id, index);
+            }
+        }
+        MessageLocator {
+            snapshot: self,
+            held,
+        }
+    }
+}
+
+impl MessageLocator<'_> {
+    /// What `id` denotes in the indexed snapshot, as [`HistorySnapshot::locate`] says it.
+    /// # Errors
+    /// Returns `InvalidMessageKey` if the matching message lacks a valid key.
+    pub fn locate(&self, id: Uuid) -> Result<LocatedMessage, InvalidMessageKey> {
+        if let Some((index, message)) = self
+            .held
+            .get(&id)
+            .and_then(|&index| Some((index, self.snapshot.messages.get(index)?)))
+        {
+            return Ok(LocatedMessage::Held {
+                key: MessageKey::from_message(message)?,
+                index,
+            });
+        }
+        if self.snapshot.tombstones.contains(&id) {
+            return Ok(LocatedMessage::Deleted);
+        }
+        Ok(LocatedMessage::Unknown)
+    }
+}
+
 impl HistoryCoverage<'_> {
     /// Resolves `key` to the held message it denotes: an exact key, or a legacy millisecond
     /// read mark naming a held message within one millisecond. A deleted anchor is reported,

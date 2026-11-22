@@ -37,6 +37,11 @@ fn the_first_line_of_text_without_its_markdown() {
         of("```rust\nlet a = 1;\nlet b = 2;\n```"),
         text("let a = 1;")
     );
+    assert_eq!(
+        of("```\n\nfoo\n```"),
+        text("foo"),
+        "a blank first line is skipped"
+    );
 }
 
 #[test]

@@ -3,13 +3,14 @@
 //! they look like, are the client's; whether a notification is due is `papo-sdk`'s policy.
 
 use papo_sdk::{
-    Message, Uuid, authored_by_other,
+    Message, Uuid,
     mentions::{contains_everyone_mention, contains_user_mention},
 };
 
-use crate::timeline_item::ReplyOriginal;
+use crate::{message_actions::is_own, timeline_item::ReplyOriginal};
 
-/// What in a message concerns this account. A message the account wrote concerns it in no way.
+/// What in a message concerns this account. A message the account wrote concerns it in no way;
+/// a webhook's or bridged author's never counts as the account's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Attention {
     /// It mentions the account directly.
@@ -28,12 +29,12 @@ pub fn attention(
     reply: Option<&ReplyOriginal>,
     account_user: Uuid,
 ) -> Attention {
-    if !authored_by_other(message, account_user) {
+    if is_own(message, account_user) {
         return Attention::default();
     }
     let content = message.content.as_deref().unwrap_or_default();
     let replies_to_you = matches!(reply, Some(ReplyOriginal::Held { message: original, .. })
-        if !authored_by_other(original, account_user));
+        if is_own(original, account_user));
     Attention {
         mentions_you: contains_user_mention(content, account_user),
         mentions_everyone: contains_everyone_mention(content),
@@ -94,6 +95,23 @@ mod tests {
         for unknown in [ReplyOriginal::Unknown, ReplyOriginal::Deleted] {
             assert!(!attention(&reply, Some(&unknown), me()).replies_to_you);
         }
+    }
+
+    #[test]
+    fn a_webhook_carrying_your_id_is_not_you() {
+        let mut relayed = message(ME, &format!("ping @mention(<@{}>)", me()));
+        relayed.webhook_id = Some(Uuid::from_u128(9).to_string());
+        assert!(attention(&relayed, None, me()).mentions_you);
+        let ReplyOriginal::Held { id, content, .. } = held(ME) else {
+            unreachable!()
+        };
+        let relayed_original = ReplyOriginal::Held {
+            id,
+            message: std::sync::Arc::new(relayed),
+            content,
+        };
+        let reply = message(OTHER, "agreed");
+        assert!(!attention(&reply, Some(&relayed_original), me()).replies_to_you);
     }
 
     #[test]
