@@ -1,0 +1,4 @@
+[crates.papo_ffi.bindings.kotlin]
+package_name = "uniffi.papo_ffi"
+cdylib_name = "papo_ffi"
+android = true
