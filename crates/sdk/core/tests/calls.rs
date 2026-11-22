@@ -792,3 +792,58 @@ fn switch_call_polls_cleanly_from_non_tokio_thread_including_drain_timeout() -> 
     call2.leave();
     h.finish()
 }
+
+#[test]
+fn switch_call_cancellation_during_drain_aborts_before_joining_next_call() -> Result {
+    use std::task::{Context, Poll, Waker};
+
+    let media = FakeMediaFactory::new();
+    let h = CallHarness::open(Some(media.clone()), CallConfig::default())?;
+    let (s2_account, ch, lease1) = h.run(async {
+        let client = h.client().handle();
+        let server_id = client
+            .add_server(&h.server().base_url(), UnixMicros(0))
+            .await?
+            .id;
+        let auth = client.auth(server_id)?;
+        register(&auth, "cancel-one").await?;
+        let s1 = login(&auth, "cancel-one").await?;
+        online(&s1).await?;
+
+        register(&auth, "cancel-two").await?;
+        let s2 = login(&auth, "cancel-two").await?;
+        online(&s2).await?;
+
+        let ch: Uuid = h
+            .server()
+            .create_voice_channel("cancel-switch")
+            .await?
+            .id
+            .ok_or("ch")?
+            .parse()?;
+        wait_for_channel(&s1, ch).await?;
+        wait_for_channel(&s2, ch).await?;
+
+        let call1 = s1.calls().join(ch)?;
+        wait_phase(&call1, |p| p == CallPhase::Joined).await?;
+        let lease1 = media.latest_lease().ok_or("lease1")?;
+        lease1.set_auto_drain(false);
+        Ok::<_, Box<dyn std::error::Error>>((s2.account(), ch, lease1))
+    })??;
+
+    let switch_client = h.client().handle();
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    let mut switch_fut = Box::pin(switch_client.switch_call(s2_account, ch));
+    assert!(matches!(switch_fut.as_mut().poll(&mut cx), Poll::Pending));
+    while !lease1.is_stopped() {
+        std::thread::yield_now();
+    }
+    drop(switch_fut);
+
+    lease1.emit(MediaReportKind::Drained);
+    h.run(async { tokio::time::sleep(Duration::from_millis(80)).await })?;
+    assert_eq!(media.leases().len(), 1);
+    assert!(h.client().handle().active_call().is_none());
+    h.finish()
+}

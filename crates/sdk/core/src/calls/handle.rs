@@ -283,6 +283,39 @@ impl Session {
     }
 }
 
+struct CancelOnDrop(tokio_util::sync::CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+fn validate_switch_target(
+    client: &ClientHandle,
+    account: AccountId,
+    channel: Uuid,
+) -> Result<Session, CallError> {
+    let target = client.session(account).map_err(|error| match error {
+        crate::ClientError::Closed => CallError::Closed,
+        _ => CallError::AccountNotFound,
+    })?;
+    let status = *target.subscribe_connection().borrow();
+    if status.state != crate::ConnectionState::Online || status.generation != target.generation() {
+        return Err(CallError::Offline);
+    }
+    let resources = target.subscribe_resources().borrow().clone();
+    if resources.generation != status.generation {
+        return Err(CallError::PermissionUnknown);
+    }
+    match crate::permissions::voice_access(&resources, account.user(), channel) {
+        crate::permissions::VoiceAccess::Allowed => Ok(target),
+        crate::permissions::VoiceAccess::NotVoiceChannel => Err(CallError::NotVoiceChannel),
+        crate::permissions::VoiceAccess::Denied => Err(CallError::Forbidden),
+        crate::permissions::VoiceAccess::Unknown => Err(CallError::PermissionUnknown),
+    }
+}
+
 impl ClientHandle {
     /// Returns the currently active call across all accounts, if any.
     #[must_use]
@@ -306,79 +339,69 @@ impl ClientHandle {
         account: AccountId,
         channel: Uuid,
     ) -> Result<CallHandle, CallError> {
+        let caller_cancel = self.inner.pool.root.child_token();
+        let drop_guard = CancelOnDrop(caller_cancel.clone());
+        let task_cancel = caller_cancel;
         let this = self.clone();
-        self.dispatch(async move {
-            let result = async {
-                if this.is_closed() {
-                    return Err(CallError::Closed);
-                }
-                if this.inner.config.media_engine.is_none() {
-                    return Err(CallError::MediaUnavailable);
-                }
-                if this.inner.call_lease.is_release_pending() {
-                    return Err(CallError::ReleasePending);
-                }
-                let target = this.session(account).map_err(|error| match error {
-                    crate::ClientError::Closed => CallError::Closed,
-                    _ => CallError::AccountNotFound,
-                })?;
-                // Verify target session is online and authorized before tearing down an existing call.
-                {
-                    let status = *target.subscribe_connection().borrow();
-                    if status.state != crate::ConnectionState::Online
-                        || status.generation != target.generation()
-                    {
-                        return Err(CallError::Offline);
+        let outcome = self
+            .dispatch(async move {
+                let result = async {
+                    if this.is_closed() || task_cancel.is_cancelled() {
+                        return Err(CallError::Closed);
                     }
-                    let resources = target.subscribe_resources().borrow().clone();
-                    if resources.generation != status.generation {
-                        return Err(CallError::PermissionUnknown);
+                    if this.inner.config.media_engine.is_none() {
+                        return Err(CallError::MediaUnavailable);
                     }
-                    match crate::permissions::voice_access(&resources, account.user(), channel) {
-                        crate::permissions::VoiceAccess::Allowed => {}
-                        crate::permissions::VoiceAccess::NotVoiceChannel => {
-                            return Err(CallError::NotVoiceChannel);
-                        }
-                        crate::permissions::VoiceAccess::Denied => {
-                            return Err(CallError::Forbidden);
-                        }
-                        crate::permissions::VoiceAccess::Unknown => {
-                            return Err(CallError::PermissionUnknown);
-                        }
+                    if this.inner.call_lease.is_release_pending() {
+                        return Err(CallError::ReleasePending);
                     }
-                }
+                    // Validate preconditions before tearing down an active call.
+                    let target = validate_switch_target(&this, account, channel)?;
 
-                if let Some(current) = this.inner.call_lease.active()
-                    && current.account != account
-                    && let Ok(old_session) = this.session(current.account)
-                {
-                    let draining = old_session
-                        .inner
-                        .calls
-                        .end_active(CallEndReason::Switched, Some(&this.inner.runtime));
-                    if let Some(prev_attempt) = draining {
-                        let waited = tokio::time::timeout(
-                            this.inner.config.call.drain_timeout,
-                            this.inner.call_lease.wait_drained(prev_attempt),
-                        )
-                        .await;
-                        match waited {
-                            Ok(Ok(())) => {}
-                            Ok(Err(error)) => return Err(error),
-                            Err(_) => {
-                                this.inner.call_lease.mark_release_pending(prev_attempt);
-                                return Err(CallError::ReleasePending);
+                    if let Some(current) = this.inner.call_lease.active()
+                        && current.account != account
+                        && let Ok(old_session) = this.session(current.account)
+                    {
+                        let draining = old_session
+                            .inner
+                            .calls
+                            .end_active(CallEndReason::Switched, Some(&this.inner.runtime));
+                        if let Some(prev_attempt) = draining {
+                            let waited = tokio::select! {
+                                biased;
+                                () = task_cancel.cancelled() => return Err(CallError::Closed),
+                                waited = tokio::time::timeout(
+                                    this.inner.config.call.drain_timeout,
+                                    this.inner.call_lease.wait_drained(prev_attempt),
+                                ) => waited,
+                            };
+                            match waited {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => return Err(error),
+                                Err(_) => {
+                                    this.inner.call_lease.mark_release_pending(prev_attempt);
+                                    return Err(CallError::ReleasePending);
+                                }
                             }
                         }
                     }
-                }
 
-                target.calls().join(channel)
-            }
-            .await;
-            Ok(result)
-        })
-        .await
-        .unwrap_or(Err(CallError::Closed))
+                    if task_cancel.is_cancelled() {
+                        return Err(CallError::Closed);
+                    }
+                    let handle = target.calls().join(channel)?;
+                    if task_cancel.is_cancelled() {
+                        handle.leave();
+                        return Err(CallError::Closed);
+                    }
+                    Ok(handle)
+                }
+                .await;
+                Ok(result)
+            })
+            .await
+            .unwrap_or(Err(CallError::Closed));
+        drop(drop_guard);
+        outcome
     }
 }
