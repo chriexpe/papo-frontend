@@ -172,7 +172,6 @@ fn build(parts: &Parts<'_>, body: El, style: &Style, report: impl FnOnce(El) -> 
             .font(TYPE_CAPTION)
             .color(palette.text_muted)
     };
-    let words = matches!(spacing.lead, Lead::Avatar(_));
     let (lead, content) = match spacing.lead {
         Lead::Avatar(size_pt) => {
             let lead = if parts.continued {
@@ -238,7 +237,7 @@ fn build(parts: &Parts<'_>, body: El, style: &Style, report: impl FnOnce(El) -> 
     }
     let row = col().w_full().pt(above_pt).child(report(message));
     match parts.boundary {
-        Some(boundary) => row.child(boundary_line(boundary, above_pt, words, &palette)),
+        Some(boundary) => row.child(boundary_line(boundary, above_pt, &palette)),
         None => row,
     }
 }

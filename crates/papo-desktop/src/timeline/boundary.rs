@@ -17,16 +17,15 @@ use crate::design::{
 use crate::strings;
 
 /// `boundary` over the `gap_pt` above a message row's top, pinned to the
-/// row. `words` puts its words in the chip; without an avatar column to
-/// hold them, a dot stands in.
-pub(super) fn boundary(boundary: Boundary, gap_pt: f32, words: bool, palette: &Palette) -> El {
+/// row.
+pub(super) fn boundary(boundary: Boundary, gap_pt: f32, palette: &Palette) -> El {
     let (shown, spoken) = match boundary {
         Boundary::NewMessages => (strings::new_messages(), strings::new_messages_spoken()),
         Boundary::UnreadBelow => (strings::unread_below(), strings::unread_below_spoken()),
         Boundary::UnreadAbove => (strings::unread_above(), strings::unread_above_spoken()),
     };
     let (pad_y, pad_x) = BOUNDARY_CHIP_PAD_PT;
-    let chip = text(if words { shown } else { strings::marker_dot() })
+    let chip = text(shown)
         .font(TYPE_CAPTION_MEDIUM)
         .color(palette.link)
         .fill(palette.accent_soft)

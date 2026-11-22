@@ -34,11 +34,6 @@ pub(crate) fn unread_above_spoken() -> &'static str {
     text!("reading.unread_above_spoken")
 }
 
-/// A boundary's chip where there is no avatar column to hold its words.
-pub(crate) fn marker_dot() -> &'static str {
-    text!("reading.marker_dot")
-}
-
 /// ⌛'s label.
 pub(crate) fn hourglass() -> &'static str {
     text!("reading.hourglass")
