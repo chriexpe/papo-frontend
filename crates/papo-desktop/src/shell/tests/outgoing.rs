@@ -80,4 +80,9 @@ fn retrying_a_message_that_may_have_arrived_asks_first() {
     click(&mut rt, "resend-cancel");
     assert!(rt.find("resend").is_none());
     assert!(rt.state.resend.is_none());
+    click(&mut rt, &mark_key(Uuid::from_u128(100)));
+    click(&mut rt, "menu-retry-send");
+    click(&mut rt, "resend-confirm");
+    assert!(rt.find("resend").is_none(), "Send again closes it");
+    assert!(rt.state.resend.is_none());
 }

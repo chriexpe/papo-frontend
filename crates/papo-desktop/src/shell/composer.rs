@@ -2,26 +2,62 @@
 //! SDK (reading and saving drafts, queueing a send, reporting typing), and
 //! the field's handlers.
 //!
-//! Draft writes are ordered by the composer's `seq`: each takes the shared
-//! write lock and is dropped when a newer one for its channel has landed,
-//! since the bridge runs jobs side by side. Saves and sends go through
-//! `Sdk::finish`, so the exit fence lets them land.
+//! The bridge runs jobs side by side, so draft writes are ordered by the
+//! composer's `seq`, one lane per channel: a write waits for the channel's
+//! lane and is dropped when a newer one has landed ([`Lane`]). Saves and
+//! sends go through `Sdk::finish`, so the exit fence lets them land; what
+//! fails comes back to the composer.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use papo_sdk::{DraftBody, OperationKind, OutgoingError, OutgoingMessage, UnixMicros, Uuid};
+use papo_sdk::{
+    DraftBody, OperationKind, OutgoingError, OutgoingMessage, Session, UnixMicros, Uuid,
+};
 use rune::Tx;
 use tokio::sync::Mutex;
 
 use super::Shell;
 use crate::composer::{Effect, Sent};
-use crate::sdk_bridge::Sdk;
+use crate::sdk_bridge::{Sdk, Updates};
 use crate::timeline::TimelineKey;
 
-/// The last draft write landed for each channel, by the composer's `seq`.
-pub(crate) type DraftWrites = Arc<Mutex<HashMap<TimelineKey, u64>>>;
+/// One lane of draft writes per channel, shared with the bridge's jobs.
+#[derive(Clone, Default)]
+pub(crate) struct DraftWrites(Arc<StdMutex<HashMap<TimelineKey, Arc<Mutex<Lane>>>>>);
+
+impl DraftWrites {
+    /// The lane of `key`'s writes. The map's lock is held only to find it.
+    fn lane(&self, key: TimelineKey) -> Arc<Mutex<Lane>> {
+        let mut lanes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(lanes.entry(key).or_default())
+    }
+
+    /// Forgets the lanes of accounts no longer saved.
+    pub(super) fn retain_accounts(&self, keep: impl Fn(papo_sdk::AccountId) -> bool) {
+        let mut lanes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        lanes.retain(|key, _| keep(key.account));
+    }
+}
+
+/// One channel's write order: the order of the last write that landed.
+/// Held across a write, so a check and its write are one step.
+#[derive(Debug, Default)]
+struct Lane {
+    landed: u64,
+}
+
+impl Lane {
+    /// Whether a write with order `seq` may still land: nothing newer has.
+    fn admits(&self, seq: u64) -> bool {
+        self.landed < seq
+    }
+
+    fn landed(&mut self, seq: u64) {
+        self.landed = self.landed.max(seq);
+    }
+}
 
 impl Shell {
     /// The field's text changed.
@@ -33,7 +69,8 @@ impl Shell {
     /// Send, or the Enter that sends: the text leaves the field and is
     /// queued.
     pub(crate) fn composer_send(&mut self, tx: &mut Tx) {
-        match self.composer.send(Uuid::new_v4()) {
+        let local = (self.local_ids)();
+        match self.composer.send(local) {
             Sent::Queued(effect) => self.run_composer(vec![effect], Some(tx)),
             Sent::Nothing | Sent::TooLong => {}
         }
@@ -68,7 +105,9 @@ impl Shell {
     }
 
     /// Carries out the composer's effects. A wake needs `tx`; only edits
-    /// and the poll ask for one, and both have it.
+    /// and the poll ask for one, and both have it. Without an SDK (before
+    /// it opens; headless tests) nothing reaches the bridge: no channel
+    /// shows before the SDK lists one.
     fn run_composer(&mut self, effects: Vec<Effect>, mut tx: Option<&mut Tx>) {
         for effect in effects {
             match effect {
@@ -93,32 +132,45 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
         Effect::Load(key) => {
             let updates = sdk.updates();
             sdk.run(move |client| async move {
-                let text = match client.session(key.account) {
-                    Ok(session) => load_draft(&session, key.channel).await,
+                let read = match client.session(key.account) {
+                    Ok(session) => session
+                        .outgoing()
+                        .draft(key.channel)
+                        .await
+                        .map(|draft| draft.map(|draft| draft.body.message.content)),
+                    Err(error) => Err(error.into()),
+                };
+                match read {
+                    Ok(text) => {
+                        updates.send(move |shell| {
+                            shell.composer.loaded(key, text.unwrap_or_default())
+                        });
+                    }
                     Err(error) => {
                         log::warn!("a draft was not read: {error}");
-                        String::new()
+                        updates.send(move |shell| shell.composer.load_failed(key));
                     }
-                };
-                updates.send(move |shell| shell.composer.loaded(key, text));
+                }
             });
         }
         Effect::Save { key, text, seq } => {
-            let writes = Arc::clone(writes);
+            let lane = writes.lane(key);
+            let updates = sdk.updates();
             sdk.finish(move |client| async move {
-                // Held across the write: it orders this channel's drafts.
-                let mut written = writes.lock().await;
-                if written.get(&key).is_some_and(|&last| last > seq) {
+                let mut lane = lane.lock().await;
+                if !lane.admits(seq) {
                     return;
                 }
-                let Ok(session) = client.session(key.account) else {
-                    return;
+                let saved = match client.session(key.account) {
+                    Ok(session) => save_draft(&session, key.channel, text).await,
+                    Err(error) => Err(error.into()),
                 };
-                match save_draft(&session, key.channel, text).await {
-                    Ok(()) => {
-                        written.insert(key, seq);
+                match saved {
+                    Ok(()) => lane.landed(seq),
+                    Err(error) => {
+                        log::warn!("a draft was not saved: {error}");
+                        updates.send(move |shell| shell.composer.save_failed(key, seq));
                     }
-                    Err(error) => log::warn!("a draft was not saved: {error}"),
                 }
             });
         }
@@ -128,38 +180,26 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
             local,
             seq,
         } => {
-            let writes = Arc::clone(writes);
+            let lane = writes.lane(key);
             let updates = sdk.updates();
             sdk.finish(move |client| async move {
-                let mut written = writes.lock().await;
-                let queued = match client.session(key.account) {
-                    Ok(session) => queue_message(&session, key.channel, local, &text)
-                        .await
-                        .map(|()| session),
-                    Err(error) => Err(error.into()),
-                };
-                let session = match queued {
+                // Held from the queueing to the clear: a newer save waits,
+                // and lands after the clear.
+                let mut lane = lane.lock().await;
+                let session = match client.session(key.account) {
                     Ok(session) => session,
-                    Err(error) => {
-                        log::warn!("a message was not queued: {error}");
-                        drop(written);
-                        updates.send(move |shell| {
-                            let effects = shell.composer.send_failed(key, text);
-                            shell.run_composer(effects, None);
-                            true
-                        });
-                        return;
-                    }
+                    Err(error) => return send_failed(&updates, key, text, &error.into()),
                 };
-                // The queue holds the message now; the stored draft still
-                // holds its text, unless something newer was saved since.
-                if written.get(&key).is_some_and(|&last| last > seq) {
+                if let Err(error) = queue_message(&session, key.channel, local, &text).await {
+                    return send_failed(&updates, key, text, &error);
+                }
+                // The queue holds the message; the stored draft may still
+                // hold its text, unless something newer was saved since.
+                if !lane.admits(seq) {
                     return;
                 }
                 match save_draft(&session, key.channel, String::new()).await {
-                    Ok(()) => {
-                        written.insert(key, seq);
-                    }
+                    Ok(()) => lane.landed(seq),
                     Err(error) => log::warn!("a sent draft was not cleared: {error}"),
                 }
             });
@@ -177,26 +217,20 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect) {
     }
 }
 
-/// The channel's stored draft text; empty when there is none or it could
-/// not be read.
-async fn load_draft(session: &papo_sdk::Session, channel: Uuid) -> String {
-    match session.outgoing().draft(channel).await {
-        Ok(draft) => draft
-            .map(|draft| draft.body.message.content)
-            .unwrap_or_default(),
-        Err(error) => {
-            log::warn!("a draft was not read: {error}");
-            String::new()
-        }
-    }
+/// The SDK did not queue `text`: it goes back in the field. A send refused
+/// as the window closes cannot come back; its text survives only as far as
+/// the stored draft held it (saved up to a second before).
+fn send_failed(updates: &Updates<Shell>, key: TimelineKey, text: String, error: &OutgoingError) {
+    log::warn!("a message was not queued: {error}");
+    updates.send(move |shell| {
+        let effects = shell.composer.send_failed(key, text);
+        shell.run_composer(effects, None);
+        true
+    });
 }
 
 /// Stores `text` as the channel's draft; empty clears it.
-async fn save_draft(
-    session: &papo_sdk::Session,
-    channel: Uuid,
-    text: String,
-) -> Result<(), OutgoingError> {
+async fn save_draft(session: &Session, channel: Uuid, text: String) -> Result<(), OutgoingError> {
     let body = DraftBody {
         message: OutgoingMessage {
             content: text,
@@ -213,7 +247,7 @@ async fn save_draft(
 
 /// Queues `text` as a new message with identity `local`.
 async fn queue_message(
-    session: &papo_sdk::Session,
+    session: &Session,
     channel: Uuid,
     local: Uuid,
     text: &str,
@@ -237,4 +271,44 @@ fn now() -> UnixMicros {
             i64::try_from(since.as_micros()).unwrap_or(i64::MAX)
         });
     UnixMicros(micros)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Lane;
+
+    /// A lane that has seen the writes `landed`, in that order.
+    fn after(landed: &[u64]) -> Lane {
+        let mut lane = Lane::default();
+        for &seq in landed {
+            lane.landed(seq);
+        }
+        lane
+    }
+
+    #[test]
+    fn a_save_older_than_a_landed_send_is_dropped() {
+        assert!(!after(&[5]).admits(4));
+    }
+
+    #[test]
+    fn a_newer_save_before_the_send_s_clear_skips_the_clear() {
+        assert!(
+            !after(&[6]).admits(5),
+            "the clear would erase what was typed since"
+        );
+    }
+
+    #[test]
+    fn a_failed_send_lets_the_older_save_land() {
+        // The send never marked the lane.
+        assert!(after(&[3]).admits(4));
+    }
+
+    #[test]
+    fn landing_out_of_order_keeps_the_newest() {
+        let lane = after(&[7, 6]);
+        assert!(!lane.admits(7));
+        assert!(lane.admits(8));
+    }
 }

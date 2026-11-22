@@ -33,8 +33,10 @@ use crate::timeline::local_time::LocalTime;
 pub(crate) struct Shell {
     /// Each channel's edit buffer and where its draft stands.
     pub(crate) composer: Composer,
-    /// The order draft writes landed in, shared with the bridge's jobs.
+    /// Each channel's lane of draft writes, shared with the bridge's jobs.
     draft_writes: composer::DraftWrites,
+    /// A new message's local identity: random in the app, fixed in tests.
+    local_ids: fn() -> papo_sdk::Uuid,
     /// "Enter to send".
     writing: WritingPrefs,
     /// The unsent message whose "Send again?" is open.
@@ -120,6 +122,7 @@ impl Default for Shell {
         Shell {
             composer: Composer::default(),
             draft_writes: composer::DraftWrites::default(),
+            local_ids: papo_sdk::Uuid::new_v4,
             writing: WritingPrefs::default(),
             resend: None,
             sdk: None,

@@ -48,20 +48,21 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         field = field
             .on_edit(|shell: &mut Shell| shell.composer.field_mut())
             .on_input_change(Shell::composer_edited)
-            .on_submit(move |shell: &mut Shell, tx| {
-                if enter_sends {
+            // With "Enter to send" on, plain Enter submits and Shift+Enter
+            // is the editor's own line break.
+            .on_submit(Shell::composer_send)
+            .on_input_key(move |shell: &mut Shell, key: &KeyEvent, tx| {
+                if enter_sends || key.key != Key::Enter {
+                    return false;
+                }
+                // Off, the keys swap. Plain Enter is taken here, not on
+                // submit, so a held Enter adds a line per repeat as typing
+                // does (Rune submits once per press).
+                if key.mods.shift {
                     shell.composer_send(tx);
                 } else {
                     shell.composer_new_line(tx);
                 }
-            })
-            .on_input_key(move |shell: &mut Shell, key: &KeyEvent, tx| {
-                // Plain Enter submits (above); Shift+Enter is the other one.
-                let shift_enter = key.key == Key::Enter && key.mods.shift;
-                if !shift_enter || enter_sends {
-                    return false;
-                }
-                shell.composer_send(tx);
                 true
             });
     }

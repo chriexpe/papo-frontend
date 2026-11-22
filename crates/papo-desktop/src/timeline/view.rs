@@ -210,7 +210,8 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
                 };
                 message_row::<S>(open, &row, previous, style)
             }
-            // An edit, a delete or a reaction: nothing of its own to draw.
+            // The SDK echoes only new messages; an echo it could not draw
+            // as one shows nothing.
             None => el().w_full(),
         },
         TimelineItem::DateSeparator { day, before } => date_row(*day, *before, style),

@@ -12,6 +12,7 @@
 #[cfg(test)]
 mod tests;
 mod ticket;
+mod updates;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -27,6 +28,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
 pub(crate) use ticket::{RequestSlot, Ticket};
+pub(crate) use updates::Updates;
 
 /// A change to the UI state, run on the UI thread. It returns whether it
 /// changed what the view reads, as `AppHandle::update_if` expects.
@@ -133,9 +135,7 @@ impl<S: 'static> Sdk<S> {
     ) where
         Work: Future<Output = ()> + Send + 'static,
     {
-        let updates = Updates {
-            post: Arc::clone(&self.post),
-        };
+        let updates = Updates::new(Arc::clone(&self.post));
         self.send(
             Box::new(move |client| Box::pin(work(client, updates))),
             false,
@@ -165,41 +165,12 @@ impl<S: 'static> Sdk<S> {
     /// what it found back to the UI thread, when no ticket decides whether
     /// the answer still counts.
     pub(crate) fn updates(&self) -> Updates<S> {
-        Updates {
-            post: Arc::clone(&self.post),
-        }
+        Updates::new(Arc::clone(&self.post))
     }
 
     fn send(&self, job: Job, finish: bool) {
         if self.jobs.send(Queued { job, finish }).is_err() {
             log::debug!("dropped a request sent after the SDK shut down");
-        }
-    }
-}
-
-/// A watch's way to change the UI state: each change runs on the UI thread,
-/// in the order sent.
-pub(crate) struct Updates<S> {
-    post: Arc<dyn Post<S>>,
-}
-
-impl<S: 'static> Updates<S> {
-    /// Queues `change`, which returns whether it changed what the view reads.
-    pub(crate) fn send(&self, change: impl FnOnce(&mut S) -> bool + Send + 'static) {
-        self.post.post(Box::new(move |state, _tx| change(state)));
-    }
-
-    /// [`Updates::send`] for a change that also asks Rune for something,
-    /// such as a scroll.
-    pub(crate) fn send_tx(&self, change: impl FnOnce(&mut S, &mut Tx) -> bool + Send + 'static) {
-        self.post.post(Box::new(change));
-    }
-}
-
-impl<S> Clone for Updates<S> {
-    fn clone(&self) -> Self {
-        Updates {
-            post: Arc::clone(&self.post),
         }
     }
 }

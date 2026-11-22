@@ -8,6 +8,8 @@
 //! shell carries out (`shell/composer.rs`); nothing here talks to the SDK.
 //! The pill is `view`'s, the Enter setting `prefs`'.
 
+mod draft;
+mod effect;
 pub(crate) mod prefs;
 #[cfg(test)]
 mod tests;
@@ -18,9 +20,10 @@ use std::collections::HashMap;
 use papo_sdk::{AccountId, Uuid};
 use rune::TextEdit;
 
-#[cfg(test)]
-pub(crate) use self::view::COMPOSER_KEY;
-pub(crate) use self::view::pill;
+pub(crate) use self::draft::Draft;
+use self::draft::DraftState;
+pub(crate) use self::effect::{Effect, Sent};
+pub(crate) use self::view::{COMPOSER_KEY, pill};
 use crate::timeline::TimelineKey;
 
 /// How long typing must pause before the draft is saved, in seconds.
@@ -30,65 +33,13 @@ const SAVE_AFTER_S: f64 = 1.0;
 /// for ten seconds after each report.
 const TYPING_EVERY_S: f64 = 5.0;
 
+/// How early a wake may arrive and still count as due, in seconds: a
+/// timer that fires a hair before its deadline must not stall the save.
+const WAKE_SLACK_S: f64 = 0.001;
+
 /// The longest message the server takes, in characters (Unicode scalar
 /// values, as the SDK counts them).
 pub(crate) const MAX_MESSAGE_CHARS: usize = 8192;
-
-/// What the shell does for the composer.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Effect {
-    /// Read the channel's draft from the SDK.
-    Load(TimelineKey),
-    /// Save `text` as the channel's draft. `seq` orders writes: one older
-    /// than the last written for the channel is dropped.
-    Save {
-        key: TimelineKey,
-        text: String,
-        seq: u64,
-    },
-    /// Queue `text` as a new message with local identity `local`, then
-    /// clear the stored draft unless a newer save (`seq`) landed first.
-    Send {
-        key: TimelineKey,
-        text: String,
-        local: Uuid,
-        seq: u64,
-    },
-    /// Tell the channel the user is typing.
-    ReportTyping(TimelineKey),
-    /// Call the composer's poll again in this many seconds.
-    WakeAfter(f64),
-}
-
-/// One channel's buffer.
-pub(crate) struct Draft {
-    pub(crate) edit: TextEdit,
-    state: DraftState,
-}
-
-/// Where a buffer stands against the SDK's stored draft.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum DraftState {
-    /// The stored draft is being read; the field takes no typing until it
-    /// arrives, so typing never races the restore.
-    Loading,
-    /// The stored draft holds what the field shows, or a save of it is on
-    /// its way.
-    Saved,
-    /// The field changed; it is saved at `due_s` on the window's clock.
-    Unsaved { due_s: f64 },
-}
-
-/// What pressing Send (or Enter) did.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Sent {
-    /// Nothing to send: the field is empty, blank, or still loading.
-    Nothing,
-    /// Over [`MAX_MESSAGE_CHARS`]: the field keeps the text.
-    TooLong,
-    /// The text left the field; the effect queues it.
-    Queued(Effect),
-}
 
 /// Every channel's buffer and the composer shown.
 #[derive(Default)]
@@ -119,8 +70,11 @@ impl Composer {
     }
 
     /// The shown channel's field, for the editor's `on_edit`. An event
-    /// that arrives once no field takes typing (the channel left, or its
-    /// draft loads) edits a spare buffer that nothing reads.
+    /// that arrives while no field takes typing (the channel left, or its
+    /// draft still loads) edits a spare buffer that nothing reads. Rune
+    /// calls this several times per event, and each call empties the
+    /// spare; its text reads the same before and after, so no change
+    /// handler runs for it.
     pub(crate) fn field_mut(&mut self) -> &mut TextEdit {
         let Composer {
             drafts,
@@ -187,10 +141,7 @@ impl Composer {
         if let Some(key) = key {
             let draft = self.drafts.entry(key).or_insert_with(|| {
                 effects.push(Effect::Load(key));
-                Draft {
-                    edit: TextEdit::new(""),
-                    state: DraftState::Loading,
-                }
+                Draft::loading()
             });
             draft.edit.focused |= focused || std::mem::take(&mut self.focus_pending);
         }
@@ -208,7 +159,8 @@ impl Composer {
 
     /// The SDK read `key`'s stored draft: `text`, empty when there is
     /// none. Only a buffer still loading takes it; the caret goes to its
-    /// end. Reading it again later never replaces what was typed since.
+    /// end (`replace_text`). Reading it again later never replaces what was
+    /// typed since.
     pub(crate) fn loaded(&mut self, key: TimelineKey, text: String) -> bool {
         let Some(draft) = self.drafts.get_mut(&key) else {
             return false;
@@ -216,10 +168,41 @@ impl Composer {
         if draft.state != DraftState::Loading {
             return false;
         }
-        let end = text.len();
         draft.edit.replace_text(text);
-        draft.edit.set_selection(end, end);
         draft.state = DraftState::Saved;
+        true
+    }
+
+    /// The SDK could not read `key`'s stored draft (signed out, storage).
+    /// The buffer is forgotten rather than taken as empty, which a save
+    /// would then write over the stored draft; it is read again the next
+    /// time the channel shows.
+    pub(crate) fn load_failed(&mut self, key: TimelineKey) -> bool {
+        let Some(draft) = self.drafts.get(&key) else {
+            return false;
+        };
+        if draft.state != DraftState::Loading {
+            return false;
+        }
+        let focused = draft.edit.focused;
+        self.drafts.remove(&key);
+        if self.shown == Some(key) {
+            self.shown = None;
+            self.focus_pending |= focused;
+        }
+        true
+    }
+
+    /// The save with order `seq` of `key`'s buffer failed: unless the
+    /// buffer was saved again since, it counts as unsaved.
+    pub(crate) fn save_failed(&mut self, key: TimelineKey, seq: u64) -> bool {
+        let Some(draft) = self.drafts.get_mut(&key) else {
+            return false;
+        };
+        if draft.state != DraftState::Saved || draft.last_save != Some(seq) {
+            return false;
+        }
+        draft.state = DraftState::SaveFailed;
         true
     }
 
@@ -243,7 +226,8 @@ impl Composer {
             self.failed = None;
         }
         let mut effects = Vec::new();
-        if self.wake_s.is_none() {
+        // A wake already past is one the poll missed: ask again.
+        if self.wake_s.is_none_or(|wake_s| wake_s < clock_s) {
             self.wake_s = Some(due_s);
             effects.push(Effect::WakeAfter(SAVE_AFTER_S));
         }
@@ -260,16 +244,17 @@ impl Composer {
     /// The window's poll at `clock_s`: saves the drafts whose pause is
     /// over, and asks for the next wake when one still waits.
     pub(crate) fn poll(&mut self, clock_s: f64) -> Vec<Effect> {
-        if self.wake_s.is_none_or(|wake_s| wake_s > clock_s) {
+        let now_s = clock_s + WAKE_SLACK_S;
+        if self.wake_s.is_none_or(|wake_s| wake_s > now_s) {
             return Vec::new();
         }
         self.wake_s = None;
         let due: Vec<TimelineKey> = self
             .drafts
             .iter()
-            .filter(|(_, draft)| {
-                matches!(draft.state, DraftState::Unsaved { due_s } if due_s <= clock_s)
-            })
+            .filter(
+                |(_, draft)| matches!(draft.state, DraftState::Unsaved { due_s } if due_s <= now_s),
+            )
             .map(|(key, _)| *key)
             .collect();
         let mut effects: Vec<Effect> = due.into_iter().filter_map(|key| self.save(key)).collect();
@@ -278,7 +263,7 @@ impl Composer {
             .values()
             .filter_map(|draft| match draft.state {
                 DraftState::Unsaved { due_s } => Some(due_s),
-                DraftState::Loading | DraftState::Saved => None,
+                DraftState::Loading | DraftState::Saved | DraftState::SaveFailed => None,
             })
             .reduce(f64::min);
         if let Some(next_s) = next_s {
@@ -293,7 +278,7 @@ impl Composer {
         let unsaved: Vec<TimelineKey> = self
             .drafts
             .iter()
-            .filter(|(_, draft)| matches!(draft.state, DraftState::Unsaved { .. }))
+            .filter(|(_, draft)| draft.state.unsaved())
             .map(|(key, _)| *key)
             .collect();
         unsaved
@@ -324,6 +309,7 @@ impl Composer {
         // A sent message never comes back through undo.
         draft.edit.replace_text("");
         draft.state = DraftState::Saved;
+        draft.last_save = Some(seq);
         if self.failed == Some(key) {
             self.failed = None;
         }
@@ -346,9 +332,7 @@ impl Composer {
         } else {
             format!("{text}\n{}", draft.edit.text)
         };
-        let end = restored.len();
         draft.edit.replace_text(restored);
-        draft.edit.set_selection(end, end);
         draft.state = DraftState::Unsaved { due_s: 0.0 };
         self.failed = Some(key);
         self.save(key).into_iter().collect()
@@ -361,17 +345,27 @@ impl Composer {
         if self.shown.is_some_and(|key| !keep(key.account)) {
             self.shown = None;
         }
+        if self.failed.is_some_and(|key| !keep(key.account)) {
+            self.failed = None;
+        }
+        if self
+            .typing_reported
+            .is_some_and(|(key, _)| !keep(key.account))
+        {
+            self.typing_reported = None;
+        }
     }
 
     /// The save of `key`'s buffer, when it has changes; it counts as saved
     /// from now on.
     fn save(&mut self, key: TimelineKey) -> Option<Effect> {
-        let seq = self.next_seq();
-        let draft = self.drafts.get_mut(&key)?;
-        if !matches!(draft.state, DraftState::Unsaved { .. }) {
+        if !self.drafts.get(&key)?.state.unsaved() {
             return None;
         }
+        let seq = self.next_seq();
+        let draft = self.drafts.get_mut(&key)?;
         draft.state = DraftState::Saved;
+        draft.last_save = Some(seq);
         Some(Effect::Save {
             key,
             text: draft.edit.text.clone(),

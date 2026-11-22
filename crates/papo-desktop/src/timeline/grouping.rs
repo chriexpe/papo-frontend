@@ -56,7 +56,8 @@ pub(crate) fn previous_message<'a>(
 }
 
 /// Whether `message` continues the group of `previous`, the message just
-/// above it (`previous_message`).
+/// above it (`previous_message`): the same author, at most five minutes
+/// apart.
 pub(crate) fn continues(previous: Option<&Message>, message: &Message) -> bool {
     let Some(previous) = previous else {
         return false;
@@ -71,8 +72,10 @@ pub(crate) fn continues(previous: Option<&Message>, message: &Message) -> bool {
     ) else {
         return false;
     };
-    let apart_us = after.created_at_us - before.created_at_us;
-    same_author && (0..=GROUP_WINDOW_US).contains(&apart_us)
+    // Either way round: a local echo carries this device's clock, which may
+    // run a little behind the server's that stamped the message above.
+    let apart_us = after.created_at_us.abs_diff(before.created_at_us);
+    same_author && apart_us <= GROUP_WINDOW_US.unsigned_abs()
 }
 
 #[cfg(test)]
@@ -131,6 +134,16 @@ mod tests {
         assert!(!continues(
             Some(&first),
             &message(2, "bia", "2026-11-20T14:01:00Z")
+        ));
+    }
+
+    #[test]
+    fn a_message_stamped_a_little_earlier_still_continues() {
+        // A local echo whose device clock runs behind the server's.
+        let first = message(1, "ana", "2026-11-20T14:00:30Z");
+        assert!(continues(
+            Some(&first),
+            &message(2, "ana", "2026-11-20T14:00:10Z")
         ));
     }
 

@@ -7,6 +7,7 @@ use papo_sdk::{RetryDecision, Uuid};
 use rune::{El, Tx};
 
 use super::Shell;
+use crate::composer::COMPOSER_KEY;
 use crate::confirm::{Question, confirm};
 use crate::design::Palette;
 use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
@@ -86,13 +87,14 @@ impl Shell {
     }
 
     /// "Send again" on the confirmation: the message goes again, knowing it
-    /// may arrive twice. The keyboard returns to its mark.
+    /// may arrive twice. Its mark becomes the waiting clock, which takes no
+    /// keyboard, so the keyboard goes back to writing.
     pub(crate) fn confirm_resend(&mut self, tx: &mut Tx) {
         let Some(Resend { key, local }) = self.resend.take() else {
             return;
         };
         self.retry(key, local, RetryDecision::AcceptPossibleDuplicate);
-        tx.focus(mark_key(local), false);
+        tx.focus(COMPOSER_KEY, false);
     }
 
     fn retry(&self, key: TimelineKey, local: Uuid, decision: RetryDecision) {

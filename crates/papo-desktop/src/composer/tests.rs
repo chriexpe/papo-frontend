@@ -219,3 +219,66 @@ fn removing_an_account_forgets_its_buffers() {
     composer.retain_accounts(|_| false);
     assert!(composer.shown().is_none());
 }
+
+#[test]
+fn an_unreadable_draft_is_forgotten_and_read_again_next_time() {
+    let mut composer = Composer::default();
+    composer.focus();
+    composer.show(Some(key(1)));
+    assert!(composer.load_failed(key(1)));
+    assert!(
+        composer.shown().is_none(),
+        "no field: typing would overwrite it"
+    );
+    assert!(composer.flush().is_empty(), "nothing is saved over it");
+    composer.show(Some(key(2)));
+    assert_eq!(composer.show(Some(key(1))), [Effect::Load(key(1))]);
+    assert!(
+        composer.shown().unwrap().1.edit.focused,
+        "the keyboard waited for the field"
+    );
+}
+
+#[test]
+fn a_failed_save_is_saved_again_on_flush_but_not_on_a_timer() {
+    let mut composer = showing("");
+    type_in(&mut composer, "a", 1.0);
+    let Some(Effect::Save { seq, .. }) = composer.flush().pop() else {
+        panic!("a save");
+    };
+    assert!(composer.save_failed(key(1), seq));
+    assert!(
+        !composer
+            .poll(100.0)
+            .iter()
+            .any(|effect| matches!(effect, Effect::Save { .. })),
+        "a failure never loops"
+    );
+    assert_eq!(composer.flush().len(), 1, "the next flush tries again");
+}
+
+#[test]
+fn a_late_failure_never_undoes_a_newer_save() {
+    let mut composer = showing("");
+    type_in(&mut composer, "a", 1.0);
+    let Some(Effect::Save { seq: older, .. }) = composer.flush().pop() else {
+        panic!("a save");
+    };
+    type_in(&mut composer, "b", 2.0);
+    composer.flush();
+    assert!(!composer.save_failed(key(1), older));
+    assert_eq!(composer.flush(), []);
+}
+
+#[test]
+fn a_wake_a_hair_early_still_saves() {
+    let mut composer = showing("");
+    type_in(&mut composer, "a", 10.0);
+    let effects = composer.poll(10.0 + SAVE_AFTER_S - 0.0005);
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Save { .. })),
+        "{effects:?}"
+    );
+}

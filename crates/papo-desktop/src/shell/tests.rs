@@ -22,7 +22,11 @@ const FRAME_S: f64 = 1.0 / 60.0;
 
 /// The shell once the SDK said which accounts are saved.
 fn runtime_with(accounts: Accounts) -> Runtime<Shell> {
-    let mut shell = Shell::default();
+    let mut shell = Shell {
+        // No randomness in tests: every send takes the same identity.
+        local_ids: || Uuid::from_u128(1),
+        ..Shell::default()
+    };
     shell.accounts_changed(accounts);
     let env = Env {
         system_dark: true,

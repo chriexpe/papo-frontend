@@ -78,6 +78,8 @@ impl Shell {
             .retain_accounts(|account| accounts.contains(&account));
         self.composer
             .retain_accounts(|account| accounts.contains(&account));
+        self.draft_writes
+            .retain_accounts(|account| accounts.contains(&account));
     }
 
     pub(super) fn start_watch(&self, opening: Opening) {

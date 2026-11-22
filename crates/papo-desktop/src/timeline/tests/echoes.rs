@@ -112,7 +112,7 @@ fn a_failed_or_unconfirmed_send_offers_its_options() {
 }
 
 #[test]
-fn a_send_s_state_moves_no_row_at_any_density() {
+fn no_send_state_moves_a_row_at_any_density() {
     for density in [
         Density::Comfortable,
         Density::Normal,

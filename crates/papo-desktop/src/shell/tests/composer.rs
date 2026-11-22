@@ -141,6 +141,8 @@ fn enter_during_a_composition_sends_nothing() {
     type_text(&mut rt, "a");
     rt.ime(Ime::Preedit("か".to_owned(), Some((3, 3)), Vec::new()));
     rt.frame(FRAME_S);
+    press(&mut rt, Key::Enter);
+    assert_eq!(field(&rt), "a", "the field kept its text: nothing was sent");
     rt.ime(Ime::Commit("か".to_owned()));
     rt.frame(FRAME_S);
     assert_eq!(field(&rt), "aか");
@@ -206,6 +208,38 @@ fn each_channel_keeps_its_text_across_a_switch() {
     type_text(&mut rt, "na mídia");
     click(&mut rt, &format!("channel-{}", channel_id(1)));
     assert_eq!(field(&rt), "no geral");
+    click(&mut rt, &format!("channel-{}", channel_id(2)));
+    assert_eq!(field(&rt), "na mídia");
+}
+
+#[test]
+fn a_draft_that_cannot_be_read_is_never_written_over() {
+    let mut rt = in_general();
+    rt.update(|shell, _tx| {
+        let key = shown(shell);
+        shell.composer.load_failed(key);
+    });
+    rt.frame(FRAME_S);
+    assert!(rt.find(COMPOSER_KEY).is_none(), "no field to type into");
+    // Shown again, the draft is read again.
+    click(&mut rt, &format!("channel-{}", channel_id(2)));
+    click(&mut rt, &format!("channel-{}", channel_id(1)));
+    assert!(rt.state.composer.is_loading());
+}
+
+#[test]
+fn holding_enter_adds_a_line_per_repeat_when_enter_does_not_send() {
+    let mut rt = writing("");
+    rt.update(|shell, _tx| shell.writing.enter_sends = false);
+    rt.frame(FRAME_S);
+    type_text(&mut rt, "a");
+    press(&mut rt, Key::Enter);
+    rt.repeat_key(KeyEvent {
+        key: Key::Enter,
+        mods: Mods::default(),
+    });
+    rt.frame(FRAME_S);
+    assert_eq!(field(&rt), "a\n\n");
 }
 
 #[test]
