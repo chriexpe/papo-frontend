@@ -11,6 +11,8 @@ mod account_switch;
 mod account_watch;
 mod badges;
 mod channel_pane;
+mod composer;
+mod confirm;
 mod design;
 mod fonts;
 mod icons;

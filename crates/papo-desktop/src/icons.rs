@@ -75,3 +75,24 @@ pub(crate) static ARROW_DOWN: Icon = Icon {
     view: 16.0,
     body: r#"<path d="M8 3V13M3.5 8.5L8 13L12.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
+
+/// Send: an arrow pointing right, the mock's ➤.
+pub(crate) static SEND: Icon = Icon {
+    name: "papo-send",
+    view: 16.0,
+    body: r#"<path d="M3 8H13M8.5 3.5L13 8L8.5 12.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+
+/// Not sent yet: a clock.
+pub(crate) static CLOCK: Icon = Icon {
+    name: "papo-clock",
+    view: 16.0,
+    body: r#"<circle cx="8" cy="8" r="5.8" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M8 4.8V8L10.2 9.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+
+/// Needs attention: a triangle with an exclamation mark.
+pub(crate) static WARNING: Icon = Icon {
+    name: "papo-warning",
+    view: 16.0,
+    body: r#"<path d="M8 2.2L14.2 13.2H1.8Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" fill="none"/><path d="M8 6.5V9.3M8 11.2V11.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/>"#,
+};

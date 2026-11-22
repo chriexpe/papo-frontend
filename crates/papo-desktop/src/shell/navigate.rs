@@ -168,6 +168,12 @@ impl Shell {
         }
         match action {
             MenuAction::RemoveServer(server) => self.nav.removing = Some(server),
+            MenuAction::RetrySend {
+                key,
+                local,
+                unknown,
+            } => self.retry_send(key, local, unknown),
+            MenuAction::DiscardSend { key, local } => self.discard_send(key, local),
         }
     }
 

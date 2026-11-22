@@ -4,14 +4,17 @@
 //! screens send are dropped, and the tests post the SDK's answers themselves.
 
 use papo_sdk::{AccountId, ServerAddress, ServerId, Uuid};
-use rune::{Env, Ime, Key, KeyEvent, Mods, Runtime};
+use rune::{Env, Key, KeyEvent, Mods, Runtime};
 
-use super::{COMPOSER_KEY, Shell, view};
+use super::{Shell, view};
 use crate::account_watch::{Accounts, Credentials, SignedOut};
+use crate::composer::COMPOSER_KEY;
 use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 
 mod accounts;
+mod composer;
 mod navigation;
+mod outgoing;
 mod timeline;
 
 const SIZE_PT: (f32, f32) = (1000.0, 700.0);
@@ -120,62 +123,6 @@ fn signed_in_screen() -> Runtime<Shell> {
 }
 
 #[test]
-fn the_composer_has_focus_at_start_and_takes_typing() {
-    let mut rt = app();
-    assert!(rt.has_focus());
-    type_text(&mut rt, "olá");
-    assert_eq!(rt.state.composer.text, "olá");
-}
-
-#[test]
-fn an_input_method_composition_commits_into_the_composer() {
-    let mut rt = app();
-    rt.ime(Ime::Preedit("にほん".to_owned(), Some((9, 9)), Vec::new()));
-    rt.frame(FRAME_S);
-    assert_eq!(
-        rt.state.composer.text, "",
-        "a preedit is drawn, not inserted"
-    );
-    rt.ime(Ime::Commit("日本".to_owned()));
-    rt.frame(FRAME_S);
-    assert_eq!(rt.state.composer.text, "日本");
-}
-
-#[test]
-fn a_cancelled_composition_leaves_the_text_as_it_was() {
-    let mut rt = app();
-    type_text(&mut rt, "a");
-    rt.ime(Ime::Preedit("か".to_owned(), Some((3, 3)), Vec::new()));
-    rt.frame(FRAME_S);
-    rt.ime(Ime::Preedit(String::new(), None, Vec::new()));
-    rt.frame(FRAME_S);
-    assert_eq!(rt.state.composer.text, "a");
-}
-
-#[test]
-fn assistive_technology_finds_a_labelled_text_field() {
-    let rt = app();
-    let tree = tree(&rt);
-    assert!(
-        tree.contains(&format!("\"{COMPOSER_KEY}\"")),
-        "the composer is in the tree: {tree}"
-    );
-    assert!(
-        tree.contains("\"Message\""),
-        "the composer is named: {tree}"
-    );
-}
-
-#[test]
-fn a_settled_window_asks_for_no_more_frames() {
-    let mut rt = app();
-    assert!(
-        settles(&mut rt),
-        "an idle window with a focused field keeps drawing"
-    );
-}
-
-#[test]
 fn nothing_shows_before_the_sdk_says_which_accounts_are_saved() {
     let env = Env {
         system_dark: false,
@@ -259,7 +206,6 @@ fn signing_in_closes_the_screen_and_names_the_server() {
     let mut rt = signed_in_screen();
     post(&mut rt, Event::SignedIn(Ok(())));
     assert!(rt.find("sign-in").is_none());
-    assert!(rt.find(COMPOSER_KEY).is_some());
     assert!(tree(&rt).contains("Connected to Lumen"), "{}", tree(&rt));
     rt.accessibility_action("connected-dismiss", rune::accesskit::Action::Click, None);
     rt.frame(FRAME_S);

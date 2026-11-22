@@ -8,21 +8,25 @@
 //! everyone) has the mention background and the amber bar on its left. The
 //! author's name comes from the account's members, a bridged author's from
 //! the message. A reading boundary (`boundary`) is drawn over the distance
-//! above the row; the new-messages divider also starts a new group.
+//! above the row; the new-messages divider also starts a new group. A local
+//! echo of your own message draws the same way, its send's mark
+//! (`send_mark`) in the time's place and, while it waits, its text in the
+//! secondary colour.
 
 use papo_sdk::mentions::{contains_everyone_mention, contains_user_mention};
 use papo_sdk::{Message, MessageKey, ResourceSnapshot, Uuid, parse_message_timestamp_us};
-use papo_sdk_ui::TimelineItem;
 use papo_sdk_ui::message_content::MessageContent;
 use rune::{El, col, el, memo, row, text};
 
 use super::OpenTimeline;
 use super::boundary::boundary as boundary_line;
 use super::content::{self, Context, Doc, Draw, Edited, mention_names};
+use super::echoes::SendState;
 use super::grouping::continues;
 use super::local_time::LocalTime;
 use super::reading::Boundary;
-use super::rows::{MESSAGE_PART, message_key};
+use super::rows::{MESSAGE_PART, echo_key, message_key};
+use super::send_mark::send_mark;
 use super::view::{Style, TimelineHost};
 use crate::design::{
     Density, Lead, MENTION_BAR_PT, MENTION_ROW_RADIUS_PT, MESSAGE_BLOCK_GAP_PT,
@@ -52,18 +56,44 @@ struct Parts<'a> {
     edited_at: Option<&'a str>,
     /// The reading boundary over the distance above it.
     boundary: Option<Boundary>,
+    /// An unsent message of yours: where its send stands.
+    sending: Option<SendState>,
 }
 
-/// Message `id`'s row. It reports where its top is, for the anchor.
-/// `previous` is the item drawn above it.
+/// Where a row's message comes from.
+#[derive(Clone, Copy)]
+pub(super) enum Origin {
+    /// The channel's history: the row reports where it is, for the anchor
+    /// and Ctrl+A.
+    History,
+    /// A local echo of yours, with where its send stands (none once sent).
+    /// It is no anchor: the SDK knows no such message yet.
+    Echo(Option<SendState>),
+}
+
+/// The message a row draws.
+pub(super) struct RowMessage<'a> {
+    /// The message's ID, or an echo's local identity.
+    pub(super) id: Uuid,
+    pub(super) message: &'a Message,
+    pub(super) content: &'a MessageContent,
+    pub(super) origin: Origin,
+}
+
+/// A message's row. A message from history reports where its top is, for
+/// the anchor. `previous` is the message drawn above it, if any.
 pub(super) fn message_row<S: TimelineHost>(
     open: &OpenTimeline,
-    id: Uuid,
-    message: &Message,
-    content: &MessageContent,
-    previous: Option<&TimelineItem>,
+    row_message: &RowMessage<'_>,
+    previous: Option<&Message>,
     style: &Style,
 ) -> El {
+    let RowMessage {
+        id,
+        message,
+        content,
+        origin,
+    } = *row_message;
     let layout = style.layout;
     let boundary = open.reading.boundary(id, style.hourglass);
     // Only the divider, held for the visit, splits a group: the block's
@@ -73,13 +103,15 @@ pub(super) fn message_row<S: TimelineHost>(
     let continued = layout.grouped && !splits && continues(previous, message);
     let at_us = created_us(message);
     let show_time = match previous {
-        Some(TimelineItem::Message {
-            message: previous, ..
-        }) if layout.density == Density::ExtraCompact => {
+        Some(previous) if layout.density == Density::ExtraCompact => {
             let minute = |at_us: Option<i64>| at_us.map(|at_us| style.time.minute_of(at_us));
             minute(created_us(previous)) != minute(at_us)
         }
         _ => true,
+    };
+    let sending = match origin {
+        Origin::Echo(state) => state,
+        Origin::History => None,
     };
     let parts = Parts {
         name: author_name(message, open.resources.as_deref()),
@@ -91,6 +123,7 @@ pub(super) fn message_row<S: TimelineHost>(
         mentions_me: mentions(message, open.key.account.user()),
         edited_at: message.edited_at.as_deref(),
         boundary,
+        sending,
     };
     let key = open.key;
     let revealed = open.revealed(id);
@@ -98,7 +131,11 @@ pub(super) fn message_row<S: TimelineHost>(
     // The key too: two accounts on one server can show the same message,
     // and the row's handlers name their timeline.
     let version = (key, style.theme, layout, &parts, revealed, copied);
-    memo(message_key(id), version, || {
+    let row_key = match origin {
+        Origin::History => message_key(id),
+        Origin::Echo(_) => echo_key(id),
+    };
+    memo(row_key, version, || {
         let doc = Doc::new(
             content,
             &Context {
@@ -107,8 +144,13 @@ pub(super) fn message_row<S: TimelineHost>(
                 jumbo: layout.density != Density::ExtraCompact,
             },
         );
+        let mut palette = style.palette;
+        if parts.sending == Some(SendState::Pending) {
+            // A message still waiting reads quieter until it is sent.
+            palette.text_primary = palette.text_secondary;
+        }
         let draw = Draw {
-            palette: &style.palette,
+            palette: &palette,
             key,
             message: id,
             copied,
@@ -117,8 +159,12 @@ pub(super) fn message_row<S: TimelineHost>(
             }),
         };
         let body = content::body::<S>(&doc, &draw);
-        build(&parts, body, style, |message| {
-            message
+        let mark = parts
+            .sending
+            .map(|state| send_mark::<S>(key, id, state, &style.palette));
+        build(&parts, body, mark, style, |message| match origin {
+            Origin::Echo(_) => message,
+            Origin::History => message
                 .on_layout_tx(move |host: &mut S, rect, tx| {
                     host.row_moved(key, id, [rect[1], rect[1] + rect[3]], tx);
                     tx.live_only();
@@ -127,7 +173,7 @@ pub(super) fn message_row<S: TimelineHost>(
                 .on_hover_change(move |host: &mut S, hovered, tx| {
                     host.message_hovered(key, id, hovered);
                     tx.live_only();
-                })
+                }),
         })
     })
 }
@@ -152,7 +198,14 @@ fn mentions(message: &Message, me: Uuid) -> bool {
 /// The row: the distance above it, then the message itself, which
 /// `report` makes report its top. The message's top, not the row's, is the
 /// anchor, so a change of the distance above leaves the text in place.
-fn build(parts: &Parts<'_>, body: El, style: &Style, report: impl FnOnce(El) -> El) -> El {
+/// `mark` takes the time's place: in the header, else in the lead column.
+fn build(
+    parts: &Parts<'_>,
+    body: El,
+    mark: Option<El>,
+    style: &Style,
+    report: impl FnOnce(El) -> El,
+) -> El {
     let palette = style.palette;
     let spacing = style.layout.density.spacing();
     let above_pt = if parts.continued {
@@ -166,36 +219,38 @@ fn build(parts: &Parts<'_>, body: El, style: &Style, report: impl FnOnce(El) -> 
             .font(TYPE_BODY_STRONG)
             .color(palette.text_primary)
     };
-    let time = || {
-        text(parts.time.clone())
-            .key("time")
-            .font(TYPE_CAPTION)
-            .color(palette.text_muted)
+    // The mark, when there is one, stands where the time would.
+    let time = |mark: Option<El>| {
+        mark.unwrap_or_else(|| {
+            text(parts.time.clone())
+                .key("time")
+                .font(TYPE_CAPTION)
+                .color(palette.text_muted)
+        })
     };
     let (lead, content) = match spacing.lead {
         Lead::Avatar(size_pt) => {
-            let lead = if parts.continued {
-                el().key("lead").w(size_pt)
-            } else {
-                avatar(&parts.name, size_pt, &palette)
-            };
             let mut content = col().gap(MESSAGE_BLOCK_GAP_PT);
-            if !parts.continued {
+            let lead = if parts.continued {
+                // No header to hold the mark: the lead column does.
+                row().key("lead").w(size_pt).justify_center().children(mark)
+            } else {
                 content = content.child(
                     row()
                         .key("header")
                         .gap(MESSAGE_HEADER_GAP_PT)
                         .items_end()
                         .child(name())
-                        .child(time()),
+                        .child(time(mark)),
                 );
-            }
+                avatar(&parts.name, size_pt, &palette)
+            };
             (lead, content.child(body))
         }
         Lead::Gutter(width_pt) => {
             let mut lead = el().key("lead").w(width_pt);
-            if parts.show_time {
-                lead = lead.child(time());
+            if parts.show_time || mark.is_some() {
+                lead = lead.child(time(mark));
             }
             let content = if style.layout.stacked {
                 let mut stack = col().gap(MESSAGE_BLOCK_GAP_PT);

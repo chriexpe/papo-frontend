@@ -8,7 +8,7 @@
 //! shell, which carries it out. What each menu lists is the view that opens
 //! it.
 
-use papo_sdk::ServerId;
+use papo_sdk::{ServerId, Uuid};
 use rune::{Align, Cx, El, Side, col, el, text};
 
 use crate::design::{
@@ -16,12 +16,22 @@ use crate::design::{
     RADIUS_PILL_PT, SPACE_LG_PT, SPACE_SM_PT, TYPE_BODY,
 };
 use crate::shell::Shell;
+use crate::timeline::TimelineKey;
 
 /// What picking an item does; the shell carries it out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MenuAction {
     /// Ask to remove this server.
     RemoveServer(ServerId),
+    /// Send your unsent message `local` again; `unknown`: it may have
+    /// arrived, so ask first.
+    RetrySend {
+        key: TimelineKey,
+        local: Uuid,
+        unknown: bool,
+    },
+    /// Drop your unsent message `local`.
+    DiscardSend { key: TimelineKey, local: Uuid },
 }
 
 /// Where an open menu sits.

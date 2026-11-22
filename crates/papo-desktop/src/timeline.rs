@@ -13,6 +13,7 @@ pub(crate) mod anchor;
 mod boundary;
 pub(crate) mod content;
 mod controls;
+pub(crate) mod echoes;
 mod grouping;
 pub(crate) mod local_time;
 mod message_row;
@@ -20,6 +21,7 @@ mod paging;
 pub(crate) mod reading;
 pub(crate) mod reports;
 pub(crate) mod rows;
+pub(crate) mod send_mark;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -35,6 +37,7 @@ use papo_sdk_ui::{Timeline, TimelineItem, TimelineUpdate};
 use tokio::sync::oneshot;
 
 use self::anchor::{Anchor, Tracker};
+use self::echoes::Echoes;
 use self::paging::Paging;
 pub(crate) use self::paging::Request;
 use self::reading::Reading;
@@ -79,6 +82,8 @@ pub(crate) struct OpenTimeline {
     live: bool,
     /// The SDK window's items, oldest first.
     pub(crate) items: Vector<Arc<TimelineItem>>,
+    /// The local echoes among them, drawn as messages.
+    pub(crate) echoes: Echoes,
     version: u64,
     /// The connection generation the items were read in; none while no
     /// window is open (before the first, between a reopen and the next).
@@ -153,6 +158,7 @@ impl OpenTimeline {
             handle: None,
             live: true,
             items: Vector::new(),
+            echoes: Echoes::default(),
             version: 0,
             generation: None,
             keys_version: 0,
@@ -180,6 +186,7 @@ impl OpenTimeline {
     pub(crate) fn loaded(key: TimelineKey, items: Vector<Arc<TimelineItem>>) -> OpenTimeline {
         let (mut open, _stopped) = OpenTimeline::opening(key, 0, None);
         open.items = items;
+        open.echoes.refresh(&open.items, key.account.user());
         open.phase = Phase::Open;
         open.generation = Some(Generation::for_test(1));
         open.reading.items_changed(&open.items, true);
@@ -202,6 +209,7 @@ impl OpenTimeline {
         self.version = version;
         self.generation = Some(generation);
         self.items = items;
+        self.echoes.refresh(&self.items, self.key.account.user());
         // Only rows reported from these items count.
         self.reports.jumped();
         self.reading
@@ -314,6 +322,7 @@ impl OpenTimeline {
         if keys_changed {
             self.keys_version += 1;
         }
+        self.echoes.refresh(&self.items, self.key.account.user());
         self.version = update.version;
         self.generation = Some(update.generation);
         let sees_bottom = watched && self.tracker.at_bottom();

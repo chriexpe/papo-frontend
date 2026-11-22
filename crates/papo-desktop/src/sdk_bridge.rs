@@ -161,6 +161,15 @@ impl<S: 'static> Sdk<S> {
         self.send(Box::new(move |client| Box::pin(work(client))), true);
     }
 
+    /// A way for a job sent with [`Sdk::run`] or [`Sdk::finish`] to post
+    /// what it found back to the UI thread, when no ticket decides whether
+    /// the answer still counts.
+    pub(crate) fn updates(&self) -> Updates<S> {
+        Updates {
+            post: Arc::clone(&self.post),
+        }
+    }
+
     fn send(&self, job: Job, finish: bool) {
         if self.jobs.send(Queued { job, finish }).is_err() {
             log::debug!("dropped a request sent after the SDK shut down");

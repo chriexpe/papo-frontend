@@ -18,13 +18,15 @@ use rune::{El, GrowthSpec, ScrollSpec, Tx, col, el, memo, row, text};
 use super::content::Press;
 use super::content::copy::{self, Source};
 use super::controls::{jump_stack, seeking_pill};
+use super::echoes::SendState;
+use super::grouping::previous_message;
 use super::local_time::{LocalTime, day_label};
-use super::message_row::message_row;
+use super::message_row::{Origin, RowMessage, message_row};
 use super::{OpenTimeline, Phase, TimelineKey, row_key};
 use crate::design::{
-    DATE_RULE_GAP_PT, DATE_RULE_PT, Density, FOCUS_RING_PT, Lead, MessageLayout, Palette,
-    RADIUS_AVATAR_PT, RADIUS_CONTROL_PT, SKELETON_BAR_PT, SKELETON_WIDTHS, SPACE_SM_PT,
-    TIMELINE_INSET_PT, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM, Theme,
+    DATE_RULE_GAP_PT, DATE_RULE_PT, Density, FOCUS_RING_PT, Lead, MESSAGE_ROW_INSET_PT,
+    MessageLayout, Palette, RADIUS_AVATAR_PT, RADIUS_CONTROL_PT, SKELETON_BAR_PT, SKELETON_WIDTHS,
+    SPACE_SM_PT, TIMELINE_INSET_PT, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM, Theme,
 };
 use crate::strings;
 
@@ -64,6 +66,9 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn down_pressed(&mut self, key: TimelineKey, tx: &mut Tx);
     /// Cancel on ⌛'s pill was pressed.
     fn seek_cancelled(&mut self, key: TimelineKey);
+    /// The mark of your unsent message `local`, in state `state`, was
+    /// pressed: its menu opens.
+    fn send_state_pressed(&mut self, key: TimelineKey, local: Uuid, state: SendState);
 }
 
 /// How the rows look: the same for every row of one view.
@@ -180,17 +185,34 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
     // The SDK's unread marker moves as rows are read; drawn as nothing,
     // it groups nothing either, so reading moves no row. The divider held
     // for the visit splits its group instead (`reading`).
-    let previous = (0..index)
-        .rev()
-        .filter_map(|before| open.items.get(before))
-        .map(AsRef::as_ref)
-        .find(|item| !matches!(item, TimelineItem::UnreadMarker { .. }));
+    let previous = previous_message(&open.items, &open.echoes, index);
     match item.as_ref() {
         TimelineItem::Message {
             id,
             message,
             content,
-        } => message_row::<S>(open, *id, message, content, previous, style),
+        } => {
+            let row = RowMessage {
+                id: *id,
+                message,
+                content,
+                origin: Origin::History,
+            };
+            message_row::<S>(open, &row, previous, style)
+        }
+        TimelineItem::LocalEcho { id, .. } => match open.echoes.get(*id) {
+            Some(echo) => {
+                let row = RowMessage {
+                    id: *id,
+                    message: &echo.message,
+                    content: &echo.content,
+                    origin: Origin::Echo(echo.state),
+                };
+                message_row::<S>(open, &row, previous, style)
+            }
+            // An edit, a delete or a reaction: nothing of its own to draw.
+            None => el().w_full(),
+        },
         TimelineItem::DateSeparator { day, before } => date_row(*day, *before, style),
         TimelineItem::Gap(gap) if open.failed_gaps.contains(&gap.cursor.id) => {
             gap_failed::<S>(open.key, &gap.cursor.id, style)
@@ -200,7 +222,7 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
         // A gap fills itself as it nears; its skeleton stands for it.
         TimelineItem::Gap(_) | TimelineItem::Loading(_) => skeleton(style),
         // The unread marker shows as the divider held for the visit, over
-        // the rows; a local echo comes with the composer.
+        // the rows.
         _ => el().w_full(),
     }
 }
@@ -280,26 +302,42 @@ fn skeleton(style: &Style) -> El {
     col()
         .w_full()
         .a11y_hidden()
-        .children(SKELETON_WIDTHS.iter().map(|&(name, body)| {
-            row()
-                .w_full()
-                .pt(spacing.between_groups_pt)
-                .gap(spacing.lead_gap_pt)
-                .items_start()
-                .child(match spacing.lead {
-                    Lead::Avatar(size_pt) => el()
-                        .size(size_pt, size_pt)
-                        .radius(RADIUS_AVATAR_PT)
-                        .fill(palette.surface_hover),
-                    Lead::Gutter(width_pt) => el().w(width_pt),
-                })
-                .child(
+        .children(
+            SKELETON_WIDTHS
+                .iter()
+                .enumerate()
+                .map(|(place, &(name, body))| {
+                    // A message row's own inset and padding, so the placeholders
+                    // line up with the messages around them. They are a fixed set:
+                    // each one's place is its identity.
                     col()
-                        .grow(1.0)
-                        .gap(bar_gap_pt)
-                        .pt(bar_gap_pt)
-                        .child(bar(name))
-                        .child(bar(body)),
-                )
-        }))
+                        .key(format!("skeleton-{place}"))
+                        .w_full()
+                        .pt(spacing.between_groups_pt)
+                        .child(
+                            row()
+                                .w_full()
+                                .px(MESSAGE_ROW_INSET_PT)
+                                .py(spacing.row_padding_pt)
+                                .gap(spacing.lead_gap_pt)
+                                .items_start()
+                                .child(match spacing.lead {
+                                    Lead::Avatar(size_pt) => el()
+                                        .key("lead")
+                                        .size(size_pt, size_pt)
+                                        .radius(RADIUS_AVATAR_PT)
+                                        .fill(palette.surface_hover),
+                                    Lead::Gutter(width_pt) => el().key("lead").w(width_pt),
+                                })
+                                .child(
+                                    col()
+                                        .grow(1.0)
+                                        .gap(bar_gap_pt)
+                                        .pt(bar_gap_pt)
+                                        .child(bar(name))
+                                        .child(bar(body)),
+                                ),
+                        )
+                }),
+        )
 }

@@ -77,6 +77,14 @@ pub(crate) const SPACE_XL_PT: f32 = 16.0;
 pub(crate) const SPACE_XXL_PT: f32 = 20.0;
 /// The composer pill's height in points.
 pub(crate) const COMPOSER_HEIGHT_PT: f32 = 44.0;
+/// Send's square inside the composer pill, in points (`docs/design.md` §5).
+pub(crate) const SEND_BUTTON_PT: f32 = 30.0;
+/// Send's corner radius in points: the mock's 10 px.
+pub(crate) const RADIUS_SEND_PT: f32 = 10.0;
+/// The most lines the composer grows to before it scrolls inside.
+pub(crate) const COMPOSER_MAX_LINES: usize = 8;
+/// The mark that takes the time's place on an unsent message, in points.
+pub(crate) const SEND_STATE_ICON_PT: f32 = 14.0;
 /// The width of a pill's outline in points.
 pub(crate) const PILL_OUTLINE_PT: f32 = 1.0;
 /// `radius.control` in points: small controls inside a field.

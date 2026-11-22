@@ -15,6 +15,7 @@ use papo_sdk_ui::{TimelineItem, UtcOffset};
 use rune::{Cx, El, ElementInfo, Env, Runtime, Tx, col};
 
 use super::content::Press;
+use super::echoes::SendState;
 use super::local_time::LocalTime;
 use super::rows::message_key;
 use super::{OpenTimeline, Request, Style, TimelineHost, TimelineKey, view};
@@ -100,6 +101,10 @@ impl TimelineHost for Host {
 
     fn seek_cancelled(&mut self, _key: TimelineKey) {
         self.controls.push("cancel");
+    }
+
+    fn send_state_pressed(&mut self, _key: TimelineKey, _local: Uuid, _state: SendState) {
+        self.controls.push("send-state");
     }
 }
 
@@ -222,5 +227,6 @@ fn assert_near(actual: f32, expected: f32, what: &str) {
 
 mod content;
 mod controls;
+mod echoes;
 mod reading;
 mod spacing;

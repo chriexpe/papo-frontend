@@ -26,7 +26,7 @@ const SAVE_AFTER_S: f64 = 2.0;
 impl Shell {
     /// The timeline the navigation shows: the selected server's account and
     /// its selected text channel.
-    fn wanted_timeline(&self) -> Option<TimelineKey> {
+    pub(super) fn wanted_timeline(&self) -> Option<TimelineKey> {
         let server = self.nav.selected()?;
         let account = server.account.as_ref()?.id;
         let channel = self.nav.selected_channel()?;
@@ -42,6 +42,7 @@ impl Shell {
     /// Without `tx` (a handler that has none) a timeline shown again
     /// returns to its place on the next frame (`poll`).
     pub(crate) fn sync_timeline(&mut self, tx: Option<&mut Tx>) {
+        self.sync_composer();
         if self.sdk.is_none() {
             return;
         }
@@ -74,6 +75,8 @@ impl Shell {
             .flat_map(|server| server.accounts.iter().map(|account| account.id))
             .collect();
         self.tabs
+            .retain_accounts(|account| accounts.contains(&account));
+        self.composer
             .retain_accounts(|account| accounts.contains(&account));
     }
 
@@ -246,9 +249,11 @@ impl Shell {
 
     /// The window's poll: returns a timeline shown again to its place,
     /// sends a read report a popup that closed lets go, saves the reader's
-    /// place once it has rested, ends a code block's "Copied", and names
-    /// the new day once one starts. Returns whether the view changed.
+    /// place once it has rested, saves drafts whose typing paused, ends a
+    /// code block's "Copied", and names the new day once one starts.
+    /// Returns whether the view changed.
     pub(crate) fn poll(&mut self, clock_s: f64, tx: &mut Tx) -> bool {
+        self.poll_composer(clock_s, tx);
         let restored = self.restore_shown(tx);
         self.report_reading();
         if self.save_wake_s.is_some_and(|wake_s| wake_s <= clock_s) {
@@ -286,9 +291,11 @@ impl Shell {
         changed
     }
 
-    /// The window closes: the shown timeline's place is saved now.
+    /// The window closes: the shown timeline's place and every unsaved
+    /// draft are saved now.
     pub(crate) fn window_closing(&mut self, _tx: &mut Tx) {
         self.save_shown_position();
+        self.flush_composer();
     }
 
     /// The reader's place moved: it is saved once it has rested for

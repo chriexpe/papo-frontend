@@ -109,3 +109,30 @@ fn a_continued_message_hides_its_header_only_when_grouped() {
     );
     assert!(has_part(&separate, 2, "header"));
 }
+
+#[test]
+fn a_loading_row_s_placeholders_line_up_with_the_messages() {
+    use papo_sdk_ui::TimelineDirection;
+    for layout in layouts() {
+        let items = Vector::from(vec![
+            message(1, "ana", 0, "above the gap"),
+            Arc::new(TimelineItem::Loading(TimelineDirection::Newer)),
+        ]);
+        let rt = runtime(items, layout);
+        let placeholder = rt
+            .elements()
+            .into_iter()
+            .find(|element| {
+                element.path.ends_with("skeleton-0/lead")
+                    || element.path.contains("skeleton-0/") && element.path.ends_with("/lead")
+            })
+            .unwrap_or_else(|| panic!("{layout:?}: no placeholder"));
+        let lead = part(&rt, 1, "lead");
+        assert_near(placeholder.rect[0], lead[0], &format!("{layout:?}: lead x"));
+        assert_near(
+            placeholder.rect[2],
+            lead[2],
+            &format!("{layout:?}: lead width"),
+        );
+    }
+}

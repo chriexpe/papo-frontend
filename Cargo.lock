@@ -38,7 +38,7 @@ dependencies = [
 [[package]]
 name = "accesskit_macos"
 version = "0.27.2"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -69,7 +69,7 @@ dependencies = [
 [[package]]
 name = "accesskit_windows"
 version = "0.35.2"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -4238,6 +4238,7 @@ dependencies = [
  "tokio",
  "unicode-segmentation",
  "url",
+ "uuid",
  "zbus 6.3.0",
 ]
 
@@ -4386,7 +4387,7 @@ checksum = "9c4482d912d7671a7cd2089794f90ef3bb5f5f8c738230fb0fcd50fa020f0ed3"
 [[package]]
 name = "parley_engine"
 version = "0.12.0"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "fontique",
  "harfrust",
@@ -5212,7 +5213,7 @@ dependencies = [
 [[package]]
 name = "rune"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -5281,7 +5282,7 @@ dependencies = [
 [[package]]
 name = "rune-core"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "js-sys",
  "libc",
@@ -5300,7 +5301,7 @@ dependencies = [
 [[package]]
 name = "rune-edit"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "js-sys",
  "parley",
@@ -5314,7 +5315,7 @@ dependencies = [
 [[package]]
 name = "rune-gpu"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -5340,7 +5341,7 @@ dependencies = [
 [[package]]
 name = "rune-highlights"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "unicode-ident",
  "wasmparser",
@@ -5349,7 +5350,7 @@ dependencies = [
 [[package]]
 name = "rune-i18n"
 version = "0.1.0"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "fixed_decimal",
  "icu_decimal",
@@ -5368,7 +5369,7 @@ dependencies = [
 [[package]]
 name = "rune-image"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "blake3",
  "image",
@@ -5385,7 +5386,7 @@ dependencies = [
 [[package]]
 name = "rune-media"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "ash",
  "block2 0.6.2",
@@ -5414,12 +5415,12 @@ dependencies = [
 [[package]]
 name = "rune-motion"
 version = "0.1.0"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 
 [[package]]
 name = "rune-spell"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "js-sys",
  "objc2-app-kit 0.2.2",
@@ -5438,7 +5439,7 @@ dependencies = [
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "wgpu",
 ]
@@ -5446,7 +5447,7 @@ dependencies = [
 [[package]]
 name = "rune-taffy"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "stacker",
  "taffy",
@@ -5455,7 +5456,7 @@ dependencies = [
 [[package]]
 name = "rune-text"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "bytemuck",
  "fontique",
@@ -5471,7 +5472,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "skrifa",
  "swash",
- "tiny-skia-path 0.11.4 (git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76)",
+ "tiny-skia-path 0.11.4 (git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53)",
  "unicode-segmentation",
  "wasm-bindgen",
  "windows",
@@ -5670,7 +5671,7 @@ dependencies = [
 [[package]]
 name = "sctk-adwaita"
 version = "0.10.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "log",
  "smithay-client-toolkit",
@@ -6436,7 +6437,7 @@ dependencies = [
 [[package]]
 name = "tiny-skia-path"
 version = "0.11.4"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "arrayref",
  "bytemuck",
@@ -7604,7 +7605,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -7930,7 +7931,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/chriexpe/rune?rev=4273827c62d1169ce7e3ced21f757fbcfd254d76#4273827c62d1169ce7e3ced21f757fbcfd254d76"
+source = "git+https://github.com/chriexpe/rune?rev=743663a98d2bb7100cf630efe39346e22c013f53#743663a98d2bb7100cf630efe39346e22c013f53"
 dependencies = [
  "ahash",
  "android-activity",

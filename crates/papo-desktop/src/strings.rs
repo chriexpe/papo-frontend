@@ -55,16 +55,6 @@ pub(crate) fn window_title() -> &'static str {
     text!("window.title")
 }
 
-/// What assistive technology announces for the message field.
-pub(crate) fn composer_label() -> &'static str {
-    text!("composer.label")
-}
-
-/// The hint shown in the empty message field.
-pub(crate) fn composer_placeholder() -> &'static str {
-    text!("composer.placeholder")
-}
-
 /// Shown when another Papo process holds the profile.
 pub(crate) fn startup_profile_in_use() -> &'static str {
     text!("startup.profile_in_use")
@@ -75,12 +65,14 @@ pub(crate) fn startup_open_failed() -> &'static str {
     text!("startup.open_failed")
 }
 
+mod composer;
 mod links;
 mod reading;
 mod servers;
 mod sign_in;
 mod timeline;
 
+pub(crate) use composer::*;
 pub(crate) use links::*;
 pub(crate) use reading::*;
 pub(crate) use servers::*;

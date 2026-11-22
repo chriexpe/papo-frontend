@@ -3,19 +3,20 @@
 //! and the "Connected to" pill. Pure: reads the shell and the system's light
 //! or dark preference.
 
-use rune::{Cx, El, HelpLook, col, el, icon, row, text, text_input};
+use rune::{Cx, El, HelpLook, col, el, icon, row, text};
 
-use super::{COMPOSER_KEY, Shell, Stage};
+use super::outgoing::resend_confirm;
+use super::{Shell, Stage};
 use crate::design::{
-    COMPOSER_HEIGHT_PT, FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, HINT_DELAY_S, HINT_GAP_PT,
-    HINT_MAX_WIDTH_PT, HINT_PAD_PT, HINT_RADIUS_PT, PANE_EDGE_PT, PILL_CROSS_PT, PILL_OUTLINE_PT,
-    Palette, RADIUS_COMPOSER_PT, RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT, SPACE_SM_PT,
-    SPACE_XL_PT, TYPE_BODY, TYPE_HINT, Theme,
+    FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, HINT_DELAY_S, HINT_GAP_PT, HINT_MAX_WIDTH_PT,
+    HINT_PAD_PT, HINT_RADIUS_PT, PANE_EDGE_PT, PILL_CROSS_PT, PILL_OUTLINE_PT, Palette,
+    RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT, SPACE_SM_PT, SPACE_XL_PT, TYPE_BODY, TYPE_HINT,
+    Theme,
 };
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
 use crate::strings;
-use crate::{channel_pane, links, menu, rail, remove_server, timeline};
+use crate::{channel_pane, composer, links, menu, rail, remove_server, timeline};
 
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
@@ -64,6 +65,9 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(prompt) = &shell.content.link {
                     app = app.child(links::confirm(prompt, &palette));
                 }
+                if let Some(resend) = resend_confirm(shell, &palette) {
+                    app = app.child(resend);
+                }
                 if let Some(flow) = flow {
                     app = app.child(sign_in::popup(flow, &shell.fields, &palette));
                 }
@@ -93,25 +97,13 @@ fn hint_look(palette: &Palette, dark: bool) -> HelpLook {
 /// The rail, the channel pane and the conversation with the composer pill
 /// at its foot.
 fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
-    let field = text_input(&shell.composer, TYPE_BODY)
-        .key(COMPOSER_KEY)
-        .label(strings::composer_label())
-        .single_line()
-        .grow(1.0)
-        .color(palette.text_primary)
-        .placeholder(strings::composer_placeholder(), palette.text_muted)
-        .caret(palette.accent, palette.text_selection)
-        .on_edit(|shell: &mut Shell| &mut shell.composer);
-    let pill = row()
-        .key("composer-pill")
-        .w_full()
-        .h(COMPOSER_HEIGHT_PT)
-        .px(SPACE_LG_PT)
-        .center_y()
-        .radius(RADIUS_COMPOSER_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
-        .child(field);
+    let channel = shell
+        .nav
+        .selected()
+        .zip(shell.nav.selected_channel())
+        .and_then(|(server, id)| server.text_channels.iter().find(|entry| entry.id == id))
+        .map_or("", |entry| entry.name.as_str());
+    let composer = composer::pill(&shell.composer, channel, shell.writing.enter_sends, palette);
     let style = timeline::Style {
         layout: shell.message_layout,
         theme,
@@ -127,7 +119,7 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
         .h_full()
         .fill(palette.surface_content)
         .child(timeline::view(shell, style))
-        .child(col().w_full().padding(SPACE_LG_PT).child(pill));
+        .child(col().w_full().padding(SPACE_LG_PT).child(composer));
     let edge = || el().w(PANE_EDGE_PT).h_full().fill(palette.line_subtle);
     row()
         .w_full()
