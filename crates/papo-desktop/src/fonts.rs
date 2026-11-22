@@ -8,13 +8,14 @@
 //! out in the same faces; a glyph these lack falls back to the system's
 //! fonts.
 
-/// Inter 4.1 (Regular, Medium, SemiBold, Italic, SemiBold Italic) and
-/// JetBrains Mono 2.304 Regular.
+/// Inter 4.1 (Regular, Medium, SemiBold and their italics; a mention in
+/// italic text is weight 500) and JetBrains Mono 2.304 Regular.
 pub(crate) const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Inter-Regular.ttf"),
     include_bytes!("../assets/fonts/Inter-Medium.ttf"),
     include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
     include_bytes!("../assets/fonts/Inter-Italic.ttf"),
+    include_bytes!("../assets/fonts/Inter-MediumItalic.ttf"),
     include_bytes!("../assets/fonts/Inter-SemiBoldItalic.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
 ];
