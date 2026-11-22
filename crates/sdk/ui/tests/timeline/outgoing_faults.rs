@@ -613,3 +613,56 @@ fn an_edit_that_replaces_embeds_settles_them_without_their_gateway_events() -> R
     })??;
     f.finish()
 }
+
+#[test]
+fn deleting_a_message_already_gone_is_done_and_frees_the_channel() -> Result {
+    let f = Fixture::new(10, vec![])?;
+    f.run(async {
+        let session = f.signed_in("gone").await?;
+        let queue = session.outgoing();
+        let mut image = queue.subscribe().await?;
+        let body = |content: &str| OutgoingMessage {
+            content: content.into(),
+            ..Default::default()
+        };
+        queue
+            .enqueue(
+                channel(),
+                local(),
+                OperationKind::Message(body("synthetic")),
+                UnixMicros(0),
+            )
+            .await?;
+        let remote = sent(&mut image, local()).await?;
+        let deletions = [0x17_u128, 0x18]
+            .map(|n| Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0000 + n));
+        for (at, deletion) in (1..).zip(deletions) {
+            queue
+                .enqueue(
+                    channel(),
+                    deletion,
+                    OperationKind::Delete {
+                        target: papo_sdk::MessageTarget::Remote(remote),
+                    },
+                    UnixMicros(at),
+                )
+                .await?;
+        }
+        // The second answers 404: the message is already gone, which is what it asked for.
+        for deletion in deletions {
+            sent(&mut image, deletion).await?;
+        }
+        let next = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0019);
+        queue
+            .enqueue(
+                channel(),
+                next,
+                OperationKind::Message(body("after")),
+                UnixMicros(3),
+            )
+            .await?;
+        sent(&mut image, next).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
