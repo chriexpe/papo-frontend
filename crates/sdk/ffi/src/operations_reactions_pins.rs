@@ -261,6 +261,7 @@ impl FfiClient {
         intent: FfiReactionIntent,
     ) -> Result<FfiReactionAdmission, FfiReactionError> {
         let session = self.session_by_id(&account).map_err(|err| match err {
+            FfiClientError::InvalidArgument => FfiReactionError::InvalidInput,
             FfiClientError::Superseded => FfiReactionError::Superseded,
             _ => FfiReactionError::Closed,
         })?;

@@ -75,13 +75,20 @@ impl FfiSearchSurface {
     /// Subscribes to search surface transitions (`Idle`, `Loading`, `Ready`, `Fault`, `Closed`).
     ///
     /// # Errors
-    /// Returns [`FfiClientError::Worker`] if subscription thread fails.
+    /// Returns [`FfiClientError::Closed`] if closed or [`FfiClientError::Worker`] if thread spawn fails.
     pub fn subscribe(
         &self,
         listener: Arc<dyn FfiSearchListener>,
     ) -> Result<Arc<FfiSubscriptionHandle>, FfiClientError> {
+        if self.client.is_closed() {
+            return Err(FfiClientError::Closed);
+        }
         let sub_owned = self.inner.subscribe();
-        let baseline = map_search_update(&sub_owned.current());
+        let baseline_sdk = sub_owned.current();
+        if matches!(baseline_sdk, SearchUpdate::Closed) {
+            return Err(FfiClientError::Closed);
+        }
+        let baseline = map_search_update(&baseline_sdk);
         let stream = Box::pin(stream::unfold(Some(sub_owned), |opt| async move {
             let mut s = opt?;
             let next = s.next().await;
@@ -108,7 +115,7 @@ impl FfiSearchSurface {
             },
             move |upd| {
                 l_upd.on_update(map_search_update(&upd));
-                !matches!(upd, SearchUpdate::Closed)
+                true
             },
             move || l_end.on_closed(),
         )

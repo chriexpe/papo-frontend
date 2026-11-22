@@ -282,6 +282,9 @@ impl FfiClient {
         self: &Arc<Self>,
         server_id: String,
     ) -> Result<Arc<FfiAuthHandle>, FfiClientError> {
+        if self.is_closed() {
+            return Err(FfiClientError::Closed);
+        }
         let server = parse_server_id(&server_id)?;
         let service = self.handle.auth(server)?;
         Ok(Arc::new(FfiAuthHandle {

@@ -17,7 +17,9 @@ use crate::{
         FfiTimelineListener, FfiTimelinePage, FfiTimelineReadingListener, FfiTimelineReadingState,
         FfiTimelineSnapshot, FfiTimelineUpdate, FfiUtcOffsetProvider, FfiVisibilityContinuity,
     },
-    timeline_seek::{FfiCatchUpSeek, timeline_closed_err, to_timeline_config},
+    timeline_seek::{
+        FfiCatchUpSeek, timeline_closed_err, timeline_session_err, to_timeline_config,
+    },
 };
 
 /// Timeline window handle supporting subscriptions, pagination, visibility reporting, and catch-up.
@@ -260,9 +262,7 @@ impl FfiClient {
         config: FfiTimelineConfig,
         offset_provider: Arc<dyn FfiUtcOffsetProvider>,
     ) -> Result<Arc<FfiTimeline>, FfiTimelineError> {
-        let session = self
-            .session_by_id(&account)
-            .map_err(|_| timeline_closed_err())?;
+        let session = self.session_by_id(&account).map_err(timeline_session_err)?;
         let channel = parse_uuid(&channel_id).map_err(|_| FfiTimelineError::InvalidArgument)?;
         let sdk_cfg = to_timeline_config(config, offset_provider)?;
         let client = Arc::clone(self);
@@ -285,9 +285,7 @@ impl FfiClient {
         config: FfiTimelineConfig,
         offset_provider: Arc<dyn FfiUtcOffsetProvider>,
     ) -> Result<Arc<FfiTimeline>, FfiTimelineError> {
-        let session = self
-            .session_by_id(&account)
-            .map_err(|_| timeline_closed_err())?;
+        let session = self.session_by_id(&account).map_err(timeline_session_err)?;
         let channel = parse_uuid(&channel_id).map_err(|_| FfiTimelineError::InvalidArgument)?;
         let anchor = parse_uuid(&anchor_id).map_err(|_| FfiTimelineError::InvalidArgument)?;
         let sdk_cfg = to_timeline_config(config, offset_provider)?;
@@ -311,9 +309,7 @@ impl FfiClient {
         config: FfiTimelineConfig,
         offset_provider: Arc<dyn FfiUtcOffsetProvider>,
     ) -> Result<Arc<FfiTimeline>, FfiTimelineError> {
-        let session = self
-            .session_by_id(&account)
-            .map_err(|_| timeline_closed_err())?;
+        let session = self.session_by_id(&account).map_err(timeline_session_err)?;
         let channel = parse_uuid(&channel_id).map_err(|_| FfiTimelineError::InvalidArgument)?;
         let anchor = parse_uuid(&anchor_id).map_err(|_| FfiTimelineError::InvalidArgument)?;
         let sdk_cfg = to_timeline_config(config, offset_provider)?;
@@ -337,9 +333,7 @@ impl FfiClient {
         config: FfiTimelineConfig,
         offset_provider: Arc<dyn FfiUtcOffsetProvider>,
     ) -> Result<Arc<FfiTimeline>, FfiTimelineError> {
-        let session = self
-            .session_by_id(&account)
-            .map_err(|_| timeline_closed_err())?;
+        let session = self.session_by_id(&account).map_err(timeline_session_err)?;
         let channel = parse_uuid(&channel_id).map_err(|_| FfiTimelineError::InvalidArgument)?;
         let sdk_cfg = to_timeline_config(config, offset_provider)?;
         let client = Arc::clone(self);

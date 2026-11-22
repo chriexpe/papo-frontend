@@ -8,6 +8,7 @@ use papo_sdk_ui::{CatchUpSeek, TimelineConfig, UtcOffset};
 
 use crate::{
     client::FfiClient,
+    errors::FfiClientError,
     timeline::FfiTimeline,
     timeline_errors::{FfiHistoryClosedReason, FfiTimelineError},
     timeline_items::{FfiTimelineConfig, FfiUtcOffsetProvider},
@@ -84,5 +85,13 @@ pub(crate) fn to_timeline_config(
 pub(crate) fn timeline_closed_err() -> FfiTimelineError {
     FfiTimelineError::Closed {
         reason: FfiHistoryClosedReason::AccountClosed,
+    }
+}
+
+/// Maps client session lookup failures while preserving `InvalidArgument`.
+pub(crate) fn timeline_session_err(err: FfiClientError) -> FfiTimelineError {
+    match err {
+        FfiClientError::InvalidArgument => FfiTimelineError::InvalidArgument,
+        _ => timeline_closed_err(),
     }
 }

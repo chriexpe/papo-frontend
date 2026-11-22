@@ -66,8 +66,8 @@ impl From<AddedServer> for FfiAddedServer {
     }
 }
 
-/// Persisted non-secret server registry entry.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+/// Persisted non-secret server registry entry (`Debug` redacts `address`).
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct FfiSavedServer {
     /// Canonical server identifier string.
     pub id: String,
@@ -75,6 +75,16 @@ pub struct FfiSavedServer {
     pub address: String,
     /// Caller-supplied registration timestamp in Unix microseconds.
     pub added_at_us: i64,
+}
+
+impl std::fmt::Debug for FfiSavedServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FfiSavedServer")
+            .field("id", &self.id)
+            .field("address", &"[redacted]")
+            .field("added_at_us", &self.added_at_us)
+            .finish()
+    }
 }
 
 impl From<SavedServer> for FfiSavedServer {

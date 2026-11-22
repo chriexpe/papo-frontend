@@ -155,6 +155,9 @@ impl FfiClient {
     /// `ANativeWindow` surface bridge binds to the same active call instance.
     #[must_use]
     pub fn call_handle_for(&self, account: FfiAccountId, attempt: u64) -> Option<CallHandle> {
+        if self.is_closed() {
+            return None;
+        }
         let account = account.into_sdk().ok()?;
         let session = self.handle.session(account).ok()?;
         let active = session.calls().active()?;
@@ -166,6 +169,9 @@ impl FfiClient {
     /// # Errors
     /// Returns [`FfiClientError::InvalidArgument`] or `Client::session` revocation errors.
     pub(crate) fn session_by_id(&self, account: &FfiAccountId) -> Result<Session, FfiClientError> {
+        if self.is_closed() {
+            return Err(FfiClientError::Closed);
+        }
         let parsed = account.clone().into_sdk()?;
         self.handle.session(parsed).map_err(FfiClientError::from)
     }

@@ -295,6 +295,9 @@ impl FfiClient {
     /// Returns the currently active call across all accounts on this client, if any.
     #[must_use]
     pub fn active_call(self: &Arc<Self>) -> Option<FfiActiveAccountCall> {
+        if self.is_closed() {
+            return None;
+        }
         self.handle
             .active_call()
             .map(|(account, handle)| FfiActiveAccountCall {

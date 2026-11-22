@@ -17,6 +17,14 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::errors::FfiClientError;
 
+/// Upper bound on FFI millisecond deadlines so `Instant::now() + duration` never overflows.
+const MAX_FFI_DEADLINE_MS: u64 = 365 * 24 * 60 * 60 * 1_000;
+
+/// Clamps millisecond deadlines to a safe horizon before computing future instants.
+pub(crate) fn bounded_duration_ms(timeout_ms: u64) -> Duration {
+    Duration::from_millis(timeout_ms.min(MAX_FFI_DEADLINE_MS))
+}
+
 /// Honest foreign-callback drain report returned by `FfiClient::shutdown`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum FfiCallbackDrainStatus {
@@ -63,7 +71,10 @@ impl CallbackTracker {
 
     /// Waits up to `timeout` for all active foreign callbacks to finish without hanging forever.
     pub(crate) fn drain(&self, timeout: Duration) -> FfiCallbackDrainStatus {
-        let deadline = Instant::now() + timeout;
+        let clamped = timeout.min(Duration::from_millis(MAX_FFI_DEADLINE_MS));
+        let deadline = Instant::now()
+            .checked_add(clamped)
+            .unwrap_or_else(Instant::now);
         let mut active = self
             .inner
             .active

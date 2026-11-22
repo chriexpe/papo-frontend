@@ -1,10 +1,7 @@
 //! Background inbox sync, push wakeups, interactive sync preemption, and connection status bindings.
 //! Disk budget measurement and maintenance live in `disk.rs`.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
 
 use papo_sdk::{
     BackgroundOutcome, BackgroundReport, ConnectionState, ConnectionStatus, InteractiveSyncGuard,
@@ -16,7 +13,9 @@ use crate::{
     errors::FfiClientError,
     ids::FfiAccountId,
     notification_records::{FfiNotificationDelivery, map_delivery},
-    subscription::{FfiSubscriptionHandle, spawn_stream_subscription, watch_stream},
+    subscription::{
+        FfiSubscriptionHandle, bounded_duration_ms, spawn_stream_subscription, watch_stream,
+    },
 };
 
 /// Sanitized per-account background inbox sync outcome.
@@ -177,9 +176,11 @@ impl FfiClient {
         deadline_ms: u64,
     ) -> Result<FfiBackgroundReport, FfiClientError> {
         let handle = self.handle.clone();
-        let timeout = Duration::from_millis(deadline_ms.max(1));
+        let timeout = bounded_duration_ms(deadline_ms.max(1));
         self.run_scoped(|| FfiClientError::Closed, async move {
-            let deadline = Instant::now() + timeout;
+            let deadline = Instant::now()
+                .checked_add(timeout)
+                .unwrap_or_else(Instant::now);
             handle
                 .background_sync(deadline)
                 .await
@@ -200,9 +201,11 @@ impl FfiClient {
     ) -> Result<FfiBackgroundReport, FfiClientError> {
         let parsed = account.into_sdk()?;
         let handle = self.handle.clone();
-        let timeout = Duration::from_millis(deadline_ms.max(1));
+        let timeout = bounded_duration_ms(deadline_ms.max(1));
         self.run_scoped(|| FfiClientError::Closed, async move {
-            let deadline = Instant::now() + timeout;
+            let deadline = Instant::now()
+                .checked_add(timeout)
+                .unwrap_or_else(Instant::now);
             handle
                 .push_wake(parsed, deadline)
                 .await

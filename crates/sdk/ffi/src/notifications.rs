@@ -4,7 +4,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use futures_util::stream;
-use papo_sdk::NotificationRecord;
+use papo_sdk::{NotificationRecord, NotificationStatus};
 use papo_sdk_ui::{AccountInbox, NotificationClient};
 
 use crate::{
@@ -18,7 +18,7 @@ use crate::{
         map_settings_to_sdk, map_status,
     },
     operation_errors::FfiNotificationError,
-    subscription::{FfiSubscriptionHandle, spawn_stream_subscription, watch_stream},
+    subscription::{FfiSubscriptionHandle, spawn_stream_subscription},
 };
 
 #[uniffi::export]
@@ -53,6 +53,11 @@ impl FfiClient {
         &self,
         target: FfiNotificationTarget,
     ) -> Result<(), FfiNotificationError> {
+        if self.is_closed() {
+            return Err(FfiNotificationError::Session {
+                error: FfiClientError::Closed,
+            });
+        }
         let sdk_target = target.into_sdk()?;
         let session = self
             .handle
@@ -90,7 +95,18 @@ impl FfiClient {
         listener: Arc<dyn FfiNotificationStatusListener>,
     ) -> Result<Arc<FfiSubscriptionHandle>, FfiClientError> {
         let session = self.session_by_id(&account)?;
-        let (baseline, stream) = watch_stream(session.notifications().subscribe_status());
+        let mut rx = session.notifications().subscribe_status();
+        let baseline = *rx.borrow_and_update();
+        if matches!(baseline, NotificationStatus::Closed) {
+            return Err(FfiClientError::Closed);
+        }
+        let stream = Box::pin(stream::unfold(Some(rx), |opt| async move {
+            let mut receiver = opt?;
+            receiver.changed().await.ok()?;
+            let next = *receiver.borrow_and_update();
+            let remaining = (!matches!(next, NotificationStatus::Closed)).then_some(receiver);
+            Some((next, remaining))
+        }));
         let l_snap = Arc::clone(&listener);
         let l_upd = Arc::clone(&listener);
         let l_end = listener;
@@ -269,6 +285,11 @@ impl FfiClient {
         &self,
         records: Vec<FfiNotificationRecord>,
     ) -> Result<(), FfiNotificationError> {
+        if self.is_closed() {
+            return Err(FfiNotificationError::Session {
+                error: FfiClientError::Closed,
+            });
+        }
         if records.is_empty() {
             return Ok(());
         }
