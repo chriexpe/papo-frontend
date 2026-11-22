@@ -164,3 +164,30 @@ fn while_the_hourglass_pages_its_pill_offers_cancel() {
     rt.frame(FRAME_S);
     assert_eq!(rt.state.controls, ["cancel"]);
 }
+
+#[test]
+fn messages_arriving_while_unwatched_get_the_divider_at_the_bottom() {
+    let mut rt = runtime(turns(12), MessageLayout::default());
+    let update = |watched: bool, before: u128| {
+        move |host: &mut Host, _tx: &mut rune::Tx| {
+            let version = host.open.version + 1;
+            let items = marked(turns(12), before);
+            host.open.update(
+                papo_sdk_ui::TimelineUpdate {
+                    version,
+                    generation: Generation::for_test(1),
+                    diffs: vec![eyeball_im::VectorDiff::Reset { values: items }],
+                },
+                watched,
+            );
+        }
+    };
+    // At the bottom and watched: read as it comes, no divider.
+    rt.update(update(true, 11));
+    until_idle(&mut rt);
+    assert!(!shows(&rt, "boundary"));
+    // At the bottom, but the window is off screen or covered.
+    rt.update(update(false, 12));
+    until_idle(&mut rt);
+    assert!(shows(&rt, "boundary"), "the divider waits for the reader");
+}

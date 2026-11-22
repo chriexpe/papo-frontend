@@ -100,16 +100,17 @@ impl Reading {
     }
 
     /// The items changed. The visit's first items set the divider; later
-    /// ones set it only while it has none and the reader is away from the
-    /// bottom (messages that arrive at the bottom are read as they come).
+    /// ones set it only while it has none and the reader does not see the
+    /// bottom (scrolled up, the window off screen, a popup over the rows):
+    /// messages arriving where the reader looks are read as they come.
     pub(crate) fn items_changed(
         &mut self,
         items: &imbl::Vector<std::sync::Arc<TimelineItem>>,
-        at_bottom: bool,
+        sees_bottom: bool,
     ) {
         match self.divider {
             Divider::Unset => self.divider = Divider::Held(first_unread(items)),
-            Divider::Held(None) if !at_bottom => {
+            Divider::Held(None) if !sees_bottom => {
                 if let Some(first) = first_unread(items) {
                     self.divider = Divider::Held(Some(first));
                 }

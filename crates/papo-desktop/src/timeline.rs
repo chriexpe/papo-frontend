@@ -299,8 +299,10 @@ impl OpenTimeline {
         Some(anchor)
     }
 
-    /// Applies one batch of the SDK's diffs, in order.
-    pub(crate) fn update(&mut self, update: TimelineUpdate) {
+    /// Applies one batch of the SDK's diffs, in order. `watched`: the
+    /// window shows and no popup covers the rows, so messages arriving at
+    /// the bottom are seen as they come.
+    pub(crate) fn update(&mut self, update: TimelineUpdate, watched: bool) {
         if update.version <= self.version {
             return;
         }
@@ -314,8 +316,8 @@ impl OpenTimeline {
         }
         self.version = update.version;
         self.generation = Some(update.generation);
-        self.reading
-            .items_changed(&self.items, self.tracker.at_bottom());
+        let sees_bottom = watched && self.tracker.at_bottom();
+        self.reading.items_changed(&self.items, sees_bottom);
     }
 
     pub(crate) fn handle(&self) -> Option<&Timeline> {

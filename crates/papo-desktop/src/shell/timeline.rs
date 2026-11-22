@@ -108,6 +108,7 @@ impl Shell {
         tx: &mut Tx,
     ) -> bool {
         let shown = self.tabs.is_shown(key);
+        let watched = self.window_shown && !self.popup_shown();
         let Some(open) = self.tabs.get_mut(key, ticket) else {
             log::debug!("dropped a post from a closed timeline");
             return false;
@@ -125,7 +126,7 @@ impl Shell {
                     .iter()
                     .any(|diff| matches!(diff, VectorDiff::Reset { .. }));
                 let anchor = open.current_anchor();
-                open.update(update);
+                open.update(update, watched);
                 // A reset replaces every row; the reader stays where they were.
                 if reset && shown {
                     open.restore = Some(anchor);
