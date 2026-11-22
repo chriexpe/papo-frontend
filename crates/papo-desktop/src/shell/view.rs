@@ -55,7 +55,7 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(picker) = shell.composer.picker() {
                     app = app.child(composer::picker::view(
                         picker,
-                        "composer-pill",
+                        composer::COMPOSER_PILL_KEY,
                         &palette,
                         cx,
                     ));

@@ -3,7 +3,7 @@
 
 use rune::{Key, KeyEvent, Mods, TextEdit};
 
-use super::{Pairs, differing, wrap, wrap_format};
+use super::{Keystroke, Pairs, differing, wrap, wrap_format};
 
 /// The field's text with `|` at the caret.
 fn shown(edit: &TextEdit) -> String {
@@ -15,8 +15,9 @@ fn shown(edit: &TextEdit) -> String {
 /// Types each character of `text` as the keyboard would.
 fn type_in(edit: &mut TextEdit, pairs: &mut Pairs, text: &str) {
     for ch in text.chars() {
-        edit.insert(ch.encode_utf8(&mut [0; 4]));
-        pairs.changed(edit, true);
+        let typed = ch.to_string();
+        edit.insert(&typed);
+        pairs.changed(edit, Some(&Keystroke::Text(typed)));
     }
 }
 
@@ -28,7 +29,7 @@ fn backspace(edit: &mut TextEdit, pairs: &mut Pairs) {
         .map_or(0, |(at, _)| at);
     edit.set_selection(start, end);
     edit.insert("");
-    pairs.changed(edit, true);
+    pairs.changed(edit, Some(&Keystroke::Backspace));
 }
 
 fn field() -> (TextEdit, Pairs) {
@@ -85,7 +86,7 @@ fn backspace_in_an_empty_pair_removes_both() {
 fn a_paste_never_closes_a_pair() {
     let (mut edit, mut pairs) = field();
     edit.insert("**");
-    pairs.changed(&mut edit, false);
+    pairs.changed(&mut edit, None);
     assert_eq!(shown(&edit), "**|");
 }
 
@@ -104,7 +105,7 @@ fn undo_takes_back_the_closer_without_losing_the_rest() {
     type_in(&mut edit, &mut pairs, "a **");
     assert_eq!(edit.text, "a ****");
     edit.undo();
-    assert!(edit.text.starts_with("a "), "{:?}", edit.text);
+    assert_eq!(edit.text, "a **", "the closer goes first");
     assert!(edit.has_history(), "the history survived the closer");
 }
 
@@ -175,4 +176,21 @@ fn only_the_middle_differs() {
     assert_eq!(differing("a**", "a****"), Some((3..3, 3..5)));
     assert_eq!(differing("ação", "açã!o"), Some((5..5, 5..6)));
     assert_eq!(differing("aa", "a"), Some((1..2, 1..1)));
+}
+
+#[test]
+fn a_wrap_over_a_mention_keeps_it_a_mention() {
+    let mut edit = TextEdit::new("oi ");
+    edit.set_caret(3);
+    edit.replace_with_pill(3..3, "id-1", "@marina");
+    edit.set_selection(0, edit.text.len());
+    assert!(wrap(&mut edit, &wrap_format(&key("*")).unwrap(), false));
+    assert_eq!(edit.text, "*oi @marina*");
+    let pills: Vec<_> = edit
+        .pills()
+        .map(|(range, id)| (range, id.to_owned()))
+        .collect();
+    assert_eq!(pills, [(4..11, "id-1".to_owned())]);
+    edit.undo();
+    assert_eq!(edit.text, "oi @marina", "one undo step");
 }

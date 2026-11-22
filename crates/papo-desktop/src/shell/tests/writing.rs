@@ -49,7 +49,7 @@ fn a_typed_opener_closes_and_its_closer_steps_over() {
 }
 
 #[test]
-fn tab_steps_past_the_closer_and_otherwise_moves_on() {
+fn tab_steps_past_the_closer_in_the_field() {
     let mut rt = writing("");
     keys(&mut rt, "(oi");
     press(&mut rt, Key::Tab);
@@ -77,8 +77,12 @@ fn a_paste_never_closes_a_pair() {
 #[test]
 fn an_input_method_commit_never_closes_a_pair() {
     let mut rt = writing("");
-    rt.ime(Ime::Preedit("(".to_owned(), Some((1, 1)), Vec::new()));
-    rt.frame(FRAME_S);
+    // A typed key that changes nothing (Backspace in an empty field), then
+    // a commit in the same frame: the key's mark must not carry over.
+    rt.key(KeyEvent {
+        key: Key::Backspace,
+        mods: Mods::default(),
+    });
     rt.ime(Ime::Commit("(".to_owned()));
     rt.frame(FRAME_S);
     assert_eq!(field(&rt), "(");
@@ -90,7 +94,7 @@ fn undo_takes_back_the_closer_then_the_typing() {
     keys(&mut rt, "a **");
     assert_eq!(field(&rt), "a ****");
     chord(&mut rt, Key::Command('z'), ctrl());
-    assert!(field(&rt).len() < "a ****".len(), "{:?}", field(&rt));
+    assert_eq!(field(&rt), "a **", "the closer goes first");
     for _ in 0..4 {
         chord(&mut rt, Key::Command('z'), ctrl());
     }
@@ -195,16 +199,75 @@ fn escape_closes_the_picker_and_keeps_the_text() {
     press(&mut rt, Key::Escape);
     assert!(rt.find(PICKER_KEY).is_none());
     assert_eq!(field(&rt), "@ma");
-    keys(&mut rt, "r");
+    keys(&mut rt, "ri");
     assert!(rt.find(PICKER_KEY).is_none(), "it stays closed for this @");
+    keys(&mut rt, " @m");
+    assert!(rt.find(PICKER_KEY).is_some(), "another @ gets it back");
 }
 
 #[test]
-fn a_mention_is_sent_as_its_token() {
+fn a_mention_is_written_as_its_token() {
     let mut rt = with_roster("");
     keys(&mut rt, "@marin");
     press(&mut rt, Key::Tab);
     keys(&mut rt, "olá");
     let sent = rt.state.composer.wire_of_shown();
     assert_eq!(sent, format!("@mention(<@{}>) olá", Uuid::from_u128(2)));
+}
+
+#[test]
+fn the_picker_leaves_with_the_caret_and_enter_goes_back_to_the_field() {
+    let mut rt = with_roster("");
+    // Enter adds a line, so what it did stays in the field.
+    rt.update(|shell, _tx| shell.writing.enter_sends = false);
+    keys(&mut rt, "oi @mar");
+    assert!(rt.find(PICKER_KEY).is_some());
+    press(&mut rt, Key::Left);
+    assert!(rt.find(PICKER_KEY).is_none(), "the caret left the query");
+    press(&mut rt, Key::Enter);
+    assert_eq!(field(&rt), "oi @ma\nr", "Enter was the field's, not a pick");
+    assert_eq!(rt.state.composer.shown().unwrap().1.edit.pills().count(), 0);
+}
+
+#[test]
+fn a_channel_switch_closes_the_picker() {
+    let mut rt = with_roster("");
+    keys(&mut rt, "@mar");
+    assert!(rt.find(PICKER_KEY).is_some());
+    rt.update(|shell, _tx| {
+        let key = shell.composer.shown().unwrap().0;
+        let other = crate::timeline::TimelineKey {
+            account: key.account,
+            channel: Uuid::from_u128(99),
+        };
+        shell.composer.show(Some(other));
+        shell.composer.show(Some(key));
+    });
+    rt.frame(FRAME_S);
+    assert!(rt.find(PICKER_KEY).is_none());
+}
+
+#[test]
+fn wrapping_a_selection_keeps_its_mention() {
+    let mut rt = with_roster("");
+    keys(&mut rt, "oi @marin");
+    press(&mut rt, Key::Enter);
+    // The space after the pick.
+    press(&mut rt, Key::Backspace);
+    chord(&mut rt, Key::Command('a'), ctrl());
+    chord(&mut rt, Key::Command('i'), ctrl());
+    let mention = format!("@mention(<@{}>)", Uuid::from_u128(2));
+    assert_eq!(rt.state.composer.wire_of_shown(), format!("*oi {mention}*"));
+    chord(&mut rt, Key::Command('i'), ctrl());
+    assert_eq!(rt.state.composer.wire_of_shown(), format!("oi {mention}"));
+}
+
+#[test]
+fn everyone_is_not_offered_without_the_permission() {
+    let mut rt = with_roster("");
+    keys(&mut rt, "@ev");
+    assert!(
+        rt.find(PICKER_KEY).is_none(),
+        "no permission data: no @everyone"
+    );
 }

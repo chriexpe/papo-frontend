@@ -55,10 +55,7 @@ pub(crate) fn wire(edit: &TextEdit) -> String {
 /// the end and no undo history: a restored draft is where editing starts.
 pub(crate) fn restore(edit: &mut TextEdit, decoded: DecodedComposerMentions) {
     edit.replace_text(decoded.text);
-    for binding in decoded.bindings {
-        // The label is the text already there, so no offset moves.
-        edit.replace_with_pill(binding.byte_range, binding.id.to_string(), &binding.text);
-    }
+    pill(edit, decoded.bindings);
     edit.clear_history();
     edit.set_caret(edit.text.len());
 }
@@ -71,12 +68,33 @@ pub(crate) fn prepend(edit: &mut TextEdit, decoded: DecodedComposerMentions) {
         restore(edit, decoded);
         return;
     }
-    edit.set_caret(0);
-    edit.insert(&format!("{}\n", decoded.text));
-    for binding in decoded.bindings {
+    edit.undo_group(|edit| {
+        edit.set_caret(0);
+        edit.insert(&format!("{}\n", decoded.text));
+        pill(edit, decoded.bindings);
+    });
+    edit.set_caret(edit.text.len());
+}
+
+/// Makes each binding's range of the field's text a pill. The label is the
+/// text already there, so no offset moves, unless Rune has to clean it (a
+/// control character in a nickname) and it comes out shorter: back to
+/// front, only ranges already done would move.
+fn pill(edit: &mut TextEdit, bindings: Vec<ComposerMentionBinding>) {
+    for binding in bindings.into_iter().rev() {
         edit.replace_with_pill(binding.byte_range, binding.id.to_string(), &binding.text);
     }
-    edit.set_caret(edit.text.len());
+}
+
+/// What a person is called: the nickname, else the username; an empty one
+/// counts as none.
+pub(crate) fn display_name<'a>(
+    nickname: Option<&'a str>,
+    username: Option<&'a str>,
+) -> Option<&'a str> {
+    nickname
+        .filter(|name| !name.is_empty())
+        .or(username.filter(|name| !name.is_empty()))
 }
 
 /// An `@` being typed: the range from the `@` to the caret, and what
@@ -148,19 +166,19 @@ pub(crate) fn candidates(
         let Some(user) = snapshot.users.get(id) else {
             continue;
         };
-        let Some(name) = user.nickname.as_ref().or(user.username.as_ref()) else {
+        let Some(name) = display_name(user.nickname.as_deref(), user.username.as_deref()) else {
             continue;
         };
-        let names = [Some(name), user.username.as_ref()];
+        let names = [Some(name), user.username.as_deref()];
         let lowered: Vec<String> = names.iter().flatten().map(|n| n.to_lowercase()).collect();
         let candidate = || Candidate {
             target: Target::User(id),
-            name: name.clone(),
+            name: name.to_owned(),
             username: user.username.clone(),
         };
         if lowered.iter().any(|n| n.starts_with(&query)) {
             starting.push(candidate());
-        } else if lowered.iter().any(|n| n.contains(&query)) {
+        } else if containing.len() < MAX_CANDIDATES && lowered.iter().any(|n| n.contains(&query)) {
             containing.push(candidate());
         }
         if starting.len() >= MAX_CANDIDATES {
@@ -182,14 +200,15 @@ pub(crate) fn candidates(
 /// Replaces the query with the mention of `candidate` and a space after it.
 pub(crate) fn pick(edit: &mut TextEdit, query: &Query, candidate: &Candidate) {
     match candidate.target {
-        Target::User(id) => {
+        // The mention and its space are one undo step.
+        Target::User(id) => edit.undo_group(|edit| {
             edit.replace_with_pill(
                 query.range.clone(),
                 id.to_string(),
                 &format!("@{}", candidate.name),
             );
             edit.insert(" ");
-        }
+        }),
         Target::Everyone => {
             edit.set_selection(query.range.start, query.range.end);
             edit.insert(&format!("{EVERYONE} "));

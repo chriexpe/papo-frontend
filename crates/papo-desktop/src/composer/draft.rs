@@ -3,7 +3,9 @@
 //! Markdown spans and its length as sent. `Composer` moves it between the
 //! states; nothing here talks to the SDK.
 
-use papo_sdk_ui::message_content::{PreviewSpan, preview_spans_with_bindings};
+use papo_sdk_ui::message_content::{
+    PreviewSpan, PreviewSpanKind, encode_composer_mentions, preview_spans_with_bindings,
+};
 use rune::TextEdit;
 
 use super::mentions;
@@ -63,8 +65,22 @@ impl Draft {
     /// Recomputes what follows from the text; after every change to it.
     pub(super) fn refresh(&mut self) {
         let bindings = mentions::bindings(&self.edit);
-        self.preview = preview_spans_with_bindings(&self.edit.text, &bindings);
-        self.wire_chars = mentions::wire(&self.edit).chars().count();
+        let mut preview = preview_spans_with_bindings(&self.edit.text, &bindings);
+        // A bound mention is a pill, which draws its own chip.
+        preview.retain(|span| {
+            !(matches!(span.kind, PreviewSpanKind::Mention(_))
+                && bindings
+                    .iter()
+                    .any(|binding| binding.byte_range == span.byte_range))
+        });
+        self.preview = preview;
+        self.wire_chars = if bindings.is_empty() {
+            self.edit.text.chars().count()
+        } else {
+            encode_composer_mentions(&self.edit.text, &bindings)
+                .chars()
+                .count()
+        };
     }
 
     /// The text was replaced, not edited: no pair is open in it.

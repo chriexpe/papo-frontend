@@ -16,6 +16,28 @@ use papo_sdk_ui::message_content::{
 };
 use rune::{Key, KeyEvent, TextEdit};
 
+/// A key that types: only a change it makes may close a pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Keystroke {
+    /// A character, or what an `AltGr` or Option chord types.
+    Text(String),
+    Backspace,
+}
+
+impl Keystroke {
+    /// Whether `before` becoming `after` is what this key does: its text
+    /// inserted, or one character removed.
+    fn made(&self, before: &str, after: &str) -> bool {
+        let Some((old, new)) = differing(before, after) else {
+            return false;
+        };
+        match self {
+            Keystroke::Text(text) => old.is_empty() && after[new] == **text,
+            Keystroke::Backspace => new.is_empty() && before[old].chars().count() == 1,
+        }
+    }
+}
+
 /// The pairs open in one field, and its text as of the last change seen.
 #[derive(Debug, Default)]
 pub(crate) struct Pairs {
@@ -31,12 +53,14 @@ impl Pairs {
         self.pairing = None;
     }
 
-    /// The field's text changed; `typed` when a typed character or
-    /// Backspace changed it. A typed opener gets its closer, a typed closer
-    /// steps over the one waiting, and Backspace in an empty pair removes
-    /// both. Any other change only moves the pairs along.
-    pub(crate) fn changed(&mut self, edit: &mut TextEdit, typed: bool) {
+    /// The field's text changed; `key` the typing key that reached it in
+    /// the same event, if any. When the change is that key's own, a typed
+    /// opener gets its closer, a typed closer steps over the one waiting,
+    /// and Backspace in an empty pair removes both. Any other change (a
+    /// paste, an input method's commit, undo) only moves the pairs along.
+    pub(crate) fn changed(&mut self, edit: &mut TextEdit, key: Option<&Keystroke>) {
         let (start, end) = edit.range();
+        let typed = key.is_some_and(|key| key.made(&self.before, &edit.text));
         if typed && start == end {
             let result = on_pair_change(
                 &self.before,
@@ -75,7 +99,9 @@ impl Pairs {
 pub(crate) fn wrap_format(key: &KeyEvent) -> Option<SelectionFormat> {
     let mods = key.mods;
     match &key.key {
-        Key::Text(text) if !mods.ctrl && !mods.cmd && !mods.alt => match text.as_str() {
+        // AltGr (Ctrl+Alt off macOS) and Option still type: only a command
+        // chord is not typing.
+        Key::Text(text) if !key.is_command_chord() => match text.as_str() {
             "*" => Some(SelectionFormat::Italic),
             "~" => Some(SelectionFormat::Strikethrough),
             "|" => Some(SelectionFormat::Spoiler),
@@ -108,13 +134,47 @@ pub(crate) fn wrap(edit: &mut TextEdit, format: &SelectionFormat, by_shortcut: b
 }
 
 /// Turns the field's text into `text` by replacing only the range that
-/// differs, as one edit, then selects `selection`.
+/// differs, as one undo step, then selects `selection`.
+///
+/// Rune drops the pills (mentions) an edit replaces. A pair or a wrap only
+/// adds or removes markers around text, so each pill's label comes through
+/// unchanged: it is found again in order and made a pill again.
 fn apply(edit: &mut TextEdit, text: &str, selection: Range<usize>) {
-    let changed = differing(&edit.text, text);
-    if let Some((old, new)) = changed {
-        edit.set_selection(old.start, old.end);
-        edit.insert(&text[new]);
+    let Some((mut old, mut new)) = differing(&edit.text, text) else {
+        edit.set_selection(selection.start, selection.end);
+        return;
+    };
+    let pills: Vec<(Range<usize>, String)> = edit
+        .pills()
+        .filter(|(range, _)| range.start < old.end && range.end > old.start)
+        .map(|(range, id)| (range, id.to_owned()))
+        .collect();
+    // A pill cut by the range joins it whole; the grown part is common to
+    // both texts, so both ranges grow alike.
+    if let (Some(first), Some(last)) = (pills.first(), pills.last()) {
+        let grow_start = old.start.saturating_sub(first.0.start);
+        let grow_end = last.0.end.saturating_sub(old.end);
+        old = old.start - grow_start..old.end + grow_end;
+        new = new.start - grow_start..new.end + grow_end;
     }
+    let labels: Vec<(String, String)> = pills
+        .into_iter()
+        .map(|(range, id)| (id, edit.text[range].to_owned()))
+        .collect();
+    edit.undo_group(|edit| {
+        edit.set_selection(old.start, old.end);
+        edit.insert(&text[new.clone()]);
+        let end = old.start + new.len();
+        let mut from = old.start;
+        for (id, label) in labels {
+            let Some(at) = edit.text.get(from..end).and_then(|rest| rest.find(&label)) else {
+                continue;
+            };
+            let start = from + at;
+            edit.replace_with_pill(start..start + label.len(), id, &label);
+            from = start + label.len();
+        }
+    });
     edit.set_selection(selection.start, selection.end);
 }
 

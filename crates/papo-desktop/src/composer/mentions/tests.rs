@@ -148,3 +148,55 @@ fn everyone_is_plain_text() {
     assert_eq!(edit.text, "@everyone ");
     assert_eq!(edit.pills().count(), 0);
 }
+
+#[test]
+fn a_person_the_roster_lacks_keeps_their_token() {
+    let wire_text = format!("oi @mention(<@{}>)", id(7));
+    let mut edit = TextEdit::new("");
+    restore(&mut edit, decode_composer_mentions(&wire_text, |_| None));
+    assert_eq!(edit.text, wire_text);
+    assert_eq!(edit.pills().count(), 0);
+}
+
+#[test]
+fn a_name_rune_cleans_never_moves_the_mentions_after_it() {
+    // U+2028 is three bytes; Rune's pill label turns it into one space.
+    let wire_text = format!("@mention(<@{}>) e @mention(<@{}>)", id(1), id(2));
+    let decoded = decode_composer_mentions(&wire_text, |user| {
+        Some(if user == id(1) {
+            "a\u{2028}b"
+        } else {
+            "marina"
+        })
+    });
+    let mut edit = TextEdit::new("");
+    restore(&mut edit, decoded);
+    let labels: Vec<&str> = edit.pills().map(|(range, _)| &edit.text[range]).collect();
+    assert_eq!(labels, ["@a b", "@marina"]);
+    assert_eq!(edit.text, "@a b e @marina", "no byte of the text was lost");
+}
+
+#[test]
+fn a_failed_message_goes_first_and_both_keep_their_mentions() {
+    let snapshot = roster(&["ana", "marina"]);
+    let mut edit = typed("@an");
+    let asked = query(&edit).unwrap();
+    pick(&mut edit, &asked, &candidates(&snapshot, "an", false)[0]);
+    let failed = format!("oi @mention(<@{}>)", id(1));
+    super::prepend(
+        &mut edit,
+        decode_composer_mentions(&failed, |_| Some("marina")),
+    );
+    assert_eq!(edit.text, "oi @marina\n@ana ");
+    assert_eq!(
+        wire(&edit),
+        format!("oi @mention(<@{}>)\n@mention(<@{}>) ", id(1), id(0))
+    );
+}
+
+#[test]
+fn an_empty_nickname_falls_back_to_the_username() {
+    assert_eq!(super::display_name(Some(""), Some("ana")), Some("ana"));
+    assert_eq!(super::display_name(Some("Ana"), Some("ana")), Some("Ana"));
+    assert_eq!(super::display_name(Some(""), None), None);
+}

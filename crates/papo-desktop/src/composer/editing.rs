@@ -6,18 +6,20 @@
 //! typing is.
 
 use super::markdown::{FieldStyle, field_style};
-use super::mentions::{self, Candidate, Query};
+use super::mentions::{self, Candidate, Query, Target};
+use super::pairs::{self, Keystroke};
 use super::picker::Picker;
-use super::{Composer, DraftState, pairs};
+use super::{Composer, DraftState};
 use crate::design::Palette;
 use crate::timeline::TimelineKey;
 use papo_sdk_ui::message_content::SelectionFormat;
 
 impl Composer {
-    /// A typed character or Backspace reached the field at `clock_s`; the
-    /// change it makes in this event may close a pair.
-    pub(crate) fn key_typed(&mut self, clock_s: f64) {
-        self.typed_at_s = Some(clock_s);
+    /// A key reached the field at `clock_s`; `typed` when it types. The
+    /// change it makes in this event may close a pair; every key clears the
+    /// last one's mark.
+    pub(crate) fn key_reached(&mut self, clock_s: f64, typed: Option<Keystroke>) {
+        self.typed = typed.map(|key| (clock_s, key));
     }
 
     /// Tab: the caret steps past the innermost closer waiting in the shown
@@ -82,11 +84,14 @@ impl Composer {
         });
     }
 
-    /// No @ query at the caret any more.
+    /// No @ query at the caret any more, or none to show.
     pub(crate) fn close_picker(&mut self) {
         self.picker = None;
-        if self.mention_query().is_none() {
-            // Another `@` gets its picker back.
+        let at = self
+            .shown()
+            .and_then(|(key, draft)| Some((key, mentions::query(&draft.edit)?.range.start)));
+        if at != self.dismissed_at {
+            // Another `@` (or none) gets its picker back.
             self.dismissed_at = None;
         }
     }
@@ -98,32 +103,41 @@ impl Composer {
         }
     }
 
-    /// The open picker, over the shown field.
+    /// The open picker, while the shown field has the keyboard and its
+    /// caret still ends the picker's query. Rune tells no handler when a
+    /// field's caret only moves, so this is checked rather than heard: the
+    /// caret leaving the `@` hides the picker, and its keys go back to the
+    /// field.
     pub(crate) fn picker(&self) -> Option<&Picker> {
-        self.picker
-            .as_ref()
-            .filter(|open| Some(open.key) == self.shown)
+        let open = self.picker.as_ref()?;
+        let (key, draft) = self.shown()?;
+        let current = draft.edit.focused
+            && key == open.key
+            && mentions::query(&draft.edit).as_ref() == Some(&open.query);
+        current.then_some(open)
     }
 
     /// ↑ or ↓: the highlight moves `by` rows.
     pub(crate) fn step_picker(&mut self, by: isize) {
-        if let Some(open) = self.picker.as_mut() {
+        if self.picker().is_some()
+            && let Some(open) = self.picker.as_mut()
+        {
             open.step(by);
         }
     }
 
-    /// Enter, Tab or a click on row `index`: the query becomes its mention.
-    /// Whether the field changed.
-    pub(crate) fn pick(&mut self, index: usize) -> bool {
+    /// Enter, Tab or a click on the row of `target`: the query becomes its
+    /// mention. Whether the field changed.
+    pub(crate) fn pick(&mut self, target: Target) -> bool {
+        if self.picker().is_none() {
+            return false;
+        }
         let Some(open) = self.picker.take() else {
             return false;
         };
-        let Some(candidate) = open.candidates.get(index) else {
+        let Some(candidate) = open.candidates.iter().find(|c| c.target == target) else {
             return false;
         };
-        if self.shown != Some(open.key) {
-            return false;
-        }
         let Some(draft) = self.shown_editable() else {
             return false;
         };

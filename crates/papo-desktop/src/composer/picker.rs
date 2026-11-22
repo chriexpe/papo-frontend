@@ -47,9 +47,14 @@ impl Picker {
         self.selected = usize::try_from((at + by).rem_euclid(count)).unwrap_or(0);
     }
 
-    /// The highlighted row's index.
-    pub(crate) fn selected(&self) -> usize {
-        self.selected
+    /// The highlighted row's key.
+    pub(crate) fn chosen_key(&self) -> Option<String> {
+        self.chosen().map(|candidate| row_key(candidate.target))
+    }
+
+    /// Who the highlighted row mentions.
+    pub(crate) fn chosen_target(&self) -> Option<Target> {
+        self.chosen().map(|candidate| candidate.target)
     }
 
     pub(super) fn chosen(&self) -> Option<&Candidate> {
@@ -57,10 +62,14 @@ impl Picker {
     }
 }
 
-/// The element key of a row: the field names the highlighted one as its
-/// active descendant, since the keyboard stays in the field.
-pub(crate) fn row_key(index: usize) -> String {
-    format!("mention-{index}")
+/// The element key of the row of `target`, by who it mentions, so a row
+/// keeps its identity as the query narrows. The field names the highlighted
+/// one as its active descendant, since the keyboard stays in the field.
+pub(crate) fn row_key(target: Target) -> String {
+    match target {
+        Target::Everyone => "mention-everyone".to_owned(),
+        Target::User(id) => format!("mention-{id}"),
+    }
 }
 
 /// Draws `picker` above the pill keyed `pill_key`, as wide as it.
@@ -70,7 +79,7 @@ pub(crate) fn view(picker: &Picker, pill_key: &str, palette: &Palette, cx: &Cx<S
         .candidates
         .iter()
         .enumerate()
-        .map(|(index, candidate)| row_for(candidate, index, index == picker.selected, palette));
+        .map(|(index, candidate)| row_for(candidate, index == picker.selected, palette));
     let list = col()
         .key("mention-rows")
         .w_full()
@@ -95,7 +104,8 @@ pub(crate) fn view(picker: &Picker, pill_key: &str, palette: &Palette, cx: &Cx<S
     panel
 }
 
-fn row_for(candidate: &Candidate, index: usize, selected: bool, palette: &Palette) -> El {
+fn row_for(candidate: &Candidate, selected: bool, palette: &Palette) -> El {
+    let target = candidate.target;
     let label = match &candidate.username {
         Some(username) if *username != candidate.name => {
             format!("{} @{username}", candidate.name)
@@ -110,7 +120,7 @@ fn row_for(candidate: &Candidate, index: usize, selected: bool, palette: &Palett
         (Target::User(_), None) => None,
     };
     let mut line = row()
-        .key(row_key(index))
+        .key(row_key(target))
         .w_full()
         .h(MENU_ROW_HEIGHT_PT)
         .px(SPACE_SM_PT)
@@ -119,7 +129,7 @@ fn row_for(candidate: &Candidate, index: usize, selected: bool, palette: &Palett
         .radius(RADIUS_CONTROL_PT)
         .role("option")
         .label(label)
-        .on_press_tx(move |shell: &mut Shell, tx| shell.mention_picked(index, tx))
+        .on_press_tx(move |shell: &mut Shell, tx| shell.mention_picked(target, tx))
         .child(avatar(&candidate.name, None, palette))
         .child(
             text(candidate.name.clone())

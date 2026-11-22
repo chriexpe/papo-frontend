@@ -32,9 +32,9 @@ use rune::TextEdit;
 pub(crate) use self::draft::Draft;
 use self::draft::DraftState;
 pub(crate) use self::effect::{Effect, Sent};
-pub(crate) use self::pairs::wrap_format;
+pub(crate) use self::pairs::{Keystroke, wrap_format};
 pub(crate) use self::picker::Picker;
-pub(crate) use self::view::{COMPOSER_KEY, pill};
+pub(crate) use self::view::{COMPOSER_KEY, COMPOSER_PILL_KEY, pill};
 use crate::timeline::TimelineKey;
 
 /// How long typing must pause before the draft is saved, in seconds.
@@ -71,10 +71,10 @@ pub(crate) struct Composer {
     /// The field takes the keyboard once one shows (the app starts with
     /// it there).
     focus_pending: bool,
-    /// When a typed character or Backspace reached the field, on the
-    /// window's clock: the change it makes in that same event may close a
-    /// pair, and no other change does.
-    typed_at_s: Option<f64>,
+    /// The typing key that last reached the field, and when on the
+    /// window's clock: its own change in that same event may close a pair,
+    /// and no other change does.
+    typed: Option<(f64, Keystroke)>,
     /// The @ picker, while an `@` is being typed in the shown field.
     picker: Option<Picker>,
     /// The `@` whose picker Escape closed, by its offset in the shown
@@ -144,6 +144,7 @@ impl Composer {
         if key == self.shown {
             return Vec::new();
         }
+        self.picker = None;
         let mut effects = Vec::new();
         let mut focused = false;
         if let Some(left) = self.shown.take()
@@ -235,8 +236,14 @@ impl Composer {
         if draft.state == DraftState::Loading {
             return Vec::new();
         }
-        let typed = self.typed_at_s.take() == Some(clock_s);
-        draft.pairs.changed(&mut draft.edit, typed);
+        // The same event's clock, to the bit: a key's mark is for its own
+        // change only.
+        let keystroke = self
+            .typed
+            .take()
+            .filter(|(at_s, _)| at_s.to_bits() == clock_s.to_bits());
+        let keystroke = keystroke.as_ref().map(|(_, keystroke)| keystroke);
+        draft.pairs.changed(&mut draft.edit, keystroke);
         draft.refresh();
         let typing = !draft.edit.text.trim().is_empty();
         let due_s = clock_s + SAVE_AFTER_S;
@@ -308,6 +315,8 @@ impl Composer {
         };
         mentions::prepend(&mut draft.edit, decoded);
         draft.replaced();
+        // Its query, if open, no longer points at the same text.
+        self.picker = None;
         draft.state = DraftState::Unsaved { due_s: 0.0 };
         self.failed = Some(key);
         self.save(key).into_iter().collect()

@@ -20,6 +20,7 @@ use rune::Tx;
 use tokio::sync::Mutex;
 
 use super::Shell;
+use crate::composer::mentions::display_name;
 use crate::composer::{Effect, Sent};
 use crate::sdk_bridge::{Sdk, Updates};
 use crate::timeline::TimelineKey;
@@ -247,7 +248,7 @@ fn decode(session: Option<&Session>, wire: &str) -> DecodedComposerMentions {
     let snapshot = session.map(|session| session.subscribe_resources().borrow().clone());
     decode_composer_mentions(wire, |id| {
         let user = snapshot.as_deref()?.users.get(id)?;
-        user.nickname.as_deref().or(user.username.as_deref())
+        display_name(user.nickname.as_deref(), user.username.as_deref())
     })
 }
 

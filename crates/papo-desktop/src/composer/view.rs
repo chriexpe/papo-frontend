@@ -9,7 +9,7 @@
 use rune::{El, KeyEvent, PillStyle, auto_grow, col, icon, row, text, text_input};
 
 use super::Composer;
-use super::picker::row_key;
+use super::picker::Picker;
 use crate::design::{
     COMPOSER_HEIGHT_PT, COMPOSER_MAX_LINES, FOCUS_RING_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
     RADIUS_COMPOSER_PT, RADIUS_SEND_PT, SEND_BUTTON_PT, SPACE_LG_PT, SPACE_SM_PT, TYPE_BODY,
@@ -21,6 +21,9 @@ use crate::strings;
 
 /// The element key of the composer's text field.
 pub(crate) const COMPOSER_KEY: &str = "composer";
+
+/// The element key of the text pill, which the @ picker grows out of.
+pub(crate) const COMPOSER_PILL_KEY: &str = "composer-pill";
 
 /// The opacity of Send while there is nothing to send.
 const SEND_IDLE_OPACITY: f32 = 0.4;
@@ -48,8 +51,8 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         .strikes(style.strikes)
         // Every pill is a mention, drawn as a message draws one.
         .pill_style(move |_| PillStyle::default().bg(chip).fg(ink));
-    if let Some(picker) = composer.picker() {
-        field = field.active_descendant(row_key(picker.selected()));
+    if let Some(row) = composer.picker().and_then(Picker::chosen_key) {
+        field = field.active_descendant(row).expanded(true);
     }
     if loading {
         // No `on_edit` while the draft loads: typing waits for it.
@@ -58,7 +61,6 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         field = field
             .on_edit(|shell: &mut Shell| shell.composer.field_mut())
             .on_input_change(Shell::composer_edited)
-            .on_selection_change(|shell: &mut Shell, _, _| shell.composer_moved())
             // With "Enter to send" on, plain Enter submits and Shift+Enter
             // is the editor's own line break.
             .on_submit(Shell::composer_send)
@@ -75,7 +77,7 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         .child(auto_grow(field, 1, COMPOSER_MAX_LINES));
     let send_inset_pt = (COMPOSER_HEIGHT_PT - SEND_BUTTON_PT) / 2.0;
     let pill = row()
-        .key("composer-pill")
+        .key(COMPOSER_PILL_KEY)
         .w_full()
         .min_h(COMPOSER_HEIGHT_PT)
         .pl(SPACE_LG_PT)
