@@ -43,6 +43,8 @@ pub(crate) struct State {
     pub(crate) silent_outgoing: bool,
     /// Edits applied so far; each edit's `edited_at` is later than the one before.
     pub(crate) edits: u32,
+    /// Edits are answered without `content` and `edited_at`.
+    pub(crate) sparse_edit_receipts: bool,
     pub(crate) notification_search: crate::notification_search::NotificationSearch,
     pub(crate) media: crate::encoded_media::Media,
     pub(crate) operations: crate::operation_requests::Operations,
@@ -102,6 +104,7 @@ impl TestServer {
             outgoing: crate::OutgoingRequestCounts::default(),
             silent_outgoing: false,
             edits: 0,
+            sparse_edit_receipts: false,
             notification_search: crate::notification_search::NotificationSearch::default(),
             media: crate::encoded_media::Media::default(),
             operations: crate::operation_requests::Operations::default(),

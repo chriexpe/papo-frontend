@@ -300,3 +300,37 @@ pub(crate) async fn contains_receipt(session: &crate::Session, channel: Uuid, id
     }
     false
 }
+
+/// Read-only canonical evidence that history holds an edit of message `id` to exactly
+/// `content` (an edited message with that text, or an edit waiting for its message), or that
+/// the message is gone, so the edit has nothing left to settle. Never infers an edit from the
+/// message merely existing.
+pub(crate) async fn holds_edit(
+    session: &crate::Session,
+    channel: Uuid,
+    id: Uuid,
+    content: &str,
+) -> bool {
+    let channel = session
+        .inner
+        .history
+        .channels
+        .lock()
+        .await
+        .get(&channel)
+        .cloned();
+    let Some(channel) = channel else {
+        return false;
+    };
+    let state = channel.state.lock().await;
+    state.model.entries.get(id.as_bytes()).is_some_and(|entry| {
+        let edited_message = entry.message.as_ref().is_some_and(|message| {
+            message.edited_at.is_some() && message.content.as_deref() == Some(content)
+        });
+        let edit_waiting = entry
+            .edit
+            .as_ref()
+            .is_some_and(|(_, edited)| edited == content);
+        entry.deleted || edited_message || edit_waiting
+    })
+}

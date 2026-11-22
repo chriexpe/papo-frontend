@@ -7,8 +7,10 @@ use crate::{
 };
 use papo_api::{
     Uuid,
-    gateway::{KnownEvent, MessageDeleteEvent, MessageEditEvent, MessageEvent},
-    wire::{Attachment, Message, UpdateMessageRequest},
+    gateway::{
+        KnownEvent, MessageDeleteEvent, MessageEditEvent, MessageEmbedsUpdateEvent, MessageEvent,
+    },
+    wire::{Attachment, Embed, Message, UpdateMessageRequest},
 };
 use serde_json::json;
 
@@ -25,6 +27,11 @@ impl TestServer {
     /// projection can be proved independently.
     pub async fn set_silent_outgoing(&self, silent: bool) {
         self.state.lock().await.silent_outgoing = silent;
+    }
+    /// Answers edits with a receipt that omits `content` and `edited_at`, as a backend outside
+    /// the pinned contract might, so clients can prove they never settle history from it.
+    pub async fn set_sparse_edit_receipts(&self, sparse: bool) {
+        self.state.lock().await.sparse_edit_receipts = sparse;
     }
     /// Observes bounded payload-free dispatch counters.
     pub async fn outgoing_request_counts(&self) -> OutgoingRequestCounts {
@@ -204,8 +211,39 @@ fn mutate(state: &mut State, user: &str, method: &str, path: &str, body: &[u8]) 
             return problem(404, "not-found", path);
         };
         message.edited_at = Some(edited_at.clone());
-        let reply = Reply::json(200, json!(message));
+        // Custom embeds as the backend stores them: their text fields.
+        let embeds = request.embeds.map(|inputs| {
+            inputs
+                .into_iter()
+                .map(|input| Embed {
+                    title: input.title,
+                    description: input.description,
+                    url: input.url,
+                    ..Embed::default()
+                })
+                .collect::<Vec<_>>()
+        });
+        if let Some(embeds) = &embeds {
+            message.embeds = Some(embeds.clone());
+        }
+        let mut receipt = message.clone();
+        if state.sparse_edit_receipts {
+            receipt.content = None;
+            receipt.edited_at = None;
+        }
+        let reply = Reply::json(200, json!(receipt));
         if !state.silent_outgoing {
+            if let Some(embeds) = embeds {
+                let _ = crate::history_controls::emit_channel(
+                    state,
+                    &channel,
+                    KnownEvent::MessageEmbedsUpdate(Box::new(MessageEmbedsUpdateEvent {
+                        channel_id: channel.clone(),
+                        message_id: id.to_string(),
+                        embeds,
+                    })),
+                );
+            }
             let _ = crate::history_controls::emit_channel(
                 state,
                 &channel,

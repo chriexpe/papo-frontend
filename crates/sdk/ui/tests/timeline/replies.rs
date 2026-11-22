@@ -114,7 +114,7 @@ fn edits_deletes_and_replies_ride_on_their_items_until_history_settles_them() ->
         post.wait_started().await?;
         until(&mut stream, |s| {
             matches!(echo_reply(s, local(2)), Some(ReplyOriginal::Held { id, .. }) if id == original)
-                && echo_reply(s, local(3)) == Some(ReplyOriginal::Unsent { local: local(2) })
+                && echo_reply(s, local(3)) == Some(ReplyOriginal::Local { local: local(2) })
         })
         .await?;
         post.release();

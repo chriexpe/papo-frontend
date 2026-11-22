@@ -51,6 +51,14 @@ fn moderator() -> ChannelCapabilities {
     }
 }
 
+/// A member who may write in the channel.
+fn writer() -> ChannelCapabilities {
+    ChannelCapabilities {
+        send: true,
+        ..ChannelCapabilities::default()
+    }
+}
+
 fn me() -> Uuid {
     Uuid::from_u128(ME)
 }
@@ -88,16 +96,23 @@ fn authors_edit_and_delete_their_own_and_moderators_delete_others() {
 }
 
 #[test]
-fn unknown_permissions_offer_only_what_an_author_may_always_do() {
+fn unknown_permissions_fail_closed_but_for_deleting_your_own() {
     let theirs = message(11, OTHER, "theirs");
     assert_eq!(
         message_actions(&theirs, None, me(), None),
+        MessageActions::default()
+    );
+    let mine = message(10, ME, "mine");
+    assert_eq!(
+        message_actions(&mine, None, me(), None),
         MessageActions {
-            reply: true,
+            reply: false,
             edit: false,
-            delete: None,
+            delete: Some(DeleteAs::Author),
         }
     );
+    let items: Vector<_> = [item(mine, None)].into_iter().collect();
+    assert_eq!(newest_editable(&items, me(), None), None);
 }
 
 #[test]
@@ -123,7 +138,7 @@ fn a_message_being_deleted_offers_nothing_until_the_deletion_fails() {
         MessageActions::default()
     );
     let failed = operation(20, OperationKind::Delete { target }, OperationState::Failed);
-    assert!(message_actions(&mine, Some(&failed), me(), None).edit);
+    assert!(message_actions(&mine, Some(&failed), me(), Some(writer())).edit);
 }
 
 #[test]
@@ -158,7 +173,7 @@ fn up_edits_the_newest_own_sent_message_with_its_unsettled_text() {
     .into_iter()
     .collect();
     assert_eq!(
-        newest_editable(&items, me(), None),
+        newest_editable(&items, me(), Some(writer())),
         Some(EditTarget {
             id: Uuid::from_u128(12),
             content: "retyped".into(),
@@ -191,7 +206,7 @@ fn up_takes_a_sent_echo_and_skips_a_message_being_deleted() {
     .into_iter()
     .collect();
     assert_eq!(
-        newest_editable(&items, me(), None).map(|target| target.id),
+        newest_editable(&items, me(), Some(writer())).map(|target| target.id),
         Some(Uuid::from_u128(10))
     );
     let mut with_echo = items;
@@ -201,7 +216,7 @@ fn up_takes_a_sent_echo_and_skips_a_message_being_deleted() {
         reply: None,
     }));
     assert_eq!(
-        newest_editable(&with_echo, me(), None),
+        newest_editable(&with_echo, me(), Some(writer())),
         Some(EditTarget {
             id: Uuid::from_u128(14),
             content: "just sent".into(),

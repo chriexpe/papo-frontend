@@ -69,9 +69,10 @@ pub enum ReplyOriginal {
         /// Parsed content of `message`.
         content: Arc<MessageContent>,
     },
-    /// One of this account's creates the server has not confirmed yet; its echo carries
-    /// this local identity.
-    Unsent {
+    /// One of this account's own creates that history does not hold yet (queued, sending,
+    /// failed, unknown, or confirmed but not yet in history): the original is its echo, which
+    /// carries this local identity.
+    Local {
         /// The create's local operation identity.
         local: Uuid,
     },
@@ -89,7 +90,7 @@ impl std::fmt::Debug for ReplyOriginal {
                 .debug_struct("Held")
                 .field("id", id)
                 .finish_non_exhaustive(),
-            Self::Unsent { local } => f.debug_struct("Unsent").field("local", local).finish(),
+            Self::Local { local } => f.debug_struct("Local").field("local", local).finish(),
             Self::Deleted => f.write_str("Deleted"),
             Self::Unknown => f.write_str("Unknown"),
         }
@@ -111,7 +112,7 @@ impl PartialEq for ReplyOriginal {
                     content: yc,
                 },
             ) => a == b && Arc::ptr_eq(x, y) && Arc::ptr_eq(xc, yc),
-            (Self::Unsent { local: a }, Self::Unsent { local: b }) => a == b,
+            (Self::Local { local: a }, Self::Local { local: b }) => a == b,
             (Self::Deleted, Self::Deleted) | (Self::Unknown, Self::Unknown) => true,
             _ => false,
         }

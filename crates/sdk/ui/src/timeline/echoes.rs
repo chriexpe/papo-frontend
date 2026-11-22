@@ -82,7 +82,7 @@ fn original(
                 .find(|op| op.id == local)
                 .and_then(|op| op.message_id);
             match confirmed.map(|id| originals.of(id)).transpose()? {
-                Some(ReplyOriginal::Unknown) | None => Ok(ReplyOriginal::Unsent { local }),
+                Some(ReplyOriginal::Unknown) | None => Ok(ReplyOriginal::Local { local }),
                 Some(original) => Ok(original),
             }
         }

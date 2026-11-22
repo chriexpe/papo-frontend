@@ -43,8 +43,10 @@ pub struct EditTarget {
 }
 
 /// The actions `message` offers to `account_user`. `pending` is the item's unsettled edit or
-/// deletion; `capabilities` are the channel's, or `None` when unknown (a DM, or permission data
-/// not yet confirmed), which offers what an author may always do and nothing a moderator does.
+/// deletion; `capabilities` are the channel's, or `None` when they are unknown (permission
+/// data not confirmed yet, or a DM read without the `CapabilityService`). Unknown fails
+/// closed: it offers only deleting your own message, which the backend allows even after
+/// access is lost; no reply, no edit and no moderator deletion.
 #[must_use]
 pub fn message_actions(
     message: &Message,
@@ -64,22 +66,22 @@ pub fn message_actions(
         None
     };
     MessageActions {
-        reply: capabilities.is_none_or(|capabilities| capabilities.send),
-        edit: own && capabilities.is_none_or(|capabilities| capabilities.can_edit(true)),
+        reply: capabilities.is_some_and(|capabilities| capabilities.send),
+        edit: own && capabilities.is_some_and(|capabilities| capabilities.can_edit(true)),
         delete,
     }
 }
 
 /// The newest message in `items` that `account_user` may edit, with the text to edit. Unsent
 /// messages are skipped (they are retried or discarded, not edited), and so are messages
-/// being deleted.
+/// being deleted. Unknown `capabilities` fail closed, as in [`message_actions`].
 #[must_use]
 pub fn newest_editable(
     items: &Vector<Arc<TimelineItem>>,
     account_user: Uuid,
     capabilities: Option<ChannelCapabilities>,
 ) -> Option<EditTarget> {
-    if capabilities.is_some_and(|capabilities| !capabilities.can_edit(true)) {
+    if !capabilities.is_some_and(|capabilities| capabilities.can_edit(true)) {
         return None;
     }
     items.iter().rev().find_map(|item| match item.as_ref() {
