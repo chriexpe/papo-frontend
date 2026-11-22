@@ -208,6 +208,7 @@ fn find(
             id: found,
             message,
             content,
+            ..
         } if *found == id => Some((message.as_ref(), content.as_ref())),
         _ => None,
     })

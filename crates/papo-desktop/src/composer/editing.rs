@@ -6,7 +6,10 @@
 //! typing is.
 
 use super::markdown::{FieldStyle, field_style};
-use super::mentions::{self, Candidate, Query, Target};
+use papo_sdk::MentionTarget;
+use papo_sdk_ui::{MentionQuery, MentionSuggestion};
+
+use super::mentions;
 use super::pairs::{self, Keystroke};
 use super::picker::Picker;
 use super::{Composer, DraftState};
@@ -45,13 +48,13 @@ impl Composer {
     }
 
     /// The @ query at the shown field's caret, unless Escape closed it.
-    pub(crate) fn mention_query(&self) -> Option<(TimelineKey, Query)> {
+    pub(crate) fn mention_query(&self) -> Option<(TimelineKey, MentionQuery)> {
         let (key, draft) = self.shown()?;
         if draft.state == DraftState::Loading {
             return None;
         }
         let query = mentions::query(&draft.edit)?;
-        if self.dismissed_at == Some((key, query.range.start)) {
+        if self.dismissed_at == Some((key, query.byte_range.start)) {
             return None;
         }
         Some((key, query))
@@ -62,8 +65,8 @@ impl Composer {
     pub(crate) fn show_picker(
         &mut self,
         key: TimelineKey,
-        query: Query,
-        candidates: Vec<Candidate>,
+        query: MentionQuery,
+        candidates: Vec<MentionSuggestion>,
     ) {
         if candidates.is_empty() {
             self.picker = None;
@@ -72,7 +75,7 @@ impl Composer {
         let selected = self
             .picker
             .as_ref()
-            .filter(|open| open.key == key && open.query.range.start == query.range.start)
+            .filter(|open| open.key == key && open.query.byte_range.start == query.byte_range.start)
             .and_then(|open| open.chosen())
             .and_then(|chosen| candidates.iter().position(|c| c == chosen))
             .unwrap_or(0);
@@ -89,7 +92,7 @@ impl Composer {
         self.picker = None;
         let at = self
             .shown()
-            .and_then(|(key, draft)| Some((key, mentions::query(&draft.edit)?.range.start)));
+            .and_then(|(key, draft)| Some((key, mentions::query(&draft.edit)?.byte_range.start)));
         if at != self.dismissed_at {
             // Another `@` (or none) gets its picker back.
             self.dismissed_at = None;
@@ -99,7 +102,7 @@ impl Composer {
     /// Escape: the picker closes and stays closed for this `@`.
     pub(crate) fn dismiss_picker(&mut self) {
         if let Some(open) = self.picker.take() {
-            self.dismissed_at = Some((open.key, open.query.range.start));
+            self.dismissed_at = Some((open.key, open.query.byte_range.start));
         }
     }
 
@@ -128,7 +131,7 @@ impl Composer {
 
     /// Enter, Tab or a click on the row of `target`: the query becomes its
     /// mention. Whether the field changed.
-    pub(crate) fn pick(&mut self, target: Target) -> bool {
+    pub(crate) fn pick(&mut self, target: MentionTarget) -> bool {
         if self.picker().is_none() {
             return false;
         }

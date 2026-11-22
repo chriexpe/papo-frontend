@@ -15,12 +15,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use papo_sdk::{
     DraftBody, OperationKind, OutgoingError, OutgoingMessage, Session, UnixMicros, Uuid,
 };
+use papo_sdk_ui::display_name;
 use papo_sdk_ui::message_content::{DecodedComposerMentions, decode_composer_mentions};
 use rune::Tx;
 use tokio::sync::Mutex;
 
 use super::Shell;
-use crate::composer::mentions::display_name;
 use crate::composer::{Effect, Sent};
 use crate::sdk_bridge::{Sdk, Updates};
 use crate::timeline::TimelineKey;

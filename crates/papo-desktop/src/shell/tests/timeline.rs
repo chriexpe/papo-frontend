@@ -32,6 +32,8 @@ fn messages(count: u128) -> Vector<Arc<TimelineItem>> {
                 seconds / 60 % 60
             );
             Arc::new(TimelineItem::Message {
+                reply: None,
+                pending: None,
                 id,
                 message: Arc::new(Message {
                     id: Some(id.to_string()),

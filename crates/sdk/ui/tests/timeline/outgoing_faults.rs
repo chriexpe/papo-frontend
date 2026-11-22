@@ -164,7 +164,7 @@ fn pending_receipt(deleted: bool) -> Result {
             outgoing.changed().await?;
         };
         until(&mut stream, |snapshot| snapshot.items.iter().any(|item| {
-            matches!(item.as_ref(), TimelineItem::LocalEcho { id, operation }
+            matches!(item.as_ref(), TimelineItem::LocalEcho { id, operation, .. }
                 if *id == local() && operation.state == OperationState::Sent
                     && operation.message_id == Some(remote))
         })).await?;
@@ -230,6 +230,438 @@ fn pending_receipt(deleted: bool) -> Result {
         }
         assert_eq!(f.server().outgoing_request_counts().await.accepted, 1);
         assert_eq!(f.server().outgoing_request_counts().await.requests, 1);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn a_confirmed_edit_and_delete_settle_history_without_their_gateway_events() -> Result {
+    let f = Fixture::new(10, vec![])?;
+    f.run(async {
+        let session = f.signed_in("receipt-edit").await?;
+        f.server().set_silent_outgoing(true).await;
+        let timeline = Timeline::live(session.clone(), channel(), config()).await?;
+        let mut stream = timeline.subscribe()?;
+        let queue = session.outgoing();
+        let faulted = watch_faults(&queue).await?;
+        let body = OutgoingMessage {
+            content: "synthetic".into(),
+            ..Default::default()
+        };
+        queue
+            .enqueue(
+                channel(),
+                local(),
+                OperationKind::Message(body),
+                UnixMicros(0),
+            )
+            .await?;
+        let mut image = queue.subscribe().await?;
+        let remote = sent(&mut image, local()).await?;
+        let text_of = |items: &imbl::Vector<std::sync::Arc<TimelineItem>>| {
+            items.iter().find_map(|item| match item.as_ref() {
+                TimelineItem::Message { id, message, .. } if *id == remote => {
+                    message.content.clone()
+                }
+                _ => None,
+            })
+        };
+        until(&mut stream, |s| {
+            text_of(&s.items).as_deref() == Some("synthetic")
+        })
+        .await?;
+
+        let edit = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0011);
+        queue
+            .enqueue(
+                channel(),
+                edit,
+                OperationKind::Edit {
+                    target: papo_sdk::MessageTarget::Remote(remote),
+                    content: "synthetic-edit".into(),
+                    embeds: None,
+                },
+                UnixMicros(1),
+            )
+            .await?;
+        until(&mut stream, |s| {
+            text_of(&s.items).as_deref() == Some("synthetic-edit")
+        })
+        .await?;
+
+        let delete = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0012);
+        queue
+            .enqueue(
+                channel(),
+                delete,
+                OperationKind::Delete {
+                    target: papo_sdk::MessageTarget::Remote(remote),
+                },
+                UnixMicros(2),
+            )
+            .await?;
+        until(&mut stream, |s| text_of(&s.items).is_none()).await?;
+        let history = session.history(channel()).await?;
+        let snapshot = history.subscribe().await?.snapshot;
+        assert_eq!(snapshot.locate(remote)?, papo_sdk::LocatedMessage::Deleted);
+        // Each operation is marked projected only after history has settled it.
+        loop {
+            let settled = image
+                .borrow_and_update()
+                .operations
+                .iter()
+                .all(|op| op.state == OperationState::Sent && op.history_projected);
+            if settled {
+                break;
+            }
+            image.changed().await?;
+        }
+        assert!(
+            !faulted.load(std::sync::atomic::Ordering::SeqCst),
+            "settling raised no fault"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn a_deletion_confirmed_after_its_channel_went_away_settles_and_never_holds_the_queue() -> Result {
+    use futures_util::StreamExt;
+    let f = Fixture::new(10, vec![])?;
+    f.run(async {
+        let session = f.signed_in("refused-settle").await?;
+        let other: Uuid = f
+            .server()
+            .create_channel("other")
+            .await?
+            .id
+            .unwrap()
+            .parse()?;
+        f.server().set_silent_outgoing(true).await;
+        let timeline = Timeline::live(session.clone(), channel(), config()).await?;
+        let mut stream = timeline.subscribe()?;
+        let queue = session.outgoing();
+        let mut image = queue.subscribe().await?;
+        let body = |content: &str| OutgoingMessage {
+            content: content.into(),
+            ..Default::default()
+        };
+        queue
+            .enqueue(
+                channel(),
+                local(),
+                OperationKind::Message(body("synthetic")),
+                UnixMicros(0),
+            )
+            .await?;
+        let remote = sent(&mut image, local()).await?;
+
+        // The server deletes the message, then the whole channel, before the client hears back.
+        let mut delete = f
+            .server()
+            .hold_next_rest("DELETE", &format!("/messages/{remote}"))
+            .await?;
+        let deletion = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0013);
+        queue
+            .enqueue(
+                channel(),
+                deletion,
+                OperationKind::Delete {
+                    target: papo_sdk::MessageTarget::Remote(remote),
+                },
+                UnixMicros(1),
+            )
+            .await?;
+        delete.wait_started().await?;
+        assert!(f.server().delete_channel(&channel().to_string()).await);
+        while let Some(event) = stream.stream.next().await {
+            if matches!(event, papo_sdk_ui::TimelineEvent::Closed(_)) {
+                break;
+            }
+        }
+        delete.release();
+        loop {
+            let settled = image.borrow_and_update().operations.iter().any(|op| {
+                op.id == deletion && op.state == OperationState::Sent && op.history_projected
+            });
+            if settled {
+                break;
+            }
+            image.changed().await?;
+        }
+
+        // The queue still sends elsewhere.
+        let next = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0014);
+        queue
+            .enqueue(
+                other,
+                next,
+                OperationKind::Message(body("elsewhere")),
+                UnixMicros(2),
+            )
+            .await?;
+        loop {
+            let sent = image
+                .borrow_and_update()
+                .operations
+                .iter()
+                .any(|op| op.id == next && op.state == OperationState::Sent);
+            if sent {
+                break;
+            }
+            image.changed().await?;
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+/// The backend ID of operation `id`, once it is Sent.
+async fn sent(
+    image: &mut tokio::sync::watch::Receiver<std::sync::Arc<papo_sdk::OutgoingSnapshot>>,
+    id: Uuid,
+) -> Result<Uuid> {
+    loop {
+        let sent = image
+            .borrow_and_update()
+            .operations
+            .iter()
+            .find(|op| op.id == id && op.state == OperationState::Sent)
+            .and_then(|op| op.message_id);
+        if let Some(remote) = sent {
+            return Ok(remote);
+        }
+        image.changed().await?;
+    }
+}
+
+/// Becomes true if the queue ever reports a fault. A failed settle raises one, which stays
+/// until the next attempt after a backoff, so a watcher cannot miss it. The watcher ends with
+/// the queue's image.
+async fn watch_faults(
+    queue: &papo_sdk::OutgoingService,
+) -> Result<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+    let faulted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut watch = queue.subscribe().await?;
+    let seen = std::sync::Arc::clone(&faulted);
+    tokio::spawn(async move {
+        loop {
+            if watch.borrow_and_update().fault.is_some() {
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if watch.changed().await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(faulted)
+}
+
+/// The message item `id`: its text, its embeds' titles, and its pending operation's state.
+fn item_state(
+    items: &imbl::Vector<std::sync::Arc<TimelineItem>>,
+    id: Uuid,
+) -> Option<(String, Vec<String>, Option<OperationState>)> {
+    items.iter().find_map(|item| match item.as_ref() {
+        TimelineItem::Message {
+            id: current,
+            message,
+            pending,
+            ..
+        } if *current == id => Some((
+            message.content.clone().unwrap_or_default(),
+            message
+                .embeds
+                .iter()
+                .flatten()
+                .filter_map(|embed| embed.title.clone())
+                .collect(),
+            pending.as_ref().map(|op| op.state),
+        )),
+        _ => None,
+    })
+}
+
+#[test]
+fn an_edit_whose_receipt_lacks_its_text_settles_only_when_history_holds_the_edit() -> Result {
+    let f = Fixture::new(10, vec![])?;
+    f.run(async {
+        let session = f.signed_in("sparse-edit").await?;
+        f.server().set_silent_outgoing(true).await;
+        f.server().set_sparse_edit_receipts(true).await;
+        let timeline = Timeline::live(session.clone(), channel(), config()).await?;
+        let mut stream = timeline.subscribe()?;
+        let queue = session.outgoing();
+        let mut image = queue.subscribe().await?;
+        let body = OutgoingMessage {
+            content: "synthetic".into(),
+            ..Default::default()
+        };
+        queue
+            .enqueue(
+                channel(),
+                local(),
+                OperationKind::Message(body),
+                UnixMicros(0),
+            )
+            .await?;
+        let remote = sent(&mut image, local()).await?;
+        let edit = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0015);
+        queue
+            .enqueue(
+                channel(),
+                edit,
+                OperationKind::Edit {
+                    target: papo_sdk::MessageTarget::Remote(remote),
+                    content: "synthetic-edit".into(),
+                    embeds: None,
+                },
+                UnixMicros(1),
+            )
+            .await?;
+        sent(&mut image, edit).await?;
+        // Confirmed, yet nothing in the receipt says what history should hold: history keeps
+        // its text, nothing is made up, and the edit rides on the item.
+        until(&mut stream, |s| {
+            item_state(&s.items, remote)
+                == Some(("synthetic".into(), vec![], Some(OperationState::Sent)))
+        })
+        .await?;
+        let projected = |image: &papo_sdk::OutgoingSnapshot| {
+            image
+                .operations
+                .iter()
+                .any(|op| op.id == edit && op.history_projected)
+        };
+        assert!(!projected(&image.borrow()));
+        // The socket's edit event brings the edit into history; then it is settled.
+        f.server()
+            .emit_event(serde_json::from_value(serde_json::json!({
+                "type": "message_edit",
+                "id": remote.to_string(),
+                "channel_id": channel().to_string(),
+                "content": "synthetic-edit",
+                "edited_at": "2026-02-02T00:00:00.000001Z",
+            }))?)
+            .await?;
+        until(&mut stream, |s| {
+            item_state(&s.items, remote) == Some(("synthetic-edit".into(), vec![], None))
+        })
+        .await?;
+        assert!(projected(&image.borrow_and_update()));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn an_edit_that_replaces_embeds_settles_them_without_their_gateway_events() -> Result {
+    let f = Fixture::new(10, vec![])?;
+    f.run(async {
+        let session = f.signed_in("embed-edit").await?;
+        f.server().set_silent_outgoing(true).await;
+        let timeline = Timeline::live(session.clone(), channel(), config()).await?;
+        let mut stream = timeline.subscribe()?;
+        let queue = session.outgoing();
+        let mut image = queue.subscribe().await?;
+        let faulted = watch_faults(&queue).await?;
+        let body = OutgoingMessage {
+            content: "synthetic".into(),
+            ..Default::default()
+        };
+        queue
+            .enqueue(
+                channel(),
+                local(),
+                OperationKind::Message(body),
+                UnixMicros(0),
+            )
+            .await?;
+        let remote = sent(&mut image, local()).await?;
+        let edit = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0016);
+        queue
+            .enqueue(
+                channel(),
+                edit,
+                OperationKind::Edit {
+                    target: papo_sdk::MessageTarget::Remote(remote),
+                    content: "synthetic-edit".into(),
+                    embeds: Some(vec![EmbedInput {
+                        title: Some("synthetic-embed".into()),
+                        ..Default::default()
+                    }]),
+                },
+                UnixMicros(1),
+            )
+            .await?;
+        until(&mut stream, |s| {
+            item_state(&s.items, remote)
+                == Some((
+                    "synthetic-edit".into(),
+                    vec!["synthetic-embed".into()],
+                    None,
+                ))
+        })
+        .await?;
+        assert!(
+            !faulted.load(std::sync::atomic::Ordering::SeqCst),
+            "settling raised no fault"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn deleting_a_message_already_gone_is_done_and_frees_the_channel() -> Result {
+    let f = Fixture::new(10, vec![])?;
+    f.run(async {
+        let session = f.signed_in("gone").await?;
+        let queue = session.outgoing();
+        let mut image = queue.subscribe().await?;
+        let body = |content: &str| OutgoingMessage {
+            content: content.into(),
+            ..Default::default()
+        };
+        queue
+            .enqueue(
+                channel(),
+                local(),
+                OperationKind::Message(body("synthetic")),
+                UnixMicros(0),
+            )
+            .await?;
+        let remote = sent(&mut image, local()).await?;
+        let deletions = [0x17_u128, 0x18]
+            .map(|n| Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0000 + n));
+        for (at, deletion) in (1..).zip(deletions) {
+            queue
+                .enqueue(
+                    channel(),
+                    deletion,
+                    OperationKind::Delete {
+                        target: papo_sdk::MessageTarget::Remote(remote),
+                    },
+                    UnixMicros(at),
+                )
+                .await?;
+        }
+        // The second answers 404: the message is already gone, which is what it asked for.
+        for deletion in deletions {
+            sent(&mut image, deletion).await?;
+        }
+        let next = Uuid::from_u128(0xd000_0000_0000_4000_8000_0000_0000_0019);
+        queue
+            .enqueue(
+                channel(),
+                next,
+                OperationKind::Message(body("after")),
+                UnixMicros(3),
+            )
+            .await?;
+        sent(&mut image, next).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()

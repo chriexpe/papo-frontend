@@ -103,6 +103,8 @@ mod tests {
     fn item(message: Message) -> TimelineItem {
         let id = Uuid::parse_str(message.id.as_deref().unwrap()).unwrap();
         TimelineItem::Message {
+            reply: None,
+            pending: None,
             id,
             message: Arc::new(message),
             content: Arc::new(MessageContent::parse("")),

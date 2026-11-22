@@ -33,6 +33,7 @@ fn unsent(state: OperationState) -> Arc<TimelineItem> {
     Arc::new(TimelineItem::LocalEcho {
         id: operation.id,
         operation: Arc::new(operation),
+        reply: None,
     })
 }
 

@@ -7,14 +7,14 @@
 //! send" setting. Anything else is the field's own, and every key is marked
 //! on its way: only a typed character or Backspace may close a pair.
 
-use papo_sdk::permissions::global_permissions;
 use rune::{Key, KeyEvent, Tx};
 
 use super::Shell;
 use crate::composer::COMPOSER_KEY;
 use crate::composer::Keystroke;
-use crate::composer::mentions::{Target, candidates};
 use crate::composer::picker::Picker;
+use papo_sdk::MentionTarget;
+use papo_sdk_ui::mention_suggestions;
 
 impl Shell {
     /// A key reached the field; whether it is taken here.
@@ -60,7 +60,7 @@ impl Shell {
     }
 
     /// The row of `target` was clicked.
-    pub(crate) fn mention_picked(&mut self, target: Target, tx: &mut Tx) {
+    pub(crate) fn mention_picked(&mut self, target: MentionTarget, tx: &mut Tx) {
         if self.composer.pick(target) {
             self.composer_edited(tx);
         }
@@ -116,11 +116,7 @@ impl Shell {
             self.composer.close_picker();
             return;
         };
-        // @everyone only where the account may notify everyone; unknown
-        // permissions leave it out.
-        let everyone = global_permissions(&snapshot, key.account.user())
-            .is_ok_and(|granted| granted.everyone_message);
-        let found = candidates(&snapshot, &query.text, everyone);
+        let found = mention_suggestions(&snapshot, key.account.user(), &query.text);
         self.composer.show_picker(key, query, found);
     }
 }

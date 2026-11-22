@@ -183,7 +183,6 @@ async fn project_receipt(
     message: &papo_api::wire::Message,
     live: bool,
 ) -> Result<(), ClientError> {
-    let epoch = session.inner.epochs.current();
     session.inner.epochs.validate(generation)?;
     let id = Uuid::from_bytes(Model::id(
         message
@@ -191,7 +190,6 @@ async fn project_receipt(
             .as_deref()
             .ok_or(ClientError::ResourceData)?,
     )?);
-    let cache = session.client.inner.caches.open(session.account()).await?;
     let channel = session
         .inner
         .history
@@ -199,16 +197,64 @@ async fn project_receipt(
         .await
         .map_err(|_| ClientError::ResourceData)?;
     channel.check()?;
+    mutate(session, generation, &channel, |model| {
+        model
+            .receipt(message, if live { generation.get() } else { 0 })
+            .map(|()| true)
+    })
+    .await
+}
+
+/// Settles a confirmed edit or deletion of this account's into history the way its socket
+/// event would, so the outcome never waits for that event: the same channels (allowed or
+/// quarantined), the same rules (an older edit never replaces a newer one, a deletion is
+/// final). Settling again reaches the same state. A channel the session refuses, or one
+/// sealed meanwhile, has no history to settle: that is done, never an error to retry.
+pub(crate) async fn settle(
+    session: &crate::Session,
+    generation: Generation,
+    channel_id: Uuid,
+    event: &KnownEvent,
+) -> Result<(), ClientError> {
+    session.inner.epochs.validate(generation)?;
+    let Some(channel) = session.inner.history.live_channel(channel_id).await else {
+        return Ok(());
+    };
+    if channel.is_closed() {
+        return Ok(());
+    }
+    let settled = mutate(session, generation, &channel, |model| {
+        model.event(event, generation.get())
+    })
+    .await;
+    if settled.is_err() && channel.check().is_err() {
+        return Ok(());
+    }
+    settled
+}
+
+/// Runs `apply` on `channel`'s model, then persists and publishes it when it reports a change.
+async fn mutate(
+    session: &crate::Session,
+    generation: Generation,
+    channel: &Arc<Channel>,
+    apply: impl FnOnce(&mut Model) -> Result<bool, super::HistoryError>,
+) -> Result<(), ClientError> {
+    let epoch = session.inner.epochs.current();
+    session.inner.epochs.validate(generation)?;
+    let cache = session.client.inner.caches.open(session.account()).await?;
     let mut state = channel.state.lock().await;
     session.inner.epochs.validate(generation)?;
-    state.ensure(&cache, *id.as_bytes(), generation).await?;
     state
-        .model
-        .receipt(message, if live { generation.get() } else { 0 })?;
+        .ensure(&cache, *channel.id.as_bytes(), generation)
+        .await?;
+    if !apply(&mut state.model)? {
+        return Ok(());
+    }
     persist_and_publish(
         &session.inner,
         &cache,
-        &channel,
+        channel,
         &mut state,
         &epoch,
         generation,
@@ -253,4 +299,38 @@ pub(crate) async fn contains_receipt(session: &crate::Session, channel: Uuid, id
             .is_some_and(|entry| entry.deleted || entry.timeline);
     }
     false
+}
+
+/// Read-only canonical evidence that history holds an edit of message `id` to exactly
+/// `content` (an edited message with that text, or an edit waiting for its message), or that
+/// the message is gone, so the edit has nothing left to settle. Never infers an edit from the
+/// message merely existing.
+pub(crate) async fn holds_edit(
+    session: &crate::Session,
+    channel: Uuid,
+    id: Uuid,
+    content: &str,
+) -> bool {
+    let channel = session
+        .inner
+        .history
+        .channels
+        .lock()
+        .await
+        .get(&channel)
+        .cloned();
+    let Some(channel) = channel else {
+        return false;
+    };
+    let state = channel.state.lock().await;
+    state.model.entries.get(id.as_bytes()).is_some_and(|entry| {
+        let edited_message = entry.message.as_ref().is_some_and(|message| {
+            message.edited_at.is_some() && message.content.as_deref() == Some(content)
+        });
+        let edit_waiting = entry
+            .edit
+            .as_ref()
+            .is_some_and(|(_, edited)| edited == content);
+        entry.deleted || edited_message || edit_waiting
+    })
 }

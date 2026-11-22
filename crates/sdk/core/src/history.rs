@@ -55,7 +55,9 @@ pub(crate) use channel::HistoryStore;
 pub use diagnostics::{HistoryBudget, HistoryDiagnostics, HistoryWork};
 pub(crate) use message_key::validate_descending_page;
 pub use message_key::{InvalidMessageKey, MessageKey, parse_message_timestamp_us};
-pub use snapshot_query::{HistoryCoverage, HistoryRange, LocatedMessage, ResolvedKey};
+pub use snapshot_query::{
+    HistoryCoverage, HistoryRange, LocatedMessage, MessageLocator, ResolvedKey,
+};
 pub use subscription::{HistoryChunk, HistorySnapshot, HistorySubscription, HistoryUpdate};
 
 /// Why a history handle can no longer access its channel.

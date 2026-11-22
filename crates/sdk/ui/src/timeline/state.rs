@@ -5,14 +5,14 @@ use papo_sdk::{
     AccountId, HistoryClosedReason, HistoryCursor, HistorySnapshot, HistorySubscription,
     HistoryUpdate, Message, ReadingSnapshot, Uuid,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::watch;
 
 use super::{TimelineConfig, TimelineError};
 use crate::{
     list_subscription::Publisher,
-    timeline_item::TimelineItem,
-    timeline_window::{self, Bounds},
+    timeline_item::{ReplyOriginal, TimelineItem},
+    timeline_window::{self, Bounds, reply_originals::Originals},
 };
 
 #[cfg(test)]
@@ -24,6 +24,10 @@ pub(super) struct WindowState {
     pub raw: Arc<HistorySnapshot>,
     pub outgoing: Option<watch::Receiver<Arc<papo_sdk::OutgoingSnapshot>>>,
     outgoing_version: u64,
+    /// This channel's operations as last projected: an outgoing image whose ones for this
+    /// channel are the same `Arc`s (an upload's progress, another channel's send) changes
+    /// no item.
+    outgoing_ops: Vec<Arc<papo_sdk::Operation>>,
     pub bounds: Bounds,
     pub older_cursor: Option<HistoryCursor>,
     pub newer_cursor: Option<HistoryCursor>,
@@ -70,6 +74,7 @@ impl WindowState {
             raw: subscription.snapshot,
             outgoing: None,
             outgoing_version: 0,
+            outgoing_ops: Vec::new(),
             history: subscription.updates,
             reading_version,
             reading,
@@ -105,6 +110,14 @@ impl WindowState {
         let read = (reading.generation == self.raw.generation)
             .then(|| reading.channels.get(&self.channel))
             .flatten();
+        let outgoing = self
+            .outgoing
+            .as_ref()
+            .map(|outgoing| Arc::clone(&outgoing.borrow()));
+        let pending = outgoing.as_deref().map_or_else(HashMap::new, |outgoing| {
+            timeline_window::pending_changes::by_message(outgoing, self.channel)
+        });
+        let cache_scope = self.account.map(|account| (account, self.channel));
         let mut items = timeline_window::project_with_cache(
             &self.raw,
             &self.bounds,
@@ -112,20 +125,43 @@ impl WindowState {
             self.loading,
             config.offset_provider.as_ref(),
             &self.publisher.items,
-            self.account.map(|account| (account, self.channel)),
+            cache_scope,
+            &pending,
         )?;
+        // Echoes follow the newest message, so only a live window shows them.
         if self.bounds.live
-            && let Some(outgoing) = &self.outgoing
+            && let Some(outgoing) = &outgoing
         {
             super::echoes::append(
                 &mut items,
-                &outgoing.borrow(),
+                outgoing,
                 self.channel,
                 &self.publisher.items,
                 &self.raw,
-            );
+                cache_scope,
+            )?;
         }
         Ok(items)
+    }
+
+    /// What message `id` is, sharing this window's `Arc`s when the window shows it.
+    pub fn original(&self, id: Uuid) -> Result<ReplyOriginal, TimelineError> {
+        let mut originals = Originals::new(
+            &self.raw,
+            self.account.map(|account| (account, self.channel)),
+        );
+        for item in &self.publisher.items {
+            if let TimelineItem::Message {
+                id,
+                message,
+                content,
+                ..
+            } = item.as_ref()
+            {
+                originals.show(*id, message, content);
+            }
+        }
+        Ok(originals.of(id)?)
     }
 
     pub fn reproject(&mut self, config: &TimelineConfig, reset: bool) -> Result<(), TimelineError> {
@@ -156,14 +192,29 @@ impl WindowState {
             _ => return Err(TimelineError::InvalidCursor),
         };
         let reading_version = self.reading.borrow_and_update().version;
-        let outgoing_version = self
-            .outgoing
-            .as_mut()
-            .map_or(0, |rx| rx.borrow_and_update().version);
+        let (outgoing_version, outgoing_ops) = self.outgoing.as_mut().map_or_else(
+            || (0, Vec::new()),
+            |rx| {
+                let image = rx.borrow_and_update();
+                let ops = image
+                    .operations
+                    .iter()
+                    .filter(|op| op.channel_id == self.channel)
+                    .cloned()
+                    .collect();
+                (image.version, ops)
+            },
+        );
         let outgoing_only = self.raw.version == next.version
             && self.raw.generation == next.generation
             && self.reading_version == reading_version;
-        if outgoing_only && self.outgoing_version == outgoing_version {
+        let same_ops = outgoing_ops.len() == self.outgoing_ops.len()
+            && outgoing_ops
+                .iter()
+                .zip(&self.outgoing_ops)
+                .all(|(a, b)| Arc::ptr_eq(a, b));
+        if outgoing_only && (self.outgoing_version == outgoing_version || same_ops) {
+            self.outgoing_version = outgoing_version;
             return Ok(());
         }
         let reset = self.raw.generation != next.generation
@@ -172,6 +223,7 @@ impl WindowState {
         self.raw = next;
         self.reading_version = reading_version;
         self.outgoing_version = outgoing_version;
+        self.outgoing_ops = outgoing_ops;
         if outgoing_only {
             let items = self.project(config)?;
             if items == self.publisher.items {

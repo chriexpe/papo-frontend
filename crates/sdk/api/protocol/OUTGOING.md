@@ -10,7 +10,7 @@ updates the older fork revision; it does not include unmerged plugin/app work.
 | Attachment-backed embed | `thumbnail`/`image` accepts exactly one of HTTPS `url` or `attachment_name`; the latter must identify exactly one sanitized multipart filename in the same request | Keep names immutable with the durable payload; referenced files become embed media, not standalone message attachments |
 | Embed video | HTTPS URL and supported `mime_type` required | Attachment references do not replace the video URL contract |
 | Editing | `PUT /messages/{message_id}` with JSON `content` and optional embeds | Editing does not upload new multipart files |
-| Deleting | `DELETE /messages/{message_id}` | Dependencies need the acknowledged backend message ID |
+| Deleting | `DELETE /messages/{message_id}` | Dependencies need the acknowledged backend message ID; a 404 means the message is already gone, so the deletion is done, not refused |
 | Reactions | Channel/message-scoped POST/DELETE; server totals arrive on the gateway | Do not infer message identity from content or time |
 | Message identity | Human creation has no nonce or idempotency key; identical POSTs create different IDs | No automatic replay of an ambiguous dispatch, including a transport failure, lost success body, or process death after committing `Sending` |
 | Response additions | Nullable attachment video/thumbnail dimensions; search/notification external authors | Preserve metadata; unknown dimensions remain unknown |

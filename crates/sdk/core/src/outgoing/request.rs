@@ -57,8 +57,18 @@ pub(super) async fn send(
             .await?,
         ),
         OperationKind::Delete { .. } => {
-            rest.delete_message(target.ok_or(papo_api::Error::Decode)?)
-                .await?;
+            match rest
+                .delete_message(target.ok_or(papo_api::Error::Decode)?)
+                .await
+            {
+                // Already gone (another deletion got there first): what was asked for holds.
+                Ok(())
+                | Err(
+                    papo_api::Error::Problem { status: 404, .. }
+                    | papo_api::Error::Http { status: 404 },
+                ) => {}
+                Err(error) => return Err(error),
+            }
             None
         }
         OperationKind::Reaction {
@@ -88,8 +98,11 @@ pub(super) async fn send(
             .flatten();
         super::receipt::message(message, operation.channel_id, author, expected)
     } else {
+        // A deletion is projected once history has settled it; a reaction has nothing to
+        // settle, its totals stay the backend's.
+        let deletion = matches!(operation.kind.as_ref(), OperationKind::Delete { .. });
         Ok(Outcome {
-            projected: true,
+            projected: !deletion,
             message_id: target,
             message: None,
         })

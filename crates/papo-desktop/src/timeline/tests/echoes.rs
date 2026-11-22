@@ -46,6 +46,7 @@ fn echo(n: u128, seconds: i64, state: OperationState, body: &str) -> Arc<Timelin
     Arc::new(TimelineItem::LocalEcho {
         id,
         operation: Arc::new(operation),
+        reply: None,
     })
 }
 
