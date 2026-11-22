@@ -41,6 +41,9 @@ pub(crate) enum Placement {
     GrowFrom(&'static str),
     /// A context menu beside the element with this key.
     Beside(String),
+    /// Grown down from the small control with this key, from its left edge
+    /// (the ⚠ of an unsent message).
+    Below(String),
 }
 
 /// One item.
@@ -89,6 +92,12 @@ pub(crate) fn view(menu: &OpenMenu, palette: &Palette, cx: &Cx<Shell>) -> El {
             ((*key).to_owned(), Side::Bottom, SPACE_SM_PT, width)
         }
         Placement::Beside(key) => (key.clone(), Side::Right, SPACE_SM_PT, CONTEXT_MENU_WIDTH_PT),
+        Placement::Below(key) => (
+            key.clone(),
+            Side::Bottom,
+            SPACE_SM_PT,
+            CONTEXT_MENU_WIDTH_PT,
+        ),
     };
     let rows = menu
         .items

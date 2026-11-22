@@ -86,3 +86,26 @@ fn retrying_a_message_that_may_have_arrived_asks_first() {
     assert!(rt.find("resend").is_none(), "Send again closes it");
     assert!(rt.state.resend.is_none());
 }
+
+#[test]
+fn the_menu_grows_down_from_the_mark() {
+    let mut rt = showing(OperationState::Failed);
+    let mark = mark_key(Uuid::from_u128(100));
+    click(&mut rt, &mark);
+    let rect = |key: &str| {
+        rt.elements()
+            .into_iter()
+            .find(|element| element.key.as_deref() == Some(key))
+            .unwrap()
+            .rect
+    };
+    let (mark, menu) = (rect(&mark), rect("menu"));
+    assert!(
+        menu[1] >= mark[1] + mark[3],
+        "below the mark: {mark:?} {menu:?}"
+    );
+    assert!(
+        (menu[0] - mark[0]).abs() < 1.0,
+        "from its left edge: {mark:?} {menu:?}"
+    );
+}
