@@ -52,6 +52,14 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(server) = connected {
                     app = app.child(connected_pill(server, &palette));
                 }
+                if let Some(picker) = shell.composer.picker() {
+                    app = app.child(composer::picker::view(
+                        picker,
+                        composer::COMPOSER_PILL_KEY,
+                        &palette,
+                        cx,
+                    ));
+                }
                 if let Some(menu) = &shell.nav.menu {
                     app = app.child(menu::view(menu, &palette, cx));
                 }

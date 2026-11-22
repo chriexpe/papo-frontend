@@ -6,11 +6,19 @@
 //! when its channel first shows and saved back after a pause in typing, on a
 //! switch, on hide and at exit. Every change returns the [`Effect`]s the
 //! shell carries out (`shell/composer.rs`); nothing here talks to the SDK.
-//! The pill is `view`'s, the Enter setting `prefs`'.
+//! The pill is `view`'s, the Enter setting `prefs`'. Markdown, pairs and
+//! mentions in the field are `markdown`'s, `pairs`' and `mentions`'; the
+//! keys and the @ picker that use them are `editing`'s and `picker`'s.
 
 mod draft;
+mod editing;
 mod effect;
+mod markdown;
+pub(crate) mod mentions;
+mod pairs;
+pub(crate) mod picker;
 pub(crate) mod prefs;
+mod saving;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -18,12 +26,15 @@ mod view;
 use std::collections::HashMap;
 
 use papo_sdk::{AccountId, Uuid};
+use papo_sdk_ui::message_content::DecodedComposerMentions;
 use rune::TextEdit;
 
 pub(crate) use self::draft::Draft;
 use self::draft::DraftState;
 pub(crate) use self::effect::{Effect, Sent};
-pub(crate) use self::view::{COMPOSER_KEY, pill};
+pub(crate) use self::pairs::{Keystroke, wrap_format};
+pub(crate) use self::picker::Picker;
+pub(crate) use self::view::{COMPOSER_KEY, COMPOSER_PILL_KEY, pill};
 use crate::timeline::TimelineKey;
 
 /// How long typing must pause before the draft is saved, in seconds.
@@ -60,6 +71,15 @@ pub(crate) struct Composer {
     /// The field takes the keyboard once one shows (the app starts with
     /// it there).
     focus_pending: bool,
+    /// The typing key that last reached the field, and when on the
+    /// window's clock: its own change in that same event may close a pair,
+    /// and no other change does.
+    typed: Option<(f64, Keystroke)>,
+    /// The @ picker, while an `@` is being typed in the shown field.
+    picker: Option<Picker>,
+    /// The `@` whose picker Escape closed, by its offset in the shown
+    /// field: it stays closed until another `@` is typed.
+    dismissed_at: Option<(TimelineKey, usize)>,
 }
 
 impl Composer {
@@ -106,12 +126,7 @@ impl Composer {
     /// within it.
     pub(crate) fn chars_over(&self) -> usize {
         self.shown().map_or(0, |(_, draft)| {
-            draft
-                .edit
-                .text
-                .chars()
-                .count()
-                .saturating_sub(MAX_MESSAGE_CHARS)
+            draft.wire_chars.saturating_sub(MAX_MESSAGE_CHARS)
         })
     }
 
@@ -129,6 +144,7 @@ impl Composer {
         if key == self.shown {
             return Vec::new();
         }
+        self.picker = None;
         let mut effects = Vec::new();
         let mut focused = false;
         if let Some(left) = self.shown.take()
@@ -157,18 +173,19 @@ impl Composer {
         }
     }
 
-    /// The SDK read `key`'s stored draft: `text`, empty when there is
-    /// none. Only a buffer still loading takes it; the caret goes to its
-    /// end (`replace_text`). Reading it again later never replaces what was
-    /// typed since.
-    pub(crate) fn loaded(&mut self, key: TimelineKey, text: String) -> bool {
+    /// The SDK read `key`'s stored draft: `decoded`, empty when there is
+    /// none, its mentions named. Only a buffer still loading takes it; the
+    /// caret goes to its end. Reading it again later never replaces what
+    /// was typed since.
+    pub(crate) fn loaded(&mut self, key: TimelineKey, decoded: DecodedComposerMentions) -> bool {
         let Some(draft) = self.drafts.get_mut(&key) else {
             return false;
         };
         if draft.state != DraftState::Loading {
             return false;
         }
-        draft.edit.replace_text(text);
+        mentions::restore(&mut draft.edit, decoded);
+        draft.replaced();
         draft.state = DraftState::Saved;
         true
     }
@@ -219,6 +236,15 @@ impl Composer {
         if draft.state == DraftState::Loading {
             return Vec::new();
         }
+        // The same event's clock, to the bit: a key's mark is for its own
+        // change only.
+        let keystroke = self
+            .typed
+            .take()
+            .filter(|(at_s, _)| at_s.to_bits() == clock_s.to_bits());
+        let keystroke = keystroke.as_ref().map(|(_, keystroke)| keystroke);
+        draft.pairs.changed(&mut draft.edit, keystroke);
+        draft.refresh();
         let typing = !draft.edit.text.trim().is_empty();
         let due_s = clock_s + SAVE_AFTER_S;
         draft.state = DraftState::Unsaved { due_s };
@@ -241,52 +267,6 @@ impl Composer {
         effects
     }
 
-    /// The window's poll at `clock_s`: saves the drafts whose pause is
-    /// over, and asks for the next wake when one still waits.
-    pub(crate) fn poll(&mut self, clock_s: f64) -> Vec<Effect> {
-        let now_s = clock_s + WAKE_SLACK_S;
-        if self.wake_s.is_none_or(|wake_s| wake_s > now_s) {
-            return Vec::new();
-        }
-        self.wake_s = None;
-        let due: Vec<TimelineKey> = self
-            .drafts
-            .iter()
-            .filter(
-                |(_, draft)| matches!(draft.state, DraftState::Unsaved { due_s } if due_s <= now_s),
-            )
-            .map(|(key, _)| *key)
-            .collect();
-        let mut effects: Vec<Effect> = due.into_iter().filter_map(|key| self.save(key)).collect();
-        let next_s = self
-            .drafts
-            .values()
-            .filter_map(|draft| match draft.state {
-                DraftState::Unsaved { due_s } => Some(due_s),
-                DraftState::Loading | DraftState::Saved | DraftState::SaveFailed => None,
-            })
-            .reduce(f64::min);
-        if let Some(next_s) = next_s {
-            self.wake_s = Some(next_s);
-            effects.push(Effect::WakeAfter(next_s - clock_s));
-        }
-        effects
-    }
-
-    /// Saves every draft not yet saved: the window hides or closes.
-    pub(crate) fn flush(&mut self) -> Vec<Effect> {
-        let unsaved: Vec<TimelineKey> = self
-            .drafts
-            .iter()
-            .filter(|(_, draft)| draft.state.unsaved())
-            .map(|(key, _)| *key)
-            .collect();
-        unsaved
-            .into_iter()
-            .filter_map(|key| self.save(key))
-            .collect()
-    }
-
     /// Send was pressed: the shown field's text leaves it as a new message
     /// with identity `local`. The stored draft keeps the text until the SDK
     /// has queued it (`Effect::Send`).
@@ -305,14 +285,16 @@ impl Composer {
         let Some(draft) = self.drafts.get_mut(&key) else {
             return Sent::Nothing;
         };
-        let text = std::mem::take(&mut draft.edit.text);
+        let text = mentions::wire(&draft.edit);
         // A sent message never comes back through undo.
         draft.edit.replace_text("");
+        draft.replaced();
         draft.state = DraftState::Saved;
         draft.last_save = Some(seq);
         if self.failed == Some(key) {
             self.failed = None;
         }
+        self.picker = None;
         Sent::Queued(Effect::Send {
             key,
             text,
@@ -321,18 +303,20 @@ impl Composer {
         })
     }
 
-    /// The SDK did not queue `text` for `key`: it goes back in the field,
-    /// before whatever was typed since, and is saved again.
-    pub(crate) fn send_failed(&mut self, key: TimelineKey, text: String) -> Vec<Effect> {
+    /// The SDK did not queue `decoded` for `key`: it goes back in the
+    /// field, before whatever was typed since, and is saved again.
+    pub(crate) fn send_failed(
+        &mut self,
+        key: TimelineKey,
+        decoded: DecodedComposerMentions,
+    ) -> Vec<Effect> {
         let Some(draft) = self.drafts.get_mut(&key) else {
             return Vec::new();
         };
-        let restored = if draft.edit.text.is_empty() {
-            text
-        } else {
-            format!("{text}\n{}", draft.edit.text)
-        };
-        draft.edit.replace_text(restored);
+        mentions::prepend(&mut draft.edit, decoded);
+        draft.replaced();
+        // Its query, if open, no longer points at the same text.
+        self.picker = None;
         draft.state = DraftState::Unsaved { due_s: 0.0 };
         self.failed = Some(key);
         self.save(key).into_iter().collect()
@@ -354,27 +338,5 @@ impl Composer {
         {
             self.typing_reported = None;
         }
-    }
-
-    /// The save of `key`'s buffer, when it has changes; it counts as saved
-    /// from now on.
-    fn save(&mut self, key: TimelineKey) -> Option<Effect> {
-        if !self.drafts.get(&key)?.state.unsaved() {
-            return None;
-        }
-        let seq = self.next_seq();
-        let draft = self.drafts.get_mut(&key)?;
-        draft.state = DraftState::Saved;
-        draft.last_save = Some(seq);
-        Some(Effect::Save {
-            key,
-            text: draft.edit.text.clone(),
-            seq,
-        })
-    }
-
-    fn next_seq(&mut self) -> u64 {
-        self.seq += 1;
-        self.seq
     }
 }

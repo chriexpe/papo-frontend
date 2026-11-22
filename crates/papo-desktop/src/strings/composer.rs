@@ -80,3 +80,13 @@ pub(crate) fn resend_cancel() -> &'static str {
 pub(crate) fn resend_confirm() -> &'static str {
     text!("outgoing.resend_confirm")
 }
+
+/// The @ picker, for assistive technology.
+pub(crate) fn mention_picker() -> &'static str {
+    text!("composer.mention_picker")
+}
+
+/// What @everyone does, beside it in the @ picker.
+pub(crate) fn mention_everyone_hint() -> &'static str {
+    text!("composer.mention_everyone")
+}

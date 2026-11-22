@@ -1,8 +1,15 @@
 //! One channel's edit buffer and where it stands against the SDK's stored
-//! draft. `Composer` moves it between the states; nothing here talks to
-//! the SDK.
+//! draft, with what follows from its text: the pairs open in it, its
+//! Markdown spans and its length as sent. `Composer` moves it between the
+//! states; nothing here talks to the SDK.
 
+use papo_sdk_ui::message_content::{
+    PreviewSpan, PreviewSpanKind, encode_composer_mentions, preview_spans_with_bindings,
+};
 use rune::TextEdit;
+
+use super::mentions;
+use super::pairs::Pairs;
 
 /// One channel's buffer.
 pub(crate) struct Draft {
@@ -10,6 +17,12 @@ pub(crate) struct Draft {
     pub(super) state: DraftState,
     /// The order of the last save asked for, so a failure is matched to it.
     pub(super) last_save: Option<u64>,
+    pub(super) pairs: Pairs,
+    /// The SDK's Markdown spans of the text, as of its last change.
+    pub(super) preview: Vec<PreviewSpan>,
+    /// The text's length as sent, in characters: a mention counts as its
+    /// token, not its name.
+    pub(super) wire_chars: usize,
 }
 
 /// Where a buffer stands against the SDK's stored draft.
@@ -43,6 +56,36 @@ impl Draft {
             edit: TextEdit::new(""),
             state: DraftState::Loading,
             last_save: None,
+            pairs: Pairs::default(),
+            preview: Vec::new(),
+            wire_chars: 0,
         }
+    }
+
+    /// Recomputes what follows from the text; after every change to it.
+    pub(super) fn refresh(&mut self) {
+        let bindings = mentions::bindings(&self.edit);
+        let mut preview = preview_spans_with_bindings(&self.edit.text, &bindings);
+        // A bound mention is a pill, which draws its own chip.
+        preview.retain(|span| {
+            !(matches!(span.kind, PreviewSpanKind::Mention(_))
+                && bindings
+                    .iter()
+                    .any(|binding| binding.byte_range == span.byte_range))
+        });
+        self.preview = preview;
+        self.wire_chars = if bindings.is_empty() {
+            self.edit.text.chars().count()
+        } else {
+            encode_composer_mentions(&self.edit.text, &bindings)
+                .chars()
+                .count()
+        };
+    }
+
+    /// The text was replaced, not edited: no pair is open in it.
+    pub(super) fn replaced(&mut self) {
+        self.pairs.reset(&self.edit.text);
+        self.refresh();
     }
 }

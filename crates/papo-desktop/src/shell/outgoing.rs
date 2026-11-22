@@ -52,7 +52,7 @@ impl Shell {
             },
         ];
         let mark = mark_key(local);
-        self.nav.menu = Some(OpenMenu::new(Placement::Beside(mark.clone()), mark, items));
+        self.nav.menu = Some(OpenMenu::new(Placement::Below(mark.clone()), mark, items));
     }
 
     /// Retry from the menu: at once for a refused message, after "Send

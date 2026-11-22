@@ -6,9 +6,10 @@
 //! Pure: it reads the composer and hands Enter, Shift+Enter, edits and Send
 //! to the shell.
 
-use rune::{El, Key, KeyEvent, auto_grow, col, icon, row, text, text_input};
+use rune::{El, KeyEvent, PillStyle, auto_grow, col, icon, row, text, text_input};
 
 use super::Composer;
+use super::picker::Picker;
 use crate::design::{
     COMPOSER_HEIGHT_PT, COMPOSER_MAX_LINES, FOCUS_RING_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
     RADIUS_COMPOSER_PT, RADIUS_SEND_PT, SEND_BUTTON_PT, SPACE_LG_PT, SPACE_SM_PT, TYPE_BODY,
@@ -21,6 +22,9 @@ use crate::strings;
 /// The element key of the composer's text field.
 pub(crate) const COMPOSER_KEY: &str = "composer";
 
+/// The element key of the text pill, which the @ picker grows out of.
+pub(crate) const COMPOSER_PILL_KEY: &str = "composer-pill";
+
 /// The opacity of Send while there is nothing to send.
 const SEND_IDLE_OPACITY: f32 = 0.4;
 
@@ -31,6 +35,8 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         return col();
     };
     let loading = composer.is_loading();
+    let style = composer.field_style(palette);
+    let (chip, ink) = (palette.accent_soft, palette.link);
     let mut field = text_input(&draft.edit, TYPE_BODY)
         .key(COMPOSER_KEY)
         .label(strings::composer_label())
@@ -40,7 +46,14 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         .grow(1.0)
         .color(palette.text_primary)
         .placeholder(strings::composer_placeholder(channel), palette.text_muted)
-        .caret(palette.accent, palette.text_selection);
+        .caret(palette.accent, palette.text_selection)
+        .spans(style.spans)
+        .strikes(style.strikes)
+        // Every pill is a mention, drawn as a message draws one.
+        .pill_style(move |_| PillStyle::default().bg(chip).fg(ink));
+    if let Some(row) = composer.picker().and_then(Picker::chosen_key) {
+        field = field.active_descendant(row).expanded(true);
+    }
     if loading {
         // No `on_edit` while the draft loads: typing waits for it.
         field = field.busy(true);
@@ -52,18 +65,7 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
             // is the editor's own line break.
             .on_submit(Shell::composer_send)
             .on_input_key(move |shell: &mut Shell, key: &KeyEvent, tx| {
-                if enter_sends || key.key != Key::Enter {
-                    return false;
-                }
-                // Off, the keys swap. Plain Enter is taken here, not on
-                // submit, so a held Enter adds a line per repeat as typing
-                // does (Rune submits once per press).
-                if key.mods.shift {
-                    shell.composer_send(tx);
-                } else {
-                    shell.composer_new_line(tx);
-                }
-                true
+                shell.composer_key(key, enter_sends, tx)
             });
     }
     let line_pt = TYPE_BODY.line_px();
@@ -75,7 +77,7 @@ pub(crate) fn pill(composer: &Composer, channel: &str, enter_sends: bool, palett
         .child(auto_grow(field, 1, COMPOSER_MAX_LINES));
     let send_inset_pt = (COMPOSER_HEIGHT_PT - SEND_BUTTON_PT) / 2.0;
     let pill = row()
-        .key("composer-pill")
+        .key(COMPOSER_PILL_KEY)
         .w_full()
         .min_h(COMPOSER_HEIGHT_PT)
         .pl(SPACE_LG_PT)

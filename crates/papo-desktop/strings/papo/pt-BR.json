@@ -1,5 +1,7 @@
 {
   "window.title": "Papo",
+  "composer.mention_picker": "Pessoas para mencionar",
+  "composer.mention_everyone": "Notifica todos aqui",
   "composer.label": "Mensagem",
   "composer.placeholder": "Mensagem em #{{channel}}",
   "startup.profile_in_use": "O Papo já está aberto.",
