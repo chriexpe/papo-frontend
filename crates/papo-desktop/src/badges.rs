@@ -103,6 +103,14 @@ impl Badge {
 }
 
 impl Count {
+    /// A count known exactly, at least 1.
+    pub(crate) fn exact(value: u64) -> Count {
+        Count {
+            value: value.max(1),
+            at_least: false,
+        }
+    }
+
     /// The pill's text: the count, "n+" for a lower bound, "99+" past 99.
     pub(crate) fn shown(self) -> String {
         if self.value > MAX_SHOWN_COUNT {
@@ -122,19 +130,25 @@ impl Count {
 /// ring is outside the badge, so the count keeps all of it. Assistive
 /// technology hears the count through the row's or tile's label.
 pub(crate) fn mention_pill(count: Count, ring: Option<Color>, palette: &Palette) -> El {
+    count_pill(count, (palette.mention, palette.mention_on), ring)
+}
+
+/// [`mention_pill`]'s shape in other colours: `fill` behind `ink`. ↓'s
+/// arrivals take the accent, so they never read as mentions.
+pub(crate) fn count_pill(count: Count, (fill, ink): (Color, Color), ring: Option<Color>) -> El {
     let shown = count.shown();
     let badge = row()
         .h(MENTION_PILL_PT)
         .center()
         .radius(MENTION_PILL_PT / 2.0)
-        .fill(palette.mention)
+        .fill(fill)
         .a11y_hidden();
     let badge = if shown.chars().count() <= CIRCLE_MAX_CHARS {
         badge.w(MENTION_PILL_PT)
     } else {
         badge.px(SPACE_SM_PT)
     };
-    let badge = badge.child(text(shown).font(TYPE_BADGE).color(palette.mention_on));
+    let badge = badge.child(text(shown).font(TYPE_BADGE).color(ink));
     match ring {
         Some(ring) => el()
             .padding(MENTION_PILL_RING_PT)

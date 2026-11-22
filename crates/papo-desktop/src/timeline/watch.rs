@@ -1,8 +1,10 @@
 //! The watch that keeps one timeline's items current, on the SDK's runtime:
 //! it opens the SDK window (at the anchor when the cache holds it: live
-//! when it is near the newest, focused around it when far), posts the
-//! baseline, then every batch of diffs and every change to the account's
-//! resources, until the timeline is dropped or the SDK closes the window.
+//! when it is near the newest, focused around it when far), or takes one
+//! ⌛ opened, posts the baseline, then every batch of diffs, every change
+//! to the window's reading overlay (the skipped block, the arrivals) and
+//! to the account's resources, until the timeline is dropped or the SDK
+//! closes the window.
 //!
 //! Every post carries the timeline's key and ticket; the shell drops posts
 //! from an opening it no longer holds.
@@ -12,12 +14,12 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use imbl::Vector;
 use papo_sdk::{
-    ClientHandle, HistoryClosedReason, HistoryError, ReadingPosition, ResourceSnapshot, Session,
-    Uuid,
+    ClientHandle, Generation, HistoryClosedReason, HistoryError, ReadingPosition, ResourceSnapshot,
+    Session, Uuid,
 };
 use papo_sdk_ui::{
-    Timeline, TimelineConfig, TimelineError, TimelineEvent, TimelineItem, TimelineUpdate,
-    UtcOffsetProvider,
+    Timeline, TimelineConfig, TimelineError, TimelineEvent, TimelineItem, TimelineReadingEvent,
+    TimelineReadingState, TimelineUpdate, UtcOffsetProvider,
 };
 use rune::Tx;
 use tokio::sync::oneshot;
@@ -36,6 +38,7 @@ pub(crate) struct Opened {
     /// around a distant anchor.
     pub(crate) live: bool,
     pub(crate) version: u64,
+    pub(crate) generation: Generation,
     pub(crate) items: Vector<Arc<TimelineItem>>,
     /// The SDK's saved reading position for the channel.
     pub(crate) saved: Option<Anchor>,
@@ -45,6 +48,8 @@ pub(crate) struct Opened {
 pub(crate) enum Posted {
     Opened(Opened),
     Update(TimelineUpdate),
+    /// The window's reading overlay changed.
+    Reading(TimelineReadingState),
     /// The account's resources changed (author names among them).
     Resources(Arc<ResourceSnapshot>),
     /// The window could not open.
@@ -63,6 +68,8 @@ pub(crate) struct Watch<S> {
     /// Where to open: the timeline's own place, else none and the SDK's
     /// saved reading position is used. `Newest` opens live at the newest.
     pub(crate) anchor: Option<Anchor>,
+    /// A window already open (⌛'s) to take instead.
+    pub(crate) window: Option<Timeline>,
     pub(crate) offsets: Arc<dyn UtcOffsetProvider>,
     pub(crate) apply: Apply<S>,
 }
@@ -80,6 +87,7 @@ impl<S: 'static> Watch<S> {
             key,
             ticket,
             anchor,
+            window,
             offsets,
             apply,
         } = self;
@@ -90,19 +98,21 @@ impl<S: 'static> Watch<S> {
             post(Posted::Failed);
             return;
         };
-        let config = TimelineConfig {
-            page_size: PAGE_SIZE,
-            offset_provider: offsets,
-            ..TimelineConfig::default()
+        let (opened, saved) = if let Some(window) = window {
+            // ⌛'s window is focused around the block.
+            (Ok((window, false)), session.reading_position(key.channel))
+        } else {
+            let opening =
+                open_when_allowed(&session, key.channel, anchor, config(offsets), &mut stopped);
+            let Some(opened) = opening.await else {
+                return;
+            };
+            opened
         };
-        let Some((opened, saved)) =
-            open_when_allowed(&session, key.channel, anchor, config, &mut stopped).await
-        else {
-            return;
-        };
-        let (handle, live, subscription) = match opened.and_then(|(handle, live)| {
+        let (handle, live, subscription, reading) = match opened.and_then(|(handle, live)| {
             let subscription = handle.subscribe()?;
-            Ok((handle, live, subscription))
+            let reading = handle.subscribe_reading()?;
+            Ok((handle, live, subscription, reading))
         }) {
             Ok(opened) => opened,
             Err(error) => {
@@ -116,9 +126,13 @@ impl<S: 'static> Watch<S> {
             handle,
             live,
             version: subscription.version,
+            generation: subscription.generation,
             items: subscription.items,
             saved: saved.map(|position| Anchor::from_saved(Some(position))),
         }));
+        post(Posted::Reading(reading.state));
+        let mut reading = reading.stream;
+        let mut reading_open = true;
         let mut resources = session.subscribe_resources();
         post(Posted::Resources(Arc::clone(
             &resources.borrow_and_update(),
@@ -136,6 +150,12 @@ impl<S: 'static> Watch<S> {
                     }
                     Some(_) => {}
                 },
+                event = reading.next(), if reading_open => match event {
+                    Some(TimelineReadingEvent::Update(state)) => post(Posted::Reading(state)),
+                    // The window's own closure follows on its item stream.
+                    Some(TimelineReadingEvent::Closed(_)) | None => reading_open = false,
+                    Some(_) => {}
+                },
                 changed = resources.changed(), if resources_open => {
                     if changed.is_err() {
                         // The session closed; the window's closure follows.
@@ -146,6 +166,16 @@ impl<S: 'static> Watch<S> {
                 }
             }
         }
+    }
+}
+
+/// The window's settings: [`PAGE_SIZE`] messages a page, days in the
+/// reader's time zone. ⌛'s paging takes them too.
+pub(crate) fn config(offsets: Arc<dyn UtcOffsetProvider>) -> TimelineConfig {
+    TimelineConfig {
+        page_size: PAGE_SIZE,
+        offset_provider: offsets,
+        ..TimelineConfig::default()
     }
 }
 

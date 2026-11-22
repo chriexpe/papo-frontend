@@ -19,7 +19,7 @@ use crate::timeline::{TimelineKey, rows};
 
 /// What the shell keeps for message content.
 #[derive(Default)]
-pub(crate) struct Reading {
+pub(crate) struct Content {
     /// The link waiting for the reader's answer.
     pub(crate) link: Option<Prompt>,
     pub(crate) trusted: Trusted,
@@ -28,7 +28,7 @@ pub(crate) struct Reading {
     hovered: Option<(TimelineKey, Uuid)>,
 }
 
-impl Reading {
+impl Content {
     /// Reads this device's trusted domains.
     pub(crate) fn load(&mut self) {
         self.trusted = Trusted::load();
@@ -64,10 +64,10 @@ impl Shell {
             .servers()
             .get(key.account.server())
             .and_then(|server| server.host.as_deref());
-        match links::decide(&url, server_host, &self.reading.trusted) {
+        match links::decide(&url, server_host, &self.content.trusted) {
             Decision::Open(address) => open(&address, tx),
             Decision::Ask { host } => {
-                self.reading.link = Some(Prompt {
+                self.content.link = Some(Prompt {
                     url,
                     host,
                     always: false,
@@ -79,24 +79,24 @@ impl Shell {
 
     /// The confirmation's Cancel, or Escape.
     pub(crate) fn cancel_link(&mut self) {
-        self.reading.link = None;
+        self.content.link = None;
     }
 
     /// The confirmation's Open: opens the link, and trusts its host when
     /// the box is ticked.
     pub(crate) fn confirm_link(&mut self, tx: &mut Tx) {
-        let Some(prompt) = self.reading.link.take() else {
+        let Some(prompt) = self.content.link.take() else {
             return;
         };
         if prompt.always {
-            self.reading.trusted.add(prompt.host);
+            self.content.trusted.add(prompt.host);
         }
         open(&prompt.url, tx);
     }
 
     /// The confirmation's "Always open links from {host}" box.
     pub(crate) fn toggle_trust_link(&mut self) {
-        if let Some(prompt) = &mut self.reading.link {
+        if let Some(prompt) = &mut self.content.link {
             prompt.always = !prompt.always;
         }
     }
@@ -130,9 +130,9 @@ impl Shell {
             return;
         }
         if hovered {
-            self.reading.hovered = Some((key, message));
-        } else if self.reading.hovered == Some((key, message)) {
-            self.reading.hovered = None;
+            self.content.hovered = Some((key, message));
+        } else if self.content.hovered == Some((key, message)) {
+            self.content.hovered = None;
         }
     }
 
@@ -166,7 +166,7 @@ impl Shell {
             }
             // Nothing under the pointer: the key is spent rather than
             // selecting every loaded message.
-            None => match self.reading.hovered {
+            None => match self.content.hovered {
                 Some((key, message)) if key == shown => message,
                 _ => return true,
             },
@@ -179,9 +179,9 @@ impl Shell {
 impl Shell {
     /// Whether a popup is over the app: a menu, a confirmation or the
     /// server and account screens.
-    fn popup_shown(&self) -> bool {
+    pub(super) fn popup_shown(&self) -> bool {
         let flow = matches!(&self.stage, super::Stage::Running { flow: Some(_), .. });
-        flow || self.reading.link.is_some()
+        flow || self.content.link.is_some()
             || self.nav.menu.is_some()
             || self.nav.removing.is_some()
     }

@@ -4,7 +4,7 @@
 
 use rune::{Color, oklch};
 
-use super::{ACCENT_HUE_DEGREES, contrast};
+use super::colour::{ACCENT_HUE_DEGREES, contrast};
 
 /// A code token's OKLCH chroma (`docs/design.md` §9).
 const CODE_TOKEN_CHROMA: f32 = 0.12;

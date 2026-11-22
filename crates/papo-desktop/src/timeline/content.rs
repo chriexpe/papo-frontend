@@ -13,6 +13,7 @@ pub(crate) mod copy;
 mod doc;
 mod emoji;
 mod inline;
+pub(crate) mod kept;
 mod table;
 #[cfg(test)]
 mod tests;

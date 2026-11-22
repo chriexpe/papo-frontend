@@ -1,5 +1,8 @@
 //! The contrast floors of `docs/design.md` §4, for every theme.
 
+use rune::Color;
+
+use super::colour::contrast;
 use super::*;
 
 const THEMES: [Theme; 4] = [Theme::Oled, Theme::Graphite, Theme::Light, Theme::SoftLight];

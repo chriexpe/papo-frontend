@@ -5,9 +5,7 @@
 //! Owns how each control looks and what assistive technology hears; which
 //! controls a step shows, and what pressing them does, is the screen's.
 
-use rune::{
-    El, Icon, LiveRegion, LoopSpec, TextEdit, TextStyle, col, el, icon, row, text, text_input,
-};
+use rune::{El, LiveRegion, LoopSpec, TextEdit, TextStyle, col, el, icon, row, text, text_input};
 
 use crate::design::{
     BUTTON_DISABLED_OPACITY, FIELD_BUSY_OPACITY, FIELD_BUTTON_HEIGHT_PT, FIELD_HEIGHT_PT,
@@ -15,17 +13,11 @@ use crate::design::{
     SPACE_MD_PT, SPACE_SM_PT, SPINNER_PERIOD_S, SPINNER_PT, TYPE_BODY, TYPE_BODY_STRONG,
     TYPE_SMALL, TYPE_SMALL_MEDIUM,
 };
+use crate::icons::SPINNER;
 use crate::shell::Shell;
 use crate::strings;
 
 use super::{Line, LineAction, Tone};
-
-/// Three quarters of a ring, turning while a request runs.
-static SPINNER: Icon = Icon {
-    name: "papo-spinner",
-    view: 16.0,
-    body: r#"<path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"#,
-};
 
 /// Picks a field's text out of the state, for its edits.
 pub(crate) type Access = fn(&mut Shell) -> &mut TextEdit;

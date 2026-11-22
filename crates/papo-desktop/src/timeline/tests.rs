@@ -46,6 +46,10 @@ struct Host {
     requests: Vec<Request>,
     /// Presses inside message content, in order.
     presses: Vec<(Uuid, Press)>,
+    /// The "Unread hourglass" setting.
+    hourglass: bool,
+    /// ⌛, ↓ and Cancel presses, in order.
+    controls: Vec<&'static str>,
 }
 
 impl TimelineHost for Host {
@@ -59,8 +63,8 @@ impl TimelineHost for Host {
         false
     }
 
-    fn viewport_moved(&mut self, _key: TimelineKey, top_pt: f32, _tx: &mut Tx) {
-        self.open.tracker.viewport_moved(top_pt);
+    fn viewport_moved(&mut self, _key: TimelineKey, top_pt: f32, height_pt: f32, _tx: &mut Tx) {
+        self.open.tracker.viewport_moved(top_pt, height_pt);
     }
 
     fn row_moved(&mut self, _key: TimelineKey, id: Uuid, [top, bottom]: [f32; 2], _tx: &mut Tx) {
@@ -68,8 +72,7 @@ impl TimelineHost for Host {
     }
 
     fn bottom_shown(&mut self, _key: TimelineKey, at_bottom: bool) -> bool {
-        self.open.tracker.bottom_shown(at_bottom);
-        false
+        self.open.tracker.bottom_shown(at_bottom)
     }
 
     fn retry_gap(&mut self, _key: TimelineKey, _cursor_id: &str) {}
@@ -86,6 +89,18 @@ impl TimelineHost for Host {
     }
 
     fn message_hovered(&mut self, _key: TimelineKey, _message: Uuid, _hovered: bool) {}
+
+    fn hourglass_pressed(&mut self, _key: TimelineKey) {
+        self.controls.push("hourglass");
+    }
+
+    fn down_pressed(&mut self, _key: TimelineKey, _tx: &mut Tx) {
+        self.controls.push("down");
+    }
+
+    fn seek_cancelled(&mut self, _key: TimelineKey) {
+        self.controls.push("cancel");
+    }
 }
 
 fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
@@ -96,6 +111,7 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
         palette: Palette::new(Theme::Graphite),
         today: time.today(),
         time,
+        hourglass: host.hourglass,
     };
     col().w_full().h_full().child(view(host, style))
 }
@@ -138,6 +154,8 @@ fn runtime(items: Vector<Arc<TimelineItem>>, layout: MessageLayout) -> Runtime<H
         layout,
         requests: Vec::new(),
         presses: Vec::new(),
+        hourglass: true,
+        controls: Vec::new(),
     };
     let env = Env {
         system_dark: true,
@@ -203,5 +221,6 @@ fn assert_near(actual: f32, expected: f32, what: &str) {
 }
 
 mod content;
+mod controls;
 mod reading;
 mod spacing;

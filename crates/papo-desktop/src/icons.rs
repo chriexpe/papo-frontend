@@ -54,3 +54,24 @@ pub(crate) static SPEAKER: Icon = Icon {
     view: 16.0,
     body: r#"<path d="M2.5 6H5L8.5 3V13L5 10H2.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" fill="none"/><path d="M11 5.5C12 6.4 12 9.6 11 10.5M12.8 3.8C14.8 5.8 14.8 10.2 12.8 12.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/>"#,
 };
+
+/// Waiting: an arc that turns.
+pub(crate) static SPINNER: Icon = Icon {
+    name: "papo-spinner",
+    view: 16.0,
+    body: r#"<path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>"#,
+};
+
+/// Skipped unread messages: an hourglass.
+pub(crate) static HOURGLASS: Icon = Icon {
+    name: "papo-hourglass",
+    view: 16.0,
+    body: r#"<path d="M4 2H12M4 14H12M5 2C5 5.5 8 6.5 8 8C8 9.5 5 10.5 5 14M11 2C11 5.5 8 6.5 8 8C8 9.5 11 10.5 11 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+
+/// To the newest message: an arrow down.
+pub(crate) static ARROW_DOWN: Icon = Icon {
+    name: "papo-arrow-down",
+    view: 16.0,
+    body: r#"<path d="M8 3V13M3.5 8.5L8 13L12.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};

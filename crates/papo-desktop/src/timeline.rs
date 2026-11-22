@@ -10,11 +10,15 @@
 //! timelines stay open is `tabs`'.
 
 pub(crate) mod anchor;
+mod boundary;
 pub(crate) mod content;
+mod controls;
 mod grouping;
 pub(crate) mod local_time;
 mod message_row;
 mod paging;
+pub(crate) mod reading;
+pub(crate) mod reports;
 pub(crate) mod rows;
 #[cfg(test)]
 mod tests;
@@ -26,15 +30,17 @@ use std::sync::Arc;
 
 use eyeball_im::VectorDiff;
 use imbl::Vector;
-use papo_sdk::{AccountId, HistoryGap, ResourceSnapshot, Uuid};
+use papo_sdk::{AccountId, Generation, HistoryGap, ResourceSnapshot, Uuid};
 use papo_sdk_ui::{Timeline, TimelineItem, TimelineUpdate};
 use tokio::sync::oneshot;
 
 use self::anchor::{Anchor, Tracker};
 use self::paging::Paging;
 pub(crate) use self::paging::Request;
+use self::reading::Reading;
+use self::reports::Reports;
 pub(crate) use self::rows::row_key;
-pub(crate) use self::view::{Style, TimelineHost, view};
+pub(crate) use self::view::{Style, TimelineHost, view, viewport_key};
 pub(crate) use self::watch::Opened;
 
 /// Which timeline: an account's channel. Another account on the same
@@ -74,6 +80,9 @@ pub(crate) struct OpenTimeline {
     /// The SDK window's items, oldest first.
     pub(crate) items: Vector<Arc<TimelineItem>>,
     version: u64,
+    /// The connection generation the items were read in; none while no
+    /// window is open (before the first, between a reopen and the next).
+    generation: Option<Generation>,
     /// Changes whenever a row's key may have changed at an index: Rune's
     /// `virtual_rows_version`.
     pub(crate) keys_version: u64,
@@ -84,7 +93,7 @@ pub(crate) struct OpenTimeline {
     pub(crate) revealed: imbl::HashMap<Uuid, Vec<u32>>,
     /// The code block whose Copy reads "Copied", until when (seconds on
     /// the window's clock).
-    copied: Option<Copied>,
+    copied: Option<content::kept::Copied>,
     older: Paging,
     newer: Paging,
     /// The gap being filled; one at a time, as the SDK pages one per
@@ -103,6 +112,28 @@ pub(crate) struct OpenTimeline {
     /// The reading position the SDK holds for the channel, as last read
     /// or saved; `Newest` when none.
     saved: Anchor,
+    /// The skipped block, the arrivals, the divider and ↓'s steps.
+    pub(crate) reading: Reading,
+    /// The read reports sent from this timeline's rows.
+    pub(crate) reports: Reports,
+    /// ⌛'s paging toward the skipped block, while it runs.
+    pub(crate) seek: Option<Seek>,
+}
+
+/// ⌛'s paging toward the skipped block. Dropping it stops the paging.
+#[derive(Debug)]
+pub(crate) struct Seek {
+    /// Which press it is: an answer for another is dropped.
+    pub(crate) id: u64,
+    _stop: oneshot::Sender<()>,
+}
+
+impl Seek {
+    /// A seek, with the receiver its task stops on once it is dropped.
+    pub(crate) fn new(id: u64) -> (Seek, oneshot::Receiver<()>) {
+        let (stop, stopped) = oneshot::channel();
+        (Seek { id, _stop: stop }, stopped)
+    }
 }
 
 impl OpenTimeline {
@@ -123,6 +154,7 @@ impl OpenTimeline {
             live: true,
             items: Vector::new(),
             version: 0,
+            generation: None,
             keys_version: 0,
             resources: None,
             revealed: imbl::HashMap::new(),
@@ -136,6 +168,9 @@ impl OpenTimeline {
             anchor: anchor.unwrap_or(Anchor::Newest),
             restore: anchor,
             saved: Anchor::Newest,
+            reading: Reading::default(),
+            reports: Reports::default(),
+            seek: None,
         };
         (open, stopped)
     }
@@ -146,6 +181,8 @@ impl OpenTimeline {
         let (mut open, _stopped) = OpenTimeline::opening(key, 0, None);
         open.items = items;
         open.phase = Phase::Open;
+        open.generation = Some(Generation::for_test(1));
+        open.reading.items_changed(&open.items, true);
         open
     }
 
@@ -156,13 +193,19 @@ impl OpenTimeline {
             handle,
             live,
             version,
+            generation,
             items,
             saved,
         } = window;
         self.handle = Some(handle);
         self.live = live;
         self.version = version;
+        self.generation = Some(generation);
         self.items = items;
+        // Only rows reported from these items count.
+        self.reports.jumped();
+        self.reading
+            .items_changed(&self.items, self.tracker.at_bottom());
         self.keys_version += 1;
         self.phase = Phase::Open;
         self.older = Paging::Idle;
@@ -180,26 +223,32 @@ impl OpenTimeline {
         }
     }
 
-    /// The same timeline opens a new window, as `ticket`, at the reader's
-    /// place: a focused window that reached the newest reopens live. The
-    /// rows stay until the new window's arrive. Returns the receiver its
-    /// watch stops on; the old watch stops now.
-    pub(crate) fn reopen(&mut self, ticket: u64) -> oneshot::Receiver<()> {
+    /// The same timeline opens a new window, as `ticket`, at `at`: the
+    /// reader's place when a focused window reached the newest, else where
+    /// a jump goes. The rows stay until the new window's arrive. Returns
+    /// the receiver its watch stops on; the old watch stops now.
+    pub(crate) fn reopen(&mut self, ticket: u64, at: Anchor) -> oneshot::Receiver<()> {
         let (stop, stopped) = oneshot::channel();
         drop(std::mem::replace(&mut self.stop, stop));
         self.ticket = ticket;
         // Requests wait for the new window: answers from the old one would
         // carry the new ticket.
         self.handle = None;
-        self.anchor = self.current_anchor();
-        self.restore = Some(self.anchor);
+        self.generation = None;
+        self.anchor = at;
+        self.restore = Some(at);
         self.newer = Paging::Loading;
+        self.reports.reopened();
+        // A jump while ⌛ pages wins: the seek would undo it.
+        self.seek = None;
         stopped
     }
 
     /// The timeline is no longer shown: its place is kept for when it is
     /// shown again. Returns that place.
     pub(crate) fn hide(&mut self) -> Anchor {
+        // Leaving the timeline stops ⌛'s paging.
+        self.seek = None;
         self.anchor = self.current_anchor();
         self.tracker = Tracker::new();
         // Until its rows report, the tracker knows nothing of the place.
@@ -211,9 +260,12 @@ impl OpenTimeline {
     /// by the next `take_restore`. While it still opens, the opening
     /// restores it.
     pub(crate) fn shown_again(&mut self) {
-        if self.phase == Phase::Open {
+        let open = self.phase == Phase::Open;
+        if open {
             self.restore = Some(self.anchor);
         }
+        self.reading.visit(open.then_some(&self.items));
+        self.reports.jumped();
     }
 
     /// The place to keep once the timeline closes: where the reader was,
@@ -261,50 +313,9 @@ impl OpenTimeline {
             self.keys_version += 1;
         }
         self.version = update.version;
-    }
-
-    /// The spoilers revealed in message `id`.
-    pub(crate) fn revealed(&self, id: Uuid) -> &[u32] {
-        self.revealed.get(&id).map_or(&[], Vec::as_slice)
-    }
-
-    /// Reveals spoiler `index` of message `id`. Returns whether it was
-    /// hidden.
-    pub(crate) fn reveal(&mut self, id: Uuid, index: u32) -> bool {
-        let revealed = self.revealed.entry(id).or_default();
-        if revealed.contains(&index) {
-            return false;
-        }
-        revealed.push(index);
-        true
-    }
-
-    /// The code block of message `id`, by its text's index, whose Copy
-    /// reads "Copied".
-    pub(crate) fn copied(&self, id: Uuid) -> Option<usize> {
-        self.copied
-            .filter(|copied| copied.message == id)
-            .map(|copied| copied.index)
-    }
-
-    /// Code block `index` of message `id` was copied: its Copy reads
-    /// "Copied" until `until_s`.
-    pub(crate) fn code_copied(&mut self, id: Uuid, index: usize, until_s: f64) {
-        self.copied = Some(Copied {
-            message: id,
-            index,
-            until_s,
-        });
-    }
-
-    /// Ends a "Copied" whose time is up at `now_s`. Returns whether one
-    /// ended.
-    pub(crate) fn end_copied(&mut self, now_s: f64) -> bool {
-        if self.copied.is_some_and(|copied| copied.until_s <= now_s) {
-            self.copied = None;
-            return true;
-        }
-        false
+        self.generation = Some(update.generation);
+        self.reading
+            .items_changed(&self.items, self.tracker.at_bottom());
     }
 
     pub(crate) fn handle(&self) -> Option<&Timeline> {
@@ -336,10 +347,7 @@ impl OpenTimeline {
         }
         let anchor = self.restore.take()?;
         let id = anchor.message()?;
-        let present = self.items.iter().any(|item| {
-            matches!(item.as_ref(), TimelineItem::Message { id: current, .. } if *current == id)
-        });
-        if !present {
+        if !self.holds(id) {
             // An anchor the window could not reach back to (deleted, or no
             // longer cached): the window opened at the newest instead.
             self.anchor = Anchor::Newest;
@@ -347,17 +355,16 @@ impl OpenTimeline {
         }
         // Until the viewport reports, it is where the scroll puts it.
         self.tracker.bottom_shown(false);
+        self.reports.jumped();
         Some(anchor)
     }
-}
 
-/// A code block whose Copy reads "Copied".
-#[derive(Clone, Copy, Debug)]
-struct Copied {
-    message: Uuid,
-    /// The block's text's index in its message.
-    index: usize,
-    until_s: f64,
+    /// Whether message `id` is among the items.
+    pub(crate) fn holds(&self, id: Uuid) -> bool {
+        self.items.iter().any(|item| {
+            matches!(item.as_ref(), TimelineItem::Message { id: current, .. } if *current == id)
+        })
+    }
 }
 
 /// Whether applying `diff` to `items` can change the key at an index while
