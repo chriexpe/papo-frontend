@@ -155,7 +155,7 @@ fn content<S: TimelineHost>(key: TimelineKey, line: &ReplyLine, palette: &Palett
             .role("link")
             .label(strings::reply_open(&spoken))
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
             .on_press_tx(move |host: &mut S, tx| host.reply_line_pressed(key, original, tx));
     }
     content

@@ -166,7 +166,7 @@ fn save_button(enabled: bool, palette: &Palette) -> El {
     if enabled {
         button
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
             .on_press_tx(Shell::composer_send)
     } else {
         button.opacity(SEND_IDLE_OPACITY)
@@ -189,7 +189,7 @@ fn send_button(enabled: bool, palette: &Palette) -> El {
     if enabled {
         button
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
             .on_press_tx(Shell::composer_send)
     } else {
         button.opacity(SEND_IDLE_OPACITY)

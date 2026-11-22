@@ -136,10 +136,10 @@ impl Shell {
         }
     }
 
-    /// Keys no control took. Ctrl+A in the timeline selects one message:
-    /// the one holding the selection, else the one under the pointer; never
-    /// the whole timeline. A selection elsewhere keeps its own Ctrl+A.
-    pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+    /// Ctrl+A in the timeline selects one message: the one holding the
+    /// selection, else the one under the pointer; never the whole timeline.
+    /// A selection elsewhere keeps its own Ctrl+A.
+    pub(super) fn select_message_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
         let plain = !key.mods.shift && !key.mods.alt;
         let Some(shown) = self.tabs.shown().map(|open| open.key) else {
             return false;

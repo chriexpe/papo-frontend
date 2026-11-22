@@ -264,6 +264,11 @@ fn alt_down_moves_the_focused_server_instead_of_the_focus() {
         "Alt+↓ is not an arrow"
     );
     assert_eq!(rt.state.nav.selected().unwrap().name, "Lumen");
+    assert_eq!(
+        rt.state.nav.selected_channel(),
+        Some("Lumen-general"),
+        "a focused tile moves itself, not the channel"
+    );
 }
 
 #[test]
@@ -282,6 +287,7 @@ fn return_in_the_removal_confirmation_keeps_the_server() {
     let mut rt = with_servers();
     click(&mut rt, "server-options");
     click(&mut rt, "menu-remove-server");
+    assert_eq!(focused(&rt).as_deref(), Some("remove-cancel"));
     press(&mut rt, Key::Enter);
     assert!(rt.find("remove-server").is_none());
     assert_eq!(rt.state.nav.servers().servers.len(), 2);

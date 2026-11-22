@@ -166,6 +166,10 @@ impl Composer {
                 Draft::loading()
             });
             draft.edit.focused |= focused || std::mem::take(&mut self.focus_pending);
+        } else {
+            // No field shows (a voice channel): the next one shown takes
+            // the keyboard back.
+            self.focus_pending |= focused;
         }
         effects
     }

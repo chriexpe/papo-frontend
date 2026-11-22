@@ -74,6 +74,13 @@ pub(crate) const MESSAGE_BLOCK_GAP_PT: f32 = SPACE_SM_PT;
 pub(crate) const MESSAGE_NAME_GAP_PT: f32 = 8.0;
 /// Between the name and the time in a message's header.
 pub(crate) const MESSAGE_HEADER_GAP_PT: f32 = 6.0;
+/// How far a message's avatar sits below the row's padding, as a multiple
+/// of the text size: the bundled Inter 4.1's distance from the last
+/// baseline to the bottom of its line box at line height 1.45, so a row's
+/// background shows as much above the avatar as below the last line.
+const AVATAR_TOP_TEXT_SIZES: f32 = 0.3786;
+/// How far a message's avatar sits below the row's padding, in points.
+pub(crate) const AVATAR_TOP_PT: f32 = AVATAR_TOP_TEXT_SIZES * TYPE_BODY.size;
 /// The Extra compact time gutter, as a multiple of the text size.
 const GUTTER_TEXT_SIZES: f32 = 3.2;
 

@@ -7,7 +7,7 @@ use imbl::Vector;
 use papo_sdk_ui::TimelineItem;
 
 use super::{DENSITIES, assert_near, bottom, has_part, message, part, runtime};
-use crate::design::{Density, MESSAGE_BLOCK_GAP_PT, MessageLayout};
+use crate::design::{AVATAR_TOP_PT, Density, Lead, MESSAGE_BLOCK_GAP_PT, MessageLayout};
 
 /// Ana twice in a minute, Bia, then Bia again half an hour later.
 fn conversation() -> Vector<Arc<TimelineItem>> {
@@ -90,6 +90,40 @@ fn every_block_starts_on_its_messages_content_column() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn an_avatar_sits_below_the_row_padding_and_adds_no_height() {
+    for density in [Density::Compact, Density::Normal, Density::Comfortable] {
+        let layout = MessageLayout {
+            density,
+            ..MessageLayout::default()
+        };
+        let rt = runtime(conversation(), layout);
+        let spacing = density.spacing();
+        let Lead::Avatar(size_pt) = spacing.lead else {
+            panic!("{density:?} leads with an avatar");
+        };
+        let what = format!("{density:?}");
+        // Bia's "oi": a header and one line, the shortest row.
+        let row = part(&rt, 3, "message");
+        let avatar = part(&rt, 3, "avatar");
+        assert_near(
+            avatar[1] - row[1] - spacing.row_padding_pt,
+            AVATAR_TOP_PT,
+            &what,
+        );
+        let content = part(&rt, 3, "content");
+        assert_near(
+            row[3],
+            2.0 * spacing.row_padding_pt + content[3].max(size_pt),
+            &format!("{what}: the row's height"),
+        );
+        assert!(
+            bottom(avatar) <= bottom(row) - spacing.row_padding_pt + 1.0,
+            "{what}: the avatar stays inside its row"
+        );
     }
 }
 

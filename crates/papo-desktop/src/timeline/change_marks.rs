@@ -44,7 +44,7 @@ pub(super) fn change_mark<S: TimelineHost>(
             mark.role("button")
                 .label(strings::edit_failed())
                 .focusable(true)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
                 .on_press(move |host: &mut S| host.change_mark_pressed(key, local))
                 .child(icon(&WARNING, SEND_STATE_ICON_PT).color(palette.danger)),
         ),
@@ -67,7 +67,7 @@ pub(super) fn delete_failed_line<S: TimelineHost>(
             .role("button")
             .focusable(true)
             .radius(RADIUS_CONTROL_PT)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
     };
     row()
         .key("delete-failed")

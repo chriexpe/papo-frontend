@@ -17,8 +17,9 @@ pub(crate) const RADIUS_INDICATOR_PT: f32 = 3.0;
 pub(crate) const ADD_TILE_OUTLINE_PT: f32 = 1.0;
 /// The + tile's dashes and the gaps between them, in points.
 pub(crate) const ADD_TILE_DASH_PT: (f32, f32) = (4.0, 3.0);
-/// The + inside its tile, in points square.
-pub(crate) const ADD_TILE_PLUS_PT: f32 = 18.0;
+/// An icon on the rail, such as the + inside its tile, in points square
+/// (`docs/design.md` §13).
+pub(crate) const RAIL_ICON_PT: f32 = 20.0;
 /// The short bar beside an unread server's tile: its width and height, in
 /// points.
 pub(crate) const RAIL_UNREAD_BAR_PT: (f32, f32) = (4.0, 8.0);
@@ -35,10 +36,15 @@ pub(crate) const UNREAD_DOT_PT: f32 = 6.0;
 pub(crate) const SIDEBAR_WIDTH_PT: f32 = 232.0;
 /// A channel row's height, in points.
 pub(crate) const CHANNEL_ROW_HEIGHT_PT: f32 = 32.0;
-/// A channel row's # or speaker, in points square.
-pub(crate) const CHANNEL_ICON_PT: f32 = 14.0;
-/// The icon inside a pill's buttons (⇄, ⚙), in points square.
-pub(crate) const PILL_ICON_PT: f32 = 16.0;
+/// An icon in a row or a menu (a channel's # or speaker, an account's ✓),
+/// in points square (`docs/design.md` §13).
+pub(crate) const ROW_ICON_PT: f32 = 16.0;
+/// An icon beside caption-sized text: in a boundary's chip, a code
+/// block's "Copied", the reply bar's @ switch, in points square.
+pub(crate) const CHIP_ICON_PT: f32 = 14.0;
+/// The icon inside a pill's buttons (⇄, ⚙, Send), in points square
+/// (`docs/design.md` §13).
+pub(crate) const PILL_ICON_PT: f32 = 18.0;
 /// The avatar in the server card and the account pill, in points square.
 pub(crate) const PILL_AVATAR_PT: f32 = 24.0;
 /// The server and account pills' height (`docs/design.md` §8: one height for
@@ -95,8 +101,6 @@ pub(crate) const POPUP_CLOSE_INSET_PT: f32 = 10.0;
 pub(crate) const POPUP_SHADOW_PT: (f32, f32) = (24.0, 70.0);
 /// A close cross inside its button, in points square.
 pub(crate) const CROSS_PT: f32 = 16.0;
-/// The close cross in a pill, in points square.
-pub(crate) const PILL_CROSS_PT: f32 = 14.0;
 /// A keyboard focus ring: its width and its gap from the control, in points.
 pub(crate) const FOCUS_RING_PT: (f32, f32) = (2.0, 2.0);
 /// `radius.avatar`: a message avatar's corner radius (a rounded square), in

@@ -217,6 +217,10 @@ fn delete_asks_first_and_cancel_deletes_nothing() {
         rt.find(&format!("standalone-{}", message_id(4))).is_some(),
         "showing the message"
     );
+    assert_eq!(
+        super::navigation::focused(&rt).as_deref(),
+        Some("delete-cancel")
+    );
     press(&mut rt, Key::Escape);
     assert!(rt.find(crate::shell::deleting::DELETE_KEY).is_none());
     assert!(rt.state.deleting.is_none(), "nothing waits to be deleted");
@@ -345,4 +349,23 @@ fn a_click_on_a_message_leaves_the_keyboard_in_the_field() {
     press(&mut rt, Key::Text("e".to_owned()));
     assert_eq!(editing(&rt), None, "the click focused no message");
     assert_eq!(field(&rt), "e", "the key went to the field");
+}
+
+#[test]
+fn alt_down_on_a_focused_message_goes_to_the_next_channel() {
+    let mut rt = conversation("");
+    focus_composer(&mut rt);
+    ctrl_up(&mut rt);
+    rt.key(KeyEvent {
+        key: Key::Down,
+        mods: Mods {
+            alt: true,
+            ..Mods::default()
+        },
+    });
+    rt.frame(FRAME_S);
+    assert_eq!(
+        rt.state.nav.selected_channel(),
+        Some(super::composer::channel_id(2).as_str())
+    );
 }

@@ -1,8 +1,9 @@
 //! The confirmation popup (`docs/design.md` §10, Confirmations): a title
 //! that asks over the dimmed app, what will be lost, then a foot row with
 //! an optional note on the left and Cancel, the default, and the action on
-//! the right. Removing a server, sending a message again and deleting one
-//! ask through it.
+//! the right. Cancel has the focus, and Escape and Return cancel. Removing
+//! a server, opening a link, sending a message again and deleting one ask
+//! through it.
 //!
 //! Owns the popup's layout and keys; what is asked and what each button
 //! does is the caller's.
@@ -25,8 +26,10 @@ pub(crate) struct Question<'a> {
     pub(crate) body: Option<&'a str>,
     /// What will be lost, shown: a message as the conversation draws it.
     pub(crate) shown: Option<El>,
-    /// A note on the foot row's left, wrapping, never a line of its own.
-    pub(crate) note: Option<&'a str>,
+    /// A note on the foot row's left, wrapping, never a line of its own:
+    /// words (`note`) or a control, such as the box that trusts a link's
+    /// host.
+    pub(crate) note: Option<El>,
     pub(crate) cancel_key: &'static str,
     pub(crate) cancel: &'static str,
     pub(crate) confirm_key: &'static str,
@@ -36,8 +39,9 @@ pub(crate) struct Question<'a> {
     pub(crate) danger: bool,
 }
 
-/// `question` over the dimmed app. Escape, Return and Cancel call
-/// `cancel`; only the action's button calls `confirm`.
+/// `question` over the dimmed app, with the keyboard on Cancel. Escape,
+/// Return and Cancel call `cancel`; only the action's button calls
+/// `confirm`.
 pub(crate) fn confirm(
     question: Question<'_>,
     cancel: fn(&mut Shell),
@@ -50,6 +54,7 @@ pub(crate) fn confirm(
         .on_press(cancel)
         // Return cancels: the action is never the default.
         .default_button()
+        .autofocus()
         .child(
             text(question.cancel)
                 .font(TYPE_BODY_STRONG)
@@ -64,52 +69,61 @@ pub(crate) fn confirm(
         .fill(fill)
         .on_press_tx(confirm)
         .child(text(question.confirm).font(TYPE_BODY_STRONG).color(ink));
-    let frame =
-        col()
-            .key(question.key)
-            .w(CONFIRM_WIDTH_PT)
-            .padding(POPUP_PADDING_PT)
-            .gap(SPACE_LG_PT)
-            .radius(RADIUS_POPUP_PT)
-            .fill(palette.surface_content)
-            .border(PILL_OUTLINE_PT, palette.line_subtle)
-            .shadow(drop, blur, palette.popup_shadow)
-            .role("alertdialog")
-            .label(question.title)
-            .modal(false, cancel)
-            .child(
-                text(question.title)
-                    .font(TYPE_DISPLAY)
-                    .color(palette.text_primary)
-                    .role("heading")
-                    .level(2)
-                    .wrap(),
-            )
-            .children(question.body.map(|body| {
-                text(body)
-                    .font(TYPE_BODY)
-                    .color(palette.text_secondary)
-                    .wrap()
-            }))
-            .children(question.shown)
-            .child(
-                row()
-                    .w_full()
-                    .items_center()
-                    .gap(SPACE_MD_PT)
-                    .child(col().grow(1.0).min_w(0.0).children(
-                        question.note.map(|note| {
-                            text(note).font(TYPE_SMALL).color(palette.text_muted).wrap()
-                        }),
-                    ))
-                    .child(cancel_button)
-                    .child(confirm_button),
-            );
+    let frame = col()
+        .key(question.key)
+        .w(CONFIRM_WIDTH_PT)
+        .padding(POPUP_PADDING_PT)
+        .gap(SPACE_LG_PT)
+        .radius(RADIUS_POPUP_PT)
+        .fill(palette.surface_content)
+        .border(PILL_OUTLINE_PT, palette.line_subtle)
+        .shadow(drop, blur, palette.popup_shadow)
+        .role("alertdialog")
+        .label(question.title)
+        .modal(false, cancel)
+        .child(
+            text(question.title)
+                .font(TYPE_DISPLAY)
+                .color(palette.text_primary)
+                .role("heading")
+                .level(2)
+                .wrap(),
+        )
+        .children(question.body.map(|body| {
+            text(body)
+                .font(TYPE_BODY)
+                .color(palette.text_secondary)
+                .wrap()
+        }))
+        .children(question.shown)
+        .child(
+            row()
+                .w_full()
+                .items_center()
+                .gap(SPACE_MD_PT)
+                .child(
+                    col()
+                        .key("confirm-note")
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .children(question.note),
+                )
+                .child(cancel_button)
+                .child(confirm_button),
+        );
     el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .center()
         .padding(SPACE_XXL_PT)
         .fill(palette.scrim)
         .child(frame)
+}
+
+/// A note in words, for a question's foot row.
+pub(crate) fn note(words: &str, palette: &Palette) -> El {
+    text(words)
+        .font(TYPE_SMALL)
+        .color(palette.text_muted)
+        .wrap()
 }
 
 fn button(key: &'static str, label: &'static str, palette: &Palette) -> El {
@@ -122,5 +136,5 @@ fn button(key: &'static str, label: &'static str, palette: &Palette) -> El {
         .role("button")
         .label(label)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.accent)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
 }

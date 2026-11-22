@@ -1,15 +1,15 @@
 //! The shell's side of navigation: taking the server list the SDK posts,
-//! selecting a server or channel, moving a server in the rail, and the
-//! server menu with its remove confirmation.
+//! selecting a server or channel (also by Alt+↑/↓), moving a server in the
+//! rail, and the server menu with its remove confirmation.
 //!
 //! The transitions are `Navigation`'s; this sends what they produce to the
 //! SDK and keeps the decoded server icons.
 
 use papo_sdk::ServerId;
-use rune::{Drag, Phase, Tx};
+use rune::{Drag, Key, KeyEvent, Phase, Tx};
 
 use super::Shell;
-use crate::channel_pane::{SERVER_CARD_KEY, SERVER_OPTIONS_KEY};
+use crate::channel_pane::{SERVER_CARD_KEY, SERVER_OPTIONS_KEY, channel_key};
 use crate::composer::COMPOSER_KEY;
 use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::rail::tile_key;
@@ -54,6 +54,48 @@ impl Shell {
     pub(crate) fn select_channel(&mut self, channel: &str, tx: &mut Tx) {
         self.nav.select_channel(channel);
         self.sync_timeline(Some(tx));
+    }
+
+    /// Keys no control took: Alt+↑/↓ between channels, then Ctrl+A in the
+    /// timeline.
+    pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        self.channel_step_key(key, tx) || self.select_message_key(key, tx)
+    }
+
+    /// Alt+↑ or Alt+↓ (Alt alone: Alt+⇧ is the unread channels'; macOS's
+    /// ⌥⌘↑/↓ come with the macOS port, D12): the
+    /// previous or next channel, stopping at the list's ends. Focus decides
+    /// (`docs/design.md` §3): a focused rail tile takes the keys itself and
+    /// moves, so they reach here from anywhere else; the composer asks
+    /// before its editor would take them. A channel row that has the
+    /// keyboard hands it to the newly selected row; the field keeps it,
+    /// also across a voice channel, which has none (`Composer::show`).
+    pub(super) fn channel_step_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        let alt_alone = mods.alt && !mods.shift && !mods.cmd && !mods.ctrl && !mods.logo;
+        let by = match key.key {
+            Key::Up if alt_alone => -1,
+            Key::Down if alt_alone => 1,
+            _ => return false,
+        };
+        // The accounts grown from ⇄ hold the keyboard like a popup does.
+        if self.popup_shown() || self.nav.accounts_open() || self.nav.selected_channel().is_none() {
+            return false;
+        }
+        let Some(next) = self.nav.channel_beside(by).map(str::to_owned) else {
+            // At an end: the key is spent, nothing moves.
+            return true;
+        };
+        let row_focused = match (tx.focused(), self.nav.selected_channel()) {
+            (Some(focused), Some(current)) => focused == channel_key(current),
+            _ => false,
+        };
+        self.select_channel(&next, tx);
+        if row_focused {
+            // From the keyboard, so the ring shows on the row it lands on.
+            tx.focus(channel_key(&next), true);
+        }
+        true
     }
 
     /// Alt+↑ or Alt+↓ on a focused tile.

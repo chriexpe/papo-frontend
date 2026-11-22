@@ -1,7 +1,8 @@
 //! The colour tokens (`docs/design.md` §4): the four themes' neutral
-//! lightnesses, the accent and feedback colours, and the mixes built from
-//! them, authored in OKLCH and converted to Rune colours here, with the
-//! WCAG contrast the floors are tested with.
+//! lightnesses, the accent, feedback, presence and search colours, and the
+//! mixes built from them, authored in OKLCH and converted to Rune colours
+//! here, with the WCAG contrast the floors are tested with. Highlights are
+//! made by `lightness_rule`.
 //!
 //! Not built yet: the user's background colour, strength and grain (every
 //! neutral below is untinted) and the accent choice (the default blue only).
@@ -9,6 +10,7 @@
 use rune::{Color, oklch};
 
 use super::CodeInk;
+use super::lightness_rule::{Text, highlight, in_gamut};
 
 /// The colour theme. It is a setting of its own, not the system's light or
 /// dark preference.
@@ -47,13 +49,13 @@ impl Theme {
         }
     }
 
-    fn is_dark(self) -> bool {
+    pub(super) fn is_dark(self) -> bool {
         matches!(self, Theme::Oled | Theme::Graphite)
     }
 
     /// Where a highlight starts (`docs/design.md` §4, Highlights): the
     /// theme's background lightness and its fixed chroma.
-    fn highlight_start(self) -> (f32, f32) {
+    pub(super) fn highlight_start(self) -> (f32, f32) {
         match self {
             Theme::Oled => (0.170, 0.040),
             Theme::Graphite => (0.262, 0.030),
@@ -166,13 +168,47 @@ const WARNING_CHROMA: f32 = 0.09;
 /// The mention highlight's default OKLCH hue in degrees: amber
 /// (`docs/design.md` §4; the user's to change once Settings exist).
 const MENTION_HIGHLIGHT_HUE_DEGREES: f32 = 75.0;
-/// How far a highlight's lightness moves per step while it looks for the
-/// text floors.
-const HIGHLIGHT_STEP: f32 = 0.002;
+/// Available's OKLCH hue, chroma, and lightness on dark and light themes
+/// (§4, Other colours added for D5).
+pub(super) const PRESENCE_ONLINE: Oklch = Oklch {
+    hue_degrees: 150.0,
+    chroma: 0.17,
+    dark: 0.72,
+    light: 0.57,
+};
+/// Away's OKLCH hue, chroma and lightnesses; a search match's underline
+/// takes the same.
+pub(super) const PRESENCE_AWAY: Oklch = Oklch {
+    hue_degrees: 82.0,
+    chroma: 0.15,
+    dark: 0.78,
+    light: 0.59,
+};
 /// The opacity of the black that dims the app behind a popup.
 const SCRIM_ALPHA: f32 = 0.5;
 /// The opacity of a popup's black shadow.
 const POPUP_SHADOW_ALPHA: f32 = 0.45;
+
+/// A colour authored as an OKLCH hue and chroma, at one lightness on dark
+/// themes and another on light ones.
+pub(super) struct Oklch {
+    pub(super) hue_degrees: f32,
+    pub(super) chroma: f32,
+    pub(super) dark: f32,
+    pub(super) light: f32,
+}
+
+impl Oklch {
+    /// The colour at the theme's lightness. Where sRGB cannot hold the
+    /// chroma there (Available's 0.17 at L 0.57 holds 0.158), only the
+    /// chroma is lowered, as §4's highlights do, so the lightness the
+    /// contrast rests on stays as authored.
+    fn on(&self, dark: bool) -> Color {
+        let lightness = if dark { self.dark } else { self.light };
+        let chroma = in_gamut(lightness, self.chroma, self.hue_degrees);
+        oklch(lightness, chroma, self.hue_degrees)
+    }
+}
 
 /// A theme's colours, ready to draw with.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -232,6 +268,18 @@ pub(crate) struct Palette {
     /// `highlight.mention`: the background of a message that mentions you,
     /// with no bar beside it (§4, Highlights: the rule at the mention hue).
     pub(crate) highlight_mention: Color,
+    /// Keyboard focus: a 2 pt solid ring in the accent.
+    pub(crate) focus_ring: Color,
+    /// Presence marks (§10, Presence): Available, Away, Busy (the badge
+    /// red) and Offline (`text.muted`). Drawn from D5b (members pane,
+    /// profile card); until then only the contrast tests read them.
+    pub(crate) presence_online: Color,
+    pub(crate) presence_away: Color,
+    pub(crate) presence_busy: Color,
+    pub(crate) presence_offline: Color,
+    /// The 2 pt underline under a matched word in search results. Drawn
+    /// from D5c (search); until then only the contrast tests read it.
+    pub(crate) search_match: Color,
     /// Highlighted code's token colours.
     pub(crate) code: CodeInk,
     /// What dims the app behind a popup.
@@ -290,69 +338,17 @@ impl Palette {
             mention_on: Color::WHITE,
             accent_soft: mix_oklab(content, accent, if dark { 0.20 } else { 0.12 }),
             highlight_mention: highlight(theme, MENTION_HIGHLIGHT_HUE_DEGREES, &text),
+            focus_ring: accent,
+            presence_online: PRESENCE_ONLINE.on(dark),
+            presence_away: PRESENCE_AWAY.on(dark),
+            presence_busy: mention,
+            presence_offline: text.muted,
+            search_match: PRESENCE_AWAY.on(dark),
             code: CodeInk::new(dark, code),
             scrim: Color::BLACK.alpha(SCRIM_ALPHA),
             popup_shadow: Color::BLACK.alpha(POPUP_SHADOW_ALPHA),
         }
     }
-}
-
-/// The text a highlight must keep readable.
-struct Text {
-    primary: Color,
-    secondary: Color,
-    muted: Color,
-    link: Color,
-}
-
-/// A highlight at `hue_degrees` (§4, Highlights): from the theme's
-/// background lightness and fixed chroma (lowered only where sRGB cannot
-/// hold it), the lightness moves away from the text until `text.primary`
-/// keeps 13:1, `text.secondary` 7:1, and `text.muted` and links 4.5:1.
-fn highlight(theme: Theme, hue_degrees: f32, text: &Text) -> Color {
-    let (start, chroma) = theme.highlight_start();
-    let step = if theme.is_dark() {
-        -HIGHLIGHT_STEP
-    } else {
-        HIGHLIGHT_STEP
-    };
-    let readable = |background: Color| {
-        contrast(text.primary, background) >= 13.0
-            && contrast(text.secondary, background) >= 7.0
-            && contrast(text.muted, background) >= 4.5
-            && contrast(text.link, background) >= 4.5
-    };
-    let mut lightness = start;
-    loop {
-        let colour = oklch(
-            lightness,
-            in_gamut(lightness, chroma, hue_degrees),
-            hue_degrees,
-        );
-        let next = lightness + step;
-        if readable(colour) || !(0.0..=1.0).contains(&next) {
-            return colour;
-        }
-        lightness = next;
-    }
-}
-
-/// `chroma`, or the most of it sRGB can show at this lightness and hue.
-fn in_gamut(lightness: f32, chroma: f32, hue_degrees: f32) -> f32 {
-    let mut chroma = chroma;
-    // Rune clamps an unreachable colour; one that comes back unchanged fits.
-    while chroma > 0.0 {
-        let [l, a, b, _] = oklch(lightness, chroma, hue_degrees).to_oklab();
-        let (sin, cos) = hue_degrees.to_radians().sin_cos();
-        let fits = (l - lightness).abs() < 1e-3
-            && (a - chroma * cos).abs() < 1e-3
-            && (b - chroma * sin).abs() < 1e-3;
-        if fits {
-            return chroma;
-        }
-        chroma -= 0.001;
-    }
-    0.0
 }
 
 /// `share` of the way from `base` to `tint`, in `OKLab`, so the mix keeps

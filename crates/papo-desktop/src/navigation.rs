@@ -153,6 +153,20 @@ impl Navigation {
         })
     }
 
+    /// The selected server's channel `by` places after the selected one
+    /// (`-1` the one before), in the list's order: text channels, then
+    /// voice. `None` past either end.
+    pub(crate) fn channel_beside(&self, by: isize) -> Option<&str> {
+        let server = self.selected()?;
+        let selected = self.selected_channel()?;
+        let mut channels = server.text_channels.iter().chain(&server.voice_channels);
+        let from = channels
+            .clone()
+            .position(|channel| channel.id == selected)?;
+        let to = from.checked_add_signed(by)?;
+        channels.nth(to).map(|channel| channel.id.as_str())
+    }
+
     pub(crate) fn select_channel(&mut self, channel: &str) {
         if let Some(server) = self.selected {
             self.channels.insert(server, channel.to_owned());
