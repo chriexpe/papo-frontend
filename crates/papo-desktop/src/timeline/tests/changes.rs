@@ -195,6 +195,17 @@ fn a_reply_line_names_its_original_or_says_it_is_gone_and_starts_a_group() {
             };
             assert!(find_part(&rt, n, header).is_some(), "{density:?} {n}");
         }
+        if density != Density::ExtraCompact {
+            // The elbow's leg reaches the avatar, which sits below the
+            // line's box.
+            let elbow = find_part(&rt, 2, "elbow").unwrap().rect;
+            let avatar = find_part(&rt, 2, "avatar").unwrap().rect;
+            let gap = avatar[1] - (elbow[1] + elbow[3]);
+            assert!(
+                gap.abs() < 0.5,
+                "{density:?}: {gap} between elbow and avatar"
+            );
+        }
     }
 }
 

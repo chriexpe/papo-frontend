@@ -9,14 +9,15 @@
 //! earlier message", neither pressable.
 
 use papo_sdk::Uuid;
-use rune::{El, Span, col, el, icon, row, text};
+use rune::{El, Span, el, icon, row, text};
 
 use super::TimelineKey;
 use super::replies::OriginalText;
 use super::view::TimelineHost;
 use crate::design::{
-    FOCUS_RING_PT, Lead, Palette, RADIUS_AVATAR_PT, RADIUS_CONTROL_PT, REPLY_AVATAR_PT,
-    REPLY_DELETED_PT, REPLY_ELBOW_PT, REPLY_LINE_ICON_PT, SPACE_SM_PT, TYPE_SMALL, WEIGHT_SEMIBOLD,
+    AVATAR_TOP_PT, FOCUS_RING_PT, Lead, Palette, RADIUS_AVATAR_PT, RADIUS_CONTROL_PT,
+    REPLY_AVATAR_PT, REPLY_DELETED_PT, REPLY_ELBOW_PT, REPLY_LINE_ICON_PT, SPACE_SM_PT, TYPE_SMALL,
+    WEIGHT_SEMIBOLD,
 };
 use crate::icons::REPLY_LINE;
 use crate::rail::initial;
@@ -46,19 +47,18 @@ pub(super) fn reply_line<S: TimelineHost>(
     match lead {
         Lead::Avatar(size_pt) => {
             let (stroke_pt, radius_pt) = REPLY_ELBOW_PT;
-            // From the avatar's centre up to the line's middle, then across
-            // to it.
-            let elbow = col()
-                .w(size_pt / 2.0 + lead_gap_pt - SPACE_SM_PT)
-                .h(line_pt)
-                .justify_end()
-                .a11y_hidden()
-                .child(
-                    el().w_full()
-                        .h(line_pt / 2.0 + stroke_pt / 2.0)
-                        .corners([radius_pt, 0.0, 0.0, 0.0])
-                        .border_sides([stroke_pt, 0.0, 0.0, stroke_pt], palette.line_strong),
-                );
+            // From the avatar's top up to the line's middle, then across to
+            // it. The avatar sits `AVATAR_TOP_PT` below the line's box, so
+            // the leg reaches past the box, out of flow: the line keeps its
+            // height.
+            let elbow_w_pt = size_pt / 2.0 + lead_gap_pt - SPACE_SM_PT;
+            let elbow = el().w(elbow_w_pt).h(line_pt).a11y_hidden().child(
+                el().key("elbow")
+                    .absolute(0.0, line_pt / 2.0 - stroke_pt / 2.0)
+                    .size(elbow_w_pt, line_pt / 2.0 + stroke_pt / 2.0 + AVATAR_TOP_PT)
+                    .corners([radius_pt, 0.0, 0.0, 0.0])
+                    .border_sides([stroke_pt, 0.0, 0.0, stroke_pt], palette.line_strong),
+            );
             row()
                 .key("reply-line")
                 .w_full()
