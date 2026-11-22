@@ -164,7 +164,7 @@ fn pending_receipt(deleted: bool) -> Result {
             outgoing.changed().await?;
         };
         until(&mut stream, |snapshot| snapshot.items.iter().any(|item| {
-            matches!(item.as_ref(), TimelineItem::LocalEcho { id, operation }
+            matches!(item.as_ref(), TimelineItem::LocalEcho { id, operation, .. }
                 if *id == local() && operation.state == OperationState::Sent
                     && operation.message_id == Some(remote))
         })).await?;

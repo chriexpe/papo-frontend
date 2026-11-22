@@ -65,7 +65,7 @@ impl Echoes {
     pub(crate) fn refresh(&mut self, items: &Vector<Arc<TimelineItem>>, me: Uuid) {
         let mut next = HashMap::new();
         for item in items {
-            let TimelineItem::LocalEcho { id, operation } = item.as_ref() else {
+            let TimelineItem::LocalEcho { id, operation, .. } = item.as_ref() else {
                 continue;
             };
             let kept = self

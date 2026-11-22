@@ -141,6 +141,8 @@ fn message(n: u128, author: &str, seconds: u32, body: &str) -> Arc<TimelineItem>
     );
     let id = Uuid::from_u128(n);
     Arc::new(TimelineItem::Message {
+        reply: None,
+        pending: None,
         id,
         message: Arc::new(Message {
             id: Some(id.to_string()),

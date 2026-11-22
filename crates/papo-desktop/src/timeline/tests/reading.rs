@@ -122,6 +122,7 @@ fn ten_thousand_messages_page_edit_and_reflow_without_moving_the_reader() {
             id,
             message,
             content,
+            ..
         } = host.open.items[above].as_ref()
         else {
             panic!("a message above");
@@ -133,6 +134,8 @@ fn ten_thousand_messages_page_edit_and_reflow_without_moving_the_reader() {
             id: *id,
             message: Arc::new(edited),
             content: Arc::clone(content),
+            reply: None,
+            pending: None,
         });
         host.open.items.set(above, edited);
     });

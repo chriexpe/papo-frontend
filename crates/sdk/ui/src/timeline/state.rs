@@ -5,14 +5,14 @@ use papo_sdk::{
     AccountId, HistoryClosedReason, HistoryCursor, HistorySnapshot, HistorySubscription,
     HistoryUpdate, Message, ReadingSnapshot, Uuid,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::watch;
 
 use super::{TimelineConfig, TimelineError};
 use crate::{
     list_subscription::Publisher,
-    timeline_item::TimelineItem,
-    timeline_window::{self, Bounds},
+    timeline_item::{ReplyOriginal, TimelineItem},
+    timeline_window::{self, Bounds, reply_originals::Originals},
 };
 
 #[cfg(test)]
@@ -105,6 +105,14 @@ impl WindowState {
         let read = (reading.generation == self.raw.generation)
             .then(|| reading.channels.get(&self.channel))
             .flatten();
+        let outgoing = self
+            .outgoing
+            .as_ref()
+            .map(|outgoing| Arc::clone(&outgoing.borrow()));
+        let pending = outgoing.as_deref().map_or_else(HashMap::new, |outgoing| {
+            timeline_window::pending_changes::by_message(outgoing, self.channel)
+        });
+        let cache_scope = self.account.map(|account| (account, self.channel));
         let mut items = timeline_window::project_with_cache(
             &self.raw,
             &self.bounds,
@@ -112,20 +120,43 @@ impl WindowState {
             self.loading,
             config.offset_provider.as_ref(),
             &self.publisher.items,
-            self.account.map(|account| (account, self.channel)),
+            cache_scope,
+            &pending,
         )?;
+        // Echoes follow the newest message, so only a live window shows them.
         if self.bounds.live
-            && let Some(outgoing) = &self.outgoing
+            && let Some(outgoing) = &outgoing
         {
             super::echoes::append(
                 &mut items,
-                &outgoing.borrow(),
+                outgoing,
                 self.channel,
                 &self.publisher.items,
                 &self.raw,
-            );
+                cache_scope,
+            )?;
         }
         Ok(items)
+    }
+
+    /// What message `id` is, sharing this window's `Arc`s when the window shows it.
+    pub fn original(&self, id: Uuid) -> Result<ReplyOriginal, TimelineError> {
+        let mut originals = Originals::new(
+            &self.raw,
+            self.account.map(|account| (account, self.channel)),
+        );
+        for item in &self.publisher.items {
+            if let TimelineItem::Message {
+                id,
+                message,
+                content,
+                ..
+            } = item.as_ref()
+            {
+                originals.show(*id, message, content);
+            }
+        }
+        Ok(originals.of(id)?)
     }
 
     pub fn reproject(&mut self, config: &TimelineConfig, reset: bool) -> Result<(), TimelineError> {

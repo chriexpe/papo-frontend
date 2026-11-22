@@ -191,6 +191,7 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
             id,
             message,
             content,
+            ..
         } => {
             let row = RowMessage {
                 id: *id,

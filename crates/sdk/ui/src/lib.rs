@@ -60,7 +60,9 @@ pub use timeline::{
     TimelineSubscription, TimelineUpdate,
 };
 pub use timeline_arrivals::TimelineArrivals;
-pub use timeline_item::{TimelineDirection, TimelineItem, UtcOffset, UtcOffsetProvider};
+pub use timeline_item::{
+    ReplyOriginal, TimelineDirection, TimelineItem, UtcOffset, UtcOffsetProvider,
+};
 pub use timeline_reading::{
     TimelineCatchUp, TimelineReadingEvent, TimelineReadingState, TimelineReadingStream,
     TimelineReadingSubscription,

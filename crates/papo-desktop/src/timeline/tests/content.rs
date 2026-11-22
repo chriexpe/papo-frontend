@@ -107,6 +107,8 @@ fn a_copy_takes_the_text_as_drawn() {
 #[test]
 fn a_copy_across_messages_heads_each_with_its_author_and_time() {
     let yesterday = Arc::new(TimelineItem::Message {
+        reply: None,
+        pending: None,
         id: Uuid::from_u128(1),
         message: Arc::new(Message {
             id: Some(Uuid::from_u128(1).to_string()),

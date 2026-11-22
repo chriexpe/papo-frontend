@@ -5,7 +5,15 @@ use imbl::Vector;
 use papo_sdk::{
     AccountId, HistoryGap, HistoryOrder, HistorySnapshot, Message, MessageKey, ReadState, Uuid,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
+
+pub(crate) mod pending_changes;
+pub(crate) mod reply_originals;
+
+use reply_originals::Originals;
 
 use crate::{
     content_cache::{self, ContentCacheKey},
@@ -39,10 +47,24 @@ pub(crate) fn project(
     offset: &dyn UtcOffsetProvider,
     previous: &Vector<Arc<TimelineItem>>,
 ) -> Result<Vector<Arc<TimelineItem>>, TimelineError> {
-    project_with_cache(raw, bounds, read, loading, offset, previous, None)
+    project_with_cache(
+        raw,
+        bounds,
+        read,
+        loading,
+        offset,
+        previous,
+        None,
+        &HashMap::new(),
+    )
 }
 
 /// Projects only this window, sharing parsed `MessageContent` `Arc`s within `(AccountId, channel)`.
+/// Each message carries its reply's original and its entry in `pending` (by message ID).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one pure projection of independent inputs; a struct would only rename them"
+)]
 pub(crate) fn project_with_cache(
     raw: &HistorySnapshot,
     bounds: &Bounds,
@@ -51,7 +73,9 @@ pub(crate) fn project_with_cache(
     offset: &dyn UtcOffsetProvider,
     previous: &Vector<Arc<TimelineItem>>,
     cache_scope: Option<(AccountId, Uuid)>,
+    pending: &HashMap<Uuid, Arc<papo_sdk::Operation>>,
 ) -> Result<Vector<Arc<TimelineItem>>, TimelineError> {
+    let mut originals = Originals::new(raw, cache_scope);
     let reusable: BTreeMap<_, _> = previous
         .iter()
         .map(|item| (item.identity(), item))
@@ -115,10 +139,14 @@ pub(crate) fn project_with_cache(
             });
         }
         let content = resolve_content(&reusable, cache_scope, point.message_id, message);
+        let reply = originals.of_wire(message.reply_to.as_deref())?;
+        originals.show(point.message_id, message, &content);
         values.push(TimelineItem::Message {
             id: point.message_id,
             message: Arc::clone(message),
             content,
+            reply,
+            pending: pending.get(&point.message_id).cloned(),
         });
         if let Some(boundaries) = gaps.remove(&point) {
             values.extend(
@@ -195,5 +223,7 @@ fn resolve_content(
     content_cache::get_or_parse(key, message)
 }
 
+#[cfg(test)]
+mod reply_tests;
 #[cfg(test)]
 mod tests;

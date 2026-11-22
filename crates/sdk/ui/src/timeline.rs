@@ -7,7 +7,9 @@ mod state;
 mod subscription;
 pub use paging::TimelinePage;
 
-use crate::timeline_item::{TimelineDirection, TimelineItem, UtcOffset, UtcOffsetProvider};
+use crate::timeline_item::{
+    ReplyOriginal, TimelineDirection, TimelineItem, UtcOffset, UtcOffsetProvider,
+};
 use eyeball_im::VectorDiff;
 use futures_util::Stream;
 use imbl::Vector;
@@ -277,15 +279,14 @@ impl Timeline {
             channel,
             &config,
         )?;
-        if live {
-            state.outgoing = Some(
-                session
-                    .outgoing()
-                    .subscribe()
-                    .await
-                    .map_err(TimelineError::Outgoing)?,
-            );
-        }
+        // Every window draws pending edits and deletions; only a live one draws echoes.
+        state.outgoing = Some(
+            session
+                .outgoing()
+                .subscribe()
+                .await
+                .map_err(TimelineError::Outgoing)?,
+        );
         state.refresh(&config)?;
         // The anchor must still be held once its pages are in: a deletion or an eviction may
         // have landed while they were fetched.
@@ -313,6 +314,17 @@ impl Timeline {
                 reading: Mutex::new(reading_overlay),
             }),
         })
+    }
+
+    /// What message `id` of this channel is, as history knows it now: held (with its parsed
+    /// content), deleted, or unknown. Never fetched. For a composer restoring a reply whose
+    /// original may be outside the window.
+    /// # Errors
+    /// Returns typed closure, lifecycle or invalid history key failures.
+    pub fn original(&self, id: Uuid) -> Result<ReplyOriginal, TimelineError> {
+        let mut state = self.inner.lock();
+        state.refresh(&self.inner.config)?;
+        state.original(id)
     }
 
     /// Report only message IDs actually visible in this exact window baseline, paired with scroll

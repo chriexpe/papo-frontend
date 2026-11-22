@@ -54,6 +54,70 @@ impl TimelineDirection {
     }
 }
 
+/// What a reply's original is, as this account's history knows it. Never fetched: the backend
+/// has no message-by-ID route, so an original history does not hold stays `Unknown`.
+#[derive(Clone)]
+#[non_exhaustive]
+pub enum ReplyOriginal {
+    /// Held in history (in this window or outside it), with its parsed content, shared with the
+    /// original's own item when this window shows it.
+    Held {
+        /// The original's backend UUID.
+        id: Uuid,
+        /// Canonical payload.
+        message: Arc<Message>,
+        /// Parsed content of `message`.
+        content: Arc<MessageContent>,
+    },
+    /// One of this account's creates the server has not confirmed yet; its echo carries
+    /// this local identity.
+    Unsent {
+        /// The create's local operation identity.
+        local: Uuid,
+    },
+    /// History knows it was deleted.
+    Deleted,
+    /// Not held: never fetched, evicted, or deleted before this cache existed. Never a deletion.
+    Unknown,
+}
+
+// The payload has no `Debug`; identities are what a log or an assertion needs.
+impl std::fmt::Debug for ReplyOriginal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Held { id, .. } => f
+                .debug_struct("Held")
+                .field("id", id)
+                .finish_non_exhaustive(),
+            Self::Unsent { local } => f.debug_struct("Unsent").field("local", local).finish(),
+            Self::Deleted => f.write_str("Deleted"),
+            Self::Unknown => f.write_str("Unknown"),
+        }
+    }
+}
+
+impl PartialEq for ReplyOriginal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Held {
+                    id: a,
+                    message: x,
+                    content: xc,
+                },
+                Self::Held {
+                    id: b,
+                    message: y,
+                    content: yc,
+                },
+            ) => a == b && Arc::ptr_eq(x, y) && Arc::ptr_eq(xc, yc),
+            (Self::Unsent { local: a }, Self::Unsent { local: b }) => a == b,
+            (Self::Deleted, Self::Deleted) | (Self::Unknown, Self::Unknown) => true,
+            _ => false,
+        }
+    }
+}
+
 /// View-ready history and local echoes; author grouping, platform types and strings belong to clients.
 /// Unchanged items retain their `Arc`; messages retain canonical SDK payload and parsed content `Arc`s.
 #[derive(Clone)]
@@ -67,6 +131,8 @@ pub enum TimelineItem {
         id: Uuid,
         /// Committed payload and typed dispatch state; callers render their own status strings.
         operation: Arc<papo_sdk::Operation>,
+        /// The original this message replies to, when it replies.
+        reply: Option<ReplyOriginal>,
     },
     /// An authenticated chronological message, never a detached pin/search preview.
     Message {
@@ -76,6 +142,12 @@ pub enum TimelineItem {
         message: Arc<Message>,
         /// Parsed message tree built once per `(content, edited_at)` revision and shared across windows.
         content: Arc<MessageContent>,
+        /// The original this message replies to, when it replies.
+        reply: Option<ReplyOriginal>,
+        /// This account's newest edit or deletion of the message that history has not settled
+        /// yet: Queued, Sending, Failed, Unknown, or Sent until it is settled. Draw an edit's
+        /// text and a deletion from it; history keeps the confirmed message meanwhile.
+        pending: Option<Arc<papo_sdk::Operation>>,
     },
     /// Local civil day as signed days since 1970-01-01. `before` stabilizes repeated days across gaps.
     DateSeparator {
@@ -120,24 +192,40 @@ impl PartialEq for TimelineItem {
                 Self::LocalEcho {
                     id: a,
                     operation: x,
+                    reply: xr,
                 },
                 Self::LocalEcho {
                     id: b,
                     operation: y,
+                    reply: yr,
                 },
-            ) => a == b && Arc::ptr_eq(x, y),
+            ) => a == b && Arc::ptr_eq(x, y) && xr == yr,
             (
                 Self::Message {
                     id: a,
                     message: x,
                     content: xc,
+                    reply: xr,
+                    pending: xp,
                 },
                 Self::Message {
                     id: b,
                     message: y,
                     content: yc,
+                    reply: yr,
+                    pending: yp,
                 },
-            ) => a == b && Arc::ptr_eq(x, y) && Arc::ptr_eq(xc, yc),
+            ) => {
+                a == b
+                    && Arc::ptr_eq(x, y)
+                    && Arc::ptr_eq(xc, yc)
+                    && xr == yr
+                    && match (xp, yp) {
+                        (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }
             (
                 Self::DateSeparator { day: a, before: x },
                 Self::DateSeparator { day: b, before: y },
