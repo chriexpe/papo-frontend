@@ -311,8 +311,9 @@ impl HistoryHandle {
         }).await.map_err(HistoryError::from)?
     }
 
-    /// Read the separate pin snapshot without making detached pins chronological members.
-    /// The newest-page fetch and reconnect refresh this snapshot from the pinned list.
+    /// Fetches the channel's pin list when online, then reads the pins, newest pin first,
+    /// without making detached pins chronological members. A successful fetch also makes
+    /// `HistorySnapshot::pins` current for this generation; reconnect refreshes open channels.
     /// # Errors
     /// Returns revoked, unverified, stale-generation or cache failures.
     pub async fn pins(&self) -> Result<Generated<Vec<Arc<papo_api::wire::Message>>>, HistoryError> {
@@ -339,10 +340,10 @@ impl HistoryHandle {
                     handle.check(generation)?;
                     let value = state
                         .model
-                        .entries
-                        .values()
-                        .filter(|entry| entry.pinned && !entry.deleted)
-                        .filter_map(|entry| entry.message.clone().map(Arc::new))
+                        .pin_order()
+                        .iter()
+                        .filter_map(|id| state.model.entries.get(id)?.message.clone())
+                        .map(Arc::new)
                         .collect();
                     Ok(Generated { generation, value })
                 };

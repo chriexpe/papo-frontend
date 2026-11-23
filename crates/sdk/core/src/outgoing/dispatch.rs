@@ -116,8 +116,10 @@ fn next(snapshot: &OutgoingSnapshot) -> Option<Arc<Operation>> {
         .operations
         .iter()
         .find(|operation| {
-            // Completed sends do not block followers in the same channel.
-            if operation.state == OperationState::Sent {
+            // Completed sends do not block followers in the same channel, and neither does an
+            // unresolved reaction: later sends never depend on it, and a later reaction on the
+            // same emoji supersedes it (`OutgoingService::retry` refuses to resend it then).
+            if operation.state == OperationState::Sent || unresolved_reaction(operation) {
                 return false;
             }
             if !channels.insert(operation.channel_id) || operation.state != OperationState::Queued {
@@ -130,6 +132,17 @@ fn next(snapshot: &OutgoingSnapshot) -> Option<Arc<Operation>> {
             })
         })
         .cloned()
+}
+
+/// A reaction the backend refused (Failed) or whose outcome is not known (Unknown).
+fn unresolved_reaction(operation: &Operation) -> bool {
+    matches!(
+        operation.kind.as_ref(),
+        super::OperationKind::Reaction { .. }
+    ) && matches!(
+        operation.state,
+        OperationState::Failed | OperationState::Unknown
+    )
 }
 
 async fn drain(service: &OutgoingService) -> Result<(), OutgoingError> {

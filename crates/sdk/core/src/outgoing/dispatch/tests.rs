@@ -61,3 +61,47 @@ fn classify_returns_queued_only_for_proven_not_dispatched_and_unknown_for_ambigu
     assert!(outcome.is_none());
     assert_eq!(failure, Some(OperationFailure::Rejected(403)));
 }
+
+#[test]
+fn an_unresolved_reaction_does_not_hold_its_channel() {
+    let make = |id, kind, state| {
+        Arc::new(Operation {
+            id: Uuid::from_u128(id),
+            channel_id: Uuid::from_u128(1),
+            kind: Arc::new(kind),
+            state,
+            attempts: 0,
+            depends_on: None,
+            failure: None,
+            message_id: None,
+            message: None,
+            history_projected: true,
+            created_at_us: 0,
+        })
+    };
+    let reaction = || OperationKind::Reaction {
+        target: MessageTarget::Remote(Uuid::from_u128(9)),
+        emoji_id: None,
+        unicode: Some("👍".into()),
+        add: true,
+    };
+    let message = || OperationKind::Message(OutgoingMessage::default());
+    let mut snapshot = OutgoingSnapshot {
+        account: None,
+        version: 0,
+        upload_progress: None,
+        fault: None,
+        operations: vec![
+            make(1, reaction(), OperationState::Failed),
+            make(2, reaction(), OperationState::Unknown),
+            make(3, message(), OperationState::Queued),
+        ],
+    };
+    assert_eq!(next(&snapshot).unwrap().id, Uuid::from_u128(3));
+    // An unresolved message still holds the reactions behind it.
+    snapshot.operations = vec![
+        make(1, message(), OperationState::Failed),
+        make(2, reaction(), OperationState::Queued),
+    ];
+    assert!(next(&snapshot).is_none());
+}

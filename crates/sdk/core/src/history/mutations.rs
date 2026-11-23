@@ -1,6 +1,6 @@
 //! Live message mutation precedence and detached pins; paging and socket journaling live elsewhere.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use papo_api::{
     gateway::KnownEvent,
@@ -12,6 +12,7 @@ use super::{
     merge::Ticket,
     model::{Entry, Model},
     ordering::{Point, timestamp_us},
+    pins::PinRank,
 };
 
 impl Model {
@@ -50,6 +51,7 @@ impl Model {
                 entry.edit = None;
                 entry.pending_embeds = None;
                 entry.pending_reactions.clear();
+                entry.own_reactions.clear();
                 entry.revision = revision;
                 self.dirty.insert(id);
                 self.record_deletions(revision, vec![id]);
@@ -82,6 +84,10 @@ impl Model {
                     return Ok(false);
                 }
                 entry.pinned = event.is_pinned;
+                entry.pin_rank = PinRank {
+                    revision,
+                    position: 0,
+                };
                 entry.pin_revision = revision;
                 entry.revision = revision;
                 self.dirty.insert(id);
@@ -199,8 +205,9 @@ impl Model {
             }
         }
         let revision = self.next_revision()?;
-        let mut pinned = BTreeSet::new();
-        for message in messages {
+        // The backend lists pins oldest pin first.
+        let mut pinned = BTreeMap::new();
+        for (position, message) in messages.iter().enumerate() {
             if Self::id(
                 message
                     .channel_id
@@ -212,7 +219,11 @@ impl Model {
             }
             let point = Point::from(&message.cursor().ok_or(HistoryError::InvalidPage)?);
             let id = point.key()?.id_bytes();
-            if !pinned.insert(id) {
+            let rank = PinRank {
+                revision: ticket.revision,
+                position: u32::try_from(position).map_err(|_| HistoryError::InvalidPage)?,
+            };
+            if pinned.insert(id, rank).is_some() {
                 return Err(HistoryError::InvalidPage);
             }
             let timeline = self.entries.get(&id).is_some_and(|entry| entry.timeline);
@@ -226,26 +237,38 @@ impl Model {
         }
         for (id, entry) in &mut self.entries {
             if entry.pin_revision <= ticket.revision && !entry.deleted {
-                let value = pinned.contains(id);
-                if entry.pinned != value {
+                let rank = pinned.get(id).copied();
+                let value = rank.is_some();
+                let rank = rank.unwrap_or(entry.pin_rank);
+                if entry.pinned != value || entry.pin_rank != rank {
                     entry.pinned = value;
+                    entry.pin_rank = rank;
                     entry.revision = revision;
                     self.dirty.insert(*id);
                 }
             }
         }
+        self.pins_generation = ticket.generation;
         Ok(())
     }
 }
 
+/// Sets one emoji's total. An emoji keeps its place (the backend lists them by first
+/// reaction), a new one goes last, and one whose count reaches zero is gone.
 pub(super) fn replace_total(
     totals: &mut Vec<MessageReactionSummary>,
     total: &MessageReactionSummary,
 ) {
-    totals.retain(|existing| {
-        existing.emoji_id != total.emoji_id || existing.unicode != total.unicode
+    let present = total.count.is_some_and(|count| count > 0);
+    let held = totals.iter().position(|existing| {
+        existing.emoji_id == total.emoji_id && existing.unicode == total.unicode
     });
-    if total.count.is_some_and(|count| count > 0) {
-        totals.push(total.clone());
+    match (held, present) {
+        (Some(index), true) => totals[index].count = total.count,
+        (Some(index), false) => {
+            totals.remove(index);
+        }
+        (None, true) => totals.push(total.clone()),
+        (None, false) => {}
     }
 }

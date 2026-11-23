@@ -89,6 +89,7 @@ impl Source {
             empty_complete: self.messages.is_empty(),
             server_live_complete: true,
             live_arrival_start: None,
+            pins: None,
         })
     }
 

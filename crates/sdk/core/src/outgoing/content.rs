@@ -340,6 +340,26 @@ impl OperationKind {
             }
         }
     }
+    /// Both are reactions to the same message with the same emoji.
+    pub(super) fn same_reaction(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Reaction {
+                    target,
+                    emoji_id,
+                    unicode,
+                    ..
+                },
+                Self::Reaction {
+                    target: other_target,
+                    emoji_id: other_emoji_id,
+                    unicode: other_unicode,
+                    ..
+                },
+            ) => target == other_target && emoji_id == other_emoji_id && unicode == other_unicode,
+            _ => false,
+        }
+    }
     pub(super) fn dependency(&self) -> Option<Uuid> {
         match self.target() {
             Some(MessageTarget::Local(id)) => Some(id),

@@ -44,6 +44,7 @@ fn snapshot(start: u128, end: u128) -> HistorySnapshot {
         empty_complete: false,
         server_live_complete: true,
         live_arrival_start: None,
+        pins: None,
     }
 }
 fn actual_point(index: u128) -> MessageKey {

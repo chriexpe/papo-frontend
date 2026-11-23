@@ -195,6 +195,11 @@ impl Model {
                 );
             }
         }
+        if entry.own_reaction_revision > ticket.revision {
+            for change in &entry.own_reactions {
+                change.apply(&mut incoming);
+            }
+        }
         entry.message = Some(incoming);
         entry.point = Some(point.clone());
         entry.timeline = true;

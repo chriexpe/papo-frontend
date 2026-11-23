@@ -18,6 +18,8 @@ mod live_at;
 mod outgoing;
 #[path = "timeline/outgoing_faults.rs"]
 mod outgoing_faults;
+#[path = "timeline/pins.rs"]
+mod pins;
 #[path = "timeline/replies.rs"]
 mod replies;
 #[path = "timeline/search.rs"]

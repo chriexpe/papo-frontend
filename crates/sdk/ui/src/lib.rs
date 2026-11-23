@@ -3,7 +3,15 @@
 
 mod message_actions;
 pub mod message_content;
-pub use message_actions::{DeleteAs, EditTarget, MessageActions, message_actions, newest_editable};
+pub use message_actions::{
+    DeleteAs, EditTarget, MessageActions, PinChange, message_actions, newest_editable, pinned,
+};
+mod pins;
+pub use pins::{ChannelPins, PinsEvent, PinsStream, PinsSubscription};
+mod reactions;
+pub use reactions::{
+    DEFAULT_QUICK_REACTIONS, ReactionChip, Reactor, Reactors, quick_reactions, reaction_chips,
+};
 mod message_attention;
 pub use message_attention::{Attention, attention};
 mod mention_suggestions;

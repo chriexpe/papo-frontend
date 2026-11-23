@@ -81,6 +81,7 @@ fn snapshot(
         empty_complete: false,
         server_live_complete: complete,
         live_arrival_start: None,
+        pins: None,
     }
 }
 fn policy(settings: &NotificationSettings) -> ChannelPolicy {

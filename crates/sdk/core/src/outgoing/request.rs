@@ -83,11 +83,25 @@ pub(super) async fn send(
             };
             let id = target.ok_or(papo_api::Error::Decode)?;
             if *add {
+                // Adding a reaction this account already has succeeds (200).
                 rest.add_reaction(operation.channel_id, id, &request)
                     .await?;
             } else {
-                rest.remove_reaction(operation.channel_id, id, &request)
-                    .await?;
+                match rest
+                    .remove_reaction(operation.channel_id, id, &request)
+                    .await
+                {
+                    // Not found: the reaction is not there (never added, or removed elsewhere),
+                    // or its message, channel or emoji is gone. Either way no reaction of this
+                    // account's remains, which is all the removal asked; it says nothing about
+                    // totals or whether the message still exists.
+                    Ok(())
+                    | Err(
+                        papo_api::Error::Problem { status: 404, .. }
+                        | papo_api::Error::Http { status: 404 },
+                    ) => {}
+                    Err(error) => return Err(error),
+                }
             }
             None
         }
@@ -98,8 +112,8 @@ pub(super) async fn send(
             .flatten();
         super::receipt::message(message, operation.channel_id, author, expected)
     } else {
-        // A deletion is projected once history has settled it; a reaction has nothing to
-        // settle, its totals stay the backend's.
+        // A deletion is projected once history has settled it; a reaction settles only this
+        // account's membership, at confirmation, and its totals stay the backend's.
         let deletion = matches!(operation.kind.as_ref(), OperationKind::Delete { .. });
         Ok(Outcome {
             projected: !deletion,

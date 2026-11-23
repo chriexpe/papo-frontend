@@ -35,7 +35,7 @@ pub struct HistoryChunk {
 }
 
 /// Complete canonical raw history for one account/channel, not a view window.
-/// Messages are unique and ascending by exact `(created_at_us, UUID)`; detached pins are absent.
+/// Messages are unique and ascending by exact `(created_at_us, UUID)`; detached pins are only in `pins`.
 /// Unknown ranges are explicit, so consumers must not infer continuity from adjacent messages.
 #[derive(Clone)]
 pub struct HistorySnapshot {
@@ -58,6 +58,13 @@ pub struct HistorySnapshot {
     pub server_live_complete: bool,
     /// Earliest live-edge message cursor added via live admission in `generation`, if any.
     pub live_arrival_start: Option<HistoryCursor>,
+    /// The channel's pinned messages, newest pin first, including pins outside `messages`.
+    /// `None` until a pin list fetch (`HistoryHandle::pins`, or the reconnect refresh) has
+    /// succeeded in `generation`; while it is `None` no message's pinned state is known. Live
+    /// pin events keep it current for messages this history holds. The backend's pin event
+    /// names no channel, so a pin of a message no channel's history holds appears only with the
+    /// next fetch: fetch again whenever the pins are shown.
+    pub pins: Option<imbl::Vector<Arc<Message>>>,
 }
 
 /// A bounded raw history delivery. Every data delivery is a complete replacement, not a delta.

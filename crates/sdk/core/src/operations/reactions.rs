@@ -16,7 +16,7 @@ use crate::{
 const COMMAND_CAPACITY: usize = 64;
 
 /// One unambiguous reaction identity. Custom emoji and unicode cannot be supplied together.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ReactionEmoji {
     /// Server-owned custom emoji identity.
     Custom(Uuid),

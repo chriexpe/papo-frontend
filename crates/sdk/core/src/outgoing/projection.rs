@@ -93,6 +93,7 @@ pub(super) async fn mark(
 /// A create enters history as a live insertion; an edit or deletion of `target` (the backend
 /// ID the attempt resolved) is settled the way its socket event would settle it, so history
 /// never shows the old text or the deleted message once the operation is Sent and projected.
+/// A reaction settles this account's membership on `target`, never its totals.
 pub(super) async fn finish(
     service: &OutgoingService,
     operation: &super::Operation,
@@ -131,7 +132,32 @@ pub(super) async fn finish(
                 Settlement::NotAChange => {}
             }
         }
-        super::OperationKind::Reaction { .. } => {}
+        super::OperationKind::Reaction {
+            emoji_id,
+            unicode,
+            add,
+            ..
+        } => {
+            if service.session.inner.epochs.validate(generation).is_err() {
+                return Ok(());
+            }
+            // Settled once, at confirmation: a replayed receipt carries no evidence that it is
+            // newer than a page fetched since, so `reconcile_receipts` never settles it again.
+            let target = target.ok_or(OutgoingError::InvalidData)?;
+            let change = crate::history::own_reactions::OwnReaction {
+                emoji_id: emoji_id.map(|id| id.to_string()),
+                unicode: unicode.clone(),
+                add: *add,
+            };
+            crate::history::live::settle_own_reaction(
+                &service.session,
+                generation,
+                operation.channel_id,
+                target,
+                change,
+            )
+            .await?;
+        }
     }
     mark(service, vec![operation.id]).await
 }
@@ -147,7 +173,8 @@ enum Settlement {
         /// The edit's requested text.
         content: String,
     },
-    /// A create or a reaction: not a change to settle.
+    /// A create or a reaction: nothing an event would settle (a reaction's own membership is
+    /// settled once, at confirmation, in `finish`).
     NotAChange,
 }
 

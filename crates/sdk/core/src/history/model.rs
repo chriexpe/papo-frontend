@@ -32,6 +32,15 @@ pub(super) struct Entry {
     pub edit: Option<(String, String)>,
     pub pending_embeds: Option<Vec<papo_api::wire::Embed>>,
     pub pending_reactions: Vec<papo_api::wire::MessageReactionSummary>,
+    /// Where this pin sits in the channel's pin order (see `pins`); meaningful while `pinned`.
+    #[serde(default)]
+    pub pin_rank: super::pins::PinRank,
+    /// Revision of this account's last settled reaction change; an older page keeps them.
+    #[serde(default)]
+    pub own_reaction_revision: u64,
+    /// This account's settled reaction changes, one per emoji, re-applied over older pages.
+    #[serde(default)]
+    pub own_reactions: Vec<super::own_reactions::OwnReaction>,
 }
 
 impl Entry {
@@ -50,6 +59,9 @@ impl Entry {
             edit: None,
             pending_embeds: None,
             pending_reactions: Vec::new(),
+            pin_rank: super::pins::PinRank::default(),
+            own_reaction_revision: 0,
+            own_reactions: Vec::new(),
         }
     }
 }
@@ -131,6 +143,9 @@ pub(super) struct Model {
     pub live_arrival_floor: Option<Point>,
     pub dirty: BTreeSet<[u8; 16]>,
     pub deletions: BTreeMap<[u8; 16], Vec<[u8; 16]>>,
+    /// Connection generation whose pin list fetch this model's pins reflect (0: none yet).
+    /// Live pin events keep a fetched list current within that generation only.
+    pub pins_generation: u64,
 }
 
 pub(super) struct CachedPage {

@@ -72,43 +72,42 @@ fn authors_edit_and_delete_their_own_and_moderators_delete_others() {
         ..ChannelCapabilities::default()
     };
     assert_eq!(
-        message_actions(&mine, None, me(), Some(reader)),
+        message_actions(&mine, None, None, me(), Some(reader)),
         MessageActions {
             reply: true,
             edit: true,
             delete: Some(DeleteAs::Author),
+            ..MessageActions::default()
         }
     );
     assert_eq!(
-        message_actions(&theirs, None, me(), Some(reader)),
+        message_actions(&theirs, None, None, me(), Some(reader)),
         MessageActions {
             reply: true,
-            edit: false,
-            delete: None,
+            ..MessageActions::default()
         }
     );
     assert_eq!(
-        message_actions(&theirs, None, me(), Some(moderator())).delete,
+        message_actions(&theirs, None, None, me(), Some(moderator())).delete,
         Some(DeleteAs::Moderator)
     );
     let muted = ChannelCapabilities::default();
-    assert!(!message_actions(&theirs, None, me(), Some(muted)).reply);
+    assert!(!message_actions(&theirs, None, None, me(), Some(muted)).reply);
 }
 
 #[test]
 fn unknown_permissions_fail_closed_but_for_deleting_your_own() {
     let theirs = message(11, OTHER, "theirs");
     assert_eq!(
-        message_actions(&theirs, None, me(), None),
+        message_actions(&theirs, None, None, me(), None),
         MessageActions::default()
     );
     let mine = message(10, ME, "mine");
     assert_eq!(
-        message_actions(&mine, None, me(), None),
+        message_actions(&mine, None, None, me(), None),
         MessageActions {
-            reply: false,
-            edit: false,
             delete: Some(DeleteAs::Author),
+            ..MessageActions::default()
         }
     );
     let items: Vector<_> = [item(mine, None)].into_iter().collect();
@@ -119,7 +118,7 @@ fn unknown_permissions_fail_closed_but_for_deleting_your_own() {
 fn a_webhook_message_naming_you_is_not_yours() {
     let mut hooked = Message::clone(&message(10, ME, "relayed"));
     hooked.webhook_id = Some(Uuid::from_u128(9).to_string());
-    let actions = message_actions(&hooked, None, me(), Some(moderator()));
+    let actions = message_actions(&hooked, None, None, me(), Some(moderator()));
     assert!(!actions.edit);
     assert_eq!(actions.delete, Some(DeleteAs::Moderator));
 }
@@ -134,11 +133,63 @@ fn a_message_being_deleted_offers_nothing_until_the_deletion_fails() {
         OperationState::Sending,
     );
     assert_eq!(
-        message_actions(&mine, Some(&deleting), me(), None),
+        message_actions(&mine, Some(&deleting), None, me(), None),
         MessageActions::default()
     );
     let failed = operation(20, OperationKind::Delete { target }, OperationState::Failed);
-    assert!(message_actions(&mine, Some(&failed), me(), Some(writer())).edit);
+    assert!(message_actions(&mine, Some(&failed), None, me(), Some(writer())).edit);
+}
+
+#[test]
+fn pin_and_unpin_need_known_pins_and_their_permission() {
+    let theirs = message(11, OTHER, "theirs");
+    let pinner = ChannelCapabilities {
+        read: true,
+        pin: true,
+        unpin: true,
+        ..ChannelCapabilities::default()
+    };
+    let actions = |pinned, capabilities| message_actions(&theirs, None, pinned, me(), capabilities);
+    assert_eq!(actions(Some(false), Some(pinner)).pin, Some(PinChange::Pin));
+    assert_eq!(
+        actions(Some(true), Some(pinner)).pin,
+        Some(PinChange::Unpin)
+    );
+    assert_eq!(actions(None, Some(pinner)).pin, None);
+    assert_eq!(actions(Some(false), Some(writer())).pin, None);
+    assert_eq!(actions(Some(true), None).pin, None);
+    let pins: Vector<_> = [Arc::clone(&theirs)].into_iter().collect();
+    assert_eq!(pinned(Some(&pins), Uuid::from_u128(11)), Some(true));
+    assert_eq!(pinned(Some(&pins), Uuid::from_u128(10)), Some(false));
+    assert_eq!(pinned(None, Uuid::from_u128(11)), None);
+}
+
+#[test]
+fn reacting_needs_send_and_seeing_who_reacted_needs_reactions_and_read() {
+    let mut reacted = Message::clone(&message(11, OTHER, "theirs"));
+    reacted.reactions = Some(vec![
+        papo_sdk::operations::interactions::MessageReactionSummary {
+            emoji_id: None,
+            unicode: Some("👍".into()),
+            count: Some(1),
+        },
+    ]);
+    let member = ChannelCapabilities {
+        read: true,
+        add_reaction: true,
+        ..ChannelCapabilities::default()
+    };
+    let actions = message_actions(&reacted, None, None, me(), Some(member));
+    assert!(actions.react && actions.view_reactions);
+    let silent = message_actions(
+        &message(11, OTHER, "theirs"),
+        None,
+        None,
+        me(),
+        Some(member),
+    );
+    assert!(silent.react && !silent.view_reactions);
+    assert!(!message_actions(&reacted, None, None, me(), None).view_reactions);
 }
 
 #[test]

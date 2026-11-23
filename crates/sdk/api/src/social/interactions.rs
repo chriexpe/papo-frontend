@@ -42,7 +42,8 @@ impl RestClient {
         .map(|_| ())
     }
 
-    /// Lists reaction users, grouped by emoji within the returned page.
+    /// Lists reaction users in `(created_at, id)` `order`, including an initial ascending
+    /// page, grouped by emoji within the returned page.
     /// # Errors
     /// Returns transport, backend or decoding errors.
     pub async fn message_reactions(
@@ -50,8 +51,11 @@ impl RestClient {
         channel: Uuid,
         message: Uuid,
         cursor: Option<&Cursor<'_>>,
+        order: crate::HistoryOrder,
     ) -> Result<MessageReactionList, Error> {
-        let parameters = cursor.map_or_else(Vec::new, Cursor::parameters);
+        let mut parameters = cursor.map_or_else(Vec::new, Cursor::parameters);
+        parameters.retain(|(key, _)| *key != routes::ORDER);
+        parameters.push((routes::ORDER, order.as_str().to_owned()));
         self.json(
             self.route_request(
                 &routes::GET_CHANNELS_CHANNEL_ID_MESSAGES_MESSAGE_ID_REACTIONS,

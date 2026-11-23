@@ -1,7 +1,7 @@
-//! What this account may do with one message (reply, edit, delete as author or moderator), and
-//! which message "edit my newest message" opens. From authorship and the SDK's channel
-//! affordances; never a substitute for the backend's own authorization. Menus, keys and words
-//! are the client's.
+//! What this account may do with one message (reply, edit, react, see who reacted, pin or
+//! unpin, delete as author or moderator), and which message "edit my newest message" opens.
+//! From authorship, the channel's pins and the SDK's channel affordances; never a substitute
+//! for the backend's own authorization. Menus, keys and words are the client's.
 
 use std::sync::Arc;
 
@@ -12,14 +12,34 @@ use crate::{ChannelCapabilities, TimelineItem};
 
 /// The actions one message offers. An action the account may not take is absent, never
 /// disabled.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent actions, each offered or not on its own"
+)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MessageActions {
     /// Reply to it.
     pub reply: bool,
     /// Edit its text: only the author's own messages.
     pub edit: bool,
+    /// Add a reaction to it (toggling an existing chip is `ReactionChip::can_toggle`).
+    pub react: bool,
+    /// See who reacted: it has reactions and the channel can be read.
+    pub view_reactions: bool,
+    /// Pin or unpin it, once the channel's pins are known.
+    pub pin: Option<PinChange>,
     /// Delete it, and in whose name.
     pub delete: Option<DeleteAs>,
+}
+
+/// Which way a pin action goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PinChange {
+    /// The message is not pinned: pin it.
+    Pin,
+    /// The message is pinned: unpin it.
+    Unpin,
 }
 
 /// Whose deletion a delete is.
@@ -43,14 +63,17 @@ pub struct EditTarget {
 }
 
 /// The actions `message` offers to `account_user`. `pending` is the item's unsettled edit or
-/// deletion; `capabilities` are the channel's, or `None` when they are unknown (permission
-/// data not confirmed yet, or a DM read without the `CapabilityService`). Unknown fails
-/// closed: it offers only deleting your own message, which the backend allows even after
-/// access is lost; no reply, no edit and no moderator deletion.
+/// deletion; `pinned` is whether the channel's pins hold it, or `None` while they are not
+/// known (`HistorySnapshot::pins`), which offers neither pin nor unpin; `capabilities` are the
+/// channel's, or `None` when they are unknown (permission data not confirmed yet, or a DM read
+/// without the `CapabilityService`). Unknown fails closed: it offers only deleting your own
+/// message, which the backend allows even after access is lost; no reply, no edit, no
+/// reaction, no pin and no moderator deletion.
 #[must_use]
 pub fn message_actions(
     message: &Message,
     pending: Option<&Operation>,
+    pinned: Option<bool>,
     account_user: Uuid,
     capabilities: Option<ChannelCapabilities>,
 ) -> MessageActions {
@@ -65,11 +88,34 @@ pub fn message_actions(
     } else {
         None
     };
+    let reacted = message
+        .reactions
+        .iter()
+        .flatten()
+        .any(|total| total.count.is_some_and(|count| count > 0));
+    let pin = match (pinned, capabilities) {
+        (Some(false), Some(capabilities)) if capabilities.pin => Some(PinChange::Pin),
+        (Some(true), Some(capabilities)) if capabilities.unpin => Some(PinChange::Unpin),
+        _ => None,
+    };
     MessageActions {
         reply: capabilities.is_some_and(|capabilities| capabilities.send),
         edit: own && capabilities.is_some_and(|capabilities| capabilities.can_edit(true)),
+        react: capabilities.is_some_and(|capabilities| capabilities.add_reaction),
+        view_reactions: reacted && capabilities.is_some_and(|capabilities| capabilities.read),
+        pin,
         delete,
     }
+}
+
+/// Whether `message` is in the channel's `pins`, or `None` while they are not known.
+#[must_use]
+pub fn pinned(pins: Option<&Vector<Arc<Message>>>, message: Uuid) -> Option<bool> {
+    let id = message.to_string();
+    pins.map(|pins| {
+        pins.iter()
+            .any(|pin| pin.id.as_deref() == Some(id.as_str()))
+    })
 }
 
 /// The newest message in `items` that `account_user` may edit, with the text to edit. Unsent

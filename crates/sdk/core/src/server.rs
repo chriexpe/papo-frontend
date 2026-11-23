@@ -93,6 +93,12 @@ impl fmt::Debug for ServerAddress {
 pub struct ServerId([u8; 16]);
 
 impl ServerId {
+    /// An all-zero identity for isolated test fixtures that never reach a server.
+    #[cfg(feature = "test-support")]
+    pub(crate) const fn for_test() -> Self {
+        Self([0; 16])
+    }
+
     /// Returns the 16 identity bytes in digest order.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
