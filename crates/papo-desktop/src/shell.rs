@@ -118,6 +118,8 @@ pub(crate) struct Shell {
     openings: u64,
     /// The pins panel, while open.
     pins_panel: Option<pins::PinsPanel>,
+    /// Whether the keyboard shortcuts sheet shows.
+    shortcuts_open: bool,
     /// The New message picker's state, while it is open.
     dm_picker: Option<new_message::DmPicker>,
     /// The search, open or folded with its query.
@@ -202,6 +204,7 @@ impl Default for Shell {
             stretched: None,
             openings: 0,
             pins_panel: None,
+            shortcuts_open: false,
             dm_picker: None,
             search: None,
             search_runs: 0,

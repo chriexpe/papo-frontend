@@ -148,3 +148,22 @@ fn f6_moves_between_the_windows_regions() {
     seen.dedup();
     assert!(seen.len() >= 3, "F6 reached several regions: {seen:?}");
 }
+
+#[test]
+fn ctrl_slash_or_f1_opens_the_shortcuts_sheet_and_escape_or_the_key_closes_it() {
+    let mut rt = three_servers();
+    key(&mut rt, Key::Command('/'), ctrl());
+    assert!(rt.find(crate::shortcuts_sheet::SHORTCUTS_KEY).is_some());
+    assert!(
+        rt.elements()
+            .iter()
+            .any(|element| element.label.as_deref() == Some("Pinned messages: Ctrl P, none")),
+        "each row names its keys"
+    );
+    key(&mut rt, Key::Escape, Mods::default());
+    assert!(rt.find(crate::shortcuts_sheet::SHORTCUTS_KEY).is_none());
+    key(&mut rt, Key::Function(1), Mods::default());
+    assert!(rt.find(crate::shortcuts_sheet::SHORTCUTS_KEY).is_some());
+    key(&mut rt, Key::Command('/'), ctrl());
+    assert!(rt.find(crate::shortcuts_sheet::SHORTCUTS_KEY).is_none());
+}

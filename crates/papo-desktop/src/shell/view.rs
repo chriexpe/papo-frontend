@@ -88,6 +88,9 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(server) = removing {
                     app = app.child(remove_server::confirm(&server.name, &palette));
                 }
+                if shell.shortcuts_open {
+                    app = app.child(crate::shortcuts_sheet::view(&palette));
+                }
                 if let Some(prompt) = &shell.content.link {
                     app = app.child(links::confirm(prompt, &palette));
                 }

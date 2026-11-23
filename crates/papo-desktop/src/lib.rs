@@ -38,6 +38,7 @@ mod remove_server;
 mod sdk_bridge;
 mod server_list;
 mod shell;
+mod shortcuts_sheet;
 mod sign_in;
 mod strings;
 mod tabs;

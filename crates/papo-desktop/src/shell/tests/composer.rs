@@ -187,6 +187,26 @@ fn with_enter_to_send_off_the_keys_swap() {
 }
 
 #[test]
+fn ctrl_enter_sends_whatever_enter_does() {
+    for enter_sends in [true, false] {
+        let mut rt = writing("");
+        rt.update(move |shell, _tx| shell.writing.enter_sends = enter_sends);
+        rt.frame(FRAME_S);
+        type_text(&mut rt, "oi");
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods {
+                cmd: true,
+                ctrl: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(FRAME_S);
+        assert_eq!(field(&rt), "", "sent with Enter to send {enter_sends}");
+    }
+}
+
+#[test]
 fn send_is_a_button_that_sends() {
     let mut rt = writing("");
     type_text(&mut rt, "oi");

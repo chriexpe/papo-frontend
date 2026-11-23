@@ -70,6 +70,12 @@ impl Shell {
             return true;
         }
         let bare = !key.mods.ctrl && !key.mods.cmd && !key.mods.alt && !key.mods.shift;
+        // Ctrl+Enter sends whatever Enter does (`docs/design.md` §12).
+        let primary_alone = (mods.ctrl || mods.cmd) && !mods.alt && !mods.shift;
+        if key.key == Key::Enter && primary_alone && !composing {
+            self.composer_send(tx);
+            return true;
+        }
         if self.mode_key(key, bare, tx) {
             return true;
         }

@@ -3,7 +3,8 @@
 //! rail; Ctrl+Tab, Ctrl+⇧Tab, Ctrl+PgDn and Ctrl+PgUp move between servers
 //! as tabs; Alt+⇧↑ and Alt+⇧↓ move to the previous or next unread channel;
 //! Alt+← and Alt+→ go back and forward through this server's channels;
-//! Ctrl+W closes the window, Ctrl+Q quits, F11 toggles full screen.
+//! Ctrl+W closes the window, Ctrl+Q quits, F11 toggles full screen; Ctrl+/,
+//! F1 or Ctrl+? opens the keyboard shortcuts sheet (`shortcuts_sheet`).
 //!
 //! Owns which key does what. Where the moves go is `navigation`'s; a popup
 //! or an open overlay keeps these keys for itself.
@@ -27,6 +28,14 @@ fn window_key(key: &KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 
+/// Ctrl+/, F1 or Ctrl+?: the keyboard shortcuts sheet.
+fn is_shortcuts_key(key: &KeyEvent) -> bool {
+    let mods = key.mods;
+    let primary = (mods.cmd || mods.ctrl) && !mods.alt && !mods.logo;
+    (primary && (key.is_command('/') || key.is_command('?')))
+        || (key.key == Key::Function(1) && mods == Mods::default())
+}
+
 /// Ctrl (⌘ on macOS) alone.
 fn primary_only(mods: Mods) -> bool {
     (mods.cmd || mods.ctrl) && !mods.alt && !mods.shift && !mods.logo
@@ -39,6 +48,10 @@ impl Shell {
         if window_key(key, tx) {
             return true;
         }
+        if is_shortcuts_key(key) {
+            self.toggle_shortcuts(tx);
+            return true;
+        }
         // A popup or an overlay holds the keyboard like a dialog does.
         if self.popup_shown() || self.nav.accounts_open() || self.nav.direct_accounts_open() {
             return false;
@@ -47,6 +60,25 @@ impl Shell {
             || self.server_step_key(key, tx)
             || self.unread_step_key(key, tx)
             || self.history_key(key, tx)
+    }
+
+    /// The shortcuts sheet opens over everything, or closes.
+    pub(crate) fn toggle_shortcuts(&mut self, tx: &mut Tx) {
+        if self.shortcuts_open {
+            self.close_shortcuts();
+            return;
+        }
+        // Only over the app itself: a dialog or a menu keeps its keys.
+        if self.popup_shown() {
+            return;
+        }
+        self.shortcuts_open = true;
+        tx.focus(crate::shortcuts_sheet::SHORTCUTS_KEY, true);
+    }
+
+    /// Escape, or the sheet's key again.
+    pub(crate) fn close_shortcuts(&mut self) {
+        self.shortcuts_open = false;
     }
 
     /// Ctrl+1–9: the server in that place of the rail.
