@@ -21,7 +21,8 @@ pub(crate) mod hover_bar;
 pub(crate) mod local_time;
 mod message_row;
 mod paging;
-mod reactions;
+pub(crate) mod reactions;
+pub(crate) mod reactors;
 pub(crate) mod reading;
 pub(crate) mod replies;
 pub(crate) mod reply_line;
@@ -48,7 +49,7 @@ pub(crate) use self::anchor::scroll_to;
 use self::anchor::{Anchor, Tracker};
 use self::changes::Changes;
 use self::echoes::Echoes;
-pub(crate) use self::message_row::{author_name, created_us};
+pub(crate) use self::message_row::{author_name, avatar, created_us};
 use self::paging::Paging;
 pub(crate) use self::paging::Request;
 use self::reading::Reading;
@@ -144,6 +145,8 @@ pub(crate) struct OpenTimeline {
     pub(crate) pins: Option<Vector<Arc<Message>>>,
     /// Their handle, which fetches them again.
     pub(crate) pins_handle: Option<ChannelPins>,
+    /// Who reacted to its messages, as far as read.
+    pub(crate) reactors: reactors::ReactorLists,
 }
 
 impl OpenTimeline {
@@ -186,6 +189,7 @@ impl OpenTimeline {
             seek: None,
             pins: None,
             pins_handle: None,
+            reactors: reactors::ReactorLists::default(),
         };
         (open, stopped)
     }

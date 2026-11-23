@@ -208,5 +208,22 @@
   "action.more": "More",
   "action.bar": "Message actions",
   "reaction.label": "{{emoji}}, {{count}}",
-  "reaction.label_mine": "{{emoji}}, {{count}}, including you"
+  "reaction.label_mine": "{{emoji}}, {{count}}, including you",
+  "reaction.you": "You",
+  "reaction.who_one": "{{a}} reacted with {{emoji}}",
+  "reaction.who_two": "{{a}} and {{b}} reacted with {{emoji}}",
+  "reaction.who_many.one": "{{a}}, {{b}} and {{count}} other reacted with {{emoji}}",
+  "reaction.who_many.other": "{{a}}, {{b}} and {{count}} others reacted with {{emoji}}",
+  "reaction.who_one_more.one": "{{a}} and {{count}} other reacted with {{emoji}}",
+  "reaction.who_one_more.other": "{{a}} and {{count}} others reacted with {{emoji}}",
+  "reaction.who_count.one": "{{count}} person reacted with {{emoji}}",
+  "reaction.who_count.other": "{{count}} people reacted with {{emoji}}",
+  "menu.view_reactions": "View reactions",
+  "reactions.title": "Reactions",
+  "reactions.back": "Back",
+  "reactions.all": "All",
+  "reactions.you": "you",
+  "reactions.tab": "{{emoji}}, {{count}}",
+  "reactions.loading": "Loading who reacted",
+  "reactions.failed": "Couldn't load who reacted."
 }

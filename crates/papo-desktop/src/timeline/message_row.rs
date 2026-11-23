@@ -280,7 +280,7 @@ fn build(
 /// the top of its lead box (`docs/design.md` §5, Distances are measured to
 /// what is seen). The box is as tall as the avatar alone, so the offset
 /// never makes a row taller than it was.
-pub(super) fn avatar(name: &str, size_pt: f32, palette: &Palette) -> El {
+pub(crate) fn avatar(name: &str, size_pt: f32, palette: &Palette) -> El {
     el().key("lead").size(size_pt, size_pt).a11y_hidden().child(
         el().key("avatar")
             .absolute(0.0, AVATAR_TOP_PT)

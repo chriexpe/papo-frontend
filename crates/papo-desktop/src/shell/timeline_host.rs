@@ -125,6 +125,18 @@ impl TimelineHost for Shell {
         }
     }
 
+    fn chip_hovered(&mut self, key: TimelineKey, id: Uuid) {
+        if self.tabs.is_shown(key) {
+            self.load_reactors(key, id, None);
+        }
+    }
+
+    fn chip_menu_requested(&mut self, key: TimelineKey, id: Uuid, emoji: String, _tx: &mut Tx) {
+        if self.tabs.is_shown(key) {
+            self.open_chip_reactions(key, id, &emoji);
+        }
+    }
+
     fn link_menu_requested(&mut self, key: TimelineKey, url: String, at: [f32; 2], _tx: &mut Tx) {
         if self.tabs.is_shown(key) {
             self.open_link_menu(key, url, at);

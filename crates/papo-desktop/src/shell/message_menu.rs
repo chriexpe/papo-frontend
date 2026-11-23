@@ -144,6 +144,14 @@ impl Shell {
             };
             group.extend(pin.map(|pin| pin.with_shortcut(strings::shortcut_pin())));
         }
+        if actions.view_reactions {
+            group.push(item(
+                "menu-view-reactions",
+                strings::menu_view_reactions(),
+                &icons::SMILE,
+                MessageAction::ViewReactions,
+            ));
+        }
         push_group(&mut entries, group);
         let copies = copy::copies(&self.copy_source(open), id)?;
         push_group(&mut entries, link_items(key, &copies.links));
@@ -165,10 +173,7 @@ impl Shell {
     /// The menu's quick-reaction strip for message `id`; none before the
     /// account's quick reactions are known.
     fn menu_strip(&self, key: TimelineKey, id: Uuid, message: &papo_sdk::Message) -> Option<Strip> {
-        let chips = self
-            .outgoing(key.account)
-            .map(|outgoing| reaction_chips(message, &outgoing))
-            .unwrap_or_default();
+        let chips = reaction_chips(message, &self.outgoing(key.account));
         let emoji: Vec<(String, bool)> = self
             .quick_reactions(key.account)
             .iter()
@@ -231,6 +236,8 @@ impl Shell {
                 }
             }
             MessageAction::Delete => self.ask_delete(key, id),
+            // The menu turned into the list instead (`menu_picked`).
+            MessageAction::ViewReactions => {}
         }
     }
 
@@ -320,7 +327,7 @@ impl Shell {
     pub(super) fn reacts_with(&self, key: TimelineKey, id: Uuid, emoji: &str) -> Option<bool> {
         let open = self.tabs.shown().filter(|open| open.key == key)?;
         let message = held_message(open, id)?;
-        let outgoing = self.outgoing(key.account)?;
+        let outgoing = self.outgoing(key.account);
         let unicode = ReactionEmoji::Unicode(emoji.to_owned());
         let chip = reaction_chips(message, &outgoing)
             .into_iter()

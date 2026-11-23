@@ -85,6 +85,12 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn change_discarded(&mut self, key: TimelineKey, local: Uuid);
     /// A press on message `id`'s hover bar.
     fn bar_pressed(&mut self, key: TimelineKey, id: Uuid, press: BarPress, tx: &mut Tx);
+    /// The pointer came to rest on one of message `id`'s chips: who
+    /// reacted is read, for its hint.
+    fn chip_hovered(&mut self, key: TimelineKey, id: Uuid);
+    /// The reactions list was asked for beside message `id`'s chip for
+    /// `emoji`, by a secondary click on it.
+    fn chip_menu_requested(&mut self, key: TimelineKey, id: Uuid, emoji: String, tx: &mut Tx);
     /// A link's menu was asked for, by a secondary click on `url` at `at`,
     /// in window points.
     fn link_menu_requested(&mut self, key: TimelineKey, url: String, at: [f32; 2], tx: &mut Tx);

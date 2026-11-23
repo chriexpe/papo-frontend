@@ -67,11 +67,12 @@ impl Shell {
             .map_or_else(|| Arc::from([]), |activity| Arc::clone(&activity.quick))
     }
 
-    /// The account's outgoing queue, once posted.
-    pub(crate) fn outgoing(&self, account: AccountId) -> Option<Arc<OutgoingSnapshot>> {
+    /// The account's outgoing queue; empty until posted.
+    pub(crate) fn outgoing(&self, account: AccountId) -> Arc<OutgoingSnapshot> {
         self.activity
             .get(&account)
             .and_then(|activity| activity.outgoing.clone())
+            .unwrap_or_else(|| Reacting::unknown().outgoing)
     }
 
     /// What the shown timeline's rows read to draw their reactions and hover
@@ -81,9 +82,8 @@ impl Shell {
             return Reacting::unknown();
         };
         let account = open.key.account;
-        let unknown = Reacting::unknown();
         Reacting {
-            outgoing: self.outgoing(account).unwrap_or(unknown.outgoing),
+            outgoing: self.outgoing(account),
             quick: self.quick_reactions(account),
             capabilities: super::replies::channel_capabilities(open),
             stretched: self

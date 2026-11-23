@@ -49,6 +49,11 @@ line_icon!(
     "smile-plus"
 );
 line_icon!(
+    /// View reactions.
+    SMILE,
+    "smile"
+);
+line_icon!(
     /// More: the message menu.
     MORE,
     "more"
@@ -87,6 +92,11 @@ line_icon!(
     /// Open link.
     EXTERNAL,
     "external"
+);
+line_icon!(
+    /// Back: the reactions list to its menu.
+    ARROW_LEFT,
+    "arrow-left"
 );
 line_icon!(
     /// Close, cancel, clear.

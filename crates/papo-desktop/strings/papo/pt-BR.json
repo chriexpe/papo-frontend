@@ -208,5 +208,22 @@
   "action.more": "Mais",
   "action.bar": "Ações da mensagem",
   "reaction.label": "{{emoji}}, {{count}}",
-  "reaction.label_mine": "{{emoji}}, {{count}}, incluindo você"
+  "reaction.label_mine": "{{emoji}}, {{count}}, incluindo você",
+  "reaction.you": "Você",
+  "reaction.who_one": "{{a}} reagiu com {{emoji}}",
+  "reaction.who_two": "{{a}} e {{b}} reagiram com {{emoji}}",
+  "reaction.who_many.one": "{{a}}, {{b}} e mais {{count}} reagiram com {{emoji}}",
+  "reaction.who_many.other": "{{a}}, {{b}} e mais {{count}} reagiram com {{emoji}}",
+  "reaction.who_one_more.one": "{{a}} e mais {{count}} reagiram com {{emoji}}",
+  "reaction.who_one_more.other": "{{a}} e mais {{count}} reagiram com {{emoji}}",
+  "reaction.who_count.one": "{{count}} pessoa reagiu com {{emoji}}",
+  "reaction.who_count.other": "{{count}} pessoas reagiram com {{emoji}}",
+  "menu.view_reactions": "Ver reações",
+  "reactions.title": "Reações",
+  "reactions.back": "Voltar",
+  "reactions.all": "Todas",
+  "reactions.you": "você",
+  "reactions.tab": "{{emoji}}, {{count}}",
+  "reactions.loading": "Carregando quem reagiu",
+  "reactions.failed": "Não deu para carregar quem reagiu."
 }

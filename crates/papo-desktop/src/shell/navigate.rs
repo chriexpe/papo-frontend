@@ -11,7 +11,7 @@ use rune::{Drag, Key, KeyEvent, Phase, Tx};
 use super::Shell;
 use crate::channel_pane::{SERVER_CARD_KEY, SERVER_OPTIONS_KEY, channel_key};
 use crate::composer::COMPOSER_KEY;
-use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
+use crate::menu::{MenuAction, MenuItem, MessageAction, OpenMenu, Placement};
 use crate::rail::tile_key;
 use crate::remove_server;
 use crate::server_list::ServerList;
@@ -211,6 +211,16 @@ impl Shell {
     /// Closes the menu, gives the keyboard back to its trigger, so a popup
     /// the action opens returns there, and carries the action out.
     pub(crate) fn menu_picked(&mut self, action: MenuAction, tx: &mut Tx) {
+        // View reactions keeps the menu: it turns into the list.
+        if let MenuAction::Message {
+            key,
+            id,
+            action: MessageAction::ViewReactions,
+        } = action
+        {
+            self.show_reactions(key, id, tx);
+            return;
+        }
         if let Some(menu) = self.nav.menu.take() {
             tx.focus(menu.trigger, false);
         }

@@ -24,6 +24,12 @@ use crate::design::{
 };
 use crate::strings;
 
+/// The element key of message `id`'s chip for `emoji`, which its
+/// reactions list opens beside.
+pub(crate) fn chip_key(id: Uuid, emoji: &str) -> String {
+    format!("chip-{id}-{emoji}")
+}
+
 /// A chip's height, in points.
 const CHIP_HEIGHT_PT: f32 = 24.0;
 /// How strongly a chip waiting for its change is drawn.
@@ -33,8 +39,10 @@ const WAITING_OPACITY: f32 = 0.6;
 /// may toggle it now.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(super) struct Chip {
-    pub(super) chip: ReactionChip,
+    pub(super) reaction: ReactionChip,
     pub(super) toggles: bool,
+    /// Who reacted, once a page of who reacted is read.
+    pub(super) who: Option<String>,
 }
 
 /// The chips message `id` shows (Unicode emoji only, in the SDK's order),
@@ -94,7 +102,7 @@ fn chip_cell<S: TimelineHost>(
     chip: &Chip,
     palette: &Palette,
 ) -> Option<El> {
-    let ReactionEmoji::Unicode(emoji) = &chip.chip.emoji else {
+    let ReactionEmoji::Unicode(emoji) = &chip.reaction.emoji else {
         return None;
     };
     let ReactionChip {
@@ -102,7 +110,7 @@ fn chip_cell<S: TimelineHost>(
         mine,
         waiting,
         ..
-    } = chip.chip;
+    } = chip.reaction;
     let label = if mine {
         strings::reaction_label_mine(emoji, count)
     } else {
@@ -118,7 +126,7 @@ fn chip_cell<S: TimelineHost>(
         )
     };
     let mut cell = row()
-        .key(format!("chip-{emoji}"))
+        .key(chip_key(id, emoji))
         .h(CHIP_HEIGHT_PT)
         .px(SPACE_MD_PT)
         .gap(SPACE_SM_PT)
@@ -129,7 +137,23 @@ fn chip_cell<S: TimelineHost>(
         .role("button")
         .label(label)
         .child(text(emoji.clone()).font(TYPE_BODY))
-        .child(text(count.to_string()).font(TYPE_SMALL_MEDIUM).color(ink));
+        .child(text(count.to_string()).font(TYPE_SMALL_MEDIUM).color(ink))
+        // Resting on a chip reads who reacted, for its hint.
+        .on_hover_change(move |host: &mut S, hovered, tx| {
+            if hovered {
+                host.chip_hovered(key, id);
+            }
+            tx.live_only();
+        });
+    {
+        let emoji = emoji.clone();
+        cell = cell.on_secondary_press(move |host: &mut S, _press, tx| {
+            host.chip_menu_requested(key, id, emoji.clone(), tx);
+        });
+    }
+    if let Some(who) = &chip.who {
+        cell = cell.help(who.clone());
+    }
     if waiting {
         cell = cell.opacity(WAITING_OPACITY).busy(true);
     } else if chip.toggles {

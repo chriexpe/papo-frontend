@@ -4,7 +4,7 @@
 //! `menu.*`, `link_menu.*`, `reaction.*`, `reactions.*`, `pins.*` and
 //! `notice.*`.
 
-use super::{I18N, Key, catalog};
+use super::{I18N, Key, PluralKey, catalog};
 
 /// A reaction you added or removed did not happen.
 pub(crate) fn notice_reaction_failed() -> &'static str {
@@ -144,4 +144,96 @@ pub(crate) fn reaction_label(emoji: &str, count: u64) -> String {
 /// Your chip's spoken name: "🧀, 4, including you".
 pub(crate) fn reaction_label_mine(emoji: &str, count: u64) -> String {
     template!("reaction.label_mine", "emoji" => emoji, "count" => count.to_string())
+}
+
+/// You, in who reacted: "You and Lia reacted with 🧀".
+pub(crate) fn reaction_you() -> &'static str {
+    text!("reaction.you")
+}
+
+/// Who reacted with `emoji`, from the first names `names` (you first) and
+/// how many reacted in all, `count`.
+pub(crate) fn reaction_who(names: &[&str], count: u64, emoji: &str) -> String {
+    let listed = u64::try_from(names.len()).unwrap_or(u64::MAX);
+    let others = count.saturating_sub(listed);
+    match (names, others) {
+        ([], _) => {
+            const KEY: PluralKey = PluralKey::named(catalog::PLURALS, "reaction.who_count");
+            I18N.plural_format(KEY, count, &[("emoji", &emoji)])
+        }
+        ([a], 0) => template!("reaction.who_one", "a" => a, "emoji" => emoji),
+        ([a], _) => {
+            const KEY: PluralKey = PluralKey::named(catalog::PLURALS, "reaction.who_one_more");
+            I18N.plural_format(KEY, others, &[("a", a), ("emoji", &emoji)])
+        }
+        ([a, b], 0) => template!("reaction.who_two", "a" => a, "b" => b, "emoji" => emoji),
+        ([a, b, ..], _) => {
+            const KEY: PluralKey = PluralKey::named(catalog::PLURALS, "reaction.who_many");
+            I18N.plural_format(KEY, others, &[("a", a), ("b", b), ("emoji", &emoji)])
+        }
+    }
+}
+
+/// View reactions, in the message menu.
+pub(crate) fn menu_view_reactions() -> &'static str {
+    text!("menu.view_reactions")
+}
+
+/// The reactions list's title.
+pub(crate) fn reactions_title() -> &'static str {
+    text!("reactions.title")
+}
+
+/// ← on the reactions list: back to the menu.
+pub(crate) fn reactions_back() -> &'static str {
+    text!("reactions.back")
+}
+
+/// The reactions list's tab of everyone.
+pub(crate) fn reactions_all() -> &'static str {
+    text!("reactions.all")
+}
+
+/// The mark beside your own row in the reactions list.
+pub(crate) fn reactions_you() -> &'static str {
+    text!("reactions.you")
+}
+
+/// An emoji's tab, spoken: "🧀, 4".
+pub(crate) fn reactions_tab(emoji: &str, count: u64) -> String {
+    template!("reactions.tab", "emoji" => emoji, "count" => count.to_string())
+}
+
+/// The list while a page of who reacted loads.
+pub(crate) fn reactions_loading() -> &'static str {
+    text!("reactions.loading")
+}
+
+/// The list when who reacted could not be loaded.
+pub(crate) fn reactions_failed() -> &'static str {
+    text!("reactions.failed")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reaction_who;
+
+    #[test]
+    fn who_reacted_names_the_first_two_and_counts_the_rest() {
+        assert_eq!(reaction_who(&[], 4, "🧀"), "4 people reacted with 🧀");
+        assert_eq!(reaction_who(&[], 1, "🧀"), "1 person reacted with 🧀");
+        assert_eq!(reaction_who(&["Lia"], 1, "🧀"), "Lia reacted with 🧀");
+        assert_eq!(
+            reaction_who(&["Lia"], 2, "🧀"),
+            "Lia and 1 other reacted with 🧀"
+        );
+        assert_eq!(
+            reaction_who(&["You", "Lia"], 2, "🧀"),
+            "You and Lia reacted with 🧀"
+        );
+        assert_eq!(
+            reaction_who(&["Lia", "Yuki"], 4, "🧀"),
+            "Lia, Yuki and 2 others reacted with 🧀"
+        );
+    }
 }

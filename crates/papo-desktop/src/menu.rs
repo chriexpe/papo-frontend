@@ -73,8 +73,21 @@ pub(crate) enum MessageAction {
     CopyText,
     CopyMarkdown,
     CopyId,
+    /// The menu turns into the reactions list.
+    ViewReactions,
     /// Ask to delete it.
     Delete,
+}
+
+/// The reactions list a menu shows in place of its entries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReactionsView {
+    pub(crate) key: TimelineKey,
+    pub(crate) id: Uuid,
+    /// The tab: one emoji's people, or everyone's.
+    pub(crate) filter: Option<papo_sdk_ui::operations::ReactionEmoji>,
+    /// Opened from a chip, not the menu: Escape closes it.
+    pub(crate) from_chip: bool,
 }
 
 /// Where an open menu sits.
@@ -186,6 +199,8 @@ pub(crate) struct OpenMenu {
     pub(crate) entries: Vec<Entry>,
     /// Its width, in points.
     pub(crate) width_pt: f32,
+    /// The reactions list it turned into, while it shows one.
+    pub(crate) reactions: Option<ReactionsView>,
 }
 
 /// The element key of the open menu.
@@ -216,6 +231,7 @@ impl OpenMenu {
             trigger,
             entries,
             width_pt,
+            reactions: None,
         }
     }
 
@@ -228,9 +244,13 @@ impl OpenMenu {
     }
 }
 
-/// Draws `menu` over everything, anchored by its placement. Escape and a
-/// click outside close it; Return or a click picks an item.
-pub(crate) fn view(menu: &OpenMenu, palette: &Palette, cx: &Cx<Shell>) -> El {
+/// The reactions list's width, in points (`docs/design.md` §10).
+pub(crate) const REACTIONS_WIDTH_PT: f32 = 340.0;
+
+/// Draws `menu` over everything, anchored by its placement: its entries,
+/// or `body` in their place (the reactions list). Escape and a click
+/// outside close it; Return or a click picks an item.
+pub(crate) fn view(menu: &OpenMenu, body: Option<El>, palette: &Palette, cx: &Cx<Shell>) -> El {
     let (anchor, side, align, width) = match &menu.placement {
         Placement::GrowFrom(key) => {
             let width = cx.layout_size(key).map_or(menu.width_pt, |[w, _]| w);
@@ -255,6 +275,15 @@ pub(crate) fn view(menu: &OpenMenu, palette: &Palette, cx: &Cx<Shell>) -> El {
         .iter()
         .enumerate()
         .map(|(index, entry)| line(entry, Some(index) == first, palette));
+    let (width, role) = if body.is_some() {
+        (REACTIONS_WIDTH_PT, "dialog")
+    } else {
+        (width, "menu")
+    };
+    let content: Vec<El> = match body {
+        Some(body) => vec![body],
+        None => lines.collect(),
+    };
     col()
         .key(MENU_KEY)
         .w(width)
@@ -262,11 +291,12 @@ pub(crate) fn view(menu: &OpenMenu, palette: &Palette, cx: &Cx<Shell>) -> El {
         .radius(RADIUS_PILL_PT)
         .fill(palette.surface_pill)
         .border(PILL_OUTLINE_PT, palette.line_pill)
-        .role("menu")
+        .role(role)
         .focus_group()
         .modal(true, Shell::close_menu)
+        .on_key(|shell: &mut Shell, event: &rune::KeyEvent, tx| shell.menu_escape(event, tx))
         .anchored_fit(anchor, side, align, SPACE_SM_PT)
-        .children(lines)
+        .children(content)
 }
 
 /// The zero-size point a menu beside the pointer hangs from, while one is

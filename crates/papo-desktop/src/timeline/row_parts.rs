@@ -6,7 +6,9 @@
 use papo_sdk::{Message, Operation, Uuid};
 use papo_sdk_ui::message_content::MessageContent;
 use papo_sdk_ui::operations::ReactionEmoji;
-use papo_sdk_ui::{ReplyOriginal, attention, message_actions, pinned, reaction_chips};
+use papo_sdk_ui::{
+    ReactionChip, ReplyOriginal, attention, display_name, message_actions, pinned, reaction_chips,
+};
 
 use super::OpenTimeline;
 use super::changes::ChangeState;
@@ -16,11 +18,13 @@ use super::grouping::continues;
 use super::hover_bar::{BAR_REACTIONS, Bar};
 use super::message_row::{author_name, created_us};
 use super::reactions::Chip;
+use super::reactors::ReactorList;
 use super::reading::Boundary;
 use super::replies::original_text;
 use super::reply_line::ReplyLine;
 use super::view::Style;
 use crate::design::Density;
+use crate::strings;
 
 /// A row's background (§4, Highlights: one per row, the strongest reason).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -174,7 +178,7 @@ pub(super) fn parts<'a>(
             Origin::Echo(_) => None,
         },
         chips: match origin {
-            Origin::History(_) => chips(message, style),
+            Origin::History(_) => chips(open, id, message, style),
             Origin::Echo(_) => Vec::new(),
         },
         add_chip: false,
@@ -234,14 +238,42 @@ fn bar(
     }
 }
 
-/// Message's reaction chips, and whether this account may toggle each now.
-fn chips(message: &Message, style: &Style) -> Vec<Chip> {
+/// Message `id`'s reaction chips, whether this account may toggle each
+/// now, and who reacted with each, once read.
+fn chips(open: &OpenTimeline, id: Uuid, message: &Message, style: &Style) -> Vec<Chip> {
     let reacting = &style.reacting;
-    reaction_chips(message, &reacting.outgoing)
-        .into_iter()
+    let chips = reaction_chips(message, &reacting.outgoing);
+    let list = open.reactors.get(id, &chips).filter(|list| list.started);
+    chips
+        .iter()
         .map(|chip| Chip {
             toggles: chip.can_toggle(reacting.capabilities),
-            chip,
+            who: list.and_then(|list| who(open, list, chip)),
+            reaction: chip.clone(),
         })
         .collect()
+}
+
+/// "Lia, Yuki and 2 others reacted with 🧀": the first two people read
+/// whose names are known (you first), and the chip's count.
+fn who(open: &OpenTimeline, list: &ReactorList, chip: &ReactionChip) -> Option<String> {
+    let ReactionEmoji::Unicode(emoji) = &chip.emoji else {
+        return None;
+    };
+    let resources = open.resources.as_deref();
+    let names: Vec<String> = list
+        .reactors
+        .rows(Some(&chip.emoji))
+        .iter()
+        .filter_map(|reactor| {
+            if reactor.you {
+                return Some(strings::reaction_you().to_owned());
+            }
+            let user = resources?.users.get(reactor.user)?;
+            display_name(user.nickname.as_deref(), user.username.as_deref()).map(str::to_owned)
+        })
+        .take(2)
+        .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    Some(strings::reaction_who(&names, chip.count, emoji))
 }

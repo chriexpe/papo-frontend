@@ -238,6 +238,8 @@ mod message_keys;
 mod message_menu;
 mod navigate;
 mod outgoing;
+mod reactions_list;
+mod reactors;
 mod reading;
 mod replies;
 mod sign_in_flow;

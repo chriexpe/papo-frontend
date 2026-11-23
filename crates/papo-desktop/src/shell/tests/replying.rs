@@ -16,16 +16,21 @@ use crate::timeline::rows::message_key;
 use crate::timeline::{OpenTimeline, TimelineKey};
 
 /// Someone else in the conversation.
-fn lia() -> Uuid {
+pub(super) fn lia() -> Uuid {
     Uuid::from_u128(0x2000)
 }
 
 /// Message `n`'s ID.
-fn message_id(n: u128) -> Uuid {
+pub(super) fn message_id(n: u128) -> Uuid {
     Uuid::from_u128(0x3000 + n)
 }
 
-fn item(n: u128, author: Uuid, text: &str, reply: Option<ReplyOriginal>) -> Arc<TimelineItem> {
+pub(super) fn item(
+    n: u128,
+    author: Uuid,
+    text: &str,
+    reply: Option<ReplyOriginal>,
+) -> Arc<TimelineItem> {
     let id = message_id(n);
     Arc::new(TimelineItem::Message {
         id,
@@ -45,7 +50,7 @@ fn item(n: u128, author: Uuid, text: &str, reply: Option<ReplyOriginal>) -> Arc<
 
 /// [`writing`] `draft` in a conversation of five messages, yours at 2 and
 /// 4 and Lia's at 1, 3 and 5, with a roster and the channel's permissions.
-fn conversation(draft: &str) -> Runtime<Shell> {
+pub(super) fn conversation(draft: &str) -> Runtime<Shell> {
     let mut rt = writing(draft);
     rt.update(|shell, _tx| {
         let key = shell.composer.shown().unwrap().0;

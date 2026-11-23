@@ -143,6 +143,14 @@ impl TimelineHost for Host {
         self.controls.push("bar");
     }
 
+    fn chip_hovered(&mut self, _key: TimelineKey, _id: Uuid) {
+        self.controls.push("chip-hovered");
+    }
+
+    fn chip_menu_requested(&mut self, _key: TimelineKey, _id: Uuid, _emoji: String, _tx: &mut Tx) {
+        self.controls.push("chip-menu");
+    }
+
     fn link_menu_requested(
         &mut self,
         _key: TimelineKey,
