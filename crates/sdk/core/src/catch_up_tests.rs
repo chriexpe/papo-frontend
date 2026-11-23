@@ -55,6 +55,7 @@ pub(super) fn snapshot(start: u128, end: u128, authors: impl Fn(u128) -> Uuid) -
         empty_complete: false,
         server_live_complete: true,
         live_arrival_start: None,
+        pins: None,
     }
 }
 

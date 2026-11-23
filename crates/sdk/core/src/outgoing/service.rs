@@ -315,6 +315,7 @@ impl OutgoingService {
         .await
     }
     /// Explicitly retries Failed work, or Unknown with `AcceptPossibleDuplicate`. Never runs automatically.
+    /// A refused or unknown reaction is never retried; discard it.
     /// # Errors
     /// Returns duplicate-risk acknowledgement, invalid transition, revoked or durable failures.
     pub async fn retry(&self, local: Uuid, decision: RetryDecision) -> Result<(), OutgoingError> {
@@ -333,6 +334,14 @@ impl OutgoingService {
             if !matches!(
                 operation.state,
                 OperationState::Failed | OperationState::Unknown
+            ) {
+                return Err(OutgoingError::InvalidState);
+            }
+            // An unresolved reaction is discard-only: a later reaction on the same emoji may
+            // already stand, and resending this one would undo it.
+            if matches!(
+                operation.kind.as_ref(),
+                super::OperationKind::Reaction { .. }
             ) {
                 return Err(OutgoingError::InvalidState);
             }

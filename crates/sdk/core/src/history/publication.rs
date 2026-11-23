@@ -30,6 +30,7 @@ pub(super) struct Publication {
     pub(super) payload_bytes: usize,
     counters: Arc<super::diagnostics::Counters>,
     updates: Option<watch::Sender<HistoryUpdate>>,
+    pins: super::pins::PinPublication,
 }
 
 #[derive(Clone)]
@@ -111,8 +112,17 @@ impl Publication {
             state.model.order.is_empty() && state.model.empty_generation == generation.get();
         let gaps =
             super::snapshot_query::published_gaps(&chunks, generation.get(), empty_complete)?;
+        let pins = self
+            .pins
+            .publish(&state.model, generation.get(), |id, revision| {
+                self.payloads
+                    .get(&id)
+                    .filter(|payload| payload.revision == revision)
+                    .map(|payload| Arc::clone(&payload.message))
+            });
         let snapshot = Arc::new(HistorySnapshot {
             version,
+            pins,
             generation,
             messages: self.messages.clone(),
             tombstones: self.tombstones.clone(),
@@ -309,6 +319,8 @@ impl Publication {
             empty_complete: false,
             server_live_complete: false,
             live_arrival_start: None,
+            // Pins fetched in the previous generation are not current in this one.
+            pins: None,
             ..(**previous).clone()
         });
         self.snapshot = Some(Arc::clone(&snapshot));

@@ -6,6 +6,8 @@ mod expressions;
 mod fixture;
 #[path = "outgoing_cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "outgoing_cases/reactions.rs"]
+mod reactions;
 #[path = "outgoing_cases/staging.rs"]
 mod staging;
 #[path = "outgoing_cases/streaming.rs"]

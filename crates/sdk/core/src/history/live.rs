@@ -54,6 +54,9 @@ pub(crate) async fn apply(
         state
             .ensure(&connection.cache, *channel.id.as_bytes(), generation)
             .await?;
+        // Reaction and pin events name no channel: only a channel holding the message takes
+        // one. A pin of a message no channel holds waits for the next pin list fetch
+        // (`HistorySnapshot::pins`).
         if unscoped_id.is_some_and(|id| !state.model.entries.contains_key(&id)) {
             continue;
         }
@@ -225,6 +228,32 @@ pub(crate) async fn settle(
     }
     let settled = mutate(session, generation, &channel, |model| {
         model.event(event, generation.get())
+    })
+    .await;
+    if settled.is_err() && channel.check().is_err() {
+        return Ok(());
+    }
+    settled
+}
+
+/// Settles a confirmed reaction change of this account's on `message` into history, with the
+/// same channel rules as `settle`. Totals are left to the backend's reaction events.
+pub(crate) async fn settle_own_reaction(
+    session: &crate::Session,
+    generation: Generation,
+    channel_id: Uuid,
+    message: Uuid,
+    change: super::own_reactions::OwnReaction,
+) -> Result<(), ClientError> {
+    session.inner.epochs.validate(generation)?;
+    let Some(channel) = session.inner.history.live_channel(channel_id).await else {
+        return Ok(());
+    };
+    if channel.is_closed() {
+        return Ok(());
+    }
+    let settled = mutate(session, generation, &channel, |model| {
+        model.own_reaction(*message.as_bytes(), change)
     })
     .await;
     if settled.is_err() && channel.check().is_err() {

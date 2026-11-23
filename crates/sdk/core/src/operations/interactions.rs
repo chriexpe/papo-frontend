@@ -3,7 +3,10 @@
 use super::{OperationError, OperationReceipt, Operations, Refresh};
 use crate::{AccountId, Generated, Generation, HistoryOrder, Uuid};
 use papo_api::Cursor;
-pub use papo_api::wire::{MessageReactionGroup, PinnedMessage};
+pub use papo_api::wire::{
+    MessageReactionGroup, MessageReactionSummary, MessageReactionUser, MessageUserReaction,
+    PinnedMessage,
+};
 
 /// Exact continuation derived from all raw grouped reaction users, not the last displayed group.
 #[derive(Clone)]
@@ -12,6 +15,7 @@ pub struct ReactorCursor {
     generation: Generation,
     channel: Uuid,
     message: Uuid,
+    order: HistoryOrder,
     created_at: String,
     id: Uuid,
 }
@@ -20,9 +24,30 @@ pub struct ReactorCursor {
 pub struct ReactorPage {
     /// Groups retain backend identity and user membership; counts are not whole-message totals.
     pub groups: Vec<MessageReactionGroup>,
-    /// Descending exact tuple boundary, absent only when the backend reports exhaustion.
+    /// Exact tuple boundary in the page's order, absent only when the backend reports exhaustion.
     pub next: Option<ReactorCursor>,
 }
+impl ReactorPage {
+    /// A page for isolated projection tests: `more` stands in for a continuation that no
+    /// request can use.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn for_test(groups: Vec<MessageReactionGroup>, more: bool) -> Self {
+        Self {
+            groups,
+            next: more.then(|| ReactorCursor {
+                account: AccountId::new(crate::ServerId::for_test(), Uuid::nil()),
+                generation: Generation::for_test(0),
+                channel: Uuid::nil(),
+                message: Uuid::nil(),
+                order: HistoryOrder::Asc,
+                created_at: String::new(),
+                id: Uuid::nil(),
+            }),
+        }
+    }
+}
+
 impl Operations {
     /// Pins a known backend message. Backend pin and channel gates remain authoritative.
     /// # Errors
@@ -52,14 +77,18 @@ impl Operations {
         )
         .await
     }
-    /// Lists reaction users in descending backend tuple order, grouped only after raw pagination.
+    /// Lists reaction users in backend `(created_at, id)` tuple `order` (ascending: the order
+    /// people reacted), all emoji together, at most 100 reactions a page, grouped only after
+    /// raw pagination. A continuation keeps the order its first page was asked in.
     /// Human reaction mutations use `OutgoingService::enqueue(OperationKind::Reaction)`.
     /// # Errors
-    /// Rejects foreign/stale cursor identities, malformed boundaries or typed backend failure.
+    /// Rejects foreign/stale cursor identities (or another order), malformed boundaries or
+    /// typed backend failure.
     pub async fn reaction_users(
         &self,
         channel: Uuid,
         message: Uuid,
+        order: HistoryOrder,
         cursor: Option<ReactorCursor>,
     ) -> Result<Generated<ReactorPage>, OperationError> {
         let account = self.session.account();
@@ -69,23 +98,25 @@ impl Operations {
                 || cursor.generation != generation
                 || cursor.channel != channel
                 || cursor.message != message
+                || cursor.order != order
         }) {
             return Err(OperationError::InvalidInput);
         }
         let boundary = cursor.clone();
         let result = self
             .read(move |rest| async move {
+                // The order goes as `message_reactions`' own parameter, first page included.
                 let wire = boundary.as_ref().map(|cursor| Cursor {
                     since: &cursor.created_at,
                     last_id: None,
-                    order: Some(HistoryOrder::Desc),
+                    order: None,
                 });
                 let id = boundary.as_ref().map(|cursor| cursor.id.to_string());
                 let wire = wire.map(|mut cursor| {
                     cursor.last_id = id.as_deref();
                     cursor
                 });
-                rest.message_reactions(channel, message, wire.as_ref())
+                rest.message_reactions(channel, message, wire.as_ref(), order)
                     .await
             })
             .await?;
@@ -103,7 +134,7 @@ impl Operations {
         }
         let groups = result.value.reactions.ok_or(OperationError::InvalidData)?;
         let more = result.value.has_more.ok_or(OperationError::InvalidData)?;
-        let last = last_boundary(&groups, cursor.as_ref())?;
+        let last = last_boundary(&groups, order, cursor.as_ref())?;
         let next = if more {
             let (created_at, id) = last.ok_or(OperationError::InvalidData)?;
             Some(ReactorCursor {
@@ -111,6 +142,7 @@ impl Operations {
                 generation,
                 channel,
                 message,
+                order,
                 created_at,
                 id,
             })
@@ -125,8 +157,10 @@ impl Operations {
     }
 }
 
+/// The page's last reaction in `order`: every reaction must lie strictly past `cursor`.
 fn last_boundary(
     groups: &[MessageReactionGroup],
+    order: HistoryOrder,
     cursor: Option<&ReactorCursor>,
 ) -> Result<Option<(String, Uuid)>, OperationError> {
     let boundary = cursor
@@ -146,17 +180,19 @@ fn last_boundary(
                 .as_ref()
                 .ok_or(OperationError::InvalidData)?;
             let point = tuple(time, id)?;
-            if !ids.insert(id)
-                || ids.len() > 100
-                || boundary.as_ref().is_some_and(|boundary| point >= *boundary)
-            {
+            // Past `a` in `order`: after it ascending, before it descending.
+            let past = |a: &_| match order {
+                HistoryOrder::Asc => point > *a,
+                HistoryOrder::Desc => point < *a,
+            };
+            if !ids.insert(id) || ids.len() > 100 || boundary.as_ref().is_some_and(|b| !past(b)) {
                 return Err(OperationError::InvalidData);
             }
             if last
                 .as_ref()
                 .map(|(time, id)| tuple(time, *id))
                 .transpose()?
-                .is_none_or(|current| point < current)
+                .is_none_or(|current| past(&current))
             {
                 last = Some((time.clone(), id));
             }
@@ -194,7 +230,9 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let (time, id) = last_boundary(&groups, None).unwrap().unwrap();
+        let (time, id) = last_boundary(&groups, HistoryOrder::Desc, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(id, Uuid::from_u128(1));
         assert_eq!(time, "2030-01-01T00:00:00.123456+03:00");
     }

@@ -123,6 +123,7 @@ pub(super) fn publish(model: &Model, generation: u64) -> HistorySnapshot {
         empty_complete,
         server_live_complete: false,
         live_arrival_start: None,
+        pins: None,
     }
 }
 

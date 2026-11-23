@@ -65,7 +65,7 @@ pub async fn prove(owner: &Session, member: &Session, channel: Uuid, message: Uu
     wait_sent(owner, local).await?;
     let page = owner
         .operations()
-        .reaction_users(channel, message, None)
+        .reaction_users(channel, message, papo_sdk::HistoryOrder::Asc, None)
         .await?
         .value;
     assert!(page.next.is_none());

@@ -26,6 +26,7 @@ fn snapshot(messages: Vec<Arc<Message>>, tombstones: &[u128]) -> HistorySnapshot
         empty_complete: false,
         server_live_complete: false,
         live_arrival_start: None,
+        pins: None,
     }
 }
 

@@ -110,6 +110,7 @@ impl Model {
             if let Some(entry) = self.entries.get_mut(&id) {
                 entry.message = None;
                 entry.deleted = true;
+                self.pin_ranks.remove(&id);
                 entry.timeline = false;
                 entry.revision = revision;
             }
@@ -163,9 +164,6 @@ impl Model {
                 incoming.content.clone_from(&existing.content);
                 incoming.edited_at.clone_from(&existing.edited_at);
             }
-            if entry.reaction_revision > ticket.revision {
-                incoming.reactions.clone_from(&existing.reactions);
-            }
             if entry.embeds_revision > ticket.revision {
                 incoming.embeds.clone_from(&existing.embeds);
             }
@@ -187,13 +185,22 @@ impl Model {
         {
             incoming.embeds = Some(embeds.clone());
         }
-        if entry.reaction_revision > ticket.revision {
-            for total in &entry.pending_reactions {
-                super::mutations::replace_total(
-                    incoming.reactions.get_or_insert_with(Vec::new),
-                    total,
-                );
-            }
+        // A live total or own change made after the page was asked for stands over it; one
+        // made before is in the page, so it is dropped.
+        entry
+            .pending_reactions
+            .retain(|pending| pending.revision > ticket.revision);
+        for pending in &entry.pending_reactions {
+            super::mutations::replace_total(
+                incoming.reactions.get_or_insert_with(Vec::new),
+                &pending.total,
+            );
+        }
+        entry
+            .own_reactions
+            .retain(|change| change.revision > ticket.revision);
+        for change in &entry.own_reactions {
+            change.apply(&mut incoming);
         }
         entry.message = Some(incoming);
         entry.point = Some(point.clone());

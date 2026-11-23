@@ -26,9 +26,13 @@ mod model;
 mod mutations;
 pub(crate) mod operation_receipts;
 mod ordering;
+pub(crate) mod own_reactions;
 mod persisted_layout;
 mod persistence;
+mod pins;
 mod publication;
+#[cfg(test)]
+mod reaction_pin_tests;
 mod receipt;
 pub(crate) mod reconnect;
 #[cfg(test)]

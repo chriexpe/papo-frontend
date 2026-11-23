@@ -195,6 +195,8 @@ pub(super) fn item_actions(
             let actions = message_actions(
                 message,
                 pending.as_deref(),
+                // Pin actions come with the pins panel.
+                None,
                 user,
                 channel_capabilities(open),
             );
