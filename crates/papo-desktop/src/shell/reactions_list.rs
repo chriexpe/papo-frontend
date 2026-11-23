@@ -21,14 +21,14 @@ use rune::{El, GrowthSpec, Key, KeyEvent, ScrollSpec, Tx, col, el, icon, row, te
 use super::Shell;
 use crate::composer::COMPOSER_KEY;
 use crate::design::{
-    FOCUS_RING_PT, PILL_AVATAR_PT, PILL_BUTTON_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT,
-    ROW_ICON_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM,
-    TYPE_TITLE,
+    FOCUS_RING_PT, PILL_AVATAR_PT, PILL_BUTTON_PT, PILL_OUTLINE_PT, Palette, RADIUS_AVATAR_PT,
+    RADIUS_CONTROL_PT, ROW_ICON_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL,
+    TYPE_SMALL_MEDIUM, TYPE_TITLE,
 };
 use crate::menu::{OpenMenu, Placement, ReactionsView};
 use crate::strings;
+use crate::timeline::TimelineKey;
 use crate::timeline::reactions::chip_key;
-use crate::timeline::{TimelineKey, avatar};
 
 /// A row's height, in points.
 const ROW_PT: f32 = 36.0;
@@ -336,7 +336,7 @@ fn reactor_row(reactor: &Reactor, name: &str, all: bool, palette: &Palette) -> E
         .gap(SPACE_MD_PT)
         .center_y()
         .role("listitem")
-        .child(avatar(name, PILL_AVATAR_PT, palette))
+        .child(person_avatar(name, palette))
         .child(
             text(name.to_owned())
                 .font(TYPE_BODY)
@@ -365,6 +365,21 @@ fn reactor_row(reactor: &Reactor, name: &str, all: bool, palette: &Palette) -> E
             .child(text(emoji).font(TYPE_BODY));
     }
     line
+}
+
+/// A person's 24 px avatar, centred on its row (the timeline's sits lower,
+/// on its message's first line).
+fn person_avatar(name: &str, palette: &Palette) -> El {
+    el().size(PILL_AVATAR_PT, PILL_AVATAR_PT)
+        .radius(RADIUS_AVATAR_PT)
+        .center()
+        .fill(palette.surface_hover)
+        .a11y_hidden()
+        .child(
+            text(crate::rail::initial(name))
+                .font(TYPE_CAPTION)
+                .color(palette.text_secondary),
+        )
 }
 
 /// A row while its page is on its way.

@@ -49,7 +49,7 @@ pub(crate) use self::anchor::scroll_to;
 use self::anchor::{Anchor, Tracker};
 use self::changes::Changes;
 use self::echoes::Echoes;
-pub(crate) use self::message_row::{author_name, avatar, created_us};
+pub(crate) use self::message_row::{author_name, created_us};
 use self::paging::Paging;
 pub(crate) use self::paging::Request;
 use self::reading::Reading;
