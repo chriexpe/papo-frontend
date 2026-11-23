@@ -100,6 +100,8 @@ pub(crate) struct Shell {
     pinning: message_menu::Pinning,
     /// The hover bar stretched into its strip, while one is.
     stretched: Option<activity::Stretched>,
+    /// The pins panel, while open.
+    pins_panel: Option<pins::PinsPanel>,
 }
 
 /// The reorder on its way to the SDK, and the newest one waiting for it.
@@ -164,6 +166,7 @@ impl Default for Shell {
             notice: None,
             pinning: message_menu::Pinning::default(),
             stretched: None,
+            pins_panel: None,
         }
     }
 }
@@ -238,6 +241,8 @@ mod message_keys;
 mod message_menu;
 mod navigate;
 mod outgoing;
+pub(crate) mod pins;
+mod pins_panel;
 mod reactions_list;
 mod reactors;
 mod reading;

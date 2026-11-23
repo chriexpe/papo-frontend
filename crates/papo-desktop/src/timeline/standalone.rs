@@ -1,5 +1,5 @@
 //! A message on its own (`docs/design.md` §10, StandaloneMessage): outside
-//! the conversation (the delete confirmation, later pins and search), with
+//! the conversation (the delete confirmation, pins, later search), with
 //! its header always shown and no grouping, its time with its date ("Today,
 //! 21:34"), and its body from the conversation's own renderer.
 
@@ -35,6 +35,18 @@ pub(crate) fn standalone<S: TimelineHost>(
         _ => None,
     })?;
     Some(draw::<S>(open, id, message, content, style))
+}
+
+/// `message` on its own, from its own content (a pin the conversation
+/// may not hold: pins draw from the SDK's pin list).
+pub(crate) fn standalone_message<S: TimelineHost>(
+    open: &OpenTimeline,
+    id: Uuid,
+    message: &Message,
+    content: &MessageContent,
+    style: &Style,
+) -> El {
+    draw::<S>(open, id, message, content, style)
 }
 
 fn draw<S: TimelineHost>(

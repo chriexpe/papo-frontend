@@ -30,6 +30,9 @@ impl Shell {
         let primary_only = (key.mods.cmd || key.mods.ctrl) && !key.mods.alt && !key.mods.shift;
         match key.key {
             Key::Escape if bare => {
+                if self.escape_on_top() {
+                    return true;
+                }
                 if let Some(effects) = self.composer.cancel_edit() {
                     self.run_composer(effects, Some(tx));
                     return true;

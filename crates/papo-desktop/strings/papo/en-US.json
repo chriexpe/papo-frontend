@@ -225,5 +225,12 @@
   "reactions.you": "you",
   "reactions.tab": "{{emoji}}, {{count}}",
   "reactions.loading": "Loading who reacted",
-  "reactions.failed": "Couldn't load who reacted."
+  "reactions.failed": "Couldn't load who reacted.",
+  "pins.title": "Pinned messages",
+  "pins.empty": "No pinned messages yet",
+  "pins.unpin": "Unpin",
+  "pins.jump": "Jump to message",
+  "pins.loading": "Loading pinned messages",
+  "shortcut.pins": "Ctrl+P",
+  "header.actions": "Conversation actions"
 }

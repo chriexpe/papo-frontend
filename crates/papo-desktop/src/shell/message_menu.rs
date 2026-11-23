@@ -287,7 +287,15 @@ impl Shell {
             PinChange::Unpin
         };
         let allowed = item_actions(open, id).and_then(|(actions, _)| actions.pin);
-        if allowed != Some(wanted) || !self.pinning.0.insert((key, id)) {
+        if allowed == Some(wanted) {
+            self.send_pin(key, id, pin);
+        }
+    }
+
+    /// Pins message `id` (`pin`) or unpins it through the SDK, unless a
+    /// change of it is already on its way; a refusal is said.
+    pub(super) fn send_pin(&mut self, key: TimelineKey, id: Uuid, pin: bool) {
+        if !self.pinning.0.insert((key, id)) {
             return;
         }
         let Some(sdk) = &self.sdk else {

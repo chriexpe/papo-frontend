@@ -18,6 +18,7 @@ mod links;
 mod message_menu;
 mod navigation;
 mod outgoing;
+mod pins;
 mod replying;
 mod timeline;
 mod writing;

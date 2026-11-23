@@ -59,7 +59,17 @@ impl Shell {
     /// Keys no control took: Alt+↑/↓ between channels, then Ctrl+A in the
     /// timeline.
     pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
-        self.channel_step_key(key, tx) || self.select_message_key(key, tx)
+        self.channel_step_key(key, tx) || self.select_message_key(key, tx) || self.pins_key(key, tx)
+    }
+
+    /// Ctrl+P: the pins panel opens, stretches back, or closes.
+    fn pins_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        if !key.is_command('p') || mods.shift || mods.alt || self.popup_shown() {
+            return false;
+        }
+        self.pins_pressed(tx);
+        true
     }
 
     /// Alt+↑ or Alt+↓ (Alt alone: Alt+⇧ is the unread channels'; macOS's

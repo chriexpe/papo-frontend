@@ -214,6 +214,41 @@ pub(crate) fn reactions_failed() -> &'static str {
     text!("reactions.failed")
 }
 
+/// The pins panel's title, and the pins button's name.
+pub(crate) fn pins_title() -> &'static str {
+    text!("pins.title")
+}
+
+/// The pins panel with nothing pinned.
+pub(crate) fn pins_empty() -> &'static str {
+    text!("pins.empty")
+}
+
+/// A pin's Unpin.
+pub(crate) fn pins_unpin() -> &'static str {
+    text!("pins.unpin")
+}
+
+/// A pin's spoken action: opening it in the conversation.
+pub(crate) fn pins_jump() -> &'static str {
+    text!("pins.jump")
+}
+
+/// The pins panel while the pins are read.
+pub(crate) fn pins_loading() -> &'static str {
+    text!("pins.loading")
+}
+
+/// The pins panel's key.
+pub(crate) fn shortcut_pins() -> &'static str {
+    text!("shortcut.pins")
+}
+
+/// The actions pill's spoken name.
+pub(crate) fn header_actions() -> &'static str {
+    text!("header.actions")
+}
+
 #[cfg(test)]
 mod tests {
     use super::reaction_who;

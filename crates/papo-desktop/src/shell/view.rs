@@ -48,7 +48,7 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 .padding(SPACE_LG_PT)
                 .child(sign_in::screen(flow, &shell.fields, &palette)),
             _ => {
-                let mut app = app(shell, theme, &palette);
+                let mut app = app(shell, theme, &palette, cx);
                 if let Some(server) = connected {
                     app = app.child(connected_pill(server, &palette));
                 }
@@ -132,7 +132,7 @@ fn timeline_style(shell: &Shell, theme: Theme, palette: &Palette) -> timeline::S
 
 /// The rail, the channel pane and the conversation with the composer pill
 /// at its foot.
-fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
+fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
     let channel = shell
         .nav
         .selected()
@@ -153,14 +153,20 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
     };
     let composer = composer::pill(&shell.composer, &context, palette);
     let style = timeline_style(shell, theme, palette);
+    let header = super::pins_panel::header(shell, channel, palette);
+    let panel = super::pins_panel::panel(shell, &style, cx);
     let conversation = col()
         .key("conversation")
         .grow(1.0)
         .min_w(0.0)
         .h_full()
         .fill(palette.surface_content)
+        // A press outside the pins panel shrinks it to the opened pin.
+        .on_background_press(Shell::pins_outside)
+        .children(header)
         .child(timeline::view(shell, style))
-        .child(col().w_full().padding(SPACE_LG_PT).child(composer));
+        .child(col().w_full().padding(SPACE_LG_PT).child(composer))
+        .children(panel);
     let edge = || el().w(PANE_EDGE_PT).h_full().fill(palette.line_subtle);
     row()
         .w_full()

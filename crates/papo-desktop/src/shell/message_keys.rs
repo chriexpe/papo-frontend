@@ -71,7 +71,9 @@ impl Shell {
                 true
             }
             Key::Escape => {
-                tx.focus(COMPOSER_KEY, false);
+                if !self.escape_on_top() {
+                    tx.focus(COMPOSER_KEY, false);
+                }
                 true
             }
             _ => false,

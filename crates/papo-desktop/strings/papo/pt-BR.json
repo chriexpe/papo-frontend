@@ -225,5 +225,12 @@
   "reactions.you": "você",
   "reactions.tab": "{{emoji}}, {{count}}",
   "reactions.loading": "Carregando quem reagiu",
-  "reactions.failed": "Não deu para carregar quem reagiu."
+  "reactions.failed": "Não deu para carregar quem reagiu.",
+  "pins.title": "Mensagens fixadas",
+  "pins.empty": "Nenhuma mensagem fixada ainda",
+  "pins.unpin": "Desafixar",
+  "pins.jump": "Ir para a mensagem",
+  "pins.loading": "Carregando mensagens fixadas",
+  "shortcut.pins": "Ctrl+P",
+  "header.actions": "Ações da conversa"
 }

@@ -59,7 +59,8 @@ impl Shell {
     }
 
     /// A key on message `id` while its bar is stretched: ← → choose, Enter
-    /// or Space reacts, Escape folds. Returns whether it was taken.
+    /// or Space reacts (Escape folds it, in its turn: `OnTop`). Returns
+    /// whether it was taken.
     pub(super) fn strip_key(&mut self, key: TimelineKey, id: Uuid, event: &KeyEvent) -> bool {
         let Some(mut stretched) = self
             .stretched
@@ -78,10 +79,6 @@ impl Shell {
             Key::Text(ref space) if space == " " => {
                 self.stretched = None;
                 return self.quick_react(key, id, stretched.chosen);
-            }
-            Key::Escape => {
-                self.stretched = None;
-                return true;
             }
             _ => return false,
         }
