@@ -46,7 +46,6 @@ pub(super) fn list_view(list: &FieldList, highlight: usize, palette: &Palette) -
                 .collect(),
         ),
     };
-    let picked = list.clone();
     col()
         .key("search-list")
         .w_full()
@@ -68,11 +67,10 @@ pub(super) fn list_view(list: &FieldList, highlight: usize, palette: &Palette) -
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
-                .children(rows.into_iter().enumerate().map(move |(index, row)| {
-                    let list = picked.clone();
-                    row.on_press_tx(move |shell: &mut Shell, tx| {
-                        shell.search_picked(&list, index, tx);
-                    })
+                // The list is read again at the press: the text may have
+                // changed since it was drawn.
+                .children(rows.into_iter().enumerate().map(|(index, row)| {
+                    row.on_press_tx(move |shell: &mut Shell, tx| shell.search_picked(index, tx))
                 })),
         )
 }

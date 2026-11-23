@@ -1,28 +1,26 @@
-//! The search panel's requests (`docs/design.md` §10, Search): the field's
+//! The search panel's searches (`docs/design.md` §10, Search): the field's
 //! text is searched once it has rested for [`RUN_AFTER_S`] (Christian,
-//! 2026-11-23: as you type), or at once on Enter; the next page is asked
-//! as the end of the results comes near; an opened result is checked
-//! against the account's connection first, and results a reconnect made
-//! stale are searched again.
+//! 2026-11-23: as you type), or at once on Enter. While the next answer
+//! loads, the results shown stay (the panel never empties between two
+//! searches). Pages and opening a result are `search_open`'s.
 //!
-//! A search the text replaced is dropped and cancelled, never shown as a
-//! failure. The query's text is never logged.
+//! Every search takes the next number of one counter for the whole shell,
+//! so an answer for a search that was replaced, stopped or dropped (with
+//! its account, server or DM) never lands in another; its request is
+//! cancelled. A replaced search is never shown as a failure. The query's
+//! text is never logged.
 
-use std::ops::Range;
 use std::time::Duration;
 
-use papo_sdk::{SearchError, SearchPage, SearchProblem, SearchRequestHandle, Uuid};
-use papo_sdk_ui::{SearchResultItem, SearchResults};
+use papo_sdk::{SearchError, SearchPage, SearchProblem, SearchRequestHandle};
+use papo_sdk_ui::SearchResults;
 use rune::Tx;
 
 use super::Shell;
 use super::search::{Found, Paging};
-use crate::timeline::TimelineKey;
 
 /// How long the text rests before it is searched, in seconds.
 pub(crate) const RUN_AFTER_S: f64 = 0.3;
-/// Results within this many of the end ask for the next page.
-const PAGE_AHEAD_ROWS: usize = 10;
 
 impl Shell {
     /// The field's text changed: it is searched once it rests.
@@ -31,8 +29,9 @@ impl Shell {
             return;
         };
         search.highlight = 0;
-        let due_s = tx.clock() + RUN_AFTER_S;
-        search.run_due_s = Some(due_s);
+        search.run_due_s = Some(tx.clock() + RUN_AFTER_S);
+        // Each edit asks its own wake; an earlier one finds the text not
+        // rested yet and waits for this one.
         tx.wake_after(Duration::from_secs_f64(RUN_AFTER_S));
     }
 
@@ -71,14 +70,19 @@ impl Shell {
                 return;
             }
         };
-        let answered = matches!(search.found, Found::Ready(_) | Found::Loading);
-        if answered && search.asked.as_ref() == Some(&query) {
+        // In flight or answered for this very text: nothing to ask.
+        if search.revision != 0 && search.asked.as_ref() == Some(&query) {
             return;
         }
         search.stop();
+        self.search_runs += 1;
+        search.revision = self.search_runs;
         search.asked = Some(query.clone());
-        search.found = Found::Loading;
         search.opened = None;
+        // The results shown stay while the next ones load.
+        if !matches!(search.found, Found::Ready(_)) {
+            search.found = Found::Loading;
+        }
         let (account, revision) = (search.account, search.revision);
         let Some(sdk) = &self.sdk else {
             return;
@@ -89,101 +93,62 @@ impl Shell {
                 .session(account)
                 .map_err(SearchError::from)
                 .and_then(|session| session.search(query));
-            let answer = match request {
-                Ok(request) => {
-                    let page = request.page(None).await;
-                    page.map(|page| (request, page))
+            let request = match request {
+                Ok(request) => request,
+                Err(error) => {
+                    updates.send(move |shell| shell.search_answered(revision, Err(error)));
+                    return;
                 }
-                Err(error) => Err(error),
             };
-            updates.send(move |shell| shell.search_answered(revision, answer));
+            // Kept at once, so stopping the search cancels its request.
+            let kept = request.clone();
+            updates.send(move |shell| shell.search_requested(revision, kept));
+            let page = request.page(None).await;
+            updates.send(move |shell| shell.search_answered(revision, page));
         });
+    }
+
+    /// The search, while `revision` is its current search.
+    pub(super) fn current_search(&mut self, revision: u64) -> Option<&mut super::search::Search> {
+        self.search
+            .as_mut()
+            .filter(|search| revision != 0 && search.revision == revision)
+    }
+
+    /// Search `revision`'s request exists: kept for stopping and paging,
+    /// or cancelled when the search has moved on.
+    fn search_requested(&mut self, revision: u64, request: SearchRequestHandle) -> bool {
+        match self.current_search(revision) {
+            Some(search) => search.request = Some(request),
+            None => request.cancel(),
+        }
+        false
     }
 
     /// The first page of search `revision` arrived. Returns whether the
     /// view changed.
-    fn search_answered(
+    pub(super) fn search_answered(
         &mut self,
         revision: u64,
-        answer: Result<(SearchRequestHandle, SearchPage), SearchError>,
+        answer: Result<SearchPage, SearchError>,
     ) -> bool {
-        let Some(search) = self
-            .search
-            .as_mut()
-            .filter(|search| search.revision == revision)
-        else {
-            if let Ok((request, _)) = answer {
-                request.cancel();
-            }
+        let Some(search) = self.current_search(revision) else {
             return false;
         };
+        search.paging = Paging::Idle;
         match answer {
-            Ok((request, page)) => {
+            Ok(page) => {
+                search.generation = Some(page.generation);
                 search.found = Found::Ready(SearchResults::first(&page));
-                search.request = Some(request);
             }
-            // Replaced or stopped: what replaced it shows.
-            Err(SearchError::Canceled) => return false,
+            // The search is still current, so the SDK cancelled it (its
+            // connection went): said as a failure, never left waiting.
             Err(error) => {
                 log::warn!("a search failed: {error}");
                 search.found = Found::Failed;
             }
         }
-        true
-    }
-
-    /// Results `range` are drawn: near the end, the next page is asked.
-    pub(crate) fn search_rows_visible(&mut self, range: Range<usize>) -> bool {
-        let Some(search) = self.search.as_mut() else {
-            return false;
-        };
-        let Found::Ready(results) = &search.found else {
-            return false;
-        };
-        let near_end = range.end + PAGE_AHEAD_ROWS >= results.items().len();
-        let (Some(cursor), Some(request)) = (results.next().cloned(), search.request.clone())
-        else {
-            return false;
-        };
-        if !near_end || search.paging == Paging::Loading {
-            return false;
-        }
-        search.paging = Paging::Loading;
-        let revision = search.revision;
-        let Some(sdk) = &self.sdk else {
-            return false;
-        };
-        let updates = sdk.updates();
-        sdk.run(move |_client| async move {
-            let page = request.page(Some(cursor)).await;
-            updates.send(move |shell| shell.search_paged(revision, page));
-        });
-        true
-    }
-
-    /// The next page of search `revision` arrived.
-    fn search_paged(&mut self, revision: u64, page: Result<SearchPage, SearchError>) -> bool {
-        let Some(search) = self
-            .search
-            .as_mut()
-            .filter(|search| search.revision == revision)
-        else {
-            return false;
-        };
-        let Found::Ready(results) = &mut search.found else {
-            return false;
-        };
-        match page {
-            Ok(page) => {
-                results.append(&page);
-                search.paging = Paging::Idle;
-            }
-            Err(SearchError::Canceled) => return false,
-            Err(error) => {
-                log::warn!("a page of search results failed: {error}");
-                search.paging = Paging::Failed;
-            }
-        }
+        search.answered = revision;
         true
     }
 
@@ -191,68 +156,8 @@ impl Shell {
     pub(crate) fn search_retry(&mut self) {
         if let Some(search) = self.search.as_mut() {
             search.stop();
+            search.asked = None;
         }
         self.search_now();
-    }
-
-    /// A result was pressed, or Enter on it (`keyboard`): once the account
-    /// confirms it (same connection, a channel it still reads), it opens
-    /// in the conversation and the panel marks it. Results a reconnect made
-    /// stale are searched again instead.
-    pub(crate) fn open_hit(&mut self, id: Uuid, keyboard: bool) {
-        let Some(search) = self.search.as_mut() else {
-            return;
-        };
-        let Found::Ready(results) = &search.found else {
-            return;
-        };
-        let Some(item) = results.items().iter().find(|item| item.id() == id).cloned() else {
-            return;
-        };
-        search.opened = Some(id);
-        let (account, revision) = (search.account, search.revision);
-        let Some(sdk) = &self.sdk else {
-            return;
-        };
-        let updates = sdk.updates();
-        sdk.run(move |client| async move {
-            let target = client
-                .session(account)
-                .map_err(SearchError::from)
-                .and_then(|session| session.search_target(&item.hit));
-            updates.send_tx(move |shell, tx| {
-                shell.hit_checked(revision, &item, target.is_ok(), keyboard, tx)
-            });
-        });
-    }
-
-    /// The account answered for result `item` of search `revision`.
-    fn hit_checked(
-        &mut self,
-        revision: u64,
-        item: &SearchResultItem,
-        current: bool,
-        keyboard: bool,
-        tx: &mut Tx,
-    ) -> bool {
-        let Some(search) = self
-            .search
-            .as_mut()
-            .filter(|search| search.revision == revision)
-        else {
-            return false;
-        };
-        if !current {
-            // A reconnect since: the results no longer open; search again.
-            search.stop();
-            self.search_now();
-            return true;
-        }
-        let key = TimelineKey {
-            account: search.account,
-            channel: item.channel,
-        };
-        self.open_message(key, item.id(), item.message.cursor(), keyboard, tx);
-        true
     }
 }

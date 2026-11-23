@@ -120,6 +120,9 @@ pub(crate) struct Shell {
     pins_panel: Option<pins::PinsPanel>,
     /// The search, open or folded with its query.
     search: Option<search::Search>,
+    /// The last search's number; each search takes the next
+    /// (`search_run`).
+    search_runs: u64,
     /// What the search field edits while there is no search (Rune asks
     /// for a field during an event even as it goes).
     search_spare: rune::TextEdit,
@@ -198,6 +201,7 @@ impl Default for Shell {
             openings: 0,
             pins_panel: None,
             search: None,
+            search_runs: 0,
             search_spare: rune::TextEdit::new(""),
             pins_return_focus: None,
         }
@@ -296,6 +300,7 @@ mod search;
 mod search_field;
 mod search_hits;
 mod search_list;
+mod search_open;
 mod search_panel;
 mod search_run;
 mod sign_in_flow;

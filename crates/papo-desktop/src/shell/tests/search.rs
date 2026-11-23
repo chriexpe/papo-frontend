@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use papo_sdk::{
-    AccountId, Channel, FilterValue, Generation, ResourceSnapshot, SearchCursor, SearchHit,
-    SearchPage, SearchResult, UserSummary, Uuid,
+    AccountId, Channel, FilterValue, Generation, ResourceSnapshot, SearchCursor, SearchError,
+    SearchHit, SearchPage, SearchResult, UserSummary, Uuid,
 };
 use papo_sdk_ui::SearchResults;
 use rune::{Key, KeyEvent, Mods, Runtime};
@@ -17,7 +17,7 @@ use rune::{Key, KeyEvent, Mods, Runtime};
 use super::navigation::focused;
 use super::replying::{conversation, lia};
 use super::{FRAME_S, Shell, press, type_text};
-use crate::shell::search::{Found, SEARCH_FIELD_KEY, Scope, Showing};
+use crate::shell::search::{Found, Paging, SEARCH_FIELD_KEY, Scope, Showing};
 use crate::shell::search_run::RUN_AFTER_S;
 use crate::timeline::TimelineKey;
 
@@ -324,4 +324,149 @@ fn two_lias(key: TimelineKey) -> ResourceSnapshot {
         key.account.user(),
     )
     .unwrap()
+}
+
+#[test]
+fn a_kind_picked_after_its_keyword_is_followed_by_a_space() {
+    let mut rt = conversation("");
+    ctrl(&mut rt, 'f');
+    press(&mut rt, Key::Down);
+    press(&mut rt, Key::Down);
+    press(&mut rt, Key::Enter);
+    assert_eq!(text(&rt), "has:", "the filter list's third is has:");
+    press(&mut rt, Key::Enter);
+    assert_eq!(text(&rt), "has:link ");
+    type_text(&mut rt, "openssl");
+    assert_eq!(text(&rt), "has:link openssl");
+}
+
+#[test]
+fn tab_and_a_press_pick_as_enter_does() {
+    let mut rt = conversation("");
+    ctrl(&mut rt, 'f');
+    type_text(&mut rt, "has:");
+    press(&mut rt, Key::Tab);
+    assert_eq!(text(&rt), "has:link ");
+    rt.update(Shell::clear_search);
+    rt.frame(FRAME_S);
+    type_text(&mut rt, "has:");
+    rt.update(|shell, tx| shell.search_picked(1, tx));
+    rt.frame(FRAME_S);
+    assert_eq!(text(&rt), "has:file ");
+}
+
+#[test]
+fn a_value_typed_out_in_full_takes_its_space_on_enter() {
+    let mut rt = conversation("");
+    ctrl(&mut rt, 'f');
+    type_text(&mut rt, "has:link");
+    press(&mut rt, Key::Enter);
+    assert_eq!(text(&rt), "has:link ");
+}
+
+/// Types `words` and lets them rest: a search is asked (with no SDK, it
+/// never answers). Returns its number.
+fn asked(rt: &mut Runtime<Shell>, words: &str) -> u64 {
+    type_text(rt, words);
+    rt.frame(RUN_AFTER_S);
+    rt.state.search.as_ref().unwrap().revision
+}
+
+fn empty_page(rt: &Runtime<Shell>) -> SearchPage {
+    SearchPage {
+        account: key(rt).account,
+        generation: Generation::for_test(1),
+        hits: Vec::new(),
+        next: None,
+    }
+}
+
+#[test]
+fn an_answer_for_a_replaced_or_dropped_search_never_lands() {
+    let mut rt = conversation("");
+    rt.poll = Some(Shell::poll);
+    ctrl(&mut rt, 'f');
+    let first = asked(&mut rt, "open");
+    let second = asked(&mut rt, "ssl");
+    assert_ne!(first, second);
+    let page = empty_page(&rt);
+    rt.update(move |shell, _tx| {
+        assert!(!shell.search_answered(first, Ok(page)));
+    });
+    assert!(matches!(
+        rt.state.search.as_ref().unwrap().found,
+        Found::Loading
+    ));
+    // Dropped with its account: a new search never takes its answer.
+    let other = AccountId::new(key(&rt).account.server(), Uuid::from_u128(0x9999));
+    show_other_channel(&mut rt, other);
+    assert!(rt.state.search.is_none());
+    let page = empty_page(&rt);
+    rt.update(move |shell, _tx| {
+        assert!(!shell.search_answered(second, Ok(page)));
+    });
+}
+
+#[test]
+fn a_current_search_the_sdk_cancelled_says_it_failed_instead_of_waiting() {
+    let mut rt = conversation("");
+    rt.poll = Some(Shell::poll);
+    ctrl(&mut rt, 'f');
+    let revision = asked(&mut rt, "open");
+    rt.update(move |shell, _tx| {
+        shell.search_answered(revision, Err(SearchError::Canceled));
+    });
+    rt.frame(FRAME_S);
+    assert!(matches!(
+        rt.state.search.as_ref().unwrap().found,
+        Found::Failed
+    ));
+    assert!(shows(&rt, "Try again"));
+}
+
+#[test]
+fn the_results_stay_while_the_next_search_loads() {
+    let mut rt = conversation("");
+    rt.poll = Some(Shell::poll);
+    ctrl(&mut rt, 'f');
+    type_text(&mut rt, "hit");
+    results(&mut rt, &[(1, "general")], false);
+    asked(&mut rt, " more");
+    let search = rt.state.search.as_ref().unwrap();
+    assert!(matches!(search.found, Found::Ready(_)));
+    assert!(search.loading());
+    assert!(
+        shows(&rt, "hit 1"),
+        "the panel never empties between searches"
+    );
+}
+
+#[test]
+fn a_failed_page_waits_for_its_try_again() {
+    let mut rt = conversation("");
+    rt.poll = Some(Shell::poll);
+    ctrl(&mut rt, 'f');
+    let revision = asked(&mut rt, "hit");
+    results(&mut rt, &[(1, "general")], true);
+    rt.update(move |shell, _tx| {
+        let search = shell.search.as_mut().unwrap();
+        search.answered = revision;
+        search.paging = Paging::Loading;
+        shell.search_paged(revision, Err(SearchError::InvalidData));
+    });
+    rt.frame(FRAME_S);
+    assert_eq!(rt.state.search.as_ref().unwrap().paging, Paging::Failed);
+    assert!(shows(&rt, "Try again"));
+    rt.update(|shell, _tx| {
+        assert!(!shell.search_rows_visible(0..1), "no page asked on its own");
+    });
+}
+
+#[test]
+fn another_conversation_showing_cancels_an_opening_on_its_way() {
+    let mut rt = conversation("");
+    let account = key(&rt).account;
+    let before = rt.state.openings;
+    show_other_channel(&mut rt, account);
+    assert_ne!(rt.state.openings, before);
 }

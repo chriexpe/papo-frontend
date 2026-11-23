@@ -75,19 +75,19 @@ impl Shell {
         self.openings += 1;
     }
 
-    /// The window opened around message `id` (opening number `opening`):
-    /// shown, if that is still the newest opening and its server is still
-    /// the one showing. Returns whether the view changed.
+    /// The window opened around message `id` (opening number `number`):
+    /// shown, if that is still the newest opening and its server, with that
+    /// channel, is still the one showing. Returns whether the view changed.
     fn message_opened(
         &mut self,
         key: TimelineKey,
         id: Uuid,
-        opening: u64,
+        number: u64,
         window: papo_sdk_ui::Timeline,
         offset_pt: f32,
         tx: &mut Tx,
     ) -> bool {
-        if opening != self.openings {
+        if number != self.openings {
             return false;
         }
         let at = Anchor::Message { id, offset_pt };
@@ -97,15 +97,18 @@ impl Shell {
             }
         } else {
             // Another channel of the server showing: it shows, at the hit.
-            let same_server = self
-                .nav
-                .selected()
-                .and_then(|server| server.account.as_ref())
-                .is_some_and(|account| account.id == key.account);
+            let channel = key.channel.to_string();
+            let same_server = self.nav.selected().is_some_and(|server| {
+                server
+                    .account
+                    .as_ref()
+                    .is_some_and(|account| account.id == key.account)
+                    && server.text_channels.iter().any(|text| text.id == channel)
+            });
             if !same_server || self.nav.direct_shown() {
                 return false;
             }
-            self.nav.select_channel(&key.channel.to_string());
+            self.nav.select_channel(&channel);
             self.sync_timeline_at(Some(tx), Some((window, at)));
             if !self.tabs.is_shown(key) {
                 return true;

@@ -68,7 +68,11 @@ pub(super) fn panel(shell: &Shell, title: &Title<'_>, style: &Style, cx: &Cx<She
     let body = match search.showing {
         Showing::Peek => search_hits::peek_line(open, search, &palette),
         _ => match &list {
-            Some(list) => Some(search_list::list_view(list, search.highlight, &palette)),
+            Some(list) => {
+                // The same row the field names to assistive technology.
+                let at = search.highlight.min(list.len().saturating_sub(1));
+                Some(search_list::list_view(list, at, &palette))
+            }
             None => results_area(shell, search, style, height_pt * PANEL_HEIGHT_SHARE),
         },
     };
@@ -213,6 +217,8 @@ fn results_area(shell: &Shell, search: &Search, style: &Style, max_height_pt: f3
 
 /// "{n} results" and, on a server, the scope choice.
 fn count_row(search: &Search, results: &SearchResults, palette: &Palette) -> El {
+    // The next search's answer is on its way: these results stay meanwhile.
+    let loading = search.loading();
     let count = match results.count() {
         SearchCount::Exact(count) => strings::search_results(count as u64),
         SearchCount::AtLeast(count) => strings::search_results_more(count as u64),
@@ -225,10 +231,16 @@ fn count_row(search: &Search, results: &SearchResults, palette: &Palette) -> El 
         .pb(SPACE_SM_PT)
         .gap(SPACE_SM_PT)
         .center_y()
+        .busy(loading)
         .child(
             text(count)
                 .font(TYPE_SMALL)
-                .color(palette.text_secondary)
+                // Dimmed while the next answer loads.
+                .color(if loading {
+                    palette.text_muted
+                } else {
+                    palette.text_secondary
+                })
                 .role("status")
                 .live_region(rune::LiveRegion::Polite),
         )

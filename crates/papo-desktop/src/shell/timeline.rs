@@ -72,13 +72,10 @@ impl Shell {
         }
         match (switch.shown, focus) {
             (Showing::Nothing, _) => {}
-            (Showing::Open(mut opening), Some((window, at))) => {
-                opening.window = Some(window);
-                opening.anchor = Some(at);
-                self.start_watch(opening);
-            }
             (Showing::Open(opening), None) => self.start_watch(opening),
-            (Showing::Again, Some((window, at))) => {
+            // The timeline takes the window as ⌛'s does, its place the
+            // message's; the opening just made never starts.
+            (Showing::Open(_) | Showing::Again, Some((window, at))) => {
                 if let Some(opening) = wanted.and_then(|key| self.tabs.adopt(key, window, at)) {
                     self.start_watch(opening);
                 }
@@ -107,6 +104,21 @@ impl Shell {
             .retain_accounts(|account| accounts.contains(&account));
         self.draft_writes
             .retain_accounts(|account| accounts.contains(&account));
+        // A removed account's panels go with it, though nothing showed.
+        if self
+            .search
+            .as_ref()
+            .is_some_and(|search| !accounts.contains(&search.account))
+            && let Some(mut search) = self.search.take()
+        {
+            search.stop();
+        }
+        if self
+            .pins_panel
+            .is_some_and(|panel| !accounts.contains(&panel.key.account))
+        {
+            self.pins_panel = None;
+        }
     }
 
     pub(super) fn start_watch(&self, opening: Opening) {

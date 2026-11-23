@@ -246,6 +246,8 @@ impl Shell {
     /// Another conversation shows: what belonged to the one that showed
     /// (its pins panel, a stretched hover bar) closes.
     pub(crate) fn conversation_left(&mut self) {
+        // An opening still on its way would pull the conversation back.
+        self.cancel_opening();
         self.pins_panel = None;
         self.stretched = None;
         self.search_conversation_left();
@@ -283,7 +285,10 @@ impl Shell {
     /// keyboard there. Returns whether it closed anything.
     pub(crate) fn escape_on_top(&mut self) -> bool {
         match self.on_top() {
-            Some(OnTop::PinsPanel) => self.pins_panel = None,
+            Some(OnTop::PinsPanel) => {
+                self.pins_panel = None;
+                self.cancel_opening();
+            }
             Some(OnTop::Search) => self.fold_search(),
             Some(OnTop::Strip) => self.stretched = None,
             None => return false,

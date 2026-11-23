@@ -77,7 +77,7 @@ pub(crate) enum Found {
 pub(crate) enum Paging {
     Idle,
     Loading,
-    /// The last page failed; nearing the end asks again.
+    /// The last page failed; its Try again row asks again.
     Failed,
 }
 
@@ -94,8 +94,14 @@ pub(crate) struct Search {
     pub(super) asked: Option<SearchQuery>,
     /// The backend request the results came from, for their next pages.
     pub(super) request: Option<SearchRequestHandle>,
-    /// Each search asked takes the next; only its answers count.
+    /// The current search's number from the shell's counter, 0 when none
+    /// is asked; only its answers count.
     pub(super) revision: u64,
+    /// The number of the search the results shown answer.
+    pub(super) answered: u64,
+    /// The connection generation the results came from: a reconnect
+    /// since makes them stale.
+    pub(super) generation: Option<papo_sdk::Generation>,
     /// When the text last changed is due to be searched, on the window's
     /// clock.
     pub(super) run_due_s: Option<f64>,
@@ -120,6 +126,8 @@ impl Search {
             asked: None,
             request: None,
             revision: 0,
+            answered: 0,
+            generation: None,
             run_due_s: None,
             highlight: 0,
             opened: None,
@@ -139,9 +147,16 @@ impl Search {
         }
     }
 
-    /// Stops the request in flight and forgets the results' source.
+    /// Whether a search is asked whose answer has not come: the results
+    /// shown, if any, are the previous search's.
+    pub(crate) fn loading(&self) -> bool {
+        self.revision != 0 && self.answered != self.revision
+    }
+
+    /// Stops the request in flight and forgets the results' source; no
+    /// answer of the stopped search counts any more.
     pub(super) fn stop(&mut self) {
-        self.revision += 1;
+        self.revision = 0;
         if let Some(request) = self.request.take() {
             request.cancel();
         }
@@ -193,7 +208,9 @@ impl Shell {
             };
             let mut search = Search::new(key.account, place);
             search.return_focus = tx.focused().map(str::to_owned);
-            self.search = Some(search);
+            if let Some(mut old) = self.search.replace(search) {
+                old.stop();
+            }
         }
         // One header panel at a time.
         if self.pins_panel.take().is_some() {
@@ -221,10 +238,14 @@ impl Shell {
         }
     }
 
-    /// Pins opened: an open search folds.
+    /// Pins opened, or Escape: an open search folds, and a result still
+    /// opening from it no longer moves the conversation.
     pub(super) fn fold_search(&mut self) {
-        if let Some(search) = self.search.as_mut() {
+        if let Some(search) = self.search.as_mut()
+            && search.showing != Showing::Folded
+        {
             search.showing = Showing::Folded;
+            self.cancel_opening();
         }
     }
 
@@ -237,15 +258,6 @@ impl Shell {
             search.opened = None;
             search.highlight = 0;
         }
-        tx.focus(SEARCH_FIELD_KEY, true);
-    }
-
-    /// The scope choice changed: the same text searches there.
-    pub(crate) fn search_scope_picked(&mut self, scope: Scope, tx: &mut Tx) {
-        if let Some(search) = self.search.as_mut() {
-            search.scope = scope;
-        }
-        self.search_now();
         tx.focus(SEARCH_FIELD_KEY, true);
     }
 
@@ -264,40 +276,6 @@ impl Shell {
             },
             |search| &mut search.edit,
         )
-    }
-
-    /// The shown panel's results, when it has some.
-    pub(crate) fn shown_results(&self) -> Option<&SearchResults> {
-        match &self.shown_search()?.found {
-            Found::Ready(results) => Some(results),
-            _ => None,
-        }
-    }
-
-    /// "This server ⌄": the scope menu grows down from it.
-    pub(crate) fn open_scope_menu(&mut self, tx: &mut Tx) {
-        use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
-        let key = super::search_panel::SCOPE_KEY;
-        let items = vec![
-            MenuItem::plain(
-                "scope-server",
-                crate::strings::search_scope_server(),
-                MenuAction::SearchScope { channel: false },
-                false,
-            ),
-            MenuItem::plain(
-                "scope-channel",
-                crate::strings::search_scope_channel(),
-                MenuAction::SearchScope { channel: true },
-                false,
-            ),
-        ];
-        self.nav.menu = Some(OpenMenu::new(
-            Placement::BelowEnd(key.to_owned()),
-            key.to_owned(),
-            items,
-        ));
-        tx.focus(crate::menu::MENU_KEY, true);
     }
 
     /// The panel, when it shows over the shown conversation.
@@ -398,8 +376,19 @@ impl Shell {
                 }
             }
         });
-        if !belongs && let Some(mut search) = self.search.take() {
-            search.stop();
+        if !belongs {
+            if let Some(mut search) = self.search.take() {
+                search.stop();
+            }
+            return;
+        }
+        // A server search kept on another channel: "This channel" is the
+        // one showing now.
+        if let (Some(search), Some(shown)) = (self.search.as_mut(), shown)
+            && search.scope == Scope::Server
+            && let Place::Server { channel } = &mut search.place
+        {
+            *channel = shown.channel;
         }
     }
 }

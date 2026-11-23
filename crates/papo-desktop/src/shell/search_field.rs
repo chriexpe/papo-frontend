@@ -3,7 +3,8 @@
 //! value as a chip in the link colour on `accent.soft`); focused and
 //! empty, the list of filters; after a keyword, its values; an ambiguous
 //! name, "Which Lia?" and its matches. ↑ and ↓ move through the list,
-//! Enter or Tab picks, and the keyboard stays in the field.
+//! Enter or Tab picks, and the keyboard stays in the field; without a
+//! list, ↓ goes into the results.
 //!
 //! Owns what the list holds and what a pick writes. Reading the text and
 //! finding the values are the SDK's (`SearchDraft`, `search_suggestions`);
@@ -175,8 +176,7 @@ impl Shell {
         if mods.ctrl || mods.alt || mods.cmd || mods.logo {
             return false;
         }
-        let list = self.search_list();
-        let rows = list.as_ref().map_or(0, FieldList::len);
+        let rows = self.search_list().as_ref().map_or(0, FieldList::len);
         match key.key {
             rune::Key::Escape => {
                 self.close_search(tx);
@@ -192,12 +192,16 @@ impl Shell {
             }
             rune::Key::Enter | rune::Key::Tab if rows > 0 && !mods.shift => {
                 let at = self.search.as_ref().map_or(0, |search| search.highlight);
-                if let Some(list) = list {
-                    self.search_picked(&list, at.min(rows - 1), tx);
-                }
+                self.search_picked(at.min(rows - 1), tx);
                 true
             }
+            // Without a list, ↓ goes into the results (`docs/design.md`
+            // §12: lists move with ↑ and ↓).
+            rune::Key::Down if !mods.shift => self.focus_first_hit(tx),
+            // A value typed out in full ends as a picked one does.
+            rune::Key::Tab if !mods.shift => self.end_typed_value(tx),
             rune::Key::Enter => {
+                self.end_typed_value(tx);
                 self.search_now();
                 true
             }
@@ -205,14 +209,17 @@ impl Shell {
         }
     }
 
-    /// Row `at` of `list` was picked: a filter's keyword goes in, or a
-    /// value replaces what was typed for it, followed by a space.
-    pub(crate) fn search_picked(&mut self, list: &FieldList, at: usize, tx: &mut Tx) {
+    /// Row `at` of the list now was picked: a filter's keyword goes in,
+    /// or a value replaces what was typed for it, followed by a space.
+    pub(crate) fn search_picked(&mut self, at: usize, tx: &mut Tx) {
+        let Some(list) = self.search_list() else {
+            return;
+        };
         let Some(search) = self.search.as_mut() else {
             return;
         };
         let edit = &mut search.edit;
-        match list {
+        match &list {
             FieldList::Filters(keywords) => {
                 let Some(keyword) = keywords.get(at) else {
                     return;
@@ -226,9 +233,10 @@ impl Shell {
                 let Some(item) = items.get(at) else {
                     return;
                 };
-                let follows_space = edit.text[value_range.end..]
-                    .chars()
-                    .next()
+                let follows_space = edit
+                    .text
+                    .get(value_range.end..)
+                    .and_then(|rest| rest.chars().next())
                     .is_some_and(char::is_whitespace);
                 let mut value = written(item).to_owned();
                 if !follows_space {
@@ -261,5 +269,38 @@ impl Shell {
         search.edit.set_caret(search.edit.text.len());
         self.search_now();
         tx.focus(SEARCH_FIELD_KEY, true);
+    }
+
+    /// Enter or Tab with the caret at the end of a filter's bound value
+    /// (typed out in full, not picked): a space follows it, as after a
+    /// pick. Returns whether it did.
+    fn end_typed_value(&mut self, tx: &mut Tx) -> bool {
+        let Some(draft) = self.search_draft() else {
+            return false;
+        };
+        let Some(search) = self.search.as_mut() else {
+            return false;
+        };
+        let caret = search.edit.range().1;
+        let ends_bound = draft.filter_at(caret).is_some_and(|filter| {
+            filter.value_range.end == caret
+                && matches!(
+                    filter.resolved,
+                    FilterValue::Person(_) | FilterValue::Channel(_) | FilterValue::Has(_)
+                )
+        });
+        let spaced = search
+            .edit
+            .text
+            .get(caret..)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(char::is_whitespace);
+        if !ends_bound || spaced {
+            return false;
+        }
+        search.edit.set_caret(caret);
+        search.edit.insert(" ");
+        self.search_edited(tx);
+        true
     }
 }
