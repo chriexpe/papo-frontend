@@ -25,7 +25,11 @@ pub use message_snippet::{Snippet, SnippetPart, snippet};
 pub mod operations;
 pub use operations::{OperationService, ReactionService};
 mod search;
-pub use search::{SearchService, SearchSubscription, SearchUpdate};
+pub use search::{
+    MAX_SEARCH_SUGGESTIONS, SearchCount, SearchResultItem, SearchResults, SearchService,
+    SearchSubscription, SearchSuggestion, SearchUpdate, SuggestedValue, search_candidates,
+    search_suggestions,
+};
 mod notifications;
 pub use notifications::{AccountInbox, NotificationClient, NotificationItem};
 mod activity;

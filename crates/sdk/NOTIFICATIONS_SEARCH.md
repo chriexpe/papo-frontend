@@ -124,18 +124,31 @@ Subscriptions invalidate idle pages on generation change and close on revocation
 
 The query supports the actual POST `/search` fields: text, author, explicit
 channel/DM, mention UUID, `has=link`, attachment presence **or absence**, inclusive
-UTC date bounds and asc/desc order. The parser resolves `de/from`, `em/in`,
-`tem/has`, `mentions` and quoted names against lightweight current metadata;
-ambiguous labels fail. Local channel/person matching never fetches a roster or
-profile list. The backend implements full-text matching and permission filtering;
-there is no client full-text index. Global backend search excludes DMs; explicitly
-scoping a DM invokes its membership/block authorization.
+UTC date bounds and asc/desc order. `SearchDraft::read` reads a search field within a
+`SearchScope` (the server, a channel a typed `in:` replaces, or one DM, where `in:`
+does not apply and only its two people can be named): `de/from`, `em/in`, `tem/has`
+and `mentions` filters and the free words, each with its UTF-8 byte range, every
+value resolved against lightweight current metadata. A UUID, an `@username` or a
+`#channel` binds; a bare name is a prefix, and when it matches several people or
+channels the filter is `Ambiguous` with its candidates and nothing is searched until
+one is picked. `has:` takes `link` and `file` (any attachment); the backend filters
+no attachment kind. The draft reports the first problem (empty, open quote,
+unresolved or repeated filter) instead of a query. `SearchQuery::parse` is the
+server-scope reading that fails on any problem. `search_suggestions` and
+`search_candidates` list a filter's values with the text that binds each one.
+Local channel/person matching never fetches a roster or profile list. The backend
+implements full-text matching and permission filtering; there is no client
+full-text index. Global backend search excludes DMs; explicitly scoping a DM
+invokes its membership/block authorization.
 
 Each page contains at most 100 results in strict `(created_at, id)` order, not
 score order. Exact backend timestamp spellings/IDs form the next cursor only when
 `has_more` is true. Invalid ordering/nonprogress fails instead of manufacturing a
 cursor. Pages, hits and original navigation targets retain account/generation
 identity. Clients retain their own query/results for Back restoration.
+`SearchResults` keeps a query's loaded pages for a client: hits as messages built
+from what a hit carries (no attachments, embeds or reactions), duplicates dropped,
+the next cursor, and the count, exact only once the last page is in.
 
 `hydrate_search_hit` retrieves full messages, including embeds/attachments,
 without opening a timeline or changing canonical history, coverage, reads or the

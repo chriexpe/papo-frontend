@@ -1,0 +1,267 @@
+//! Filter suggestions and result pages, from synthetic rosters and hits.
+
+use super::*;
+use papo_sdk::{
+    AccountId, Channel, DirectConversation, FilterValue, Generation, HasKind, ResourceSnapshot,
+    SearchCursor, SearchDraft, SearchHit, SearchKeyword, SearchNames, SearchPage, SearchResult,
+    SearchScope, ServerAddress, UserSummary, Uuid,
+};
+
+const OWN: u128 = 0;
+const DM: u128 = 50;
+
+fn id(n: u128) -> Uuid {
+    Uuid::from_u128(0x2000 + n)
+}
+
+fn person(n: u128, username: &str, nickname: &str) -> UserSummary {
+    UserSummary {
+        id: Some(id(n).to_string()),
+        username: Some(username.into()),
+        nickname: nickname.into(),
+        roles: Some(Vec::new()),
+        ..UserSummary::default()
+    }
+}
+
+fn channel(n: u128, name: &str, kind: &str) -> Channel {
+    Channel {
+        id: Some(id(n).to_string()),
+        name: Some(name.into()),
+        r#type: Some(kind.into()),
+        permissions: Some(vec![]),
+        ..Channel::default()
+    }
+}
+
+/// You (@eu), Lia (@lia), Ana Lia (@ana), Rui (@rui); #geral, #dev chat, a category; a DM
+/// with Rui.
+fn snapshot() -> ResourceSnapshot {
+    ResourceSnapshot::fixture(
+        Generation::for_test(1),
+        None,
+        vec![
+            channel(20, "geral", "text"),
+            channel(21, "dev chat", "text"),
+            channel(22, "general stuff", "category"),
+        ],
+        Vec::new(),
+        vec![
+            person(OWN, "eu", ""),
+            person(1, "lia", "Lia"),
+            person(2, "ana", "Ana Lia"),
+            person(3, "rui", "Rui"),
+        ],
+        Vec::new(),
+        vec![DirectConversation {
+            id: id(DM).to_string(),
+            user: person(3, "rui", "Rui"),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            last_message: None,
+            last_read_message: None,
+            last_read_at: None,
+            unread_count: 0,
+        }],
+        Vec::new(),
+        id(OWN),
+    )
+    .unwrap()
+}
+
+fn bindings(suggestions: &[SearchSuggestion]) -> Vec<&str> {
+    suggestions.iter().map(|s| s.binding.as_str()).collect()
+}
+
+#[test]
+fn people_starting_with_the_value_come_before_people_containing_it() {
+    let found = search_suggestions(&snapshot(), SearchKeyword::From, "@li", SearchScope::Server);
+    assert_eq!(bindings(&found), ["@lia", "@ana"]);
+    assert_eq!(found[1].name.as_deref(), Some("Ana Lia"));
+    assert_eq!(found[1].value, SuggestedValue::Person(id(2)));
+}
+
+#[test]
+fn a_direct_conversation_suggests_its_two_people_no_channels_and_no_mentions() {
+    let scope = SearchScope::Direct {
+        channel: id(DM),
+        account_user: id(OWN),
+    };
+    let found = search_suggestions(&snapshot(), SearchKeyword::From, "", scope);
+    assert_eq!(bindings(&found), ["@eu", "@rui"]);
+    for keyword in [SearchKeyword::In, SearchKeyword::Mentions] {
+        let found = search_suggestions(&snapshot(), keyword, "", scope);
+        assert_eq!(bindings(&found), [""; 0]);
+    }
+}
+
+#[test]
+fn channels_leave_out_categories_and_a_name_with_spaces_binds_quoted() {
+    let found = search_suggestions(&snapshot(), SearchKeyword::In, "#", SearchScope::Server);
+    assert_eq!(bindings(&found), ["#geral", "\"#dev chat\""]);
+}
+
+#[test]
+fn has_lists_the_kinds_the_backend_filters() {
+    let found = search_suggestions(&snapshot(), SearchKeyword::Has, "", SearchScope::Server);
+    let kinds: Vec<_> = found.iter().map(|s| s.value).collect();
+    assert_eq!(
+        kinds,
+        [
+            SuggestedValue::Has(HasKind::Link),
+            SuggestedValue::Has(HasKind::File)
+        ]
+    );
+    let found = search_suggestions(&snapshot(), SearchKeyword::Has, "fi", SearchScope::Server);
+    assert_eq!(bindings(&found), ["file"]);
+    // Portuguese spellings find their kind too.
+    let found = search_suggestions(&snapshot(), SearchKeyword::Has, "arq", SearchScope::Server);
+    assert_eq!(bindings(&found), ["file"]);
+}
+
+/// Every binding, written after its keyword, reads back as exactly its own value.
+#[test]
+fn every_binding_reads_back_as_its_own_value() {
+    let snapshot = snapshot();
+    let names = SearchNames {
+        resources: &snapshot,
+    };
+    for (keyword, spelling) in [
+        (SearchKeyword::From, "from:"),
+        (SearchKeyword::In, "in:"),
+        (SearchKeyword::Has, "has:"),
+    ] {
+        for suggestion in search_suggestions(&snapshot, keyword, "", SearchScope::Server) {
+            let field = format!("{spelling}{}", suggestion.binding);
+            let draft = SearchDraft::read(&field, &names, SearchScope::Server);
+            let expected = match suggestion.value {
+                SuggestedValue::Person(id) => FilterValue::Person(id),
+                SuggestedValue::Channel(id) => FilterValue::Channel(id),
+                SuggestedValue::Has(kind) => FilterValue::Has(kind),
+            };
+            assert_eq!(draft.filters[0].resolved, expected, "{field}");
+        }
+    }
+}
+
+/// Two handles differing only in case bind by UUID, so a pick never stays ambiguous.
+#[test]
+fn handles_equal_but_for_case_bind_by_id() {
+    let snapshot = ResourceSnapshot::fixture(
+        Generation::for_test(1),
+        None,
+        vec![
+            channel(20, "General", "text"),
+            channel(21, "general", "text"),
+        ],
+        Vec::new(),
+        vec![
+            person(OWN, "eu", ""),
+            person(1, "Lia", ""),
+            person(2, "lia", ""),
+        ],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        id(OWN),
+    )
+    .unwrap();
+    let people = search_candidates(
+        &snapshot,
+        SearchKeyword::From,
+        &[id(1), id(2)],
+        SearchScope::Server,
+    );
+    assert_eq!(bindings(&people), [id(1).to_string(), id(2).to_string()]);
+    let channels = search_suggestions(&snapshot, SearchKeyword::In, "gen", SearchScope::Server);
+    assert_eq!(
+        bindings(&channels),
+        [id(20).to_string(), id(21).to_string()]
+    );
+}
+
+#[test]
+fn candidates_keep_their_order_and_drop_what_the_snapshot_lost() {
+    let found = search_candidates(
+        &snapshot(),
+        SearchKeyword::From,
+        &[id(2), id(9), id(1)],
+        SearchScope::Server,
+    );
+    assert_eq!(bindings(&found), ["@ana", "@lia"]);
+}
+
+fn account() -> AccountId {
+    AccountId::new(
+        ServerAddress::parse("https://example.invalid")
+            .unwrap()
+            .id(),
+        id(OWN),
+    )
+}
+
+fn hit(n: u128, at: &str) -> SearchHit {
+    SearchHit::fixture(
+        account(),
+        Generation::for_test(1),
+        SearchResult {
+            r#type: Some("message".into()),
+            id: Some(id(100 + n).to_string()),
+            content: Some(format!("**hit** {n}")),
+            channel_id: Some(id(20).to_string()),
+            channel_name: Some("geral".into()),
+            author_id: Some(id(1).to_string()),
+            author_username: Some("lia".into()),
+            created_at: Some(at.into()),
+            ..SearchResult::default()
+        },
+    )
+}
+
+fn page(hits: Vec<SearchHit>, more: bool) -> SearchPage {
+    let next = more.then(|| SearchCursor {
+        created_at: "2026-01-01T00:00:00Z".into(),
+        id: id(100).to_string(),
+    });
+    SearchPage {
+        account: account(),
+        generation: Generation::for_test(1),
+        hits,
+        next,
+    }
+}
+
+#[test]
+fn the_count_is_a_floor_until_the_last_page_is_in() {
+    let mut results = SearchResults::first(&page(
+        vec![
+            hit(2, "2026-01-02T00:00:00Z"),
+            hit(1, "2026-01-01T00:00:00Z"),
+        ],
+        true,
+    ));
+    assert_eq!(results.count(), SearchCount::AtLeast(2));
+    assert!(results.next().is_some());
+    // A repeated hit is listed once; a malformed one not at all.
+    let mut malformed = hit(3, "not a time");
+    malformed = SearchHit::fixture(account(), Generation::for_test(1), {
+        let mut result = (*malformed.result).clone();
+        result.created_at = Some("yesterday".into());
+        result
+    });
+    results.append(&page(
+        vec![
+            hit(1, "2026-01-01T00:00:00Z"),
+            malformed,
+            hit(0, "2025-12-31T00:00:00Z"),
+        ],
+        false,
+    ));
+    assert_eq!(results.count(), SearchCount::Exact(3));
+    assert!(results.next().is_none());
+    let first = &results.items()[0];
+    assert_eq!(first.id(), id(102));
+    assert_eq!(first.channel, id(20));
+    assert_eq!(first.message.content.as_deref(), Some("**hit** 2"));
+    assert!(first.message.attachments.is_none());
+    assert!(!first.content.is_empty());
+}

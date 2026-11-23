@@ -1,4 +1,12 @@
-//! Account-bound observable search pages; core owns grammar/backend requests and clients own navigation/Back state.
+//! Account-bound observable search pages, the results a client lists and the values a filter can
+//! take; core owns grammar/backend requests and clients own navigation/Back state.
+
+mod results;
+mod suggestions;
+pub use results::{SearchCount, SearchResultItem, SearchResults};
+pub use suggestions::{
+    MAX_SEARCH_SUGGESTIONS, SearchSuggestion, SuggestedValue, search_candidates, search_suggestions,
+};
 
 use papo_sdk::{
     SearchCursor, SearchError, SearchHit, SearchPage, SearchQuery, SearchRequestHandle,
@@ -192,3 +200,7 @@ impl SearchSubscription {
         self.current()
     }
 }
+
+#[cfg(test)]
+#[path = "search/tests.rs"]
+mod tests;
