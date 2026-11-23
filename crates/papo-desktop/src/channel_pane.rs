@@ -195,7 +195,7 @@ fn account_pill(account: &AccountEntry, palette: &Palette) -> El {
 }
 
 /// A pill's row: both pills are one height (`docs/design.md` §8).
-fn pill_row() -> El {
+pub(crate) fn pill_row() -> El {
     row()
         .w_full()
         .h(PANE_PILL_HEIGHT_PT)
@@ -205,7 +205,7 @@ fn pill_row() -> El {
 }
 
 /// A floating pill's surface around `content`.
-fn chrome(content: El, palette: &Palette) -> El {
+pub(crate) fn chrome(content: El, palette: &Palette) -> El {
     content
         .radius(RADIUS_PILL_PT)
         .fill(palette.surface_pill)

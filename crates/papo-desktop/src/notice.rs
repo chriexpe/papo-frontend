@@ -34,6 +34,8 @@ pub(crate) enum Refusal {
     Pin,
     /// Unpinning a message.
     Unpin,
+    /// Closing a direct conversation.
+    CloseDm,
 }
 
 impl Refusal {
@@ -42,6 +44,7 @@ impl Refusal {
             Refusal::Reaction => strings::notice_reaction_failed(),
             Refusal::Pin => strings::notice_pin_failed(),
             Refusal::Unpin => strings::notice_unpin_failed(),
+            Refusal::CloseDm => strings::notice_dm_close_failed(),
         }
     }
 }

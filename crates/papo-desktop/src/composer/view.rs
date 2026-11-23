@@ -37,8 +37,8 @@ const SEND_IDLE_OPACITY: f32 = 0.4;
 
 /// What the pill shows besides the composer's own state.
 pub(crate) struct PillContext<'a> {
-    /// The shown channel's name.
-    pub(crate) channel: &'a str,
+    /// The empty field's prompt: "Message #general", "Message @Lia".
+    pub(crate) placeholder: &'a str,
     /// The "Enter to send" setting.
     pub(crate) enter_sends: bool,
     /// A reply's original in words, while one is being written.
@@ -51,7 +51,7 @@ pub(crate) struct PillContext<'a> {
 /// one and the reply or edit bar on top.
 pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, palette: &Palette) -> El {
     let PillContext {
-        channel,
+        placeholder,
         enter_sends,
         original,
         me,
@@ -70,7 +70,7 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, palette: &Pal
         .wrap_anywhere()
         .grow(1.0)
         .color(palette.text_primary)
-        .placeholder(strings::composer_placeholder(channel), palette.text_muted)
+        .placeholder(placeholder, palette.text_muted)
         .caret(palette.accent, palette.text_selection)
         .spans(style.spans)
         .strikes(style.strikes)

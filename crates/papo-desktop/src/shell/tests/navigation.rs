@@ -45,6 +45,7 @@ pub(super) fn entry(name: &str, channels: &[&str]) -> ServerEntry {
             name: "hangout".to_owned(),
             badge: Badge::default(),
         }],
+        direct_badges: std::collections::BTreeMap::new(),
         badge: Badge::default(),
     }
 }
@@ -59,6 +60,7 @@ pub(super) fn with_servers() -> Runtime<Shell> {
                     entry("Lumen", &["general", "media"]),
                     entry("Mirante", &["avisos"]),
                 ],
+                direct: Badge::default(),
             },
             tx,
         );
@@ -313,6 +315,7 @@ fn with_badges() -> Runtime<Shell> {
         shell.servers_changed(
             ServerList {
                 servers: vec![lumen, mirante],
+                direct: Badge::default(),
             },
             tx,
         );

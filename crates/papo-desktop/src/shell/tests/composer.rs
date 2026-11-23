@@ -44,6 +44,7 @@ pub(super) fn in_general() -> Runtime<Shell> {
         shell.servers_changed(
             ServerList {
                 servers: vec![lumen],
+                direct: crate::badges::Badge::default(),
             },
             tx,
         );

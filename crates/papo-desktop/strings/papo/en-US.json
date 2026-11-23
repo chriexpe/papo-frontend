@@ -233,5 +233,19 @@
   "pins.loading": "Loading pinned messages",
   "shortcut.pins": "Ctrl+P",
   "header.actions": "Conversation actions",
-  "pins.failed": "Couldn't load the pinned messages."
+  "pins.failed": "Couldn't load the pinned messages.",
+  "presence.available": "Available",
+  "presence.away": "Away",
+  "presence.busy": "Busy",
+  "presence.offline": "Offline",
+  "presence.named": "{{name}}, {{presence}}",
+  "direct.title": "Direct messages",
+  "direct.typing": "typing…",
+  "direct.close": "Close the conversation with {{name}}",
+  "direct.close_hint": "Delete closes the conversation",
+  "direct.list": "Direct conversations",
+  "notice.dm_close_failed": "Couldn't close the conversation.",
+  "direct.empty": "No conversations yet",
+  "composer.placeholder_direct": "Message @{{name}}",
+  "direct.title_label": "{{name}}, on {{server}}"
 }

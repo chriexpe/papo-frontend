@@ -1,6 +1,7 @@
-//! What reacting needs from each account beyond a timeline, from the
-//! shell's side (`reaction_watch` posts it): the outgoing queue a chip
-//! waits on, the account's quick reactions, and its refused reactions,
+//! What each account shows live beyond a timeline, from the shell's side
+//! (`live_watch` posts it): its people's activity (presence marks, who
+//! types), the outgoing queue a chip waits on, the account's quick
+//! reactions, and its refused reactions,
 //! which the notice says where they were made and the queue drops (nothing
 //! else removes them: `unresolved_reactions`). The notice pill is shown
 //! and timed here.
@@ -9,12 +10,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use papo_sdk::{AccountId, OutgoingSnapshot, Uuid};
-use papo_sdk_ui::unresolved_reactions;
+use papo_sdk_ui::{AccountActivity, unresolved_reactions};
 use rune::Tx;
 
 use super::Shell;
+use crate::live_watch::Posted;
 use crate::notice::{Notice, Refusal};
-use crate::reaction_watch::Posted;
 use crate::timeline::{Reacting, TimelineKey};
 
 /// A hover bar Add reaction stretched into the quick-reaction strip.
@@ -26,9 +27,11 @@ pub(crate) struct Stretched {
     pub(crate) chosen: usize,
 }
 
-/// One account's reacting state, as its watch last posted it.
+/// One account's live state, as its watch last posted it.
 #[derive(Default)]
 pub(crate) struct Activity {
+    /// Its people's activity; none until posted.
+    pub(crate) people: Option<Arc<AccountActivity>>,
     /// Its outgoing queue: a chip whose change is in it waits.
     pub(crate) outgoing: Option<Arc<OutgoingSnapshot>>,
     /// Its quick reactions, most used first; empty until posted.
@@ -47,6 +50,12 @@ impl Shell {
         tx: &mut Tx,
     ) -> bool {
         match posted {
+            Posted::People(people) => {
+                self.activity.entry(account).or_default().people = Some(people);
+                // Presence and typing show wherever the account's people do:
+                // its conversations, DM rows, an open card.
+                true
+            }
             Posted::Quick(quick) => {
                 self.activity.entry(account).or_default().quick = quick.into();
                 self.shows_account(account)
@@ -57,7 +66,11 @@ impl Shell {
                 // Only the shown conversation's chips wait on a queue.
                 self.shows_account(account)
             }
-            Posted::Closed => self.activity.remove(&account).is_some(),
+            Posted::Closed => {
+                // A conversation of a signed-out account can't stay open.
+                self.nav.account_closed(account);
+                self.activity.remove(&account).is_some()
+            }
         }
     }
 
@@ -66,6 +79,11 @@ impl Shell {
         self.tabs
             .shown()
             .is_some_and(|open| open.key.account == account)
+    }
+
+    /// The account's people's activity; none until posted.
+    pub(crate) fn people(&self, account: AccountId) -> Option<&AccountActivity> {
+        self.activity.get(&account)?.people.as_deref()
     }
 
     /// The account's quick reactions, most used first.

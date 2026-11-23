@@ -12,6 +12,7 @@ use rune::{Cx, El, KeyEvent, ScrollSpec, col, el, icon, memo, row, text};
 
 use super::Shell;
 use super::pins::{PINS_BUTTON_KEY, PINS_PANEL_KEY, PinsPanel, pin_row_key};
+use super::title::Title;
 use crate::design::{
     FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
     RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, SPACE_XL_PT,
@@ -31,26 +32,10 @@ const PANEL_HEIGHT_SHARE: f32 = 0.7;
 const EMPTY_ICON_PT: f32 = 32.0;
 
 /// The header row over the conversation: the title pill and the actions
-/// pill. None while no channel shows.
-pub(super) fn header(shell: &Shell, channel: &str, palette: &Palette) -> Option<El> {
+/// pill. None while no conversation shows.
+pub(super) fn header(shell: &Shell, title: &Title<'_>, palette: &Palette) -> Option<El> {
     shell.tabs.shown()?;
-    let title = row()
-        .key("title-pill")
-        .h(HEADER_PILL_HEIGHT_PT)
-        .px(SPACE_LG_PT)
-        .gap(SPACE_SM_PT)
-        .center_y()
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
-        .role("heading")
-        .label(channel.to_owned())
-        .child(icon(&crate::icons::HASH, PILL_ICON_PT).color(palette.text_secondary))
-        .child(
-            text(channel.to_owned())
-                .font(TYPE_BODY_STRONG)
-                .color(palette.text_primary),
-        );
+    let title = super::title::pill(title, palette);
     // The open panel takes the actions pill's place.
     let actions = shell
         .shown_pins_panel()

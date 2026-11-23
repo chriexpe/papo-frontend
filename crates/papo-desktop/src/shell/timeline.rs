@@ -27,6 +27,9 @@ impl Shell {
     /// The timeline the navigation shows: the selected server's account and
     /// its selected text channel.
     pub(super) fn wanted_timeline(&self) -> Option<TimelineKey> {
+        if self.nav.direct_shown() {
+            return self.wanted_direct_timeline();
+        }
         let server = self.nav.selected()?;
         let account = server.account.as_ref()?.id;
         let channel = self.nav.selected_channel()?;

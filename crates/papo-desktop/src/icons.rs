@@ -34,7 +34,6 @@ macro_rules! line_icon {
 macro_rules! presence_mark {
     ($(#[$doc:meta])* $name:ident, $file:literal) => {
         $(#[$doc])*
-        #[expect(dead_code, reason = "the members pane and profile card (D5b) draw presence")]
         pub(crate) static $name: Icon = Icon {
             name: concat!("papo-presence-", $file),
             view: PRESENCE_VIEW,
@@ -182,6 +181,11 @@ line_icon!(
     /// Edit message (the edit bar).
     EDIT,
     "edit"
+);
+line_icon!(
+    /// Direct messages: the rail's Direct.
+    DIRECT,
+    "direct"
 );
 line_icon!(
     /// A reply line in Extra compact, where no elbow fits.

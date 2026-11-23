@@ -14,6 +14,7 @@ use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 mod accounts;
 mod channel_keys;
 mod composer;
+mod direct;
 mod links;
 mod message_menu;
 mod navigation;

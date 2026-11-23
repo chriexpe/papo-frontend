@@ -16,7 +16,9 @@ use crate::design::{
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
 use crate::strings;
-use crate::{channel_pane, composer, links, menu, notice, rail, remove_server, timeline};
+use crate::{
+    channel_pane, composer, direct_pane, links, menu, notice, rail, remove_server, timeline,
+};
 
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
@@ -137,12 +139,8 @@ fn timeline_style(shell: &Shell, theme: Theme, palette: &Palette) -> timeline::S
 /// The rail, the channel pane and the conversation with the composer pill
 /// at its foot.
 fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
-    let channel = shell
-        .nav
-        .selected()
-        .zip(shell.nav.selected_channel())
-        .and_then(|(server, id)| server.text_channels.iter().find(|entry| entry.id == id))
-        .map_or("", |entry| entry.name.as_str());
+    let title = shell.title();
+    let placeholder = title.placeholder();
     let shown = shell.composer.shown();
     let open = shown.and_then(|(key, _)| shell.tabs.shown().filter(|open| open.key == key));
     let original = shown.and_then(|(_, draft)| {
@@ -150,14 +148,14 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         timeline::replies::reply_text(open, reply.id, reply.original.as_ref())
     });
     let context = composer::PillContext {
-        channel,
+        placeholder: &placeholder,
         enter_sends: shell.writing.enter_sends,
         original: original.as_ref(),
         me: shown.map_or(papo_sdk::Uuid::nil(), |(key, _)| key.account.user()),
     };
     let composer = composer::pill(&shell.composer, &context, palette);
     let style = timeline_style(shell, theme, palette);
-    let header = super::pins_panel::header(shell, channel, palette);
+    let header = super::pins_panel::header(shell, &title, palette);
     let panel = super::pins_panel::panel(shell, &style, cx);
     let conversation = col()
         .key("conversation")
@@ -180,7 +178,11 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         })
         .child(rail::view(&shell.nav, &shell.icons, palette))
         .child(edge())
-        .child(channel_pane::view(&shell.nav, &shell.icons, palette))
+        .child(if shell.nav.direct_shown() {
+            direct_pane::view(shell, palette)
+        } else {
+            channel_pane::view(&shell.nav, &shell.icons, palette)
+        })
         .child(edge())
         .child(conversation)
 }

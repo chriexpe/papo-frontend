@@ -233,5 +233,19 @@
   "pins.loading": "Carregando mensagens fixadas",
   "shortcut.pins": "Ctrl+P",
   "header.actions": "Ações da conversa",
-  "pins.failed": "Não deu para carregar as mensagens fixadas."
+  "pins.failed": "Não deu para carregar as mensagens fixadas.",
+  "presence.available": "Disponível",
+  "presence.away": "Ausente",
+  "presence.busy": "Ocupado",
+  "presence.offline": "Offline",
+  "presence.named": "{{name}}, {{presence}}",
+  "direct.title": "Mensagens diretas",
+  "direct.typing": "digitando…",
+  "direct.close": "Fechar a conversa com {{name}}",
+  "direct.close_hint": "Delete fecha a conversa",
+  "direct.list": "Conversas diretas",
+  "notice.dm_close_failed": "Não deu para fechar a conversa.",
+  "direct.empty": "Nenhuma conversa ainda",
+  "composer.placeholder_direct": "Mensagem para @{{name}}",
+  "direct.title_label": "{{name}}, em {{server}}"
 }

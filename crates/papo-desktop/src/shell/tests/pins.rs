@@ -122,7 +122,7 @@ fn escape_closes_the_panel_then_folds_the_strip_then_goes_back_to_writing() {
     rt.update(|shell, tx| {
         let account = shell.tabs.shown().unwrap().key.account;
         let quick = ["🧀", "👍", "😂"].map(str::to_owned).to_vec();
-        shell.activity_posted(account, crate::reaction_watch::Posted::Quick(quick), tx);
+        shell.activity_posted(account, crate::live_watch::Posted::Quick(quick), tx);
     });
     pin(&mut rt, &[]);
     rt.update(|_shell, tx| tx.focus(message_key(message_id(3)), true));

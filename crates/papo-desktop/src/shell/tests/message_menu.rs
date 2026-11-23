@@ -15,8 +15,8 @@ use rune::{Key, KeyEvent, Mods, Runtime};
 
 use super::replying::{conversation, message_id};
 use super::{FRAME_S, Shell, press};
+use crate::live_watch::Posted;
 use crate::menu::Entry;
-use crate::reaction_watch::Posted;
 use crate::timeline::rows::message_key;
 
 /// The message whose row has the keyboard.
