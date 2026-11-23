@@ -1,5 +1,5 @@
-//! The keyboard shortcuts sheet's strings (`docs/design.md` §12). The
-//! catalog entries are `shortcuts.*`.
+//! The keyboard shortcuts sheet's strings and Ctrl+K's (`docs/design.md`
+//! §12). The catalog entries are `shortcuts.*` and `jump.*`.
 
 use super::{I18N, Key, catalog};
 
@@ -231,4 +231,19 @@ pub(crate) fn shortcuts_none() -> &'static str {
 /// Between alternative keys, spoken.
 pub(crate) fn shortcuts_or() -> &'static str {
     text!("shortcuts.or")
+}
+
+/// Ctrl+K when nothing matches.
+pub(crate) fn jump_none() -> &'static str {
+    text!("jump.none")
+}
+
+/// Ctrl+K's list, spoken.
+pub(crate) fn jump_list() -> &'static str {
+    text!("jump.list")
+}
+
+/// Under a server's own row in Ctrl+K.
+pub(crate) fn jump_server() -> &'static str {
+    text!("jump.server")
 }

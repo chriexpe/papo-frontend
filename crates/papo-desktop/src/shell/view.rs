@@ -88,6 +88,9 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(server) = removing {
                     app = app.child(remove_server::confirm(&server.name, &palette));
                 }
+                if let Some(jump) = super::jump_view::view(shell, &palette) {
+                    app = app.child(jump);
+                }
                 if shell.shortcuts_open {
                     app = app.child(crate::shortcuts_sheet::view(&palette));
                 }

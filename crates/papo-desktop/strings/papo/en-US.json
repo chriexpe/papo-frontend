@@ -365,5 +365,8 @@
   "shortcuts.papo": "Papo",
   "shortcuts.system": "System",
   "shortcuts.none": "none",
-  "shortcuts.or": " or "
+  "shortcuts.or": " or ",
+  "jump.none": "Nothing matches",
+  "jump.list": "Places",
+  "jump.server": "Server"
 }

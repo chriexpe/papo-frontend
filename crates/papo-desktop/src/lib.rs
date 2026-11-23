@@ -33,6 +33,7 @@ mod private_bus;
 mod profile_dir;
 mod rail;
 mod reading_prefs;
+mod recent_jumps;
 mod reconnect_hints;
 mod remove_server;
 mod sdk_bridge;

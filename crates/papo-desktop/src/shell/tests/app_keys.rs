@@ -167,3 +167,80 @@ fn ctrl_slash_or_f1_opens_the_shortcuts_sheet_and_escape_or_the_key_closes_it() 
     key(&mut rt, Key::Command('/'), ctrl());
     assert!(rt.find(crate::shortcuts_sheet::SHORTCUTS_KEY).is_none());
 }
+
+fn jump_rows(rt: &Runtime<Shell>) -> Vec<String> {
+    rt.state
+        .jump
+        .as_ref()
+        .map(|jump| {
+            jump.found
+                .iter()
+                .map(|target| target.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn ctrl_k_lists_unread_places_first_and_a_jump_shows_the_channel_with_the_keyboard_in_it() {
+    let mut rt = three_servers();
+    // Real channel ids are UUIDs.
+    let id = |n: u128| Uuid::from_u128(0x6100 + n).to_string();
+    let mut servers = rt.state.navigation().servers().servers.clone();
+    for (n, channel) in servers[0].text_channels.iter_mut().enumerate() {
+        channel.id = id(n as u128);
+    }
+    rt.update(move |shell, tx| {
+        shell.servers_changed(
+            ServerList {
+                servers,
+                direct: Badge::default(),
+                account_badges: std::collections::BTreeMap::new(),
+            },
+            tx,
+        );
+    });
+    rt.frame(FRAME_S);
+    key(&mut rt, Key::Command('k'), ctrl());
+    assert_eq!(
+        focused(&rt).as_deref(),
+        Some(crate::shell::jump::JUMP_FIELD_KEY)
+    );
+    let rows = jump_rows(&rt);
+    assert_eq!(&rows[..2], ["media", "dev"], "unread first: {rows:?}");
+    key(&mut rt, Key::Down, Mods::default());
+    key(&mut rt, Key::Enter, Mods::default());
+    assert!(rt.state.jump.is_none());
+    assert_eq!(channel(&rt), Some(id(3)));
+    // The last jump comes first next time.
+    key(&mut rt, Key::Command('k'), ctrl());
+    assert_eq!(jump_rows(&rt).first().map(String::as_str), Some("dev"));
+    key(&mut rt, Key::Escape, Mods::default());
+    assert!(rt.state.jump.is_none());
+}
+
+#[test]
+fn ctrl_k_opens_centred_near_the_top_of_the_window() {
+    let mut rt = three_servers();
+    key(&mut rt, Key::Command('k'), ctrl());
+    let elements = rt.elements();
+    let window = elements[0].rect;
+    let card = elements
+        .iter()
+        .find(|element| {
+            element.role == "dialog"
+                && element.label.as_deref() == Some("Jump to a channel, DM, person or server")
+        })
+        .unwrap()
+        .rect;
+    let card_centre = card[0] + card[2] / 2.0;
+    let window_centre = window[0] + window[2] / 2.0;
+    assert!(
+        (card_centre - window_centre).abs() < 1.0,
+        "centred: {card:?} in {window:?}"
+    );
+    assert!(
+        card[1] < window[1] + window[3] / 3.0,
+        "near the top: {card:?} in {window:?}"
+    );
+}

@@ -4,7 +4,8 @@
 //! as tabs; Alt+⇧↑ and Alt+⇧↓ move to the previous or next unread channel;
 //! Alt+← and Alt+→ go back and forward through this server's channels;
 //! Ctrl+W closes the window, Ctrl+Q quits, F11 toggles full screen; Ctrl+/,
-//! F1 or Ctrl+? opens the keyboard shortcuts sheet (`shortcuts_sheet`).
+//! F1 or Ctrl+? opens the keyboard shortcuts sheet (`shortcuts_sheet`); Ctrl+K
+//! opens the jump field (`jump`), from any focus, typing included.
 //!
 //! Owns which key does what. Where the moves go is `navigation`'s; a popup
 //! or an open overlay keeps these keys for itself.
@@ -50,6 +51,10 @@ impl Shell {
         }
         if is_shortcuts_key(key) {
             self.toggle_shortcuts(tx);
+            return true;
+        }
+        if key.is_command('k') && primary_only(key.mods) {
+            self.toggle_jump(tx);
             return true;
         }
         // A popup or an overlay holds the keyboard like a dialog does.

@@ -120,6 +120,10 @@ pub(crate) struct Shell {
     pins_panel: Option<pins::PinsPanel>,
     /// Whether the keyboard shortcuts sheet shows.
     shortcuts_open: bool,
+    /// Ctrl+K's field and what it finds, while it is open.
+    jump: Option<jump::Jump>,
+    /// The last places Ctrl+K jumped to, remembered across launches.
+    recent_jumps: crate::recent_jumps::RecentJumps,
     /// The New message picker's state, while it is open.
     dm_picker: Option<new_message::DmPicker>,
     /// The search, open or folded with its query.
@@ -205,6 +209,8 @@ impl Default for Shell {
             openings: 0,
             pins_panel: None,
             shortcuts_open: false,
+            jump: None,
+            recent_jumps: crate::recent_jumps::RecentJumps::default(),
             dm_picker: None,
             search: None,
             search_runs: 0,
@@ -243,6 +249,7 @@ impl Shell {
         self.content.load();
         self.prefs = ReadingPrefs::load();
         self.layout = crate::layout_prefs::LayoutPrefs::load();
+        self.recent_jumps = crate::recent_jumps::RecentJumps::load();
         self.writing = WritingPrefs::load();
     }
 
@@ -289,6 +296,8 @@ mod content;
 pub(crate) mod deleting;
 pub(crate) mod direct;
 mod hover_bar;
+mod jump;
+mod jump_view;
 mod message_keys;
 mod message_menu;
 mod message_open;
