@@ -326,6 +326,10 @@ impl Shell {
         }
         let copied_ended = self.end_copied(clock_s);
         let new_day = self.follow_the_day(clock_s, tx);
+        if new_day {
+            // "today" and "2d" mean other days now.
+            self.search_now();
+        }
         let flash_ended = self.poll_flash(clock_s);
         let notice_ended = self.poll_notice(clock_s);
         let list_closed = self.poll_reactions();

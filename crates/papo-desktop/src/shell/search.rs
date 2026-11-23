@@ -13,17 +13,11 @@
 //! move to another channel yourself (Christian, 2026-11-23). Escape folds
 //! it, giving the keyboard back.
 
-use chrono::NaiveDate;
-use papo_sdk::Uuid;
-use papo_sdk::{
-    AccountId, DateOrder, DateWords, SearchCalendar, SearchDraft, SearchNames, SearchQuery,
-    SearchRequestHandle, SearchScope,
-};
+use papo_sdk::{AccountId, SearchQuery, SearchRequestHandle, SearchScope, Uuid};
 use papo_sdk_ui::SearchResults;
 use rune::{TextEdit, Tx};
 
 use super::Shell;
-use crate::strings;
 
 /// The element key of 🔍, which the panel grows from.
 pub(crate) const SEARCH_BUTTON_KEY: &str = "search-button";
@@ -291,47 +285,6 @@ impl Shell {
         self.search
             .as_ref()
             .filter(|search| search.showing != Showing::Folded && search.account == shown.account)
-    }
-
-    /// The field's text read against the shown conversation's names.
-    pub(crate) fn search_draft(&self) -> Option<SearchDraft> {
-        let search = self.search.as_ref()?;
-        let open = self
-            .tabs
-            .shown()
-            .filter(|open| open.key.account == search.account)?;
-        let resources = open.resources.as_deref()?;
-        let names = SearchNames { resources };
-        Some(SearchDraft::read(
-            &search.edit.text,
-            &names,
-            search.sdk_scope(),
-            self.search_calendar(),
-        ))
-    }
-
-    /// The reader's calendar for date filters: today in the zone the
-    /// conversation shows times in, and this locale's way of writing dates.
-    pub(crate) fn search_calendar(&self) -> SearchCalendar {
-        // `today` counts days from 1970-01-01, which is day 719 163 of the
-        // common era.
-        let today = i32::try_from(self.today + 719_163)
-            .ok()
-            .and_then(NaiveDate::from_num_days_from_ce_opt)
-            .unwrap_or_default();
-        SearchCalendar {
-            today,
-            order: if strings::search_day_first() {
-                DateOrder::DayFirst
-            } else {
-                DateOrder::MonthFirst
-            },
-            words: if strings::search_portuguese_dates() {
-                DateWords::Portuguese
-            } else {
-                DateWords::English
-            },
-        }
     }
 
     /// Input outside the panel: it shrinks to the opened result, or folds

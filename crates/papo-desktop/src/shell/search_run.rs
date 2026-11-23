@@ -93,6 +93,7 @@ impl Shell {
             search.found = Found::Loading;
         }
         let (account, revision) = (search.account, search.revision);
+        let window = search.window;
         let Some(sdk) = &self.sdk else {
             return;
         };
@@ -112,7 +113,8 @@ impl Shell {
             // Kept at once, so stopping the search cancels its request.
             let kept = request.clone();
             updates.send(move |shell| shell.search_requested(revision, kept));
-            let page = request.page(None).await;
+            // A date search starts at its window's near end.
+            let page = request.page(window.first_cursor()).await;
             updates.send(move |shell| shell.search_answered(revision, page));
         });
     }

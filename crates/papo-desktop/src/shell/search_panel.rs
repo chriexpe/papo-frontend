@@ -65,17 +65,16 @@ pub(super) fn panel(shell: &Shell, title: &Title<'_>, style: &Style, cx: &Cx<She
     let width = PANEL_MAX_PT.min(width_pt - 2.0 * SPACE_LG_PT);
     let list = shell.search_list();
     let head = head(shell, search, title, list.as_ref(), &palette);
-    let body = match search.showing {
-        Showing::Peek => search_hits::peek_line(open, search, &palette),
-        _ => match &list {
-            Some(list) => {
-                // The same row the field names to assistive technology.
-                let at = search.highlight.min(list.len().saturating_sub(1));
-                let this_year = chrono::Datelike::year(&shell.search_calendar().today);
-                Some(search_list::list_view(list, at, this_year, &palette))
-            }
-            None => results_area(shell, search, style, height_pt * PANEL_HEIGHT_SHARE),
-        },
+    let body = if search.showing == Showing::Peek {
+        search_hits::peek_line(open, search, &palette)
+    } else {
+        open_body(
+            shell,
+            search,
+            list.as_ref(),
+            style,
+            height_pt * PANEL_HEIGHT_SHARE,
+        )
     };
     Some(
         col()
@@ -109,6 +108,37 @@ pub(super) fn panel(shell: &Shell, title: &Title<'_>, style: &Style, cx: &Cx<She
             .child(head)
             .children(body),
     )
+}
+
+/// The open panel under its field: the list there, a date's meaning over
+/// the results, or the results.
+fn open_body(
+    shell: &Shell,
+    search: &Search,
+    list: Option<&FieldList>,
+    style: &Style,
+    max_height_pt: f32,
+) -> Option<El> {
+    let palette = style.palette;
+    let this_year = chrono::Datelike::year(&shell.search_calendar().today);
+    match list {
+        // A date already read: what it means, over the results.
+        Some(list @ FieldList::Dates { read: true, .. }) => {
+            let meaning = search_list::list_view(list, usize::MAX, this_year, &palette);
+            Some(col().w_full().child(meaning).children(results_area(
+                shell,
+                search,
+                style,
+                max_height_pt,
+            )))
+        }
+        Some(list) => {
+            // The same row the field names to assistive technology.
+            let at = search.highlight.min(list.len().saturating_sub(1));
+            Some(search_list::list_view(list, at, this_year, &palette))
+        }
+        None => results_area(shell, search, style, max_height_pt),
+    }
 }
 
 /// The field, its ✕ while it has text, and 🔍.
@@ -145,7 +175,7 @@ fn head(
         .on_edit(Shell::search_field_mut)
         .on_input_change(Shell::search_edited)
         .on_input_key(|shell: &mut Shell, key: &KeyEvent, tx| shell.search_key(key, tx));
-    if let Some(list) = list.filter(|list| list.len() > 0) {
+    if let Some(list) = list.filter(|list| list.key_rows() > 0) {
         let at = search.highlight.min(list.len() - 1);
         field = field
             .active_descendant(search_list::option_key(at))
@@ -183,18 +213,16 @@ fn results_area(shell: &Shell, search: &Search, style: &Style, max_height_pt: f3
     match &search.found {
         Found::Nothing => None,
         Found::Held => {
-            // An unknown name, or dates that leave no day, find nothing;
-            // an ambiguous name has its list.
-            let unknown = shell.search_draft().is_some_and(|draft| {
-                draft.query() == Err(&SearchProblem::NoDays)
-                    || draft.filters.iter().any(|filter| {
-                        matches!(
-                            filter.resolved,
-                            FilterValue::Unknown | FilterValue::Unavailable
-                        )
-                    })
+            // Held text finds nothing, and says so; an ambiguous name has
+            // its list instead, and an open quote is still being typed.
+            let says = shell.search_draft().is_some_and(|draft| {
+                let ambiguous = draft
+                    .filters
+                    .iter()
+                    .any(|filter| matches!(filter.resolved, FilterValue::Ambiguous(_)));
+                !ambiguous && draft.query() != Err(&SearchProblem::UnclosedQuote)
             });
-            unknown.then(|| nothing_found(shell, search, &palette))
+            says.then(|| nothing_found(shell, search, &palette))
         }
         Found::Loading => Some(
             el().w_full()

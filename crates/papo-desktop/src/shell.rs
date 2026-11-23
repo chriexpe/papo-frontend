@@ -299,6 +299,7 @@ mod replies;
 mod search;
 mod search_field;
 mod search_hits;
+mod search_keys;
 mod search_list;
 mod search_open;
 mod search_panel;

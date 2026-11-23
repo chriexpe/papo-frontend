@@ -525,3 +525,20 @@ fn a_number_after_a_date_keyword_offers_each_unit() {
         assert!(shows(&rt, binding), "{binding} is offered");
     }
 }
+
+#[test]
+fn a_date_already_read_shows_its_meaning_over_the_results_and_enter_searches() {
+    let mut rt = conversation("");
+    rt.poll = Some(Shell::poll);
+    ctrl(&mut rt, 'f');
+    type_text(&mut rt, "hit during:2d");
+    results(&mut rt, &[(1, "general")], false);
+    assert!(shows(&rt, "2d"), "its meaning shows");
+    assert!(shows(&rt, "hit 1"), "over the results");
+    press(&mut rt, Key::Enter);
+    assert_eq!(
+        text(&rt),
+        "hit during:2d ",
+        "Enter ends the value and searches"
+    );
+}
