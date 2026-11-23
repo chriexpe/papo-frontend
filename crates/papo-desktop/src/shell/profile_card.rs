@@ -93,7 +93,7 @@ impl Shell {
 
     /// Asks for person `user`'s profile when timeline `key`'s account does
     /// not have it yet; the SDK publishes it with the account's resources.
-    fn load_profile(&self, key: TimelineKey, user: Uuid) {
+    pub(super) fn load_profile(&self, key: TimelineKey, user: Uuid) {
         let known = self
             .shown_timeline(key)
             .and_then(|open| open.resources.as_deref())
@@ -294,7 +294,13 @@ pub(super) fn body(shell: &Shell, palette: &Palette) -> Option<El> {
             .role("group")
             .label(strings::card_label(&name))
             .children(header.view(palette))
-            .children(sections(&roles, about, since.as_deref(), palette))
+            .children(sections(
+                strings::card_roles(),
+                &roles,
+                about,
+                since.as_deref(),
+                palette,
+            ))
             .child(el().h(SPACE_MD_PT))
             .children(actions.view(&name, &server, palette)),
     )
@@ -302,15 +308,15 @@ pub(super) fn body(shell: &Shell, palette: &Palette) -> Option<El> {
 
 /// The card's top: the avatar with presence and the status bubble, then
 /// the name and @handle.
-struct Header<'a> {
-    name: &'a str,
-    username: Option<&'a str>,
-    presence: Option<PresenceMark>,
-    status: Option<&'a str>,
+pub(super) struct Header<'a> {
+    pub(super) name: &'a str,
+    pub(super) username: Option<&'a str>,
+    pub(super) presence: Option<PresenceMark>,
+    pub(super) status: Option<&'a str>,
 }
 
 impl Header<'_> {
-    fn view(&self, palette: &Palette) -> [El; 2] {
+    pub(super) fn view(&self, palette: &Palette) -> [El; 2] {
         let mut top = row()
             .w_full()
             .px(SPACE_LG_PT)
@@ -345,9 +351,10 @@ impl Header<'_> {
     }
 }
 
-/// Roles, About and "Member since", each only when there is something to
-/// say.
-fn sections(
+/// Roles (under `roles_heading`), About and "Member since", each only when
+/// there is something to say.
+pub(super) fn sections(
+    roles_heading: &str,
     roles: &[&str],
     about: Option<&str>,
     since: Option<&str>,
@@ -356,7 +363,7 @@ fn sections(
     let mut sections = Vec::new();
     if !roles.is_empty() {
         sections.push(section(
-            strings::card_roles(),
+            roles_heading,
             row()
                 .w_full()
                 .gap(SPACE_SM_PT)

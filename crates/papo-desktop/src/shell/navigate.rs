@@ -64,6 +64,7 @@ impl Shell {
         self.channel_step_key(key, tx)
             || self.select_message_key(key, tx)
             || self.pins_key(key, tx)
+            || self.profile_key(key, tx)
             || self.escape_key(key)
     }
 
@@ -82,6 +83,20 @@ impl Shell {
             return false;
         }
         self.pins_pressed(true, tx);
+        true
+    }
+
+    /// Ctrl+U in a DM: its profile pane (in a channel, the members pane's
+    /// key, which comes with the roles session).
+    fn profile_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        if !key.is_command('u') || mods.shift || mods.alt || self.popup_shown() {
+            return false;
+        }
+        if self.nav.picked_dm().is_none() {
+            return false;
+        }
+        self.toggle_dm_profile(tx);
         true
     }
 

@@ -8,7 +8,7 @@ use papo_sdk::{Generation, Presence, PresenceStatus};
 use papo_sdk_ui::{AccountActivity, DirectMessageId, DirectMessageItem, TypingItem};
 
 use super::navigation::{ana, click, named, with_servers};
-use super::replying::{conversation, lia};
+use super::replying::{conversation, lia, resources_owned_by};
 use super::*;
 use crate::direct_list::DirectRows;
 use crate::direct_pane::dm_row_key;
@@ -246,4 +246,46 @@ fn a_conversation_the_backend_refuses_says_so_in_the_text_pills_place() {
         shell.direct_posted([row].into_iter().collect(), tx);
     });
     assert!(rt.state.picked_dm_access().is_none());
+}
+
+#[test]
+fn ctrl_u_shows_and_hides_a_dms_profile_pane() {
+    let mut rt = direct();
+    let row = dm(1, lia(), "Lia", "Lumen");
+    click(&mut rt, &dm_row_key(&row));
+    // The SDK would open its timeline; the fixture shows it with Lia known.
+    let key = crate::timeline::TimelineKey {
+        account: row.id.account,
+        channel: row.id.channel,
+    };
+    rt.update(move |shell, _tx| {
+        let mut open = crate::timeline::OpenTimeline::loaded(key, imbl::Vector::new());
+        open.resources = Some(Arc::new(resources_owned_by(key, Uuid::from_u128(0x4001))));
+        shell.tabs.show(Some(key), false);
+        *shell.tabs.shown_mut().unwrap() = open;
+    });
+    rt.frame(FRAME_S);
+    let pane = |rt: &Runtime<Shell>| {
+        rt.elements()
+            .into_iter()
+            .any(|element| element.key.as_deref() == Some("profile-pane") && !element.exiting)
+    };
+    assert!(!pane(&rt));
+    rt.key(KeyEvent {
+        key: Key::Command('u'),
+        mods: Mods {
+            ctrl: true,
+            cmd: true,
+            ..Mods::default()
+        },
+    });
+    rt.frame(FRAME_S);
+    assert!(pane(&rt));
+    assert!(
+        tree(&rt).contains("@lia"),
+        "the person, as the card shows them"
+    );
+    click(&mut rt, crate::shell::profile_pane::PROFILE_BUTTON_KEY);
+    rt.frame(FRAME_S);
+    assert!(!pane(&rt));
 }

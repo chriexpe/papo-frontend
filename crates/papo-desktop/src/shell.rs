@@ -100,6 +100,8 @@ pub(crate) struct Shell {
     /// The conversation a card's Message opened, picked once the list
     /// holds it.
     awaited_dm: Option<papo_sdk_ui::DirectMessageId>,
+    /// Whether a DM shows its profile pane, remembered for the window.
+    dm_profile: bool,
     /// What the backend said about conversations that left the list.
     dm_access: std::collections::BTreeMap<
         papo_sdk_ui::DirectMessageId,
@@ -179,6 +181,7 @@ impl Default for Shell {
             activity: HashMap::new(),
             direct: direct_list::DirectRows::new(),
             awaited_dm: None,
+            dm_profile: false,
             dm_access: std::collections::BTreeMap::new(),
             notice: None,
             pinning: reacting::Pinning::default(),
@@ -269,6 +272,7 @@ mod outgoing;
 pub(crate) mod pins;
 mod pins_panel;
 mod profile_card;
+mod profile_pane;
 mod reacting;
 mod reactions_list;
 mod reactors;

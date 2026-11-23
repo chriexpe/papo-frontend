@@ -193,6 +193,11 @@ line_icon!(
     "block"
 );
 line_icon!(
+    /// A DM's profile pane.
+    USER,
+    "user"
+);
+line_icon!(
     /// Direct messages: the rail's Direct.
     DIRECT,
     "direct"

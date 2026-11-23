@@ -270,5 +270,8 @@
   "notice.dm_open_failed": "Não deu para abrir a conversa.",
   "notice.dm_refused": "Você não pode mandar mensagem para essa pessoa.",
   "direct.you_blocked": "Você bloqueou {{name}}.",
-  "direct.cant_message": "Você não pode mandar mensagem para {{name}}."
+  "direct.cant_message": "Você não pode mandar mensagem para {{name}}.",
+  "direct.profile": "Perfil",
+  "shortcut.profile": "Ctrl+U",
+  "direct.roles_in": "Cargos em {{server}}"
 }

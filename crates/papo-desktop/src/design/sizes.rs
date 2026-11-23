@@ -182,3 +182,6 @@ pub(crate) const TYPING_DOT_PT: f32 = 4.0;
 /// The typing line's dots' pulse: one dot after another over this period,
 /// in seconds.
 pub(crate) const TYPING_PULSE_S: f64 = 1.2;
+
+/// The members pane's width, which a DM's profile pane takes, in points.
+pub(crate) const MEMBERS_WIDTH_PT: f32 = 214.0;

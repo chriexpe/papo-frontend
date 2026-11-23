@@ -201,6 +201,7 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         })
         .child(edge())
         .child(conversation)
+        .children(super::profile_pane::pane(shell, palette))
 }
 
 /// "Connected to {server}", floating at the top until dismissed.

@@ -117,3 +117,18 @@ pub(crate) fn direct_you_blocked(name: &str) -> String {
 pub(crate) fn direct_cant_message(name: &str) -> String {
     template!("direct.cant_message", "name" => name)
 }
+
+/// A DM's profile pane, and the button that shows it.
+pub(crate) fn direct_profile() -> &'static str {
+    text!("direct.profile")
+}
+
+/// The profile pane's shortcut, as its hint shows it.
+pub(crate) fn shortcut_profile() -> &'static str {
+    text!("shortcut.profile")
+}
+
+/// The profile pane's roles heading: "Roles in Cyber Asilo".
+pub(crate) fn direct_roles_in(server: &str) -> String {
+    template!("direct.roles_in", "server" => server)
+}

@@ -35,12 +35,12 @@ const EMPTY_ICON_PT: f32 = 32.0;
 /// pill. None while no conversation shows.
 pub(super) fn header(shell: &Shell, title: &Title<'_>, palette: &Palette) -> Option<El> {
     shell.tabs.shown()?;
-    let title = super::title::pill(title, palette);
+    let title_pill = super::title::pill(title, palette);
     // The open panel takes the actions pill's place.
     let actions = shell
         .shown_pins_panel()
         .is_none()
-        .then(|| actions_pill(false, palette));
+        .then(|| actions_pill(false, dm_profile(shell, title), palette));
     Some(
         row()
             .key("conversation-header")
@@ -49,13 +49,20 @@ pub(super) fn header(shell: &Shell, title: &Title<'_>, palette: &Palette) -> Opt
             .pt(SPACE_LG_PT)
             .center_y()
             .justify_between()
-            .child(title)
+            .child(title_pill)
             .children(actions),
     )
 }
 
 /// The actions pill: 📌, in the accent while the panel is open.
-fn actions_pill(open: bool, palette: &Palette) -> El {
+/// In a DM, whether its profile pane shows: the person button is there.
+fn dm_profile(shell: &Shell, title: &Title<'_>) -> Option<bool> {
+    matches!(title, Title::Direct { .. }).then_some(shell.dm_profile)
+}
+
+/// The actions pill: 📌, in the accent while the panel is open, and in a
+/// DM the person button.
+fn actions_pill(open: bool, profile: Option<bool>, palette: &Palette) -> El {
     row()
         .key("actions-pill")
         .h(HEADER_PILL_HEIGHT_PT)
@@ -67,6 +74,7 @@ fn actions_pill(open: bool, palette: &Palette) -> El {
         .role("toolbar")
         .label(strings::header_actions())
         .child(pins_button(open, palette))
+        .children(profile.map(|shown| super::profile_pane::button(shown, palette)))
 }
 
 fn pins_button(open: bool, palette: &Palette) -> El {

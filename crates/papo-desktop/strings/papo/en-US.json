@@ -270,5 +270,8 @@
   "notice.dm_open_failed": "Couldn't open the conversation.",
   "notice.dm_refused": "You can't message them.",
   "direct.you_blocked": "You blocked {{name}}.",
-  "direct.cant_message": "You can't message {{name}}."
+  "direct.cant_message": "You can't message {{name}}.",
+  "direct.profile": "Profile",
+  "shortcut.profile": "Ctrl+U",
+  "direct.roles_in": "Roles in {{server}}"
 }
