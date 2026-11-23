@@ -118,7 +118,14 @@ impl SearchResults {
             let Some(item) = SearchResultItem::of(hit) else {
                 continue;
             };
-            if !self.window.holds(item.key.created_at_us) {
+            let at_us = item.key.created_at_us;
+            if self.window.passed(at_us) {
+                // Past the window's far end: so is every later result.
+                self.next = None;
+                self.complete = true;
+                return;
+            }
+            if !self.window.holds(at_us) {
                 continue;
             }
             if !self.listed.insert(item.id()) {

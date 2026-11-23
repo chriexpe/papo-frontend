@@ -123,6 +123,7 @@ const MONTH_NAMES: &[(&str, u32)] = &[
     ("ago", 8),
     ("september", 9),
     ("setembro", 9),
+    ("sept", 9),
     ("sep", 9),
     ("set", 9),
     ("october", 10),
@@ -138,7 +139,8 @@ const MONTH_NAMES: &[(&str, u32)] = &[
     ("dez", 12),
 ];
 
-/// What `raw` names in `calendar`; none when it is no date this reads.
+/// What `raw` names in `calendar`; none when it is no date this reads, or
+/// one outside years 1 to 9999.
 #[must_use]
 pub fn parse_search_date(raw: &str, calendar: SearchCalendar) -> Option<SearchDate> {
     let raw = raw.trim().to_lowercase();
@@ -146,20 +148,34 @@ pub fn parse_search_date(raw: &str, calendar: SearchCalendar) -> Option<SearchDa
         return None;
     }
     let today = calendar.today;
-    match raw.as_str() {
-        "today" | "hoje" => return Some(SearchDate::Day(today)),
-        "yesterday" | "ontem" => return today.pred_opt().map(SearchDate::Day),
-        _ => {}
-    }
-    relative(&raw, today)
-        .or_else(|| named_month(&raw, today))
-        .or_else(|| numeric(&raw, calendar))
+    let date = match raw.as_str() {
+        "today" | "hoje" => Some(SearchDate::Day(today)),
+        "yesterday" | "ontem" => today.pred_opt().map(SearchDate::Day),
+        _ => relative(&raw, today)
+            .or_else(|| named_month(&raw, today))
+            .or_else(|| numeric(&raw, calendar)),
+    }?;
+    let in_range = |day: NaiveDate| (MIN_YEAR..=MAX_YEAR).contains(&day.year());
+    (date.first_day().is_some_and(in_range) && date.last_day().is_some_and(in_range))
+        .then_some(date)
 }
+
+/// The years a date may fall in: the backend's `YYYY-MM-DD`.
+const MIN_YEAR: i32 = 1;
+const MAX_YEAR: i32 = 9999;
+
+/// How far back a day and month with no year looks for a year that has
+/// it (29 February: the most recent leap year).
+const YEARS_BACK: i32 = 8;
 
 /// `2d`, `3w` / `3s`, `1m`, `1y` / `1a`: that long before today.
 fn relative(raw: &str, today: NaiveDate) -> Option<SearchDate> {
     let unit = raw.chars().last()?;
-    let count: u32 = raw[..raw.len() - unit.len_utf8()].parse().ok()?;
+    let digits = &raw[..raw.len() - unit.len_utf8()];
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let count: u32 = digits.parse().ok()?;
     if count > MAX_RELATIVE {
         return None;
     }
@@ -191,7 +207,7 @@ fn named_month(raw: &str, today: NaiveDate) -> Option<SearchDate> {
     if rest.is_empty() {
         return Some(recent_month(month, today));
     }
-    let year = year_of(rest)?;
+    let year = year_of(rest, today)?;
     Some(SearchDate::Month { year, month })
 }
 
@@ -205,14 +221,22 @@ fn recent_month(month: u32, today: NaiveDate) -> SearchDate {
     SearchDate::Month { year, month }
 }
 
-/// A two- or four-digit year: `26` is 2026.
-fn year_of(raw: &str) -> Option<i32> {
+/// A four-digit year, or a two-digit one as the most recent such year not
+/// after today's (in 2026, `26` is 2026 and `99` is 1999).
+fn year_of(raw: &str, today: NaiveDate) -> Option<i32> {
     if !raw.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
     let year: i32 = raw.parse().ok()?;
     match raw.len() {
-        2 => Some(2000 + year),
+        2 => {
+            let this_century = today.year() - today.year().rem_euclid(100) + year;
+            Some(if this_century > today.year() {
+                this_century - 100
+            } else {
+                this_century
+            })
+        }
         4 => Some(year),
         _ => None,
     }
@@ -230,25 +254,38 @@ fn numeric(raw: &str, calendar: SearchCalendar) -> Option<SearchDate> {
     match parts.as_slice() {
         [digits] => packed(digits, calendar),
         [first, second] => two_parts(first, second, calendar),
-        [first, second, third] => three_parts(first, second, third, calendar.order),
+        [first, second, third] => three_parts(first, second, third, calendar),
         _ => None,
     }
 }
 
 /// A date with no separators: `2025` (a year), `211126`, `21112026`,
-/// `20261121`.
+/// `20261121`. Eight digits read both ways; a reading whose year is
+/// plausible (from 1970 to next year) wins, the calendar's order first.
 fn packed(digits: &str, calendar: SearchCalendar) -> Option<SearchDate> {
     match digits.len() {
         4 => Some(SearchDate::Year(digits.parse().ok()?)),
-        6 => three_parts(&digits[..2], &digits[2..4], &digits[4..], calendar.order),
-        8 => three_parts(&digits[..2], &digits[2..4], &digits[4..], calendar.order)
-            .or_else(|| three_parts(&digits[..4], &digits[4..6], &digits[6..], calendar.order)),
+        6 => three_parts(&digits[..2], &digits[2..4], &digits[4..], calendar),
+        8 => {
+            let ordered = three_parts(&digits[..2], &digits[2..4], &digits[4..], calendar);
+            let year_first = three_parts(&digits[..4], &digits[4..6], &digits[6..], calendar);
+            let plausible = |date: &SearchDate| {
+                date.first_day()
+                    .is_some_and(|day| (1970..=calendar.today.year() + 1).contains(&day.year()))
+            };
+            [ordered, year_first]
+                .into_iter()
+                .flatten()
+                .find(plausible)
+                .or(ordered)
+                .or(year_first)
+        }
         _ => None,
     }
 }
 
 /// `11/2026` and `2026-11` (a month), else a day and month in the
-/// calendar's order (the most recent one not after today).
+/// calendar's order: the most recent such day not after today.
 fn two_parts(first: &str, second: &str, calendar: SearchCalendar) -> Option<SearchDate> {
     let month_of = |raw: &str| {
         raw.parse::<u32>()
@@ -273,20 +310,24 @@ fn two_parts(first: &str, second: &str, calendar: SearchCalendar) -> Option<Sear
     };
     let (day, month): (u32, u32) = (day.parse().ok()?, month.parse().ok()?);
     let today = calendar.today;
-    let this_year = NaiveDate::from_ymd_opt(today.year(), month, day);
-    match this_year {
-        Some(date) if date <= today => Some(SearchDate::Day(date)),
-        _ => NaiveDate::from_ymd_opt(today.year() - 1, month, day).map(SearchDate::Day),
-    }
+    (0..=YEARS_BACK)
+        .filter_map(|back| NaiveDate::from_ymd_opt(today.year() - back, month, day))
+        .find(|date| *date <= today)
+        .map(SearchDate::Day)
 }
 
 /// `2026-11-21` (year first), else day, month and year in the calendar's
 /// order, the year in two or four digits.
-fn three_parts(first: &str, second: &str, third: &str, order: DateOrder) -> Option<SearchDate> {
+fn three_parts(
+    first: &str,
+    second: &str,
+    third: &str,
+    calendar: SearchCalendar,
+) -> Option<SearchDate> {
     let (year, month, day) = if first.len() == 4 {
         (first, second, third)
     } else {
-        match order {
+        match calendar.order {
             DateOrder::DayFirst => (third, second, first),
             DateOrder::MonthFirst => (third, first, second),
         }
@@ -294,7 +335,8 @@ fn three_parts(first: &str, second: &str, third: &str, order: DateOrder) -> Opti
     if day.len() > 2 || month.len() > 2 {
         return None;
     }
-    let date = NaiveDate::from_ymd_opt(year_of(year)?, month.parse().ok()?, day.parse().ok()?)?;
+    let year = year_of(year, calendar.today)?;
+    let date = NaiveDate::from_ymd_opt(year, month.parse().ok()?, day.parse().ok()?)?;
     Some(SearchDate::Day(date))
 }
 

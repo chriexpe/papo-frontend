@@ -121,3 +121,43 @@ fn what_is_no_date_reads_as_none() {
         assert_eq!(read(raw), None, "{raw}");
     }
 }
+
+#[test]
+fn eight_digits_prefer_the_reading_with_a_plausible_year() {
+    assert_eq!(read("20101115"), Some(SearchDate::Day(day("2010-11-15"))));
+    assert_eq!(read("21112026"), Some(SearchDate::Day(day("2026-11-21"))));
+    let us = SearchCalendar {
+        order: DateOrder::MonthFirst,
+        ..brazil()
+    };
+    assert_eq!(
+        parse_search_date("112126", us),
+        Some(SearchDate::Day(day("2026-11-21")))
+    );
+}
+
+#[test]
+fn two_digit_years_are_the_most_recent_and_far_years_are_refused() {
+    assert_eq!(read("01/01/99"), Some(SearchDate::Day(day("1999-01-01"))));
+    assert_eq!(
+        read("nov26"),
+        Some(SearchDate::Month {
+            year: 2026,
+            month: 11
+        })
+    );
+    assert_eq!(read("9999y"), None);
+    assert_eq!(read("+2d"), None);
+    assert_eq!(
+        read("sept"),
+        Some(SearchDate::Month {
+            year: 2026,
+            month: 9
+        })
+    );
+}
+
+#[test]
+fn february_29_with_no_year_is_the_most_recent_leap_day() {
+    assert_eq!(read("29/02"), Some(SearchDate::Day(day("2024-02-29"))));
+}

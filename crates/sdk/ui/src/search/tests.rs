@@ -341,6 +341,7 @@ fn results_keep_to_the_window_and_want_the_next_page_when_one_kept_nothing() {
     let window = SearchWindow {
         start_us: Some(instant_us("2026-11-20T03:00:00Z")),
         end_us: Some(instant_us("2026-11-21T03:00:00Z")),
+        oldest_first: false,
     };
     let results =
         SearchResults::first_within(&page(vec![hit(1, "2026-11-21T04:00:00Z")], true), window);
@@ -406,4 +407,43 @@ fn a_number_offers_each_unit_and_a_word_its_completions() {
         "a read value shows itself"
     );
     assert_eq!(date_bindings("zz", november_23()), [""; 0]);
+}
+
+#[test]
+fn the_first_page_starts_at_the_windows_end_and_a_hit_before_it_ends_the_list() {
+    let (_, window) = localize_search(
+        days_query(Some("2026-11-20"), Some("2026-11-20")),
+        &brasilia,
+    )
+    .unwrap();
+    let cursor = window.first_cursor().unwrap();
+    assert_eq!(cursor.created_at, "2026-11-21T03:00:00.000000Z");
+    assert_eq!(cursor.id, Uuid::nil().to_string());
+    let mut results =
+        SearchResults::first_within(&page(vec![hit(1, "2026-11-20T12:00:00Z")], true), window);
+    results.append(&page(
+        vec![
+            hit(2, "2026-11-20T04:00:00Z"),
+            hit(3, "2026-11-20T02:00:00Z"),
+        ],
+        true,
+    ));
+    assert_eq!(
+        results.count(),
+        SearchCount::Exact(2),
+        "older than the window: the end"
+    );
+    assert!(results.next().is_none());
+}
+
+#[test]
+fn a_midnight_the_clock_skips_starts_the_day_at_the_change() {
+    // UTC−4 until 2026-09-06T04:00Z, when local 00:00 becomes 01:00 (UTC−3).
+    let change_us = instant_us("2026-09-06T04:00:00Z");
+    let chile = move |at_us: i64| {
+        let hours = if at_us < change_us { -4 } else { -3 };
+        crate::UtcOffset::from_seconds_east(hours * 3600).unwrap()
+    };
+    let (_, window) = localize_search(days_query(Some("2026-09-06"), None), &chile).unwrap();
+    assert_eq!(window.start_us, Some(change_us));
 }

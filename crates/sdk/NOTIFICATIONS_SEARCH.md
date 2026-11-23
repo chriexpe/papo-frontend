@@ -141,8 +141,10 @@ client's `SearchCalendar` (today, order, language), into `SearchQuery::local_day
 the backend counts UTC days, so `Session::search` refuses such a query until
 `papo_sdk_ui::localize_search` converts it with the client's UTC offsets: the
 local days become the exact instants they span, the request asks every UTC day
-those touch, and `SearchResults` keeps only results inside that window
-(`wants_next` when a whole page fell outside it). The draft reports the first problem (empty, open quote,
+those touch, the first page starts from `SearchWindow::first_cursor` (the
+window's near end, so the backend skips the hours outside it), and
+`SearchResults` keeps only results inside the window, ending the list at the first
+result past its far end (`wants_next` when a whole page fell outside it). The draft reports the first problem (empty, open quote,
 unresolved or repeated filter) instead of a query. `SearchQuery::parse` is the
 server-scope reading that fails on any problem. `search_suggestions` and
 `search_candidates` list a filter's values with the text that binds each one.
