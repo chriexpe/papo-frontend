@@ -74,7 +74,16 @@ impl TimelineHost for Shell {
     }
 
     fn content_pressed(&mut self, key: TimelineKey, message: Uuid, press: Press, tx: &mut Tx) {
-        self.worked_outside();
+        // A mention in one of the open pins panel's pins is a press inside
+        // the panel: it stays, and the card opens beside the mention.
+        let in_pins = matches!(press, Press::Person(_))
+            && self.shown_pins_panel().is_some()
+            && self
+                .shown_timeline(key)
+                .is_some_and(|open| open.pins.get(message).is_some());
+        if !in_pins {
+            self.worked_outside();
+        }
         self.content_pressed_in(key, message, press, tx);
     }
 
@@ -86,6 +95,7 @@ impl TimelineHost for Shell {
     fn author_pressed(&mut self, key: TimelineKey, user: Uuid, anchor: String, tx: &mut Tx) {
         // A press moves no keyboard focus: what had it gets it back, as
         // from a menu the pointer opened.
+        self.worked_outside();
         let trigger = tx.focused().unwrap_or(COMPOSER_KEY).to_owned();
         self.open_card(key, user, Placement::Beside(anchor), trigger, tx);
     }

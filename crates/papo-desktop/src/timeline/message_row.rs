@@ -235,7 +235,8 @@ fn build(
                 // A continued row keeps the hidden name's width, so its
                 // text stays on the column.
                 let name = if parts.continued {
-                    name().opacity(0.0).a11y_hidden()
+                    // Only a placeholder: it opens no card.
+                    name_text(&parts.name, &palette).opacity(0.0).a11y_hidden()
                 } else {
                     name()
                 };

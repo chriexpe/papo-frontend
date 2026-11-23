@@ -239,11 +239,11 @@ fn a_conversation_the_backend_refuses_says_so_in_the_text_pills_place() {
         shell.direct_posted(DirectRows::new(), tx);
     });
     let id = row.id.clone();
-    rt.update(move |shell, _tx| {
+    rt.update(move |shell, tx| {
         shell
             .dm_access
             .insert(id.clone(), crate::shell::direct::Asked::Pending);
-        shell.dm_access_answered(id, Ok(DirectAccess::Refused));
+        shell.dm_access_answered(id, Ok(DirectAccess::Refused), tx);
     });
     rt.frame(FRAME_S);
     assert_eq!(rt.state.picked_dm_access(), Some(DirectAccess::Refused));
@@ -310,7 +310,7 @@ fn an_answer_that_comes_after_the_conversation_is_back_in_the_list_is_dropped() 
             .dm_access
             .insert(id.clone(), crate::shell::direct::Asked::Pending);
         shell.direct_posted([row].into_iter().collect(), tx);
-        shell.dm_access_answered(id, Ok(DirectAccess::Refused));
+        shell.dm_access_answered(id, Ok(DirectAccess::Refused), tx);
     });
     assert!(rt.state.picked_dm_access().is_none());
 }
@@ -340,4 +340,39 @@ fn an_account_switch_drops_the_other_accounts_conversation() {
         );
     });
     assert!(rt.state.navigation().picked_dm_row().is_none());
+}
+
+#[test]
+fn a_conversation_the_account_is_no_longer_in_closes() {
+    use papo_sdk::operations::social::DirectAccess;
+    let mut rt = direct();
+    let row = dm(1, lia(), "Lia", "Lumen");
+    click(&mut rt, &dm_row_key(&row));
+    let id = row.id.clone();
+    rt.update(move |shell, tx| {
+        shell.direct_posted(DirectRows::new(), tx);
+        shell
+            .dm_access
+            .insert(id.clone(), crate::shell::direct::Asked::Pending);
+        shell.dm_access_answered(id, Ok(DirectAccess::Gone), tx);
+    });
+    assert!(rt.state.navigation().picked_dm().is_none());
+}
+
+#[test]
+fn a_notice_shows_in_direct_with_no_conversation_open() {
+    let mut rt = direct();
+    rt.update(|shell, tx| shell.refuse(crate::notice::Refusal::CloseDm, tx));
+    rt.frame(FRAME_S);
+    let notice = rt
+        .elements()
+        .into_iter()
+        .find(|element| element.key.as_deref() == Some(crate::notice::NOTICE_KEY))
+        .expect("the notice");
+    let [x, y, w, h] = notice.rect;
+    assert!(
+        w > 0.0 && h > 0.0 && x >= 0.0 && y >= 0.0,
+        "drawn in the window"
+    );
+    assert!(tree(&rt).contains("Couldn't close the conversation."));
 }

@@ -35,7 +35,6 @@ impl Shell {
         trigger: String,
         tx: &mut Tx,
     ) {
-        self.worked_outside();
         let mut menu = OpenMenu::with_entries(
             placement,
             trigger,

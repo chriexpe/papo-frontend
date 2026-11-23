@@ -57,7 +57,8 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, palette: &Pal
         me,
     } = *context;
     let Some((_, draft)) = composer.shown() else {
-        return col();
+        // Nothing to write in: still the notice pill's anchor, at no height.
+        return col().key(COMPOSER_PILL_KEY).w_full();
     };
     let loading = composer.is_loading();
     let style = composer.field_style(palette);

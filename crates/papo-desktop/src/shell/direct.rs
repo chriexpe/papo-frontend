@@ -224,27 +224,39 @@ impl Shell {
                     .map_err(|error| error.to_string()),
                 Err(error) => Err(error.to_string()),
             };
-            updates.send(move |shell| shell.dm_access_answered(id, answer));
+            updates.send_tx(move |shell, tx| shell.dm_access_answered(id, answer, tx));
         });
     }
 
     /// The backend's answer about conversation `id`. A failed read is
     /// asked again with the next list; an answer for a conversation back
-    /// in the list, or no longer asked about, is dropped. Only a refusal
-    /// or absence is kept: open needs no note, and "you blocked" is read
-    /// from the live block list. Returns whether the view changed.
+    /// in the list, or no longer asked about, is dropped. A refusal is
+    /// kept for the state pill; a conversation the account is no longer
+    /// in closes; open needs no note (a hide elsewhere reads as open), and
+    /// "you blocked" is read from the live block list. Returns whether the
+    /// view changed.
     pub(super) fn dm_access_answered(
         &mut self,
         id: DirectMessageId,
         answer: Result<DirectAccess, String>,
+        tx: &mut Tx,
     ) -> bool {
         if !matches!(self.dm_access.get(&id), Some(Asked::Pending)) {
             return false;
         }
         let listed = self.direct.iter().any(|row| row.id == id);
         match answer {
-            Ok(access @ (DirectAccess::Refused | DirectAccess::Gone)) if !listed => {
-                self.dm_access.insert(id, Asked::Answered(access));
+            Ok(DirectAccess::Refused) if !listed => {
+                self.dm_access
+                    .insert(id, Asked::Answered(DirectAccess::Refused));
+                true
+            }
+            Ok(DirectAccess::Gone) if !listed => {
+                self.dm_access.remove(&id);
+                if self.nav.picked_dm().is_some_and(|picked| picked.id == id) {
+                    self.nav.unpick_dm();
+                    self.sync_timeline(Some(tx));
+                }
                 true
             }
             Ok(_) => {
@@ -283,7 +295,9 @@ pub(super) fn state_pill(
         _ => strings::direct_cant_message(name),
     };
     let mut pill = row()
-        .key(DM_STATE_KEY)
+        // In the text pill's place, under its key: the notice pill hangs
+        // above whichever shows.
+        .key(crate::composer::COMPOSER_PILL_KEY)
         .w_full()
         .h(COMPOSER_HEIGHT_PT)
         .px(SPACE_LG_PT)
@@ -329,6 +343,3 @@ pub(super) fn state_pill(
     }
     pill
 }
-
-/// The element key of a DM's state pill.
-pub(crate) const DM_STATE_KEY: &str = "dm-state";
