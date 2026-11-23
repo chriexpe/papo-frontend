@@ -31,7 +31,9 @@ pub use notifications::{AccountInbox, NotificationClient, NotificationItem};
 mod activity;
 mod calls;
 mod expressions;
-pub use activity::{ActivityService, ActivitySubscription, ActivityView, TypingItem};
+pub use activity::{
+    AccountActivity, ActivityService, ActivitySubscription, PresenceMark, TypingItem,
+};
 pub use calls::{
     ActiveCallView, CallParticipantItem, CallParticipantKey, CallService, CallSubscription,
     CallView, ParticipantVideoBinding, RoomParticipantItem, VoiceCapability, VoiceRoomView,
@@ -55,7 +57,7 @@ mod channel_projection;
 mod channel_reading;
 mod people;
 mod resource_list;
-pub use people::{MemberItem, PeopleService, ProfileItem, RoleLabel};
+pub use people::{MemberItem, PeopleService, ProfileItem, RoleLabel, person, requested_profile};
 pub use resource_list::{PeopleListSubscription, PeopleListUpdate};
 mod content_cache;
 mod list_diff;
