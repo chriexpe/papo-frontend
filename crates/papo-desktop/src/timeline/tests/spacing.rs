@@ -1,13 +1,32 @@
-//! The spacing model of `docs/design.md` §5 at every density: distances
-//! between groups and within one, and one content column per message.
+//! The spacing model of `docs/design.md` §5 at every density, and at the
+//! smallest and largest text size and spacing: distances between groups
+//! and within one, and one content column per message.
 
 use std::sync::Arc;
 
 use imbl::Vector;
 use papo_sdk_ui::TimelineItem;
 
-use super::{DENSITIES, assert_near, bottom, has_part, message, part, runtime};
-use crate::design::{AVATAR_TOP, Density, Lead, Look, MESSAGE_BLOCK_GAP, MessageLayout, Theme};
+use super::{DENSITIES, assert_near, bottom, has_part, message, part, runtime, runtime_with};
+use crate::design::{
+    AVATAR_TOP, Density, Lead, Look, MESSAGE_BLOCK_GAP, MessageLayout, Scale, Theme,
+};
+
+/// The default look, and the smallest and largest text size with the
+/// smallest and largest spacing (§5: 12–16 pt, ×0.8–×1.25).
+fn looks() -> [Look; 3] {
+    let at = |text_pt, spacing| {
+        Look::scaled(
+            Theme::Graphite,
+            Scale {
+                text_pt,
+                spacing,
+                roundness: 1.0,
+            },
+        )
+    };
+    [Look::new(Theme::Graphite), at(12.0, 0.8), at(16.0, 1.25)]
+}
 
 /// Ana twice in a minute, Bia, then Bia again half an hour later.
 fn conversation() -> Vector<Arc<TimelineItem>> {
@@ -40,9 +59,11 @@ fn layouts() -> Vec<MessageLayout> {
 
 #[test]
 fn rows_sit_at_the_spacing_of_their_density() {
-    let look = Look::new(Theme::Graphite);
-    for layout in layouts() {
-        let rt = runtime(conversation(), layout);
+    for (look, layout) in looks()
+        .into_iter()
+        .flat_map(|look| layouts().into_iter().map(move |layout| (look, layout)))
+    {
+        let rt = runtime_with(conversation(), layout, &look);
         let spacing = look.spacing(layout.density);
         let continued = if layout.grouped {
             spacing.within_group_pt
@@ -67,10 +88,15 @@ fn rows_sit_at_the_spacing_of_their_density() {
 
 #[test]
 fn every_block_starts_on_its_messages_content_column() {
-    let look = Look::new(Theme::Graphite);
-    for layout in layouts() {
-        let rt = runtime(conversation(), layout);
-        let what = format!("{layout:?}");
+    for (look, layout) in looks()
+        .into_iter()
+        .flat_map(|look| layouts().into_iter().map(move |layout| (look, layout)))
+    {
+        let rt = runtime_with(conversation(), layout, &look);
+        let what = format!(
+            "{layout:?} at {:?}",
+            look.font(crate::design::TYPE_BODY).size
+        );
         let column = part(&rt, 1, "content")[0];
         for n in 1..=4 {
             let content = part(&rt, n, "content");
@@ -96,14 +122,16 @@ fn every_block_starts_on_its_messages_content_column() {
 }
 
 #[test]
-fn an_avatar_sits_below_the_row_padding_and_adds_no_height() {
-    let look = Look::new(Theme::Graphite);
-    for density in [Density::Compact, Density::Normal, Density::Comfortable] {
+fn an_avatar_sits_below_the_row_padding_inside_its_row() {
+    for (look, density) in looks().into_iter().flat_map(|look| {
+        [Density::Compact, Density::Normal, Density::Comfortable]
+            .map(move |density| (look, density))
+    }) {
         let layout = MessageLayout {
             density,
             ..MessageLayout::default()
         };
-        let rt = runtime(conversation(), layout);
+        let rt = runtime_with(conversation(), layout, &look);
         let spacing = look.spacing(density);
         let Lead::Avatar(size_pt) = spacing.lead else {
             panic!("{density:?} leads with an avatar");
@@ -118,13 +146,14 @@ fn an_avatar_sits_below_the_row_padding_and_adds_no_height() {
             &what,
         );
         let content = part(&rt, 3, "content");
+        let lead_pt = look.text_multiple(AVATAR_TOP) + size_pt;
         assert_near(
             row[3],
-            2.0 * spacing.row_padding_pt + content[3].max(size_pt),
+            2.0 * spacing.row_padding_pt + content[3].max(lead_pt),
             &format!("{what}: the row's height"),
         );
         assert!(
-            bottom(avatar) <= bottom(row) - spacing.row_padding_pt + 1.0,
+            bottom(avatar) <= bottom(row) - spacing.row_padding_pt + 0.1,
             "{what}: the avatar stays inside its row"
         );
     }

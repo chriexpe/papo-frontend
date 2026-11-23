@@ -23,8 +23,11 @@ use crate::design::{Density, Look, MessageLayout, Theme};
 
 const SIZE_PT: (f32, f32) = (800.0, 600.0);
 const FRAME_S: f64 = 1.0 / 60.0;
-/// Points within which two layout edges count as the same.
-const EDGE_PT: f32 = 0.01;
+/// Points within which two layout distances count as the same. Rune
+/// rounds edges to a fraction of a point, so at a scaled text size or
+/// spacing a distance can miss its value by up to 1/16 pt; at ×1 every
+/// value in the spacing model lands on that grid exactly.
+const EDGE_PT: f32 = 1.0 / 16.0 + 1e-3;
 /// How far the reader's row may move through a change, in points.
 const HOLD_PT: f32 = 0.5;
 const DENSITIES: [Density; 4] = [
@@ -43,6 +46,8 @@ fn noon_us() -> i64 {
 struct Host {
     open: OpenTimeline,
     layout: MessageLayout,
+    /// The look the rows are drawn with: the text size and spacing.
+    look: Look,
     /// History requests the visible rows asked for.
     requests: Vec<Request>,
     /// Presses inside message content, in order.
@@ -189,7 +194,7 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
     let style = Style {
         layout: host.layout,
         theme: Theme::Graphite,
-        look: Look::new(Theme::Graphite),
+        look: host.look,
         today: time.today(),
         time,
         hourglass: host.hourglass,
@@ -234,9 +239,19 @@ fn message(n: u128, author: &str, seconds: u32, body: &str) -> Arc<TimelineItem>
 }
 
 fn runtime(items: Vector<Arc<TimelineItem>>, layout: MessageLayout) -> Runtime<Host> {
+    runtime_with(items, layout, &Look::new(Theme::Graphite))
+}
+
+/// [`runtime`] drawn with `look`.
+fn runtime_with(
+    items: Vector<Arc<TimelineItem>>,
+    layout: MessageLayout,
+    look: &Look,
+) -> Runtime<Host> {
     let host = Host {
         open: OpenTimeline::loaded(key(), items),
         layout,
+        look: *look,
         requests: Vec::new(),
         presses: Vec::new(),
         hourglass: true,

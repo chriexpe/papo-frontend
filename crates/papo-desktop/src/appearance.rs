@@ -1,18 +1,17 @@
 //! The Appearance settings (`docs/design.md` §4 to §6 and §8): the theme,
-//! the background colour and grain, the accent, each account's message
-//! spacing and grouping, Shape and type's five values, the system font and
-//! the Glass switch. Every one is this device's: the account's `theme`,
-//! `fontSize` and `messageDensity` cannot hold them (B-016 to B-018), so
-//! none follows the account until the backend can.
+//! the background colour and grain, the accent, message spacing and
+//! grouping, Shape and type's five values, the system font and the Glass
+//! switch. Every one is this device's, one value for every account: the
+//! account's `theme`, `fontSize` and `messageDensity` cannot hold them
+//! (B-016 to B-018), so none follows the account until the backend can,
+//! and while nothing syncs message spacing is not kept per account
+//! either (Christian, 2026-11-23).
 //!
 //! Owns the values, their defaults and their place in this device's
 //! settings file (`rune::prefs`). A change is saved before it is kept, so
 //! what the settings show is what is saved (§8, Saving). The tokens drawn
 //! from them are `design`'s (`Look`).
 
-use std::collections::HashMap;
-
-use papo_sdk::AccountId;
 use rune::prefs::Prefs;
 
 use crate::design::{
@@ -121,6 +120,8 @@ pub(crate) struct Appearance {
     /// A fine noise over the surfaces (0–1).
     pub(crate) grain: f32,
     pub(crate) accent: Accent,
+    /// Message spacing, Group and Stack (§6).
+    pub(crate) messages: MessageLayout,
     pub(crate) shape: Shape,
     /// The system's interface font instead of Inter.
     pub(crate) system_font: bool,
@@ -135,6 +136,7 @@ impl Default for Appearance {
             background: Background::default(),
             grain: 0.0,
             accent: Accent::default(),
+            messages: MessageLayout::default(),
             shape: Shape::default(),
             system_font: false,
             glass: Theme::ALL.map(|theme| theme != Theme::Oled),
@@ -172,7 +174,7 @@ mod key {
     pub(super) const SHAPE: &str = "appearance.shape";
     pub(super) const SYSTEM_FONT: &str = "appearance.system_font";
     pub(super) const GLASS: &str = "appearance.glass";
-    /// Followed by the account's server and user: `messages.<server>.<user>`.
+    /// Message spacing, Group and Stack: `[density, grouped, stacked]`.
     pub(super) const MESSAGES: &str = "appearance.messages";
 }
 
@@ -184,7 +186,6 @@ pub(crate) struct NotSaved;
 /// The Appearance settings and where they are saved.
 pub(crate) struct AppearanceStore {
     appearance: Appearance,
-    layouts: HashMap<AccountId, MessageLayout>,
     prefs: Prefs,
 }
 
@@ -242,15 +243,21 @@ impl AppearanceStore {
                 .get::<String>(key::ACCENT)
                 .and_then(|name| accent_named(&name))
                 .unwrap_or(defaults.accent),
+            messages: prefs
+                .get::<(String, bool, bool)>(key::MESSAGES)
+                .and_then(|(density, grouped, stacked)| {
+                    Some(MessageLayout {
+                        density: density_named(&density)?,
+                        grouped,
+                        stacked,
+                    })
+                })
+                .unwrap_or(defaults.messages),
             shape,
             system_font: prefs.get(key::SYSTEM_FONT).unwrap_or(defaults.system_font),
             glass,
         };
-        AppearanceStore {
-            appearance,
-            layouts: HashMap::new(),
-            prefs,
-        }
+        AppearanceStore { appearance, prefs }
     }
 
     pub(crate) fn appearance(&self) -> &Appearance {
@@ -291,6 +298,15 @@ impl AppearanceStore {
         if appearance.accent != old.accent {
             write!(key::ACCENT, accent_name(appearance.accent));
         }
+        if appearance.messages != old.messages {
+            let messages = appearance.messages;
+            let value = (
+                density_name(messages.density),
+                messages.grouped,
+                messages.stacked,
+            );
+            write!(key::MESSAGES, &value);
+        }
         if appearance.shape != old.shape {
             let values = ShapeValue::ALL.map(|value| appearance.shape.get(value));
             write!(key::SHAPE, &values);
@@ -308,31 +324,6 @@ impl AppearanceStore {
         self.appearance = appearance;
         Ok(())
     }
-
-    /// `account`'s message spacing and grouping (§6: per account on this
-    /// device).
-    pub(crate) fn layout(&mut self, account: AccountId) -> MessageLayout {
-        if let Some(layout) = self.layouts.get(&account) {
-            return *layout;
-        }
-        let layout = self
-            .prefs
-            .get::<(String, bool, bool)>(&layout_key(account))
-            .and_then(|(density, grouped, stacked)| {
-                Some(MessageLayout {
-                    density: density_named(&density)?,
-                    grouped,
-                    stacked,
-                })
-            })
-            .unwrap_or_default();
-        self.layouts.insert(account, layout);
-        layout
-    }
-}
-
-fn layout_key(account: AccountId) -> String {
-    format!("{}.{}.{}", key::MESSAGES, account.server(), account.user())
 }
 
 fn theme_name(theme: Theme) -> &'static str {

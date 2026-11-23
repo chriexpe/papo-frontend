@@ -19,7 +19,6 @@ use rune::{Image, ImageCache};
 use crate::account_watch::{self, Accounts};
 use crate::composer::Composer;
 use crate::composer::prefs::WritingPrefs;
-use crate::design::MessageLayout;
 use crate::navigation::Navigation;
 use crate::reading_prefs::ReadingPrefs;
 use crate::reconnect_hints;
@@ -69,9 +68,6 @@ pub(crate) struct Shell {
     reorder: Reorder,
     /// The open timelines and the places of closed ones.
     tabs: Tabs,
-    /// How the shown conversation's messages are laid out: its account's
-    /// layout from the Appearance settings.
-    message_layout: MessageLayout,
     /// The Appearance settings.
     appearance: crate::appearance::AppearanceStore,
     /// The system's interface font family, for "Use the system font"; none
@@ -195,7 +191,6 @@ impl Default for Shell {
             reorder_requests: RequestSlot::default(),
             reorder: Reorder::default(),
             tabs: Tabs::default(),
-            message_layout: MessageLayout::default(),
             appearance: crate::appearance::AppearanceStore::default(),
             system_font: None,
             local_time: LocalTime::system(),

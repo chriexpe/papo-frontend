@@ -1,15 +1,13 @@
 //! The shell's side of the Appearance settings: the frame's look made from
 //! them and the system's preferences, a change applied (saved first, kept
-//! only once saved), each account's message layout as its conversation
-//! shows, and the text-size keys (`docs/design.md` §12: Ctrl+= / Ctrl+- /
-//! Ctrl+0).
+//! only once saved, the message being read held in its place), and the
+//! text-size keys (`docs/design.md` §12: Ctrl+= / Ctrl+- / Ctrl+0).
 
-use papo_sdk::AccountId;
 use rune::Tx;
 
 use super::Shell;
 use crate::appearance::{Appearance, NotSaved, ShapeValue, TEXT_SIZE_DEFAULT_PT, text_size_step};
-use crate::design::{Glass, Look, LookSpec, MessageLayout, Scale};
+use crate::design::{Glass, Look, LookSpec, Scale};
 use crate::timeline::OpenTimeline;
 use crate::timeline::anchor::{Anchor, scroll_to};
 
@@ -46,15 +44,6 @@ impl Shell {
         self.appearance.set(appearance)?;
         keep_place(reading, tx);
         Ok(())
-    }
-
-    /// The layout of the account whose conversation now shows, read from
-    /// the settings file the first time it shows. Its rows take it as they
-    /// open, so no place needs keeping.
-    pub(super) fn follow_account_layout(&mut self, account: Option<AccountId>) {
-        self.message_layout = account.map_or_else(MessageLayout::default, |account| {
-            self.appearance.layout(account)
-        });
     }
 
     /// The shown timeline's anchor before a change that reflows its rows.

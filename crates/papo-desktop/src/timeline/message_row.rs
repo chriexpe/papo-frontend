@@ -318,13 +318,14 @@ fn name_text(name: &str, look: &Look) -> El {
         .color(look.palette.text_primary)
 }
 
-/// The first letter of `name` on a rounded square, `look.text_multiple(AVATAR_TOP)` below
-/// the top of its lead box (`docs/design.md` §5, Distances are measured to
-/// what is seen). The box is as tall as the avatar alone, so the offset
-/// never makes a row taller than it was.
+/// The first letter of `name` on a rounded square, [`AVATAR_TOP`] below the
+/// top of its lead box (`docs/design.md` §5, Distances are measured to what
+/// is seen). The box holds the offset and the avatar, so a row too short
+/// for them grows rather than let the avatar reach past its background
+/// (Christian, 2026-11-23: at 12 pt Comfortable it reached 4.6 pt past).
 pub(super) fn avatar(name: &str, size_pt: f32, look: &Look, press: impl FnOnce(El) -> El) -> El {
     el().key("lead")
-        .size(size_pt, size_pt)
+        .size(size_pt, size_pt + look.text_multiple(AVATAR_TOP))
         .a11y_hidden()
         .child(press(
             el().key("avatar")

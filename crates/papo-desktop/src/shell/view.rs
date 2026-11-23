@@ -140,7 +140,7 @@ fn timeline_style(shell: &Shell, theme: Theme, look: &Look) -> timeline::Style {
         .shown()
         .and_then(|(_, draft)| draft.mode.target());
     timeline::Style {
-        layout: shell.message_layout,
+        layout: shell.appearance.appearance().messages,
         theme,
         look: *look,
         time: shell.local_time.clone(),

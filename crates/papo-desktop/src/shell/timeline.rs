@@ -63,7 +63,6 @@ impl Shell {
             return;
         }
         let wanted = self.wanted_timeline();
-        self.follow_account_layout(wanted.map(|key| key.account));
         let Some(switch) = self.tabs.show(wanted, self.prefs.open_at_newest) else {
             return;
         };

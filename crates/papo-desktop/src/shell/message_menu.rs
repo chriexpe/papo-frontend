@@ -209,7 +209,7 @@ impl Shell {
             items: open.items.clone(),
             resources: open.resources.clone(),
             revealed: open.revealed.clone(),
-            jumbo: self.message_layout.density != Density::ExtraCompact,
+            jumbo: self.appearance.appearance().messages.density != Density::ExtraCompact,
             time: self.local_time.clone(),
             today: self.today,
         }

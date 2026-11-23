@@ -114,6 +114,16 @@ impl Look {
         })
     }
 
+    /// `theme` at the defaults but for `scale`: what the spacing tests
+    /// draw at the smallest and largest text size and spacing.
+    #[cfg(test)]
+    pub(crate) fn scaled(theme: Theme, scale: Scale) -> Look {
+        Look {
+            scale,
+            ..Look::new(theme)
+        }
+    }
+
     pub(crate) fn with(spec: &LookSpec) -> Look {
         Look {
             palette: Palette::with(spec.theme, spec.accent, &spec.background),
