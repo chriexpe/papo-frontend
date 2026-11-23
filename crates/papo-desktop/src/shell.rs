@@ -69,8 +69,14 @@ pub(crate) struct Shell {
     reorder: Reorder,
     /// The open timelines and the places of closed ones.
     tabs: Tabs,
-    /// How messages are laid out: Normal until the Appearance settings.
+    /// How the shown conversation's messages are laid out: its account's
+    /// layout from the Appearance settings.
     message_layout: MessageLayout,
+    /// The Appearance settings.
+    appearance: crate::appearance::AppearanceStore,
+    /// The system's interface font family, for "Use the system font"; none
+    /// when the desktop names none.
+    system_font: Option<&'static str>,
     /// The time zone and clock message times are read in.
     local_time: LocalTime,
     /// When the shown timeline's place is next saved, on the window's
@@ -190,6 +196,8 @@ impl Default for Shell {
             reorder: Reorder::default(),
             tabs: Tabs::default(),
             message_layout: MessageLayout::default(),
+            appearance: crate::appearance::AppearanceStore::default(),
+            system_font: None,
             local_time: LocalTime::system(),
             save_due_s: None,
             save_wake_s: None,
@@ -254,6 +262,7 @@ impl Shell {
         self.layout = crate::layout_prefs::LayoutPrefs::load();
         self.recent_jumps = crate::recent_jumps::RecentJumps::load();
         self.writing = WritingPrefs::load();
+        self.appearance = crate::appearance::AppearanceStore::load();
     }
 
     /// Takes the account watch's summary, and opens the screens it calls for.
@@ -293,6 +302,7 @@ impl Shell {
 mod accounts;
 mod activity;
 mod app_keys;
+pub(crate) mod appearance;
 mod composer;
 mod composer_input;
 mod content;

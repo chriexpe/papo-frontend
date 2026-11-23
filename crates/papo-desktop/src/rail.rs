@@ -19,7 +19,8 @@ use crate::badges::mention_pill;
 use crate::design::{
     ADD_TILE_DASH_PT, ADD_TILE_OUTLINE_PT, FOCUS_RING_PT, Look, MENTION_PILL_OVERHANG_PT,
     MENTION_PILL_RING_PT, PILL_OUTLINE_PT, RADIUS_ICON, RADIUS_INDICATOR, RAIL_GAP_PT,
-    RAIL_ICON_PT, RAIL_INDICATOR_PT, RAIL_TILE_PT, RAIL_UNREAD_BAR_PT, RAIL_WIDTH_PT, TYPE_TITLE,
+    RAIL_ICON_PT, RAIL_INDICATOR_PT, RAIL_TILE_PT, RAIL_UNREAD_BAR_PT, RAIL_WIDTH_PT, Surfaces,
+    TYPE_TITLE,
 };
 use crate::icons::{DIRECT, PLUS};
 use crate::navigation::Navigation;
@@ -81,7 +82,7 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, look: &Lo
         .items_center()
         .gap(RAIL_GAP_PT)
         .py(RAIL_GAP_PT)
-        .fill(look.palette.surface_rail)
+        .chrome_fill(&look.palette.rail_fill)
         .child(direct_tile(nav.direct_shown(), nav.servers().direct, look))
         .child(servers)
         .child(add_tile(look))

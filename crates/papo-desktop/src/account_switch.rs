@@ -16,9 +16,8 @@ use rune::{El, col, el, icon, row, text};
 use crate::badges::Badge;
 use crate::channel_pane::{account_pill, avatar, row_badge, switch_button};
 use crate::design::{
-    FOCUS_RING_PT, Look, PANE_EDGE_PT, PANE_PILL_HEIGHT, PILL_OUTLINE_PT, RADIUS_CONTROL,
-    RADIUS_PILL, ROW_ICON_PT, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION,
-    TYPE_CAPTION_MEDIUM,
+    FOCUS_RING_PT, Look, PANE_EDGE_PT, PANE_PILL_HEIGHT, RADIUS_CONTROL, RADIUS_PILL, ROW_ICON_PT,
+    SPACE_MD, SPACE_SM, Surfaces, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
 };
 use crate::icons::{CHECK, PLUS};
 use crate::server_list::{AccountEntry, ServerEntry, ServerList};
@@ -81,8 +80,7 @@ pub(crate) fn grown(server: &ServerEntry, pill_row: El, look: &Look) -> El {
             None,
         )
         .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("dialog")
         .label(strings::switch_account())
         .modal(true, Shell::close_accounts)
@@ -243,8 +241,7 @@ pub(crate) fn direct_grown(servers: &ServerList, look: &Look) -> El {
             Some(look.space(SPACE_MD) + look.space(PANE_PILL_HEIGHT) + look.space(SPACE_SM)),
         )
         .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("dialog")
         .label(strings::direct_accounts())
         .modal(true, Shell::close_accounts)

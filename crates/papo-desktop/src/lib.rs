@@ -9,6 +9,7 @@
 
 mod account_switch;
 mod account_watch;
+mod appearance;
 mod badges;
 mod channel_pane;
 mod composer;

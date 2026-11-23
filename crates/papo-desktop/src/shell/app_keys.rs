@@ -5,7 +5,8 @@
 //! Alt+← and Alt+→ go back and forward through this server's channels;
 //! Ctrl+W closes the window, Ctrl+Q quits, F11 toggles full screen; Ctrl+/,
 //! F1 or Ctrl+? opens the keyboard shortcuts sheet (`shortcuts_sheet`); Ctrl+K
-//! opens the jump field (`jump`), from any focus, typing included.
+//! opens the jump field (`jump`), from any focus, typing included; Ctrl+=,
+//! Ctrl+- and Ctrl+0 make the text larger, smaller or the default size.
 //!
 //! Owns which key does what. Where the moves go is `navigation`'s; a popup
 //! or an open overlay keeps these keys for itself.
@@ -13,6 +14,7 @@
 use rune::{Key, KeyEvent, Mods, Tx};
 
 use super::Shell;
+use super::appearance::TextSizeStep;
 
 /// Ctrl+W, Ctrl+Q, F11: the window's own keys, from anywhere.
 fn window_key(key: &KeyEvent, tx: &mut Tx) -> bool {
@@ -35,6 +37,25 @@ fn is_shortcuts_key(key: &KeyEvent) -> bool {
     let primary = (mods.cmd || mods.ctrl) && !mods.alt && !mods.logo;
     (primary && (key.is_command('/') || key.is_command('?')))
         || (key.key == Key::Function(1) && mods == Mods::default())
+}
+
+/// Ctrl+= (or Ctrl++, the same key shifted), Ctrl+- and Ctrl+0: the Text
+/// size setting a step larger, smaller, or back to the default.
+fn text_size_key(key: &KeyEvent) -> Option<TextSizeStep> {
+    let mods = key.mods;
+    let primary = (mods.cmd || mods.ctrl) && !mods.alt && !mods.logo;
+    if !primary {
+        return None;
+    }
+    if key.is_command('=') || key.is_command('+') {
+        Some(TextSizeStep::Larger)
+    } else if key.is_command('-') && !mods.shift {
+        Some(TextSizeStep::Smaller)
+    } else if key.is_command('0') && !mods.shift {
+        Some(TextSizeStep::Default)
+    } else {
+        None
+    }
 }
 
 /// Ctrl (⌘ on macOS) alone.
@@ -65,6 +86,10 @@ impl Shell {
         }
         if key.is_command('k') && primary_only(key.mods) {
             self.toggle_jump(tx);
+            return true;
+        }
+        if let Some(step) = text_size_key(key) {
+            self.step_text_size(step, tx);
             return true;
         }
         // A popup or an overlay holds the keyboard like a dialog does.

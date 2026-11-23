@@ -21,7 +21,7 @@ use crate::badges::Badge;
 use crate::channel_pane::{chrome, pill_row, row_badge, row_name};
 use crate::design::{
     AVATAR_ROW, DM_ROW_HEIGHT_PT, FOCUS_RING_PT, Look, PILL_BUTTON_PT, PILL_ICON_PT,
-    RADIUS_CONTROL, SIDEBAR_WIDTH_PT, SPACE_MD, SPACE_SM, TYPE_CAPTION, TYPE_TITLE,
+    RADIUS_CONTROL, SIDEBAR_WIDTH_PT, SPACE_MD, SPACE_SM, Surfaces, TYPE_CAPTION, TYPE_TITLE,
 };
 use crate::icons::X;
 use crate::person_avatar::person_avatar;
@@ -82,7 +82,7 @@ pub(crate) fn view(shell: &Shell, look: &Look) -> El {
         .h_full()
         .padding(look.space(SPACE_MD))
         .gap(look.space(SPACE_SM))
-        .fill(look.palette.surface_sidebar)
+        .chrome_fill(&look.palette.sidebar_fill)
         .child(pill)
         .child(
             col()

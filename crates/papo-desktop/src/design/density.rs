@@ -7,13 +7,6 @@ use super::{SPACE_SM, Space, TextMultiple};
 
 /// How tightly messages sit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the Appearance settings (D6) choose a density; the spacing tests use each now"
-    )
-)]
 pub(crate) enum Density {
     Compact,
     #[default]
@@ -84,6 +77,14 @@ pub(crate) const AVATAR_TOP: TextMultiple = TextMultiple(0.3786);
 pub(super) const GUTTER: TextMultiple = TextMultiple(3.2);
 
 impl Density {
+    /// Every density, in the settings' order.
+    pub(crate) const ALL: [Density; 4] = [
+        Density::Compact,
+        Density::Normal,
+        Density::Comfortable,
+        Density::ExtraCompact,
+    ];
+
     /// Its distances at spacing ×1 and the default text size
     /// (`docs/design.md` §5); `Look::spacing` gives them at the settings.
     pub(super) fn base_spacing(self) -> Spacing {

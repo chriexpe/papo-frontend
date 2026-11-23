@@ -15,8 +15,8 @@ use super::pins::{PINS_BUTTON_KEY, PINS_PANEL_KEY, PinsPanel, pin_row_key};
 use super::title::Title;
 use crate::design::{
     FOCUS_RING_PT, HEADER_PILL_HEIGHT, Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT,
-    RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, TYPE_BODY_STRONG,
-    TYPE_SMALL, TYPE_TITLE,
+    RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, Surfaces,
+    TYPE_BODY_STRONG, TYPE_SMALL, TYPE_TITLE,
 };
 use crate::strings;
 use crate::timeline::pinned::Pin;
@@ -66,8 +66,7 @@ fn actions_pill(open: bool, profile: Option<bool>, look: &Look) -> El {
         .px(look.space(SPACE_SM))
         .center_y()
         .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("toolbar")
         .label(strings::header_actions())
         .child(super::search_panel::search_button(false, look))
@@ -145,8 +144,7 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
             .key(PINS_PANEL_KEY)
             .w(width)
             .radius(look.radius(RADIUS_PILL))
-            .fill(look.palette.surface_pill)
-            .border(PILL_OUTLINE_PT, look.palette.line_pill)
+            .pill_surface(&look)
             .role("dialog")
             .label(strings::pins_title())
             .pin(

@@ -11,8 +11,8 @@ use rune::{El, icon, row, text};
 
 use super::Shell;
 use crate::design::{
-    AVATAR_TITLE, HEADER_PILL_HEIGHT, Look, PILL_ICON_PT, PILL_OUTLINE_PT, RADIUS_PILL, SPACE_LG,
-    SPACE_SM, TYPE_BODY_STRONG, TYPE_CAPTION,
+    AVATAR_TITLE, HEADER_PILL_HEIGHT, Look, PILL_ICON_PT, RADIUS_PILL, SPACE_LG, SPACE_SM,
+    Surfaces, TYPE_BODY_STRONG, TYPE_CAPTION,
 };
 use crate::icons::HASH;
 use crate::person_avatar::person_avatar;
@@ -89,8 +89,7 @@ pub(super) fn pill(title: &Title<'_>, look: &Look) -> El {
         .gap(look.space(SPACE_SM))
         .center_y()
         .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("heading");
     match title {
         Title::Channel(channel) => pill

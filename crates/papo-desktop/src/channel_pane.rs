@@ -16,8 +16,8 @@ use crate::account_switch;
 use crate::badges::{Badge, mention_pill};
 use crate::design::{
     CHANNEL_ROW_HEIGHT_PT, CORNER_MARKER_OVERHANG_PT, FOCUS_RING_PT, Look, PANE_PILL_HEIGHT,
-    PILL_AVATAR_PT, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL,
-    ROW_ICON_PT, SIDEBAR_WIDTH_PT, SPACE_LG, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_BODY_MEDIUM,
+    PILL_AVATAR_PT, PILL_BUTTON_PT, PILL_ICON_PT, RADIUS_CONTROL, RADIUS_PILL, ROW_ICON_PT,
+    SIDEBAR_WIDTH_PT, SPACE_LG, SPACE_MD, SPACE_SM, Surfaces, TYPE_BODY, TYPE_BODY_MEDIUM,
     TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_TITLE, UNREAD_DOT_PT,
 };
 use crate::icons::{GEAR, HASH, SPEAKER, SWITCH};
@@ -49,7 +49,7 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, look: &Lo
         .h_full()
         .padding(look.space(SPACE_MD))
         .gap(look.space(SPACE_SM))
-        .fill(look.palette.surface_sidebar);
+        .chrome_fill(&look.palette.sidebar_fill);
     let Some(server) = nav.selected() else {
         return pane;
     };
@@ -239,10 +239,7 @@ pub(crate) fn pill_row(look: &Look) -> El {
 
 /// A floating pill's surface around `content`.
 pub(crate) fn chrome(content: El, look: &Look) -> El {
-    content
-        .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+    content.radius(look.radius(RADIUS_PILL)).pill_surface(look)
 }
 
 /// An image, or the first letter of `name` on a neutral tile.

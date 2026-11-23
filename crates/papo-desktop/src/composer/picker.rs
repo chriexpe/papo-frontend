@@ -11,8 +11,8 @@ use rune::{Align, Cx, El, ScrollSpec, Side, col, row, text};
 
 use crate::channel_pane::avatar;
 use crate::design::{
-    Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_SM,
-    TYPE_BODY, TYPE_SMALL,
+    Look, MENU_ROW_HEIGHT_PT, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_SM, Surfaces, TYPE_BODY,
+    TYPE_SMALL,
 };
 use crate::shell::Shell;
 use crate::strings;
@@ -98,8 +98,7 @@ pub(crate) fn view(picker: &Picker, pill_key: &str, look: &Look, cx: &Cx<Shell>)
         .key(PICKER_KEY)
         .padding(look.space(SPACE_SM))
         .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("listbox")
         .label(strings::mention_picker())
         .anchored(pill_key, Side::Top, Align::Start, look.space(SPACE_SM))

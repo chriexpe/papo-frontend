@@ -4,7 +4,8 @@
 
 use rune::{Color, oklch};
 
-use super::colour::{ACCENT_HUE_DEGREES, contrast};
+use super::background::Accent;
+use super::colour::contrast;
 
 /// A code token's OKLCH chroma (`docs/design.md` §9).
 const CODE_TOKEN_CHROMA: f32 = 0.12;
@@ -28,17 +29,18 @@ pub(crate) struct CodeInk {
 }
 
 impl CodeInk {
-    pub(super) fn new(dark: bool, surface_code: Color) -> CodeInk {
+    pub(super) fn new(dark: bool, surface_code: Color, accent: Accent) -> CodeInk {
         let token = |hue: f32| code_token(hue, dark, surface_code);
-        // Numbers move to 80° under the Orange accent and functions to 256°
-        // under Teal, so no token shares the keyword's hue; the accent
-        // choice is not built yet, and Blue clashes with neither.
+        // No token shares the keyword's hue: numbers move to 80° under the
+        // Orange accent and functions to 256° under Teal.
+        let number = if accent == Accent::Orange { 80.0 } else { 52.0 };
+        let function = if accent == Accent::Teal { 256.0 } else { 196.0 };
         CodeInk {
-            keyword: token(ACCENT_HUE_DEGREES),
+            keyword: token(accent.hue_degrees()),
             string: token(150.0),
-            number: token(52.0),
+            number: token(number),
             type_name: token(300.0),
-            function: token(196.0),
+            function: token(function),
         }
     }
 }

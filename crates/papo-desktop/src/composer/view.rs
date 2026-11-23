@@ -15,7 +15,7 @@ use super::bars::bar;
 use super::picker::Picker;
 use crate::design::{
     COMPOSER_HEIGHT, COMPOSER_MAX_LINES, FOCUS_RING_PT, Look, PILL_ICON_PT, PILL_OUTLINE_PT,
-    RADIUS_COMPOSER, RADIUS_SEND, SEND_BUTTON, SPACE_LG, SPACE_SM, TYPE_BODY, TYPE_SMALL,
+    RADIUS_COMPOSER, RADIUS_SEND, SEND_BUTTON, SPACE_LG, SPACE_SM, Surfaces, TYPE_BODY, TYPE_SMALL,
 };
 use crate::icons::{CHECK, SEND};
 use crate::shell::Shell;
@@ -121,8 +121,7 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         .key(COMPOSER_PILL_KEY)
         .w_full()
         .radius(look.radius(RADIUS_COMPOSER))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .children(bar(&draft.mode, original, me, look))
         .child(writing);
     let note = if composer.chars_over() > 0 {

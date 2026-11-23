@@ -14,8 +14,8 @@ use super::{OpenTimeline, TimelineKey};
 use crate::badges::{Count, count_pill};
 use crate::design::{
     FOCUS_RING_PT, HEADER_PILL_HEIGHT, JUMP_BUTTON_PT, JUMP_GAP, JUMP_ICON_PT, JUMP_INSET, Look,
-    MENTION_PILL_OVERHANG_PT, MENTION_PILL_RING_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL,
-    SPACE_LG, SPACE_SM, SPINNER_PERIOD_S, SPINNER_PT, TYPE_SMALL, TYPE_SMALL_MEDIUM,
+    MENTION_PILL_OVERHANG_PT, MENTION_PILL_RING_PT, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG,
+    SPACE_SM, SPINNER_PERIOD_S, SPINNER_PT, Surfaces, TYPE_SMALL, TYPE_SMALL_MEDIUM,
 };
 use crate::icons::{ARROW_DOWN, HOURGLASS, SPINNER};
 use crate::strings;
@@ -93,8 +93,7 @@ fn round_button(key: &'static str, glyph: &'static rune::Icon, label: &str, look
         .size(JUMP_BUTTON_PT, JUMP_BUTTON_PT)
         .center()
         .radius(JUMP_BUTTON_PT / 2.0)
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("button")
         .label(label.to_owned())
         .focusable(true)
@@ -125,8 +124,7 @@ pub(super) fn seeking_pill<S: TimelineHost>(key: TimelineKey, look: &Look) -> El
         .gap(look.space(SPACE_LG))
         .center_y()
         .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("status")
         .live_region(rune::LiveRegion::Polite)
         .child(

@@ -18,8 +18,8 @@ use super::search_field::{FieldList, field_spans};
 use super::title::Title;
 use super::{search_hits, search_list};
 use crate::design::{
-    FOCUS_RING_PT, HEADER_PILL_HEIGHT, Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT,
-    RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, TYPE_BODY, TYPE_SMALL,
+    FOCUS_RING_PT, HEADER_PILL_HEIGHT, Look, PILL_BUTTON_PT, PILL_ICON_PT, RADIUS_CONTROL,
+    RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_SMALL,
 };
 use crate::strings;
 use crate::timeline::Style;
@@ -80,8 +80,7 @@ pub(super) fn panel(shell: &Shell, title: &Title<'_>, style: &Style, cx: &Cx<She
             .key(SEARCH_PANEL_KEY)
             .w(width)
             .radius(look.radius(RADIUS_PILL))
-            .fill(look.palette.surface_pill)
-            .border(PILL_OUTLINE_PT, look.palette.line_pill)
+            .pill_surface(&look)
             .role("dialog")
             .label(strings::search_title())
             .pin(

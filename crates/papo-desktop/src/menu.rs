@@ -16,7 +16,7 @@ use rune::{Align, Cx, El, Icon, Side, col, el, icon, row, text};
 
 use crate::design::{
     CONTEXT_MENU_WIDTH_PT, Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL,
-    ROW_ICON_PT, SPACE_LG, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_CAPTION, TYPE_HINT,
+    ROW_ICON_PT, SPACE_LG, SPACE_MD, SPACE_SM, Surfaces, TYPE_BODY, TYPE_CAPTION, TYPE_HINT,
 };
 use crate::shell::Shell;
 use crate::timeline::TimelineKey;
@@ -339,8 +339,7 @@ pub(crate) fn view(menu: &OpenMenu, body: Option<El>, look: &Look, cx: &Cx<Shell
         .w(width)
         .padding(look.space(SPACE_SM))
         .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role(role)
         .focus_group()
         .modal(true, Shell::close_menu)

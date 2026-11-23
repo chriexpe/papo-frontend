@@ -18,7 +18,7 @@ use super::TimelineKey;
 use super::view::TimelineHost;
 use crate::design::{
     Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, Radius, SPACE_LG,
-    SPACE_SM, SPACE_XS, TYPE_BODY,
+    SPACE_SM, SPACE_XS, Surfaces, TYPE_BODY,
 };
 use crate::strings;
 
@@ -134,8 +134,7 @@ pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, look: 
         .gap(look.space(SPACE_XS))
         .center_y()
         .radius(look.radius(RADIUS_CARD))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("toolbar")
         .label(strings::action_bar())
         // The bar's whole surface takes the pointer, not only its buttons

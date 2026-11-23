@@ -10,7 +10,7 @@ use super::{Shell, Stage};
 use crate::design::{
     FOCUS_RING_PT, HEADER_PILL_HEIGHT, HINT_DELAY_S, HINT_GAP_PT, HINT_MAX_WIDTH_PT, HINT_PAD_PT,
     HINT_RADIUS, Look, PANE_EDGE_PT, PILL_ICON_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL,
-    SPACE_LG, SPACE_SM, SPACE_XL, TYPE_BODY, TYPE_HINT, Theme,
+    SPACE_LG, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_HINT, Theme,
 };
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
@@ -22,9 +22,12 @@ use crate::{
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
 pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
-    let theme = Theme::following_system(cx.system_dark());
-    let look = Look::new(theme);
-    cx.help_look(hint_look(&look, cx.system_dark()));
+    let look = shell.look(super::appearance::SystemLook {
+        dark: cx.system_dark(),
+        reduced_transparency: false,
+    });
+    let theme = look.theme();
+    cx.help_look(hint_look(&look, look.theme().is_dark()));
     let surface = col().w_full().h_full().fill(look.palette.surface_content);
     match &shell.stage {
         Stage::Starting => surface,
@@ -245,8 +248,7 @@ fn connected_pill(server: &str, look: &Look) -> El {
         .gap(look.space(SPACE_SM))
         .center_y()
         .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("status")
         .live_region(rune::LiveRegion::Polite)
         .child(

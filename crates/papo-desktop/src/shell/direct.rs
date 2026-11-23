@@ -18,8 +18,8 @@ use rune::{El, Tx, row, text};
 
 use super::Shell;
 use crate::design::{
-    COMPOSER_HEIGHT, FOCUS_RING_PT, Look, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG,
-    SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_BODY_STRONG,
+    COMPOSER_HEIGHT, FOCUS_RING_PT, Look, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_MD,
+    SPACE_SM, Surfaces, TYPE_BODY, TYPE_BODY_STRONG,
 };
 use crate::direct_list::DirectRows;
 use crate::notice::Refusal;
@@ -332,8 +332,7 @@ pub(super) fn state_pill(
         .gap(look.space(SPACE_MD))
         .center_y()
         .radius(look.radius(RADIUS_PILL))
-        .fill(look.palette.surface_pill)
-        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .pill_surface(look)
         .role("status")
         .child(
             text(words)

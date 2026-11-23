@@ -123,11 +123,12 @@ pub(crate) const RADIUS_PILL: Radius = Radius(14.0);
 /// The header pills' height.
 pub(crate) const HEADER_PILL_HEIGHT: Space = Space(36.0);
 
+mod background;
 mod code_ink;
 mod colour;
 mod content;
 mod density;
-mod lightness_rule;
+mod floors;
 mod look;
 mod reading;
 mod replies;
@@ -135,11 +136,14 @@ mod sizes;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use background::{
+    Accent, Background, BackgroundColour, CHROME_GRADIENT_DEGREES, ChromeFill,
+};
 pub(crate) use code_ink::CodeInk;
 pub(crate) use colour::{Palette, Theme};
 pub(crate) use content::*;
 pub(crate) use density::*;
-pub(crate) use look::Look;
+pub(crate) use look::{Glass, Look, LookSpec, Scale, Surfaces};
 pub(crate) use reading::*;
 pub(crate) use replies::*;
 pub(crate) use sizes::*;
