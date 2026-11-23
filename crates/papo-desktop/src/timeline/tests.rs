@@ -290,5 +290,6 @@ mod content;
 mod controls;
 mod echoes;
 mod hover_bar;
+mod reactions;
 mod reading;
 mod spacing;

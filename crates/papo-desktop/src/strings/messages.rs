@@ -135,3 +135,13 @@ pub(crate) fn action_more() -> &'static str {
 pub(crate) fn action_bar() -> &'static str {
     text!("action.bar")
 }
+
+/// A chip's spoken name: "🧀, 4".
+pub(crate) fn reaction_label(emoji: &str, count: u64) -> String {
+    template!("reaction.label", "emoji" => emoji, "count" => count.to_string())
+}
+
+/// Your chip's spoken name: "🧀, 4, including you".
+pub(crate) fn reaction_label_mine(emoji: &str, count: u64) -> String {
+    template!("reaction.label_mine", "emoji" => emoji, "count" => count.to_string())
+}

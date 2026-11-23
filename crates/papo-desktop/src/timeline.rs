@@ -21,6 +21,7 @@ pub(crate) mod hover_bar;
 pub(crate) mod local_time;
 mod message_row;
 mod paging;
+mod reactions;
 pub(crate) mod reading;
 pub(crate) mod replies;
 pub(crate) mod reply_line;

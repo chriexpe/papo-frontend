@@ -15,6 +15,7 @@ use super::echoes::SendState;
 use super::grouping::continues;
 use super::hover_bar::{BAR_REACTIONS, Bar};
 use super::message_row::{author_name, created_us};
+use super::reactions::Chip;
 use super::reading::Boundary;
 use super::replies::original_text;
 use super::reply_line::ReplyLine;
@@ -59,6 +60,9 @@ pub(super) struct Parts<'a> {
     pub(super) change: Option<(Uuid, ChangeState)>,
     /// Its hover bar: a message from history has one.
     pub(super) bar: Option<Bar>,
+    /// Its reaction chips, and whether the add chip ends them.
+    pub(super) chips: Vec<Chip>,
+    pub(super) add_chip: bool,
 }
 
 /// Where a row's message comes from.
@@ -169,6 +173,16 @@ pub(super) fn parts<'a>(
             Origin::History(pending) => Some(bar(open, id, message, pending, style)),
             Origin::Echo(_) => None,
         },
+        chips: match origin {
+            Origin::History(_) => chips(message, style),
+            Origin::Echo(_) => Vec::new(),
+        },
+        add_chip: false,
+    };
+    // The add chip is offered where the bar offers reacting.
+    let parts = Parts {
+        add_chip: parts.bar.as_ref().is_some_and(|bar| !bar.emoji.is_empty()),
+        ..parts
     };
     (parts, content)
 }
@@ -218,4 +232,16 @@ fn bar(
         reply: actions.reply,
         edit: actions.edit,
     }
+}
+
+/// Message's reaction chips, and whether this account may toggle each now.
+fn chips(message: &Message, style: &Style) -> Vec<Chip> {
+    let reacting = &style.reacting;
+    reaction_chips(message, &reacting.outgoing)
+        .into_iter()
+        .map(|chip| Chip {
+            toggles: chip.can_toggle(reacting.capabilities),
+            chip,
+        })
+        .collect()
 }

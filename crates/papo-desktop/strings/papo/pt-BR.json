@@ -206,5 +206,7 @@
   "action.reply": "Responder",
   "action.edit": "Editar",
   "action.more": "Mais",
-  "action.bar": "Ações da mensagem"
+  "action.bar": "Ações da mensagem",
+  "reaction.label": "{{emoji}}, {{count}}",
+  "reaction.label_mine": "{{emoji}}, {{count}}, incluindo você"
 }

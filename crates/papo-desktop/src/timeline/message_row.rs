@@ -31,6 +31,7 @@ use super::content::{self, Context, Doc, Draw, Edited};
 use super::echoes::SendState;
 use super::hover_bar;
 use super::local_time::LocalTime;
+use super::reactions;
 use super::reply_line::reply_line;
 use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
 use super::rows::{MESSAGE_PART, echo_key, message_key};
@@ -95,6 +96,10 @@ pub(super) fn message_row<S: TimelineHost>(
             }),
         };
         let mut body = content::body::<S>(&doc, &draw);
+        if let Some(chips) = reactions::chips::<S>(key, id, &parts.chips, parts.add_chip, &palette)
+        {
+            body = col().gap(MESSAGE_BLOCK_GAP_PT).child(body).child(chips);
+        }
         if let Some((local, ChangeState::DeleteFailed)) = parts.change {
             body = col()
                 .gap(MESSAGE_BLOCK_GAP_PT)
