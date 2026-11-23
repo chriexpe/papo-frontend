@@ -162,3 +162,36 @@ fn the_bars_half_over_the_row_above_keeps_its_own_row() {
         "and the row above shows none"
     );
 }
+
+#[test]
+fn walking_up_onto_the_bar_anywhere_keeps_it_on_its_row() {
+    let mut rt = runtime(turns(12), MessageLayout::default());
+    let x = 400.0;
+    rt.pointer_move(x, 560.0);
+    settle(&mut rt);
+    let row = message_at(&rt, x, 560.0).expect("a message under the pointer");
+    let path = format!("/{}/", message_key(Uuid::from_u128(row)));
+    let part = |rt: &Runtime<Host>, suffix: &str| {
+        rt.elements()
+            .into_iter()
+            .find(|element| element.path.contains(&path) && element.path.ends_with(suffix))
+            .unwrap()
+            .rect
+    };
+    let bar = part(&rt, "/bar");
+    let top = part(&rt, "/message")[1];
+    // Up from inside the row, one point at a time, across the bar's
+    // buttons, its padding and the gaps between them.
+    for k in 1..12_u8 {
+        let bx = bar[0] + bar[2] * f32::from(k) / 12.0;
+        rt.pointer_move(bx, top + 10.0);
+        settle(&mut rt);
+        let mut y = top + 10.0;
+        while y > bar[1] + 0.5 {
+            y -= 1.0;
+            rt.pointer_move(bx, y);
+            rt.frame(FRAME_S);
+            assert_eq!(bar_opacity(&rt, row), Some(1.0), "lost at ({bx}, {y})");
+        }
+    }
+}

@@ -138,6 +138,11 @@ pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, palett
         .border(PILL_OUTLINE_PT, palette.line_pill)
         .role("toolbar")
         .label(strings::action_bar())
+        // The bar's whole surface takes the pointer, not only its buttons
+        // (its padding, the divider, the gaps, the corners): over the row
+        // above, the bar stays its row's, and a press there falls through
+        // to nothing.
+        .on_background_press(|_: &mut S| {})
         .pin(None, Some(-BAR_HEIGHT_PT / 2.0), Some(SPACE_LG_PT), None)
         .group_opacity(0.0, 1.0)
         .children(buttons)
