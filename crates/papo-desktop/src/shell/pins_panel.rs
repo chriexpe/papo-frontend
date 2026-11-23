@@ -56,7 +56,7 @@ pub(super) fn header(shell: &Shell, title: &Title<'_>, palette: &Palette) -> Opt
 
 /// In a DM, whether its profile pane shows: the person button is there.
 fn dm_profile(shell: &Shell, title: &Title<'_>) -> Option<bool> {
-    matches!(title, Title::Direct { .. }).then_some(shell.dm_profile)
+    matches!(title, Title::Direct { .. }).then_some(shell.layout.dm_profile())
 }
 
 /// The actions pill: 📌, in the accent while the panel is open, and in a

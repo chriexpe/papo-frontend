@@ -2,7 +2,7 @@
 //! messages): the person's avatar with presence, name, @handle, About,
 //! their roles in that server and "Member since", beside the conversation
 //! at the members pane's width. The person button in the actions pill or
-//! Ctrl+U shows or hides it, remembered for the window.
+//! Ctrl+U shows or hides it, remembered across launches (`layout_prefs`).
 //!
 //! Owns the toggle and the pane; its content is the profile card's facts,
 //! About first and without the status bubble, and no picture is drawn yet.
@@ -30,8 +30,9 @@ impl Shell {
             return;
         }
         self.worked_outside();
-        self.dm_profile = !self.dm_profile;
-        if self.dm_profile
+        let shown = !self.layout.dm_profile();
+        self.layout.set_dm_profile(shown);
+        if shown
             && let (Some(key), Some(picked)) = (self.wanted_direct_timeline(), self.nav.picked_dm())
         {
             self.load_profile(key, picked.user);
@@ -65,7 +66,7 @@ pub(super) fn button(shown: bool, palette: &Palette) -> El {
 
 /// The pane, while a picked conversation shows it.
 pub(super) fn pane(shell: &Shell, palette: &Palette) -> Option<El> {
-    if !shell.dm_profile {
+    if !shell.layout.dm_profile() {
         return None;
     }
     let picked = shell.nav.picked_dm()?;

@@ -273,5 +273,6 @@
   "direct.cant_message": "You can't message {{name}}.",
   "direct.profile": "Profile",
   "shortcut.profile": "Ctrl+U",
-  "direct.roles_in": "Roles in {{server}}"
+  "direct.roles_in": "Roles in {{server}}",
+  "menu.view_profile": "View profile"
 }

@@ -273,5 +273,6 @@
   "direct.cant_message": "Você não pode mandar mensagem para {{name}}.",
   "direct.profile": "Perfil",
   "shortcut.profile": "Ctrl+U",
-  "direct.roles_in": "Cargos em {{server}}"
+  "direct.roles_in": "Cargos em {{server}}",
+  "menu.view_profile": "Ver perfil"
 }

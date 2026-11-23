@@ -66,6 +66,7 @@ fn enter_opens_your_messages_menu_with_what_you_may_do() {
         [
             "Reply",
             "Edit",
+            "View profile",
             "Copy text",
             "Copy as Markdown",
             "Copy ID",
@@ -80,7 +81,16 @@ fn someone_elses_message_offers_no_edit_and_no_delete() {
     focus_message(&mut rt, 3);
     press(&mut rt, Key::Enter);
     let (_, items) = menu(&rt);
-    assert_eq!(items, ["Reply", "Copy text", "Copy as Markdown", "Copy ID"]);
+    assert_eq!(
+        items,
+        [
+            "Reply",
+            "View profile",
+            "Copy text",
+            "Copy as Markdown",
+            "Copy ID"
+        ]
+    );
 }
 
 #[test]

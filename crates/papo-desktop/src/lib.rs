@@ -19,6 +19,7 @@ mod direct_pane;
 mod fonts;
 mod icons;
 mod keyring;
+mod layout_prefs;
 mod lifecycle;
 mod links;
 mod live_watch;

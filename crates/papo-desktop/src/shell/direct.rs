@@ -135,7 +135,7 @@ impl Shell {
         );
         self.nav.pick_dm(row);
         // An open profile pane shows the newly picked person.
-        if self.dm_profile {
+        if self.layout.dm_profile() {
             self.load_profile(key, user);
         }
         self.sync_timeline(Some(tx));

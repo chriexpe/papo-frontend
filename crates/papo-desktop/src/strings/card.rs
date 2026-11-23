@@ -75,3 +75,8 @@ pub(crate) fn notice_dm_open_failed() -> &'static str {
 pub(crate) fn notice_dm_refused() -> &'static str {
     text!("notice.dm_refused")
 }
+
+/// The message menu's item that turns it into the author's card.
+pub(crate) fn menu_view_profile() -> &'static str {
+    text!("menu.view_profile")
+}

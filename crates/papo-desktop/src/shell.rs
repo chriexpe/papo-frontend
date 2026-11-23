@@ -100,8 +100,8 @@ pub(crate) struct Shell {
     /// The conversation a card's Message opened, picked once the list
     /// holds it.
     awaited_dm: Option<papo_sdk_ui::DirectMessageId>,
-    /// Whether a DM shows its profile pane, remembered for the window.
-    dm_profile: bool,
+    /// Whether a DM shows its profile pane, remembered across launches.
+    layout: crate::layout_prefs::LayoutPrefs,
     /// What the backend said about conversations that left the list.
     dm_access: std::collections::BTreeMap<papo_sdk_ui::DirectMessageId, direct::Asked>,
     /// The notice pill, while one shows.
@@ -178,7 +178,7 @@ impl Default for Shell {
             activity: HashMap::new(),
             direct: direct_list::DirectRows::new(),
             awaited_dm: None,
-            dm_profile: false,
+            layout: crate::layout_prefs::LayoutPrefs::default(),
             dm_access: std::collections::BTreeMap::new(),
             notice: None,
             pinning: reacting::Pinning::default(),
@@ -217,6 +217,7 @@ impl Shell {
         self.images = Some(ImageCache::new(waker));
         self.content.load();
         self.prefs = ReadingPrefs::load();
+        self.layout = crate::layout_prefs::LayoutPrefs::load();
         self.writing = WritingPrefs::load();
     }
 

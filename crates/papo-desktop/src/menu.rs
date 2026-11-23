@@ -96,6 +96,8 @@ pub(crate) enum MessageAction {
     CopyId,
     /// The menu turns into the reactions list.
     ViewReactions,
+    /// The menu turns into its author's profile card.
+    ViewProfile,
     /// Ask to delete it.
     Delete,
 }

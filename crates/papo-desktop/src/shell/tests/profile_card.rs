@@ -186,3 +186,23 @@ fn a_persons_avatar_opens_their_card_too() {
         .map(|card| card.user);
     assert_eq!(card, Some(lia()));
 }
+
+#[test]
+fn view_profile_in_the_message_menu_turns_it_into_the_authors_card() {
+    let mut rt = conversation("");
+    let id = message_id(3);
+    rt.update(move |_shell, tx| tx.focus(crate::timeline::rows::message_key(id), true));
+    rt.frame(FRAME_S);
+    press(&mut rt, Key::Enter);
+    click(&mut rt, "menu-view-profile");
+    rt.frame(FRAME_S);
+    let card = rt
+        .state
+        .navigation()
+        .menu
+        .as_ref()
+        .and_then(|menu| menu.card.as_ref())
+        .map(|card| card.user);
+    assert_eq!(card, Some(lia()));
+    assert_eq!(focused(&rt).as_deref(), Some("card-message"));
+}

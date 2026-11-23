@@ -71,6 +71,24 @@ impl Shell {
         self.load_profile(key, user);
     }
 
+    /// View profile: the message menu turns into message `id`'s author's
+    /// card, where the menu was.
+    pub(super) fn show_author_card(&mut self, key: TimelineKey, id: Uuid, tx: &mut Tx) {
+        let user = self
+            .shown_timeline(key)
+            .and_then(|open| super::message_menu::author_person(open, id));
+        let (Some(user), Some(menu)) = (user, self.nav.menu.as_mut()) else {
+            return;
+        };
+        menu.card = Some(CardView {
+            key,
+            user,
+            banning: false,
+        });
+        tx.focus(first_key(key, user), true);
+        self.load_profile(key, user);
+    }
+
     /// Escape on a card the reactions list turned into: back to the list.
     /// Returns whether it was one.
     pub(super) fn card_back(&mut self, tx: &mut Tx) -> bool {

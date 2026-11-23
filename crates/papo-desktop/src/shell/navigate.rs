@@ -263,6 +263,16 @@ impl Shell {
             self.show_reactions(key, id, tx);
             return;
         }
+        // So does View profile: it turns into the author's card.
+        if let MenuAction::Message {
+            key,
+            id,
+            action: MessageAction::ViewProfile,
+        } = action
+        {
+            self.show_author_card(key, id, tx);
+            return;
+        }
         // Asking about a ban, or not, keeps the card.
         if let MenuAction::Person {
             action: action @ (PersonAction::AskBan | PersonAction::CancelBan),
