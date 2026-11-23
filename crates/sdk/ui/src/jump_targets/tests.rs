@@ -130,3 +130,63 @@ fn you_people_you_block_and_an_empty_field_find_nothing() {
     assert_eq!(names("gene"), ["general"], "Gene is blocked");
     assert_eq!(names("  "), [""; 0]);
 }
+
+#[test]
+fn banned_members_are_no_target_and_several_accounts_each_bring_theirs() {
+    let mut people = vec![person(0, "me", ""), person(5, "zé", "Zé")];
+    people.push(UserSummary {
+        banned: Some(true),
+        ..person(6, "zeca", "Zeca")
+    });
+    let other = ResourceSnapshot::fixture(
+        Generation::for_test(1),
+        None,
+        Vec::new(),
+        Vec::new(),
+        people,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        id(0),
+    )
+    .unwrap();
+    let second = AccountId::new(
+        ServerAddress::parse("https://orla.example.invalid")
+            .unwrap()
+            .id(),
+        id(0),
+    );
+    let lumen = lumen();
+    let found = jump_targets(&[(account(), &lumen), (second, &other)], "z");
+    let names: Vec<_> = found.iter().map(|target| target.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Zé"],
+        "a non-ASCII name matches; the banned one does not"
+    );
+    assert_eq!(found[0].account, second);
+}
+
+#[test]
+fn at_most_fifty_targets_the_best_first() {
+    let channels: Vec<_> = (0..80)
+        .map(|n| channel(100 + n, &format!("room-{n:02}"), "text"))
+        .chain([channel(300, "room", "text")])
+        .collect();
+    let many = ResourceSnapshot::fixture(
+        Generation::for_test(1),
+        None,
+        channels,
+        Vec::new(),
+        vec![person(0, "me", "")],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        id(0),
+    )
+    .unwrap();
+    let found = jump_targets(&[(account(), &many)], "room");
+    assert_eq!(found.len(), MAX_JUMP_TARGETS);
+    assert_eq!(found[0].name, "room", "the exact name first");
+    assert_eq!(found[1].name, "room-00");
+}

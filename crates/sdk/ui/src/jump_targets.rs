@@ -9,6 +9,8 @@
 //! SDK holds; nothing is fetched. What an empty field shows (recent jumps,
 //! unread conversations) is the client's, which knows its own history.
 
+use std::collections::HashSet;
+
 use papo_sdk::{AccountId, ChannelKind, ResourceSnapshot, Uuid};
 
 use crate::display_name;
@@ -95,13 +97,18 @@ pub fn jump_targets(accounts: &[(AccountId, &ResourceSnapshot)], query: &str) ->
             }
         }
     }
-    ranked.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
-    ranked
-        .into_iter()
-        .take(MAX_JUMP_TARGETS)
-        .map(|(_, _, _, target)| target)
-        .collect()
+    let order = |a: &Ranked, b: &Ranked| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2));
+    // Only the best are kept: put them first, then sort just those.
+    if ranked.len() > MAX_JUMP_TARGETS {
+        ranked.select_nth_unstable_by(MAX_JUMP_TARGETS, order);
+        ranked.truncate(MAX_JUMP_TARGETS);
+    }
+    ranked.sort_by(order);
+    ranked.into_iter().map(|(_, _, _, target)| target).collect()
 }
+
+/// A target with what it ranks by: how well it matches, its kind, its name.
+type Ranked = (u8, u8, String, JumpTarget);
 
 /// How well `name` matches `needle` (both lowercase): 0 equal, 1 starting
 /// with it, 2 a word starting with it, 3 containing it; none otherwise. An
@@ -160,7 +167,7 @@ fn candidates(account: AccountId, snapshot: &ResourceSnapshot, only: Only) -> Ve
             let name = display_name(user.nickname.as_deref(), user.username.as_deref())?;
             Some((name.to_owned(), user.username.clone()))
         };
-        let mut with_conversation = Vec::new();
+        let mut with_conversation = HashSet::new();
         for dm in snapshot.dms.iter() {
             if snapshot.blocks.contains(dm.peer_id) {
                 continue;
@@ -171,7 +178,7 @@ fn candidates(account: AccountId, snapshot: &ResourceSnapshot, only: Only) -> Ve
                     peer: dm.peer_id,
                 };
                 targets.push(target(kind, &name, username));
-                with_conversation.push(dm.peer_id);
+                with_conversation.insert(dm.peer_id);
             }
         }
         for id in snapshot.members.iter() {
