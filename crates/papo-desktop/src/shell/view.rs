@@ -165,7 +165,13 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         .fill(palette.surface_content)
         .children(header)
         .child(timeline::view(shell, style))
-        .child(col().w_full().padding(SPACE_LG_PT).child(composer))
+        .child(
+            col()
+                .w_full()
+                .padding(SPACE_LG_PT)
+                .child(composer)
+                .children(typing_line(shell, palette)),
+        )
         .children(panel);
     let edge = || el().w(PANE_EDGE_PT).h_full().fill(palette.line_subtle);
     row()
@@ -225,4 +231,15 @@ fn connected_pill(server: &str, palette: &Palette) -> El {
         .pin(Some(0.0), Some(SPACE_XL_PT), Some(0.0), None)
         .justify_center()
         .child(pill)
+}
+
+/// Who else is typing in the shown conversation, over its composer.
+fn typing_line(shell: &Shell, palette: &Palette) -> Option<El> {
+    let open = shell.tabs.shown()?;
+    let people = shell.people(open.key.account)?;
+    crate::typing_line::view(
+        people.typing_in(open.key.channel),
+        open.resources.as_deref(),
+        palette,
+    )
 }

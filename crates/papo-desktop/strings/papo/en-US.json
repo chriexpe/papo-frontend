@@ -247,5 +247,10 @@
   "notice.dm_close_failed": "Couldn't close the conversation.",
   "direct.empty": "No conversations yet",
   "composer.placeholder_direct": "Message @{{name}}",
-  "direct.title_label": "{{name}}, on {{server}}"
+  "direct.title_label": "{{name}}, on {{server}}",
+  "typing.one": "{{name}} is typing…",
+  "typing.one_phrase": "{{name}} {{phrase}}",
+  "typing.two": "{{first}} and {{second}} are typing…",
+  "typing.three": "{{first}}, {{second}} and {{third}} are typing…",
+  "typing.many": "Several people are typing…"
 }

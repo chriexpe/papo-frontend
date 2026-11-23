@@ -247,5 +247,10 @@
   "notice.dm_close_failed": "Não deu para fechar a conversa.",
   "direct.empty": "Nenhuma conversa ainda",
   "composer.placeholder_direct": "Mensagem para @{{name}}",
-  "direct.title_label": "{{name}}, em {{server}}"
+  "direct.title_label": "{{name}}, em {{server}}",
+  "typing.one": "{{name}} está digitando…",
+  "typing.one_phrase": "{{name}} {{phrase}}",
+  "typing.two": "{{first}} e {{second}} estão digitando…",
+  "typing.three": "{{first}}, {{second}} e {{third}} estão digitando…",
+  "typing.many": "Várias pessoas estão digitando…"
 }

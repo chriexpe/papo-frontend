@@ -40,6 +40,7 @@ mod sign_in;
 mod strings;
 mod tabs;
 mod timeline;
+mod typing_line;
 mod window;
 
 use std::cell::RefCell;

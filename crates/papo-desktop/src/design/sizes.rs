@@ -164,3 +164,11 @@ pub(crate) const AVATAR_ROW: AvatarSize = AvatarSize {
 
 /// A direct conversation's row in Direct, in points tall.
 pub(crate) const DM_ROW_HEIGHT_PT: f32 = 44.0;
+
+/// The typing line over the composer, in points tall: `type.small`'s line.
+pub(crate) const TYPING_LINE_PT: f32 = 18.0;
+/// A typing line's dot, in points square.
+pub(crate) const TYPING_DOT_PT: f32 = 4.0;
+/// The typing line's dots' pulse: one dot after another over this period,
+/// in seconds.
+pub(crate) const TYPING_PULSE_S: f64 = 1.2;

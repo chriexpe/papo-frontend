@@ -1,6 +1,9 @@
-//! The strings of people (`docs/design.md` §10): presence, and how a person
-//! is spoken with it, and direct messages. The catalog entries are
-//! `presence.*` and `direct.*`.
+//! The strings of people (`docs/design.md` §10): presence and how a person
+//! is spoken with it, direct messages, and who is typing. The catalog
+//! entries are
+//! `presence.*`, `direct.*` and `typing.*`.
+
+use std::ops::Range;
 
 use papo_sdk_ui::PresenceMark;
 
@@ -59,4 +62,47 @@ pub(crate) fn notice_dm_close_failed() -> &'static str {
 /// A direct conversation's title, spoken: "Lia, on Cyber Asilo".
 pub(crate) fn direct_title_label(name: &str, server: &str) -> String {
     template!("direct.title_label", "name" => name, "server" => server)
+}
+
+/// Who is typing (`docs/design.md` §10, Typing line), and where each name
+/// sits in it (byte ranges, drawn at 600): "Lia is typing…", "Yuki is
+/// thinking very hard…" (a personal phrase, one typer only), "Lia and Yuki
+/// are typing…", "Lia, Yuki and Caio are typing…", then "Several people
+/// are typing…". Empty with nobody.
+pub(crate) fn typing_line(names: &[&str], phrase: Option<&str>) -> (String, Vec<Range<usize>>) {
+    // Each name goes in as a private-use marker, so it is found again in
+    // any translation's order without matching the words around it.
+    const MARKERS: [&str; 3] = ["\u{E000}", "\u{E001}", "\u{E002}"];
+    let line = match (names, phrase) {
+        ([], _) => return (String::new(), Vec::new()),
+        ([_], Some(phrase)) => {
+            template!("typing.one_phrase", "name" => MARKERS[0], "phrase" => phrase)
+        }
+        ([_], None) => template!("typing.one", "name" => MARKERS[0]),
+        ([_, _], _) => template!("typing.two", "first" => MARKERS[0], "second" => MARKERS[1]),
+        ([_, _, _], _) => template!(
+            "typing.three",
+            "first" => MARKERS[0],
+            "second" => MARKERS[1],
+            "third" => MARKERS[2]
+        ),
+        _ => return (text!("typing.many").to_owned(), Vec::new()),
+    };
+    let mut filled = String::with_capacity(line.len());
+    let mut ranges = Vec::new();
+    let mut rest = line.as_str();
+    while let Some((at, index)) = MARKERS
+        .iter()
+        .enumerate()
+        .filter_map(|(index, marker)| rest.find(marker).map(|at| (at, index)))
+        .min()
+    {
+        filled.push_str(&rest[..at]);
+        let start = filled.len();
+        filled.push_str(names[index]);
+        ranges.push(start..filled.len());
+        rest = &rest[at + MARKERS[index].len()..];
+    }
+    filled.push_str(rest);
+    (filled, ranges)
 }

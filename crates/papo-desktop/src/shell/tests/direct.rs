@@ -8,15 +8,12 @@ use papo_sdk::{Generation, Presence, PresenceStatus};
 use papo_sdk_ui::{AccountActivity, DirectMessageId, DirectMessageItem, TypingItem};
 
 use super::navigation::{ana, click, named, with_servers};
+use super::replying::{conversation, lia};
 use super::*;
 use crate::direct_list::DirectRows;
 use crate::direct_pane::dm_row_key;
 use crate::live_watch::Posted;
 use crate::rail::DIRECT_KEY;
-
-fn lia() -> Uuid {
-    Uuid::from_u128(0x51)
-}
 
 fn dm(channel: u128, user: Uuid, name: &str, server: &str) -> Arc<DirectMessageItem> {
     Arc::new(DirectMessageItem {
@@ -154,4 +151,52 @@ fn delete_on_a_row_closes_it_and_a_picked_one_is_no_longer_picked() {
     rt.frame(FRAME_S);
     press(&mut rt, Key::Delete);
     assert!(rt.state.navigation().picked_dm().is_none());
+}
+
+/// `account`'s people's activity with `typists` typing in `channel`.
+fn typing(rt: &mut Runtime<Shell>, channel: Uuid, typists: &[(Uuid, Option<&str>)]) {
+    let items = typists
+        .iter()
+        .map(|(user, phrase)| TypingItem {
+            user: *user,
+            nickname: None,
+            phrase: phrase.map(str::to_owned),
+        })
+        .collect();
+    let activity = AccountActivity {
+        generation: Generation::for_test(1),
+        live: true,
+        presence: BTreeMap::new(),
+        typing: BTreeMap::from([(channel, items)]),
+    };
+    let account = rt.state.tabs.shown().unwrap().key.account;
+    rt.update(move |shell, tx| {
+        shell.activity_posted(account, Posted::People(Arc::new(activity)), tx);
+    });
+    rt.frame(FRAME_S);
+}
+
+fn typing_line(rt: &Runtime<Shell>) -> Option<String> {
+    let line = rt
+        .elements()
+        .into_iter()
+        .position(|element| element.key.as_deref() == Some("typing-line") && !element.exiting)?;
+    let elements = rt.elements();
+    elements[line..]
+        .iter()
+        .find_map(|element| element.text.clone().filter(|text| text.contains("typing")))
+}
+
+#[test]
+fn the_typing_line_names_who_else_types_in_the_shown_conversation_and_goes_when_they_stop() {
+    let mut rt = conversation("");
+    let channel = rt.state.tabs.shown().unwrap().key.channel;
+    assert_eq!(typing_line(&rt), None);
+    typing(&mut rt, channel, &[(lia(), None)]);
+    // The fixture knows Lia by username only.
+    assert_eq!(typing_line(&rt).as_deref(), Some("lia is typing…"));
+    // Someone typing elsewhere is not this conversation's.
+    typing(&mut rt, Uuid::from_u128(0x99), &[(lia(), None)]);
+    assert_eq!(typing_line(&rt), None);
+    assert!(settles(&mut rt), "no frames while nobody types");
 }

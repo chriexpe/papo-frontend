@@ -106,6 +106,37 @@ mod tests {
     }
 
     #[test]
+    fn the_typing_line_names_up_to_three_and_marks_where_each_name_is() {
+        let line = |names: &[&str], phrase| {
+            let (line, ranges) = super::typing_line(names, phrase);
+            let named: Vec<String> = ranges
+                .iter()
+                .map(|range| line[range.clone()].to_owned())
+                .collect();
+            (line, named)
+        };
+        assert_eq!(line(&[], None).0, "");
+        assert_eq!(
+            line(&["Lia"], None),
+            ("Lia is typing…".to_owned(), vec!["Lia".to_owned()])
+        );
+        assert_eq!(
+            line(&["Yuki"], Some("is thinking very hard…")).0,
+            "Yuki is thinking very hard…"
+        );
+        let (two, named) = line(&["Lia", "Yuki"], None);
+        assert_eq!(two, "Lia and Yuki are typing…");
+        assert_eq!(named, ["Lia", "Yuki"]);
+        let (three, named) = line(&["Lia", "Yuki", "Caio"], Some("ignored"));
+        assert_eq!(three, "Lia, Yuki and Caio are typing…");
+        assert_eq!(named, ["Lia", "Yuki", "Caio"]);
+        assert_eq!(
+            line(&["A", "B", "C", "D"], None),
+            ("Several people are typing…".to_owned(), Vec::new())
+        );
+    }
+
+    #[test]
     fn every_locale_translates_every_string() {
         let source = keys(include_str!("../strings/papo/en-US.json"));
         let portuguese = keys(include_str!("../strings/papo/pt-BR.json"));
