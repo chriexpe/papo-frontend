@@ -71,15 +71,20 @@ pub fn mention_query(text: &str, caret: usize, mentions: &[Range<usize>]) -> Opt
     })
 }
 
-/// The people of `snapshot`'s roster that `query` finds, ranked, for `account_user`.
-/// `@everyone` leads when it matches and the account's global permissions allow it; unknown
-/// permissions leave it out.
+/// The people `query` finds for a message in `channel`, ranked, for `account_user`: the
+/// roster, with `@everyone` leading when it matches and the account's global permissions
+/// allow it (unknown permissions leave it out). A direct conversation offers none: its two
+/// people need no mention.
 #[must_use]
 pub fn mention_suggestions(
     snapshot: &ResourceSnapshot,
     account_user: Uuid,
+    channel: Uuid,
     query: &str,
 ) -> Vec<MentionSuggestion> {
+    if snapshot.dms.get(channel).is_some() {
+        return Vec::new();
+    }
     let query = query.to_lowercase();
     let mut starting = Vec::new();
     let mut containing = Vec::new();

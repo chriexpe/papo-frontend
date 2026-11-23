@@ -155,7 +155,7 @@ impl Shell {
             self.composer.close_picker();
             return;
         };
-        let found = mention_suggestions(&snapshot, key.account.user(), &query.text);
+        let found = mention_suggestions(&snapshot, key.account.user(), key.channel, &query.text);
         self.composer.show_picker(key, query, found);
     }
 }

@@ -32,6 +32,9 @@ impl Default for BadgeAggregate {
 pub struct AccountBadges {
     /// All admitted channels belonging to this account only.
     pub all: BadgeAggregate,
+    /// Only this account's server channels, without its direct conversations: what a server
+    /// tile shows beside a separate Direct entry, so a DM is counted once.
+    pub channels: BadgeAggregate,
     /// Only this account's direct conversations, never another account's DMs.
     pub dms: BadgeAggregate,
 }
@@ -43,6 +46,28 @@ pub struct ServerBadgesSnapshot {
     pub accounts: BTreeMap<AccountId, Arc<AccountBadges>>,
     /// Each server's active account only; absent selection or closed session is unknown.
     pub servers: BTreeMap<ServerId, Arc<AccountBadges>>,
+}
+
+impl ServerBadgesSnapshot {
+    /// `accounts`' direct conversations as one: what a cross-server Direct entry shows for
+    /// the accounts its list holds. An account without badges (its session closed) is an
+    /// unknown part; unknown parts keep it a lower bound, as in one account's aggregate.
+    #[must_use]
+    pub fn direct_messages<'a>(
+        &self,
+        accounts: impl IntoIterator<Item = &'a AccountId>,
+    ) -> BadgeAggregate {
+        let unknown = BadgeAggregate::default();
+        let parts: Vec<&BadgeAggregate> = accounts
+            .into_iter()
+            .map(|account| {
+                self.accounts
+                    .get(account)
+                    .map_or(&unknown, |badges| &badges.dms)
+            })
+            .collect();
+        projection::combine(parts.into_iter())
+    }
 }
 
 /// A changed aggregate image. Equal values do not publish or replace their item `Arc`s.

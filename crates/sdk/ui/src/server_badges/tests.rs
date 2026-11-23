@@ -77,6 +77,9 @@ fn aggregate_preserves_lower_bounds_and_independent_unread_evidence() {
     assert_eq!(value.all.has_unread, Some(true));
     assert_eq!(value.dms.mention_count, UnreadCount::AtLeast(2));
     assert_eq!(value.dms.has_unread, None);
+    // A server tile beside Direct counts no DM: exact, and no DM doubt.
+    assert_eq!(value.channels.mention_count, UnreadCount::Exact(3));
+    assert_eq!(value.channels.has_unread, Some(true));
 }
 
 #[test]
@@ -309,5 +312,55 @@ fn closed_badge_watch_and_registry_shutdown_clear_retained_totals() {
             .accounts
             .values()
             .all(|value| **value == AccountBadges::default())
+    );
+}
+
+#[test]
+fn direct_messages_join_the_named_accounts_and_stay_a_lower_bound_when_one_is_unknown() {
+    let aggregate = |mention_count, has_unread| {
+        Arc::new(AccountBadges {
+            all: BadgeAggregate::default(),
+            channels: BadgeAggregate::default(),
+            dms: BadgeAggregate {
+                mention_count,
+                has_unread,
+            },
+        })
+    };
+    let server = ServerAddress::parse("https://one.invalid").unwrap().id();
+    let account = |user| AccountId::new(server, Uuid::from_u128(user));
+    let mut snapshot = ServerBadgesSnapshot::default();
+    assert_eq!(
+        snapshot.direct_messages([]),
+        BadgeAggregate {
+            mention_count: UnreadCount::Exact(0),
+            has_unread: Some(false),
+        },
+        "no account: nothing unread, exactly"
+    );
+    snapshot
+        .accounts
+        .insert(account(1), aggregate(UnreadCount::Exact(2), Some(false)));
+    snapshot
+        .accounts
+        .insert(account(2), aggregate(UnreadCount::Exact(3), Some(true)));
+    snapshot
+        .accounts
+        .insert(account(3), aggregate(UnreadCount::Exact(40), Some(true)));
+    assert_eq!(
+        snapshot.direct_messages(&[account(1), account(2)]),
+        BadgeAggregate {
+            mention_count: UnreadCount::Exact(5),
+            has_unread: Some(true),
+        },
+        "only the named accounts"
+    );
+    assert_eq!(
+        snapshot.direct_messages(&[account(1), account(9)]),
+        BadgeAggregate {
+            mention_count: UnreadCount::AtLeast(2),
+            has_unread: None,
+        },
+        "an account without badges is unknown"
     );
 }

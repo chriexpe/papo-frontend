@@ -94,16 +94,18 @@ impl ChannelCapabilities {
     }
 }
 
-/// Computes ordinary-channel affordances from explicit inputs. DMs require the owner-bound `CapabilityService`.
+/// Computes a channel's affordances for `user` from explicit inputs: an ordinary channel from
+/// its roles and overwrites, a listed DM from membership and block evidence. Whether the
+/// image is current is the caller's: `CapabilityService` adds that check.
 /// # Errors
-/// Returns `Unavailable` if required server, channel, role or membership data is absent.
+/// Returns `Unavailable` if required server, channel, role, membership or block data is absent.
 pub fn capabilities(
     snapshot: &ResourceSnapshot,
     user: Uuid,
     channel: Uuid,
 ) -> Result<ChannelCapabilities, PermissionDataError> {
     if snapshot.dms.get(channel).is_some() {
-        return Err(PermissionDataError::Unavailable);
+        return direct_capabilities(snapshot, channel);
     }
     let channel = snapshot
         .channels
@@ -150,11 +152,7 @@ impl CapabilityService {
         self.fresh(&snapshot)?;
         Ok(Generated {
             generation: snapshot.generation,
-            value: if snapshot.dms.get(channel).is_some() {
-                direct_capabilities(&snapshot, channel)?
-            } else {
-                capabilities(&snapshot, self.session.account().user(), channel)?
-            },
+            value: capabilities(&snapshot, self.session.account().user(), channel)?,
         })
     }
     /// Evaluates current global roles, including the backend's actual `manage_server` ban gate.
@@ -274,11 +272,7 @@ impl CapabilityService {
             };
         }
         let global = global_permissions(&snapshot, self.session.account().user());
-        let channel = if snapshot.dms.get(channel).is_some() {
-            direct_capabilities(&snapshot, channel)
-        } else {
-            capabilities(&snapshot, self.session.account().user(), channel)
-        };
+        let channel = capabilities(&snapshot, self.session.account().user(), channel);
         CapabilityView {
             generation,
             global,

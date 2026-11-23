@@ -41,6 +41,9 @@ pub struct ProfileItem {
     pub description: Option<String>,
     /// Backend custom typing phrase, distinct from active channel typing.
     pub typing_phrase: Option<String>,
+    /// When the person's account was created (backend RFC 3339 `created_at`), for "Member
+    /// since"; clients format it.
+    pub member_since: Option<String>,
 }
 
 /// Observable people resources bound to exactly one account.
@@ -111,6 +114,20 @@ pub(crate) fn member(snapshot: &ResourceSnapshot, id: Uuid) -> MemberItem {
     }
 }
 
+/// Person `id` as a snapshot knows them, whether or not their full profile was requested.
+#[must_use]
+pub fn person(snapshot: &ResourceSnapshot, id: Uuid) -> MemberItem {
+    member(snapshot, id)
+}
+
+/// Person `id`'s profile, once a request for it (`PeopleService::load_profiles`) reached the
+/// snapshot; none before.
+#[must_use]
+pub fn requested_profile(snapshot: &ResourceSnapshot, id: Uuid) -> Option<ProfileItem> {
+    snapshot.profiles.get(id)?;
+    Some(profile(snapshot, id))
+}
+
 fn profile(snapshot: &ResourceSnapshot, id: Uuid) -> ProfileItem {
     ProfileItem {
         member: member(snapshot, id),
@@ -119,5 +136,9 @@ fn profile(snapshot: &ResourceSnapshot, id: Uuid) -> ProfileItem {
             .get(id)
             .and_then(|profile| profile.description.clone()),
         typing_phrase: snapshot.users.get(id).and_then(|user| user.typing.clone()),
+        member_since: snapshot
+            .users
+            .get(id)
+            .and_then(|user| user.created_at.clone()),
     }
 }
