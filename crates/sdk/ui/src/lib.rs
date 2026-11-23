@@ -55,10 +55,12 @@ pub use capabilities::{
 mod direct_candidates;
 mod direct_messages;
 pub use direct_candidates::{DirectCandidate, direct_candidates};
+mod jump_targets;
 pub use direct_messages::{
     DirectMessageId, DirectMessageItem, DirectMessageService, DirectMessageSubscription,
     DirectMessageUpdate,
 };
+pub use jump_targets::{JumpKind, JumpTarget, MAX_JUMP_TARGETS, jump_targets};
 mod channel_list;
 mod channel_projection;
 mod channel_reading;
