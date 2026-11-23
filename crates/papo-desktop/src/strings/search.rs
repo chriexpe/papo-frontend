@@ -63,6 +63,27 @@ pub(crate) fn search_hint_date() -> &'static str {
     text!("search.hint_date")
 }
 
+/// A whole month, as a date suggestion means it: "November 2026".
+pub(crate) fn search_month_year(month: u32, year: i32) -> String {
+    template!("search.month_year", "month" => super::timeline::month_name(month), "year" => year)
+}
+
+/// A whole year, as a date suggestion means it.
+pub(crate) fn search_year(year: i32) -> String {
+    template!("search.year", "year" => year)
+}
+
+/// Whether this locale writes a numeric date day first (21/11) or month
+/// first (11/21).
+pub(crate) fn search_day_first() -> bool {
+    text!("search.date_order") == "day_first"
+}
+
+/// Whether this locale's date words are Portuguese (hoje, novembro).
+pub(crate) fn search_portuguese_dates() -> bool {
+    text!("search.date_words") == "pt"
+}
+
 /// What `from:` and `mentions:` take.
 pub(crate) fn search_hint_person() -> &'static str {
     text!("search.hint_person")

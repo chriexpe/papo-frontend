@@ -71,7 +71,8 @@ pub(super) fn panel(shell: &Shell, title: &Title<'_>, style: &Style, cx: &Cx<She
             Some(list) => {
                 // The same row the field names to assistive technology.
                 let at = search.highlight.min(list.len().saturating_sub(1));
-                Some(search_list::list_view(list, at, &palette))
+                let this_year = chrono::Datelike::year(&shell.search_calendar().today);
+                Some(search_list::list_view(list, at, this_year, &palette))
             }
             None => results_area(shell, search, style, height_pt * PANEL_HEIGHT_SHARE),
         },

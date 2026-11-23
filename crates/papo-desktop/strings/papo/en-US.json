@@ -312,5 +312,9 @@
   "search.keyword_before": "before:",
   "search.keyword_after": "after:",
   "search.keyword_during": "during:",
-  "search.hint_date": "a date, as 2026-11-20"
+  "search.hint_date": "a date: yesterday, 2d, 11/21, nov",
+  "search.month_year": "{{month}} {{year}}",
+  "search.year": "All of {{year}}",
+  "search.date_order": "month_first",
+  "search.date_words": "en"
 }

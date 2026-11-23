@@ -10,8 +10,11 @@
 //! finding the values are the SDK's (`SearchDraft`, `search_suggestions`);
 //! the panel's look is `search_panel`'s.
 
-use papo_sdk::{FilterValue, HasKind, SearchDraft, SearchKeyword, SearchScope};
-use papo_sdk_ui::{SearchSuggestion, SuggestedValue, search_candidates, search_suggestions};
+use papo_sdk::{FilterValue, HasKind, SearchCalendar, SearchDraft, SearchKeyword, SearchScope};
+use papo_sdk_ui::{
+    DateSuggestion, SearchSuggestion, SuggestedValue, search_candidates, search_date_suggestions,
+    search_suggestions,
+};
 use rune::{KeyEvent, Span, Tx};
 
 use super::Shell;
@@ -33,6 +36,12 @@ pub(crate) enum FieldList {
         which: Option<String>,
         items: Vec<SearchSuggestion>,
     },
+    /// What the date filter at the caret can be, each with what it means.
+    Dates {
+        /// The value's byte range in the field, which a pick replaces.
+        value_range: std::ops::Range<usize>,
+        items: Vec<DateSuggestion>,
+    },
 }
 
 impl FieldList {
@@ -41,6 +50,7 @@ impl FieldList {
         match self {
             FieldList::Filters(keywords) => keywords.len(),
             FieldList::Values { items, .. } => items.len(),
+            FieldList::Dates { items, .. } => items.len(),
         }
     }
 }
@@ -105,12 +115,24 @@ pub(crate) fn field_list(
     draft: &SearchDraft,
     snapshot: &papo_sdk::ResourceSnapshot,
     scope: SearchScope,
+    calendar: SearchCalendar,
 ) -> Option<FieldList> {
     if text.trim().is_empty() {
         return Some(FieldList::Filters(offered_filters(scope)));
     }
     // The filter being typed: its values, until one is picked (the value
     // is that one's binding).
+    // A date's list stays while its value is typed, so what it means shows.
+    if let Some(filter) = draft
+        .filter_at(caret)
+        .filter(|filter| filter.keyword.takes_date())
+    {
+        let items = search_date_suggestions(&filter.value, calendar);
+        return (!items.is_empty()).then(|| FieldList::Dates {
+            value_range: filter.value_range.clone(),
+            items,
+        });
+    }
     if let Some(filter) = draft.filter_at(caret)
         && filter.resolved != FilterValue::Unavailable
     {
@@ -179,6 +201,7 @@ impl Shell {
             &draft,
             snapshot,
             search.sdk_scope(),
+            self.search_calendar(),
         )
     }
 
@@ -232,13 +255,17 @@ impl Shell {
             return;
         };
         let edit = &mut search.edit;
-        match &list {
+        let (value_range, value) = match &list {
             FieldList::Filters(keywords) => {
                 let Some(keyword) = keywords.get(at) else {
                     return;
                 };
                 edit.replace_text(keyword_text(*keyword));
                 edit.set_caret(edit.text.len());
+                search.highlight = 0;
+                self.search_edited(tx);
+                tx.focus(SEARCH_FIELD_KEY, true);
+                return;
             }
             FieldList::Values {
                 value_range, items, ..
@@ -246,19 +273,26 @@ impl Shell {
                 let Some(item) = items.get(at) else {
                     return;
                 };
-                let follows_space = edit
-                    .text
-                    .get(value_range.end..)
-                    .and_then(|rest| rest.chars().next())
-                    .is_some_and(char::is_whitespace);
-                let mut value = written(item).to_owned();
-                if !follows_space {
-                    value.push(' ');
-                }
-                edit.set_selection(value_range.start, value_range.end);
-                edit.insert(&value);
+                (value_range, written(item))
             }
+            FieldList::Dates { value_range, items } => {
+                let Some(item) = items.get(at) else {
+                    return;
+                };
+                (value_range, item.binding.as_str())
+            }
+        };
+        let follows_space = edit
+            .text
+            .get(value_range.end..)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(char::is_whitespace);
+        let mut value = value.to_owned();
+        if !follows_space {
+            value.push(' ');
         }
+        edit.set_selection(value_range.start, value_range.end);
+        edit.insert(&value);
         search.highlight = 0;
         self.search_edited(tx);
         tx.focus(SEARCH_FIELD_KEY, true);

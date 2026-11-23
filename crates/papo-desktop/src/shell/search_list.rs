@@ -4,8 +4,9 @@
 //! for an ambiguous name; the highlighted row on `surface.selected`. What
 //! it holds and what a pick writes are `search_field`'s. Pure.
 
-use papo_sdk::SearchKeyword;
-use papo_sdk_ui::{SearchSuggestion, SuggestedValue};
+use chrono::Datelike;
+use papo_sdk::{SearchDate, SearchKeyword};
+use papo_sdk_ui::{DateSuggestion, SearchSuggestion, SuggestedValue};
 use rune::{El, ScrollSpec, col, icon, row, text};
 
 use super::Shell;
@@ -27,7 +28,12 @@ pub(crate) fn option_key(index: usize) -> String {
 
 /// The filters, or a filter's values with "Which Lia?" over an
 /// ambiguous name's.
-pub(super) fn list_view(list: &FieldList, highlight: usize, palette: &Palette) -> El {
+pub(super) fn list_view(
+    list: &FieldList,
+    highlight: usize,
+    this_year: i32,
+    palette: &Palette,
+) -> El {
     let (heading, rows): (Option<String>, Vec<El>) = match list {
         FieldList::Filters(keywords) => (
             Some(strings::search_filters().to_owned()),
@@ -43,6 +49,14 @@ pub(super) fn list_view(list: &FieldList, highlight: usize, palette: &Palette) -
                 .iter()
                 .enumerate()
                 .map(|(index, item)| value_row(item, index, index == highlight, palette))
+                .collect(),
+        ),
+        FieldList::Dates { items, .. } => (
+            None,
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| date_row(item, index, index == highlight, this_year, palette))
                 .collect(),
         ),
     };
@@ -162,5 +176,51 @@ fn value_row(item: &SearchSuggestion, index: usize, chosen: bool, palette: &Pale
                 .child(icon(&crate::icons::PAPERCLIP, PILL_ICON_PT).color(palette.text_secondary))
                 .child(text(spelled).font(TYPE_BODY).color(palette.text_primary))
         }
+    }
+}
+
+/// A date value and what it means: "2d · Friday, 21 November".
+fn date_row(
+    item: &DateSuggestion,
+    index: usize,
+    chosen: bool,
+    this_year: i32,
+    palette: &Palette,
+) -> El {
+    let meaning = date_meaning(item.date, this_year);
+    option_row(
+        index,
+        format!("{} {meaning}", item.binding),
+        chosen,
+        palette,
+    )
+    .child(icon(&crate::icons::CALENDAR, PILL_ICON_PT).color(palette.text_secondary))
+    .child(
+        text(item.binding.clone())
+            .font(TYPE_BODY)
+            .color(palette.text_primary),
+    )
+    .child(
+        text(meaning)
+            .font(TYPE_SMALL)
+            .color(palette.text_muted)
+            .truncate(),
+    )
+}
+
+/// What a date value means, in words: a day with its weekday (and its
+/// year when not this one), a month and its year, a whole year.
+fn date_meaning(date: SearchDate, this_year: i32) -> String {
+    match date {
+        SearchDate::Day(day) => {
+            let weekday = day.weekday().num_days_from_sunday();
+            if day.year() == this_year {
+                strings::date(weekday, day.day(), day.month())
+            } else {
+                strings::date_with_year(weekday, day.day(), day.month(), i64::from(day.year()))
+            }
+        }
+        SearchDate::Month { year, month } => strings::search_month_year(month, year),
+        SearchDate::Year(year) => strings::search_year(year),
     }
 }

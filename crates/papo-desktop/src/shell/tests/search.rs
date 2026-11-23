@@ -488,7 +488,7 @@ fn a_date_typed_out_is_a_chip_and_dates_that_leave_no_day_find_nothing() {
     assert!(matches!(draft.filters[0].resolved, FilterValue::Date(_)));
     rt.update(Shell::clear_search);
     rt.frame(FRAME_S);
-    type_text(&mut rt, "after:2026-11-20 before:2026-11-21");
+    type_text(&mut rt, "after:2026-11-20 before:2026-11-21 ");
     rt.update(|shell, _tx| shell.search_now());
     rt.frame(FRAME_S);
     assert!(matches!(
@@ -499,4 +499,29 @@ fn a_date_typed_out_is_a_chip_and_dates_that_leave_no_day_find_nothing() {
         &rt,
         "No results for “after:2026-11-20 before:2026-11-21”"
     ));
+}
+
+#[test]
+fn a_date_keyword_lists_dates_with_their_meaning_and_a_pick_binds_one() {
+    let mut rt = conversation("");
+    ctrl(&mut rt, 'f');
+    type_text(&mut rt, "before:");
+    for binding in ["today", "yesterday", "7d"] {
+        assert!(shows(&rt, binding), "{binding} is offered");
+    }
+    press(&mut rt, Key::Down);
+    press(&mut rt, Key::Enter);
+    assert_eq!(text(&rt), "before:yesterday ");
+    let draft = rt.state.search_draft().unwrap();
+    assert!(matches!(draft.filters[0].resolved, FilterValue::Date(_)));
+}
+
+#[test]
+fn a_number_after_a_date_keyword_offers_each_unit() {
+    let mut rt = conversation("");
+    ctrl(&mut rt, 'f');
+    type_text(&mut rt, "after:2");
+    for binding in ["2d", "2w", "2m", "2y"] {
+        assert!(shows(&rt, binding), "{binding} is offered");
+    }
 }

@@ -142,7 +142,7 @@ fn weekday_name(weekday: u32) -> &'static str {
     }
 }
 
-fn month_name(month: u32) -> &'static str {
+pub(super) fn month_name(month: u32) -> &'static str {
     match month {
         1 => text!("timeline.month.1"),
         2 => text!("timeline.month.2"),
