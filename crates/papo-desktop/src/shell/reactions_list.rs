@@ -1,7 +1,8 @@
 //! The reactions list (`docs/design.md` §10, Reactions list): View
 //! reactions turns the message menu into it in place, and a secondary
 //! click on a chip opens it beside the chip on that emoji. "← Reactions"
-//! on top, then the tabs (All, then each emoji with its count, in the
+//! on top when it came from the menu (from a chip nothing is behind it),
+//! then the tabs (All, then each emoji with its count, in the
 //! chips' order), then 36 px rows: the avatar, the name, "you" by yours,
 //! and on All every emoji each person used at the row's end. You first,
 //! then in the order people reacted. Pages are read as the end of the
@@ -198,10 +199,13 @@ pub(super) fn body(shell: &Shell, palette: &Palette) -> Option<El> {
             },
         )
         .on_visible_rows(move |shell: &mut Shell, range| shell.reactions_visible(range, shown));
+    // Opened from a chip, nothing is behind the list to go back to: no
+    // "← Reactions" (Christian, 2026-11-23).
+    let header = (!view.from_chip).then(|| header(&palette));
     let mut body = col()
         .w_full()
         .gap(SPACE_SM_PT)
-        .child(header(&palette))
+        .children(header)
         .child(tabs(&chips, view.filter.as_ref(), &palette))
         .child(
             el().w_full()

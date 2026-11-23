@@ -13,7 +13,7 @@ use rune::{Align, El, Side, Tx, icon, row, text};
 
 use crate::design::{
     FOCUS_RING_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT,
-    SPACE_LG_PT, SPACE_SM_PT, TYPE_SMALL,
+    SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_SMALL,
 };
 use crate::shell::Shell;
 use crate::strings;
@@ -117,5 +117,5 @@ pub(crate) fn view(notice: &Notice, above: &str, palette: &Palette) -> El {
                 .color(palette.text_primary),
         )
         .child(close);
-    pill.anchored(above, Side::Top, Align::Start, SPACE_SM_PT)
+    pill.anchored(above, Side::Top, Align::Start, SPACE_MD_PT)
 }

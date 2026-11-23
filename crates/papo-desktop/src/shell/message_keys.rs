@@ -31,7 +31,8 @@ impl Shell {
         tx: &mut Tx,
     ) -> bool {
         let mods = event.mods;
-        if event.is_command('c') && !mods.shift && !mods.alt {
+        // A selection copies itself; without one, the focused message does.
+        if event.is_command('c') && !mods.shift && !mods.alt && tx.text_selection().is_none() {
             // The message's Text copy, as Copy text in its menu.
             return match self.copy_of(key, id, MessageAction::CopyText) {
                 Some(text) => {
