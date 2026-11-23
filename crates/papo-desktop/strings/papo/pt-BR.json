@@ -268,5 +268,7 @@
   "notice.unblock_failed": "Não deu para desbloquear.",
   "notice.ban_failed": "Não deu para banir.",
   "notice.dm_open_failed": "Não deu para abrir a conversa.",
-  "notice.dm_refused": "Você não pode mandar mensagem para essa pessoa."
+  "notice.dm_refused": "Você não pode mandar mensagem para essa pessoa.",
+  "direct.you_blocked": "Você bloqueou {{name}}.",
+  "direct.cant_message": "Você não pode mandar mensagem para {{name}}."
 }

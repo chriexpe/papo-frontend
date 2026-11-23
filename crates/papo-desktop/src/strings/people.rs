@@ -106,3 +106,14 @@ pub(crate) fn typing_line(names: &[&str], phrase: Option<&str>) -> (String, Vec<
     filled.push_str(rest);
     (filled, ranges)
 }
+
+/// A DM's state pill when this account blocks them: "You blocked Lia.".
+pub(crate) fn direct_you_blocked(name: &str) -> String {
+    template!("direct.you_blocked", "name" => name)
+}
+
+/// A DM's state pill when the backend refuses it, never saying who blocked
+/// whom: "You can't message Lia.".
+pub(crate) fn direct_cant_message(name: &str) -> String {
+    template!("direct.cant_message", "name" => name)
+}

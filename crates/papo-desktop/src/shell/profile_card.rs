@@ -182,7 +182,7 @@ impl Shell {
         });
     }
 
-    fn set_blocked(&mut self, key: TimelineKey, user: Uuid, blocked: bool) {
+    pub(super) fn set_blocked(&mut self, key: TimelineKey, user: Uuid, blocked: bool) {
         let Some(sdk) = &self.sdk else {
             return;
         };

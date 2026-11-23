@@ -157,7 +157,13 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         original: original.as_ref(),
         me: shown.map_or(papo_sdk::Uuid::nil(), |(key, _)| key.account.user()),
     };
-    let composer = composer::pill(&shell.composer, &context, palette);
+    let state = shell.picked_dm_access().zip(shell.nav.picked_dm());
+    let composer = match (state, &title) {
+        (Some((access, picked)), super::title::Title::Direct { name, .. }) => {
+            super::direct::state_pill(access, name, picked, palette)
+        }
+        _ => composer::pill(&shell.composer, &context, palette),
+    };
     let style = timeline_style(shell, theme, palette);
     let header = super::pins_panel::header(shell, &title, palette);
     let panel = super::pins_panel::panel(shell, &style, cx);

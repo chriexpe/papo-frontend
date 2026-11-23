@@ -2,17 +2,27 @@
 //! SDK's list as `direct_list` posts it, showing Direct in the server's
 //! place, picking a conversation, and the timeline a picked one shows.
 //!
-//! Owns these transitions; the list and its order are the SDK's, where the
-//! person is lives in `navigation`, and the drawing in `direct_pane`.
+//! A picked conversation that is not open says why in its text pill's
+//! place: this account blocks them, or the backend refuses it.
+//!
+//! Owns these transitions and the state pill; the list and its order are
+//! the SDK's, where the person is lives in `navigation`, and the list's
+//! drawing in `direct_pane`.
 
 use std::sync::Arc;
 
+use papo_sdk::operations::social::DirectAccess;
 use papo_sdk_ui::{DirectMessageId, DirectMessageItem};
-use rune::Tx;
+use rune::{El, Tx, row, text};
 
 use super::Shell;
+use crate::design::{
+    COMPOSER_HEIGHT_PT, FOCUS_RING_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT,
+    SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_STRONG,
+};
 use crate::direct_list::DirectRows;
 use crate::notice::Refusal;
+use crate::strings;
 use crate::timeline::TimelineKey;
 
 impl Shell {
@@ -22,6 +32,12 @@ impl Shell {
     pub(crate) fn direct_posted(&mut self, rows: DirectRows, tx: &mut Tx) -> bool {
         self.nav.direct_changed(rows.iter());
         self.direct = rows;
+        // Back in the list, a conversation is open again; one the picked
+        // conversation left asks the backend why.
+        let direct = &self.direct;
+        self.dm_access
+            .retain(|id, _| !direct.iter().any(|row| &row.id == id));
+        self.check_picked_dm();
         if self.pick_awaited_dm(tx) {
             return true;
         }
@@ -109,6 +125,57 @@ impl Shell {
         });
     }
 
+    /// What the picked conversation allows, when it is not open: this
+    /// account blocks them (its own block list, at once), or the backend
+    /// refuses it (asked once it left the list). None while open or not
+    /// yet known.
+    pub(super) fn picked_dm_access(&self) -> Option<DirectAccess> {
+        let picked = self.nav.picked_dm()?;
+        let key = self.wanted_direct_timeline()?;
+        let blocked = self
+            .shown_timeline(key)
+            .and_then(|open| open.resources.as_deref())
+            .is_some_and(|resources| resources.blocks.contains(picked.user));
+        if blocked {
+            return Some(DirectAccess::YouBlocked);
+        }
+        self.dm_access
+            .get(&picked.id)
+            .copied()
+            .filter(|access| *access != DirectAccess::Open)
+    }
+
+    /// Asks the backend about the picked conversation once it left the
+    /// list: a refusal and a hide elsewhere look the same there.
+    fn check_picked_dm(&mut self) {
+        let Some(picked) = self.nav.picked_dm() else {
+            return;
+        };
+        let listed = self.direct.iter().any(|row| row.id == picked.id);
+        if listed || self.dm_access.contains_key(&picked.id) {
+            return;
+        }
+        let (id, user) = (picked.id.clone(), picked.user);
+        // Asked once: the answer, or "open" until it comes.
+        self.dm_access.insert(id.clone(), DirectAccess::Open);
+        let Some(sdk) = &self.sdk else {
+            return;
+        };
+        let updates = sdk.updates();
+        sdk.run(move |client| async move {
+            let Ok(session) = client.session(id.account) else {
+                return;
+            };
+            match session.operations().direct_access(id.channel, user).await {
+                Ok(access) => updates.send(move |shell| {
+                    shell.dm_access.insert(id, access);
+                    true
+                }),
+                Err(error) => log::debug!("a conversation's access was not read: {error}"),
+            }
+        });
+    }
+
     /// The timeline Direct shows: the picked conversation's.
     pub(super) fn wanted_direct_timeline(&self) -> Option<TimelineKey> {
         let picked = self.nav.picked_dm()?;
@@ -118,3 +185,67 @@ impl Shell {
         })
     }
 }
+
+/// A DM's state pill, in the text pill's place and at its height: "You
+/// blocked Lia." with Unblock, or "You can't message Lia." without saying
+/// who blocked whom.
+pub(super) fn state_pill(
+    access: DirectAccess,
+    name: &str,
+    picked: &DirectMessageItem,
+    palette: &Palette,
+) -> El {
+    let words = match access {
+        DirectAccess::YouBlocked => strings::direct_you_blocked(name),
+        _ => strings::direct_cant_message(name),
+    };
+    let mut pill = row()
+        .key(DM_STATE_KEY)
+        .w_full()
+        .h(COMPOSER_HEIGHT_PT)
+        .px(SPACE_LG_PT)
+        .gap(SPACE_MD_PT)
+        .center_y()
+        .radius(RADIUS_PILL_PT)
+        .fill(palette.surface_pill)
+        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .role("status")
+        .child(
+            text(words)
+                .font(TYPE_BODY)
+                .color(palette.text_secondary)
+                .grow(1.0)
+                .min_w(0.0)
+                .max_lines(1),
+        );
+    if access == DirectAccess::YouBlocked {
+        let key = TimelineKey {
+            account: picked.id.account,
+            channel: picked.id.channel,
+        };
+        let user = picked.user;
+        pill = pill.child(
+            row()
+                .key("dm-unblock")
+                .px(SPACE_MD_PT)
+                .py(SPACE_SM_PT)
+                .radius(RADIUS_CONTROL_PT)
+                .hover(palette.surface_hover)
+                .role("button")
+                .label(strings::card_unblock())
+                .focusable(true)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+                .on_press(move |shell: &mut Shell| shell.set_blocked(key, user, false))
+                .child(
+                    text(strings::card_unblock())
+                        .font(TYPE_BODY_STRONG)
+                        .color(palette.link)
+                        .a11y_hidden(),
+                ),
+        );
+    }
+    pill
+}
+
+/// The element key of a DM's state pill.
+pub(crate) const DM_STATE_KEY: &str = "dm-state";

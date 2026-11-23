@@ -222,3 +222,28 @@ fn a_conversation_a_card_opened_is_picked_once_the_list_holds_it() {
     assert_eq!(picked, Some(dm(7, lia(), "Lia", "Lumen").id.clone()));
     assert!(rt.state.navigation().direct_shown());
 }
+
+#[test]
+fn a_conversation_the_backend_refuses_says_so_in_the_text_pills_place() {
+    use papo_sdk::operations::social::DirectAccess;
+    let mut rt = direct();
+    let row = dm(1, lia(), "Lia", "Lumen");
+    click(&mut rt, &dm_row_key(&row));
+    assert!(rt.state.picked_dm_access().is_none(), "open while listed");
+    // It leaves the list; the backend says it refuses it.
+    rt.update(|shell, tx| {
+        shell.direct_posted(DirectRows::new(), tx);
+    });
+    let id = row.id.clone();
+    rt.update(move |shell, _tx| {
+        shell.dm_access.insert(id, DirectAccess::Refused);
+    });
+    rt.frame(FRAME_S);
+    assert_eq!(rt.state.picked_dm_access(), Some(DirectAccess::Refused));
+    assert!(tree(&rt).contains("You can't message Lia."));
+    // Back in the list, it is open again.
+    rt.update(move |shell, tx| {
+        shell.direct_posted([row].into_iter().collect(), tx);
+    });
+    assert!(rt.state.picked_dm_access().is_none());
+}

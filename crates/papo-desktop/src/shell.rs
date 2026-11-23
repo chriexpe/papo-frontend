@@ -100,6 +100,11 @@ pub(crate) struct Shell {
     /// The conversation a card's Message opened, picked once the list
     /// holds it.
     awaited_dm: Option<papo_sdk_ui::DirectMessageId>,
+    /// What the backend said about conversations that left the list.
+    dm_access: std::collections::BTreeMap<
+        papo_sdk_ui::DirectMessageId,
+        papo_sdk::operations::social::DirectAccess,
+    >,
     /// The notice pill, while one shows.
     notice: Option<crate::notice::Notice>,
     /// Pins and unpins on their way.
@@ -174,6 +179,7 @@ impl Default for Shell {
             activity: HashMap::new(),
             direct: direct_list::DirectRows::new(),
             awaited_dm: None,
+            dm_access: std::collections::BTreeMap::new(),
             notice: None,
             pinning: reacting::Pinning::default(),
             stretched: None,
