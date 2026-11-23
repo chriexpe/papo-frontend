@@ -50,10 +50,9 @@ pub(crate) struct Bar {
 /// What a press on the bar asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BarPress {
-    /// Add (`add`) or take back your reaction `emoji`.
+    /// Toggle your reaction `emoji`.
     React {
         emoji: String,
-        add: bool,
     },
     /// Add reaction: the bar stretches into the strip, or folds back.
     AddReaction,
@@ -158,7 +157,6 @@ fn emoji_buttons<S: TimelineHost>(
         .map(|(index, (emoji, mine))| {
             let press = BarPress::React {
                 emoji: emoji.clone(),
-                add: !mine,
             };
             let label = if *mine {
                 strings::reaction_take_back(emoji)

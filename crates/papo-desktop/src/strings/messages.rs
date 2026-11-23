@@ -234,6 +234,11 @@ pub(crate) fn pins_jump() -> &'static str {
     text!("pins.jump")
 }
 
+/// The pins panel when the pins could not be read.
+pub(crate) fn pins_failed() -> &'static str {
+    text!("pins.failed")
+}
+
 /// The pins panel while the pins are read.
 pub(crate) fn pins_loading() -> &'static str {
     text!("pins.loading")

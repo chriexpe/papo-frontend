@@ -63,7 +63,7 @@ impl Shell {
             }
             Key::Enter => {
                 self.stretched = None;
-                self.open_message_menu(key, id, Placement::BelowEnd(more_key(id)));
+                self.open_message_menu(key, id, Placement::BelowEnd(more_key(id)), message_key(id));
                 true
             }
             Key::Delete => {

@@ -21,6 +21,8 @@ pub(crate) mod hover_bar;
 pub(crate) mod local_time;
 mod message_row;
 mod paging;
+pub(crate) mod pinned;
+pub(crate) mod reacting;
 pub(crate) mod reactions;
 pub(crate) mod reactors;
 pub(crate) mod reading;
@@ -52,11 +54,12 @@ use self::echoes::Echoes;
 pub(crate) use self::message_row::{author_name, created_us};
 use self::paging::Paging;
 pub(crate) use self::paging::Request;
+pub(crate) use self::reacting::Reacting;
 use self::reading::Reading;
 pub(crate) use self::reading::Seek;
 use self::reports::Reports;
 pub(crate) use self::rows::row_key;
-pub(crate) use self::view::{Reacting, Style, TimelineHost, view, viewport_key};
+pub(crate) use self::view::{Style, TimelineHost, view, viewport_key};
 pub(crate) use self::watch::Opened;
 
 /// Which timeline: an account's channel. Another account on the same
@@ -141,8 +144,8 @@ pub(crate) struct OpenTimeline {
     pub(crate) reports: Reports,
     /// ⌛'s paging toward the skipped block, while it runs.
     pub(crate) seek: Option<Seek>,
-    /// The channel's pins, newest pin first; none while unknown.
-    pub(crate) pins: Option<Vector<Arc<Message>>>,
+    /// The channel's pins, newest pin first, parsed.
+    pub(crate) pins: pinned::Pins,
     /// Their handle, which fetches them again.
     pub(crate) pins_handle: Option<ChannelPins>,
     /// Who reacted to its messages, as far as read.
@@ -187,7 +190,7 @@ impl OpenTimeline {
             reading: Reading::default(),
             reports: Reports::default(),
             seek: None,
-            pins: None,
+            pins: pinned::Pins::default(),
             pins_handle: None,
             reactors: reactors::ReactorLists::default(),
         };
@@ -384,6 +387,25 @@ impl OpenTimeline {
         self.tracker.bottom_shown(false);
         self.reports.jumped();
         Some(anchor)
+    }
+
+    /// Message `id` with its parsed content, when among the items.
+    pub(crate) fn message(
+        &self,
+        id: Uuid,
+    ) -> Option<(
+        &Arc<Message>,
+        &Arc<papo_sdk_ui::message_content::MessageContent>,
+    )> {
+        self.items.iter().find_map(|item| match item.as_ref() {
+            TimelineItem::Message {
+                id: current,
+                message,
+                content,
+                ..
+            } if *current == id => Some((message, content)),
+            _ => None,
+        })
     }
 
     /// Whether message `id` is among the items.

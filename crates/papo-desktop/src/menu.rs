@@ -54,12 +54,11 @@ pub(crate) enum MenuAction {
     OpenLink { key: TimelineKey, url: String },
     /// Copy `url`.
     CopyLink(String),
-    /// Add, or take back, your reaction `emoji` to message `id`.
+    /// Toggle your reaction `emoji` to message `id`.
     React {
         key: TimelineKey,
         id: Uuid,
         emoji: String,
-        add: bool,
     },
 }
 

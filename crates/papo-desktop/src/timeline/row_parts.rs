@@ -7,7 +7,7 @@ use papo_sdk::{Message, Operation, Uuid};
 use papo_sdk_ui::message_content::MessageContent;
 use papo_sdk_ui::operations::ReactionEmoji;
 use papo_sdk_ui::{
-    ReactionChip, ReplyOriginal, attention, display_name, message_actions, pinned, reaction_chips,
+    ReactionChip, ReplyOriginal, attention, display_name, message_actions, reaction_chips,
 };
 
 use super::OpenTimeline;
@@ -155,6 +155,11 @@ pub(super) fn parts<'a>(
     // An edit in flight shows its own text.
     let edit = change.and_then(|change| change.edit.as_ref());
     let content = edit.map_or(content, |(_, parsed)| parsed.as_ref());
+    // Read once for the bar and the chips: the queue is scanned per chip.
+    let reactions = match origin {
+        Origin::History(_) => reaction_chips(message, &style.reacting.outgoing),
+        Origin::Echo(_) => Vec::new(),
+    };
     let parts = Parts {
         name: author_name(message, open.resources.as_deref()),
         time: at_us.map_or_else(String::new, |at_us| style.time.time_label(at_us)),
@@ -174,13 +179,10 @@ pub(super) fn parts<'a>(
         reply: line,
         change: change.map(|change| (change.local, change.state)),
         bar: match origin {
-            Origin::History(pending) => Some(bar(open, id, message, pending, style)),
+            Origin::History(pending) => Some(bar(open, id, message, pending, &reactions, style)),
             Origin::Echo(_) => None,
         },
-        chips: match origin {
-            Origin::History(_) => chips(open, id, message, style),
-            Origin::Echo(_) => Vec::new(),
-        },
+        chips: chips(open, id, &reactions, style),
         add_chip: false,
     };
     // The add chip is offered where the bar offers reacting.
@@ -197,13 +199,14 @@ fn bar(
     id: Uuid,
     message: &Message,
     pending: Option<&Operation>,
+    chips: &[ReactionChip],
     style: &Style,
 ) -> Bar {
     let reacting = &style.reacting;
     let actions = message_actions(
         message,
         pending,
-        pinned(open.pins.as_ref(), id),
+        open.pins.pinned(id),
         open.key.account.user(),
         reacting.capabilities,
     );
@@ -211,7 +214,6 @@ fn bar(
         .stretched
         .and_then(|(on, chosen)| (on == id).then_some(chosen));
     let emoji = if actions.react {
-        let chips = reaction_chips(message, &reacting.outgoing);
         let shown = if stretched.is_some() {
             reacting.quick.len()
         } else {
@@ -240,10 +242,9 @@ fn bar(
 
 /// Message `id`'s reaction chips, whether this account may toggle each
 /// now, and who reacted with each, once read.
-fn chips(open: &OpenTimeline, id: Uuid, message: &Message, style: &Style) -> Vec<Chip> {
+fn chips(open: &OpenTimeline, id: Uuid, chips: &[ReactionChip], style: &Style) -> Vec<Chip> {
     let reacting = &style.reacting;
-    let chips = reaction_chips(message, &reacting.outgoing);
-    let list = open.reactors.get(id, &chips).filter(|list| list.started);
+    let list = open.reactors.get(id, chips).filter(|list| list.started);
     chips
         .iter()
         .map(|chip| Chip {

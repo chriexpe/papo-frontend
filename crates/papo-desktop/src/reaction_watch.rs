@@ -37,7 +37,9 @@ pub(crate) enum Posted {
 pub(crate) type Apply<S> = fn(&mut S, AccountId, Posted, &mut Tx) -> bool;
 
 /// Runs until the client closes: one watch per open session, started as
-/// sessions open and dropped as they close (or with this watch).
+/// sessions open and dropped as they close (or with this watch). A watch
+/// that ended by itself starts again only when the sessions change, so one
+/// that cannot subscribe never spins.
 pub(crate) async fn run<S: 'static>(client: ClientHandle, updates: Updates<S>, apply: Apply<S>) {
     let mut sessions = client.subscribe_session_changes();
     let mut tasks = JoinSet::new();
@@ -54,18 +56,27 @@ pub(crate) async fn run<S: 'static>(client: ClientHandle, updates: Updates<S>, a
             let kept = open.iter().any(|session| session.account() == *account);
             if !kept {
                 task.abort();
+                let account = *account;
+                updates.send_tx(move |state, tx| apply(state, account, Posted::Closed, tx));
             }
             kept && !task.is_finished()
         });
         for session in open {
-            let account = session.account();
-            if let Entry::Vacant(slot) = running.entry(account) {
+            if let Entry::Vacant(slot) = running.entry(session.account()) {
                 slot.insert(tasks.spawn(account_watch(session, updates.clone(), apply)));
             }
         }
-        tokio::select! {
-            changed = sessions.changed() => if changed.is_err() { return },
-            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
+        loop {
+            tokio::select! {
+                changed = sessions.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    break;
+                }
+                // Reaped, not restarted: see above.
+                Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
+            }
         }
     }
 }
@@ -88,9 +99,10 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
         .await;
     let mut library = match library {
         Ok(library) => {
-            if let Some(quick) = ranked(&library.baseline) {
-                post(Posted::Quick(quick));
-            }
+            // A library that starts in a fault still has the defaults.
+            let quick =
+                ranked(&library.baseline).unwrap_or_else(|| quick_reactions(&[], QUICK_REACTIONS));
+            post(Posted::Quick(quick));
             Some(library)
         }
         Err(error) => {

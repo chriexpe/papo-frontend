@@ -1,49 +1,42 @@
 //! Who reacted, from the shell's side: reading the SDK's `reaction_users`
 //! pages for a message (oldest reaction first) into its timeline's lists,
-//! one page at a time while more are needed, and asking for the profiles
-//! of people the account does not know yet, so their names show (the SDK
-//! publishes them with the account's resources).
+//! one page at a time (the first for a chip's hint; for the reactions list,
+//! until its tab holds its count), and asking for the profiles of people
+//! the account does not know yet, so their names show (the SDK publishes
+//! them with the account's resources).
 
+use papo_sdk::operations::interactions::ReactorPage;
 use papo_sdk::{HistoryOrder, Uuid};
-use papo_sdk_ui::operations::ReactionEmoji;
-use papo_sdk_ui::{TimelineItem, reaction_chips};
+use papo_sdk_ui::reaction_chips;
 
 use super::Shell;
 use crate::timeline::TimelineKey;
+use crate::timeline::reactors::Want;
 
 impl Shell {
-    /// Reads the next page of who reacted to message `id` of timeline
-    /// `key`, when one is needed to show `filter`'s people (everyone's
-    /// when none) and none is on its way.
-    pub(crate) fn load_reactors(
-        &mut self,
-        key: TimelineKey,
-        id: Uuid,
-        filter: Option<&ReactionEmoji>,
-    ) {
+    /// Reads the next page of who reacted to message `id` of the shown
+    /// timeline `key`, when `want` needs one and none is on its way.
+    /// Returns whether a page was asked for.
+    pub(crate) fn load_reactors(&mut self, key: TimelineKey, id: Uuid, want: Want<'_>) -> bool {
         let outgoing = self.outgoing(key.account);
         let Some(open) = self.shown_timeline_mut(key) else {
-            return;
+            return false;
         };
-        let Some(message) = open.items.iter().find_map(|item| match item.as_ref() {
-            TimelineItem::Message {
-                id: current,
-                message,
-                ..
-            } if *current == id => Some(std::sync::Arc::clone(message)),
-            _ => None,
-        }) else {
-            return;
+        let Some(message) = open
+            .message(id)
+            .map(|(message, _)| std::sync::Arc::clone(message))
+        else {
+            return false;
         };
         let chips = reaction_chips(&message, &outgoing);
         if chips.is_empty() {
-            return;
+            return false;
         }
-        let Some(request) = open.reactors.wanted(id, key.account.user(), &chips, filter) else {
-            return;
+        let Some(request) = open.reactors.wanted(id, key.account.user(), &chips, want) else {
+            return false;
         };
         let Some(sdk) = &self.sdk else {
-            return;
+            return false;
         };
         let updates = sdk.updates();
         sdk.run(move |client| async move {
@@ -62,18 +55,20 @@ impl Shell {
             updates
                 .send(move |shell| shell.reactors_arrived(key, request.id, request.ticket, page));
         });
+        true
     }
 
     /// A page of who reacted to message `id` arrived (none when it could
-    /// not be read). Returns whether the view changed.
+    /// not be read). Taken by its timeline, shown or not, so no list waits
+    /// for an answer it dropped. Returns whether the view changed.
     fn reactors_arrived(
         &mut self,
         key: TimelineKey,
         id: Uuid,
         ticket: u64,
-        page: Option<papo_sdk::operations::interactions::ReactorPage>,
+        page: Option<ReactorPage>,
     ) -> bool {
-        let Some(open) = self.shown_timeline_mut(key) else {
+        let Some(open) = self.tabs.open_mut(key) else {
             return false;
         };
         let people: Vec<Uuid> = page
@@ -103,6 +98,17 @@ impl Shell {
                     log::debug!("reactors' profiles were not read: {error}");
                 }
             });
+        }
+        // A tab still short of its count reads on: its rows may not have
+        // changed, so nothing else would ask.
+        let view = self
+            .nav
+            .menu
+            .as_ref()
+            .and_then(|menu| menu.reactions.clone())
+            .filter(|view| view.key == key && view.id == id);
+        if let Some(view) = view {
+            self.load_reactors(key, id, Want::People(view.filter.as_ref()));
         }
         true
     }

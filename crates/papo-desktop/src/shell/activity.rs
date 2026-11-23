@@ -49,15 +49,23 @@ impl Shell {
         match posted {
             Posted::Quick(quick) => {
                 self.activity.entry(account).or_default().quick = quick.into();
-                true
+                self.shows_account(account)
             }
             Posted::Outgoing(outgoing) => {
                 self.drop_unresolved(account, &outgoing, tx);
                 self.activity.entry(account).or_default().outgoing = Some(outgoing);
-                true
+                // Only the shown conversation's chips wait on a queue.
+                self.shows_account(account)
             }
             Posted::Closed => self.activity.remove(&account).is_some(),
         }
+    }
+
+    /// Whether the shown conversation is `account`'s.
+    fn shows_account(&self, account: AccountId) -> bool {
+        self.tabs
+            .shown()
+            .is_some_and(|open| open.key.account == account)
     }
 
     /// The account's quick reactions, most used first.

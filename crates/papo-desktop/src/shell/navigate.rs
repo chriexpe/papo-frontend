@@ -59,7 +59,18 @@ impl Shell {
     /// Keys no control took: Alt+↑/↓ between channels, then Ctrl+A in the
     /// timeline.
     pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
-        self.channel_step_key(key, tx) || self.select_message_key(key, tx) || self.pins_key(key, tx)
+        self.channel_step_key(key, tx)
+            || self.select_message_key(key, tx)
+            || self.pins_key(key, tx)
+            || self.escape_key(key)
+    }
+
+    /// Escape where nothing took it (the rail, a channel row, the header):
+    /// what is on top closes.
+    fn escape_key(&mut self, key: &KeyEvent) -> bool {
+        let mods = key.mods;
+        let bare = !(mods.cmd || mods.ctrl || mods.alt || mods.shift || mods.logo);
+        key.key == Key::Escape && bare && self.escape_on_top()
     }
 
     /// Ctrl+P: the pins panel opens, stretches back, or closes.
@@ -265,12 +276,9 @@ impl Shell {
             MenuAction::Message { key, id, action } => self.message_action(key, id, action, tx),
             MenuAction::OpenLink { key, url } => self.link_pressed(key, url, tx),
             MenuAction::CopyLink(url) => tx.copy(url),
-            MenuAction::React {
-                key,
-                id,
-                emoji,
-                add,
-            } => self.react(key, id, emoji, add),
+            MenuAction::React { key, id, emoji } => {
+                self.toggle_reaction(key, id, &emoji);
+            }
         }
     }
 

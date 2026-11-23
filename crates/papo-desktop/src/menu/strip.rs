@@ -34,15 +34,13 @@ pub(crate) struct Strip {
 }
 
 impl Strip {
-    /// The action reacting with emoji `index` is: adding it, or taking
-    /// yours back.
+    /// The action reacting with emoji `index` is: toggling yours.
     pub(crate) fn action(&self, index: usize) -> Option<MenuAction> {
-        let (emoji, mine) = self.emoji.get(index)?;
+        let (emoji, _) = self.emoji.get(index)?;
         Some(MenuAction::React {
             key: self.key,
             id: self.id,
             emoji: emoji.clone(),
-            add: !mine,
         })
     }
 }

@@ -232,5 +232,6 @@
   "pins.jump": "Ir para a mensagem",
   "pins.loading": "Carregando mensagens fixadas",
   "shortcut.pins": "Ctrl+P",
-  "header.actions": "Ações da conversa"
+  "header.actions": "Ações da conversa",
+  "pins.failed": "Não deu para carregar as mensagens fixadas."
 }

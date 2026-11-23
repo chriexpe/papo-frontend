@@ -40,7 +40,8 @@ fn pin(rt: &mut Runtime<Shell>, pinned: &[u128]) {
                 })
             })
             .collect();
-        open.pins = Some(pins);
+        let items = open.items.clone();
+        open.pins.set(Some(pins), &items);
     });
     rt.frame(FRAME_S);
 }
@@ -161,4 +162,21 @@ fn the_pointer_leaving_the_panel_for_the_conversation_shrinks_it() {
     rt.pointer_move(panel[0] - 40.0, panel[1] + panel[3] / 2.0);
     rt.frame(FRAME_S);
     assert!(rt.state.shown_pins_panel().is_some_and(|panel| panel.peek));
+}
+
+#[test]
+fn the_pointer_coming_back_onto_the_shrunk_panel_stretches_it() {
+    let mut rt = conversation("");
+    pin(&mut rt, &[3]);
+    ctrl_p(&mut rt);
+    let key = rt.state.tabs.shown().unwrap().key;
+    rt.update(move |shell, tx| shell.open_pin(key, message_id(3), tx));
+    rt.update(|shell, _tx| shell.pins_left());
+    rt.frame(FRAME_S);
+    assert!(rt.state.shown_pins_panel().is_some_and(|panel| panel.peek));
+    rt.update(|shell, _tx| {
+        shell.pins_hovered();
+    });
+    rt.frame(FRAME_S);
+    assert!(rt.state.shown_pins_panel().is_some_and(|panel| !panel.peek));
 }

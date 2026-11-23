@@ -30,6 +30,15 @@ pub(crate) struct ReactorList {
     pub(crate) started: bool,
 }
 
+/// What a page is read for.
+#[derive(Clone, Copy)]
+pub(crate) enum Want<'a> {
+    /// A chip's hint: the first page is enough.
+    Hint,
+    /// The reactions list on this tab (everyone's when none).
+    People(Option<&'a papo_sdk_ui::operations::ReactionEmoji>),
+}
+
 /// What to fetch for a message: the page after `cursor` (the first when
 /// none), as request number `ticket`.
 pub(crate) struct PageRequest {
@@ -55,15 +64,17 @@ impl ReactorLists {
             .filter(|list| list.signature == signature(chips))
     }
 
-    /// The next page message `id`'s list needs to show `filter`'s people
-    /// (everyone's when none), if one is needed and none is on its way. A
-    /// list that no longer matches `chips` starts again.
+    /// The next page message `id`'s list needs, if one is needed and none
+    /// is on its way: for a hint, only the first; for the list, until it
+    /// shows `filter`'s people (everyone's when none). Asked for the list,
+    /// a list whose last page failed tries again. A list that no longer
+    /// matches `chips` starts again.
     pub(crate) fn wanted(
         &mut self,
         id: Uuid,
         account_user: Uuid,
         chips: &[ReactionChip],
-        filter: Option<&papo_sdk_ui::operations::ReactionEmoji>,
+        want: Want<'_>,
     ) -> Option<PageRequest> {
         let signature = signature(chips);
         let list = self
@@ -75,7 +86,13 @@ impl ReactorLists {
                 }
             })
             .or_insert_with(|| ReactorList::new(signature, account_user, chips));
-        let needed = !list.started || list.reactors.wants_more(filter, chips);
+        let needed = match want {
+            Want::Hint => !list.started,
+            Want::People(filter) => {
+                list.failed = false;
+                !list.started || list.reactors.wants_more(filter, chips)
+            }
+        };
         if !needed || list.loading.is_some() || list.failed {
             return None;
         }
@@ -167,15 +184,17 @@ mod tests {
         let id = Uuid::from_u128(1);
         let me = Uuid::from_u128(2);
         let chips = [chip(4)];
-        let first = lists.wanted(id, me, &chips, None).expect("the first page");
+        let first = lists
+            .wanted(id, me, &chips, Want::People(None))
+            .expect("the first page");
         assert!(first.cursor.is_none());
         assert!(
-            lists.wanted(id, me, &chips, None).is_none(),
+            lists.wanted(id, me, &chips, Want::People(None)).is_none(),
             "one on its way"
         );
         assert!(lists.arrived(id, first.ticket, Some(page(true))));
         assert!(
-            lists.wanted(id, me, &chips, None).is_some(),
+            lists.wanted(id, me, &chips, Want::People(None)).is_some(),
             "more is needed"
         );
     }
@@ -185,8 +204,12 @@ mod tests {
         let mut lists = ReactorLists::default();
         let id = Uuid::from_u128(1);
         let me = Uuid::from_u128(2);
-        let old = lists.wanted(id, me, &[chip(4)], None).unwrap();
-        let new = lists.wanted(id, me, &[chip(5)], None).unwrap();
+        let old = lists
+            .wanted(id, me, &[chip(4)], Want::People(None))
+            .unwrap();
+        let new = lists
+            .wanted(id, me, &[chip(5)], Want::People(None))
+            .unwrap();
         assert!(!lists.arrived(id, old.ticket, Some(page(false))));
         assert!(lists.arrived(id, new.ticket, Some(page(false))));
         assert!(lists.get(id, &[chip(5)]).is_some());
@@ -199,5 +222,32 @@ mod tests {
         let lia = Uuid::from_u128(7);
         assert_eq!(lists.unasked([lia]), [lia]);
         assert_eq!(lists.unasked([lia]), Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn a_hint_reads_the_first_page_only() {
+        let mut lists = ReactorLists::default();
+        let id = Uuid::from_u128(1);
+        let me = Uuid::from_u128(2);
+        let chips = [chip(400)];
+        let first = lists.wanted(id, me, &chips, Want::Hint).unwrap();
+        assert!(lists.arrived(id, first.ticket, Some(page(true))));
+        assert!(lists.wanted(id, me, &chips, Want::Hint).is_none());
+        assert!(lists.wanted(id, me, &chips, Want::People(None)).is_some());
+    }
+
+    #[test]
+    fn the_list_tries_a_failed_page_again() {
+        let mut lists = ReactorLists::default();
+        let id = Uuid::from_u128(1);
+        let me = Uuid::from_u128(2);
+        let chips = [chip(4)];
+        let first = lists.wanted(id, me, &chips, Want::Hint).unwrap();
+        assert!(lists.arrived(id, first.ticket, None));
+        assert!(
+            lists.wanted(id, me, &chips, Want::Hint).is_none(),
+            "a hint does not retry"
+        );
+        assert!(lists.wanted(id, me, &chips, Want::People(None)).is_some());
     }
 }

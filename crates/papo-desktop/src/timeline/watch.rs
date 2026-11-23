@@ -57,6 +57,8 @@ pub(crate) enum Posted {
     PinsOpened(ChannelPins),
     /// The channel's pins now, newest pin first; none while unknown.
     Pins(Option<Vector<Arc<Message>>>),
+    /// A fetch of the pins did not succeed.
+    PinsFailed,
     /// The window could not open.
     Failed,
     /// The SDK closed the window for good.
@@ -172,9 +174,10 @@ impl<S: 'static> Watch<S> {
                 }
                 event = next_pins(pins.as_mut()) => match event {
                     Some(PinsEvent::Update(update)) => {
-                        if update.is_none() {
+                        if let (None, Some((handle, _))) = (&update, &pins) {
                             // Unknown again (a new connection): fetched again.
-                            refresh(pins.as_ref().map(|(handle, _)| handle.clone()));
+                            let post = post.clone();
+                            refresh(handle.clone(), move || post(Posted::PinsFailed));
                         }
                         post(Posted::Pins(update));
                     }
@@ -193,7 +196,7 @@ impl<S: 'static> Watch<S> {
 async fn follow_pins(
     session: &Session,
     channel: Uuid,
-    post: &impl Fn(Posted),
+    post: &(impl Fn(Posted) + Clone + Send + 'static),
 ) -> Option<(ChannelPins, PinsStream)> {
     let opened = match ChannelPins::open(session, channel).await {
         Ok(pins) => pins
@@ -211,20 +214,20 @@ async fn follow_pins(
     };
     post(Posted::PinsOpened(pins.clone()));
     if subscription.pins.is_none() {
-        refresh(Some(pins.clone()));
+        let post = post.clone();
+        refresh(pins.clone(), move || post(Posted::PinsFailed));
     }
     post(Posted::Pins(subscription.pins));
     Some((pins, subscription.stream))
 }
 
-/// Fetches the pins on their own task: the stream posts what arrives.
-pub(crate) fn refresh(pins: Option<ChannelPins>) {
-    let Some(pins) = pins else {
-        return;
-    };
+/// Fetches the pins on their own task: the stream posts what arrives, and
+/// `failed` hears when the fetch did not succeed.
+pub(crate) fn refresh(pins: ChannelPins, failed: impl FnOnce() + Send + 'static) {
     tokio::spawn(async move {
         if let Err(error) = pins.refresh().await {
             log::debug!("a channel's pins were not fetched: {error}");
+            failed();
         }
     });
 }

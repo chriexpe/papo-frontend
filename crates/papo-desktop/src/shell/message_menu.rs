@@ -1,15 +1,12 @@
 //! A message's menu from the shell's side (`docs/design.md` §10): what it
 //! lists for this account (an item it may not use is left out, never
 //! greyed), the three ways it opens, and carrying out its items: reply,
-//! edit, pin or unpin, the copies, delete, opening a link it holds, and a
-//! quick reaction. Reactions and pins go to the SDK (`ReactionService`,
-//! pin and unpin); a refused one is said in the notice pill.
+//! edit, pin or unpin, the copies, delete, opening a link it holds. The
+//! reactions and pins it asks for are `reacting`'s.
 
-use std::collections::HashSet;
-
-use papo_sdk::operations::reactions::{ReactionEmoji, ReactionIntent};
-use papo_sdk::{MessageTarget, Uuid};
-use papo_sdk_ui::{PinChange, TimelineItem, reaction_chips};
+use papo_sdk::Uuid;
+use papo_sdk::operations::reactions::ReactionEmoji;
+use papo_sdk_ui::{PinChange, reaction_chips};
 use rune::Tx;
 
 use super::Shell;
@@ -18,62 +15,58 @@ use crate::composer::COMPOSER_KEY;
 use crate::design::{Density, MESSAGE_MENU_WIDTH_PT};
 use crate::icons;
 use crate::links;
-use crate::menu::{
-    Entry, MenuAction, MenuIcon, MenuItem, MessageAction, OpenMenu, Placement, Strip,
-};
-use crate::notice::Refusal;
+use crate::menu::{Entry, MenuAction, MenuItem, MessageAction, OpenMenu, Placement, Strip};
 use crate::strings;
 use crate::timeline::content::copy::{self, Source};
 use crate::timeline::local_time::day_label;
-use crate::timeline::rows::message_key;
 use crate::timeline::{OpenTimeline, TimelineKey};
 
-/// Pins and unpins on their way, by message: a second press waits for the
-/// first (a control whose call is in flight waits).
-#[derive(Default)]
-pub(crate) struct Pinning(HashSet<(TimelineKey, Uuid)>);
-
 impl Shell {
-    /// Opens message `id`'s menu at `placement`; the message gets the
-    /// keyboard back when it closes.
-    pub(crate) fn open_message_menu(&mut self, key: TimelineKey, id: Uuid, placement: Placement) {
+    /// Opens message `id`'s menu at `placement`; `trigger` gets the
+    /// keyboard back when it closes: the message when the keyboard opened
+    /// it, else what had the keyboard (the pointer moves no focus).
+    pub(crate) fn open_message_menu(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        placement: Placement,
+        trigger: String,
+    ) {
         let Some(open) = self.tabs.shown().filter(|open| open.key == key) else {
             return;
         };
         let Some(entries) = self.message_entries(open, id) else {
             return;
         };
-        let menu =
-            OpenMenu::with_entries(placement, message_key(id), entries, MESSAGE_MENU_WIDTH_PT);
+        let menu = OpenMenu::with_entries(placement, trigger, entries, MESSAGE_MENU_WIDTH_PT);
         self.nav.close_accounts();
+        self.stretched = None;
         self.nav.menu = Some(menu);
     }
 
     /// A link's menu beside the pointer at `at`: Open link, with its host,
     /// and Copy link, nothing else (`docs/design.md` §10, Link menu).
     pub(super) fn open_link_menu(&mut self, key: TimelineKey, url: String, at: [f32; 2]) {
+        let open_link = MenuAction::OpenLink {
+            key,
+            url: url.clone(),
+        };
         let items = vec![
-            MenuItem {
-                key: "menu-link-open".to_owned(),
-                label: strings::link_menu_open().to_owned(),
-                sub: links::host(&url),
-                icon: Some(MenuIcon(&icons::EXTERNAL)),
-                shortcut: None,
-                action: MenuAction::OpenLink {
-                    key,
-                    url: url.clone(),
-                },
-                danger: false,
-            },
-            MenuItem {
-                key: "menu-link-copy".to_owned(),
-                label: strings::link_menu_copy().to_owned(),
-                sub: None,
-                icon: Some(MenuIcon(&icons::COPY)),
-                shortcut: None,
-                action: MenuAction::CopyLink(url),
-                danger: false,
-            },
+            MenuItem::plain(
+                "menu-link-open",
+                strings::link_menu_open(),
+                open_link,
+                false,
+            )
+            .with_icon(&icons::EXTERNAL)
+            .with_sub(links::host(&url)),
+            MenuItem::plain(
+                "menu-link-copy",
+                strings::link_menu_copy(),
+                MenuAction::CopyLink(url),
+                false,
+            )
+            .with_icon(&icons::COPY),
         ];
         let entries = items.into_iter().map(Entry::Item).collect();
         // Opened by the pointer, which moves no keyboard focus: writing gets
@@ -92,7 +85,7 @@ impl Shell {
     fn message_entries(&self, open: &OpenTimeline, id: Uuid) -> Option<Vec<Entry>> {
         let key = open.key;
         let (actions, _) = item_actions(open, id)?;
-        let message = held_message(open, id)?;
+        let message = open.message(id).map(|(message, _)| message.as_ref())?;
         let mut entries = vec![Entry::Header(self.menu_header(open, message))];
         if actions.react
             && let Some(strip) = self.menu_strip(key, id, message)
@@ -126,7 +119,7 @@ impl Shell {
                 .with_shortcut(strings::shortcut_edit()),
             );
         }
-        if !self.pinning.0.contains(&(key, id)) {
+        if !self.pinning.waits(key, id) {
             let pin = match actions.pin {
                 Some(PinChange::Pin) => Some(item(
                     "menu-pin",
@@ -259,132 +252,6 @@ impl Shell {
             _ => None,
         }
     }
-
-    /// P on the focused message: pins it, or unpins it when pinned.
-    /// Returns whether the key was taken.
-    pub(super) fn toggle_pin(&mut self, key: TimelineKey, id: Uuid) -> bool {
-        let Some(open) = self.tabs.shown().filter(|open| open.key == key) else {
-            return false;
-        };
-        match item_actions(open, id).and_then(|(actions, _)| actions.pin) {
-            Some(PinChange::Pin) => self.set_pin(key, id, true),
-            Some(PinChange::Unpin) => self.set_pin(key, id, false),
-            _ => return false,
-        }
-        true
-    }
-
-    /// P, or Pin or Unpin in the menu: pins message `id` (`pin`) or
-    /// unpins it, if the account may and no pin of it is on its way. The
-    /// pins follow from the SDK's pin events; a refusal is said.
-    pub(super) fn set_pin(&mut self, key: TimelineKey, id: Uuid, pin: bool) {
-        let Some(open) = self.tabs.shown().filter(|open| open.key == key) else {
-            return;
-        };
-        let wanted = if pin {
-            PinChange::Pin
-        } else {
-            PinChange::Unpin
-        };
-        let allowed = item_actions(open, id).and_then(|(actions, _)| actions.pin);
-        if allowed == Some(wanted) {
-            self.send_pin(key, id, pin);
-        }
-    }
-
-    /// Pins message `id` (`pin`) or unpins it through the SDK, unless a
-    /// change of it is already on its way; a refusal is said.
-    pub(super) fn send_pin(&mut self, key: TimelineKey, id: Uuid, pin: bool) {
-        if !self.pinning.0.insert((key, id)) {
-            return;
-        }
-        let Some(sdk) = &self.sdk else {
-            self.pinning.0.remove(&(key, id));
-            return;
-        };
-        let updates = sdk.updates();
-        sdk.run(move |client| async move {
-            let done = match client.session(key.account) {
-                Ok(session) => {
-                    let operations = session.operations();
-                    if pin {
-                        operations.pin_message(key.channel, id).await.map(|_| ())
-                    } else {
-                        operations.unpin_message(key.channel, id).await.map(|_| ())
-                    }
-                }
-                Err(error) => Err(error.into()),
-            };
-            let refused = done.err().map(|error| {
-                log::warn!("a pin change did not happen: {error}");
-                if pin { Refusal::Pin } else { Refusal::Unpin }
-            });
-            updates.send_tx(move |shell, tx| {
-                shell.pinning.0.remove(&(key, id));
-                if let Some(refusal) = refused {
-                    shell.refuse(refusal, tx);
-                }
-                true
-            });
-        });
-    }
-
-    /// Whether your reaction `emoji` to message `id` is there, when you may
-    /// change it now: none without the permission, or while a change of it
-    /// is on its way (the chip waits).
-    pub(super) fn reacts_with(&self, key: TimelineKey, id: Uuid, emoji: &str) -> Option<bool> {
-        let open = self.tabs.shown().filter(|open| open.key == key)?;
-        let message = held_message(open, id)?;
-        let outgoing = self.outgoing(key.account);
-        let unicode = ReactionEmoji::Unicode(emoji.to_owned());
-        let chip = reaction_chips(message, &outgoing)
-            .into_iter()
-            .find(|chip| chip.emoji == unicode);
-        match chip {
-            Some(chip) => chip
-                .can_toggle(super::replies::channel_capabilities(open))
-                .then_some(chip.mine),
-            None => item_actions(open, id)
-                .is_some_and(|(actions, _)| actions.react)
-                .then_some(false),
-        }
-    }
-
-    /// A quick reaction or a chip: your reaction `emoji` to message `id`
-    /// is added (`add`) or taken back. The chip waits for the SDK's answer;
-    /// a refused one is said.
-    pub(crate) fn react(&mut self, key: TimelineKey, id: Uuid, emoji: String, add: bool) {
-        let Some(sdk) = &self.sdk else {
-            return;
-        };
-        let local = (self.local_ids)();
-        let updates = sdk.updates();
-        sdk.run(move |client| async move {
-            let admitted = match client.session(key.account) {
-                Ok(session) => session
-                    .reactions()
-                    .set(ReactionIntent {
-                        channel: key.channel,
-                        message: MessageTarget::Remote(id),
-                        emoji: ReactionEmoji::Unicode(emoji),
-                        add,
-                        local,
-                        at: super::composer::now(),
-                    })
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| error.to_string()),
-                Err(error) => Err(error.to_string()),
-            };
-            if let Err(error) = admitted {
-                log::warn!("a reaction was not queued: {error}");
-                updates.send_tx(|shell, tx| {
-                    shell.refuse(Refusal::Reaction, tx);
-                    true
-                });
-            }
-        });
-    }
 }
 
 /// One Open link item per link the message holds, with its host.
@@ -452,16 +319,4 @@ fn push_group(entries: &mut Vec<Entry>, group: Vec<MenuItem>) {
         entries.push(Entry::Divider);
     }
     entries.extend(group.into_iter().map(Entry::Item));
-}
-
-/// Message `id` as the timeline holds it.
-fn held_message(open: &OpenTimeline, id: Uuid) -> Option<&papo_sdk::Message> {
-    open.items.iter().find_map(|item| match item.as_ref() {
-        TimelineItem::Message {
-            id: current,
-            message,
-            ..
-        } if *current == id => Some(message.as_ref()),
-        _ => None,
-    })
 }

@@ -66,7 +66,11 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(menu) = &shell.nav.menu {
                     app = app.children(menu::pointer_point(menu));
                     let body = super::reactions_list::body(shell, &palette);
-                    app = app.child(menu::view(menu, body, &palette, cx));
+                    // A list whose message went away draws nothing; the
+                    // next poll closes it.
+                    if body.is_some() || menu.reactions.is_none() {
+                        app = app.child(menu::view(menu, body, &palette, cx));
+                    }
                 }
                 let removing = shell
                     .nav

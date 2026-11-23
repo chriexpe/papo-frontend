@@ -17,9 +17,9 @@ impl Shell {
     /// A press on message `id`'s bar.
     pub(super) fn bar_press(&mut self, key: TimelineKey, id: Uuid, press: BarPress, tx: &mut Tx) {
         match press {
-            BarPress::React { emoji, add } => {
+            BarPress::React { emoji } => {
                 self.stretched = None;
-                self.react(key, id, emoji, add);
+                self.toggle_reaction(key, id, &emoji);
             }
             BarPress::AddReaction => self.toggle_strip(key, id),
             BarPress::Reply => {
@@ -30,7 +30,8 @@ impl Shell {
             }
             BarPress::More => {
                 self.stretched = None;
-                self.open_message_menu(key, id, Placement::BelowEnd(more_key(id)));
+                let trigger = pointer_trigger(tx);
+                self.open_message_menu(key, id, Placement::BelowEnd(more_key(id)), trigger);
             }
         }
     }
@@ -51,11 +52,7 @@ impl Shell {
         let Some(emoji) = self.quick_reactions(key.account).get(index).cloned() else {
             return false;
         };
-        let Some(add) = self.reacts_with(key, id, &emoji).map(|mine| !mine) else {
-            return false;
-        };
-        self.react(key, id, emoji, add);
-        true
+        self.toggle_reaction(key, id, &emoji)
     }
 
     /// A key on message `id` while its bar is stretched: ← → choose, Enter
@@ -68,21 +65,34 @@ impl Shell {
         else {
             return false;
         };
+        if event.mods.shift {
+            return false;
+        }
         let count = self.quick_reactions(key.account).len();
         match event.key {
             Key::Right => stretched.chosen = (stretched.chosen + 1) % count.max(1),
             Key::Left => stretched.chosen = (stretched.chosen + count.max(1) - 1) % count.max(1),
             Key::Enter => {
                 self.stretched = None;
-                return self.quick_react(key, id, stretched.chosen);
+                // Taken either way: Enter here never opens the menu.
+                self.quick_react(key, id, stretched.chosen);
+                return true;
             }
             Key::Text(ref space) if space == " " => {
                 self.stretched = None;
-                return self.quick_react(key, id, stretched.chosen);
+                self.quick_react(key, id, stretched.chosen);
+                return true;
             }
             _ => return false,
         }
         self.stretched = Some(stretched);
         true
     }
+}
+
+/// What gets the keyboard back from a menu the pointer opened: what had
+/// it, else the composer.
+pub(super) fn pointer_trigger(tx: &Tx) -> String {
+    tx.focused()
+        .map_or_else(|| crate::composer::COMPOSER_KEY.to_owned(), str::to_owned)
 }

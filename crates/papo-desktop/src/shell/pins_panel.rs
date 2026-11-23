@@ -8,9 +8,6 @@
 
 use std::sync::Arc;
 
-use papo_sdk::{Message, Uuid};
-use papo_sdk_ui::TimelineItem;
-use papo_sdk_ui::message_content::MessageContent;
 use rune::{Cx, El, KeyEvent, ScrollSpec, col, el, icon, memo, row, text};
 
 use super::Shell;
@@ -21,6 +18,7 @@ use crate::design::{
     TYPE_BODY_STRONG, TYPE_SMALL, TYPE_TITLE,
 };
 use crate::strings;
+use crate::timeline::pinned::Pin;
 use crate::timeline::replies::{OriginalText, original_text};
 use crate::timeline::standalone::standalone_message;
 use crate::timeline::{OpenTimeline, Style};
@@ -119,8 +117,7 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
         .layout_size("conversation")
         .unwrap_or([PANEL_MAX_PT, 600.0]);
     let width = PANEL_MAX_PT.min(width_pt - 2.0 * SPACE_LG_PT);
-    let pins = open.pins.clone();
-    let count = pins.as_ref().map(imbl::Vector::len);
+    let count = open.pins.list().map(<[_]>::len);
     let head = row()
         .w_full()
         .h(HEADER_PILL_HEIGHT_PT)
@@ -147,7 +144,6 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
         Some(list(
             shell,
             open,
-            pins.as_ref(),
             &state,
             style,
             height_pt * PANEL_HEIGHT_SHARE,
@@ -174,8 +170,12 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
             // Leaving the panel after opening a pin shrinks it: a press on a
             // message or a scroll of the conversation never reaches a handler
             // of the panel's, and the pointer always leaves it first.
+            // Coming back onto the shrunk panel (or scrolling over it, which
+            // comes this way) stretches it back.
             .on_hover_change(|shell: &mut Shell, hovered, _tx| {
-                if !hovered {
+                if hovered {
+                    shell.pins_hovered();
+                } else {
                     shell.pins_left();
                 }
             })
@@ -193,11 +193,11 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
 /// The opened pin in one line, on `highlight.selected`.
 fn peek_line(open: &OpenTimeline, state: &PinsPanel, palette: &Palette) -> Option<El> {
     let id = state.opened?;
-    let (message, content) = pin_message(open, id)?;
+    let pin = open.pins.get(id)?;
     let original = papo_sdk_ui::ReplyOriginal::Held {
         id,
-        message,
-        content,
+        message: Arc::clone(&pin.message),
+        content: Arc::clone(&pin.content),
     };
     let OriginalText::Message { name, snippet, .. } = original_text(&original, open) else {
         return None;
@@ -224,18 +224,25 @@ fn peek_line(open: &OpenTimeline, state: &PinsPanel, palette: &Palette) -> Optio
     Some(col().w_full().px(SPACE_SM_PT).pb(SPACE_SM_PT).child(line))
 }
 
-/// The pins, newest first; the empty state; or skeleton rows while not
-/// known.
+/// The pins, newest first; the empty state; a failure; or a wait while
+/// they are not known.
 fn list(
     shell: &Shell,
     open: &OpenTimeline,
-    pins: Option<&imbl::Vector<Arc<Message>>>,
     state: &PinsPanel,
     style: &Style,
     max_height_pt: f32,
 ) -> El {
     let palette = style.palette;
-    let Some(pins) = pins else {
+    let Some(pins) = open.pins.list() else {
+        if open.pins.failed {
+            return el().w_full().px(SPACE_LG_PT).pb(SPACE_MD_PT).child(
+                text(strings::pins_failed())
+                    .font(TYPE_SMALL)
+                    .color(palette.danger)
+                    .role("alert"),
+            );
+        }
         return el()
             .w_full()
             .h(HEADER_PILL_HEIGHT_PT * 2.0)
@@ -258,9 +265,6 @@ fn list(
     let key = open.key;
     let mut rows = Vec::new();
     for (index, pin) in pins.iter().enumerate() {
-        let Some(id) = pin.id.as_deref().and_then(|id| Uuid::parse_str(id).ok()) else {
-            continue;
-        };
         if index > 0 {
             rows.push(
                 el().w_full()
@@ -269,9 +273,9 @@ fn list(
                     .a11y_hidden(),
             );
         }
-        let unpin = shell.may_unpin(key, id);
-        let marked = state.opened == Some(id);
-        rows.push(pin_row(open, id, pin, unpin, marked, style));
+        let unpin = shell.may_unpin(key, pin.id);
+        let marked = state.opened == Some(pin.id);
+        rows.push(pin_row(open, pin, unpin, marked, style));
     }
     col()
         .w_full()
@@ -290,31 +294,27 @@ fn list(
 
 /// One pin: the message on its own, pressed (or Enter) to open it, with
 /// Unpin on hover or focus.
-fn pin_row(
-    open: &OpenTimeline,
-    id: Uuid,
-    pin: &Arc<Message>,
-    unpin: bool,
-    marked: bool,
-    style: &Style,
-) -> El {
+fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &Style) -> El {
     let key = open.key;
+    let id = pin.id;
     let palette = style.palette;
-    // A pin held in the timeline draws from its parsed content.
-    let held = pin_of(open, id);
+    // Everything the drawn message reads: its payload and parse, the
+    // names it shows, the day its time is read against, the density.
     let version = (
         style.theme,
-        Arc::as_ptr(pin) as usize,
+        style.layout,
+        style.today,
+        Arc::as_ptr(&pin.message) as usize,
+        Arc::as_ptr(&pin.content) as usize,
+        open.resources
+            .as_ref()
+            .map(|resources| Arc::as_ptr(resources) as usize),
         marked,
         unpin,
         open.revealed(id),
     );
     memo(format!("pin-{id}"), version, || {
-        let (message, content) = held.clone().unwrap_or_else(|| {
-            let content = MessageContent::parse(pin.content.as_deref().unwrap_or_default());
-            (Arc::clone(pin), Arc::new(content))
-        });
-        let shown = standalone_message::<Shell>(open, id, &message, &content, style);
+        let shown = standalone_message::<Shell>(open, id, &pin.message, &pin.content, style);
         let mut line = col()
             .key(format!("pin-row-{id}"))
             .w_full()
@@ -343,6 +343,8 @@ fn pin_row(
                     .role("button")
                     .label(strings::pins_unpin())
                     .help(strings::pins_unpin())
+                    .focusable(true)
+                    .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
                     .group_opacity(0.0, 1.0)
                     .pin(None, Some(SPACE_SM_PT), Some(SPACE_SM_PT), None)
                     .on_press(move |shell: &mut Shell| shell.unpin_from_panel(key, id))
@@ -352,32 +354,5 @@ fn pin_row(
             );
         }
         line
-    })
-}
-
-/// Pin `id` with its parsed content: the timeline's, else parsed from the
-/// pin list's.
-fn pin_message(open: &OpenTimeline, id: Uuid) -> Option<(Arc<Message>, Arc<MessageContent>)> {
-    pin_of(open, id).or_else(|| {
-        let pin = open
-            .pins
-            .iter()
-            .flatten()
-            .find(|pin| pin.id.as_deref() == Some(id.to_string().as_str()))?;
-        let content = MessageContent::parse(pin.content.as_deref().unwrap_or_default());
-        Some((Arc::clone(pin), Arc::new(content)))
-    })
-}
-
-/// Pin `id` as the timeline holds it, with its parsed content.
-fn pin_of(open: &OpenTimeline, id: Uuid) -> Option<(Arc<Message>, Arc<MessageContent>)> {
-    open.items.iter().find_map(|item| match item.as_ref() {
-        TimelineItem::Message {
-            id: current,
-            message,
-            content,
-            ..
-        } if *current == id => Some((Arc::clone(message), Arc::clone(content))),
-        _ => None,
     })
 }

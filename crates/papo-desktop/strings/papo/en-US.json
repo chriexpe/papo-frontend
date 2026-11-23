@@ -232,5 +232,6 @@
   "pins.jump": "Jump to message",
   "pins.loading": "Loading pinned messages",
   "shortcut.pins": "Ctrl+P",
-  "header.actions": "Conversation actions"
+  "header.actions": "Conversation actions",
+  "pins.failed": "Couldn't load the pinned messages."
 }

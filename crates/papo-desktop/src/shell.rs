@@ -97,7 +97,7 @@ pub(crate) struct Shell {
     /// The notice pill, while one shows.
     notice: Option<crate::notice::Notice>,
     /// Pins and unpins on their way.
-    pinning: message_menu::Pinning,
+    pinning: reacting::Pinning,
     /// The hover bar stretched into its strip, while one is.
     stretched: Option<activity::Stretched>,
     /// The pins panel, while open.
@@ -164,7 +164,7 @@ impl Default for Shell {
             seeks: 0,
             activity: HashMap::new(),
             notice: None,
-            pinning: message_menu::Pinning::default(),
+            pinning: reacting::Pinning::default(),
             stretched: None,
             pins_panel: None,
         }
@@ -243,6 +243,7 @@ mod navigate;
 mod outgoing;
 pub(crate) mod pins;
 mod pins_panel;
+mod reacting;
 mod reactions_list;
 mod reactors;
 mod reading;

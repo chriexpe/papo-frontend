@@ -166,7 +166,6 @@ fn chip_cell<S: TimelineHost>(
                     id,
                     super::hover_bar::BarPress::React {
                         emoji: emoji.clone(),
-                        add: !mine,
                     },
                     tx,
                 );

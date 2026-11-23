@@ -12,6 +12,7 @@ use crate::menu::Placement;
 use crate::timeline::content::Press;
 use crate::timeline::echoes::SendState;
 use crate::timeline::hover_bar::{BarPress, more_key};
+use crate::timeline::reactors::Want;
 use crate::timeline::{OpenTimeline, Request, TimelineHost, TimelineKey};
 
 impl TimelineHost for Shell {
@@ -127,7 +128,7 @@ impl TimelineHost for Shell {
 
     fn chip_hovered(&mut self, key: TimelineKey, id: Uuid) {
         if self.tabs.is_shown(key) {
-            self.load_reactors(key, id, None);
+            self.load_reactors(key, id, Want::Hint);
         }
     }
 
@@ -148,13 +149,14 @@ impl TimelineHost for Shell {
         key: TimelineKey,
         id: Uuid,
         at: Option<[f32; 2]>,
-        _tx: &mut Tx,
+        tx: &mut Tx,
     ) {
         let placement = match at {
             Some(point) => Placement::AtPointer(point),
             None => Placement::BelowEnd(more_key(id)),
         };
-        self.open_message_menu(key, id, placement);
+        let trigger = super::hover_bar::pointer_trigger(tx);
+        self.open_message_menu(key, id, placement, trigger);
     }
 
     fn retry_gap(&mut self, key: TimelineKey, cursor_id: &str) {

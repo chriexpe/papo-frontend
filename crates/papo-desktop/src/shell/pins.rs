@@ -34,6 +34,8 @@ pub(crate) struct PinsPanel {
     pub(crate) opened: Option<Uuid>,
     /// Shrunk to its header and the opened pin.
     pub(crate) peek: bool,
+    /// The newest pin opening sent; only its answer counts.
+    opening: u64,
 }
 
 impl Shell {
@@ -55,6 +57,7 @@ impl Shell {
                     key,
                     opened: None,
                     peek: false,
+                    opening: 0,
                 });
                 self.refresh_pins(key);
             }
@@ -98,18 +101,41 @@ impl Shell {
         self.pins_panel.filter(|panel| panel.key == shown)
     }
 
-    /// Fetches timeline `key`'s pins again.
-    fn refresh_pins(&self, key: TimelineKey) {
-        let Some(handle) = self
-            .tabs
-            .shown()
-            .filter(|open| open.key == key)
-            .and_then(|open| open.pins_handle.clone())
-        else {
+    /// Fetches timeline `key`'s pins again; a failure is said in the panel.
+    fn refresh_pins(&mut self, key: TimelineKey) {
+        let Some(open) = self.shown_timeline_mut(key) else {
             return;
         };
-        if let Some(sdk) = &self.sdk {
-            sdk.run(move |_client| async move { watch::refresh(Some(handle)) });
+        open.pins.failed = false;
+        let Some(handle) = open.pins_handle.clone() else {
+            return;
+        };
+        let Some(sdk) = &self.sdk else {
+            return;
+        };
+        let updates = sdk.updates();
+        sdk.run(move |_client| async move {
+            watch::refresh(handle, move || {
+                updates.send(move |shell| {
+                    let Some(open) = shell.shown_timeline_mut(key) else {
+                        return false;
+                    };
+                    open.pins.failed = true;
+                    true
+                });
+            });
+        });
+    }
+
+    /// The pointer came onto the panel: a shrunk one stretches back (a
+    /// scroll over it comes this way too).
+    pub(crate) fn pins_hovered(&mut self) -> bool {
+        match &mut self.pins_panel {
+            Some(panel) if panel.peek => {
+                panel.peek = false;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -122,6 +148,8 @@ impl Shell {
         };
         panel.opened = Some(id);
         panel.peek = false;
+        panel.opening += 1;
+        let opening = panel.opening;
         let Some(open) = self.shown_timeline_mut(key) else {
             return;
         };
@@ -131,13 +159,7 @@ impl Shell {
         }
         // A pin the window does not hold: there is no fetch by ID, so the
         // window opens around the pin's exact cursor.
-        let Some(cursor) = open
-            .pins
-            .iter()
-            .flatten()
-            .find(|pin| pin.id.as_deref() == Some(id.to_string().as_str()))
-            .and_then(|pin| pin.cursor())
-        else {
+        let Some(cursor) = open.pins.get(id).and_then(|pin| pin.message.cursor()) else {
             return;
         };
         let offset_pt = open.tracker.jump_offset_pt();
@@ -153,19 +175,40 @@ impl Shell {
             let config = watch::config(offsets);
             match papo_sdk_ui::Timeline::focused(session, key.channel, cursor, config).await {
                 Ok(window) => updates.send_tx(move |shell, tx| {
-                    let at = Anchor::Message { id, offset_pt };
-                    if let Some(opening) = shell.tabs.adopt(key, window, at) {
-                        shell.start_watch(opening);
-                    }
-                    if let Some(open) = shell.shown_timeline_mut(key) {
-                        open.flash = Some((id, tx.clock() + JUMP_HIGHLIGHT_S));
-                    }
-                    tx.wake_after(Duration::from_secs_f64(JUMP_HIGHLIGHT_S));
-                    true
+                    shell.pin_opened(key, id, opening, window, offset_pt, tx)
                 }),
                 Err(error) => log::warn!("a pin did not open: {error}"),
             }
         });
+    }
+
+    /// The window opened around pin `id` (opening number `opening`): shown,
+    /// if that pin is still the one the open panel last opened. Returns
+    /// whether the view changed.
+    fn pin_opened(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        opening: u64,
+        window: papo_sdk_ui::Timeline,
+        offset_pt: f32,
+        tx: &mut Tx,
+    ) -> bool {
+        let current = self.shown_pins_panel().is_some_and(|panel| {
+            panel.key == key && panel.opened == Some(id) && panel.opening == opening
+        });
+        if !current {
+            return false;
+        }
+        let at = Anchor::Message { id, offset_pt };
+        if let Some(opening) = self.tabs.adopt(key, window, at) {
+            self.start_watch(opening);
+        }
+        if let Some(open) = self.shown_timeline_mut(key) {
+            open.flash = Some((id, tx.clock() + JUMP_HIGHLIGHT_S));
+        }
+        tx.wake_after(Duration::from_secs_f64(JUMP_HIGHLIGHT_S));
+        true
     }
 
     /// Unpin on a pin of the panel: it applies at once, if the account may.
@@ -180,17 +223,25 @@ impl Shell {
         let Some(open) = self.tabs.shown().filter(|open| open.key == key) else {
             return false;
         };
-        let Some(pin) = open
-            .pins
-            .iter()
-            .flatten()
-            .find(|pin| pin.id.as_deref() == Some(id.to_string().as_str()))
-        else {
+        let Some(pin) = open.pins.get(id) else {
             return false;
         };
         let capabilities = super::replies::channel_capabilities(open);
-        message_actions(pin, None, Some(true), key.account.user(), capabilities).pin
-            == Some(PinChange::Unpin)
+        message_actions(
+            &pin.message,
+            None,
+            Some(true),
+            key.account.user(),
+            capabilities,
+        )
+        .pin == Some(PinChange::Unpin)
+    }
+
+    /// Another conversation shows: what belonged to the one that showed
+    /// (its pins panel, a stretched hover bar) closes.
+    pub(crate) fn conversation_left(&mut self) {
+        self.pins_panel = None;
+        self.stretched = None;
     }
 }
 
@@ -211,7 +262,10 @@ impl Shell {
         if self.shown_pins_panel().is_some() {
             return Some(OnTop::PinsPanel);
         }
-        self.stretched.map(|_| OnTop::Strip)
+        let shown = self.tabs.shown()?.key;
+        self.stretched
+            .filter(|stretched| stretched.key == shown)
+            .map(|_| OnTop::Strip)
     }
 
     /// Escape where the keyboard is: closes what is on top, keeping the

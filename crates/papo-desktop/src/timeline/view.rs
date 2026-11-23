@@ -11,10 +11,8 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use std::sync::Arc;
-
-use papo_sdk::{OutgoingSnapshot, Uuid};
-use papo_sdk_ui::{ChannelCapabilities, TimelineItem};
+use papo_sdk::Uuid;
+use papo_sdk_ui::TimelineItem;
 use rune::{El, GrowthSpec, KeyEvent, ScrollSpec, Tx, col, el, memo, row, text};
 
 use super::content::Press;
@@ -120,39 +118,7 @@ pub(crate) struct Style {
     /// message being edited): it wears `highlight.selected`.
     pub(crate) selected: Option<Uuid>,
     /// What reacting reads, the same for every row.
-    pub(crate) reacting: Reacting,
-}
-
-/// What a row's reactions and hover bar read beyond the message.
-#[derive(Clone)]
-pub(crate) struct Reacting {
-    /// The account's outgoing queue: a chip whose change is in it waits.
-    pub(crate) outgoing: Arc<OutgoingSnapshot>,
-    /// The account's quick reactions, most used first.
-    pub(crate) quick: Arc<[String]>,
-    /// What the account may do in the channel; none while unknown.
-    pub(crate) capabilities: Option<ChannelCapabilities>,
-    /// The message whose bar Add reaction stretched, and the emoji ← and →
-    /// are on.
-    pub(crate) stretched: Option<(Uuid, usize)>,
-}
-
-impl Reacting {
-    /// Nothing known yet: no quick reactions, an empty queue.
-    pub(crate) fn unknown() -> Reacting {
-        Reacting {
-            outgoing: Arc::new(OutgoingSnapshot {
-                account: None,
-                version: 0,
-                operations: Vec::new(),
-                upload_progress: None,
-                fault: None,
-            }),
-            quick: Arc::from([]),
-            capabilities: None,
-            stretched: None,
-        }
-    }
+    pub(crate) reacting: super::reacting::Reacting,
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and
