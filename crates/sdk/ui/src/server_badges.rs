@@ -32,6 +32,9 @@ impl Default for BadgeAggregate {
 pub struct AccountBadges {
     /// All admitted channels belonging to this account only.
     pub all: BadgeAggregate,
+    /// Only this account's server channels, without its direct conversations: what a server
+    /// tile shows beside a separate Direct entry, so a DM is counted once.
+    pub channels: BadgeAggregate,
     /// Only this account's direct conversations, never another account's DMs.
     pub dms: BadgeAggregate,
 }

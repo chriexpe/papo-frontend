@@ -225,6 +225,7 @@ fn a_server_takes_the_aggregate_of_the_account_its_rows_show() {
                 mention_count: UnreadCount::Exact(mentions),
                 has_unread: Some(true),
             },
+            channels: papo_sdk_ui::BadgeAggregate::default(),
             dms: papo_sdk_ui::BadgeAggregate::default(),
         })
     };

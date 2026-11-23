@@ -152,6 +152,14 @@ pub(super) fn aggregate(snapshot: &BadgesSnapshot) -> AccountBadges {
             snapshot.channels.values().map(AsRef::as_ref),
             snapshot.channels_complete,
         ),
+        channels: total(
+            snapshot
+                .channels
+                .values()
+                .filter(|channel| !channel.direct_message)
+                .map(AsRef::as_ref),
+            snapshot.channels_complete,
+        ),
         dms: total(
             snapshot
                 .channels

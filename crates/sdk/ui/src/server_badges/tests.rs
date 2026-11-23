@@ -77,6 +77,9 @@ fn aggregate_preserves_lower_bounds_and_independent_unread_evidence() {
     assert_eq!(value.all.has_unread, Some(true));
     assert_eq!(value.dms.mention_count, UnreadCount::AtLeast(2));
     assert_eq!(value.dms.has_unread, None);
+    // A server tile beside Direct counts no DM: exact, and no DM doubt.
+    assert_eq!(value.channels.mention_count, UnreadCount::Exact(3));
+    assert_eq!(value.channels.has_unread, Some(true));
 }
 
 #[test]
@@ -317,6 +320,7 @@ fn direct_messages_join_the_named_accounts_and_stay_a_lower_bound_when_one_is_un
     let aggregate = |mention_count, has_unread| {
         Arc::new(AccountBadges {
             all: BadgeAggregate::default(),
+            channels: BadgeAggregate::default(),
             dms: BadgeAggregate {
                 mention_count,
                 has_unread,
