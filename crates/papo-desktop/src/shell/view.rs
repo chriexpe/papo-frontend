@@ -22,10 +22,11 @@ use crate::{
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
 pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
-    let look = shell.look(super::appearance::SystemLook {
+    let system = super::appearance::SystemLook {
         dark: cx.system_dark(),
         reduced_transparency: false,
-    });
+    };
+    let look = shell.look(system);
     let theme = look.theme();
     cx.help_look(hint_look(&look, look.theme().is_dark()));
     let surface = col().w_full().h_full().fill(look.palette.surface_content);
@@ -66,6 +67,17 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 }
                 if let Some(notice) = &shell.notice {
                     app = app.child(notice::view(notice, composer::COMPOSER_PILL_KEY, &look));
+                }
+                // Under the menu: a choice's menu opens over the panel.
+                if let Some(panel) = &shell.settings {
+                    let view = crate::settings::view::PanelView {
+                        panel,
+                        saved: shell.appearance.appearance(),
+                        system_dark: cx.system_dark(),
+                        system_font_known: shell.system_font.is_some(),
+                        reduced_transparency: system.reduced_transparency,
+                    };
+                    app = app.child(crate::settings::view(&view, &look));
                 }
                 if let Some(menu) = &shell.nav.menu {
                     app = app.children(menu::pointer_point(menu));

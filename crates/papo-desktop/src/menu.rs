@@ -61,6 +61,8 @@ pub(crate) enum MenuAction {
     },
     /// The search scope: this channel, or the whole server.
     SearchScope { channel: bool },
+    /// A settings choice's value (`docs/design.md` §8: a menu under the row).
+    Setting(crate::shell::SettingChoice),
     /// Something a profile card does about person `user`, seen from
     /// timeline `key`.
     Person {
@@ -162,6 +164,8 @@ pub(crate) struct MenuItem {
     pub(crate) action: MenuAction,
     /// Destroys something: drawn in the danger colour.
     pub(crate) danger: bool,
+    /// One of a choice's values: whether it is the current one, ticked.
+    pub(crate) radio: Option<bool>,
 }
 
 impl MenuItem {
@@ -180,7 +184,14 @@ impl MenuItem {
             shortcut: None,
             action,
             danger,
+            radio: None,
         }
+    }
+
+    /// The item as one of a choice's values, ticked when `current`.
+    pub(crate) fn with_radio(mut self, current: bool) -> MenuItem {
+        self.radio = Some(current);
+        self
     }
 
     /// The item with `shape` before its label.
@@ -426,6 +437,17 @@ pub(crate) fn item_row(item: &MenuItem, first: bool, look: &Look) -> El {
         // One highlight for the pointer and the keyboard, as a menu has.
         .focus_highlight(look.palette.surface_hover)
         .on_press_tx(move |shell: &mut Shell, tx| shell.menu_picked(action.clone(), tx));
+    if let Some(current) = item.radio {
+        // The tick's column is kept on every value, so the names line up.
+        row = row
+            .role("menuitemradio")
+            .checked(current)
+            .child(if current {
+                icon(&crate::icons::CHECK, ROW_ICON_PT).color(look.palette.accent)
+            } else {
+                el().size(ROW_ICON_PT, ROW_ICON_PT)
+            });
+    }
     if let Some(MenuIcon(shape)) = item.icon {
         let tone = if item.danger {
             look.palette.danger

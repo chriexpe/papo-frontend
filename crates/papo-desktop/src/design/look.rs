@@ -142,6 +142,17 @@ impl Look {
     /// translucent, over a blur of what is behind it) or solid, its
     /// outline, and the lift and contact shadows at the depth setting.
     fn pill_surface(&self, el: El) -> El {
+        self.floating_surface(el, self.palette.surface_pill)
+    }
+
+    /// The settings panel's surface (§8): as a pill's, in the panel's own
+    /// colour (the sidebar's on dark themes).
+    fn panel_surface(&self, el: El) -> El {
+        self.floating_surface(el, self.palette.surface_panel)
+    }
+
+    /// A floating surface of `colour`: glass or solid, outline, shadows.
+    fn floating_surface(&self, el: El, colour: Color) -> El {
         let palette = &self.palette;
         let el = el.border(PILL_OUTLINE_PT, palette.line_pill);
         let el = if self.glass.on {
@@ -150,9 +161,9 @@ impl Look {
                 .position(|theme| *theme == self.theme)
                 .unwrap_or_default();
             el.backdrop_blur(self.glass.blur_pt)
-                .fill(palette.surface_pill.alpha(GLASS_TINT_ALPHA[index]))
+                .fill(colour.alpha(GLASS_TINT_ALPHA[index]))
         } else {
-            el.fill(palette.surface_pill)
+            el.fill(colour)
         };
         self.shadows(el)
     }
@@ -245,6 +256,8 @@ impl Look {
 pub(crate) trait Surfaces {
     /// A floating pill's surface: glass or solid, outline and shadows.
     fn pill_surface(self, look: &Look) -> Self;
+    /// The settings panel's surface: a pill's, in the panel colour.
+    fn panel_surface(self, look: &Look) -> Self;
     /// A chrome surface (the rail, a sidebar): its colour, or the
     /// background colours' gradient across it.
     fn chrome_fill(self, fill: &ChromeFill) -> Self;
@@ -253,6 +266,10 @@ pub(crate) trait Surfaces {
 impl Surfaces for El {
     fn pill_surface(self, look: &Look) -> El {
         look.pill_surface(self)
+    }
+
+    fn panel_surface(self, look: &Look) -> El {
+        look.panel_surface(self)
     }
 
     fn chrome_fill(self, fill: &ChromeFill) -> El {

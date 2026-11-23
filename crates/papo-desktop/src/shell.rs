@@ -70,6 +70,8 @@ pub(crate) struct Shell {
     tabs: Tabs,
     /// The Appearance settings.
     appearance: crate::appearance::AppearanceStore,
+    /// The settings panel, while open.
+    settings: Option<crate::settings::SettingsPanel>,
     /// The system's interface font family, for "Use the system font"; none
     /// when the desktop names none.
     system_font: Option<&'static str>,
@@ -192,6 +194,7 @@ impl Default for Shell {
             reorder: Reorder::default(),
             tabs: Tabs::default(),
             appearance: crate::appearance::AppearanceStore::default(),
+            settings: None,
             system_font: None,
             local_time: LocalTime::system(),
             save_due_s: None,
@@ -329,6 +332,7 @@ mod search_list;
 mod search_open;
 mod search_panel;
 mod search_run;
+mod settings;
 mod sign_in_flow;
 #[cfg(test)]
 mod tests;
@@ -340,4 +344,5 @@ mod view;
 pub(crate) use new_message::{
     DIRECT_PILL_KEY, FIND_FIELD_KEY, NEW_MESSAGE_BUTTON_KEY, candidate_key,
 };
+pub(crate) use settings::SettingChoice;
 pub(crate) use view::view;

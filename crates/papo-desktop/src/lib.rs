@@ -39,6 +39,7 @@ mod reconnect_hints;
 mod remove_server;
 mod sdk_bridge;
 mod server_list;
+mod settings;
 mod shell;
 mod shortcuts_sheet;
 mod sign_in;

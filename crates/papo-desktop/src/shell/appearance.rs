@@ -30,7 +30,7 @@ pub(crate) struct SystemLook {
 impl Shell {
     /// The frame's look: the Appearance settings, as `system` allows.
     pub(crate) fn look(&self, system: SystemLook) -> Look {
-        look_of(self.appearance.appearance(), system, self.system_font)
+        look_of(&self.shown_appearance(), system, self.system_font)
     }
 
     /// Saves `appearance` and shows it, the message being read kept in

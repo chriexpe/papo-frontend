@@ -88,6 +88,10 @@ impl Shell {
             self.toggle_jump(tx);
             return true;
         }
+        if key.is_command(',') && primary_only(key.mods) {
+            self.toggle_settings(tx);
+            return true;
+        }
         if let Some(step) = text_size_key(key) {
             self.step_text_size(step, tx);
             return true;

@@ -19,6 +19,8 @@ use crate::design::{
 };
 use crate::window::APP_ID;
 
+pub(crate) mod presets;
+
 /// Shape and type's five values (§5).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Shape {
@@ -97,6 +99,15 @@ impl Shape {
     }
 }
 
+impl Shape {
+    /// Whether every value equals `other`'s, to the slider's resolution.
+    pub(crate) fn same_as(&self, other: &Shape) -> bool {
+        ShapeValue::ALL
+            .into_iter()
+            .all(|value| (self.get(value) - other.get(value)).abs() < 0.005)
+    }
+}
+
 impl Default for Shape {
     /// The Balanced direction, Papo's defaults (§5).
     fn default() -> Shape {
@@ -155,6 +166,12 @@ impl Appearance {
     pub(crate) fn glass(&self, theme: Theme) -> bool {
         self.glass[theme_index(theme)]
     }
+
+    /// The same settings with `theme`'s Glass switch `on`.
+    pub(crate) fn with_glass(mut self, theme: Theme, on: bool) -> Appearance {
+        self.glass[theme_index(theme)] = on;
+        self
+    }
 }
 
 fn theme_index(theme: Theme) -> usize {
@@ -202,6 +219,13 @@ impl AppearanceStore {
     /// value takes its default.
     pub(crate) fn load() -> AppearanceStore {
         AppearanceStore::read(Prefs::open(APP_ID))
+    }
+
+    /// The settings in `prefs`, for tests that need a file of their own
+    /// (one that cannot be written, say).
+    #[cfg(test)]
+    pub(crate) fn from_prefs(prefs: Prefs) -> AppearanceStore {
+        AppearanceStore::read(prefs)
     }
 
     fn read(prefs: Prefs) -> AppearanceStore {

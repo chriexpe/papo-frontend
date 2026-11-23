@@ -354,6 +354,7 @@ impl Shell {
                 self.toggle_reaction(key, id, &emoji);
             }
             MenuAction::Person { key, user, action } => self.person_action(key, user, action, tx),
+            MenuAction::Setting(choice) => self.settings_chosen(choice, tx),
             MenuAction::SearchScope { channel } => {
                 let scope = if channel {
                     super::search::Scope::Channel

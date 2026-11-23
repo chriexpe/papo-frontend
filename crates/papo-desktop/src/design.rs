@@ -132,12 +132,14 @@ mod floors;
 mod look;
 mod reading;
 mod replies;
+pub(crate) mod settings;
 mod sizes;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use background::{
     Accent, Background, BackgroundColour, CHROME_GRADIENT_DEGREES, ChromeFill,
+    MAX_BACKGROUND_COLOURS,
 };
 pub(crate) use code_ink::CodeInk;
 pub(crate) use colour::{Palette, Theme};

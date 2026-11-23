@@ -200,8 +200,12 @@ fn pill_button(key: &'static str, glyph: &'static Icon, look: &Look) -> El {
 }
 
 /// The account pill: the account's avatar, name and handle, then
-/// `trailing` at its end (Direct's ⇄; a server's settings later).
+/// `trailing` (Direct's ⇄) and ⚙, which opens the settings panel
+/// (`docs/design.md` §8).
 pub(crate) fn account_pill(account: &AccountEntry, trailing: Option<El>, look: &Look) -> El {
+    let settings = pill_button(crate::settings::SETTINGS_BUTTON_KEY, &GEAR, look)
+        .label(strings::settings_title())
+        .on_press_tx(|shell: &mut Shell, tx| shell.toggle_settings(tx));
     let names = col()
         .grow(1.0)
         .min_w(0.0)
@@ -222,7 +226,8 @@ pub(crate) fn account_pill(account: &AccountEntry, trailing: Option<El>, look: &
             .key("account")
             .child(avatar(&account.name, None, look))
             .child(names)
-            .children(trailing),
+            .children(trailing)
+            .child(settings),
         look,
     )
 }
