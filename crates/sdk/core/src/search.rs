@@ -3,8 +3,15 @@
 mod detached;
 pub(crate) use detached::DetachedStore;
 pub use detached::{DetachedMessageRequest, DetachedMessageUpdate};
+mod dates;
+mod draft;
 mod grammar;
-pub use grammar::{SearchNames, SearchQuery};
+pub use dates::{DateOrder, DateWords, SearchCalendar, SearchDate, parse_search_date};
+pub use draft::{
+    FilterValue, HasKind, MAX_SEARCH_BYTES, MAX_SEARCH_CANDIDATES, SearchDraft, SearchFilter,
+    SearchKeyword, SearchNames, SearchProblem, SearchScope,
+};
+pub use grammar::{LocalDays, SearchQuery};
 #[cfg(test)]
 mod tests;
 
@@ -47,6 +54,19 @@ pub struct SearchHit {
     generation: Generation,
     /// Authoritative detached REST fields; media hydration is a separate explicit request.
     pub result: Arc<SearchResult>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl SearchHit {
+    /// A hit of `account` at `generation`, for client tests; real hits come from pages only.
+    #[must_use]
+    pub fn fixture(account: AccountId, generation: Generation, result: SearchResult) -> Self {
+        Self {
+            account,
+            generation,
+            result: Arc::new(result),
+        }
+    }
 }
 
 /// Validated source identity for client-owned search navigation and Back restoration.

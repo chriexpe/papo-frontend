@@ -35,7 +35,7 @@ fn quoted_names_resolve_filters_and_ambiguous_labels_fail() {
         "from:\"@Quoted Person\" in:\"#Quoted Channel\" tem:anexo has:link ",
         "mentions:00000000-0000-0000-0000-000000000001 words"
     );
-    let query = SearchQuery::parse(input, &names)
+    let query = SearchQuery::parse(input, &names, calendar())
         .unwrap()
         .into_request()
         .unwrap();
@@ -51,7 +51,8 @@ fn quoted_names_resolve_filters_and_ambiguous_labels_fail() {
             "de:\"Quoted Person\"",
             &SearchNames {
                 resources: &resources
-            }
+            },
+            calendar()
         )
         .is_err()
     );
@@ -105,4 +106,13 @@ fn submicrosecond_search_cursor_is_rejected_like_history() {
     };
     assert!(matches!(cursor_key(&cursor), Err(SearchError::InvalidData)));
     assert!(crate::MessageKey::parse(&cursor.created_at, &cursor.id).is_err());
+}
+
+/// Sunday, 23 November 2026, written day first.
+fn calendar() -> crate::SearchCalendar {
+    crate::SearchCalendar {
+        today: chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap(),
+        order: crate::DateOrder::DayFirst,
+        words: crate::DateWords::Portuguese,
+    }
 }

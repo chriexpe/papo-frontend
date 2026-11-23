@@ -124,18 +124,43 @@ Subscriptions invalidate idle pages on generation change and close on revocation
 
 The query supports the actual POST `/search` fields: text, author, explicit
 channel/DM, mention UUID, `has=link`, attachment presence **or absence**, inclusive
-UTC date bounds and asc/desc order. The parser resolves `de/from`, `em/in`,
-`tem/has`, `mentions` and quoted names against lightweight current metadata;
-ambiguous labels fail. Local channel/person matching never fetches a roster or
-profile list. The backend implements full-text matching and permission filtering;
-there is no client full-text index. Global backend search excludes DMs; explicitly
-scoping a DM invokes its membership/block authorization.
+UTC date bounds and asc/desc order. `SearchDraft::read` reads a search field within a
+`SearchScope` (the server, a channel a typed `in:` replaces, or one DM, where `in:`
+does not apply and only its two people can be named): `de/from`, `em/in`, `tem/has`
+and `mentions` filters and the free words, each with its UTF-8 byte range, every
+value resolved against lightweight current metadata. A UUID, an `@username` or a
+`#channel` binds; a bare name is a prefix, and when it matches several people or
+channels the filter is `Ambiguous` with its candidates and nothing is searched until
+one is picked. `has:` takes `link` and `file` (any attachment); the backend filters
+no attachment kind. `before:`, `after:` and `during:` (`antes:`, `depois:`, `durante:`)
+take dates as people write them (`parse_search_date`: `2d`, `3w`, `1m`, `1y`;
+today and yesterday; `21/11/2026`, `211126` and more in the calendar's day/month
+order; `nov`, `11/2026`, `2025` for whole months and years), read against the
+client's `SearchCalendar` (today, order, language), into `SearchQuery::local_days`;
+`search_date_suggestions` lists what a date value can be, with its meaning;
+the backend counts UTC days, so `Session::search` refuses such a query until
+`papo_sdk_ui::localize_search` converts it with the client's UTC offsets: the
+local days become the exact instants they span, the request asks every UTC day
+those touch, the first page starts from `SearchWindow::first_cursor` (the
+window's near end, so the backend skips the hours outside it), and
+`SearchResults` keeps only results inside the window, ending the list at the first
+result past its far end (`wants_next` when a whole page fell outside it). The draft reports the first problem (empty, open quote,
+unresolved or repeated filter) instead of a query. `SearchQuery::parse` is the
+server-scope reading that fails on any problem. `search_suggestions` and
+`search_candidates` list a filter's values with the text that binds each one.
+Local channel/person matching never fetches a roster or profile list. The backend
+implements full-text matching and permission filtering; there is no client
+full-text index. Global backend search excludes DMs; explicitly scoping a DM
+invokes its membership/block authorization.
 
 Each page contains at most 100 results in strict `(created_at, id)` order, not
 score order. Exact backend timestamp spellings/IDs form the next cursor only when
 `has_more` is true. Invalid ordering/nonprogress fails instead of manufacturing a
 cursor. Pages, hits and original navigation targets retain account/generation
 identity. Clients retain their own query/results for Back restoration.
+`SearchResults` keeps a query's loaded pages for a client: hits as messages built
+from what a hit carries (no attachments, embeds or reactions), duplicates dropped,
+the next cursor, and the count, exact only once the last page is in.
 
 `hydrate_search_hit` retrieves full messages, including embeds/attachments,
 without opening a timeline or changing canonical history, coverage, reads or the

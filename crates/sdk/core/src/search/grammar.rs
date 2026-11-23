@@ -1,11 +1,14 @@
-//! Search filter grammar and unambiguous name resolution; server execution stays authoritative.
+//! The backend query a search asks for and its request validation; reading the field's text is
+//! `draft`'s, and server execution stays authoritative.
 
+use super::SearchCalendar;
 use super::SearchError;
-use crate::{HistoryOrder, ResourceSnapshot, Uuid};
+use super::draft::{MAX_SEARCH_BYTES, SearchDraft, SearchNames, SearchScope};
+use crate::{HistoryOrder, Uuid};
 use papo_api::wire::SearchRequest;
 
 /// Explicit backend filters; absence of a channel means server-wide non-DM search.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchQuery {
     /// Backend full-text terms.
     pub text: Option<String>,
@@ -23,54 +26,47 @@ pub struct SearchQuery {
     pub date_start: Option<String>,
     /// Inclusive UTC date YYYY-MM-DD.
     pub date_end: Option<String>,
+    /// Days of the reader's own calendar (`before:`, `after:`, `during:`).
+    /// The backend counts UTC days, so a query holding them is refused by
+    /// [`crate::Session::search`] until a client converts them with its UTC
+    /// offsets (`papo_sdk_ui::localize_search`), which sets the dates above
+    /// and the exact window results are trimmed to.
+    pub local_days: Option<LocalDays>,
     /// Tuple ordering; default newest first.
     pub order: Option<HistoryOrder>,
 }
 
-/// Borrowed lightweight labels used for parsing/local filtering; never fetches profiles or a roster.
-pub struct SearchNames<'a> {
-    /// Current account's lightweight resource image.
-    pub resources: &'a ResourceSnapshot,
-}
 impl SearchQuery {
-    /// Parses de/from, em/in, tem/has, mentions and quoted names. Ambiguous names fail.
+    /// Parses de/from, em/in, tem/has, mentions and quoted names for a server-wide search, as
+    /// [`SearchDraft::read`] does. Ambiguous or unknown names fail.
     /// # Errors
-    /// Returns invalid/unknown/ambiguous filters or unmatched quotes.
-    pub fn parse(raw: &str, names: &SearchNames<'_>) -> Result<Self, SearchError> {
-        if raw.len() > 8192 {
+    /// Returns invalid/unknown/ambiguous/repeated filters or unmatched quotes.
+    pub fn parse(
+        raw: &str,
+        names: &SearchNames<'_>,
+        calendar: SearchCalendar,
+    ) -> Result<Self, SearchError> {
+        if raw.len() > MAX_SEARCH_BYTES {
             return Err(SearchError::InvalidData);
         }
-        let mut query = Self::default();
-        let mut words = Vec::new();
-        for token in tokens(raw)? {
-            let Some((prefix, value)) = token.split_once(':') else {
-                words.push(token);
-                continue;
-            };
-            match prefix.to_lowercase().as_str() {
-                "de" | "from" => set(&mut query.author, names.person(value)?)?,
-                "em" | "in" => set(&mut query.channel, names.channel(value)?)?,
-                "mentions" => set(&mut query.mention, names.person(value)?)?,
-                "tem" | "has" => match value.to_lowercase().as_str() {
-                    "link" => query.has_link = true,
-                    "anexo" | "arquivo" | "attachment" | "file" => {
-                        query.contains_attachment = Some(true);
-                    }
-                    _ => return Err(SearchError::InvalidData),
-                },
-                _ => words.push(token),
-            }
-        }
-        let text = words.join(" ");
-        query.text = (!text.is_empty()).then_some(text);
-        query.clone().into_request()?;
-        Ok(query)
+        SearchDraft::read(raw, names, SearchScope::Server, calendar)
+            .query()
+            .cloned()
+            .map_err(|_| SearchError::InvalidData)
     }
-    pub(super) fn into_request(self) -> Result<SearchRequest, SearchError> {
-        if self.text.as_ref().is_some_and(|s| s.len() > 8192) {
+    /// Whether the query asks for something the backend takes: a text within
+    /// its limit, at least one filter (local days count), ordered dates.
+    /// # Errors
+    /// Returns invalid data for anything else.
+    pub(super) fn check(&self) -> Result<(), SearchError> {
+        if self
+            .text
+            .as_ref()
+            .is_some_and(|s| s.len() > MAX_SEARCH_BYTES)
+        {
             return Err(SearchError::InvalidData);
         }
-        let text = self.text.filter(|s| !s.trim().is_empty());
+        let text = self.text.as_deref().filter(|s| !s.trim().is_empty());
         if text.is_none()
             && self.author.is_none()
             && self.channel.is_none()
@@ -79,6 +75,7 @@ impl SearchQuery {
             && self.contains_attachment.is_none()
             && self.date_start.is_none()
             && self.date_end.is_none()
+            && self.local_days.is_none()
         {
             return Err(SearchError::InvalidData);
         }
@@ -87,6 +84,19 @@ impl SearchQuery {
         if start.zip(end).is_some_and(|(a, b)| a > b) {
             return Err(SearchError::InvalidData);
         }
+        if self.local_days.is_some_and(|days| !days.is_ordered()) {
+            return Err(SearchError::InvalidData);
+        }
+        Ok(())
+    }
+
+    pub(super) fn into_request(self) -> Result<SearchRequest, SearchError> {
+        self.check()?;
+        // Local days the client has not converted would search UTC days.
+        if self.local_days.is_some() {
+            return Err(SearchError::InvalidData);
+        }
+        let text = self.text.filter(|s| !s.trim().is_empty());
         Ok(SearchRequest {
             text,
             author: self.author.map(|id| id.to_string()),
@@ -107,120 +117,26 @@ impl SearchQuery {
         })
     }
 }
+/// Days of the reader's own calendar, both ends inclusive; an open end is
+/// unbounded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalDays {
+    /// The first day searched (`after:` the day before, `during:` the day).
+    pub first: Option<chrono::NaiveDate>,
+    /// The last day searched (`before:` the day after, `during:` the day).
+    pub last: Option<chrono::NaiveDate>,
+}
+
+impl LocalDays {
+    /// Whether the first day is not after the last.
+    #[must_use]
+    pub fn is_ordered(self) -> bool {
+        self.first
+            .zip(self.last)
+            .is_none_or(|(first, last)| first <= last)
+    }
+}
+
 fn date(raw: &str) -> Result<chrono::NaiveDate, SearchError> {
     chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").map_err(|_| SearchError::InvalidData)
-}
-fn set<T>(slot: &mut Option<T>, value: T) -> Result<(), SearchError> {
-    if slot.replace(value).is_some() {
-        return Err(SearchError::InvalidData);
-    }
-    Ok(())
-}
-impl SearchNames<'_> {
-    fn person(&self, raw: &str) -> Result<Uuid, SearchError> {
-        let name = raw.trim_start_matches('@');
-        if let Ok(id) = name.parse() {
-            return Ok(id);
-        }
-        unique(
-            self.resources
-                .members
-                .iter()
-                .filter_map(|id| self.resources.users.get(id))
-                .filter(|p| {
-                    p.username
-                        .as_deref()
-                        .is_some_and(|s| s.eq_ignore_ascii_case(name))
-                        || p.nickname
-                            .as_deref()
-                            .is_some_and(|s| s.eq_ignore_ascii_case(name))
-                })
-                .map(|p| p.id),
-        )
-    }
-    fn channel(&self, raw: &str) -> Result<Uuid, SearchError> {
-        let name = raw.trim_start_matches('#');
-        if let Ok(id) = name.parse() {
-            return Ok(id);
-        }
-        unique(
-            self.resources
-                .channels
-                .iter()
-                .filter(|c| {
-                    c.name
-                        .as_deref()
-                        .is_some_and(|s| s.eq_ignore_ascii_case(name))
-                })
-                .map(|c| c.id),
-        )
-    }
-    /// Finds channel and person metadata by name without loading additional members/profiles.
-    #[must_use]
-    pub fn matching(&self, text: &str) -> (Vec<Uuid>, Vec<Uuid>) {
-        let needle = text.to_lowercase();
-        let channels = self
-            .resources
-            .channels
-            .iter()
-            .filter(|c| {
-                c.name
-                    .as_ref()
-                    .is_some_and(|s| s.to_lowercase().contains(&needle))
-            })
-            .map(|c| c.id)
-            .take(100)
-            .collect();
-        let people = self
-            .resources
-            .members
-            .iter()
-            .filter_map(|id| self.resources.users.get(id))
-            .filter(|p| {
-                [p.username.as_ref(), p.nickname.as_ref()]
-                    .into_iter()
-                    .flatten()
-                    .any(|s| s.to_lowercase().contains(&needle))
-            })
-            .map(|p| p.id)
-            .take(100)
-            .collect();
-        (channels, people)
-    }
-}
-fn unique(mut ids: impl Iterator<Item = Uuid>) -> Result<Uuid, SearchError> {
-    let id = ids.next().ok_or(SearchError::InvalidData)?;
-    if ids.any(|next| next != id) {
-        return Err(SearchError::InvalidData);
-    }
-    Ok(id)
-}
-fn tokens(raw: &str) -> Result<Vec<String>, SearchError> {
-    let mut words = Vec::new();
-    let mut token = String::new();
-    let mut quoted = false;
-    let mut escaped = false;
-    for ch in raw.chars() {
-        if escaped {
-            token.push(ch);
-            escaped = false;
-        } else if ch == '\\' && quoted {
-            escaped = true;
-        } else if ch == '"' {
-            quoted = !quoted;
-        } else if ch.is_whitespace() && !quoted {
-            if !token.is_empty() {
-                words.push(std::mem::take(&mut token));
-            }
-        } else {
-            token.push(ch);
-        }
-    }
-    if quoted || escaped {
-        return Err(SearchError::InvalidData);
-    }
-    if !token.is_empty() {
-        words.push(token);
-    }
-    Ok(words)
 }

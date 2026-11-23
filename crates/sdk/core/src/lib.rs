@@ -99,7 +99,7 @@ mod resources;
 pub use account_cache::{AccountCache, AccountCaches, CacheError, CacheResource};
 pub use papo_api::wire::{
     Channel, DirectConversation, ExternalAuthor, LoginRequest, LoginServerRequest, RegisterRequest,
-    Role, RoleSummary, UserProfile, UserSummary,
+    Role, RoleSummary, SearchResult, UserProfile, UserSummary,
 };
 pub use read_points::ServerReadPoint;
 pub use resources::{
@@ -116,8 +116,10 @@ pub use notifications::{
 mod scoped_request;
 mod search;
 pub use search::{
-    DetachedMessageRequest, DetachedMessageUpdate, SearchCursor, SearchError, SearchHit,
-    SearchNames, SearchPage, SearchQuery, SearchRequestHandle, SearchTarget,
+    DateOrder, DateWords, DetachedMessageRequest, DetachedMessageUpdate, FilterValue, HasKind,
+    LocalDays, MAX_SEARCH_BYTES, MAX_SEARCH_CANDIDATES, SearchCalendar, SearchCursor, SearchDate,
+    SearchDraft, SearchError, SearchFilter, SearchHit, SearchKeyword, SearchNames, SearchPage,
+    SearchProblem, SearchQuery, SearchRequestHandle, SearchScope, SearchTarget, parse_search_date,
 };
 mod session;
 mod session_pool;
