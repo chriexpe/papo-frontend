@@ -1,11 +1,11 @@
 //! A message on its own (`docs/design.md` §10, StandaloneMessage): outside
-//! the conversation (the delete confirmation, pins, later search), with
+//! the conversation (the delete confirmation, pins, search results), with
 //! its header always shown and no grouping, its time with its date ("Today,
 //! 21:34"), and its body from the conversation's own renderer.
 
 use papo_sdk::{Message, Uuid};
-use papo_sdk_ui::TimelineItem;
 use papo_sdk_ui::message_content::MessageContent;
+use papo_sdk_ui::{SearchResultItem, TimelineItem};
 use rune::{El, col, row, text};
 
 use super::OpenTimeline;
@@ -34,7 +34,7 @@ pub(crate) fn standalone<S: TimelineHost>(
         } if *current == id => Some((message, content)),
         _ => None,
     })?;
-    Some(draw::<S>(open, id, message, content, style))
+    Some(draw::<S>(open, id, message, content, style, None))
 }
 
 /// `message` on its own, from its own content (a pin the conversation
@@ -46,7 +46,25 @@ pub(crate) fn standalone_message<S: TimelineHost>(
     content: &MessageContent,
     style: &Style,
 ) -> El {
-    draw::<S>(open, id, message, content, style)
+    draw::<S>(open, id, message, content, style, None)
+}
+
+/// A search result on its own, from what the hit carries; its author by
+/// the username the backend sent when the roster no longer holds them.
+pub(crate) fn standalone_hit<S: TimelineHost>(
+    open: &OpenTimeline,
+    item: &SearchResultItem,
+    style: &Style,
+) -> El {
+    let fallback = item.author_username.as_deref();
+    draw::<S>(
+        open,
+        item.id(),
+        &item.message,
+        &item.content,
+        style,
+        fallback,
+    )
 }
 
 fn draw<S: TimelineHost>(
@@ -55,10 +73,22 @@ fn draw<S: TimelineHost>(
     message: &Message,
     content: &MessageContent,
     style: &Style,
+    fallback_name: Option<&str>,
 ) -> El {
     let palette = style.palette;
     let spacing = style.layout.density.spacing();
-    let name = author_name(message, open.resources.as_deref());
+    let resources = open.resources.as_deref();
+    let known = message.external_author.is_some()
+        || message
+            .author_id
+            .as_deref()
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .zip(resources)
+            .is_some_and(|(id, resources)| resources.users.get(id).is_some());
+    let name = match fallback_name {
+        Some(fallback) if !known && !fallback.is_empty() => fallback.to_owned(),
+        _ => author_name(message, resources),
+    };
     let time = created_us(message).map_or_else(String::new, |at_us| {
         let day = style.time.day_of(at_us);
         if day >= style.today - 1 {

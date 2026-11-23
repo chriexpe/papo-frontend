@@ -113,8 +113,19 @@ pub(crate) struct Shell {
     pinning: reacting::Pinning,
     /// The hover bar stretched into its strip, while one is.
     stretched: Option<activity::Stretched>,
+    /// The newest opening of a message from a panel; only its answer
+    /// counts (`message_open`).
+    openings: u64,
     /// The pins panel, while open.
     pins_panel: Option<pins::PinsPanel>,
+    /// The search, open or folded with its query.
+    search: Option<search::Search>,
+    /// The last search's number; each search takes the next
+    /// (`search_run`).
+    search_runs: u64,
+    /// What the search field edits while there is no search (Rune asks
+    /// for a field during an event even as it goes).
+    search_spare: rune::TextEdit,
     /// What had the keyboard when the pins panel opened, which gets it
     /// back when it closes.
     pins_return_focus: Option<String>,
@@ -187,7 +198,11 @@ impl Default for Shell {
             notice: None,
             pinning: reacting::Pinning::default(),
             stretched: None,
+            openings: 0,
             pins_panel: None,
+            search: None,
+            search_runs: 0,
+            search_spare: rune::TextEdit::new(""),
             pins_return_focus: None,
         }
     }
@@ -269,6 +284,7 @@ pub(crate) mod direct;
 mod hover_bar;
 mod message_keys;
 mod message_menu;
+mod message_open;
 mod navigate;
 mod outgoing;
 pub(crate) mod pins;
@@ -280,6 +296,14 @@ mod reactions_list;
 mod reactors;
 mod reading;
 mod replies;
+mod search;
+mod search_field;
+mod search_hits;
+mod search_keys;
+mod search_list;
+mod search_open;
+mod search_panel;
+mod search_run;
 mod sign_in_flow;
 #[cfg(test)]
 mod tests;

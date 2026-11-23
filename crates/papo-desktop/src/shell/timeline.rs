@@ -16,6 +16,7 @@ use rune::Tx;
 
 use super::Shell;
 use crate::tabs::{Opening, Showing};
+use crate::timeline::anchor::Anchor;
 use crate::timeline::watch::{Posted, Watch};
 use crate::timeline::{OpenTimeline, Request, TimelineKey, scroll_to};
 
@@ -45,6 +46,18 @@ impl Shell {
     /// Without `tx` (a handler that has none) a timeline shown again
     /// returns to its place on the next frame (`poll`).
     pub(crate) fn sync_timeline(&mut self, tx: Option<&mut Tx>) {
+        self.sync_timeline_at(tx, None);
+    }
+
+    /// [`Self::sync_timeline`], the timeline that shows taking `focus`
+    /// (a window opened around a message, and that message's place)
+    /// instead of opening at its own place: a search hit in another
+    /// channel, which opens nothing at the reader's place first.
+    pub(super) fn sync_timeline_at(
+        &mut self,
+        tx: Option<&mut Tx>,
+        focus: Option<(Timeline, Anchor)>,
+    ) {
         self.sync_composer();
         if self.sdk.is_none() {
             return;
@@ -57,11 +70,18 @@ impl Shell {
         if let Some(save) = switch.save {
             self.save_position(save.key, save.position);
         }
-        match switch.shown {
-            Showing::Nothing => {}
-            Showing::Open(opening) => self.start_watch(opening),
+        match (switch.shown, focus) {
+            (Showing::Nothing, _) => {}
+            (Showing::Open(opening), None) => self.start_watch(opening),
+            // The timeline takes the window as ⌛'s does, its place the
+            // message's; the opening just made never starts.
+            (Showing::Open(_) | Showing::Again, Some((window, at))) => {
+                if let Some(opening) = wanted.and_then(|key| self.tabs.adopt(key, window, at)) {
+                    self.start_watch(opening);
+                }
+            }
             // Without a `tx` the place stays pending for the next poll.
-            Showing::Again => {
+            (Showing::Again, None) => {
                 if let Some(tx) = tx {
                     self.restore_shown(tx);
                 }
@@ -84,6 +104,21 @@ impl Shell {
             .retain_accounts(|account| accounts.contains(&account));
         self.draft_writes
             .retain_accounts(|account| accounts.contains(&account));
+        // A removed account's panels go with it, though nothing showed.
+        if self
+            .search
+            .as_ref()
+            .is_some_and(|search| !accounts.contains(&search.account))
+            && let Some(mut search) = self.search.take()
+        {
+            search.stop();
+        }
+        if self
+            .pins_panel
+            .is_some_and(|panel| !accounts.contains(&panel.key.account))
+        {
+            self.pins_panel = None;
+        }
     }
 
     pub(super) fn start_watch(&self, opening: Opening) {
@@ -267,7 +302,8 @@ impl Shell {
     /// The window's poll: returns a timeline shown again to its place,
     /// sends a read report a popup that closed lets go, saves the reader's
     /// place once it has rested, saves drafts whose typing paused, ends a
-    /// code block's "Copied", and names the new day once one starts.
+    /// code block's "Copied", searches a search field whose text rested,
+    /// and names the new day once one starts.
     /// Returns whether the view changed.
     pub(crate) fn poll(&mut self, clock_s: f64, tx: &mut Tx) -> bool {
         self.poll_composer(clock_s, tx);
@@ -290,10 +326,15 @@ impl Shell {
         }
         let copied_ended = self.end_copied(clock_s);
         let new_day = self.follow_the_day(clock_s, tx);
+        if new_day {
+            // "today" and "2d" mean other days now.
+            self.search_now();
+        }
         let flash_ended = self.poll_flash(clock_s);
         let notice_ended = self.poll_notice(clock_s);
         let list_closed = self.poll_reactions();
         let card_closed = self.poll_card();
+        let searched = self.poll_search(clock_s);
         restored
             || copied_ended
             || new_day
@@ -301,6 +342,7 @@ impl Shell {
             || notice_ended
             || list_closed
             || card_closed
+            || searched
     }
 
     /// Keeps `today` current: checks once the local day should have ended,

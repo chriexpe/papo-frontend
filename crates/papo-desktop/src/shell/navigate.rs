@@ -68,6 +68,7 @@ impl Shell {
         self.channel_step_key(key, tx)
             || self.select_message_key(key, tx)
             || self.pins_key(key, tx)
+            || self.search_shortcut(key, tx)
             || self.profile_key(key)
             || self.direct_key(key, tx)
             || self.escape_key(key)
@@ -88,6 +89,17 @@ impl Shell {
             return false;
         }
         self.pins_pressed(true, tx);
+        true
+    }
+
+    /// Ctrl+F: the search panel opens, or stretches back, with the
+    /// keyboard in its field.
+    fn search_shortcut(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        if !key.is_command('f') || mods.shift || mods.alt || self.popup_shown() {
+            return false;
+        }
+        self.search_pressed(true, tx);
         true
     }
 
@@ -331,6 +343,14 @@ impl Shell {
                 self.toggle_reaction(key, id, &emoji);
             }
             MenuAction::Person { key, user, action } => self.person_action(key, user, action, tx),
+            MenuAction::SearchScope { channel } => {
+                let scope = if channel {
+                    super::search::Scope::Channel
+                } else {
+                    super::search::Scope::Server
+                };
+                self.search_scope_picked(scope, tx);
+            }
         }
     }
 

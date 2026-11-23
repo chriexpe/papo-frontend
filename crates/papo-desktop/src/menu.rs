@@ -60,6 +60,8 @@ pub(crate) enum MenuAction {
         id: Uuid,
         emoji: String,
     },
+    /// The search scope: this channel, or the whole server.
+    SearchScope { channel: bool },
     /// Something a profile card does about person `user`, seen from
     /// timeline `key`.
     Person {
