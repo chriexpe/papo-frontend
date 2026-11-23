@@ -135,7 +135,7 @@ pub(crate) fn project(
     badges: &ServerBadgesSnapshot,
 ) -> ServerList {
     let account_badges = &badges.accounts;
-    let servers = registry
+    let servers: Vec<ServerEntry> = registry
         .servers
         .iter()
         .map(|saved| {
@@ -179,9 +179,16 @@ pub(crate) fn project(
             }
         })
         .collect();
+    // The accounts the DM list holds: each server's shown one.
+    let direct = badges.direct_messages(
+        servers
+            .iter()
+            .filter_map(|server| server.account.as_ref())
+            .map(|account| &account.id),
+    );
     ServerList {
         servers,
-        direct: Badge::of_aggregate(&badges.direct_messages()),
+        direct: Badge::of_aggregate(&direct),
     }
 }
 

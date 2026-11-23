@@ -58,6 +58,11 @@ fn your_own_card_offers_only_copy_id() {
     assert!(shown(&rt, "card-copy-id"));
     assert!(!shown(&rt, "card-message"));
     assert!(!shown(&rt, "card-block"));
+    assert_eq!(
+        focused(&rt).as_deref(),
+        Some("card-copy-id"),
+        "opens on what it has"
+    );
 }
 
 #[test]
@@ -77,9 +82,11 @@ fn a_moderator_is_asked_inside_the_ban_row_and_cancel_puts_it_back() {
         !shown(&rt, "card-ban"),
         "the question takes the row's place"
     );
+    assert_eq!(focused(&rt).as_deref(), Some("card-ban-cancel"));
     click(&mut rt, "card-ban-cancel");
     rt.frame(FRAME_S);
     assert!(shown(&rt, "card-ban"));
+    assert_eq!(focused(&rt).as_deref(), Some("card-ban"));
     assert!(rt.state.navigation().menu.is_some(), "the card stays");
 }
 
@@ -138,4 +145,44 @@ fn a_reactors_row_turns_the_list_into_their_card_and_escape_turns_it_back() {
             .is_some_and(|menu| menu.reactions.is_some()),
         "back to the list"
     );
+}
+
+#[test]
+fn a_card_whose_conversation_went_closes_and_leaves_the_keys_free() {
+    let mut rt = conversation("");
+    open_lias_card(&mut rt);
+    assert!(rt.state.navigation().menu.is_some());
+    // The conversation goes (a server removed, a sign-out).
+    rt.update(|shell, tx| {
+        shell.tabs.show(None, false);
+        // The window's poll, as Rune runs it each frame.
+        shell.poll(0.0, tx);
+    });
+    assert!(rt.state.navigation().menu.is_none());
+}
+
+#[test]
+fn a_persons_avatar_opens_their_card_too() {
+    let mut rt = conversation("");
+    // The avatar is hidden from assistive technology (the name opens the
+    // card there): a pointer press.
+    let key = crate::timeline::rows::avatar_key(message_id(1));
+    let [x, y, w, h] = rt
+        .elements()
+        .into_iter()
+        .find(|element| element.key.as_deref() == Some(key.as_str()))
+        .expect("message 1's avatar")
+        .rect;
+    rt.pointer_down(x + w / 2.0, y + h / 2.0);
+    rt.frame(FRAME_S);
+    rt.pointer_up(x + w / 2.0, y + h / 2.0);
+    rt.frame(FRAME_S);
+    let card = rt
+        .state
+        .navigation()
+        .menu
+        .as_ref()
+        .and_then(|menu| menu.card.as_ref())
+        .map(|card| card.user);
+    assert_eq!(card, Some(lia()));
 }

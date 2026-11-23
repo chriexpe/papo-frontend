@@ -93,7 +93,7 @@ impl TimelineHost for Host {
         false
     }
 
-    fn author_pressed(&mut self, _key: TimelineKey, _id: Uuid, _user: Uuid, _tx: &mut Tx) {}
+    fn author_pressed(&mut self, _key: TimelineKey, _user: Uuid, _anchor: String, _tx: &mut Tx) {}
 
     fn message_pressed(&mut self, _key: TimelineKey) {
         self.controls.push("message-pressed");
@@ -286,6 +286,10 @@ fn find_part(rt: &Runtime<Host>, n: u128, part: &str) -> Option<ElementInfo> {
         "name" => vec![
             "/name".to_owned(),
             format!("/{}", super::rows::author_key(id)),
+        ],
+        "avatar" => vec![
+            "/avatar".to_owned(),
+            format!("/{}", super::rows::avatar_key(id)),
         ],
         _ => vec![format!("/{part}")],
     };

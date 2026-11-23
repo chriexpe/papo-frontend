@@ -23,7 +23,6 @@
 use papo_sdk::{Message, MessageKey, ResourceSnapshot, Uuid, parse_message_timestamp_us};
 use rune::{El, col, el, memo, row, text};
 
-use super::OpenTimeline;
 use super::boundary::boundary as boundary_line;
 use super::change_marks::{change_mark, delete_failed_line};
 use super::changes::ChangeState;
@@ -34,9 +33,10 @@ use super::local_time::LocalTime;
 use super::reactions;
 use super::reply_line::reply_line;
 use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
-use super::rows::{author_key, echo_key, message_key, message_part_key};
+use super::rows::{author_key, avatar_key, echo_key, message_key, message_part_key};
 use super::send_mark::send_mark;
 use super::view::{Style, TimelineHost};
+use super::{OpenTimeline, TimelineKey};
 use crate::design::{
     AVATAR_TOP_PT, DELETING_OPACITY, Density, FOCUS_RING_PT, HIGHLIGHT_ROW_RADIUS_PT, Lead,
     MESSAGE_BLOCK_GAP_PT, MESSAGE_HEADER_GAP_PT, MESSAGE_NAME_GAP_PT, MESSAGE_ROW_INSET_PT,
@@ -120,17 +120,7 @@ pub(super) fn message_row<S: TimelineHost>(
             .as_ref()
             .map(|bar| hover_bar::bar::<S>(key, id, bar, &style.palette));
         let (enter, exit) = hover_bar::row_motion();
-        // A person's name opens their card beside it; a bridged author has
-        // no person behind the name.
-        let author = papo_sdk_ui::AuthorIdentity::for_message(row_message.message);
-        let name_press = move |name: El| match (&author, history) {
-            (papo_sdk_ui::AuthorIdentity::Person(user), true) => {
-                let user = *user;
-                name.key(author_key(id))
-                    .on_press_tx(move |host: &mut S, tx| host.author_pressed(key, id, user, tx))
-            }
-            _ => name,
-        };
+        let name_press = author_press::<S>(key, row_message.message, history);
         build(id, &parts, line, body, mark, style, name_press, |message| {
             if !history {
                 return message;
@@ -189,7 +179,7 @@ fn build(
     body: El,
     mark: Option<El>,
     style: &Style,
-    name_press: impl Fn(El) -> El,
+    name_press: impl Fn(El, String) -> El,
     report: impl FnOnce(El) -> El,
 ) -> El {
     let palette = style.palette;
@@ -199,14 +189,7 @@ fn build(
     } else {
         spacing.between_groups_pt
     };
-    let name = || {
-        name_press(
-            text(parts.name.clone())
-                .key("name")
-                .font(TYPE_BODY_STRONG)
-                .color(palette.text_primary),
-        )
-    };
+    let name = || name_press(name_text(&parts.name, &palette), author_key(id));
     // The mark, when there is one, stands where the time would.
     let time = |mark: Option<El>| {
         mark.unwrap_or_else(|| {
@@ -231,7 +214,9 @@ fn build(
                         .child(name())
                         .child(time(mark)),
                 );
-                avatar(&parts.name, size_pt, &palette)
+                avatar(&parts.name, size_pt, &palette, |tile| {
+                    name_press(tile, avatar_key(id))
+                })
             };
             (lead, content.child(body))
         }
@@ -300,24 +285,61 @@ fn build(
     }
 }
 
+/// What makes a person's name or avatar open their card beside it, keyed
+/// by the anchor it is given. A bridged author has no person behind them,
+/// and an echo not yet sent no row to open from.
+fn author_press<S: TimelineHost>(
+    key: TimelineKey,
+    message: &Message,
+    history: bool,
+) -> impl Fn(El, String) -> El {
+    let author = papo_sdk_ui::AuthorIdentity::for_message(message);
+    move |part: El, anchor: String| match (&author, history) {
+        (papo_sdk_ui::AuthorIdentity::Person(user), true) => {
+            let user = *user;
+            part.key(anchor.clone())
+                .on_press_tx(move |host: &mut S, tx| {
+                    host.author_pressed(key, user, anchor.clone(), tx);
+                })
+        }
+        _ => part,
+    }
+}
+
+/// The author's name at the head of a group.
+fn name_text(name: &str, palette: &Palette) -> El {
+    text(name.to_owned())
+        .key("name")
+        .font(TYPE_BODY_STRONG)
+        .color(palette.text_primary)
+}
+
 /// The first letter of `name` on a rounded square, `AVATAR_TOP_PT` below
 /// the top of its lead box (`docs/design.md` §5, Distances are measured to
 /// what is seen). The box is as tall as the avatar alone, so the offset
 /// never makes a row taller than it was.
-pub(super) fn avatar(name: &str, size_pt: f32, palette: &Palette) -> El {
-    el().key("lead").size(size_pt, size_pt).a11y_hidden().child(
-        el().key("avatar")
-            .absolute(0.0, AVATAR_TOP_PT)
-            .size(size_pt, size_pt)
-            .radius(RADIUS_AVATAR_PT)
-            .center()
-            .fill(palette.surface_hover)
-            .child(
-                text(initial(name))
-                    .font(TYPE_CAPTION_MEDIUM)
-                    .color(palette.text_secondary),
-            ),
-    )
+pub(super) fn avatar(
+    name: &str,
+    size_pt: f32,
+    palette: &Palette,
+    press: impl FnOnce(El) -> El,
+) -> El {
+    el().key("lead")
+        .size(size_pt, size_pt)
+        .a11y_hidden()
+        .child(press(
+            el().key("avatar")
+                .absolute(0.0, AVATAR_TOP_PT)
+                .size(size_pt, size_pt)
+                .radius(RADIUS_AVATAR_PT)
+                .center()
+                .fill(palette.surface_hover)
+                .child(
+                    text(initial(name))
+                        .font(TYPE_CAPTION_MEDIUM)
+                        .color(palette.text_secondary),
+                ),
+        ))
 }
 
 /// The author's name: a member's nickname or username, a bridged author's

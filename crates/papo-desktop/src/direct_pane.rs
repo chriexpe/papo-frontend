@@ -165,7 +165,11 @@ impl<'a> Shown<'a> {
             .center_y()
             .radius(RADIUS_CONTROL_PT)
             .role("option")
-            .label(self.badge.label(&spoken))
+            // The server too: two accounts can each talk with the same person.
+            .label(
+                self.badge
+                    .label(&strings::direct_title_label(&spoken, &self.server)),
+            )
             .description(strings::direct_close_hint())
             .focusable(true)
             .focus_selected(self.picked)

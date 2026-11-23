@@ -96,7 +96,7 @@ fn draw<S: TimelineHost>(
         .w_full()
         .gap(spacing.lead_gap_pt)
         .items_start()
-        .child(avatar(&name, lead_pt, &palette))
+        .child(avatar(&name, lead_pt, &palette, |tile| tile))
         .child(
             col()
                 .grow(1.0)

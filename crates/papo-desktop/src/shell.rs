@@ -103,10 +103,7 @@ pub(crate) struct Shell {
     /// Whether a DM shows its profile pane, remembered for the window.
     dm_profile: bool,
     /// What the backend said about conversations that left the list.
-    dm_access: std::collections::BTreeMap<
-        papo_sdk_ui::DirectMessageId,
-        papo_sdk::operations::social::DirectAccess,
-    >,
+    dm_access: std::collections::BTreeMap<papo_sdk_ui::DirectMessageId, direct::Asked>,
     /// The notice pill, while one shows.
     notice: Option<crate::notice::Notice>,
     /// Pins and unpins on their way.
@@ -263,7 +260,7 @@ mod composer;
 mod composer_input;
 mod content;
 pub(crate) mod deleting;
-mod direct;
+pub(crate) mod direct;
 mod hover_bar;
 mod message_keys;
 mod message_menu;

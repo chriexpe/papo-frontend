@@ -25,6 +25,16 @@ use crate::notice::Refusal;
 use crate::strings;
 use crate::timeline::TimelineKey;
 
+/// What the shell knows from the backend about a conversation that left
+/// the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Asked {
+    /// Asked; no answer yet.
+    Pending,
+    /// Refused or gone.
+    Answered(DirectAccess),
+}
+
 impl Shell {
     /// Takes the newest list of direct conversations, picking the one a
     /// card's Message waits for once it is there. Returns whether the view
@@ -32,6 +42,7 @@ impl Shell {
     pub(crate) fn direct_posted(&mut self, rows: DirectRows, tx: &mut Tx) -> bool {
         self.nav.direct_changed(rows.iter());
         self.direct = rows;
+        self.drop_unshown_dms();
         // Back in the list, a conversation is open again; one the picked
         // conversation left asks the backend why.
         let direct = &self.direct;
@@ -68,6 +79,36 @@ impl Shell {
         true
     }
 
+    /// Forgets the picked and the awaited conversation of an account the
+    /// rail no longer shows (an account switch, a sign-out): its title,
+    /// typing and composer would be that account's. Returns whether the
+    /// picked one went.
+    pub(super) fn drop_unshown_dms(&mut self) -> bool {
+        let shown: Vec<_> = self
+            .nav
+            .servers()
+            .servers
+            .iter()
+            .filter_map(|server| server.account.as_ref().map(|account| account.id))
+            .collect();
+        if self
+            .awaited_dm
+            .as_ref()
+            .is_some_and(|awaited| !shown.contains(&awaited.account))
+        {
+            self.awaited_dm = None;
+        }
+        self.dm_access.retain(|id, _| shown.contains(&id.account));
+        let unshown = self
+            .nav
+            .picked_dm_row()
+            .is_some_and(|picked| !shown.contains(&picked.id.account));
+        if unshown {
+            self.nav.unpick_dm();
+        }
+        unshown
+    }
+
     /// The direct conversations, newest activity first.
     pub(crate) fn direct_rows(&self) -> &DirectRows {
         &self.direct
@@ -76,6 +117,7 @@ impl Shell {
     /// Shows Direct in the server's place.
     pub(crate) fn select_direct(&mut self, tx: &mut Tx) {
         self.worked_outside();
+        self.awaited_dm = None;
         self.nav.select_direct();
         self.sync_timeline(Some(tx));
     }
@@ -83,7 +125,19 @@ impl Shell {
     /// Picks direct conversation `row`.
     pub(crate) fn pick_dm(&mut self, row: Arc<DirectMessageItem>, tx: &mut Tx) {
         self.worked_outside();
+        self.awaited_dm = None;
+        let (key, user) = (
+            TimelineKey {
+                account: row.id.account,
+                channel: row.id.channel,
+            },
+            row.user,
+        );
         self.nav.pick_dm(row);
+        // An open profile pane shows the newly picked person.
+        if self.dm_profile {
+            self.load_profile(key, user);
+        }
         self.sync_timeline(Some(tx));
     }
 
@@ -139,10 +193,10 @@ impl Shell {
         if blocked {
             return Some(DirectAccess::YouBlocked);
         }
-        self.dm_access
-            .get(&picked.id)
-            .copied()
-            .filter(|access| *access != DirectAccess::Open)
+        match self.dm_access.get(&picked.id) {
+            Some(Asked::Answered(access)) => Some(*access),
+            Some(Asked::Pending) | None => None,
+        }
     }
 
     /// Asks the backend about the picked conversation once it left the
@@ -155,25 +209,54 @@ impl Shell {
         if listed || self.dm_access.contains_key(&picked.id) {
             return;
         }
-        let (id, user) = (picked.id.clone(), picked.user);
-        // Asked once: the answer, or "open" until it comes.
-        self.dm_access.insert(id.clone(), DirectAccess::Open);
         let Some(sdk) = &self.sdk else {
             return;
         };
+        let (id, user) = (picked.id.clone(), picked.user);
+        self.dm_access.insert(id.clone(), Asked::Pending);
         let updates = sdk.updates();
         sdk.run(move |client| async move {
-            let Ok(session) = client.session(id.account) else {
-                return;
+            let answer = match client.session(id.account) {
+                Ok(session) => session
+                    .operations()
+                    .direct_access(id.channel, user)
+                    .await
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
             };
-            match session.operations().direct_access(id.channel, user).await {
-                Ok(access) => updates.send(move |shell| {
-                    shell.dm_access.insert(id, access);
-                    true
-                }),
-                Err(error) => log::debug!("a conversation's access was not read: {error}"),
-            }
+            updates.send(move |shell| shell.dm_access_answered(id, answer));
         });
+    }
+
+    /// The backend's answer about conversation `id`. A failed read is
+    /// asked again with the next list; an answer for a conversation back
+    /// in the list, or no longer asked about, is dropped. Only a refusal
+    /// or absence is kept: open needs no note, and "you blocked" is read
+    /// from the live block list. Returns whether the view changed.
+    pub(super) fn dm_access_answered(
+        &mut self,
+        id: DirectMessageId,
+        answer: Result<DirectAccess, String>,
+    ) -> bool {
+        if !matches!(self.dm_access.get(&id), Some(Asked::Pending)) {
+            return false;
+        }
+        let listed = self.direct.iter().any(|row| row.id == id);
+        match answer {
+            Ok(access @ (DirectAccess::Refused | DirectAccess::Gone)) if !listed => {
+                self.dm_access.insert(id, Asked::Answered(access));
+                true
+            }
+            Ok(_) => {
+                self.dm_access.remove(&id);
+                false
+            }
+            Err(error) => {
+                log::debug!("a conversation's access was not read: {error}");
+                self.dm_access.remove(&id);
+                false
+            }
+        }
     }
 
     /// The timeline Direct shows: the picked conversation's.

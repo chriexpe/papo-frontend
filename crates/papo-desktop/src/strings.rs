@@ -132,6 +132,11 @@ mod tests {
         let (three, named) = line(&["Lia", "Yuki", "Caio"], Some("ignored"));
         assert_eq!(three, "Lia, Yuki and Caio are typing…");
         assert_eq!(named, ["Lia", "Yuki", "Caio"]);
+        // A phrase from the server is words, never markers.
+        assert_eq!(
+            line(&["Yuki"], Some("\u{E001}\u{E002} hm")).0,
+            "Yuki \u{E001}\u{E002} hm"
+        );
         assert_eq!(
             line(&["A", "B", "C", "D"], None),
             ("Several people are typing…".to_owned(), Vec::new())

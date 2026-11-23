@@ -14,7 +14,6 @@ use crate::timeline::content::Press;
 use crate::timeline::echoes::SendState;
 use crate::timeline::hover_bar::{BarPress, more_key};
 use crate::timeline::reactors::Want;
-use crate::timeline::rows::author_key;
 use crate::timeline::{OpenTimeline, Request, TimelineHost, TimelineKey};
 
 impl TimelineHost for Shell {
@@ -84,11 +83,11 @@ impl TimelineHost for Shell {
         self.code_copied_in(key, message, index, tx);
     }
 
-    fn author_pressed(&mut self, key: TimelineKey, id: Uuid, user: Uuid, tx: &mut Tx) {
+    fn author_pressed(&mut self, key: TimelineKey, user: Uuid, anchor: String, tx: &mut Tx) {
         // A press moves no keyboard focus: what had it gets it back, as
         // from a menu the pointer opened.
         let trigger = tx.focused().unwrap_or(COMPOSER_KEY).to_owned();
-        self.open_card(key, user, Placement::Beside(author_key(id)), trigger, tx);
+        self.open_card(key, user, Placement::Beside(anchor), trigger, tx);
     }
 
     fn message_pressed(&mut self, key: TimelineKey) {

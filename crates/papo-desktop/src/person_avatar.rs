@@ -60,9 +60,10 @@ fn badge(mark: PresenceMark, size: AvatarSize, surface: Color, palette: &Palette
 
 fn shape(mark: PresenceMark, palette: &Palette) -> (&'static Icon, Color) {
     match mark {
-        PresenceMark::Available => (&PRESENCE_ONLINE, palette.presence_online),
         PresenceMark::Away => (&PRESENCE_AWAY, palette.presence_away),
         PresenceMark::Busy => (&PRESENCE_BUSY, palette.presence_busy),
         PresenceMark::Offline => (&PRESENCE_OFFLINE, palette.presence_offline),
+        // Available, and a mark this client does not know yet: connected.
+        _ => (&PRESENCE_ONLINE, palette.presence_online),
     }
 }

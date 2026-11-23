@@ -1,7 +1,8 @@
 //! Where the person is in the app: Direct or the selected server and, per
-//! server, the selected channel; the direct conversation picked in Direct; the rail's order while a reorder is on its way to the
-//! SDK or a tile is being dragged; the open menu, the open accounts and the
-//! remove confirmation.
+//! server, the selected channel; the direct conversation picked in Direct;
+//! the rail's order while a reorder is on its way to the SDK or a tile is
+//! being dragged; the open menu, the open accounts and the remove
+//! confirmation.
 //!
 //! Owns these transitions and nothing the SDK holds: the server list itself
 //! comes from `server_list`, and reordering or removing is sent to the SDK by
@@ -142,6 +143,11 @@ impl Navigation {
     pub(crate) fn pick_dm(&mut self, row: Arc<DirectMessageItem>) {
         self.select_direct();
         self.picked_dm = Some(row);
+    }
+
+    /// The picked conversation's row, Direct shown or not.
+    pub(crate) fn picked_dm_row(&self) -> Option<&DirectMessageItem> {
+        self.picked_dm.as_deref()
     }
 
     /// Picks no direct conversation.

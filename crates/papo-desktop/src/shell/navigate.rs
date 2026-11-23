@@ -41,6 +41,8 @@ impl Shell {
             self.icon_bytes.retain(|id, _| self.icons.contains_key(id));
         }
         self.nav.servers_changed(list);
+        // An account switch: the other account's conversation goes.
+        self.drop_unshown_dms();
         self.retain_timelines();
         self.sync_timeline(Some(tx));
         true
@@ -48,6 +50,8 @@ impl Shell {
 
     pub(crate) fn select_server(&mut self, server: ServerId, tx: &mut Tx) {
         self.worked_outside();
+        // A card's Message no longer takes the person back to Direct.
+        self.awaited_dm = None;
         self.nav.select_server(server);
         self.sync_timeline(Some(tx));
     }
@@ -64,7 +68,7 @@ impl Shell {
         self.channel_step_key(key, tx)
             || self.select_message_key(key, tx)
             || self.pins_key(key, tx)
-            || self.profile_key(key, tx)
+            || self.profile_key(key)
             || self.escape_key(key)
     }
 
@@ -88,7 +92,7 @@ impl Shell {
 
     /// Ctrl+U in a DM: its profile pane (in a channel, the members pane's
     /// key, which comes with the roles session).
-    fn profile_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+    fn profile_key(&mut self, key: &KeyEvent) -> bool {
         let mods = key.mods;
         if !key.is_command('u') || mods.shift || mods.alt || self.popup_shown() {
             return false;
@@ -96,7 +100,7 @@ impl Shell {
         if self.nav.picked_dm().is_none() {
             return false;
         }
-        self.toggle_dm_profile(tx);
+        self.toggle_dm_profile();
         true
     }
 
@@ -265,7 +269,7 @@ impl Shell {
             ..
         } = action
         {
-            self.card_ban_asked(action == PersonAction::AskBan);
+            self.card_ban_asked(action == PersonAction::AskBan, tx);
             return;
         }
         if let Some(menu) = self.nav.menu.take() {

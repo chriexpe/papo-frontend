@@ -7,7 +7,7 @@ use std::sync::Arc;
 use papo_sdk::{Generation, Presence, PresenceStatus};
 use papo_sdk_ui::{AccountActivity, DirectMessageId, DirectMessageItem, TypingItem};
 
-use super::navigation::{ana, click, named, with_servers};
+use super::navigation::{ana, click, entry, named, with_servers};
 use super::replying::{conversation, lia, resources_owned_by};
 use super::*;
 use crate::direct_list::DirectRows;
@@ -76,7 +76,11 @@ fn direct_on_the_rail_lists_the_conversations_in_the_channel_pane_with_their_ser
 fn a_row_says_the_persons_presence_and_typing_while_they_type() {
     let mut rt = direct();
     let row = dm(1, lia(), "Lia", "Lumen");
-    assert_eq!(row_label(&rt, &row), "Lia", "no presence while not live");
+    assert_eq!(
+        row_label(&rt, &row),
+        "Lia, on Lumen",
+        "no presence while not live"
+    );
     let presence = BTreeMap::from([(
         lia(),
         Presence {
@@ -106,7 +110,7 @@ fn a_row_says_the_persons_presence_and_typing_while_they_type() {
         shell.activity_posted(account, Posted::People(Arc::new(activity)), tx);
     });
     rt.frame(FRAME_S);
-    assert_eq!(row_label(&rt, &row), "Lia, Away");
+    assert_eq!(row_label(&rt, &row), "Lia, Away, on Lumen");
     // Drawn in place of the server, never spoken: it would talk over the
     // focused row each time it came and went.
     let drawn = rt
@@ -236,7 +240,10 @@ fn a_conversation_the_backend_refuses_says_so_in_the_text_pills_place() {
     });
     let id = row.id.clone();
     rt.update(move |shell, _tx| {
-        shell.dm_access.insert(id, DirectAccess::Refused);
+        shell
+            .dm_access
+            .insert(id.clone(), crate::shell::direct::Asked::Pending);
+        shell.dm_access_answered(id, Ok(DirectAccess::Refused));
     });
     rt.frame(FRAME_S);
     assert_eq!(rt.state.picked_dm_access(), Some(DirectAccess::Refused));
@@ -288,4 +295,49 @@ fn ctrl_u_shows_and_hides_a_dms_profile_pane() {
     click(&mut rt, crate::shell::profile_pane::PROFILE_BUTTON_KEY);
     rt.frame(FRAME_S);
     assert!(!pane(&rt));
+}
+
+#[test]
+fn an_answer_that_comes_after_the_conversation_is_back_in_the_list_is_dropped() {
+    use papo_sdk::operations::social::DirectAccess;
+    let mut rt = direct();
+    let row = dm(1, lia(), "Lia", "Lumen");
+    click(&mut rt, &dm_row_key(&row));
+    let id = row.id.clone();
+    rt.update(move |shell, tx| {
+        shell.direct_posted(DirectRows::new(), tx);
+        shell
+            .dm_access
+            .insert(id.clone(), crate::shell::direct::Asked::Pending);
+        shell.direct_posted([row].into_iter().collect(), tx);
+        shell.dm_access_answered(id, Ok(DirectAccess::Refused));
+    });
+    assert!(rt.state.picked_dm_access().is_none());
+}
+
+#[test]
+fn an_account_switch_drops_the_other_accounts_conversation() {
+    let mut rt = direct();
+    let row = dm(1, lia(), "Lia", "Lumen");
+    click(&mut rt, &dm_row_key(&row));
+    assert!(rt.state.navigation().picked_dm().is_some());
+    // Lumen now shows another account: Lia's conversation was Ana's.
+    rt.update(|shell, tx| {
+        let mut lumen = entry("Lumen", &["general"]);
+        let other = crate::server_list::AccountEntry {
+            id: AccountId::new(named("Lumen"), Uuid::from_u128(0x77)),
+            name: "Ana Two".to_owned(),
+            username: "ana2".to_owned(),
+        };
+        lumen.account = Some(other.clone());
+        lumen.accounts.push(other);
+        shell.servers_changed(
+            crate::server_list::ServerList {
+                servers: vec![lumen, entry("Mirante", &["avisos"])],
+                direct: crate::badges::Badge::default(),
+            },
+            tx,
+        );
+    });
+    assert!(rt.state.navigation().picked_dm_row().is_none());
 }

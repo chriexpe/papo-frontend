@@ -344,14 +344,15 @@ fn up_from_a_reply_goes_to_the_message_above_not_into_its_line() {
 fn a_click_on_a_message_leaves_the_keyboard_in_the_field() {
     let mut rt = conversation("");
     focus_composer(&mut rt);
-    let avatar = rt
+    // On its time: the avatar and the name open a card.
+    let time = rt
         .elements()
         .into_iter()
         .find(|element| {
-            element.path.contains(&message_key(message_id(4))) && element.path.ends_with("/lead")
+            element.path.contains(&message_key(message_id(4))) && element.path.ends_with("/time")
         })
-        .expect("message 4's avatar");
-    let [x, y, w, h] = avatar.rect;
+        .expect("message 4's time");
+    let [x, y, w, h] = time.rect;
     rt.pointer_down(x + w / 2.0, y + h / 2.0);
     rt.frame(FRAME_S);
     rt.pointer_up(x + w / 2.0, y + h / 2.0);

@@ -41,7 +41,7 @@ pub(crate) struct Activity {
 }
 
 impl Shell {
-    /// Takes a post of `account`'s reaction watch. Returns whether the view
+    /// Takes a post of `account`'s live watch. Returns whether the view
     /// changed.
     pub(crate) fn activity_posted(
         &mut self,
@@ -52,9 +52,17 @@ impl Shell {
         match posted {
             Posted::People(people) => {
                 self.activity.entry(account).or_default().people = Some(people);
-                // Presence and typing show wherever the account's people do:
-                // its conversations, DM rows, an open card.
-                true
+                // Presence and typing show where the account's people do: its
+                // shown conversation, its rows in Direct, an open card.
+                self.shows_account(account)
+                    || (self.nav.direct_shown()
+                        && self.direct.iter().any(|row| row.id.account == account))
+                    || self
+                        .nav
+                        .menu
+                        .as_ref()
+                        .and_then(|menu| menu.card.as_ref())
+                        .is_some_and(|card| card.key.account == account)
             }
             Posted::Quick(quick) => {
                 self.activity.entry(account).or_default().quick = quick.into();
@@ -69,7 +77,17 @@ impl Shell {
             Posted::Closed => {
                 // A conversation of a signed-out account can't stay open.
                 self.nav.account_closed(account);
-                self.activity.remove(&account).is_some()
+                if self
+                    .awaited_dm
+                    .as_ref()
+                    .is_some_and(|awaited| awaited.account == account)
+                {
+                    self.awaited_dm = None;
+                }
+                self.dm_access.retain(|id, _| id.account != account);
+                self.sync_timeline(Some(tx));
+                self.activity.remove(&account);
+                true
             }
         }
     }

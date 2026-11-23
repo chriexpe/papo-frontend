@@ -293,7 +293,14 @@ impl Shell {
         let flash_ended = self.poll_flash(clock_s);
         let notice_ended = self.poll_notice(clock_s);
         let list_closed = self.poll_reactions();
-        restored || copied_ended || new_day || flash_ended || notice_ended || list_closed
+        let card_closed = self.poll_card();
+        restored
+            || copied_ended
+            || new_day
+            || flash_ended
+            || notice_ended
+            || list_closed
+            || card_closed
     }
 
     /// Keeps `today` current: checks once the local day should have ended,

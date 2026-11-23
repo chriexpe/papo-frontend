@@ -12,10 +12,11 @@ use super::{I18N, Key, catalog};
 /// A presence's name: "Away".
 pub(crate) fn presence(mark: PresenceMark) -> &'static str {
     match mark {
-        PresenceMark::Available => text!("presence.available"),
         PresenceMark::Away => text!("presence.away"),
         PresenceMark::Busy => text!("presence.busy"),
         PresenceMark::Offline => text!("presence.offline"),
+        // Available, and a mark this client does not know yet: connected.
+        _ => text!("presence.available"),
     }
 }
 
@@ -70,13 +71,15 @@ pub(crate) fn direct_title_label(name: &str, server: &str) -> String {
 /// are typing…", "Lia, Yuki and Caio are typing…", then "Several people
 /// are typing…". Empty with nobody.
 pub(crate) fn typing_line(names: &[&str], phrase: Option<&str>) -> (String, Vec<Range<usize>>) {
-    // Each name goes in as a private-use marker, so it is found again in
-    // any translation's order without matching the words around it.
-    const MARKERS: [&str; 3] = ["\u{E000}", "\u{E001}", "\u{E002}"];
+    // Each name, and the phrase, goes in as a private-use marker, so it is
+    // found again in any translation's order without matching the words
+    // around it; nothing from the server is scanned for markers.
+    const MARKERS: [&str; 4] = ["\u{E000}", "\u{E001}", "\u{E002}", "\u{E003}"];
+    const PHRASE: usize = 3;
     let line = match (names, phrase) {
         ([], _) => return (String::new(), Vec::new()),
-        ([_], Some(phrase)) => {
-            template!("typing.one_phrase", "name" => MARKERS[0], "phrase" => phrase)
+        ([_], Some(_)) => {
+            template!("typing.one_phrase", "name" => MARKERS[0], "phrase" => MARKERS[PHRASE])
         }
         ([_], None) => template!("typing.one", "name" => MARKERS[0]),
         ([_, _], _) => template!("typing.two", "first" => MARKERS[0], "second" => MARKERS[1]),
@@ -98,9 +101,13 @@ pub(crate) fn typing_line(names: &[&str], phrase: Option<&str>) -> (String, Vec<
         .min()
     {
         filled.push_str(&rest[..at]);
-        let start = filled.len();
-        filled.push_str(names[index]);
-        ranges.push(start..filled.len());
+        if index == PHRASE {
+            filled.push_str(phrase.unwrap_or_default());
+        } else {
+            let start = filled.len();
+            filled.push_str(names.get(index).copied().unwrap_or_default());
+            ranges.push(start..filled.len());
+        }
         rest = &rest[at + MARKERS[index].len()..];
     }
     filled.push_str(rest);

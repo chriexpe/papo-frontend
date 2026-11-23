@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use imbl::Vector;
-use papo_sdk::{ClientHandle, Session};
+use papo_sdk::{AccountId, ClientHandle, RegistrySnapshot, Session};
 use papo_sdk_ui::{DirectMessageItem, DirectMessageService};
 
 use crate::sdk_bridge::Updates;
@@ -31,12 +31,10 @@ pub(crate) async fn run<S: 'static>(
     let mut registry_changes = client.subscribe_registry();
     loop {
         sessions.borrow_and_update();
-        let registry = Arc::clone(&registry_changes.borrow_and_update());
-        let open: Vec<Session> = registry
-            .servers
+        let accounts = shown_accounts(&registry_changes.borrow_and_update());
+        let open: Vec<Session> = accounts
             .iter()
-            .filter_map(|server| shown_account(&registry.accounts, server.address.id()))
-            .filter_map(|account| client.session(account.id).ok())
+            .filter_map(|account| client.session(*account).ok())
             .collect();
         let subscription = DirectMessageService::new(open).subscribe();
         let mut rows = subscription.snapshot;
@@ -48,19 +46,23 @@ pub(crate) async fn run<S: 'static>(
         post(&rows);
         loop {
             tokio::select! {
-                // A session opened or closed, or a server's shown account
-                // changed: the service is bound to the sessions it got.
+                // A session opened or closed: the service is bound to the
+                // sessions it got.
                 changed = sessions.changed() => {
                     if changed.is_err() {
                         return;
                     }
                     break;
                 }
+                // A registry change matters only when it changes which
+                // account a server shows (a switch, an added server).
                 changed = registry_changes.changed() => {
                     if changed.is_err() {
                         return;
                     }
-                    break;
+                    if shown_accounts(&registry_changes.borrow_and_update()) != accounts {
+                        break;
+                    }
                 }
                 update = list_updates.next() => {
                     let Some(update) = update else {
@@ -76,4 +78,14 @@ pub(crate) async fn run<S: 'static>(
             }
         }
     }
+}
+
+/// Each server's shown account, in the rail's order.
+fn shown_accounts(registry: &RegistrySnapshot) -> Vec<AccountId> {
+    registry
+        .servers
+        .iter()
+        .filter_map(|server| shown_account(&registry.accounts, server.address.id()))
+        .map(|account| account.id)
+        .collect()
 }
