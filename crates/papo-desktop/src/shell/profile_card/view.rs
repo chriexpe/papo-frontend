@@ -11,9 +11,9 @@ use rune::{El, col, el, icon, row, text};
 
 use super::super::Shell;
 use crate::design::{
-    AVATAR_CARD, FOCUS_RING_PT, MENU_ROW_HEIGHT_PT, Palette, RADIUS_CONTROL_PT, ROW_ICON_PT,
-    SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_STRONG, TYPE_CAPTION,
-    TYPE_CAPTION_MEDIUM, TYPE_DISPLAY, TYPE_SMALL,
+    AVATAR_CARD, FOCUS_RING_PT, Look, MENU_ROW_HEIGHT_PT, RADIUS_CONTROL, ROW_ICON_PT, SPACE_LG,
+    SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
+    TYPE_DISPLAY, TYPE_SMALL,
 };
 use crate::icons::{BAN, BLOCK, DIRECT, ID};
 use crate::menu::{MenuAction, MenuItem, PersonAction, item_row};
@@ -87,7 +87,7 @@ impl PersonFacts {
 
 /// The open card, drawn; none while no card is open or its conversation
 /// is no longer shown (`poll_card` closes it).
-pub(in crate::shell) fn body(shell: &Shell, palette: &Palette) -> Option<El> {
+pub(in crate::shell) fn body(shell: &Shell, look: &Look) -> Option<El> {
     let card = shell.nav.menu.as_ref()?.card.as_ref()?;
     let facts = PersonFacts::of(shell, card.key, card.user)?;
     let resources = shell.shown_timeline(card.key)?.resources.as_deref()?;
@@ -106,43 +106,47 @@ pub(in crate::shell) fn body(shell: &Shell, palette: &Palette) -> Option<El> {
             .w_full()
             .role("group")
             .label(strings::card_label(&facts.name))
-            .children(header(&facts, true, palette))
-            .children(sections(&facts, Order::Card, palette))
-            .child(el().h(SPACE_MD_PT))
-            .children(actions.view(&facts.name, &facts.server, palette)),
+            .children(header(&facts, true, look))
+            .children(sections(&facts, Order::Card, look))
+            .child(el().h(look.space(SPACE_MD)))
+            .children(actions.view(&facts.name, &facts.server, look)),
     )
 }
 
 /// The top: the avatar with presence and, when `status` says so, the
 /// status bubble; then the name and @handle.
-pub(in crate::shell) fn header(facts: &PersonFacts, status: bool, palette: &Palette) -> [El; 2] {
+pub(in crate::shell) fn header(facts: &PersonFacts, status: bool, look: &Look) -> [El; 2] {
     let mut top = row()
         .w_full()
-        .px(SPACE_LG_PT)
-        .pt(SPACE_LG_PT)
-        .gap(SPACE_MD_PT)
+        .px(look.space(SPACE_LG))
+        .pt(look.space(SPACE_LG))
+        .gap(look.space(SPACE_MD))
         .items_end()
         .child(person_avatar(
             &facts.name,
             AVATAR_CARD,
             facts.presence,
-            palette.surface_pill,
-            palette,
+            look.palette.surface_pill,
+            look,
         ));
     if let Some(phrase) = facts.status.as_deref().filter(|_| status) {
-        top = top.child(bubble(phrase, palette));
+        top = top.child(bubble(phrase, look));
     }
-    let mut who = col().w_full().px(SPACE_LG_PT).pt(SPACE_SM_PT).child(
-        text(facts.name.clone())
-            .font(TYPE_DISPLAY)
-            .color(palette.text_primary)
-            .max_lines(1),
-    );
+    let mut who = col()
+        .w_full()
+        .px(look.space(SPACE_LG))
+        .pt(look.space(SPACE_SM))
+        .child(
+            text(facts.name.clone())
+                .font(look.font(TYPE_DISPLAY))
+                .color(look.palette.text_primary)
+                .max_lines(1),
+        );
     if let Some(username) = &facts.username {
         who = who.child(
             text(format!("@{username}"))
-                .font(TYPE_SMALL)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted)
                 .max_lines(1),
         );
     }
@@ -159,7 +163,7 @@ pub(in crate::shell) enum Order {
 
 /// Roles, About and "Member since", each only when there is something to
 /// say, in `order`'s order.
-pub(in crate::shell) fn sections(facts: &PersonFacts, order: Order, palette: &Palette) -> Vec<El> {
+pub(in crate::shell) fn sections(facts: &PersonFacts, order: Order, look: &Look) -> Vec<El> {
     let roles = (!facts.roles.is_empty()).then(|| {
         let heading = match order {
             Order::Card => strings::card_roles().to_owned(),
@@ -169,28 +173,31 @@ pub(in crate::shell) fn sections(facts: &PersonFacts, order: Order, palette: &Pa
             &heading,
             row()
                 .w_full()
-                .gap(SPACE_SM_PT)
+                .gap(look.space(SPACE_SM))
                 .wrap()
-                .children(facts.roles.iter().map(|role| role_chip(role, palette))),
-            palette,
+                .children(facts.roles.iter().map(|role| role_chip(role, look))),
+            look,
         )
     });
     let about = facts.about.as_deref().map(|about| {
         section(
             strings::card_about(),
             text(about.to_owned())
-                .font(TYPE_SMALL)
-                .color(palette.text_secondary)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_secondary)
                 .w_full(),
-            palette,
+            look,
         )
     });
     let since = facts.since.as_deref().map(|since| {
-        el().w_full().px(SPACE_LG_PT).pt(SPACE_MD_PT).child(
-            text(strings::card_member_since(since))
-                .font(TYPE_CAPTION)
-                .color(palette.text_muted),
-        )
+        el().w_full()
+            .px(look.space(SPACE_LG))
+            .pt(look.space(SPACE_MD))
+            .child(
+                text(strings::card_member_since(since))
+                    .font(look.font(TYPE_CAPTION))
+                    .color(look.palette.text_muted),
+            )
     });
     let ordered = match order {
         Order::Card => [roles, about, since],
@@ -200,48 +207,48 @@ pub(in crate::shell) fn sections(facts: &PersonFacts, order: Order, palette: &Pa
 }
 
 /// The status phrase in a bubble beside the avatar.
-fn bubble(status: &str, palette: &Palette) -> El {
-    el().mb(SPACE_SM_PT)
-        .px(SPACE_MD_PT)
-        .py(SPACE_SM_PT)
-        .radius(RADIUS_CONTROL_PT)
-        .fill(palette.surface_content)
-        .border(1.0, palette.line_subtle)
+fn bubble(status: &str, look: &Look) -> El {
+    el().mb(look.space(SPACE_SM))
+        .px(look.space(SPACE_MD))
+        .py(look.space(SPACE_SM))
+        .radius(look.radius(RADIUS_CONTROL))
+        .fill(look.palette.surface_content)
+        .border(1.0, look.palette.line_subtle)
         .min_w(0.0)
         .child(
             text(status.to_owned())
-                .font(TYPE_SMALL)
-                .color(palette.text_secondary)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_secondary)
                 .max_lines(2),
         )
 }
 
 /// A titled section: its heading in capitals' place, then `body`.
-fn section(heading: &str, body: El, palette: &Palette) -> El {
+fn section(heading: &str, body: El, look: &Look) -> El {
     col()
         .w_full()
-        .px(SPACE_LG_PT)
-        .pt(SPACE_MD_PT)
-        .gap(SPACE_SM_PT)
+        .px(look.space(SPACE_LG))
+        .pt(look.space(SPACE_MD))
+        .gap(look.space(SPACE_SM))
         .child(
             text(heading.to_uppercase())
-                .font(TYPE_CAPTION_MEDIUM)
-                .color(palette.text_muted),
+                .font(look.font(TYPE_CAPTION_MEDIUM))
+                .color(look.palette.text_muted),
         )
         .child(body)
 }
 
 /// A role's chip. Role colours come with their slice.
-fn role_chip(role: &str, palette: &Palette) -> El {
-    el().px(SPACE_SM_PT)
-        .py(SPACE_SM_PT / 2.0)
-        .radius(RADIUS_CONTROL_PT)
-        .fill(palette.surface_content)
-        .border(1.0, palette.line_subtle)
+fn role_chip(role: &str, look: &Look) -> El {
+    el().px(look.space(SPACE_SM))
+        .py(look.space(SPACE_SM) / 2.0)
+        .radius(look.radius(RADIUS_CONTROL))
+        .fill(look.palette.surface_content)
+        .border(1.0, look.palette.line_subtle)
         .child(
             text(role.to_owned())
-                .font(TYPE_CAPTION)
-                .color(palette.text_secondary),
+                .font(look.font(TYPE_CAPTION))
+                .color(look.palette.text_secondary),
         )
 }
 
@@ -257,10 +264,10 @@ struct Actions {
 }
 
 impl Actions {
-    fn view(&self, name: &str, server: &str, palette: &Palette) -> Vec<El> {
+    fn view(&self, name: &str, server: &str, look: &Look) -> Vec<El> {
         let mut rows = Vec::new();
         if self.block.is_some() {
-            rows.push(self.message_button(palette));
+            rows.push(self.message_button(look));
         }
         let copy_id = PersonAction::CopyId;
         let mut items = vec![
@@ -285,9 +292,9 @@ impl Actions {
                     .with_icon(&BAN),
             );
         }
-        rows.extend(items.iter().map(|item| item_row(item, false, palette)));
+        rows.extend(items.iter().map(|item| item_row(item, false, look)));
         if self.ban == Some(true) {
-            rows.push(self.ban_question(name, server, palette));
+            rows.push(self.ban_question(name, server, look));
         }
         rows
     }
@@ -306,7 +313,7 @@ impl Actions {
     }
 
     /// Message, the accent button: it starts something.
-    fn message_button(&self, palette: &Palette) -> El {
+    fn message_button(&self, look: &Look) -> El {
         let action = MenuAction::Person {
             key: self.key,
             user: self.user,
@@ -316,28 +323,28 @@ impl Actions {
             .key(MESSAGE_KEY)
             .w_full()
             .h(MENU_ROW_HEIGHT_PT)
-            .mb(SPACE_SM_PT)
-            .gap(SPACE_SM_PT)
+            .mb(look.space(SPACE_SM))
+            .gap(look.space(SPACE_SM))
             .center()
-            .radius(RADIUS_CONTROL_PT)
-            .fill(palette.accent)
+            .radius(look.radius(RADIUS_CONTROL))
+            .fill(look.palette.accent)
             .role("button")
             .label(strings::card_message())
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
             .on_press_tx(move |shell: &mut Shell, tx| shell.menu_picked(action.clone(), tx))
-            .child(icon(&DIRECT, ROW_ICON_PT).color(palette.accent_on))
+            .child(icon(&DIRECT, ROW_ICON_PT).color(look.palette.accent_on))
             .child(
                 text(strings::card_message())
-                    .font(TYPE_BODY_STRONG)
-                    .color(palette.accent_on)
+                    .font(look.font(TYPE_BODY_STRONG))
+                    .color(look.palette.accent_on)
                     .a11y_hidden(),
             )
     }
 
     /// "Ban Lia from Cyber Asilo?", unframed, with Cancel and Ban on the
     /// right.
-    fn ban_question(&self, name: &str, server: &str, palette: &Palette) -> El {
+    fn ban_question(&self, name: &str, server: &str, look: &Look) -> El {
         let button = |key: &str, label: &str, action: PersonAction, danger: bool| {
             let action = MenuAction::Person {
                 key: self.key,
@@ -345,43 +352,43 @@ impl Actions {
                 action,
             };
             let (fill, ink) = if danger {
-                (palette.danger, palette.accent_on)
+                (look.palette.danger, look.palette.accent_on)
             } else {
-                (palette.surface_hover, palette.text_primary)
+                (look.palette.surface_hover, look.palette.text_primary)
             };
             row()
                 .key(key.to_owned())
-                .px(SPACE_MD_PT)
-                .py(SPACE_SM_PT)
-                .radius(RADIUS_CONTROL_PT)
+                .px(look.space(SPACE_MD))
+                .py(look.space(SPACE_SM))
+                .radius(look.radius(RADIUS_CONTROL))
                 .fill(fill)
                 .role("button")
                 .label(label.to_owned())
                 .focusable(true)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
                 .on_press_tx(move |shell: &mut Shell, tx| shell.menu_picked(action.clone(), tx))
                 .child(
                     text(label.to_owned())
-                        .font(TYPE_BODY)
+                        .font(look.font(TYPE_BODY))
                         .color(ink)
                         .a11y_hidden(),
                 )
         };
         col()
             .w_full()
-            .px(SPACE_LG_PT)
-            .py(SPACE_SM_PT)
-            .gap(SPACE_SM_PT)
+            .px(look.space(SPACE_LG))
+            .py(look.space(SPACE_SM))
+            .gap(look.space(SPACE_SM))
             .child(
                 text(strings::card_ban_ask(name, server))
-                    .font(TYPE_BODY)
-                    .color(palette.text_primary)
+                    .font(look.font(TYPE_BODY))
+                    .color(look.palette.text_primary)
                     .w_full(),
             )
             .child(
                 row()
                     .w_full()
-                    .gap(SPACE_SM_PT)
+                    .gap(look.space(SPACE_SM))
                     .justify_end()
                     .child(button(
                         BAN_CANCEL_KEY,

@@ -13,8 +13,8 @@ use super::doc::Run;
 use super::inline::text_key;
 use crate::design::{
     CHIP_ICON_PT, CODE_BLOCK_MAX_LINES, CODE_BLOCK_OUTLINE_PT, CODE_BLOCK_PAD_PT,
-    CODE_BLOCK_RADIUS_PT, CODE_LABEL_GAP_PT, COPY_BUTTON_HEIGHT_PT, COPY_BUTTON_INSET_PT,
-    COPY_BUTTON_PAD_PT, COPY_BUTTON_RADIUS_PT, CodeInk, FOCUS_RING_PT, Palette, SPACE_XS_PT,
+    CODE_BLOCK_RADIUS, CODE_LABEL_GAP, COPY_BUTTON_HEIGHT_PT, COPY_BUTTON_INSET_PT,
+    COPY_BUTTON_PAD_PT, COPY_BUTTON_RADIUS, CodeInk, FOCUS_RING_PT, Look, SPACE_XS,
     TYPE_CAPTION_MEDIUM, TYPE_CODE_BLOCK, TYPE_SMALL,
 };
 use crate::icons::CHECK;
@@ -28,32 +28,32 @@ thread_local! {
 
 /// The code block whose code is `run`, fenced as `language`.
 pub(super) fn block<S: TimelineHost>(language: Option<&str>, run: &Run, draw: &Draw<'_>) -> El {
-    let palette = draw.palette;
-    let spans = highlight(language, &run.text, palette);
+    let look = draw.look;
+    let spans = highlight(language, &run.text, look);
     let code = rich(run.text.clone(), spans)
         .key(text_key(run.index))
-        .font(TYPE_CODE_BLOCK)
-        .color(palette.text_primary)
+        .font(look.font(TYPE_CODE_BLOCK))
+        .color(look.palette.text_primary)
         .selectable(true)
-        .selection_color(palette.text_selection);
+        .selection_color(look.palette.text_selection);
     let lines = col()
         .key("lines")
         .w_full()
-        .max_h(TYPE_CODE_BLOCK.line_height * CODE_BLOCK_MAX_LINES)
+        .max_h(look.font(TYPE_CODE_BLOCK).line_height * CODE_BLOCK_MAX_LINES)
         .scroll_xy()
         // The keyboard scrolls it once focused.
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .child(code);
-    let mut inside = col().w_full().gap(CODE_LABEL_GAP_PT);
+    let mut inside = col().w_full().gap(look.space(CODE_LABEL_GAP));
     // A fence that names no language gets no label: the client never
     // guesses.
     if let Some(language) = language {
         inside = inside.child(
             text(language.to_owned())
                 .key("language")
-                .font(TYPE_SMALL)
-                .color(palette.text_muted),
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted),
         );
     }
     let copied = draw.copied == Some(run.index);
@@ -63,9 +63,9 @@ pub(super) fn block<S: TimelineHost>(language: Option<&str>, run: &Run, draw: &D
         .w_full()
         .py(vertical)
         .px(horizontal)
-        .radius(CODE_BLOCK_RADIUS_PT)
-        .fill(palette.surface_code)
-        .border(CODE_BLOCK_OUTLINE_PT, palette.line_subtle)
+        .radius(look.radius(CODE_BLOCK_RADIUS))
+        .fill(look.palette.surface_code)
+        .border(CODE_BLOCK_OUTLINE_PT, look.palette.line_subtle)
         .hover_group()
         .child(inside.child(lines))
         .child(copy_button::<S>(run, draw, copied))
@@ -74,7 +74,7 @@ pub(super) fn block<S: TimelineHost>(language: Option<&str>, run: &Run, draw: &D
 /// "Copy" in the block's top-right corner, ✓ "Copied" for a moment after
 /// a press.
 fn copy_button<S: TimelineHost>(run: &Run, draw: &Draw<'_>, copied: bool) -> El {
-    let palette = draw.palette;
+    let look = draw.look;
     let (key, message, index) = (draw.key, draw.message, run.index);
     let code = run.text.clone();
     let label = if copied {
@@ -93,23 +93,23 @@ fn copy_button<S: TimelineHost>(run: &Run, draw: &Draw<'_>, copied: bool) -> El 
         .h(COPY_BUTTON_HEIGHT_PT)
         .px(COPY_BUTTON_PAD_PT)
         .center()
-        .radius(COPY_BUTTON_RADIUS_PT)
-        .fill(palette.surface_pill)
-        .border(CODE_BLOCK_OUTLINE_PT, palette.line_strong)
+        .radius(look.radius(COPY_BUTTON_RADIUS))
+        .fill(look.palette.surface_pill)
+        .border(CODE_BLOCK_OUTLINE_PT, look.palette.line_strong)
         .role("button")
         .label(strings::copy_code_label())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press_tx(move |host: &mut S, tx| {
             tx.copy(code.clone());
             host.code_copied(key, message, index, tx);
         })
-        .gap(SPACE_XS_PT)
-        .children(copied.then(|| icon(&CHECK, CHIP_ICON_PT).color(palette.text_secondary)))
+        .gap(look.space(SPACE_XS))
+        .children(copied.then(|| icon(&CHECK, CHIP_ICON_PT).color(look.palette.text_secondary)))
         .child(
             text(label)
-                .font(TYPE_CAPTION_MEDIUM)
-                .color(palette.text_secondary),
+                .font(look.font(TYPE_CAPTION_MEDIUM))
+                .color(look.palette.text_secondary),
         );
     if copied {
         button
@@ -120,7 +120,7 @@ fn copy_button<S: TimelineHost>(run: &Run, draw: &Draw<'_>, copied: bool) -> El 
 
 /// `code`'s token colours as `language` lexes it; none for a language the
 /// highlighter does not know.
-fn highlight(language: Option<&str>, code: &str, palette: &Palette) -> Vec<Span> {
+fn highlight(language: Option<&str>, code: &str, look: &Look) -> Vec<Span> {
     let Some(lang) = language.and_then(Lang::from_name) else {
         return Vec::new();
     };
@@ -128,7 +128,7 @@ fn highlight(language: Option<&str>, code: &str, palette: &Palette) -> Vec<Span>
     tokens
         .into_iter()
         .filter_map(|(range, token)| {
-            let colour = token_colour(token, &palette.code, palette)?;
+            let colour = token_colour(token, &look.palette.code, look)?;
             Some(Span::new(range.start, range.end).color(colour))
         })
         .collect()
@@ -136,7 +136,7 @@ fn highlight(language: Option<&str>, code: &str, palette: &Palette) -> Vec<Span>
 
 /// The colour of `token` (Zed's capture names); none leaves it
 /// `text.primary`.
-fn token_colour(token: Token, ink: &CodeInk, palette: &Palette) -> Option<rune::Color> {
+fn token_colour(token: Token, ink: &CodeInk, look: &Look) -> Option<rune::Color> {
     let name = token.name();
     let family = name.split('.').next().unwrap_or(name);
     match family {
@@ -145,7 +145,7 @@ fn token_colour(token: Token, ink: &CodeInk, palette: &Palette) -> Option<rune::
         "number" | "constant" | "boolean" => Some(ink.number),
         "type" | "enum" | "variant" | "constructor" => Some(ink.type_name),
         "function" => Some(ink.function),
-        "comment" => Some(palette.text_muted),
+        "comment" => Some(look.palette.text_muted),
         _ => None,
     }
 }

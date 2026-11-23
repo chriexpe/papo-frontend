@@ -14,8 +14,7 @@ use rune::{El, GrowthSpec, KeyEvent, ScrollSpec, col, el, memo, row, text};
 use super::Shell;
 use super::search::{Found, Paging, SEARCH_FIELD_KEY, Search, hit_row_key};
 use crate::design::{
-    FOCUS_RING_PT, Palette, RADIUS_CONTROL_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_CAPTION,
-    TYPE_SMALL,
+    FOCUS_RING_PT, Look, RADIUS_CONTROL, SPACE_LG, SPACE_MD, SPACE_SM, TYPE_CAPTION, TYPE_SMALL,
 };
 use crate::strings;
 use crate::timeline::standalone::standalone_hit;
@@ -31,6 +30,7 @@ pub(super) fn hits(search: &Search, style: &Style, max_height_pt: f32) -> El {
     let Found::Ready(results) = &search.found else {
         return el();
     };
+    let look = &style.look;
     let tail = usize::from(search.paging != Paging::Idle);
     let count = results.items().len() + tail;
     let row_style = style.clone();
@@ -41,8 +41,8 @@ pub(super) fn hits(search: &Search, style: &Style, max_height_pt: f32) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .px(SPACE_SM_PT)
-        .pb(SPACE_SM_PT)
+        .px(look.space(SPACE_SM))
+        .pb(look.space(SPACE_SM))
         .child(
             col()
                 .key("search-rows")
@@ -74,7 +74,7 @@ pub(super) fn hits(search: &Search, style: &Style, max_height_pt: f32) -> El {
 /// Result `index`, under its channel's line when that differs from the
 /// result above; past the last, the next page's skeleton.
 fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
-    let palette = style.palette;
+    let look = style.look;
     let (Some(open), Some(search), Some(results)) = (
         shell.tabs.shown(),
         shell.shown_search(),
@@ -84,14 +84,14 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
     };
     let Some(item) = results.items().get(index) else {
         if search.paging == Paging::Failed {
-            return page_failed(&palette);
+            return page_failed(&look);
         }
         return el()
             .w_full()
-            .h(ESTIMATED_HIT_PT - SPACE_SM_PT)
-            .my(SPACE_SM_PT / 2.0)
-            .radius(RADIUS_CONTROL_PT)
-            .fill(palette.surface_hover)
+            .h(ESTIMATED_HIT_PT - look.space(SPACE_SM))
+            .my(look.space(SPACE_SM) / 2.0)
+            .radius(look.radius(RADIUS_CONTROL))
+            .fill(look.palette.surface_hover)
             .busy(true)
             .label(strings::search_loading());
     };
@@ -121,12 +121,12 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
         let mut line = col()
             .key(hit_row_key(id))
             .w_full()
-            .padding(SPACE_LG_PT)
-            .radius(RADIUS_CONTROL_PT)
+            .padding(look.space(SPACE_LG))
+            .radius(look.radius(RADIUS_CONTROL))
             .role("listitem")
             .label(strings::search_jump())
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
             .on_press(move |shell: &mut Shell| shell.open_hit(id, false))
             .on_key(
                 move |shell: &mut Shell, event: &KeyEvent, tx| match event.key {
@@ -144,25 +144,25 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
             )
             .child(shown);
         line = if marked {
-            line.fill(palette.surface_selected)
+            line.fill(look.palette.surface_selected)
         } else {
-            line.hover(palette.surface_hover)
+            line.hover(look.palette.surface_hover)
         };
         col()
             .w_full()
             .children(channel_line.map(|name| {
                 text(format!("#{name}"))
-                    .font(TYPE_CAPTION)
-                    .color(palette.text_muted)
-                    .px(SPACE_LG_PT)
-                    .pt(SPACE_SM_PT)
+                    .font(look.font(TYPE_CAPTION))
+                    .color(look.palette.text_muted)
+                    .px(look.space(SPACE_LG))
+                    .pt(look.space(SPACE_SM))
             }))
             .child(line)
     })
 }
 
 /// The opened result in one line, on `highlight.selected`.
-pub(super) fn peek_line(open: &OpenTimeline, search: &Search, palette: &Palette) -> Option<El> {
+pub(super) fn peek_line(open: &OpenTimeline, search: &Search, look: &Look) -> Option<El> {
     let id = search.opened?;
     let Found::Ready(results) = &search.found else {
         return None;
@@ -173,22 +173,22 @@ pub(super) fn peek_line(open: &OpenTimeline, search: &Search, palette: &Palette)
         message: Arc::new(item.message.clone()),
         content: Arc::clone(&item.content),
     };
-    super::pins_panel::peek_row(&original, open, palette)
+    super::pins_panel::peek_row(&original, open, look)
 }
 
 /// The next page failed: "Couldn't search. Try again" past the last result.
-fn page_failed(palette: &Palette) -> El {
+fn page_failed(look: &Look) -> El {
     row()
         .key("search-page-failed")
         .w_full()
-        .px(SPACE_LG_PT)
-        .py(SPACE_MD_PT)
-        .gap(SPACE_SM_PT)
+        .px(look.space(SPACE_LG))
+        .py(look.space(SPACE_MD))
+        .gap(look.space(SPACE_SM))
         .center_y()
         .child(
             text(strings::search_failed())
-                .font(TYPE_SMALL)
-                .color(palette.danger)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.danger)
                 .role("alert"),
         )
         .child(
@@ -197,12 +197,12 @@ fn page_failed(palette: &Palette) -> El {
                 .role("button")
                 .label(strings::search_retry())
                 .focusable(true)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
                 .on_press(|shell: &mut Shell| shell.search_page_retry())
                 .child(
                     text(strings::search_retry())
-                        .font(TYPE_SMALL)
-                        .color(palette.link),
+                        .font(look.font(TYPE_SMALL))
+                        .color(look.palette.link),
                 ),
         )
 }

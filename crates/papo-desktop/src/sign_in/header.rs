@@ -7,34 +7,33 @@
 use rune::{El, LiveRegion, col, el, text};
 
 use crate::design::{
-    Palette, RADIUS_SERVER_ICON_PT, SERVER_ICON_PT, SPACE_SM_PT, TYPE_CAPTION, TYPE_DISPLAY,
-    TYPE_SMALL,
+    Look, RADIUS_SERVER_ICON, SERVER_ICON_PT, SPACE_SM, TYPE_CAPTION, TYPE_DISPLAY, TYPE_SMALL,
 };
 use crate::strings;
 
 use super::{AccountForm, Form, Server};
 
 /// The server's icon, name and address, centred, with the notice under them.
-pub(super) fn server_header(server: &Server, form: Form, palette: &Palette) -> El {
+pub(super) fn server_header(server: &Server, form: Form, look: &Look) -> El {
     let icon = match &server.icon {
         Some(image) => el()
             .size(SERVER_ICON_PT, SERVER_ICON_PT)
-            .radius(RADIUS_SERVER_ICON_PT)
+            .radius(look.radius(RADIUS_SERVER_ICON))
             .pixels(image.pixels())
             .a11y_hidden(),
-        None => initial(&server.name, palette),
+        None => initial(&server.name, look),
     };
     let mut header = col()
         .key("server")
         .w_full()
         .items_center()
-        .gap(SPACE_SM_PT)
+        .gap(look.space(SPACE_SM))
         .child(icon)
-        .child(title(&server.name, palette))
+        .child(title(&server.name, look))
         .child(
             text(server.address.as_str())
-                .font(TYPE_CAPTION)
-                .color(palette.text_muted),
+                .font(look.font(TYPE_CAPTION))
+                .color(look.palette.text_muted),
         );
     let notice = match form {
         Form::Unlock { lapsed: true, .. } => Some(strings::notice_access_expired()),
@@ -47,8 +46,8 @@ pub(super) fn server_header(server: &Server, form: Form, palette: &Palette) -> E
         header = header.child(
             text(notice)
                 .key("notice")
-                .font(TYPE_SMALL)
-                .color(palette.warning)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.warning)
                 .role("status")
                 .live_region(LiveRegion::Polite),
         );
@@ -57,7 +56,7 @@ pub(super) fn server_header(server: &Server, form: Form, palette: &Palette) -> E
 }
 
 /// A server without an icon: the first letter of its name.
-fn initial(name: &str, palette: &Palette) -> El {
+fn initial(name: &str, look: &Look) -> El {
     let letter: String = name
         .chars()
         .next()
@@ -66,21 +65,21 @@ fn initial(name: &str, palette: &Palette) -> El {
         .collect();
     el().size(SERVER_ICON_PT, SERVER_ICON_PT)
         .center()
-        .radius(RADIUS_SERVER_ICON_PT)
-        .fill(palette.surface_code)
+        .radius(look.radius(RADIUS_SERVER_ICON))
+        .fill(look.palette.surface_code)
         .a11y_hidden()
         .child(
             text(letter)
-                .font(TYPE_DISPLAY)
-                .color(palette.text_secondary),
+                .font(look.font(TYPE_DISPLAY))
+                .color(look.palette.text_secondary),
         )
 }
 
-pub(super) fn title(words: &str, palette: &Palette) -> El {
+pub(super) fn title(words: &str, look: &Look) -> El {
     text(words)
         .key("title")
-        .font(TYPE_DISPLAY)
-        .color(palette.text_primary)
+        .font(look.font(TYPE_DISPLAY))
+        .color(look.palette.text_primary)
         .role("heading")
         .level(2)
 }

@@ -9,9 +9,9 @@ use rune::{El, LiveRegion, LoopSpec, TextEdit, TextStyle, col, el, icon, row, te
 
 use crate::design::{
     BUTTON_DISABLED_OPACITY, FIELD_BUSY_OPACITY, FIELD_BUTTON_HEIGHT_PT, FIELD_HEIGHT_PT,
-    FIELD_OUTLINE_PT, FOCUS_RING_PT, Palette, RADIUS_CONTROL_PT, RADIUS_FIELD_PT, SPACE_LG_PT,
-    SPACE_MD_PT, SPACE_SM_PT, SPINNER_PERIOD_S, SPINNER_PT, TYPE_BODY, TYPE_BODY_STRONG,
-    TYPE_SMALL, TYPE_SMALL_MEDIUM,
+    FIELD_OUTLINE_PT, FOCUS_RING_PT, Look, RADIUS_CONTROL, RADIUS_FIELD, SPACE_LG, SPACE_MD,
+    SPACE_SM, SPINNER_PERIOD_S, SPINNER_PT, TYPE_BODY, TYPE_BODY_STRONG, TYPE_SMALL,
+    TYPE_SMALL_MEDIUM,
 };
 use crate::icons::SPINNER;
 use crate::shell::Shell;
@@ -35,24 +35,24 @@ pub(crate) struct Field<'a> {
 }
 
 /// The label above a field.
-pub(crate) fn label(label: &'static str, palette: &Palette) -> El {
+pub(crate) fn label(label: &'static str, look: &Look) -> El {
     text(label)
-        .font(TYPE_SMALL_MEDIUM)
-        .color(palette.text_secondary)
+        .font(look.font(TYPE_SMALL_MEDIUM))
+        .color(look.palette.text_secondary)
         .a11y_hidden()
 }
 
 /// A labelled field: the label above it, and the field's own outline.
-pub(crate) fn field(field: &Field, placeholder: Option<&'static str>, palette: &Palette) -> El {
-    let mut input = input(field, palette);
+pub(crate) fn field(field: &Field, placeholder: Option<&'static str>, look: &Look) -> El {
+    let mut input = input(field, look);
     if let Some(placeholder) = placeholder {
-        input = input.placeholder(placeholder, palette.text_muted);
+        input = input.placeholder(placeholder, look.palette.text_muted);
     }
     col()
         .w_full()
-        .gap(SPACE_MD_PT)
-        .child(label(field.label, palette))
-        .child(frame(field, palette).child(input))
+        .gap(look.space(SPACE_MD))
+        .child(label(field.label, look))
+        .child(frame(field, look).child(input))
 }
 
 /// A password field: the label, then the field with Show or Hide at its end.
@@ -61,7 +61,7 @@ pub(crate) fn password_field(
     field: &Field,
     shown: bool,
     toggle: fn(&mut Shell),
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     let (word, spoken) = if shown {
         (strings::hide(), strings::hide_password())
@@ -71,41 +71,41 @@ pub(crate) fn password_field(
     let reveal = row()
         .key(format!("{}-reveal", field.key))
         .h(FIELD_BUTTON_HEIGHT_PT)
-        .px(SPACE_MD_PT)
+        .px(look.space(SPACE_MD))
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
+        .radius(look.radius(RADIUS_CONTROL))
         .role("button")
         .label(spoken)
         .focusable(!field.busy)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(toggle)
         .child(
             text(word)
-                .font(TYPE_SMALL_MEDIUM)
-                .color(palette.text_secondary),
+                .font(look.font(TYPE_SMALL_MEDIUM))
+                .color(look.palette.text_secondary),
         );
-    let input = input(field, palette).secure().revealed(shown);
+    let input = input(field, look).secure().revealed(shown);
     col()
         .w_full()
-        .gap(SPACE_MD_PT)
-        .child(label(field.label, palette))
+        .gap(look.space(SPACE_MD))
+        .child(label(field.label, look))
         .child(
-            frame(field, palette)
-                .pr(SPACE_SM_PT)
-                .gap(SPACE_SM_PT)
+            frame(field, look)
+                .pr(look.space(SPACE_SM))
+                .gap(look.space(SPACE_SM))
                 .child(input)
                 .child(reveal),
         )
 }
 
-fn input(field: &Field, palette: &Palette) -> El {
-    let input = text_input(field.edit, TYPE_BODY)
+fn input(field: &Field, look: &Look) -> El {
+    let input = text_input(field.edit, look.font(TYPE_BODY))
         .key(field.key)
         .label(field.label)
         .single_line()
         .grow(1.0)
-        .color(palette.text_primary)
-        .caret(palette.accent, palette.text_selection)
+        .color(look.palette.text_primary)
+        .caret(look.palette.accent, look.palette.text_selection)
         .invalid(field.invalid)
         .on_edit(field.access)
         .on_input_change(|shell: &mut Shell, _tx| {
@@ -115,21 +115,21 @@ fn input(field: &Field, palette: &Palette) -> El {
 }
 
 /// The outlined box a field sits in.
-fn frame(field: &Field, palette: &Palette) -> El {
+fn frame(field: &Field, look: &Look) -> El {
     let outline = if field.invalid {
-        palette.danger
+        look.palette.danger
     } else if field.edit.focused {
-        palette.accent
+        look.palette.accent
     } else {
-        palette.line_strong
+        look.palette.line_strong
     };
     let frame = row()
         .w_full()
         .h(FIELD_HEIGHT_PT)
-        .px(SPACE_LG_PT)
+        .px(look.space(SPACE_LG))
         .center_y()
-        .radius(RADIUS_FIELD_PT)
-        .fill(palette.surface_code)
+        .radius(look.radius(RADIUS_FIELD))
+        .fill(look.palette.surface_code)
         .border(FIELD_OUTLINE_PT, outline);
     if field.busy {
         frame.opacity(FIELD_BUSY_OPACITY)
@@ -148,7 +148,7 @@ pub(crate) fn primary_button(
     busy: bool,
     ready: bool,
     press: fn(&mut Shell),
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     let enabled = ready && !busy;
     let mut button = row()
@@ -156,13 +156,13 @@ pub(crate) fn primary_button(
         .w_full()
         .h(FIELD_HEIGHT_PT)
         .center()
-        .gap(SPACE_MD_PT)
-        .radius(RADIUS_FIELD_PT)
-        .fill(palette.accent)
+        .gap(look.space(SPACE_MD))
+        .radius(look.radius(RADIUS_FIELD))
+        .fill(look.palette.accent)
         .role("button")
         .label(if busy { busy_label } else { label })
         .disabled(!enabled)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring);
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring);
     if enabled {
         button = button.focusable(true).on_press(press).default_button();
     } else {
@@ -171,15 +171,15 @@ pub(crate) fn primary_button(
     if busy {
         button = button.child(
             icon(&SPINNER, SPINNER_PT)
-                .color(palette.accent_on)
+                .color(look.palette.accent_on)
                 .looping(LoopSpec::rotation(SPINNER_PERIOD_S))
                 .a11y_hidden(),
         );
     }
     button.child(
         text(if busy { busy_label } else { label })
-            .font(TYPE_BODY_STRONG)
-            .color(palette.accent_on),
+            .font(look.font(TYPE_BODY_STRONG))
+            .color(look.palette.accent_on),
     )
 }
 
@@ -190,9 +190,9 @@ pub(crate) fn link(
     label: &'static str,
     dim: bool,
     press: fn(&mut Shell),
-    palette: &Palette,
+    look: &Look,
 ) -> El {
-    link_styled(key, label, dim, TYPE_SMALL_MEDIUM, press, palette)
+    link_styled(key, label, dim, look.font(TYPE_SMALL_MEDIUM), press, look)
 }
 
 fn link_styled(
@@ -201,38 +201,38 @@ fn link_styled(
     dim: bool,
     style: TextStyle,
     press: fn(&mut Shell),
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     let color = if dim {
-        palette.text_secondary
+        look.palette.text_secondary
     } else {
-        palette.link
+        look.palette.link
     };
     el().key(key)
         .role("button")
         .label(label)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(press)
         .child(text(label).font(style).color(color))
 }
 
 /// The feedback line, in its tone's colour, with its action. Errors are
 /// announced at once; warnings when assistive technology is idle.
-pub(crate) fn feedback(line: &Line, palette: &Palette) -> El {
+pub(crate) fn feedback(line: &Line, look: &Look) -> El {
     let (color, announce, role) = match line.tone() {
-        Tone::Danger => (palette.danger, LiveRegion::Assertive, "alert"),
-        Tone::Warning => (palette.warning, LiveRegion::Polite, "status"),
+        Tone::Danger => (look.palette.danger, LiveRegion::Assertive, "alert"),
+        Tone::Warning => (look.palette.warning, LiveRegion::Polite, "status"),
     };
     let words = line_text(line);
     let mut line_el = row()
         .key("feedback")
         .w_full()
-        .gap(SPACE_SM_PT)
+        .gap(look.space(SPACE_SM))
         .flex_wrap()
         .role(role)
         .live_region(announce)
-        .child(text(words).font(TYPE_SMALL).color(color).wrap());
+        .child(text(words).font(look.font(TYPE_SMALL)).color(color).wrap());
     if let Some(action) = line.action() {
         let (key, label, press): (_, _, fn(&mut Shell)) = match action {
             LineAction::TryAgain => ("feedback-try-again", strings::try_again(), |shell| {
@@ -242,7 +242,14 @@ pub(crate) fn feedback(line: &Line, palette: &Palette) -> El {
                 shell.sign_in_event(super::Event::Open);
             }),
         };
-        line_el = line_el.child(link_styled(key, label, false, TYPE_SMALL, press, palette));
+        line_el = line_el.child(link_styled(
+            key,
+            label,
+            false,
+            look.font(TYPE_SMALL),
+            press,
+            look,
+        ));
     }
     line_el
 }

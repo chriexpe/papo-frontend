@@ -20,8 +20,8 @@ use rune::{El, GrowthSpec, Key, KeyEvent, ScrollSpec, col, el, icon, row, text};
 use crate::badges::Badge;
 use crate::channel_pane::{chrome, pill_row, row_badge, row_name};
 use crate::design::{
-    AVATAR_ROW, DM_ROW_HEIGHT_PT, FOCUS_RING_PT, PILL_BUTTON_PT, PILL_ICON_PT, Palette,
-    RADIUS_CONTROL_PT, SIDEBAR_WIDTH_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_CAPTION, TYPE_TITLE,
+    AVATAR_ROW, DM_ROW_HEIGHT_PT, FOCUS_RING_PT, Look, PILL_BUTTON_PT, PILL_ICON_PT,
+    RADIUS_CONTROL, SIDEBAR_WIDTH_PT, SPACE_MD, SPACE_SM, TYPE_CAPTION, TYPE_TITLE,
 };
 use crate::icons::X;
 use crate::person_avatar::person_avatar;
@@ -41,7 +41,7 @@ pub(crate) fn dm_row_key(row: &DirectMessageItem) -> String {
 
 /// Direct: the pane pill, then the conversations, or the people the
 /// accounts block.
-pub(crate) fn view(shell: &Shell, palette: &Palette) -> El {
+pub(crate) fn view(shell: &Shell, look: &Look) -> El {
     let blocked = shell.navigation().direct_blocked();
     let title = if blocked {
         strings::direct_blocked_title()
@@ -49,44 +49,40 @@ pub(crate) fn view(shell: &Shell, palette: &Palette) -> El {
         strings::direct_title()
     };
     let pill = chrome(
-        pill_row()
+        pill_row(look)
             .child(
                 text(title)
-                    .font(TYPE_TITLE)
-                    .color(palette.text_primary)
+                    .font(look.font(TYPE_TITLE))
+                    .color(look.palette.text_primary)
                     .role("heading")
                     .grow(1.0)
                     .min_w(0.0),
             )
-            .child(new_message_button(
-                shell.shown_dm_picker().is_some(),
-                palette,
-            ))
-            .child(blocked_button(blocked, palette)),
-        palette,
+            .child(new_message_button(shell.shown_dm_picker().is_some(), look))
+            .child(blocked_button(blocked, look)),
+        look,
     )
     .key(crate::shell::DIRECT_PILL_KEY);
     let list = if blocked {
-        blocked_list(shell, palette)
+        blocked_list(shell, look)
     } else {
-        conversations(shell, palette)
+        conversations(shell, look)
     };
     let servers = shell.navigation().servers();
     let accounts_open = shell.navigation().direct_accounts_open();
-    let accounts = direct_account(shell).map(|account| {
-        crate::account_switch::direct_pill(account, servers, accounts_open, palette)
-    });
+    let accounts = direct_account(shell)
+        .map(|account| crate::account_switch::direct_pill(account, servers, accounts_open, look));
     // Last, so it draws over the conversations and the pill.
-    let grown = accounts_open.then(|| crate::account_switch::direct_grown(servers, palette));
+    let grown = accounts_open.then(|| crate::account_switch::direct_grown(servers, look));
     col()
         .key("channel-pane")
         .role("navigation")
         .label(strings::direct_title())
         .w(SIDEBAR_WIDTH_PT)
         .h_full()
-        .padding(SPACE_MD_PT)
-        .gap(SPACE_SM_PT)
-        .fill(palette.surface_sidebar)
+        .padding(look.space(SPACE_MD))
+        .gap(look.space(SPACE_SM))
+        .fill(look.palette.surface_sidebar)
         .child(pill)
         .child(
             col()
@@ -123,8 +119,8 @@ fn direct_account(shell: &Shell) -> Option<&crate::server_list::AccountEntry> {
 }
 
 /// The conversations, newest activity first; a line when there are none.
-fn conversations(shell: &Shell, palette: &Palette) -> El {
-    let palette_copy = *palette;
+fn conversations(shell: &Shell, look: &Look) -> El {
+    let palette_copy = *look;
     // Only the rows on screen are built: a person can have many
     // conversations.
     let list = col()
@@ -158,10 +154,10 @@ fn conversations(shell: &Shell, palette: &Palette) -> El {
         );
     // With none, a line in the list's place.
     if shell.direct_rows().is_empty() {
-        return el().padding(SPACE_MD_PT).child(
+        return el().padding(look.space(SPACE_MD)).child(
             text(strings::direct_empty())
-                .font(TYPE_CAPTION)
-                .color(palette.text_muted),
+                .font(look.font(TYPE_CAPTION))
+                .color(look.palette.text_muted),
         );
     }
     list
@@ -205,17 +201,17 @@ impl<'a> Shown<'a> {
         }
     }
 
-    fn view(&self, palette: &Palette) -> El {
-        let (style, colour) = row_name(self.badge, self.picked, palette);
+    fn view(&self, look: &Look) -> El {
+        let (style, colour) = row_name(self.badge, self.picked, look);
         let sub_line = if self.typing {
             strings::direct_typing()
         } else {
             self.server.as_str()
         };
         let surface = if self.picked {
-            palette.surface_selected
+            look.palette.surface_selected
         } else {
-            palette.surface_sidebar
+            look.palette.surface_sidebar
         };
         let open = Arc::clone(self.item);
         let close = Arc::clone(self.item);
@@ -227,10 +223,10 @@ impl<'a> Shown<'a> {
             .key(dm_row_key(self.item))
             .w_full()
             .h(DM_ROW_HEIGHT_PT)
-            .px(SPACE_SM_PT)
-            .gap(SPACE_MD_PT)
+            .px(look.space(SPACE_SM))
+            .gap(look.space(SPACE_MD))
             .center_y()
-            .radius(RADIUS_CONTROL_PT)
+            .radius(look.radius(RADIUS_CONTROL))
             .role("option")
             // The server too: two accounts can each talk with the same person.
             .label(
@@ -240,7 +236,7 @@ impl<'a> Shown<'a> {
             .description(strings::direct_close_hint())
             .focusable(true)
             .focus_selected(self.picked)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
             .hover_group()
             .on_press_tx(move |shell: &mut Shell, tx| shell.pick_dm(Arc::clone(&open), tx))
             .on_key(
@@ -261,7 +257,7 @@ impl<'a> Shown<'a> {
                 AVATAR_ROW,
                 self.presence,
                 surface,
-                palette,
+                look,
             ))
             .child(
                 col()
@@ -276,40 +272,40 @@ impl<'a> Shown<'a> {
                     )
                     .child(
                         text(sub_line)
-                            .font(TYPE_CAPTION)
-                            .color(palette.text_muted)
+                            .font(look.font(TYPE_CAPTION))
+                            .color(look.palette.text_muted)
                             .max_lines(1),
                     ),
             );
-        line = line.children(row_badge(self.badge, palette));
+        line = line.children(row_badge(self.badge, look));
         line = if self.picked {
-            line.fill(palette.surface_selected)
+            line.fill(look.palette.surface_selected)
         } else {
-            line.hover(palette.surface_hover)
+            line.hover(look.palette.surface_hover)
         };
-        line.child(self.close_button(palette))
+        line.child(self.close_button(look))
     }
 
     /// ✕, over the badge while the row is hovered or focused: closes at
     /// once, no question; messaging them again reopens it.
-    fn close_button(&self, palette: &Palette) -> El {
+    fn close_button(&self, look: &Look) -> El {
         let item = Arc::clone(self.item);
         row()
             .key(format!("close-{}", dm_row_key(self.item)))
             .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
             .center()
-            .radius(RADIUS_CONTROL_PT)
-            .fill(palette.surface_hover)
+            .radius(look.radius(RADIUS_CONTROL))
+            .fill(look.palette.surface_hover)
             .role("button")
             .label(strings::direct_close(&self.name))
             .group_opacity(0.0, 1.0)
             .pin(
                 None,
                 Some((DM_ROW_HEIGHT_PT - PILL_BUTTON_PT) / 2.0),
-                Some(SPACE_SM_PT),
+                Some(look.space(SPACE_SM)),
                 None,
             )
             .on_press_tx(move |shell: &mut Shell, tx| shell.close_dm(&item, tx))
-            .child(icon(&X, PILL_ICON_PT).color(palette.text_secondary))
+            .child(icon(&X, PILL_ICON_PT).color(look.palette.text_secondary))
     }
 }

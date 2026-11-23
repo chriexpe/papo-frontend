@@ -13,8 +13,8 @@ use rune::{El, col, icon, row, text};
 use super::Shell;
 use super::profile_card::{Order, PersonFacts, header, sections};
 use crate::design::{
-    FOCUS_RING_PT, MEMBERS_WIDTH_PT, PILL_BUTTON_PT, PILL_ICON_PT, Palette, RADIUS_CONTROL_PT,
-    SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY,
+    FOCUS_RING_PT, Look, MEMBERS_WIDTH_PT, PILL_BUTTON_PT, PILL_ICON_PT, RADIUS_CONTROL, SPACE_LG,
+    SPACE_MD, SPACE_SM, TYPE_BODY,
 };
 use crate::icons::{BLOCK, USER};
 use crate::strings;
@@ -43,31 +43,31 @@ impl Shell {
 }
 
 /// The actions pill's person button, in the accent while the pane shows.
-pub(super) fn button(shown: bool, palette: &Palette) -> El {
+pub(super) fn button(shown: bool, look: &Look) -> El {
     let tone = if shown {
-        palette.accent
+        look.palette.accent
     } else {
-        palette.text_secondary
+        look.palette.text_secondary
     };
     row()
         .key(PROFILE_BUTTON_KEY)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(RADIUS_CONTROL_PT)
+        .radius(look.radius(RADIUS_CONTROL))
         .role("button")
         .label(strings::direct_profile())
         .help(strings::direct_profile())
         .help_keys([strings::shortcut_profile()])
         .expanded(shown)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
-        .hover(palette.surface_hover)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+        .hover(look.palette.surface_hover)
         .on_press(Shell::toggle_dm_profile)
         .child(icon(&USER, PILL_ICON_PT).color(tone))
 }
 
 /// The pane, while a picked conversation shows it.
-pub(super) fn pane(shell: &Shell, palette: &Palette) -> Option<El> {
+pub(super) fn pane(shell: &Shell, look: &Look) -> Option<El> {
     if !shell.layout.dm_profile() {
         return None;
     }
@@ -83,18 +83,18 @@ pub(super) fn pane(shell: &Shell, palette: &Palette) -> Option<El> {
             .key("profile-pane")
             .w(MEMBERS_WIDTH_PT)
             .h_full()
-            .pb(SPACE_MD_PT)
-            .fill(palette.surface_sidebar)
+            .pb(look.space(SPACE_MD))
+            .fill(look.palette.surface_sidebar)
             .role("complementary")
             .label(strings::direct_profile())
-            .children(header(&facts, false, palette))
-            .children(sections(&facts, Order::Pane, palette))
-            .child(block_button(key, picked.user, blocked, palette)),
+            .children(header(&facts, false, look))
+            .children(sections(&facts, Order::Pane, look))
+            .child(block_button(key, picked.user, blocked, look)),
     )
 }
 
 /// Block, or Unblock: at once, each undoing the other.
-fn block_button(key: TimelineKey, user: Uuid, blocked: bool, palette: &Palette) -> El {
+fn block_button(key: TimelineKey, user: Uuid, blocked: bool, look: &Look) -> El {
     let label = if blocked {
         strings::card_unblock()
     } else {
@@ -103,24 +103,24 @@ fn block_button(key: TimelineKey, user: Uuid, blocked: bool, palette: &Palette) 
     row()
         .key("pane-block")
         .w_full()
-        .mt(SPACE_LG_PT)
-        .mx(SPACE_SM_PT)
-        .px(SPACE_MD_PT)
+        .mt(look.space(SPACE_LG))
+        .mx(look.space(SPACE_SM))
+        .px(look.space(SPACE_MD))
         .h(PILL_BUTTON_PT)
-        .gap(SPACE_MD_PT)
+        .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
-        .hover(palette.surface_hover)
+        .radius(look.radius(RADIUS_CONTROL))
+        .hover(look.palette.surface_hover)
         .role("button")
         .label(label)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(move |shell: &mut Shell| shell.set_blocked(key.account, user, !blocked))
-        .child(icon(&BLOCK, PILL_ICON_PT).color(palette.text_secondary))
+        .child(icon(&BLOCK, PILL_ICON_PT).color(look.palette.text_secondary))
         .child(
             text(label)
-                .font(TYPE_BODY)
-                .color(palette.text_primary)
+                .font(look.font(TYPE_BODY))
+                .color(look.palette.text_primary)
                 .a11y_hidden(),
         )
 }

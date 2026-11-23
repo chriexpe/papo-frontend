@@ -19,7 +19,7 @@ use super::echoes::SendState;
 use super::local_time::LocalTime;
 use super::rows::message_key;
 use super::{OpenTimeline, Reacting, Request, Style, TimelineHost, TimelineKey, view};
-use crate::design::{Density, MessageLayout, Palette, Theme};
+use crate::design::{Density, Look, MessageLayout, Theme};
 
 const SIZE_PT: (f32, f32) = (800.0, 600.0);
 const FRAME_S: f64 = 1.0 / 60.0;
@@ -189,7 +189,7 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
     let style = Style {
         layout: host.layout,
         theme: Theme::Graphite,
-        palette: Palette::new(Theme::Graphite),
+        look: Look::new(Theme::Graphite),
         today: time.today(),
         time,
         hourglass: host.hourglass,

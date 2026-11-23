@@ -10,7 +10,7 @@ use rune::{El, icon, row};
 use super::TimelineKey;
 use super::echoes::SendState;
 use super::view::TimelineHost;
-use crate::design::{FOCUS_RING_PT, Palette, RADIUS_CONTROL_PT, SEND_STATE_ICON_PT};
+use crate::design::{FOCUS_RING_PT, Look, RADIUS_CONTROL, SEND_STATE_ICON_PT};
 use crate::icons::{CLOCK, WARNING};
 use crate::strings;
 
@@ -25,17 +25,17 @@ pub(super) fn send_mark<S: TimelineHost>(
     key: TimelineKey,
     local: Uuid,
     state: SendState,
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     let mark = row()
         .key(mark_key(local))
         .center()
-        .radius(RADIUS_CONTROL_PT);
+        .radius(look.radius(RADIUS_CONTROL));
     match state {
         SendState::Pending => mark
             .role("img")
             .label(strings::outgoing_pending())
-            .child(icon(&CLOCK, SEND_STATE_ICON_PT).color(palette.text_muted)),
+            .child(icon(&CLOCK, SEND_STATE_ICON_PT).color(look.palette.text_muted)),
         SendState::Failed | SendState::Unknown => {
             let words = if state == SendState::Failed {
                 strings::outgoing_failed()
@@ -45,9 +45,9 @@ pub(super) fn send_mark<S: TimelineHost>(
             mark.role("button")
                 .label(strings::outgoing_options(words))
                 .focusable(true)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
                 .on_press(move |host: &mut S| host.send_state_pressed(key, local, state))
-                .child(icon(&WARNING, SEND_STATE_ICON_PT).color(palette.danger))
+                .child(icon(&WARNING, SEND_STATE_ICON_PT).color(look.palette.danger))
         }
     }
 }

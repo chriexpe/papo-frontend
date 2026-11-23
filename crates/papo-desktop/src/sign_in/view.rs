@@ -10,9 +10,9 @@ use rune::{El, col, el, icon, row, text};
 use super::header::{server_header, title};
 
 use crate::design::{
-    CROSS_PT, FOCUS_RING_PT, FORM_WIDTH_PT, PILL_OUTLINE_PT, POPUP_CLOSE_INSET_PT, POPUP_CLOSE_PT,
-    POPUP_PADDING_PT, POPUP_SHADOW_PT, POPUP_SIZE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_POPUP_PT,
-    SPACE_LG_PT, SPACE_SM_PT, SPACE_XL_PT, SPACE_XXL_PT, TYPE_CAPTION,
+    CROSS_PT, FOCUS_RING_PT, FORM_WIDTH_PT, Look, PILL_OUTLINE_PT, POPUP_CLOSE_INSET_PT,
+    POPUP_CLOSE_PT, POPUP_PADDING_PT, POPUP_SHADOW_PT, POPUP_SIZE_PT, RADIUS_CONTROL, RADIUS_POPUP,
+    SPACE_LG, SPACE_SM, SPACE_XL, SPACE_XXL, TYPE_CAPTION,
 };
 use crate::icons::X;
 use crate::shell::Shell;
@@ -28,28 +28,28 @@ use super::{
 pub(crate) const SCREEN_KEY: &str = "sign-in";
 
 /// The screen: the server step or the account steps, `FORM_WIDTH_PT` wide.
-pub(crate) fn screen(flow: &SignIn, fields: &Fields, palette: &Palette) -> El {
+pub(crate) fn screen(flow: &SignIn, fields: &Fields, look: &Look) -> El {
     let column = col()
         .key(SCREEN_KEY)
         .w(FORM_WIDTH_PT)
         .max_w(FORM_WIDTH_PT)
-        .gap(SPACE_LG_PT);
+        .gap(look.space(SPACE_LG));
     match flow.screen() {
-        Screen::Address { phase, .. } => address_step(column, flow, fields, phase, palette),
+        Screen::Address { phase, .. } => address_step(column, flow, fields, phase, look),
         Screen::Account {
             server,
             form,
             phase,
         } => column
-            .gap(SPACE_XL_PT)
-            .child(server_header(server, *form, palette))
-            .child(account_step(server, *form, phase, fields, palette)),
+            .gap(look.space(SPACE_XL))
+            .child(server_header(server, *form, look))
+            .child(account_step(server, *form, phase, fields, look)),
     }
 }
 
 /// The popup over the dimmed app: the screen in a frame, with ✕. Escape and
 /// ✕ close it; the app behind takes no input meanwhile.
-pub(crate) fn popup(flow: &SignIn, fields: &Fields, palette: &Palette) -> El {
+pub(crate) fn popup(flow: &SignIn, fields: &Fields, look: &Look) -> El {
     let (drop, blur) = POPUP_SHADOW_PT;
     let close = row()
         .key("sign-in-close")
@@ -59,40 +59,34 @@ pub(crate) fn popup(flow: &SignIn, fields: &Fields, palette: &Palette) -> El {
         )
         .size(POPUP_CLOSE_PT, POPUP_CLOSE_PT)
         .center()
-        .radius(RADIUS_CONTROL_PT)
+        .radius(look.radius(RADIUS_CONTROL))
         .role("button")
         .label(strings::close())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(Shell::close_sign_in)
-        .child(icon(&X, CROSS_PT).color(palette.text_secondary));
+        .child(icon(&X, CROSS_PT).color(look.palette.text_secondary));
     let frame = col()
         .key("sign-in-popup")
         .size(POPUP_SIZE_PT.0, POPUP_SIZE_PT.1)
         .center()
         .padding(POPUP_PADDING_PT)
-        .radius(RADIUS_POPUP_PT)
-        .fill(palette.surface_content)
-        .border(PILL_OUTLINE_PT, palette.line_subtle)
-        .shadow(drop, blur, palette.popup_shadow)
+        .radius(look.radius(RADIUS_POPUP))
+        .fill(look.palette.surface_content)
+        .border(PILL_OUTLINE_PT, look.palette.line_subtle)
+        .shadow(drop, blur, look.palette.popup_shadow)
         .role("dialog")
         .modal(false, Shell::close_sign_in)
         .child(close)
-        .child(screen(flow, fields, palette));
+        .child(screen(flow, fields, look));
     el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .center()
-        .padding(SPACE_XXL_PT)
-        .fill(palette.scrim)
+        .padding(look.space(SPACE_XXL))
+        .fill(look.palette.scrim)
         .child(frame)
 }
 
-fn address_step(
-    column: El,
-    flow: &SignIn,
-    fields: &Fields,
-    phase: &Phase,
-    palette: &Palette,
-) -> El {
+fn address_step(column: El, flow: &SignIn, fields: &Fields, phase: &Phase, look: &Look) -> El {
     let busy = *phase == Phase::Busy;
     let line = flow.address_line(fields);
     let invalid = matches!(line, Some(Line::Address(_)));
@@ -104,16 +98,19 @@ fn address_step(
         busy,
         invalid,
     };
-    let mut entry = col().w_full().gap(SPACE_SM_PT).child(controls::field(
-        &field,
-        Some(strings::address_placeholder()),
-        palette,
-    ));
+    let mut entry = col()
+        .w_full()
+        .gap(look.space(SPACE_SM))
+        .child(controls::field(
+            &field,
+            Some(strings::address_placeholder()),
+            look,
+        ));
     if let Some(line) = &line {
-        entry = entry.child(controls::feedback(line, palette));
+        entry = entry.child(controls::feedback(line, look));
     }
     column
-        .child(title(strings::add_server(), palette))
+        .child(title(strings::add_server(), look))
         .child(entry)
         .child(controls::primary_button(
             "connect",
@@ -122,17 +119,11 @@ fn address_step(
             busy,
             !matches!(fields.address_check, super::AddressCheck::Empty),
             submit,
-            palette,
+            look,
         ))
 }
 
-fn account_step(
-    server: &Server,
-    form: Form,
-    phase: &Phase,
-    fields: &Fields,
-    palette: &Palette,
-) -> El {
+fn account_step(server: &Server, form: Form, phase: &Phase, fields: &Fields, look: &Look) -> El {
     let busy = *phase == Phase::Busy;
     let line = match phase {
         Phase::Editing(line) => line.as_ref(),
@@ -149,16 +140,16 @@ fn account_step(
         fields,
         busy,
         rejected,
-        palette,
+        look,
     };
     let (inputs, button) = match form {
         Form::Unlock { .. } => unlock_inputs(&state),
         Form::Account(AccountForm::SignIn) => sign_in_inputs(&state),
         Form::Account(AccountForm::CreateAccount) => create_account_inputs(&state),
     };
-    let mut column = col().w_full().gap(SPACE_LG_PT).children(inputs);
+    let mut column = col().w_full().gap(look.space(SPACE_LG)).children(inputs);
     if let Some(line) = line {
-        column = column.child(controls::feedback(line, palette));
+        column = column.child(controls::feedback(line, look));
     }
     column = column.child(controls::primary_button(
         button.key,
@@ -167,9 +158,9 @@ fn account_step(
         busy,
         can_submit(form, fields),
         submit,
-        palette,
+        look,
     ));
-    let links = links(server, form, palette);
+    let links = links(server, form, look);
     if links.is_empty() {
         column
     } else {
@@ -177,7 +168,7 @@ fn account_step(
             row()
                 .w_full()
                 .justify_center()
-                .gap(SPACE_XL_PT)
+                .gap(look.space(SPACE_XL))
                 .children(links),
         )
     }
@@ -189,7 +180,7 @@ struct FormState<'a> {
     busy: bool,
     /// The server rejected what the form's main field holds.
     rejected: bool,
-    palette: &'a Palette,
+    look: &'a Look,
 }
 
 /// A form's primary button: its key and its two labels.
@@ -211,7 +202,7 @@ fn unlock_inputs(state: &FormState) -> (Vec<El>, Button) {
         },
         state.fields.password_shown,
         toggle_password,
-        state.palette,
+        state.look,
     );
     let button = Button {
         key: "unlock",
@@ -232,7 +223,7 @@ fn sign_in_inputs(state: &FormState) -> (Vec<El>, Button) {
             invalid: false,
         },
         None,
-        state.palette,
+        state.look,
     );
     let password = controls::password_field(
         &Field {
@@ -245,7 +236,7 @@ fn sign_in_inputs(state: &FormState) -> (Vec<El>, Button) {
         },
         state.fields.password_shown,
         toggle_password,
-        state.palette,
+        state.look,
     );
     let button = Button {
         key: "sign-in-button",
@@ -256,7 +247,7 @@ fn sign_in_inputs(state: &FormState) -> (Vec<El>, Button) {
 }
 
 fn create_account_inputs(state: &FormState) -> (Vec<El>, Button) {
-    let palette = state.palette;
+    let look = state.look;
     let username = controls::field(
         &Field {
             key: "new-username",
@@ -267,7 +258,7 @@ fn create_account_inputs(state: &FormState) -> (Vec<El>, Button) {
             invalid: state.rejected,
         },
         None,
-        palette,
+        look,
     );
     let password = controls::password_field(
         &Field {
@@ -280,18 +271,22 @@ fn create_account_inputs(state: &FormState) -> (Vec<El>, Button) {
         },
         state.fields.password_shown,
         toggle_password,
-        palette,
+        look,
     );
     let hint_color = if password_rules_met(&state.fields.new_password.text) {
-        palette.success
+        look.palette.success
     } else {
-        palette.text_muted
+        look.palette.text_muted
     };
     let hint = text(strings::password_hint())
         .key("password-hint")
-        .font(TYPE_CAPTION)
+        .font(look.font(TYPE_CAPTION))
         .color(hint_color);
-    let password = col().w_full().gap(SPACE_SM_PT).child(password).child(hint);
+    let password = col()
+        .w_full()
+        .gap(look.space(SPACE_SM))
+        .child(password)
+        .child(hint);
     let button = Button {
         key: "create-account-button",
         label: strings::create_account(),
@@ -303,13 +298,13 @@ fn create_account_inputs(state: &FormState) -> (Vec<El>, Button) {
 /// The links under the button. Signing in again hides Create account and
 /// Change server: it is the same account on the same server. Adding an
 /// account to a saved server hides Change server: the server stays.
-fn links(server: &Server, form: Form, palette: &Palette) -> Vec<El> {
+fn links(server: &Server, form: Form, look: &Look) -> Vec<El> {
     if server.renewing.is_some() {
         return Vec::new();
     }
     match form {
         Form::Unlock { .. } if server.adding => Vec::new(),
-        Form::Unlock { .. } => vec![change_server(palette)],
+        Form::Unlock { .. } => vec![change_server(look)],
         Form::Account(AccountForm::SignIn) => {
             let mut links = vec![controls::link(
                 "to-create-account",
@@ -318,10 +313,10 @@ fn links(server: &Server, form: Form, palette: &Palette) -> Vec<El> {
                 |shell| {
                     shell.sign_in_event(Event::ShowForm(AccountForm::CreateAccount));
                 },
-                palette,
+                look,
             )];
             if !server.adding {
-                links.push(change_server(palette));
+                links.push(change_server(look));
             }
             links
         }
@@ -332,12 +327,12 @@ fn links(server: &Server, form: Form, palette: &Palette) -> Vec<El> {
             |shell| {
                 shell.sign_in_event(Event::ShowForm(AccountForm::SignIn));
             },
-            palette,
+            look,
         )],
     }
 }
 
-fn change_server(palette: &Palette) -> El {
+fn change_server(look: &Look) -> El {
     controls::link(
         "change-server",
         strings::change_server(),
@@ -345,7 +340,7 @@ fn change_server(palette: &Palette) -> El {
         |shell| {
             shell.sign_in_event(Event::ChangeServer);
         },
-        palette,
+        look,
     )
 }
 

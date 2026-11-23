@@ -11,8 +11,8 @@ use rune::{Align, Cx, El, ScrollSpec, Side, col, row, text};
 
 use crate::channel_pane::avatar;
 use crate::design::{
-    MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT,
-    SPACE_SM_PT, TYPE_BODY, TYPE_SMALL,
+    Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_SM,
+    TYPE_BODY, TYPE_SMALL,
 };
 use crate::shell::Shell;
 use crate::strings;
@@ -79,13 +79,13 @@ pub(crate) fn row_key(target: MentionTarget) -> String {
 }
 
 /// Draws `picker` above the pill keyed `pill_key`, as wide as it.
-pub(crate) fn view(picker: &Picker, pill_key: &str, palette: &Palette, cx: &Cx<Shell>) -> El {
+pub(crate) fn view(picker: &Picker, pill_key: &str, look: &Look, cx: &Cx<Shell>) -> El {
     let width = cx.layout_size(pill_key).map(|[width, _]| width);
     let rows = picker
         .candidates
         .iter()
         .enumerate()
-        .map(|(index, candidate)| row_for(candidate, index == picker.selected, palette));
+        .map(|(index, candidate)| row_for(candidate, index == picker.selected, look));
     let list = col()
         .key("mention-rows")
         .w_full()
@@ -96,13 +96,13 @@ pub(crate) fn view(picker: &Picker, pill_key: &str, palette: &Palette, cx: &Cx<S
         .children(rows);
     let mut panel = col()
         .key(PICKER_KEY)
-        .padding(SPACE_SM_PT)
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .padding(look.space(SPACE_SM))
+        .radius(look.radius(RADIUS_PILL))
+        .fill(look.palette.surface_pill)
+        .border(PILL_OUTLINE_PT, look.palette.line_pill)
         .role("listbox")
         .label(strings::mention_picker())
-        .anchored(pill_key, Side::Top, Align::Start, SPACE_SM_PT)
+        .anchored(pill_key, Side::Top, Align::Start, look.space(SPACE_SM))
         .child(list);
     if let Some(width) = width {
         panel = panel.w(width);
@@ -110,7 +110,7 @@ pub(crate) fn view(picker: &Picker, pill_key: &str, palette: &Palette, cx: &Cx<S
     panel
 }
 
-fn row_for(candidate: &MentionSuggestion, selected: bool, palette: &Palette) -> El {
+fn row_for(candidate: &MentionSuggestion, selected: bool, look: &Look) -> El {
     let target = candidate.target;
     let label = match &candidate.username {
         Some(username) if *username != candidate.name => {
@@ -129,31 +129,31 @@ fn row_for(candidate: &MentionSuggestion, selected: bool, palette: &Palette) -> 
         .key(row_key(target))
         .w_full()
         .h(MENU_ROW_HEIGHT_PT)
-        .px(SPACE_SM_PT)
-        .gap(SPACE_SM_PT)
+        .px(look.space(SPACE_SM))
+        .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
+        .radius(look.radius(RADIUS_CONTROL))
         .role("option")
         .label(label)
         .on_press_tx(move |shell: &mut Shell, tx| shell.mention_picked(target, tx))
-        .child(avatar(&candidate.name, None, palette))
+        .child(avatar(&candidate.name, None, look))
         .child(
             text(candidate.name.clone())
-                .font(TYPE_BODY)
-                .color(palette.text_primary)
+                .font(look.font(TYPE_BODY))
+                .color(look.palette.text_primary)
                 .truncate(),
         )
         .children(handle.map(|handle| {
             text(handle)
-                .font(TYPE_SMALL)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted)
                 .truncate()
         }))
         .child(row().grow(1.0))
-        .pr(SPACE_LG_PT);
+        .pr(look.space(SPACE_LG));
     // `surface.hover` is too close to the pill's own surface to show.
     if selected {
-        line = line.fill(palette.surface_selected);
+        line = line.fill(look.palette.surface_selected);
     }
     line
 }

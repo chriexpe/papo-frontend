@@ -13,7 +13,7 @@ use papo_sdk_ui::TypingItem;
 use rune::{El, LoopSpec, Span, el, rich, row};
 
 use crate::design::{
-    PILL_OUTLINE_PT, Palette, SPACE_LG_PT, SPACE_SM_PT, TYPE_SMALL, TYPING_DOT_PT, TYPING_LINE_PT,
+    Look, PILL_OUTLINE_PT, SPACE_LG, SPACE_SM, TYPE_SMALL, TYPING_DOT_PT, TYPING_LINE_PT,
     TYPING_PULSE_S, WEIGHT_SEMIBOLD,
 };
 use crate::strings;
@@ -23,7 +23,7 @@ use crate::strings;
 pub(crate) fn view(
     typing: &[TypingItem],
     resources: Option<&ResourceSnapshot>,
-    palette: &Palette,
+    look: &Look,
 ) -> Option<El> {
     let names: Vec<String> = typing
         .iter()
@@ -44,29 +44,29 @@ pub(crate) fn view(
         .map(|range| {
             Span::new(range.start, range.end)
                 .weight(WEIGHT_SEMIBOLD)
-                .color(palette.text_secondary)
+                .color(look.palette.text_secondary)
         })
         .collect();
     // At the pill's text: the column's padding, the pill's outline, then
     // the text's own inset.
-    let inset_pt = SPACE_LG_PT + PILL_OUTLINE_PT + SPACE_LG_PT;
+    let inset_pt = look.space(SPACE_LG) + PILL_OUTLINE_PT + look.space(SPACE_LG);
     Some(
         row()
             .key("typing-line")
             .h(TYPING_LINE_PT)
-            .gap(SPACE_SM_PT)
+            .gap(look.space(SPACE_SM))
             .center_y()
             .pin(
                 Some(inset_pt),
-                Some(SPACE_LG_PT - TYPING_LINE_PT),
+                Some(look.space(SPACE_LG) - TYPING_LINE_PT),
                 None,
                 None,
             )
-            .child(dots(palette))
+            .child(dots(look))
             .child(
                 rich(line, spans)
-                    .font(TYPE_SMALL)
-                    .color(palette.text_muted)
+                    .font(look.font(TYPE_SMALL))
+                    .color(look.palette.text_muted)
                     .max_lines(1),
             ),
     )
@@ -84,11 +84,11 @@ fn name(typist: &TypingItem, resources: Option<&ResourceSnapshot>) -> String {
 }
 
 /// Three dots, each pulsing a third of a period after the one before.
-fn dots(palette: &Palette) -> El {
+fn dots(look: &Look) -> El {
     let dot = |index: u32| {
         el().size(TYPING_DOT_PT, TYPING_DOT_PT)
             .radius(TYPING_DOT_PT / 2.0)
-            .fill(palette.text_muted)
+            .fill(look.palette.text_muted)
             .looping(LoopSpec::opacity(
                 TYPING_PULSE_S,
                 TYPING_PULSE_S * f64::from(index) / 3.0,

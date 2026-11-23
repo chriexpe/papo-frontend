@@ -10,8 +10,8 @@ use papo_sdk::AccountId;
 use rune::{El, col, el, icon, row, text};
 
 use crate::design::{
-    AVATAR_ROW, DM_ROW_HEIGHT_PT, FOCUS_RING_PT, PILL_BUTTON_PT, PILL_ICON_PT, Palette,
-    RADIUS_CONTROL_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_CAPTION,
+    AVATAR_ROW, DM_ROW_HEIGHT_PT, FOCUS_RING_PT, Look, PILL_BUTTON_PT, PILL_ICON_PT,
+    RADIUS_CONTROL, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_CAPTION,
 };
 use crate::icons::BLOCK;
 use crate::person_avatar::person_avatar;
@@ -21,24 +21,24 @@ use crate::strings;
 
 /// The pill's switch between the conversations and the blocked people, in
 /// the accent while it shows them.
-pub(super) fn blocked_button(shown: bool, palette: &Palette) -> El {
+pub(super) fn blocked_button(shown: bool, look: &Look) -> El {
     let tone = if shown {
-        palette.accent
+        look.palette.accent
     } else {
-        palette.text_secondary
+        look.palette.text_secondary
     };
     row()
         .key(BLOCKED_BUTTON_KEY)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(RADIUS_CONTROL_PT)
+        .radius(look.radius(RADIUS_CONTROL))
         .role("button")
         .label(strings::direct_blocked_button())
         .help(strings::direct_blocked_button())
         .expanded(shown)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
-        .hover(palette.surface_hover)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+        .hover(look.palette.surface_hover)
         .on_press(Shell::toggle_direct_blocked)
         .child(icon(&BLOCK, PILL_ICON_PT).color(tone))
 }
@@ -49,7 +49,7 @@ pub(crate) const BLOCKED_BUTTON_KEY: &str = "direct-blocked";
 /// The people each shown account blocks, with the server under each and
 /// Unblock at the end. Their conversations are not in the list: the backend
 /// leaves out conversations blocked in either direction.
-pub(super) fn blocked_list(shell: &Shell, palette: &Palette) -> El {
+pub(super) fn blocked_list(shell: &Shell, look: &Look) -> El {
     let rows: Vec<El> = shell
         .navigation()
         .servers()
@@ -60,14 +60,14 @@ pub(super) fn blocked_list(shell: &Shell, palette: &Palette) -> El {
             server
                 .blocked
                 .iter()
-                .map(move |person| blocked_row(account.id, &server.name, person, palette))
+                .map(move |person| blocked_row(account.id, &server.name, person, look))
         })
         .collect();
     if rows.is_empty() {
-        return el().padding(SPACE_MD_PT).child(
+        return el().padding(look.space(SPACE_MD)).child(
             text(strings::direct_blocked_empty())
-                .font(TYPE_CAPTION)
-                .color(palette.text_muted),
+                .font(look.font(TYPE_CAPTION))
+                .color(look.palette.text_muted),
         );
     }
     col()
@@ -78,7 +78,7 @@ pub(super) fn blocked_list(shell: &Shell, palette: &Palette) -> El {
         .children(rows)
 }
 
-fn blocked_row(account: AccountId, server: &str, person: &BlockedPerson, palette: &Palette) -> El {
+fn blocked_row(account: AccountId, server: &str, person: &BlockedPerson, look: &Look) -> El {
     let name = person
         .name
         .clone()
@@ -88,8 +88,8 @@ fn blocked_row(account: AccountId, server: &str, person: &BlockedPerson, palette
         .key(format!("blocked-{}-{user}", account.user()))
         .w_full()
         .h(DM_ROW_HEIGHT_PT)
-        .px(SPACE_SM_PT)
-        .gap(SPACE_MD_PT)
+        .px(look.space(SPACE_SM))
+        .gap(look.space(SPACE_MD))
         .center_y()
         .role("listitem")
         .label(strings::direct_title_label(&name, server))
@@ -97,8 +97,8 @@ fn blocked_row(account: AccountId, server: &str, person: &BlockedPerson, palette
             &name,
             AVATAR_ROW,
             None,
-            palette.surface_sidebar,
-            palette,
+            look.palette.surface_sidebar,
+            look,
         ))
         .child(
             col()
@@ -107,33 +107,33 @@ fn blocked_row(account: AccountId, server: &str, person: &BlockedPerson, palette
                 .a11y_hidden()
                 .child(
                     text(name.clone())
-                        .font(TYPE_BODY)
-                        .color(palette.text_secondary)
+                        .font(look.font(TYPE_BODY))
+                        .color(look.palette.text_secondary)
                         .max_lines(1),
                 )
                 .child(
                     text(server.to_owned())
-                        .font(TYPE_CAPTION)
-                        .color(palette.text_muted)
+                        .font(look.font(TYPE_CAPTION))
+                        .color(look.palette.text_muted)
                         .max_lines(1),
                 ),
         )
         .child(
             row()
                 .key(format!("unblock-{}-{user}", account.user()))
-                .px(SPACE_MD_PT)
-                .py(SPACE_SM_PT)
-                .radius(RADIUS_CONTROL_PT)
-                .hover(palette.surface_hover)
+                .px(look.space(SPACE_MD))
+                .py(look.space(SPACE_SM))
+                .radius(look.radius(RADIUS_CONTROL))
+                .hover(look.palette.surface_hover)
                 .role("button")
                 .label(strings::direct_unblock(&name))
                 .focusable(true)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
                 .on_press(move |shell: &mut Shell| shell.set_blocked(account, user, false))
                 .child(
                     text(strings::card_unblock())
-                        .font(TYPE_CAPTION)
-                        .color(palette.link)
+                        .font(look.font(TYPE_CAPTION))
+                        .color(look.palette.link)
                         .a11y_hidden(),
                 ),
         )

@@ -24,7 +24,7 @@ use rune::{El, col, text};
 pub(crate) use self::doc::{Context, Doc, mention_names};
 use self::inline::Trailer;
 use super::{TimelineHost, TimelineKey};
-use crate::design::{MESSAGE_BLOCK_GAP_PT, Palette, TYPE_CAPTION};
+use crate::design::{Look, MESSAGE_BLOCK_GAP, TYPE_CAPTION};
 use crate::strings;
 
 /// What a press inside a message's content asks for.
@@ -87,7 +87,7 @@ impl Press {
 
 /// What drawing one message's content reads besides the content.
 pub(crate) struct Draw<'a> {
-    pub(crate) palette: &'a Palette,
+    pub(crate) look: &'a Look,
     pub(crate) key: TimelineKey,
     pub(crate) message: Uuid,
     /// The code block, by its text's index, whose Copy reads "Copied".
@@ -107,22 +107,22 @@ pub(crate) struct Edited {
 
 /// The body of a message laid out as `doc`.
 pub(crate) fn body<S: TimelineHost>(doc: &Doc, draw: &Draw<'_>) -> El {
-    let palette = draw.palette;
+    let look = draw.look;
     let marker = draw.edited.as_ref().map(|edited| Trailer {
         words: strings::edited().to_owned(),
-        font: TYPE_CAPTION,
-        ink: palette.text_muted,
+        font: look.font(TYPE_CAPTION),
+        ink: look.palette.text_muted,
         help: edited.hint.clone(),
     });
     let inline_marker = marker.as_ref().filter(|_| doc.ends_in_text());
     let mut body = col()
         .key("body")
         .w_full()
-        .gap(MESSAGE_BLOCK_GAP_PT)
+        .gap(look.space(MESSAGE_BLOCK_GAP))
         .children(blocks::nodes::<S>(
             &doc.nodes,
             draw,
-            palette.text_primary,
+            look.palette.text_primary,
             inline_marker,
         ));
     // After a code block, a table, a list or a quote, the marker takes a

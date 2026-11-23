@@ -7,7 +7,7 @@ use imbl::Vector;
 use papo_sdk_ui::TimelineItem;
 
 use super::{DENSITIES, assert_near, bottom, has_part, message, part, runtime};
-use crate::design::{AVATAR_TOP_PT, Density, Lead, MESSAGE_BLOCK_GAP_PT, MessageLayout};
+use crate::design::{AVATAR_TOP, Density, Lead, Look, MESSAGE_BLOCK_GAP, MessageLayout, Theme};
 
 /// Ana twice in a minute, Bia, then Bia again half an hour later.
 fn conversation() -> Vector<Arc<TimelineItem>> {
@@ -40,9 +40,10 @@ fn layouts() -> Vec<MessageLayout> {
 
 #[test]
 fn rows_sit_at_the_spacing_of_their_density() {
+    let look = Look::new(Theme::Graphite);
     for layout in layouts() {
         let rt = runtime(conversation(), layout);
-        let spacing = layout.density.spacing();
+        let spacing = look.spacing(layout.density);
         let continued = if layout.grouped {
             spacing.within_group_pt
         } else {
@@ -66,6 +67,7 @@ fn rows_sit_at_the_spacing_of_their_density() {
 
 #[test]
 fn every_block_starts_on_its_messages_content_column() {
+    let look = Look::new(Theme::Graphite);
     for layout in layouts() {
         let rt = runtime(conversation(), layout);
         let what = format!("{layout:?}");
@@ -86,7 +88,7 @@ fn every_block_starts_on_its_messages_content_column() {
                     let header = part(&rt, n, header);
                     assert_near(header[0], column, &what);
                     let gap = part(&rt, n, "body")[1] - bottom(header);
-                    assert_near(gap, MESSAGE_BLOCK_GAP_PT, &what);
+                    assert_near(gap, look.space(MESSAGE_BLOCK_GAP), &what);
                 }
             }
         }
@@ -95,13 +97,14 @@ fn every_block_starts_on_its_messages_content_column() {
 
 #[test]
 fn an_avatar_sits_below_the_row_padding_and_adds_no_height() {
+    let look = Look::new(Theme::Graphite);
     for density in [Density::Compact, Density::Normal, Density::Comfortable] {
         let layout = MessageLayout {
             density,
             ..MessageLayout::default()
         };
         let rt = runtime(conversation(), layout);
-        let spacing = density.spacing();
+        let spacing = look.spacing(density);
         let Lead::Avatar(size_pt) = spacing.lead else {
             panic!("{density:?} leads with an avatar");
         };
@@ -111,7 +114,7 @@ fn an_avatar_sits_below_the_row_padding_and_adds_no_height() {
         let avatar = part(&rt, 3, "avatar");
         assert_near(
             avatar[1] - row[1] - spacing.row_padding_pt,
-            AVATAR_TOP_PT,
+            look.text_multiple(AVATAR_TOP),
             &what,
         );
         let content = part(&rt, 3, "content");

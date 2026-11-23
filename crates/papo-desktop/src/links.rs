@@ -16,8 +16,8 @@ use url::Position;
 
 use crate::confirm::{Question, confirm as ask};
 use crate::design::{
-    FOCUS_RING_PT, Palette, RADIUS_CONTROL_PT, SPACE_MD_PT, SPACE_SM_PT, TASK_BOX_OUTLINE_PT,
-    TASK_BOX_PT, TASK_BOX_RADIUS_PT, TASK_CHECK_PT, TYPE_CODE, TYPE_SMALL, WEIGHT_SEMIBOLD,
+    FOCUS_RING_PT, Look, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TASK_BOX, TASK_BOX_OUTLINE_PT,
+    TASK_BOX_RADIUS, TASK_CHECK, TYPE_CODE, TYPE_SMALL, WEIGHT_SEMIBOLD,
 };
 use crate::shell::Shell;
 use crate::strings;
@@ -150,25 +150,25 @@ pub(crate) struct Prompt {
 /// confirmation (`docs/design.md` §10): the address with its host in bold,
 /// the box as the foot row's note, Cancel (focused) and Open. Escape,
 /// Return and Cancel keep it closed.
-pub(crate) fn confirm(prompt: &Prompt, palette: &Palette) -> El {
+pub(crate) fn confirm(prompt: &Prompt, look: &Look) -> El {
     let question = Question {
         key: "open-link",
         title: strings::link_title(),
         body: None,
-        shown: Some(address(prompt, palette)),
-        note: Some(always_box(prompt, palette)),
+        shown: Some(address(prompt, look)),
+        note: Some(always_box(prompt, look)),
         cancel_key: "open-link-cancel",
         cancel: strings::link_cancel(),
         confirm_key: "open-link-confirm",
         confirm: strings::link_open(),
         danger: true,
     };
-    ask(question, Shell::cancel_link, Shell::confirm_link, palette)
+    ask(question, Shell::cancel_link, Shell::confirm_link, look)
 }
 
 /// The whole address in mono, as the URL parser reads it, its host in
 /// bold: the host that opens, never a look-alike inside the user name.
-fn address(prompt: &Prompt, palette: &Palette) -> El {
+fn address(prompt: &Prompt, look: &Look) -> El {
     let parsed = url::Url::parse(&prompt.url).ok();
     let shown = parsed
         .as_ref()
@@ -182,41 +182,42 @@ fn address(prompt: &Prompt, palette: &Palette) -> El {
             vec![
                 Span::new(host.start, host.end)
                     .weight(WEIGHT_SEMIBOLD)
-                    .color(palette.text_primary),
+                    .color(look.palette.text_primary),
             ]
         })
         .unwrap_or_default();
     el().key("address")
         .w_full()
-        .py(SPACE_SM_PT * 1.5)
-        .px(SPACE_MD_PT)
-        .radius(RADIUS_CONTROL_PT)
-        .fill(palette.surface_code)
+        .py(look.space(SPACE_SM) * 1.5)
+        .px(look.space(SPACE_MD))
+        .radius(look.radius(RADIUS_CONTROL))
+        .fill(look.palette.surface_code)
         .child(
             rich(shown, spans)
-                .font(TYPE_CODE)
-                .color(palette.text_secondary)
+                .font(look.font(TYPE_CODE))
+                .color(look.palette.text_secondary)
                 .wrap_anywhere()
                 .w_full()
                 .selectable(true)
-                .selection_color(palette.text_selection),
+                .selection_color(look.palette.text_selection),
         )
 }
 
 /// "Always open links from {host}", with the task box (§9), here one that
 /// toggles: hover, a focus ring, Space.
-fn always_box(prompt: &Prompt, palette: &Palette) -> El {
+fn always_box(prompt: &Prompt, look: &Look) -> El {
     let label = strings::link_always(&prompt.host);
     let square = el()
-        .size(TASK_BOX_PT, TASK_BOX_PT)
-        .radius(TASK_BOX_RADIUS_PT)
+        .size(look.text_multiple(TASK_BOX), look.text_multiple(TASK_BOX))
+        .radius(look.radius(TASK_BOX_RADIUS))
         .center();
     let square = if prompt.always {
-        square
-            .fill(palette.accent)
-            .child(icon(&crate::icons::CHECK, TASK_CHECK_PT).color(palette.accent_on))
+        square.fill(look.palette.accent).child(
+            icon(&crate::icons::CHECK, look.text_multiple(TASK_CHECK))
+                .color(look.palette.accent_on),
+        )
     } else {
-        square.border(TASK_BOX_OUTLINE_PT, palette.line_strong)
+        square.border(TASK_BOX_OUTLINE_PT, look.palette.line_strong)
     };
     // As wide as the foot row leaves it, so the label wraps beside Cancel
     // instead of running under it.
@@ -224,22 +225,22 @@ fn always_box(prompt: &Prompt, palette: &Palette) -> El {
         .key("open-link-always")
         .w_full()
         .min_w(0.0)
-        .gap(SPACE_MD_PT)
+        .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
-        .hover(palette.surface_hover)
+        .radius(look.radius(RADIUS_CONTROL))
+        .hover(look.palette.surface_hover)
         .role("checkbox")
         .checked(prompt.always)
         .label(label.clone())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(Shell::toggle_trust_link)
         .child(square)
         .child(
             text(label)
                 .key("open-link-always-label")
-                .font(TYPE_SMALL)
-                .color(palette.text_secondary)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_secondary)
                 .grow(1.0)
                 .min_w(0.0)
                 .wrap(),

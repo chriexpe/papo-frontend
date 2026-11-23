@@ -20,7 +20,7 @@ use rune::{El, GrowthSpec, Key, KeyEvent, ScrollSpec, Tx, col, el, text};
 
 use super::Shell;
 use crate::composer::COMPOSER_KEY;
-use crate::design::{PILL_OUTLINE_PT, Palette, SPACE_SM_PT, TYPE_SMALL};
+use crate::design::{Look, PILL_OUTLINE_PT, SPACE_SM, TYPE_SMALL};
 use crate::menu::{OpenMenu, Placement, ReactionsView};
 use crate::strings;
 use crate::timeline::TimelineKey;
@@ -164,7 +164,7 @@ impl Shell {
 }
 
 /// The list the open menu shows, when it shows one.
-pub(super) fn body(shell: &Shell, palette: &Palette) -> Option<El> {
+pub(super) fn body(shell: &Shell, look: &Look) -> Option<El> {
     let view = shell.nav.menu.as_ref()?.reactions.clone()?;
     let open = shell.tabs.shown().filter(|open| open.key == view.key)?;
     let message = open.items.iter().find_map(|item| match item.as_ref() {
@@ -194,7 +194,7 @@ pub(super) fn body(shell: &Shell, palette: &Palette) -> Option<El> {
         .collect();
     let keys: Vec<Uuid> = rows.iter().map(|reactor| reactor.user).collect();
     let all = view.filter.is_none();
-    let palette = *palette;
+    let look = *look;
     let shown = rows.len();
     let count = shown + if waiting { SKELETON_ROWS } else { 0 };
     let list_rows = col()
@@ -212,23 +212,23 @@ pub(super) fn body(shell: &Shell, palette: &Palette) -> Option<El> {
                 })
             },
             move |_shell: &Shell, index| match rows.get(index) {
-                Some(reactor) => rows::reactor_row(reactor, &names[index], all, &palette),
-                None => rows::skeleton_row(&palette),
+                Some(reactor) => rows::reactor_row(reactor, &names[index], all, &look),
+                None => rows::skeleton_row(&look),
             },
         )
         .on_visible_rows(move |shell: &mut Shell, range| shell.reactions_visible(range, shown));
     // Opened from a chip, nothing is behind the list to go back to: no
     // "← Reactions" (Christian, 2026-11-23).
-    let header = (!view.from_chip).then(|| rows::header(&palette));
+    let header = (!view.from_chip).then(|| rows::header(&look));
     let mut body = col()
         .w_full()
-        .gap(SPACE_SM_PT)
+        .gap(look.space(SPACE_SM))
         .children(header)
-        .child(rows::tabs(&chips, view.filter.as_ref(), &palette))
+        .child(rows::tabs(&chips, view.filter.as_ref(), &look))
         .child(
             el().w_full()
                 .h(PILL_OUTLINE_PT)
-                .fill(palette.line_subtle)
+                .fill(look.palette.line_subtle)
                 .a11y_hidden(),
         )
         .child(
@@ -243,8 +243,8 @@ pub(super) fn body(shell: &Shell, palette: &Palette) -> Option<El> {
     if failed {
         body = body.child(
             text(strings::reactions_failed())
-                .font(TYPE_SMALL)
-                .color(palette.danger)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.danger)
                 .role("alert"),
         );
     }

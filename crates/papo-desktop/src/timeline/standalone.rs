@@ -14,7 +14,7 @@ use super::local_time::day_label;
 use super::message_row::{author_name, avatar, created_us};
 use super::view::{Style, TimelineHost};
 use crate::design::{
-    Density, Lead, MESSAGE_BLOCK_GAP_PT, MESSAGE_HEADER_GAP_PT, TYPE_BODY_STRONG, TYPE_CAPTION,
+    Density, Lead, MESSAGE_BLOCK_GAP, MESSAGE_HEADER_GAP, TYPE_BODY_STRONG, TYPE_CAPTION,
 };
 use crate::strings;
 
@@ -75,8 +75,8 @@ fn draw<S: TimelineHost>(
     style: &Style,
     fallback_name: Option<&str>,
 ) -> El {
-    let palette = style.palette;
-    let spacing = style.layout.density.spacing();
+    let look = style.look;
+    let spacing = look.spacing(style.layout.density);
     let resources = open.resources.as_deref();
     let known = message.external_author.is_some()
         || message
@@ -106,7 +106,7 @@ fn draw<S: TimelineHost>(
         },
     );
     let draw = Draw {
-        palette: &palette,
+        look: &look,
         key: open.key,
         message: id,
         copied: None,
@@ -115,7 +115,7 @@ fn draw<S: TimelineHost>(
     };
     // Extra compact has no avatar in the conversation; on its own, a
     // message keeps Normal's.
-    let lead_pt = [spacing.lead, Density::Normal.spacing().lead]
+    let lead_pt = [spacing.lead, look.spacing(Density::Normal).lead]
         .into_iter()
         .find_map(|lead| match lead {
             Lead::Avatar(size_pt) => Some(size_pt),
@@ -127,22 +127,26 @@ fn draw<S: TimelineHost>(
         .w_full()
         .gap(spacing.lead_gap_pt)
         .items_start()
-        .child(avatar(&name, lead_pt, &palette, |tile| tile))
+        .child(avatar(&name, lead_pt, &look, |tile| tile))
         .child(
             col()
                 .grow(1.0)
                 .min_w(0.0)
-                .gap(MESSAGE_BLOCK_GAP_PT)
+                .gap(look.space(MESSAGE_BLOCK_GAP))
                 .child(
                     row()
-                        .gap(MESSAGE_HEADER_GAP_PT)
+                        .gap(look.space(MESSAGE_HEADER_GAP))
                         .items_end()
                         .child(
                             text(name)
-                                .font(TYPE_BODY_STRONG)
-                                .color(palette.text_primary),
+                                .font(look.font(TYPE_BODY_STRONG))
+                                .color(look.palette.text_primary),
                         )
-                        .child(text(time).font(TYPE_CAPTION).color(palette.text_muted)),
+                        .child(
+                            text(time)
+                                .font(look.font(TYPE_CAPTION))
+                                .color(look.palette.text_muted),
+                        ),
                 )
                 .child(content::body::<S>(&doc, &draw)),
         )

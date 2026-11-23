@@ -13,10 +13,9 @@ use super::view::{Style, TimelineHost};
 use super::{OpenTimeline, TimelineKey};
 use crate::badges::{Count, count_pill};
 use crate::design::{
-    FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, JUMP_BUTTON_PT, JUMP_GAP_PT, JUMP_ICON_PT, JUMP_INSET_PT,
-    MENTION_PILL_OVERHANG_PT, MENTION_PILL_RING_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT,
-    RADIUS_PILL_PT, SPACE_LG_PT, SPACE_SM_PT, SPINNER_PERIOD_S, SPINNER_PT, TYPE_SMALL,
-    TYPE_SMALL_MEDIUM,
+    FOCUS_RING_PT, HEADER_PILL_HEIGHT, JUMP_BUTTON_PT, JUMP_GAP, JUMP_ICON_PT, JUMP_INSET, Look,
+    MENTION_PILL_OVERHANG_PT, MENTION_PILL_RING_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL,
+    SPACE_LG, SPACE_SM, SPINNER_PERIOD_S, SPINNER_PT, TYPE_SMALL, TYPE_SMALL_MEDIUM,
 };
 use crate::icons::{ARROW_DOWN, HOURGLASS, SPINNER};
 use crate::strings;
@@ -36,15 +35,20 @@ pub(super) fn jump_stack<S: TimelineHost>(open: &OpenTimeline, style: &Style) ->
         return None;
     }
     let key = open.key;
-    let palette = &style.palette;
+    let look = &style.look;
     let mut stack = col()
         .key("jump")
-        .pin(None, None, Some(JUMP_INSET_PT), Some(JUMP_INSET_PT))
-        .gap(JUMP_GAP_PT)
+        .pin(
+            None,
+            None,
+            Some(look.space(JUMP_INSET)),
+            Some(look.space(JUMP_INSET)),
+        )
+        .gap(look.space(JUMP_GAP))
         .items_end();
     if hourglass {
         stack = stack.child(
-            round_button("hourglass", &HOURGLASS, strings::hourglass(), palette)
+            round_button("hourglass", &HOURGLASS, strings::hourglass(), look)
                 .on_press(move |host: &mut S| host.hourglass_pressed(key)),
         );
     }
@@ -60,13 +64,14 @@ pub(super) fn jump_stack<S: TimelineHost>(open: &OpenTimeline, style: &Style) ->
         } else {
             action.to_owned()
         };
-        let mut button = round_button("down", &ARROW_DOWN, &label, palette)
+        let mut button = round_button("down", &ARROW_DOWN, &label, look)
             .on_press_tx(move |host: &mut S, tx| host.down_pressed(key, tx));
         if arrivals > 0 {
             let badge = count_pill(
                 Count::exact(arrivals),
-                (palette.accent, palette.accent_on),
-                Some(palette.surface_content),
+                (look.palette.accent, look.palette.accent_on),
+                Some(look.palette.surface_content),
+                look,
             );
             let overhang = MENTION_PILL_OVERHANG_PT + MENTION_PILL_RING_PT;
             button = button.child(
@@ -82,68 +87,63 @@ pub(super) fn jump_stack<S: TimelineHost>(open: &OpenTimeline, style: &Style) ->
 }
 
 /// A round glass button holding `glyph`, named `label`.
-fn round_button(
-    key: &'static str,
-    glyph: &'static rune::Icon,
-    label: &str,
-    palette: &Palette,
-) -> El {
+fn round_button(key: &'static str, glyph: &'static rune::Icon, label: &str, look: &Look) -> El {
     row()
         .key(key)
         .size(JUMP_BUTTON_PT, JUMP_BUTTON_PT)
         .center()
         .radius(JUMP_BUTTON_PT / 2.0)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .fill(look.palette.surface_pill)
+        .border(PILL_OUTLINE_PT, look.palette.line_pill)
         .role("button")
         .label(label.to_owned())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .child(
             icon(glyph, JUMP_ICON_PT)
-                .color(palette.text_secondary)
+                .color(look.palette.text_secondary)
                 .a11y_hidden(),
         )
 }
 
 /// "Loading earlier unread messages…" with Cancel, at the timeline's foot,
 /// while ⌛ pages toward the block.
-pub(super) fn seeking_pill<S: TimelineHost>(key: TimelineKey, palette: &Palette) -> El {
+pub(super) fn seeking_pill<S: TimelineHost>(key: TimelineKey, look: &Look) -> El {
     let cancel = text(strings::seek_cancel())
         .key("seek-cancel")
-        .font(TYPE_SMALL_MEDIUM)
-        .color(palette.link)
+        .font(look.font(TYPE_SMALL_MEDIUM))
+        .color(look.palette.link)
         .role("button")
         .focusable(true)
-        .radius(RADIUS_CONTROL_PT)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .radius(look.radius(RADIUS_CONTROL))
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(move |host: &mut S| host.seek_cancelled(key));
     let pill = row()
         .key("seeking")
-        .h(HEADER_PILL_HEIGHT_PT)
-        .px(SPACE_LG_PT)
-        .gap(SPACE_LG_PT)
+        .h(look.space(HEADER_PILL_HEIGHT))
+        .px(look.space(SPACE_LG))
+        .gap(look.space(SPACE_LG))
         .center_y()
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .radius(look.radius(RADIUS_PILL))
+        .fill(look.palette.surface_pill)
+        .border(PILL_OUTLINE_PT, look.palette.line_pill)
         .role("status")
         .live_region(rune::LiveRegion::Polite)
         .child(
             icon(&SPINNER, SPINNER_PT)
-                .color(palette.text_secondary)
+                .color(look.palette.text_secondary)
                 .looping(LoopSpec::rotation(SPINNER_PERIOD_S))
                 .a11y_hidden(),
         )
         .child(
             text(strings::seeking())
-                .font(TYPE_SMALL)
-                .color(palette.text_primary),
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_primary),
         )
         .child(cancel);
     row()
-        .pin(Some(0.0), None, Some(0.0), Some(JUMP_INSET_PT))
+        .pin(Some(0.0), None, Some(0.0), Some(look.space(JUMP_INSET)))
         .justify_center()
-        .gap(SPACE_SM_PT)
+        .gap(look.space(SPACE_SM))
         .child(pill)
 }

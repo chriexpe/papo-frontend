@@ -21,7 +21,7 @@ use papo_sdk_ui::{
 use rune::Span;
 
 use super::Shell;
-use crate::design::{CHIP_PAD_PT, Palette};
+use crate::design::{CHIP_PAD, Look};
 use crate::strings;
 
 /// What the list under the field shows.
@@ -180,11 +180,11 @@ pub(crate) fn field_list(
 
 /// The field's styling: each keyword in `text.muted`, each bound value a
 /// chip in the link colour on `accent.soft`.
-pub(crate) fn field_spans(draft: &SearchDraft, palette: &Palette) -> Vec<Span> {
+pub(crate) fn field_spans(draft: &SearchDraft, look: &Look) -> Vec<Span> {
     let mut spans = Vec::new();
     for filter in &draft.filters {
         let keyword = &filter.keyword_range;
-        spans.push(Span::new(keyword.start, keyword.end).color(palette.text_muted));
+        spans.push(Span::new(keyword.start, keyword.end).color(look.palette.text_muted));
         let bound = matches!(
             filter.resolved,
             FilterValue::Person(_)
@@ -196,8 +196,8 @@ pub(crate) fn field_spans(draft: &SearchDraft, palette: &Palette) -> Vec<Span> {
         if bound && value.start < value.end {
             spans.push(
                 Span::new(value.start, value.end)
-                    .color(palette.link)
-                    .bg(palette.accent_soft, CHIP_PAD_PT),
+                    .color(look.palette.link)
+                    .bg(look.palette.accent_soft, look.space(CHIP_PAD)),
             );
         }
     }

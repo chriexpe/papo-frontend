@@ -13,9 +13,9 @@
 use rune::{El, ScrollSpec, col, el, row, text};
 
 use crate::design::{
-    PILL_OUTLINE_PT, POPUP_PADDING_PT, POPUP_SHADOW_PT, Palette, RADIUS_INDICATOR_PT,
-    RADIUS_POPUP_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, SPACE_XL_PT, SPACE_XXL_PT, TYPE_BODY,
-    TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_DISPLAY, TYPE_SMALL,
+    Look, PILL_OUTLINE_PT, POPUP_PADDING_PT, POPUP_SHADOW_PT, RADIUS_INDICATOR, RADIUS_POPUP,
+    SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XXL, TYPE_BODY, TYPE_CAPTION,
+    TYPE_CAPTION_MEDIUM, TYPE_DISPLAY, TYPE_SMALL,
 };
 mod rows;
 
@@ -37,28 +37,28 @@ const KEYS_COLUMN_PT: f32 = 190.0;
 const SHEET_MAX_HEIGHT_PT: f32 = 560.0;
 
 /// The sheet over the dimmed app. Escape closes it.
-pub(crate) fn view(palette: &Palette) -> El {
+pub(crate) fn view(look: &Look) -> El {
     let (drop, blur) = POPUP_SHADOW_PT;
-    let mut body = col().w_full().gap(SPACE_XL_PT);
+    let mut body = col().w_full().gap(look.space(SPACE_XL));
     for group in groups() {
-        body = body.child(group_view(&group, palette));
+        body = body.child(group_view(&group, look));
     }
     let frame = col()
         .key(SHORTCUTS_KEY)
         .w(SHEET_WIDTH_PT)
         .padding(POPUP_PADDING_PT)
-        .gap(SPACE_LG_PT)
-        .radius(RADIUS_POPUP_PT)
-        .fill(palette.surface_content)
-        .border(PILL_OUTLINE_PT, palette.line_subtle)
-        .shadow(drop, blur, palette.popup_shadow)
+        .gap(look.space(SPACE_LG))
+        .radius(look.radius(RADIUS_POPUP))
+        .fill(look.palette.surface_content)
+        .border(PILL_OUTLINE_PT, look.palette.line_subtle)
+        .shadow(drop, blur, look.palette.popup_shadow)
         .role("dialog")
         .label(strings::shortcuts_title())
         .modal(false, Shell::close_shortcuts)
         .child(
             text(strings::shortcuts_title())
-                .font(TYPE_DISPLAY)
-                .color(palette.text_primary)
+                .font(look.font(TYPE_DISPLAY))
+                .color(look.palette.text_primary)
                 .role("heading")
                 .level(2),
         )
@@ -78,26 +78,26 @@ pub(crate) fn view(palette: &Palette) -> El {
         );
     el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .center()
-        .padding(SPACE_XXL_PT)
-        .fill(palette.scrim)
+        .padding(look.space(SPACE_XXL))
+        .fill(look.palette.scrim)
         .child(frame)
 }
 
 /// A group: its title over the Papo and System columns, then its rows.
-fn group_view(group: &Group, palette: &Palette) -> El {
+fn group_view(group: &Group, look: &Look) -> El {
     let caption = |words: &str| {
         text(words.to_owned())
-            .font(TYPE_CAPTION_MEDIUM)
-            .color(palette.text_muted)
+            .font(look.font(TYPE_CAPTION_MEDIUM))
+            .color(look.palette.text_muted)
     };
     let head = row()
         .w_full()
-        .gap(SPACE_MD_PT)
-        .pb(SPACE_SM_PT)
+        .gap(look.space(SPACE_MD))
+        .pb(look.space(SPACE_SM))
         .child(
             text(group.title)
-                .font(TYPE_BODY)
-                .color(palette.text_primary)
+                .font(look.font(TYPE_BODY))
+                .color(look.palette.text_primary)
                 .role("heading")
                 .level(3)
                 .grow(1.0)
@@ -118,16 +118,16 @@ fn group_view(group: &Group, palette: &Palette) -> El {
             .child(
                 el().w_full()
                     .h(PILL_OUTLINE_PT)
-                    .fill(palette.line_subtle)
+                    .fill(look.palette.line_subtle)
                     .a11y_hidden(),
             )
-            .child(shortcut_row(shortcut, palette));
+            .child(shortcut_row(shortcut, look));
     }
     table
 }
 
 /// One row: the action and its note, Papo's keys, the system's keys.
-fn shortcut_row(shortcut: &Shortcut, palette: &Palette) -> El {
+fn shortcut_row(shortcut: &Shortcut, look: &Look) -> El {
     let spoken = format!(
         "{}: {}, {}",
         shortcut.action,
@@ -136,8 +136,8 @@ fn shortcut_row(shortcut: &Shortcut, palette: &Palette) -> El {
     );
     row()
         .w_full()
-        .gap(SPACE_MD_PT)
-        .py(SPACE_SM_PT)
+        .gap(look.space(SPACE_MD))
+        .py(look.space(SPACE_SM))
         .items_start()
         .role("listitem")
         .label(spoken)
@@ -148,41 +148,49 @@ fn shortcut_row(shortcut: &Shortcut, palette: &Palette) -> El {
                 .a11y_hidden()
                 .child(
                     text(shortcut.action)
-                        .font(TYPE_SMALL)
-                        .color(palette.text_primary)
+                        .font(look.font(TYPE_SMALL))
+                        .color(look.palette.text_primary)
                         .wrap(),
                 )
                 .children(shortcut.note.map(|note| {
                     text(note)
-                        .font(TYPE_CAPTION)
-                        .color(palette.text_muted)
+                        .font(look.font(TYPE_CAPTION))
+                        .color(look.palette.text_muted)
                         .wrap()
                 })),
         )
-        .child(keys_cell(shortcut.papo, palette))
-        .child(keys_cell(shortcut.system, palette))
+        .child(keys_cell(shortcut.papo, look))
+        .child(keys_cell(shortcut.system, look))
 }
 
 /// A column's keys: each combination as key caps, alternatives apart; a
 /// dash with none.
-fn keys_cell(combos: &[Combo], palette: &Palette) -> El {
+fn keys_cell(combos: &[Combo], look: &Look) -> El {
     let mut cell = row()
         .w(KEYS_COLUMN_PT)
-        .gap(SPACE_SM_PT)
+        .gap(look.space(SPACE_SM))
         .wrap()
         .a11y_hidden();
     if combos.is_empty() {
-        return cell.child(text("—").font(TYPE_SMALL).color(palette.text_muted));
+        return cell.child(
+            text("—")
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted),
+        );
     }
     for combo in combos {
-        let mut caps = row().gap(SPACE_SM_PT / 2.0);
+        let mut caps = row().gap(look.space(SPACE_SM) / 2.0);
         for cap in *combo {
             caps = caps.child(
-                el().px(SPACE_SM_PT)
-                    .radius(RADIUS_INDICATOR_PT)
-                    .fill(palette.surface_code)
-                    .border(PILL_OUTLINE_PT, palette.line_subtle)
-                    .child(text(*cap).font(TYPE_SMALL).color(palette.text_primary)),
+                el().px(look.space(SPACE_SM))
+                    .radius(look.radius(RADIUS_INDICATOR))
+                    .fill(look.palette.surface_code)
+                    .border(PILL_OUTLINE_PT, look.palette.line_subtle)
+                    .child(
+                        text(*cap)
+                            .font(look.font(TYPE_SMALL))
+                            .color(look.palette.text_primary),
+                    ),
             );
         }
         cell = cell.child(caps);

@@ -11,7 +11,7 @@ use super::TimelineKey;
 use super::changes::ChangeState;
 use super::view::TimelineHost;
 use crate::design::{
-    FOCUS_RING_PT, Palette, RADIUS_CONTROL_PT, SEND_STATE_ICON_PT, SPACE_SM_PT, TYPE_SMALL,
+    FOCUS_RING_PT, Look, RADIUS_CONTROL, SEND_STATE_ICON_PT, SPACE_SM, TYPE_SMALL,
     TYPE_SMALL_MEDIUM,
 };
 use crate::icons::{CLOCK, WARNING};
@@ -28,25 +28,25 @@ pub(super) fn change_mark<S: TimelineHost>(
     key: TimelineKey,
     local: Uuid,
     state: ChangeState,
-    palette: &Palette,
+    look: &Look,
 ) -> Option<El> {
     let mark = row()
         .key(change_mark_key(local))
         .center()
-        .radius(RADIUS_CONTROL_PT);
+        .radius(look.radius(RADIUS_CONTROL));
     match state {
         ChangeState::Saving => Some(
             mark.role("img")
                 .label(strings::edit_saving())
-                .child(icon(&CLOCK, SEND_STATE_ICON_PT).color(palette.text_muted)),
+                .child(icon(&CLOCK, SEND_STATE_ICON_PT).color(look.palette.text_muted)),
         ),
         ChangeState::EditFailed => Some(
             mark.role("button")
                 .label(strings::edit_failed())
                 .focusable(true)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
                 .on_press(move |host: &mut S| host.change_mark_pressed(key, local))
-                .child(icon(&WARNING, SEND_STATE_ICON_PT).color(palette.danger)),
+                .child(icon(&WARNING, SEND_STATE_ICON_PT).color(look.palette.danger)),
         ),
         ChangeState::Saved | ChangeState::Deleting | ChangeState::DeleteFailed => None,
     }
@@ -57,26 +57,26 @@ pub(super) fn change_mark<S: TimelineHost>(
 pub(super) fn delete_failed_line<S: TimelineHost>(
     key: TimelineKey,
     local: Uuid,
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     let action = |name: &'static str, label: &'static str| {
         text(label)
             .key(name)
-            .font(TYPE_SMALL_MEDIUM)
-            .color(palette.link)
+            .font(look.font(TYPE_SMALL_MEDIUM))
+            .color(look.palette.link)
             .role("button")
             .focusable(true)
-            .radius(RADIUS_CONTROL_PT)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .radius(look.radius(RADIUS_CONTROL))
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
     };
     row()
         .key("delete-failed")
-        .gap(SPACE_SM_PT)
+        .gap(look.space(SPACE_SM))
         .center_y()
         .child(
             text(strings::delete_failed())
-                .font(TYPE_SMALL)
-                .color(palette.danger),
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.danger),
         )
         .child(
             action("delete-retry", strings::delete_try_again())
@@ -84,8 +84,8 @@ pub(super) fn delete_failed_line<S: TimelineHost>(
         )
         .child(
             text("·")
-                .font(TYPE_SMALL)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted)
                 .a11y_hidden(),
         )
         .child(

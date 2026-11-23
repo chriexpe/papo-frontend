@@ -14,9 +14,8 @@ use super::Composer;
 use super::bars::bar;
 use super::picker::Picker;
 use crate::design::{
-    COMPOSER_HEIGHT_PT, COMPOSER_MAX_LINES, FOCUS_RING_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
-    RADIUS_COMPOSER_PT, RADIUS_SEND_PT, SEND_BUTTON_PT, SPACE_LG_PT, SPACE_SM_PT, TYPE_BODY,
-    TYPE_SMALL,
+    COMPOSER_HEIGHT, COMPOSER_MAX_LINES, FOCUS_RING_PT, Look, PILL_ICON_PT, PILL_OUTLINE_PT,
+    RADIUS_COMPOSER, RADIUS_SEND, SEND_BUTTON, SPACE_LG, SPACE_SM, TYPE_BODY, TYPE_SMALL,
 };
 use crate::icons::{CHECK, SEND};
 use crate::shell::Shell;
@@ -49,7 +48,7 @@ pub(crate) struct PillContext<'a> {
 
 /// The pill for the shown channel, with the line over it when there is
 /// one and the reply or edit bar on top.
-pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, palette: &Palette) -> El {
+pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) -> El {
     let PillContext {
         placeholder,
         enter_sends,
@@ -61,18 +60,18 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, palette: &Pal
         return col().key(COMPOSER_PILL_KEY).w_full();
     };
     let loading = composer.is_loading();
-    let style = composer.field_style(palette);
-    let (chip, ink) = (palette.accent_soft, palette.link);
-    let mut field = text_input(&draft.edit, TYPE_BODY)
+    let style = composer.field_style(look);
+    let (chip, ink) = (look.palette.accent_soft, look.palette.link);
+    let mut field = text_input(&draft.edit, look.font(TYPE_BODY))
         .key(COMPOSER_KEY)
         .label(strings::composer_label())
         // A long link or word breaks at the field's edge instead of running
         // past it.
         .wrap_anywhere()
         .grow(1.0)
-        .color(palette.text_primary)
-        .placeholder(placeholder, palette.text_muted)
-        .caret(palette.accent, palette.text_selection)
+        .color(look.palette.text_primary)
+        .placeholder(placeholder, look.palette.text_muted)
+        .caret(look.palette.accent, look.palette.text_selection)
         .spans(style.spans)
         .strikes(style.strikes)
         // Every pill is a mention, drawn as a message draws one.
@@ -94,37 +93,37 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, palette: &Pal
                 shell.composer_key(key, enter_sends, tx)
             });
     }
-    let line_pt = TYPE_BODY.line_px();
+    let line_pt = look.font(TYPE_BODY).line_px();
     // One line sits level with Send; more lines grow the pill upward.
     let field = col()
         .grow(1.0)
         .min_w(0.0)
-        .py(((SEND_BUTTON_PT - line_pt) / 2.0).max(0.0))
+        .py(((look.space(SEND_BUTTON) - line_pt) / 2.0).max(0.0))
         .child(auto_grow(field, 1, COMPOSER_MAX_LINES));
-    let send_inset_pt = (COMPOSER_HEIGHT_PT - SEND_BUTTON_PT) / 2.0;
+    let send_inset_pt = (look.space(COMPOSER_HEIGHT) - look.space(SEND_BUTTON)) / 2.0;
     let editing = draft.mode.editing().is_some();
     let action = if editing {
-        save_button(!loading, palette)
+        save_button(!loading, look)
     } else {
-        send_button(composer.can_send(), palette)
+        send_button(composer.can_send(), look)
     };
     let writing = row()
         .w_full()
-        .min_h(COMPOSER_HEIGHT_PT - PILL_OUTLINE_PT * 2.0)
-        .pl(SPACE_LG_PT)
+        .min_h(look.space(COMPOSER_HEIGHT) - PILL_OUTLINE_PT * 2.0)
+        .pl(look.space(SPACE_LG))
         .pr(send_inset_pt)
         .py(send_inset_pt)
-        .gap(SPACE_SM_PT)
+        .gap(look.space(SPACE_SM))
         .items_end()
         .child(field)
         .child(action);
     let pill = col()
         .key(COMPOSER_PILL_KEY)
         .w_full()
-        .radius(RADIUS_COMPOSER_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
-        .children(bar(&draft.mode, original, me, palette))
+        .radius(look.radius(RADIUS_COMPOSER))
+        .fill(look.palette.surface_pill)
+        .border(PILL_OUTLINE_PT, look.palette.line_pill)
+        .children(bar(&draft.mode, original, me, look))
         .child(writing);
     let note = if composer.chars_over() > 0 {
         let over = u64::try_from(composer.chars_over()).unwrap_or(u64::MAX);
@@ -140,13 +139,13 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, palette: &Pal
         .role("form")
         .label(strings::composer_label())
         .w_full()
-        .gap(SPACE_SM_PT)
+        .gap(look.space(SPACE_SM))
         .children(note.map(|note| {
             text(note)
                 .key("composer-note")
-                .font(TYPE_SMALL)
-                .color(palette.danger)
-                .px(SPACE_LG_PT)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.danger)
+                .px(look.space(SPACE_LG))
                 .role("status")
                 .live_region(rune::LiveRegion::Polite)
                 .wrap()
@@ -156,21 +155,21 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, palette: &Pal
 
 /// Save in Send's place while editing: the check on the accent square,
 /// named "Save edit". An emptied edit saves too: it asks to delete instead.
-fn save_button(enabled: bool, palette: &Palette) -> El {
+fn save_button(enabled: bool, look: &Look) -> El {
     let button = row()
         .key(SAVE_KEY)
-        .size(SEND_BUTTON_PT, SEND_BUTTON_PT)
+        .size(look.space(SEND_BUTTON), look.space(SEND_BUTTON))
         .center()
-        .radius(RADIUS_SEND_PT)
-        .fill(palette.accent)
+        .radius(look.radius(RADIUS_SEND))
+        .fill(look.palette.accent)
         .role("button")
         .label(strings::edit_save())
         .disabled(!enabled)
-        .child(icon(&CHECK, PILL_ICON_PT).color(palette.accent_on));
+        .child(icon(&CHECK, PILL_ICON_PT).color(look.palette.accent_on));
     if enabled {
         button
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
             .on_press_tx(Shell::composer_send)
     } else {
         button.opacity(SEND_IDLE_OPACITY)
@@ -179,21 +178,21 @@ fn save_button(enabled: bool, palette: &Palette) -> El {
 
 /// Send: the accent square with the arrow, dimmed while there is nothing
 /// to send.
-fn send_button(enabled: bool, palette: &Palette) -> El {
+fn send_button(enabled: bool, look: &Look) -> El {
     let button = row()
         .key("composer-send")
-        .size(SEND_BUTTON_PT, SEND_BUTTON_PT)
+        .size(look.space(SEND_BUTTON), look.space(SEND_BUTTON))
         .center()
-        .radius(RADIUS_SEND_PT)
-        .fill(palette.accent)
+        .radius(look.radius(RADIUS_SEND))
+        .fill(look.palette.accent)
         .role("button")
         .label(strings::composer_send())
         .disabled(!enabled)
-        .child(icon(&SEND, PILL_ICON_PT).color(palette.accent_on));
+        .child(icon(&SEND, PILL_ICON_PT).color(look.palette.accent_on));
     if enabled {
         button
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
             .on_press_tx(Shell::composer_send)
     } else {
         button.opacity(SEND_IDLE_OPACITY)

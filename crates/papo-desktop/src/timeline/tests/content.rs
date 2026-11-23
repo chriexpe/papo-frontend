@@ -14,7 +14,8 @@ use rune::{Key, KeyEvent, Mods, Runtime};
 
 use super::{Host, assert_near, find_part, key, message, part, runtime, until_idle};
 use crate::design::{
-    CODE_BLOCK_MAX_LINES, Density, MessageLayout, TYPE_BODY, TYPE_CODE_BLOCK, TYPE_JUMBO,
+    CODE_BLOCK_MAX_LINES, Density, Look, MessageLayout, TYPE_BODY, TYPE_CODE_BLOCK, TYPE_JUMBO,
+    Theme,
 };
 use crate::timeline::TimelineHost;
 use crate::timeline::content::Press;
@@ -129,6 +130,7 @@ fn a_copy_across_messages_heads_each_with_its_author_and_time() {
 
 #[test]
 fn a_long_code_block_stops_at_twenty_lines_and_scrolls_inside() {
+    let look = Look::new(Theme::Graphite);
     let code: Vec<String> = (0..30)
         .map(|n| format!("let line_{n} = \"{}\";", "x".repeat(120)))
         .collect();
@@ -138,7 +140,7 @@ fn a_long_code_block_stops_at_twenty_lines_and_scrolls_inside() {
     let lines = part(&rt, 1, "lines");
     assert_near(
         lines[3],
-        TYPE_CODE_BLOCK.line_height * CODE_BLOCK_MAX_LINES,
+        look.font(TYPE_CODE_BLOCK).line_height * CODE_BLOCK_MAX_LINES,
         "the code's height",
     );
     let body = part(&rt, 1, "body");
@@ -178,13 +180,14 @@ fn a_tables_header_fill_ends_with_its_last_column() {
 
 #[test]
 fn one_to_three_emoji_draw_large_but_not_at_extra_compact() {
+    let look = Look::new(Theme::Graphite);
     let items = || Vector::from(vec![message(1, "ana", 0, "🎉🔥")]);
     // The system's emoji font may stand a little taller than the line it
     // sits on, so the heights are bounds.
     let rt = runtime(items(), normal());
     let jumbo = part(&rt, 1, "t0")[3];
     assert!(
-        jumbo >= TYPE_JUMBO.line_height - 0.5,
+        jumbo >= look.font(TYPE_JUMBO).line_height - 0.5,
         "a jumbo line: {jumbo}"
     );
     let compact = MessageLayout {
@@ -193,5 +196,8 @@ fn one_to_three_emoji_draw_large_but_not_at_extra_compact() {
     };
     let rt = runtime(items(), compact);
     let line = part(&rt, 1, "t0")[3];
-    assert!(line < TYPE_BODY.line_height * 1.5, "a text line: {line}");
+    assert!(
+        line < look.font(TYPE_BODY).line_height * 1.5,
+        "a text line: {line}"
+    );
 }

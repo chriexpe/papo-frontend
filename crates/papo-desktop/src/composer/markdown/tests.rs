@@ -3,7 +3,7 @@
 use papo_sdk_ui::message_content::{PreviewSpanKind, preview_spans};
 
 use super::{field_style, parts};
-use crate::design::{Palette, Theme};
+use crate::design::{Look, Theme};
 
 /// For each span of `kind` in `source`: its content and its markers, as text.
 fn split(source: &str, kind: PreviewSpanKind) -> Vec<(String, Vec<String>)> {
@@ -112,27 +112,27 @@ fn a_fence_still_open_is_all_marker_until_the_code_starts() {
 
 #[test]
 fn markers_come_after_the_content_so_their_dimming_wins() {
-    let palette = Palette::new(Theme::Graphite);
+    let look = Look::new(Theme::Graphite);
     let source = "**oi**";
-    let style = field_style(source, &preview_spans(source), &palette);
+    let style = field_style(source, &preview_spans(source), &look);
     let last = style.spans.last().unwrap();
-    assert_eq!(last.color, Some(palette.text_muted));
+    assert_eq!(last.color, Some(look.palette.text_muted));
     assert_eq!(style.spans[0].weight, Some(crate::design::WEIGHT_SEMIBOLD));
     assert_eq!((style.spans[0].start, style.spans[0].end), (2, 4));
 }
 
 #[test]
 fn a_strikethrough_draws_a_line_over_its_content_only() {
-    let palette = Palette::new(Theme::Graphite);
+    let look = Look::new(Theme::Graphite);
     let source = "~~oi~~";
-    let style = field_style(source, &preview_spans(source), &palette);
+    let style = field_style(source, &preview_spans(source), &look);
     assert_eq!(style.strikes, [(2, 4, None)]);
 }
 
 #[test]
 fn no_style_changes_the_text_s_size() {
-    let palette = Palette::new(Theme::Graphite);
+    let look = Look::new(Theme::Graphite);
     let source = "# h\n**b** *i* `c` ||s|| [l](https://example.org) > q\n```\nx\n```";
-    let style = field_style(source, &preview_spans(source), &palette);
+    let style = field_style(source, &preview_spans(source), &look);
     assert!(style.spans.iter().all(|span| span.size.is_none()));
 }

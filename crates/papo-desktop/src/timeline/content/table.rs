@@ -23,10 +23,10 @@ pub(super) fn table<S: TimelineHost>(
     draw: &Draw<'_>,
     ink: Color,
 ) -> El {
-    let palette = draw.palette;
+    let look = draw.look;
     let header_font = TextStyle {
         weight: WEIGHT_SEMIBOLD,
-        ..TYPE_TABLE
+        ..look.font(TYPE_TABLE)
     };
     let widths = column_widths(header, rows, header_font, draw);
     let line = |row: usize, column: usize| {
@@ -45,7 +45,7 @@ pub(super) fn table<S: TimelineHost>(
             .w(widths.get(column).copied().unwrap_or_default())
             .py(vertical)
             .px(horizontal)
-            .border_sides(line(row, column), palette.line_subtle)
+            .border_sides(line(row, column), look.palette.line_subtle)
             .border_layout()
             .child(run_text::<S>(run, font, ink, draw, None).align(align))
     };
@@ -56,15 +56,14 @@ pub(super) fn table<S: TimelineHost>(
         .role("row")
         .children(header.iter().enumerate().map(|(column, run)| {
             cell(run, 0, column, header_font)
-                .fill(palette.surface_sidebar)
+                .fill(look.palette.surface_sidebar)
                 .role("columnheader")
         }));
     let body = rows.iter().enumerate().map(|(index, cells)| {
         row().key(format!("r{}", index + 1)).role("row").children(
-            cells
-                .iter()
-                .enumerate()
-                .map(|(column, run)| cell(run, index + 1, column, TYPE_TABLE).role("cell")),
+            cells.iter().enumerate().map(|(column, run)| {
+                cell(run, index + 1, column, look.font(TYPE_TABLE)).role("cell")
+            }),
         )
     });
     el().key("table")
@@ -81,7 +80,14 @@ fn column_widths(
     header_font: TextStyle,
     draw: &Draw<'_>,
 ) -> Vec<f32> {
-    let most = rune::text::measure(&"0".repeat(TABLE_CELL_CHARS), &[], TYPE_TABLE, None).0;
+    let look = draw.look;
+    let most = rune::text::measure(
+        &"0".repeat(TABLE_CELL_CHARS),
+        &[],
+        look.font(TYPE_TABLE),
+        None,
+    )
+    .0;
     let natural = |run: &Run, font: TextStyle| {
         let spans = layout_spans(run, font, draw);
         rune::text::measure(&run.text, &spans, font, None)
@@ -101,7 +107,7 @@ fn column_widths(
                 .chain(
                     rows.iter()
                         .filter_map(|cells| cells.get(column))
-                        .map(|run| natural(run, TYPE_TABLE)),
+                        .map(|run| natural(run, look.font(TYPE_TABLE))),
                 )
                 .fold(0.0, f32::max);
             widest.ceil() + 2.0 * horizontal + 2.0 * TABLE_LINE_PT
