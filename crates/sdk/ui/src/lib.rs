@@ -11,6 +11,7 @@ pub use pins::{ChannelPins, PinsEvent, PinsStream, PinsSubscription};
 mod reactions;
 pub use reactions::{
     DEFAULT_QUICK_REACTIONS, ReactionChip, Reactor, Reactors, quick_reactions, reaction_chips,
+    unresolved_reactions,
 };
 mod message_attention;
 pub use message_attention::{Attention, attention};

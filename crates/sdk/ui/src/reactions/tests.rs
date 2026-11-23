@@ -222,3 +222,15 @@ fn a_filtered_tab_keeps_paging_until_it_holds_its_count() {
     assert!(!list.wants_more(Some(&cheese), &chips));
     assert!(list.exhausted());
 }
+
+#[test]
+fn refused_and_unknown_reactions_are_the_unresolved_ones() {
+    let queue = outgoing(vec![
+        (OperationState::Failed, "🧀"),
+        (OperationState::Queued, "🧀"),
+        (OperationState::Unknown, "👍"),
+        (OperationState::Sent, "🔥"),
+    ]);
+    let unresolved: Vec<_> = unresolved_reactions(&queue).map(|op| op.id).collect();
+    assert_eq!(unresolved, [Uuid::from_u128(900), Uuid::from_u128(902)]);
+}

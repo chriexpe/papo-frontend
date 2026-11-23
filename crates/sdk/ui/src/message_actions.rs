@@ -16,7 +16,7 @@ use crate::{ChannelCapabilities, TimelineItem};
     clippy::struct_excessive_bools,
     reason = "independent actions, each offered or not on its own"
 )]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct MessageActions {
     /// Reply to it.
     pub reply: bool,
@@ -33,7 +33,7 @@ pub struct MessageActions {
 }
 
 /// Which way a pin action goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum PinChange {
     /// The message is not pinned: pin it.
@@ -43,7 +43,7 @@ pub enum PinChange {
 }
 
 /// Whose deletion a delete is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DeleteAs {
     /// The author deletes their own message.

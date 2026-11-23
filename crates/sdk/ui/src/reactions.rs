@@ -9,7 +9,7 @@ mod tests;
 use std::collections::HashMap;
 
 use papo_sdk::{
-    Message, OperationKind, OperationState, OutgoingSnapshot, Uuid,
+    Message, Operation, OperationKind, OperationState, OutgoingSnapshot, Uuid,
     operations::interactions::{MessageReactionGroup, ReactorPage},
 };
 
@@ -19,7 +19,7 @@ use crate::{ChannelCapabilities, operations::ReactionEmoji};
 pub const DEFAULT_QUICK_REACTIONS: [&str; 8] = ["😂", "👍", "❤️", "🔥", "😭", "👀", "🙏", "😮"];
 
 /// One emoji's reactions on a message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReactionChip {
     /// The emoji.
     pub emoji: ReactionEmoji,
@@ -80,6 +80,24 @@ pub fn reaction_chips(message: &Message, outgoing: &OutgoingSnapshot) -> Vec<Rea
             })
         })
         .collect()
+}
+
+/// This account's reactions the backend refused (Failed) or whose outcome is not known
+/// (Unknown). Neither holds its channel, and neither is retried: a later reaction on the same
+/// emoji replaces it. A client says so where the reaction was made and discards each one, as
+/// nothing else removes them from the queue.
+pub fn unresolved_reactions(outgoing: &OutgoingSnapshot) -> impl Iterator<Item = &Operation> {
+    outgoing
+        .operations
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|operation| {
+            matches!(operation.kind.as_ref(), OperationKind::Reaction { .. })
+                && matches!(
+                    operation.state,
+                    OperationState::Failed | OperationState::Unknown
+                )
+        })
 }
 
 /// This account's `count` quick reactions: its most used Unicode emoji first (`usage` is the
