@@ -296,6 +296,7 @@ fn an_account_switch_drops_the_other_accounts_conversation() {
             crate::server_list::ServerList {
                 servers: vec![lumen, entry("Mirante", &["avisos"])],
                 direct: crate::badges::Badge::default(),
+                account_badges: BTreeMap::new(),
             },
             tx,
         );

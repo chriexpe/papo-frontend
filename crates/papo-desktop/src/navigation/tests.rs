@@ -45,6 +45,7 @@ fn list(names: &[&str]) -> ServerList {
             .map(|name| server(name, &["general", "media"]))
             .collect(),
         direct: Badge::default(),
+        account_badges: std::collections::BTreeMap::new(),
     }
 }
 
@@ -106,6 +107,7 @@ fn a_picked_channel_the_server_deleted_falls_back_to_the_first() {
     nav.servers_changed(ServerList {
         servers: vec![server("lumen", &["general"])],
         direct: Badge::default(),
+        account_badges: std::collections::BTreeMap::new(),
     });
     assert_eq!(nav.selected_channel(), Some("lumen-general"));
 }

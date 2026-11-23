@@ -1,8 +1,10 @@
 //! The accounts on the selected server (`docs/design.md` §8): the server pill
 //! grown downward from its ⇄, listing every account saved on the server with
-//! the shown one ticked, then Add account. Picking a row makes that account
-//! the server's active one; the SDK keeps each account's session and cache
-//! apart.
+//! the shown one ticked, then Add account. Direct's Accounts pill grows the
+//! same list upward for every server at once, each account with its unread
+//! badge (the SDK keeps every account's session live). Picking a row makes
+//! that account its server's active one; the SDK keeps each account's
+//! session and cache apart.
 //!
 //! Owns the grown pill's sections, their keys, keyboard and accessibility.
 //! The pill's own row is `channel_pane`'s; switching and adding are the
@@ -11,14 +13,15 @@
 use papo_sdk::AccountId;
 use rune::{El, col, el, icon, row, text};
 
-use crate::channel_pane::avatar;
+use crate::badges::Badge;
+use crate::channel_pane::{account_pill, avatar, row_badge, switch_button};
 use crate::design::{
-    FOCUS_RING_PT, PANE_EDGE_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT,
-    ROW_ICON_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION,
-    TYPE_CAPTION_MEDIUM,
+    FOCUS_RING_PT, PANE_EDGE_PT, PANE_PILL_HEIGHT_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT,
+    RADIUS_PILL_PT, ROW_ICON_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM,
+    TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
 };
 use crate::icons::{CHECK, PLUS};
-use crate::server_list::{AccountEntry, ServerEntry};
+use crate::server_list::{AccountEntry, ServerEntry, ServerList};
 use crate::shell::Shell;
 use crate::strings;
 
@@ -26,10 +29,15 @@ use crate::strings;
 pub(crate) const ACCOUNTS_KEY: &str = "accounts";
 /// The element key of Add account.
 pub(crate) const ADD_ACCOUNT_KEY: &str = "add-account";
+/// The element key of Direct's Accounts pill.
+pub(crate) const DIRECT_ACCOUNTS_KEY: &str = "direct-accounts";
+/// The element key of Direct's accounts, grown from its pill.
+pub(crate) const DIRECT_ACCOUNTS_LIST_KEY: &str = "direct-accounts-list";
 
-/// The element key of an account's row.
+/// The element key of an account's row: unique across servers, as
+/// Direct lists every server's accounts.
 pub(crate) fn account_key(account: AccountId) -> String {
-    format!("account-{}", account.user())
+    format!("account-{}-{}", account.server(), account.user())
 }
 
 /// The server pill grown: `pill_row` (the pill's own row) on top, then the
@@ -41,7 +49,7 @@ pub(crate) fn grown(server: &ServerEntry, pill_row: El, palette: &Palette) -> El
     let rows = server
         .accounts
         .iter()
-        .map(|account| account_row(account, Some(account.id) == shown, palette));
+        .map(|account| account_row(account, Some(account.id) == shown, None, palette));
     // Written in capitals, as the catalog writes the rest of the caption.
     let title = strings::accounts_on(&server.name.to_uppercase());
     let accounts = col()
@@ -93,9 +101,9 @@ fn divider(palette: &Palette) -> El {
     el().w_full().h(PANE_EDGE_PT).fill(palette.line_subtle)
 }
 
-/// One account: its avatar, name and handle, ticked when it is the one the
-/// channel list shows.
-fn account_row(account: &AccountEntry, shown: bool, palette: &Palette) -> El {
+/// One account: its avatar, name and handle, its `badge` when given, ticked
+/// when it is the one its server shows.
+fn account_row(account: &AccountEntry, shown: bool, badge: Option<Badge>, palette: &Palette) -> El {
     let id = account.id;
     let names = col()
         .grow(1.0)
@@ -112,14 +120,17 @@ fn account_row(account: &AccountEntry, shown: bool, palette: &Palette) -> El {
                 .color(palette.text_muted)
                 .max_lines(1),
         );
+    let spoken = strings::account_row(&account.name, &account.username);
+    let label = badge.map_or_else(|| spoken.clone(), |badge| badge.label(&spoken));
     let mut line = choice(account_key(id), palette)
         .role("radio")
-        .label(strings::account_row(&account.name, &account.username))
+        .label(label)
         .checked(shown)
         .focus_selected(shown)
         .on_press_tx(move |shell: &mut Shell, tx| shell.pick_account(id, tx))
         .child(avatar(&account.name, None, palette))
-        .child(names);
+        .child(names)
+        .children(badge.and_then(|badge| row_badge(badge, palette)));
     if shown {
         line = line.child(icon(&CHECK, ROW_ICON_PT).color(palette.accent));
     }
@@ -153,3 +164,97 @@ fn choice(key: String, palette: &Palette) -> El {
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
 }
+
+/// Direct's account pill, at the bottom of the pane: `account` (the one
+/// the picked conversation is from, else the first server's), as a
+/// server's account pill shows it, with ⇄ at its end carrying what every
+/// account on every server has unread. ⇄ opens every server's accounts.
+pub(crate) fn direct_pill(
+    account: &AccountEntry,
+    servers: &ServerList,
+    open: bool,
+    palette: &Palette,
+) -> El {
+    let badge = Badge::sum(servers.account_badges.values().copied());
+    let switch = switch_button(
+        DIRECT_ACCOUNTS_KEY,
+        badge,
+        open,
+        Shell::toggle_direct_accounts,
+        palette,
+    );
+    account_pill(account, Some(switch), palette)
+}
+
+/// Every server's accounts, grown upward from Direct's account pill over
+/// the bottom of the pane: a section per server, each account with its
+/// unread badge and the shown one ticked. Escape or a click outside
+/// closes it.
+pub(crate) fn direct_grown(servers: &ServerList, palette: &Palette) -> El {
+    let mut list = col().w_full();
+    for (index, server) in servers.servers.iter().enumerate() {
+        if server.accounts.is_empty() {
+            continue;
+        }
+        if index > 0 {
+            list = list.child(divider(palette));
+        }
+        let shown = server.account.as_ref().map(|account| account.id);
+        let title = strings::accounts_on(&server.name.to_uppercase());
+        let rows = server.accounts.iter().map(|account| {
+            let badge = servers.account_badges.get(&account.id).copied();
+            account_row(account, Some(account.id) == shown, badge, palette)
+        });
+        list = list.child(
+            section()
+                .child(
+                    el().w_full()
+                        .min_w(0.0)
+                        .px(SPACE_MD_PT)
+                        .pb(SPACE_SM_PT)
+                        .child(
+                            text(title.as_str())
+                                .font(TYPE_CAPTION_MEDIUM)
+                                .color(palette.text_muted)
+                                .max_lines(1)
+                                .w_full()
+                                .a11y_hidden(),
+                        ),
+                )
+                .child(
+                    col()
+                        .w_full()
+                        .role("radiogroup")
+                        .label(title.as_str())
+                        .focus_group()
+                        .children(rows),
+                ),
+        );
+    }
+    col()
+        .key(DIRECT_ACCOUNTS_LIST_KEY)
+        .pin(
+            Some(SPACE_MD_PT),
+            None,
+            Some(SPACE_MD_PT),
+            Some(SPACE_MD_PT + PANE_PILL_HEIGHT_PT + SPACE_SM_PT),
+        )
+        .radius(RADIUS_PILL_PT)
+        .fill(palette.surface_pill)
+        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .role("dialog")
+        .label(strings::direct_accounts())
+        .modal(true, Shell::close_accounts)
+        .child(
+            col()
+                .w_full()
+                .max_h(DIRECT_ACCOUNTS_MAX_PT)
+                .scroll(rune::ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(list),
+        )
+}
+
+/// The tallest Direct's accounts grow before they scroll, in points.
+const DIRECT_ACCOUNTS_MAX_PT: f32 = 420.0;

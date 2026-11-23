@@ -85,6 +85,7 @@ fn the_pills_blocked_switch_lists_the_people_blocked_with_unblock() {
             crate::server_list::ServerList {
                 servers,
                 direct: crate::badges::Badge::default(),
+                account_badges: std::collections::BTreeMap::new(),
             },
             tx,
         );

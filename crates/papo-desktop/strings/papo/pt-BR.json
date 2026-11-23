@@ -76,8 +76,6 @@
   "server_card.switch_account": "Trocar de conta",
   "accounts.title": "CONTAS EM {{server}}",
   "accounts.row": "{{name}}, @{{username}}",
-  "accounts.count.one": "{{count}} conta",
-  "accounts.count.other": "{{count}} contas",
   "accounts.add": "Adicionar conta",
   "timeline.label": "Mensagens",
   "timeline.today": "Hoje",
@@ -320,5 +318,6 @@
   "direct.new": "Nova mensagem",
   "direct.find": "Procurar alguém",
   "direct.find_none": "Ninguém encontrado",
-  "direct.find_list": "Pessoas"
+  "direct.find_list": "Pessoas",
+  "accounts.direct": "Contas"
 }

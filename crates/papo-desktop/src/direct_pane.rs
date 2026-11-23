@@ -71,6 +71,13 @@ pub(crate) fn view(shell: &Shell, palette: &Palette) -> El {
     } else {
         conversations(shell, palette)
     };
+    let servers = shell.navigation().servers();
+    let accounts_open = shell.navigation().direct_accounts_open();
+    let accounts = direct_account(shell).map(|account| {
+        crate::account_switch::direct_pill(account, servers, accounts_open, palette)
+    });
+    // Last, so it draws over the conversations and the pill.
+    let grown = accounts_open.then(|| crate::account_switch::direct_grown(servers, palette));
     col()
         .key("channel-pane")
         .w(SIDEBAR_WIDTH_PT)
@@ -95,6 +102,22 @@ pub(crate) fn view(shell: &Shell, palette: &Palette) -> El {
                 })
                 .child(list),
         )
+        .children(accounts)
+        .children(grown)
+}
+
+/// The account Direct's pill shows: the one the picked conversation is
+/// from, else the first server's shown one.
+fn direct_account(shell: &Shell) -> Option<&crate::server_list::AccountEntry> {
+    let servers = &shell.navigation().servers().servers;
+    let picked = shell
+        .navigation()
+        .picked_dm()
+        .map(|picked| picked.id.account);
+    let shown = || servers.iter().filter_map(|server| server.account.as_ref());
+    picked
+        .and_then(|picked| shown().find(|account| account.id == picked))
+        .or_else(|| shown().next())
 }
 
 /// The conversations, newest activity first; a line when there are none.

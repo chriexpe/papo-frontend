@@ -68,6 +68,30 @@ impl Badge {
         Badge::new(aggregate.has_unread, aggregate.mention_count)
     }
 
+    /// Several accounts' badges as one: their mentions summed (a lower bound
+    /// when any is), else unread when any is.
+    pub(crate) fn sum(badges: impl IntoIterator<Item = Badge>) -> Badge {
+        let mut total: Option<Count> = None;
+        let mut unread = false;
+        for badge in badges {
+            unread |= badge.is_unread();
+            if let Some(count) = badge.mentions() {
+                total = Some(match total {
+                    Some(sum) => Count {
+                        value: sum.value.saturating_add(count.value),
+                        at_least: sum.at_least || count.at_least,
+                    },
+                    None => count,
+                });
+            }
+        }
+        match total {
+            Some(count) => Badge::Mentions(count),
+            None if unread => Badge::Unread,
+            None => Badge::Nothing,
+        }
+    }
+
     /// Whether the row or tile reads as unread: bold, with its dot or bar.
     pub(crate) fn is_unread(self) -> bool {
         !matches!(self, Badge::Nothing)
@@ -240,5 +264,21 @@ mod tests {
             Badge::of_aggregate(&aggregate).mentions().unwrap().shown(),
             "2+"
         );
+    }
+
+    #[test]
+    fn several_accounts_sum_their_mentions_else_say_unread() {
+        let three = Badge::new(Some(true), UnreadCount::Exact(3));
+        let some = Badge::new(Some(true), UnreadCount::AtLeast(2));
+        assert_eq!(
+            Badge::sum([three, Badge::Unread])
+                .mentions()
+                .unwrap()
+                .shown(),
+            "3"
+        );
+        assert_eq!(Badge::sum([three, some]).mentions().unwrap().shown(), "5+");
+        assert_eq!(Badge::sum([Badge::Nothing, Badge::Unread]), Badge::Unread);
+        assert_eq!(Badge::sum([]), Badge::Nothing);
     }
 }

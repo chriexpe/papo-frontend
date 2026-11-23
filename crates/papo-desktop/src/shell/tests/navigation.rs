@@ -62,6 +62,7 @@ pub(super) fn with_servers() -> Runtime<Shell> {
                     entry("Mirante", &["avisos"]),
                 ],
                 direct: Badge::default(),
+                account_badges: std::collections::BTreeMap::new(),
             },
             tx,
         );
@@ -317,6 +318,7 @@ fn with_badges() -> Runtime<Shell> {
             ServerList {
                 servers: vec![lumen, mirante],
                 direct: Badge::default(),
+                account_badges: std::collections::BTreeMap::new(),
             },
             tx,
         );

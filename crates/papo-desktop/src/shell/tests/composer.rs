@@ -45,6 +45,7 @@ pub(super) fn in_general() -> Runtime<Shell> {
             ServerList {
                 servers: vec![lumen],
                 direct: crate::badges::Badge::default(),
+                account_badges: std::collections::BTreeMap::new(),
             },
             tx,
         );
@@ -377,6 +378,7 @@ fn an_account_switch_shows_the_other_accounts_draft_not_this_ones() {
             ServerList {
                 servers: vec![lumen],
                 direct: crate::badges::Badge::default(),
+                account_badges: std::collections::BTreeMap::new(),
             },
             tx,
         );
