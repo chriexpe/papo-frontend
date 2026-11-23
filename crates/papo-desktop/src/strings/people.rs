@@ -139,3 +139,28 @@ pub(crate) fn shortcut_profile() -> &'static str {
 pub(crate) fn direct_roles_in(server: &str) -> String {
     template!("direct.roles_in", "server" => server)
 }
+
+/// Direct's pill while it shows the people this account blocks.
+pub(crate) fn direct_blocked_title() -> &'static str {
+    text!("direct.blocked_title")
+}
+
+/// The pill's button that shows or hides them.
+pub(crate) fn direct_blocked_button() -> &'static str {
+    text!("direct.blocked_button")
+}
+
+/// The list of blocked people, for assistive technology.
+pub(crate) fn direct_blocked_list() -> &'static str {
+    text!("direct.blocked_list")
+}
+
+/// No one blocked.
+pub(crate) fn direct_blocked_empty() -> &'static str {
+    text!("direct.blocked_empty")
+}
+
+/// A blocked person's Unblock: "Unblock Lia".
+pub(crate) fn direct_unblock(name: &str) -> String {
+    template!("direct.unblock", "name" => name)
+}

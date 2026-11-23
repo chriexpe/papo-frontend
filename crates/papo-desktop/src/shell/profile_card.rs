@@ -8,8 +8,8 @@
 //! click outside, focus going back) is the menu's, the person and their
 //! profile are the SDK's, and no picture is drawn yet (a later slice).
 
-use papo_sdk::Uuid;
 use papo_sdk::operations::social::DirectAccess;
+use papo_sdk::{AccountId, Uuid};
 use papo_sdk_ui::{DirectMessageId, requested_profile};
 use rune::Tx;
 
@@ -155,8 +155,8 @@ impl Shell {
         match action {
             PersonAction::Message => self.message_person(key, user),
             PersonAction::CopyId => tx.copy(user.to_string()),
-            PersonAction::Block => self.set_blocked(key, user, true),
-            PersonAction::Unblock => self.set_blocked(key, user, false),
+            PersonAction::Block => self.set_blocked(key.account, user, true),
+            PersonAction::Unblock => self.set_blocked(key.account, user, false),
             PersonAction::Ban => self.ban(key, user),
             // Kept by `menu_picked`: the card stays for them.
             PersonAction::AskBan | PersonAction::CancelBan => {}
@@ -208,13 +208,13 @@ impl Shell {
         });
     }
 
-    pub(super) fn set_blocked(&mut self, key: TimelineKey, user: Uuid, blocked: bool) {
+    pub(crate) fn set_blocked(&mut self, account: AccountId, user: Uuid, blocked: bool) {
         let Some(sdk) = &self.sdk else {
             return;
         };
         let updates = sdk.updates();
         sdk.run(move |client| async move {
-            let done = match client.session(key.account) {
+            let done = match client.session(account) {
                 Ok(session) => {
                     let operations = session.operations();
                     let sent = if blocked {
@@ -226,6 +226,12 @@ impl Shell {
                 }
                 Err(error) => Err(error.to_string()),
             };
+            if done.is_ok() {
+                updates.send(move |shell| {
+                    shell.blocks_changed(user);
+                    true
+                });
+            }
             if let Err(error) = done {
                 log::warn!("a block was not changed: {error}");
                 let refusal = if blocked {

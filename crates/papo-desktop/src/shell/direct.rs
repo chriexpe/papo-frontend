@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use papo_sdk::Uuid;
 use papo_sdk::operations::social::DirectAccess;
 use papo_sdk_ui::{DirectMessageId, DirectMessageItem};
 use rune::{El, Tx, row, text};
@@ -33,7 +34,7 @@ pub(crate) enum Asked {
     Pending,
     /// The backend's answer.
     Answered(DirectAccess),
-    /// The read failed: asked again when the conversation is picked again.
+    /// The read failed: asked again at the next pick.
     Failed,
 }
 
@@ -45,11 +46,6 @@ impl Shell {
         self.nav.direct_changed(rows.iter());
         self.direct = rows;
         self.drop_unshown_dms();
-        // Back in the list, a conversation is open again; one the picked
-        // conversation left asks the backend why.
-        let direct = &self.direct;
-        self.dm_access
-            .retain(|id, _| !direct.iter().any(|row| &row.id == id));
         self.check_picked_dm();
         if self.pick_awaited_dm(tx) {
             return true;
@@ -114,6 +110,13 @@ impl Shell {
         &self.direct
     }
 
+    /// Switches Direct between the conversations and the people the
+    /// accounts block.
+    pub(crate) fn toggle_direct_blocked(&mut self) {
+        self.worked_outside();
+        self.nav.toggle_direct_blocked();
+    }
+
     /// Shows Direct in the server's place.
     pub(crate) fn select_direct(&mut self, tx: &mut Tx) {
         self.worked_outside();
@@ -131,10 +134,8 @@ impl Shell {
     pub(crate) fn pick_dm(&mut self, row: Arc<DirectMessageItem>, tx: &mut Tx) {
         self.worked_outside();
         self.awaited_dm = None;
-        // Picked again: a failed read may be asked again.
-        if self.dm_access.get(&row.id) == Some(&Asked::Failed) {
-            self.dm_access.remove(&row.id);
-        }
+        // Each pick asks the backend afresh (`check_picked_dm`).
+        self.dm_access.remove(&row.id);
         let (key, user) = (
             TimelineKey {
                 account: row.id.account,
@@ -143,6 +144,7 @@ impl Shell {
             row.user,
         );
         self.nav.pick_dm(row);
+        self.check_picked_dm();
         // An open profile pane shows the newly picked person.
         if self.layout.dm_profile() {
             self.load_profile(key, user);
@@ -210,42 +212,43 @@ impl Shell {
         }
     }
 
-    /// Asks the backend about the picked conversation once it left the
-    /// list: a refusal and a hide elsewhere look the same there.
+    /// Asks the backend about the picked conversation, once per pick: the
+    /// list does not hear of a block the other person made, nor tells a
+    /// refusal from a hide elsewhere, so it can't say whether a
+    /// conversation is open.
     fn check_picked_dm(&mut self) {
         let Some(picked) = self.nav.picked_dm() else {
             return;
         };
-        let listed = self.direct.iter().any(|row| row.id == picked.id);
-        if listed || self.dm_access.contains_key(&picked.id) {
+        if self.dm_access.contains_key(&picked.id) {
             return;
         }
         let Some(sdk) = &self.sdk else {
             return;
         };
-        let (id, user) = (picked.id.clone(), picked.user);
+        let id = picked.id.clone();
         self.dm_access.insert(id.clone(), Asked::Pending);
         let updates = sdk.updates();
         sdk.run(move |client| async move {
             let answer = match client.session(id.account) {
-                Ok(session) => session
-                    .operations()
-                    .direct_access(id.channel, user)
-                    .await
-                    .map_err(|error| error.to_string()),
+                Ok(session) => match session.operations().direct_conversation(id.channel).await {
+                    Ok(_) => Ok(DirectAccess::Open),
+                    Err(error) => DirectAccess::proven_by(&error).ok_or_else(|| error.to_string()),
+                },
                 Err(error) => Err(error.to_string()),
             };
             updates.send_tx(move |shell, tx| shell.dm_access_answered(id, answer, tx));
         });
     }
 
-    /// The backend's answer about conversation `id`, kept until it is back
-    /// in the list or its account goes; an answer for one back in the list,
-    /// or no longer asked about, is dropped. A refusal shows the state
-    /// pill; a conversation the account is no longer in closes; open (a
-    /// hide elsewhere reads as open) needs no pill, and "you blocked" is
-    /// read from the live block list. A failed read waits for the next
-    /// pick. Returns whether the view changed.
+    /// The backend's answer about conversation `id`, kept until it is
+    /// picked again, unblocked or its account goes; an answer no longer
+    /// asked for is dropped. A refusal shows the state pill, even while a
+    /// stale list still holds the conversation; a conversation the account
+    /// is no longer in closes; open (a hide elsewhere reads as open) needs
+    /// no pill, and "you blocked" is read from the live block list. A
+    /// failed read waits for the next pick. Returns whether the view
+    /// changed.
     pub(super) fn dm_access_answered(
         &mut self,
         id: DirectMessageId,
@@ -255,14 +258,8 @@ impl Shell {
         if !matches!(self.dm_access.get(&id), Some(Asked::Pending)) {
             return false;
         }
-        let listed = self.direct.iter().any(|row| row.id == id);
         match answer {
-            Ok(DirectAccess::Refused) if !listed => {
-                self.dm_access
-                    .insert(id, Asked::Answered(DirectAccess::Refused));
-                true
-            }
-            Ok(DirectAccess::Gone) if !listed => {
+            Ok(DirectAccess::Gone) => {
                 self.dm_access.remove(&id);
                 if self.nav.picked_dm().is_some_and(|picked| picked.id == id) {
                     self.nav.unpick_dm();
@@ -270,21 +267,30 @@ impl Shell {
                 }
                 true
             }
-            // Kept, so a conversation hidden elsewhere is asked about once,
-            // not on every list change.
-            Ok(access) if !listed => {
+            Ok(access) => {
                 self.dm_access.insert(id, Asked::Answered(access));
-                false
-            }
-            Ok(_) => {
-                self.dm_access.remove(&id);
-                false
+                access == DirectAccess::Refused
             }
             Err(error) => {
                 log::debug!("a conversation's access was not read: {error}");
                 self.dm_access.insert(id, Asked::Failed);
                 false
             }
+        }
+    }
+
+    /// This account blocked or unblocked `user`: their conversations are
+    /// asked about again, since the backend refuses a conversation blocked
+    /// in either direction.
+    pub(super) fn blocks_changed(&mut self, user: Uuid) {
+        let picked = self
+            .nav
+            .picked_dm()
+            .filter(|picked| picked.user == user)
+            .map(|picked| picked.id.clone());
+        if let Some(id) = picked {
+            self.dm_access.remove(&id);
+            self.check_picked_dm();
         }
     }
 
@@ -349,7 +355,7 @@ pub(super) fn state_pill(
                 .label(strings::card_unblock())
                 .focusable(true)
                 .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
-                .on_press(move |shell: &mut Shell| shell.set_blocked(key, user, false))
+                .on_press(move |shell: &mut Shell| shell.set_blocked(key.account, user, false))
                 .child(
                     text(strings::card_unblock())
                         .font(TYPE_BODY_STRONG)

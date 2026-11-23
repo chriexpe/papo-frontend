@@ -97,6 +97,7 @@ fn a_signed_in_server_takes_its_name_owner_icon_and_channels_from_its_resources(
             text_channels,
             voice_channels,
             direct_badges: BTreeMap::new(),
+            blocked: Vec::new(),
         },
     )]);
     let list = project(&registry, &resources, &ServerBadgesSnapshot::default());

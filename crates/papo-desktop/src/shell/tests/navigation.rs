@@ -46,6 +46,7 @@ pub(super) fn entry(name: &str, channels: &[&str]) -> ServerEntry {
             badge: Badge::default(),
         }],
         direct_badges: std::collections::BTreeMap::new(),
+        blocked: Vec::new(),
         badge: Badge::default(),
     }
 }

@@ -29,6 +29,9 @@ pub(crate) struct Navigation {
     /// Direct is shown in the selected server's place; the server stays
     /// remembered for when the person goes back to it.
     direct: bool,
+    /// Direct shows the people the accounts block instead of the
+    /// conversations.
+    direct_blocked: bool,
     /// The direct conversation picked in Direct, as its row last read: it
     /// stays picked when it leaves the list (a block, a hide elsewhere), so
     /// the conversation can say why.
@@ -126,6 +129,17 @@ impl Navigation {
     /// Whether Direct is shown.
     pub(crate) fn direct_shown(&self) -> bool {
         self.direct
+    }
+
+    /// Whether Direct shows the blocked people instead of the
+    /// conversations.
+    pub(crate) fn direct_blocked(&self) -> bool {
+        self.direct_blocked
+    }
+
+    /// Switches Direct between the conversations and the blocked people.
+    pub(crate) fn toggle_direct_blocked(&mut self) {
+        self.direct_blocked = !self.direct_blocked;
     }
 
     /// Shows Direct in the server's place; the server's accounts close.

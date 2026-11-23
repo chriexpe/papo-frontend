@@ -28,22 +28,70 @@ use crate::person_avatar::person_avatar;
 use crate::shell::Shell;
 use crate::strings;
 
+pub(crate) mod blocked;
+
+use blocked::{blocked_button, blocked_list};
+
 /// The element key of a direct conversation's row.
 pub(crate) fn dm_row_key(row: &DirectMessageItem) -> String {
     format!("dm-{}-{}", row.id.account.user(), row.id.channel)
 }
 
-/// Direct: the pane pill, then the conversations.
+/// Direct: the pane pill, then the conversations, or the people the
+/// accounts block.
 pub(crate) fn view(shell: &Shell, palette: &Palette) -> El {
+    let blocked = shell.navigation().direct_blocked();
+    let title = if blocked {
+        strings::direct_blocked_title()
+    } else {
+        strings::direct_title()
+    };
     let pill = chrome(
-        pill_row().child(
-            text(strings::direct_title())
-                .font(TYPE_TITLE)
-                .color(palette.text_primary)
-                .role("heading"),
-        ),
+        pill_row()
+            .child(
+                text(title)
+                    .font(TYPE_TITLE)
+                    .color(palette.text_primary)
+                    .role("heading")
+                    .grow(1.0)
+                    .min_w(0.0),
+            )
+            .child(blocked_button(blocked, palette)),
         palette,
     );
+    let list = if blocked {
+        blocked_list(shell, palette)
+    } else {
+        conversations(shell, palette)
+    };
+    col()
+        .key("channel-pane")
+        .w(SIDEBAR_WIDTH_PT)
+        .h_full()
+        .padding(SPACE_MD_PT)
+        .gap(SPACE_SM_PT)
+        .fill(palette.surface_sidebar)
+        .child(pill)
+        .child(
+            col()
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                // A scroll here is work outside a header panel; it scrolls
+                // as usual.
+                .on_wheel(|shell: &mut Shell, _wheel, _tx| {
+                    shell.worked_outside();
+                    false
+                })
+                .child(list),
+        )
+}
+
+/// The conversations, newest activity first; a line when there are none.
+fn conversations(shell: &Shell, palette: &Palette) -> El {
     let palette_copy = *palette;
     // Only the rows on screen are built: a person can have many
     // conversations.
@@ -77,39 +125,14 @@ pub(crate) fn view(shell: &Shell, palette: &Palette) -> El {
             },
         );
     // With none, a line in the list's place.
-    let list = if shell.direct_rows().is_empty() {
-        el().padding(SPACE_MD_PT).child(
+    if shell.direct_rows().is_empty() {
+        return el().padding(SPACE_MD_PT).child(
             text(strings::direct_empty())
                 .font(TYPE_CAPTION)
                 .color(palette.text_muted),
-        )
-    } else {
-        list
-    };
-    col()
-        .key("channel-pane")
-        .w(SIDEBAR_WIDTH_PT)
-        .h_full()
-        .padding(SPACE_MD_PT)
-        .gap(SPACE_SM_PT)
-        .fill(palette.surface_sidebar)
-        .child(pill)
-        .child(
-            col()
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                // A scroll here is work outside a header panel; it scrolls
-                // as usual.
-                .on_wheel(|shell: &mut Shell, _wheel, _tx| {
-                    shell.worked_outside();
-                    false
-                })
-                .child(list),
-        )
+        );
+    }
+    list
 }
 
 /// One row, as drawn.

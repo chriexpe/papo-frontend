@@ -274,5 +274,10 @@
   "direct.profile": "Perfil",
   "shortcut.profile": "Ctrl+U",
   "direct.roles_in": "Cargos em {{server}}",
-  "menu.view_profile": "Ver perfil"
+  "menu.view_profile": "Ver perfil",
+  "direct.blocked_title": "Bloqueados",
+  "direct.blocked_button": "Pessoas bloqueadas",
+  "direct.blocked_empty": "Você não bloqueou ninguém.",
+  "direct.blocked_list": "Pessoas bloqueadas",
+  "direct.unblock": "Desbloquear {{name}}"
 }

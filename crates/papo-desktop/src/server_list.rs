@@ -80,6 +80,9 @@ pub(crate) struct ServerEntry {
     pub(crate) voice_channels: Vec<ChannelEntry>,
     /// The shown account's direct conversations' badges, by channel.
     pub(crate) direct_badges: BTreeMap<Uuid, Badge>,
+    /// The people the shown account blocks: their conversations are not in
+    /// Direct's list, so its Blocked list shows them.
+    pub(crate) blocked: Vec<BlockedPerson>,
     /// The server's badge: its shown account's unread and mentions in the
     /// server's channels (its DMs are Direct's).
     pub(crate) badge: Badge,
@@ -116,6 +119,14 @@ pub(crate) struct ChannelEntry {
     pub(crate) badge: Badge,
 }
 
+/// A person the account blocks, as Direct's Blocked list shows them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BlockedPerson {
+    pub(crate) id: Uuid,
+    /// Their nickname or username; none when the account does not know it.
+    pub(crate) name: Option<String>,
+}
+
 /// What one account session's resources say about its server.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct ServerResources {
@@ -126,6 +137,8 @@ pub(crate) struct ServerResources {
     pub(crate) voice_channels: Vec<ChannelEntry>,
     /// Each direct conversation's badge, by channel.
     pub(crate) direct_badges: BTreeMap<Uuid, Badge>,
+    /// The people the account blocks, in the backend's order.
+    pub(crate) blocked: Vec<BlockedPerson>,
 }
 
 /// Builds the rail from the registry and the resources of each server's
@@ -171,6 +184,7 @@ pub(crate) fn project(
                 direct_badges: found
                     .map(|found| found.direct_badges.clone())
                     .unwrap_or_default(),
+                blocked: found.map(|found| found.blocked.clone()).unwrap_or_default(),
                 // The shown account's server channels, so the tile always
                 // agrees with the rows below it, active account or not; its
                 // DMs count on Direct instead.
@@ -441,6 +455,24 @@ fn resources(
         text_channels,
         voice_channels,
         direct_badges,
+        blocked: snapshot
+            .blocks
+            .iter()
+            .map(|id| {
+                let user = snapshot.users.get(id);
+                BlockedPerson {
+                    id,
+                    name: user
+                        .and_then(|user| {
+                            papo_sdk_ui::display_name(
+                                user.nickname.as_deref(),
+                                user.username.as_deref(),
+                            )
+                        })
+                        .map(str::to_owned),
+                }
+            })
+            .collect(),
     }
 }
 

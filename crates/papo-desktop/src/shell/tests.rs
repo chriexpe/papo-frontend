@@ -15,6 +15,7 @@ mod accounts;
 mod channel_keys;
 mod composer;
 mod direct;
+mod direct_lists;
 mod links;
 mod message_menu;
 mod navigation;

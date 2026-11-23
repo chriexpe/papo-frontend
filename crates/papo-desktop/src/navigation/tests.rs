@@ -33,6 +33,7 @@ fn server(name: &str, channels: &[&str]) -> ServerEntry {
             .collect(),
         voice_channels: Vec::new(),
         direct_badges: std::collections::BTreeMap::new(),
+        blocked: Vec::new(),
         badge: Badge::default(),
     }
 }

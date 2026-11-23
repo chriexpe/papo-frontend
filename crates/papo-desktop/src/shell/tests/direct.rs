@@ -15,7 +15,7 @@ use crate::direct_pane::dm_row_key;
 use crate::live_watch::Posted;
 use crate::rail::DIRECT_KEY;
 
-fn dm(channel: u128, user: Uuid, name: &str, server: &str) -> Arc<DirectMessageItem> {
+pub(super) fn dm(channel: u128, user: Uuid, name: &str, server: &str) -> Arc<DirectMessageItem> {
     Arc::new(DirectMessageItem {
         id: DirectMessageId {
             account: ana(server).id,
@@ -200,9 +200,10 @@ fn a_conversation_the_backend_refuses_says_so_in_the_text_pills_place() {
     rt.frame(FRAME_S);
     assert_eq!(rt.state.picked_dm_access(), Some(DirectAccess::Refused));
     assert!(tree(&rt).contains("You can't message Lia."));
-    // Back in the list, it is open again.
+    // Picked again, it is asked about afresh.
     rt.update(move |shell, tx| {
-        shell.direct_posted([row].into_iter().collect(), tx);
+        shell.direct_posted([Arc::clone(&row)].into_iter().collect(), tx);
+        shell.pick_dm(row, tx);
     });
     assert!(rt.state.picked_dm_access().is_none());
 }
@@ -244,27 +245,29 @@ fn ctrl_u_shows_and_hides_a_dms_profile_pane() {
         tree(&rt).contains("@lia"),
         "the person, as the card shows them"
     );
+    assert!(tree(&rt).contains("Block"), "the pane blocks them too");
     click(&mut rt, crate::shell::profile_pane::PROFILE_BUTTON_KEY);
     rt.frame(FRAME_S);
     assert!(!pane(&rt));
 }
 
 #[test]
-fn an_answer_that_comes_after_the_conversation_is_back_in_the_list_is_dropped() {
+fn a_refusal_shows_even_while_a_stale_list_still_holds_the_conversation() {
     use papo_sdk::operations::social::DirectAccess;
     let mut rt = direct();
     let row = dm(1, lia(), "Lia", "Lumen");
     click(&mut rt, &dm_row_key(&row));
+    // The other person blocked this account: the list never heard.
     let id = row.id.clone();
     rt.update(move |shell, tx| {
-        shell.direct_posted(DirectRows::new(), tx);
         shell
             .dm_access
             .insert(id.clone(), crate::shell::direct::Asked::Pending);
-        shell.direct_posted([row].into_iter().collect(), tx);
         shell.dm_access_answered(id, Ok(DirectAccess::Refused), tx);
     });
-    assert!(rt.state.picked_dm_access().is_none());
+    rt.frame(FRAME_S);
+    assert_eq!(rt.state.picked_dm_access(), Some(DirectAccess::Refused));
+    assert!(tree(&rt).contains("You can't message Lia."));
 }
 
 #[test]
@@ -350,65 +353,4 @@ fn ctrl_shift_d_shows_direct_and_the_list_builds_its_rows() {
         tree(&rt).contains("Lia, on Lumen"),
         "the virtual list's row"
     );
-}
-
-/// Direct with `count` conversations with people on Lumen.
-fn many(count: u128) -> (Runtime<Shell>, Vec<Arc<DirectMessageItem>>) {
-    let mut rt = with_servers();
-    let rows: Vec<_> = (0..count)
-        .map(|n| {
-            dm(
-                100 + n,
-                Uuid::from_u128(0x500 + n),
-                &format!("P{n}"),
-                "Lumen",
-            )
-        })
-        .collect();
-    let posted = rows.clone();
-    rt.update(move |shell, tx| {
-        shell.direct_posted(posted.into_iter().collect(), tx);
-        shell.select_direct(tx);
-    });
-    rt.frame(FRAME_S);
-    (rt, rows)
-}
-
-#[test]
-fn the_arrows_walk_a_long_list_past_the_rows_built_on_screen() {
-    let (mut rt, rows) = many(40);
-    let first = dm_row_key(&rows[0]);
-    rt.update(move |_shell, tx| tx.focus(first, true));
-    rt.frame(FRAME_S);
-    for _ in 0..30 {
-        press(&mut rt, Key::Down);
-    }
-    let focused = rt
-        .elements()
-        .into_iter()
-        .find(|element| element.focused)
-        .and_then(|element| element.key);
-    assert_eq!(focused, Some(dm_row_key(&rows[30])));
-}
-
-#[test]
-fn coming_back_to_direct_shows_the_picked_conversation_far_down() {
-    let (mut rt, rows) = many(40);
-    let picked = Arc::clone(&rows[35]);
-    rt.update(move |shell, tx| {
-        shell.pick_dm(picked, tx);
-        shell.select_server(named("Lumen"), tx);
-    });
-    rt.frame(FRAME_S);
-    rt.update(Shell::select_direct);
-    for _ in 0..10 {
-        rt.frame(FRAME_S);
-    }
-    let key = dm_row_key(&rows[35]);
-    let shown = rt.elements().into_iter().any(|element| {
-        element.key.as_deref() == Some(key.as_str())
-            && element.visible[2] > 0.0
-            && element.visible[3] > 0.0
-    });
-    assert!(shown, "its row is built and on screen");
 }
