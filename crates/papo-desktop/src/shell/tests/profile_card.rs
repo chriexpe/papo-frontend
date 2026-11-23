@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use super::navigation::click;
-use super::replying::{conversation, lia, resources_owned_by};
+use super::replying::{conversation, item, lia, resources_owned_by};
 use super::*;
 use crate::timeline::rows::author_key;
 
@@ -205,4 +205,33 @@ fn view_profile_in_the_message_menu_turns_it_into_the_authors_card() {
         .map(|card| card.user);
     assert_eq!(card, Some(lia()));
     assert_eq!(focused(&rt).as_deref(), Some("card-message"));
+}
+
+#[test]
+fn a_mention_opens_its_persons_card_beside_it() {
+    let mut rt = conversation("");
+    rt.update(|shell, _tx| {
+        let open = shell.tabs.shown_mut().unwrap();
+        let me = open.key.account.user();
+        let text = format!("ask {}", papo_sdk::mentions::encode_user_mention(lia()));
+        // Message 4 (yours) now mentions Lia.
+        let mention = item(4, me, &text, None);
+        open.items.set(3, mention);
+    });
+    for _ in 0..10 {
+        rt.frame(FRAME_S);
+    }
+    let (x, y) = rt
+        .find(&format!("#person/{}", lia()))
+        .expect("the mention is a link");
+    rt.pointer_down(x, y);
+    rt.frame(FRAME_S);
+    rt.pointer_up(x, y);
+    rt.frame(FRAME_S);
+    let menu = rt.state.navigation().menu.as_ref().expect("a card");
+    assert_eq!(menu.card.as_ref().map(|card| card.user), Some(lia()));
+    let crate::menu::Placement::BesideBox([left, top, width, height]) = menu.placement else {
+        panic!("beside the mention");
+    };
+    assert!((left..left + width).contains(&x) && (top..top + height).contains(&y));
 }

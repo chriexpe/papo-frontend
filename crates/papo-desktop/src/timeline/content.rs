@@ -36,6 +36,8 @@ pub(crate) enum Press {
     Spoiler(u32),
     /// The "(edited)" marker, which only explains itself.
     Edited,
+    /// A person's mention: their card.
+    Person(Uuid),
 }
 
 impl Press {
@@ -46,6 +48,7 @@ impl Press {
             Press::Url(url) => url.clone(),
             Press::Spoiler(index) => format!("#spoiler/{index}"),
             Press::Edited => "#edited".to_owned(),
+            Press::Person(user) => format!("#person/{user}"),
         }
     }
 
@@ -55,6 +58,9 @@ impl Press {
         }
         if let Some(index) = id.strip_prefix("#spoiler/") {
             return index.parse().ok().map(Press::Spoiler);
+        }
+        if let Some(user) = id.strip_prefix("#person/") {
+            return Uuid::parse_str(user).ok().map(Press::Person);
         }
         Some(Press::Url(id.to_owned()))
     }

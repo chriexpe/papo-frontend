@@ -139,6 +139,9 @@ pub(crate) enum Placement {
     BelowEnd(String),
     /// Beside the pointer, at this point in window points.
     AtPointer([f32; 2]),
+    /// Beside this box (left, top, width, height) in window points, top
+    /// aligned with it: a mention, which is no element of its own.
+    BesideBox([f32; 4]),
 }
 
 /// One item.
@@ -299,7 +302,7 @@ pub(crate) fn view(menu: &OpenMenu, body: Option<El>, palette: &Palette, cx: &Cx
         Placement::Beside(key) => (key.clone(), Side::Right, Align::Start, menu.width_pt),
         Placement::Below(key) => (key.clone(), Side::Bottom, Align::Start, menu.width_pt),
         Placement::BelowEnd(key) => (key.clone(), Side::Bottom, Align::End, menu.width_pt),
-        Placement::AtPointer(_) => (
+        Placement::AtPointer(_) | Placement::BesideBox(_) => (
             POINTER_KEY.to_owned(),
             Side::Right,
             Align::Start,
@@ -339,16 +342,18 @@ pub(crate) fn view(menu: &OpenMenu, body: Option<El>, palette: &Palette, cx: &Cx
         .children(content)
 }
 
-/// The zero-size point a menu beside the pointer hangs from, while one is
-/// open there.
+/// What a menu beside the pointer, or beside a box, hangs from while one is
+/// open there: a zero-size point, or the box.
 pub(crate) fn pointer_point(menu: &OpenMenu) -> Option<El> {
-    let Placement::AtPointer([x, y]) = menu.placement else {
-        return None;
+    let [x, y, width, height] = match menu.placement {
+        Placement::AtPointer([x, y]) => [x, y, 0.0, 0.0],
+        Placement::BesideBox(rect) => rect,
+        _ => return None,
     };
     Some(
         el().key(POINTER_KEY)
             .pin(Some(x), Some(y), None, None)
-            .size(0.0, 0.0)
+            .size(width, height)
             .a11y_hidden(),
     )
 }

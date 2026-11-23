@@ -127,11 +127,13 @@ pub(super) enum Mark {
         url: String,
     },
     /// A mention's label between its pads; `known` is false for a person
-    /// the server does not know.
+    /// the server does not know. `person` is who a known person mention
+    /// names, whose card it opens.
     Mention {
         range: Range<usize>,
         known: bool,
         bold: bool,
+        person: Option<papo_sdk::Uuid>,
     },
     /// Spoiler `index` of its message: its words between its pads.
     Spoiler {
