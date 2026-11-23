@@ -124,11 +124,6 @@ impl Shell {
             .is_some_and(|open| open.end_copied(clock_s))
     }
 
-    /// Whether the pointer is on a message of the shown conversation.
-    pub(super) fn pointer_on_messages(&self) -> bool {
-        self.content.hovered.is_some()
-    }
-
     /// The pointer entered or left `message`.
     pub(crate) fn message_hovered_in(&mut self, key: TimelineKey, message: Uuid, hovered: bool) {
         if !self.tabs.is_shown(key) {

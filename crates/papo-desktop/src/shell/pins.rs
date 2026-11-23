@@ -1,15 +1,20 @@
 //! The pins panel from the shell's side (`docs/design.md` §10, Pins and
-//! PanelPeek): 📌 or Ctrl+P opens it (fetching the pins again, as a pin of
+//! `PanelPeek`): 📌 or Ctrl+P opens it (fetching the pins again, as a pin of
 //! a message never loaded arrives only with a fetch), a pin opens in the
 //! conversation the way ⌛ opens its block, with `highlight.selected`, and
-//! the panel stays open marking it. The pointer leaving it then shrinks it
-//! to its header and that pin (`PanelPeek`): the pointer leaves before any
-//! press on a message or scroll of the conversation, which never reach the
-//! panel. 📌, Ctrl+P, the pointer coming back onto it or a click on it
-//! stretch it back. With nothing opened, a press on the conversation or a
-//! scroll of it under the pointer closes it (leaving it alone does not).
-//! Escape closes it.
-//! Unpin applies at once.
+//! the panel stays open marking it.
+//!
+//! One rule decides the rest, and search shares it: input that starts
+//! outside the panel (a press anywhere else in the window, a wheel over the
+//! conversation, the channels or the rail, typing, a key on a message)
+//! means you are back in the conversation (`worked_outside`). The panel
+//! then shrinks to its header and the opened pin, or closes when nothing
+//! was opened from it. Input on it (the pointer coming onto it, a press,
+//! 📌 or Ctrl+P) stretches it back, the opened pin in view. The app acting
+//! on its own (messages arriving, a jump, a resize) never counts. Once a
+//! pin is opened, the pointer leaving the panel shrinks it early
+//! (Christian, 2026-11-23). Escape closes it, giving the keyboard back to
+//! where it was.
 
 use std::time::Duration;
 
@@ -20,12 +25,18 @@ use rune::Tx;
 use super::Shell;
 use crate::design::JUMP_HIGHLIGHT_S;
 use crate::timeline::anchor::Anchor;
+use crate::timeline::rows::message_key;
 use crate::timeline::{TimelineKey, watch};
 
 /// The element key of 📌, which the panel grows from.
 pub(crate) const PINS_BUTTON_KEY: &str = "pins-button";
 /// The element key of the open panel.
 pub(crate) const PINS_PANEL_KEY: &str = "pins-panel";
+
+/// The element key of pin `id`'s row in the panel.
+pub(crate) fn pin_row_key(id: Uuid) -> String {
+    format!("pin-row-{id}")
+}
 
 /// The open pins panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,61 +52,83 @@ pub(crate) struct PinsPanel {
 }
 
 impl Shell {
-    /// 📌 or Ctrl+P: the panel opens, or a shrunk one stretches back, or
-    /// an open one closes.
-    pub(crate) fn pins_pressed(&mut self, tx: &mut Tx) {
+    /// 📌 or Ctrl+P (`keyboard`): the panel opens, or a shrunk one stretches
+    /// back, or an open one closes.
+    pub(crate) fn pins_pressed(&mut self, keyboard: bool, tx: &mut Tx) {
         let Some(key) = self.tabs.shown().map(|open| open.key) else {
             return;
         };
-        match &mut self.pins_panel {
-            Some(panel) if panel.key == key && panel.peek => panel.peek = false,
+        match self.pins_panel {
+            Some(panel) if panel.key == key && panel.peek => {
+                self.stretch_pins(tx);
+                return;
+            }
             Some(panel) if panel.key == key => {
                 self.close_pins(tx);
                 return;
             }
-            _ => {
-                self.nav.menu = None;
-                self.pins_panel = Some(PinsPanel {
-                    key,
-                    opened: None,
-                    peek: false,
-                    opening: 0,
-                });
-                self.refresh_pins(key);
-            }
+            _ => {}
         }
-        tx.focus(PINS_PANEL_KEY, true);
+        self.nav.menu = None;
+        self.pins_panel = Some(PinsPanel {
+            key,
+            opened: None,
+            peek: false,
+            opening: 0,
+        });
+        self.pins_return_focus = tx.focused().map(str::to_owned);
+        self.refresh_pins(key);
+        // The keyboard follows a keyboard open; a click moves no focus.
+        if keyboard {
+            tx.focus(PINS_PANEL_KEY, true);
+        }
     }
 
-    /// Escape, or 📌 on the open panel: it closes, and 📌 gets the
-    /// keyboard.
+    /// Escape, or 📌 on the open panel: it closes, and what had the
+    /// keyboard before it opened gets it back.
     pub(crate) fn close_pins(&mut self, tx: &mut Tx) {
         if self.pins_panel.take().is_some() {
-            tx.focus(PINS_BUTTON_KEY, true);
+            match self.pins_return_focus.take() {
+                Some(key) => tx.focus(key, true),
+                None => tx.focus(PINS_BUTTON_KEY, true),
+            }
         }
     }
 
-    /// A click outside the panel: it shrinks to the opened pin, or closes
-    /// when none was opened.
-    pub(crate) fn pins_outside(&mut self) {
-        match &mut self.pins_panel {
-            Some(panel) if panel.opened.is_some() => panel.peek = true,
-            Some(_) => self.pins_panel = None,
-            None => {}
-        }
-    }
-
-    /// The conversation scrolled under the pointer: the panel shrinks to
-    /// the opened pin, or closes with none opened, as for a press outside.
-    /// Returns whether it changed.
-    pub(crate) fn pins_scrolled(&mut self) -> bool {
+    /// Input that started outside the panel (a press elsewhere, a wheel
+    /// over the conversation, the channels or the rail, typing, a key on a
+    /// message): the panel shrinks to the opened pin, or closes when
+    /// nothing was opened. The one rule every outside path calls. Returns
+    /// whether it changed.
+    pub(crate) fn worked_outside(&mut self) -> bool {
         let Some(panel) = self.shown_pins_panel() else {
             return false;
         };
-        if panel.peek {
-            return false;
+        match panel.opened {
+            Some(_) if panel.peek => false,
+            Some(_) => {
+                if let Some(panel) = &mut self.pins_panel {
+                    panel.peek = true;
+                }
+                true
+            }
+            None => {
+                self.pins_panel = None;
+                true
+            }
         }
-        self.pins_outside();
+    }
+
+    /// A shrunk panel stretches back, its opened pin brought into view, so
+    /// what is under the pointer stays the pin it pointed at.
+    fn stretch_pins(&mut self, tx: &mut Tx) -> bool {
+        let Some(panel) = self.pins_panel.as_mut().filter(|panel| panel.peek) else {
+            return false;
+        };
+        panel.peek = false;
+        if let Some(id) = panel.opened {
+            tx.scroll_into_view(pin_row_key(id));
+        }
         true
     }
 
@@ -145,20 +178,16 @@ impl Shell {
 
     /// The pointer came onto the panel: a shrunk one stretches back (a
     /// scroll over it comes this way too).
-    pub(crate) fn pins_hovered(&mut self) -> bool {
-        match &mut self.pins_panel {
-            Some(panel) if panel.peek => {
-                panel.peek = false;
-                true
-            }
-            _ => false,
-        }
+    pub(crate) fn pins_hovered(&mut self, tx: &mut Tx) -> bool {
+        self.stretch_pins(tx)
     }
 
-    /// A pin was pressed (or Enter on it): it shows in the conversation, in
-    /// place when the window holds it, else in a window opened at its exact
-    /// place, with `highlight.selected`; the panel marks it.
-    pub(crate) fn open_pin(&mut self, key: TimelineKey, id: Uuid, tx: &mut Tx) {
+    /// A pin was pressed, or Enter on it (`keyboard`): it shows in the
+    /// conversation, in place when the window holds it, else in a window
+    /// opened at its exact place, with `highlight.selected`; the panel
+    /// marks it. From the keyboard, the message takes the keyboard (the
+    /// conversation is where you work now) and the panel shrinks to it.
+    pub(crate) fn open_pin(&mut self, key: TimelineKey, id: Uuid, keyboard: bool, tx: &mut Tx) {
         let Some(panel) = self.pins_panel.as_mut().filter(|panel| panel.key == key) else {
             return;
         };
@@ -171,6 +200,10 @@ impl Shell {
         };
         if open.holds(id) {
             self.jump_to_original(key, id, tx);
+            if keyboard {
+                tx.focus(message_key(id), true);
+                self.worked_outside();
+            }
             return;
         }
         // A pin the window does not hold: there is no fetch by ID, so the
@@ -179,6 +212,10 @@ impl Shell {
             return;
         };
         let offset_pt = open.tracker.jump_offset_pt();
+        if keyboard {
+            // The window opens around it; the panel gives way meanwhile.
+            self.worked_outside();
+        }
         let offsets = std::sync::Arc::clone(&self.local_time.offsets);
         let Some(sdk) = &self.sdk else {
             return;
@@ -251,6 +288,24 @@ impl Shell {
             capabilities,
         )
         .pin == Some(PinChange::Unpin)
+    }
+
+    /// The shown timeline's pins changed: an opened pin no longer among
+    /// them is forgotten, so the panel never shrinks to nothing.
+    pub(crate) fn pins_changed(&mut self, key: TimelineKey) {
+        let Some(open) = self.tabs.open_mut(key) else {
+            return;
+        };
+        let Some(panel) = self.pins_panel.as_mut().filter(|panel| panel.key == key) else {
+            return;
+        };
+        let gone = panel
+            .opened
+            .is_some_and(|id| open.pins.pinned(id) == Some(false));
+        if gone {
+            panel.opened = None;
+            panel.peek = false;
+        }
     }
 
     /// Another conversation shows: what belonged to the one that showed

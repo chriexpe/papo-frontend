@@ -11,7 +11,7 @@ use std::sync::Arc;
 use rune::{Cx, El, KeyEvent, ScrollSpec, col, el, icon, memo, row, text};
 
 use super::Shell;
-use super::pins::{PINS_BUTTON_KEY, PINS_PANEL_KEY, PinsPanel};
+use super::pins::{PINS_BUTTON_KEY, PINS_PANEL_KEY, PinsPanel, pin_row_key};
 use crate::design::{
     FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
     RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, SPACE_XL_PT,
@@ -103,7 +103,7 @@ fn pins_button(open: bool, palette: &Palette) -> El {
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
         .hover(palette.surface_hover)
-        .on_press_tx(|shell: &mut Shell, tx| shell.pins_pressed(tx))
+        .on_press_tx(|shell: &mut Shell, tx| shell.pins_pressed(false, tx))
         .child(icon(&crate::icons::PIN, PILL_ICON_PT).color(tone))
 }
 
@@ -158,7 +158,6 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
             .border(PILL_OUTLINE_PT, palette.line_pill)
             .role("dialog")
             .label(strings::pins_title())
-            .focusable(true)
             .pin(None, Some(SPACE_LG_PT), Some(SPACE_LG_PT), None)
             .on_key(|shell: &mut Shell, event: &KeyEvent, tx| {
                 if event.key == rune::Key::Escape {
@@ -172,9 +171,9 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
             // of the panel's, and the pointer always leaves it first.
             // Coming back onto the shrunk panel (or scrolling over it, which
             // comes this way) stretches it back.
-            .on_hover_change(|shell: &mut Shell, hovered, _tx| {
+            .on_hover_change(|shell: &mut Shell, hovered, tx| {
                 if hovered {
-                    shell.pins_hovered();
+                    shell.pins_hovered(tx);
                 } else {
                     shell.pins_left();
                 }
@@ -182,9 +181,12 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
             // A press on the shrunk panel stretches it back.
             .on_background_press_tx(|shell: &mut Shell, tx| {
                 if shell.shown_pins_panel().is_some_and(|panel| panel.peek) {
-                    shell.pins_pressed(tx);
+                    shell.pins_pressed(false, tx);
                 }
             })
+            // After the background press, which leaves an element unfocusable:
+            // the panel takes the keyboard Ctrl+P gives it.
+            .focusable(true)
             .child(head)
             .children(body),
     )
@@ -316,7 +318,7 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
     memo(format!("pin-{id}"), version, || {
         let shown = standalone_message::<Shell>(open, id, &pin.message, &pin.content, style);
         let mut line = col()
-            .key(format!("pin-row-{id}"))
+            .key(pin_row_key(id))
             .w_full()
             .padding(SPACE_LG_PT)
             .radius(RADIUS_CONTROL_PT)
@@ -325,7 +327,14 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
             .focusable(true)
             .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
             .hover_group()
-            .on_press_tx(move |shell: &mut Shell, tx| shell.open_pin(key, id, tx))
+            .on_press_tx(move |shell: &mut Shell, tx| shell.open_pin(key, id, false, tx))
+            .on_key(move |shell: &mut Shell, event: &KeyEvent, tx| {
+                if event.key != rune::Key::Enter {
+                    return false;
+                }
+                shell.open_pin(key, id, true, tx);
+                true
+            })
             .child(shown);
         line = if marked {
             line.fill(palette.surface_selected)

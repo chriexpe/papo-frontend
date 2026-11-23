@@ -37,12 +37,15 @@ pub(crate) fn echo_key(id: papo_sdk::Uuid) -> String {
     format!("e{id}")
 }
 
-/// The key, inside a message's row, of the message itself: the row less
-/// the distance above it.
-pub(crate) const MESSAGE_PART: &str = "message";
+/// The key, inside message `id`'s row, of the message itself: the row less
+/// the distance above it, which takes the keyboard. Its own (not one key
+/// for every message) so focus remembered by key comes back to it.
+pub(crate) fn message_part_key(id: papo_sdk::Uuid) -> String {
+    format!("message-{id}")
+}
 
 /// The key path `Tx::scroll_key_to` lands message `id` by: the message
 /// itself, which the anchor's offset is measured to.
 pub(crate) fn anchor_key(id: papo_sdk::Uuid) -> String {
-    format!("{}/{MESSAGE_PART}", message_key(id))
+    format!("{}/{}", message_key(id), message_part_key(id))
 }

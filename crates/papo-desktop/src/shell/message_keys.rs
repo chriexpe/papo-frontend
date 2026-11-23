@@ -30,6 +30,11 @@ impl Shell {
         event: &KeyEvent,
         tx: &mut Tx,
     ) -> bool {
+        // A key on a message is work outside a header panel (Escape closes
+        // what is on top instead).
+        if event.key != Key::Escape {
+            self.worked_outside();
+        }
         let mods = event.mods;
         // A selection copies itself; without one, the focused message does.
         if event.is_command('c') && !mods.shift && !mods.alt && tx.text_selection().is_none() {

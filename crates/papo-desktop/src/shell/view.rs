@@ -165,8 +165,6 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         .min_w(0.0)
         .h_full()
         .fill(palette.surface_content)
-        // A press outside the pins panel shrinks it to the opened pin.
-        .on_background_press(Shell::pins_outside)
         .children(header)
         .child(timeline::view(shell, style))
         .child(col().w_full().padding(SPACE_LG_PT).child(composer))
@@ -176,6 +174,10 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         .w_full()
         .h_full()
         .fill(palette.surface_content)
+        // A press anywhere no control takes: work outside a header panel.
+        .on_background_press(|shell: &mut Shell| {
+            shell.worked_outside();
+        })
         .child(rail::view(&shell.nav, &shell.icons, palette))
         .child(edge())
         .child(channel_pane::view(&shell.nav, &shell.icons, palette))

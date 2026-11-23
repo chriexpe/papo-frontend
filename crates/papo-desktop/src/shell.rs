@@ -102,6 +102,9 @@ pub(crate) struct Shell {
     stretched: Option<activity::Stretched>,
     /// The pins panel, while open.
     pins_panel: Option<pins::PinsPanel>,
+    /// What had the keyboard when the pins panel opened, which gets it
+    /// back when it closes.
+    pins_return_focus: Option<String>,
 }
 
 /// The reorder on its way to the SDK, and the newest one waiting for it.
@@ -167,6 +170,7 @@ impl Default for Shell {
             pinning: reacting::Pinning::default(),
             stretched: None,
             pins_panel: None,
+            pins_return_focus: None,
         }
     }
 }

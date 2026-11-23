@@ -97,6 +97,10 @@ impl TimelineHost for Host {
         self.controls.push("message-pressed");
     }
 
+    fn timeline_wheeled(&mut self, _key: TimelineKey) -> bool {
+        false
+    }
+
     fn hourglass_pressed(&mut self, _key: TimelineKey) {
         self.controls.push("hourglass");
     }
@@ -272,7 +276,12 @@ fn rect(rt: &Runtime<Host>, suffix: &str) -> [f32; 4] {
 /// at any depth inside its row.
 fn find_part(rt: &Runtime<Host>, n: u128, part: &str) -> Option<ElementInfo> {
     let row = format!("/{}/", message_key(Uuid::from_u128(n)));
-    let part = format!("/{part}");
+    // The message itself is keyed by its ID.
+    let part = if part == "message" {
+        format!("/{}", super::rows::message_part_key(Uuid::from_u128(n)))
+    } else {
+        format!("/{part}")
+    };
     rt.elements().into_iter().find(|element| {
         element.path.contains(&row) && element.path.ends_with(&part) && !element.exiting
     })

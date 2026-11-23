@@ -125,7 +125,11 @@ fn no_send_state_moves_a_row_at_any_density() {
             ..MessageLayout::default()
         };
         let mut rt = runtime(after_mine(OperationState::Queued), layout);
-        let row = format!("{}/message", echo_key(Uuid::from_u128(100)));
+        let row = format!(
+            "{}/{}",
+            echo_key(Uuid::from_u128(100)),
+            crate::timeline::rows::message_part_key(Uuid::from_u128(100))
+        );
         let pending = rect(&rt, &row);
         becomes(&mut rt, OperationState::Failed, 2);
         assert_eq!(rect(&rt, &row), pending, "{density:?}: failed");

@@ -179,7 +179,7 @@ fn walking_up_onto_the_bar_anywhere_keeps_it_on_its_row() {
             .rect
     };
     let bar = part(&rt, "/bar");
-    let top = part(&rt, "/message")[1];
+    let top = part(&rt, &format!("/message-{}", Uuid::from_u128(row)))[1];
     // Up from inside the row, one point at a time, across the bar's
     // buttons, its padding and the gaps between them.
     for k in 1..12_u8 {

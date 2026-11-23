@@ -34,7 +34,7 @@ use super::local_time::LocalTime;
 use super::reactions;
 use super::reply_line::reply_line;
 use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
-use super::rows::{MESSAGE_PART, echo_key, message_key};
+use super::rows::{echo_key, message_key, message_part_key};
 use super::send_mark::send_mark;
 use super::view::{Style, TimelineHost};
 use crate::design::{
@@ -120,7 +120,7 @@ pub(super) fn message_row<S: TimelineHost>(
             .as_ref()
             .map(|bar| hover_bar::bar::<S>(key, id, bar, &style.palette));
         let (enter, exit) = hover_bar::row_motion();
-        build(&parts, line, body, mark, style, |message| {
+        build(id, &parts, line, body, mark, style, |message| {
             if !history {
                 return message;
             }
@@ -168,6 +168,7 @@ fn edited_hint(edited_at: &str, time: &LocalTime) -> Option<String> {
 /// leaves the text in place. `mark` takes the time's place: in the header,
 /// else in the lead column.
 fn build(
+    id: Uuid,
     parts: &Parts<'_>,
     line: Option<El>,
     body: El,
@@ -251,7 +252,7 @@ fn build(
         .child(lead)
         .child(content.key("content").grow(1.0).min_w(0.0));
     let mut message = col()
-        .key(MESSAGE_PART)
+        .key(message_part_key(id))
         .w_full()
         .px(MESSAGE_ROW_INSET_PT)
         .py(spacing.row_padding_pt)

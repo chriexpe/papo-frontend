@@ -120,6 +120,7 @@ impl Shell {
             return false;
         };
         let opened = matches!(posted, Posted::Opened(_));
+        let pins = matches!(posted, Posted::Pins(_));
         match posted {
             Posted::Opened(window) => {
                 open.opened(window);
@@ -155,6 +156,9 @@ impl Shell {
         }
         if opened {
             self.resolve_replies();
+        }
+        if pins {
+            self.pins_changed(key);
         }
         shown
     }

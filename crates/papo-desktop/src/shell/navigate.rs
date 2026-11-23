@@ -47,11 +47,13 @@ impl Shell {
     }
 
     pub(crate) fn select_server(&mut self, server: ServerId, tx: &mut Tx) {
+        self.worked_outside();
         self.nav.select_server(server);
         self.sync_timeline(Some(tx));
     }
 
     pub(crate) fn select_channel(&mut self, channel: &str, tx: &mut Tx) {
+        self.worked_outside();
         self.nav.select_channel(channel);
         self.sync_timeline(Some(tx));
     }
@@ -79,7 +81,7 @@ impl Shell {
         if !key.is_command('p') || mods.shift || mods.alt || self.popup_shown() {
             return false;
         }
-        self.pins_pressed(tx);
+        self.pins_pressed(true, tx);
         true
     }
 

@@ -24,18 +24,14 @@ impl TimelineHost for Shell {
         let Some(open) = self.shown_timeline_mut(key) else {
             return false;
         };
-        let moved = open.visible_range() != range;
         let requests = open.rows_visible(range);
         open.reports.rows_reported();
-        // Scrolled with the pointer over the messages: the conversation is
-        // where the reader works, so the pins panel gives way.
-        let scrolled = moved && self.pointer_on_messages() && self.pins_scrolled();
         let filling = requests
             .iter()
             .any(|request| matches!(request, Request::FillGap(_)));
         self.send_requests(key, requests);
         self.report_reading();
-        filling || scrolled
+        filling
     }
 
     fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, height_pt: f32, _tx: &mut Tx) {
@@ -77,17 +73,23 @@ impl TimelineHost for Shell {
     }
 
     fn content_pressed(&mut self, key: TimelineKey, message: Uuid, press: Press, tx: &mut Tx) {
+        self.worked_outside();
         self.content_pressed_in(key, message, press, tx);
     }
 
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx) {
+        self.worked_outside();
         self.code_copied_in(key, message, index, tx);
     }
 
     fn message_pressed(&mut self, key: TimelineKey) {
         if self.tabs.is_shown(key) {
-            self.pins_outside();
+            self.worked_outside();
         }
+    }
+
+    fn timeline_wheeled(&mut self, key: TimelineKey) -> bool {
+        self.tabs.is_shown(key) && self.worked_outside()
     }
 
     fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) -> bool {
@@ -96,10 +98,12 @@ impl TimelineHost for Shell {
     }
 
     fn hourglass_pressed(&mut self, key: TimelineKey) {
+        self.worked_outside();
         self.hourglass_pressed(key);
     }
 
     fn down_pressed(&mut self, key: TimelineKey, tx: &mut Tx) {
+        self.worked_outside();
         self.down_pressed(key, tx);
     }
 
@@ -108,6 +112,7 @@ impl TimelineHost for Shell {
     }
 
     fn send_state_pressed(&mut self, key: TimelineKey, local: Uuid, state: SendState) {
+        self.worked_outside();
         self.open_send_menu(key, local, state);
     }
 
@@ -116,10 +121,12 @@ impl TimelineHost for Shell {
     }
 
     fn reply_line_pressed(&mut self, key: TimelineKey, original: Uuid, tx: &mut Tx) {
+        self.worked_outside();
         self.jump_to_original(key, original, tx);
     }
 
     fn change_mark_pressed(&mut self, key: TimelineKey, local: Uuid) {
+        self.worked_outside();
         self.open_change_menu(key, local);
     }
 
@@ -132,6 +139,7 @@ impl TimelineHost for Shell {
     }
 
     fn bar_pressed(&mut self, key: TimelineKey, id: Uuid, press: BarPress, tx: &mut Tx) {
+        self.worked_outside();
         if self.tabs.is_shown(key) {
             self.bar_press(key, id, press, tx);
         }
@@ -144,12 +152,14 @@ impl TimelineHost for Shell {
     }
 
     fn chip_menu_requested(&mut self, key: TimelineKey, id: Uuid, emoji: String, _tx: &mut Tx) {
+        self.worked_outside();
         if self.tabs.is_shown(key) {
             self.open_chip_reactions(key, id, &emoji);
         }
     }
 
     fn link_menu_requested(&mut self, key: TimelineKey, url: String, at: [f32; 2], _tx: &mut Tx) {
+        self.worked_outside();
         if self.tabs.is_shown(key) {
             self.open_link_menu(key, url, at);
         }
@@ -162,6 +172,7 @@ impl TimelineHost for Shell {
         at: Option<[f32; 2]>,
         tx: &mut Tx,
     ) {
+        self.worked_outside();
         let placement = match at {
             Some(point) => Placement::AtPointer(point),
             None => Placement::BelowEnd(more_key(id)),

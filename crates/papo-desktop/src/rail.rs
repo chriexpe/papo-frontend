@@ -64,6 +64,11 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, palette: 
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
+        // A scroll here is work outside a header panel; it scrolls as usual.
+        .on_wheel(|shell: &mut Shell, _wheel, _tx| {
+            shell.worked_outside();
+            false
+        })
         .child(servers);
     col()
         .key("rail")

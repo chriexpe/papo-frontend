@@ -76,7 +76,7 @@ fn a_pin_opens_marked_and_leaving_the_panel_shrinks_it_to_that_pin() {
     pin(&mut rt, &[3, 1]);
     ctrl_p(&mut rt);
     let key = rt.state.tabs.shown().unwrap().key;
-    rt.update(move |shell, tx| shell.open_pin(key, message_id(3), tx));
+    rt.update(move |shell, tx| shell.open_pin(key, message_id(3), false, tx));
     rt.frame(FRAME_S);
     assert_eq!(
         rt.state.tabs.shown().unwrap().flash.map(|(id, _)| id),
@@ -109,7 +109,9 @@ fn with_nothing_opened_a_press_outside_closes_the_panel() {
     let mut rt = conversation("");
     pin(&mut rt, &[1]);
     ctrl_p(&mut rt);
-    rt.update(|shell, _tx| shell.pins_outside());
+    rt.update(|shell, _tx| {
+        shell.worked_outside();
+    });
     rt.frame(FRAME_S);
     assert!(rt.state.shown_pins_panel().is_none());
 }
@@ -123,14 +125,26 @@ fn escape_closes_the_panel_then_folds_the_strip_then_goes_back_to_writing() {
         shell.activity_posted(account, crate::reaction_watch::Posted::Quick(quick), tx);
     });
     pin(&mut rt, &[]);
-    ctrl_p(&mut rt);
     rt.update(|_shell, tx| tx.focus(message_key(message_id(3)), true));
     rt.frame(FRAME_S);
     press(&mut rt, Key::Text("+".to_owned()));
+    // Opened from the message: the panel takes the keyboard, and gives it
+    // back when it closes.
+    ctrl_p(&mut rt);
     assert!(rt.state.shown_pins_panel().is_some());
     press(&mut rt, Key::Escape);
     assert!(rt.state.shown_pins_panel().is_none(), "the panel first");
     assert!(rt.state.reacting().stretched.is_some(), "the strip stays");
+    let focused = rt
+        .elements()
+        .into_iter()
+        .find(|element| element.focused)
+        .and_then(|element| crate::timeline::content::copy::message_of(&element.path));
+    assert_eq!(
+        focused,
+        Some(message_id(3)),
+        "the keyboard is back on the message"
+    );
     press(&mut rt, Key::Escape);
     assert!(rt.state.reacting().stretched.is_none(), "then the strip");
     press(&mut rt, Key::Escape);
@@ -148,7 +162,7 @@ fn the_pointer_leaving_the_panel_for_the_conversation_shrinks_it() {
     pin(&mut rt, &[3, 1]);
     ctrl_p(&mut rt);
     let key = rt.state.tabs.shown().unwrap().key;
-    rt.update(move |shell, tx| shell.open_pin(key, message_id(3), tx));
+    rt.update(move |shell, tx| shell.open_pin(key, message_id(3), false, tx));
     rt.frame(FRAME_S);
     let panel = rt
         .elements()
@@ -170,12 +184,12 @@ fn the_pointer_coming_back_onto_the_shrunk_panel_stretches_it() {
     pin(&mut rt, &[3]);
     ctrl_p(&mut rt);
     let key = rt.state.tabs.shown().unwrap().key;
-    rt.update(move |shell, tx| shell.open_pin(key, message_id(3), tx));
+    rt.update(move |shell, tx| shell.open_pin(key, message_id(3), false, tx));
     rt.update(|shell, _tx| shell.pins_left());
     rt.frame(FRAME_S);
     assert!(rt.state.shown_pins_panel().is_some_and(|panel| panel.peek));
-    rt.update(|shell, _tx| {
-        shell.pins_hovered();
+    rt.update(|shell, tx| {
+        shell.pins_hovered(tx);
     });
     rt.frame(FRAME_S);
     assert!(rt.state.shown_pins_panel().is_some_and(|panel| !panel.peek));
@@ -196,9 +210,11 @@ fn with_nothing_opened_a_press_on_a_message_closes_the_panel_and_leaving_does_no
         .elements()
         .into_iter()
         .find(|element| {
-            element
-                .path
-                .ends_with(&format!("{}/message", message_key(message_id(2))))
+            element.path.ends_with(&format!(
+                "{}/{}",
+                message_key(message_id(2)),
+                crate::timeline::rows::message_part_key(message_id(2))
+            ))
         })
         .expect("message 2's row")
         .rect;
@@ -212,4 +228,55 @@ fn with_nothing_opened_a_press_on_a_message_closes_the_panel_and_leaving_does_no
         rt.state.shown_pins_panel().is_none(),
         "a press on a message closes it"
     );
+}
+
+#[test]
+fn a_key_on_a_message_typing_or_a_wheel_on_the_conversation_is_work_outside() {
+    let mut rt = conversation("");
+    pin(&mut rt, &[1]);
+    ctrl_p(&mut rt);
+    rt.update(|_shell, tx| tx.focus(message_key(message_id(3)), true));
+    rt.frame(FRAME_S);
+    press(&mut rt, Key::Down);
+    assert!(rt.state.shown_pins_panel().is_none(), "a key on a message");
+    ctrl_p(&mut rt);
+    let key = rt.state.tabs.shown().unwrap().key;
+    rt.update(move |shell, _tx| {
+        crate::timeline::TimelineHost::timeline_wheeled(shell, key);
+    });
+    assert!(
+        rt.state.shown_pins_panel().is_none(),
+        "a wheel on the conversation"
+    );
+}
+
+#[test]
+fn the_app_acting_on_its_own_leaves_the_panel_alone() {
+    let mut rt = conversation("");
+    pin(&mut rt, &[1]);
+    ctrl_p(&mut rt);
+    let key = rt.state.tabs.shown().unwrap().key;
+    // New rows reported visible (an arrival, a load, a resize) are no input.
+    rt.update(move |shell, _tx| {
+        crate::timeline::TimelineHost::rows_visible(shell, key, 0..3);
+    });
+    rt.frame(FRAME_S);
+    assert!(rt.state.shown_pins_panel().is_some());
+}
+
+#[test]
+fn an_opened_pin_that_goes_is_forgotten() {
+    let mut rt = conversation("");
+    pin(&mut rt, &[3, 1]);
+    ctrl_p(&mut rt);
+    let key = rt.state.tabs.shown().unwrap().key;
+    rt.update(move |shell, tx| shell.open_pin(key, message_id(3), false, tx));
+    rt.update(|shell, _tx| {
+        shell.worked_outside();
+    });
+    assert!(rt.state.shown_pins_panel().is_some_and(|panel| panel.peek));
+    pin(&mut rt, &[1]);
+    rt.update(move |shell, _tx| shell.pins_changed(key));
+    let panel = rt.state.shown_pins_panel().unwrap();
+    assert_eq!((panel.opened, panel.peek), (None, false));
 }

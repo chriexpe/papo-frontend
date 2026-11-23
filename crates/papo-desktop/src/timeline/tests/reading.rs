@@ -41,7 +41,10 @@ fn read_up(rt: &mut Runtime<Host>, wheel_pt: f32) -> (String, f32) {
 fn reader_row(rt: &Runtime<Host>) -> (String, f32) {
     rt.elements()
         .into_iter()
-        .filter(|element| element.path.ends_with("/message") && bottom(element.rect) > 0.0)
+        .filter(|element| {
+            let last = element.path.rsplit('/').next().unwrap_or_default();
+            last.starts_with("message-") && bottom(element.rect) > 0.0
+        })
         .min_by(|a, b| a.rect[1].total_cmp(&b.rect[1]))
         .map(|element| (element.path, element.rect[1]))
         .expect("a message row in view")

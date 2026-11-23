@@ -62,6 +62,10 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx);
     /// A press on a message of timeline `key` that nothing in it took.
     fn message_pressed(&mut self, key: TimelineKey);
+    /// A wheel or trackpad scroll over timeline `key`, by the reader (the
+    /// app's own scrolls never come here). Returns whether the view
+    /// changed; the viewport scrolls as usual.
+    fn timeline_wheeled(&mut self, key: TimelineKey) -> bool;
     /// The pointer entered or left message `message`. Returns whether the
     /// view changed.
     fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) -> bool;
@@ -199,6 +203,12 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         })
         .label(strings::timeline_label())
         .on_at_bottom_if(move |host: &mut S, at_bottom| host.bottom_shown(key, at_bottom))
+        .on_wheel(move |host: &mut S, _wheel, tx| {
+            if !host.timeline_wheeled(key) {
+                tx.live_only();
+            }
+            false
+        })
         .on_layout_tx(move |host: &mut S, rect, tx| {
             host.viewport_moved(key, rect[1], rect[3], tx);
             tx.live_only();
