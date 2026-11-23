@@ -14,11 +14,10 @@ use rune::{El, GrowthSpec, KeyEvent, ScrollSpec, col, el, memo, row, text};
 use super::Shell;
 use super::search::{Found, Paging, SEARCH_FIELD_KEY, Search, hit_row_key};
 use crate::design::{
-    FOCUS_RING_PT, Palette, RADIUS_CONTROL_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT,
-    TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_SMALL,
+    FOCUS_RING_PT, Palette, RADIUS_CONTROL_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_CAPTION,
+    TYPE_SMALL,
 };
 use crate::strings;
-use crate::timeline::replies::{OriginalText, original_text};
 use crate::timeline::standalone::standalone_hit;
 use crate::timeline::{OpenTimeline, Style};
 
@@ -174,28 +173,7 @@ pub(super) fn peek_line(open: &OpenTimeline, search: &Search, palette: &Palette)
         message: Arc::new(item.message.clone()),
         content: Arc::clone(&item.content),
     };
-    let OriginalText::Message { name, snippet, .. } = original_text(&original, open) else {
-        return None;
-    };
-    let line = row()
-        .w_full()
-        .px(SPACE_LG_PT)
-        .py(SPACE_MD_PT)
-        .gap(SPACE_SM_PT)
-        .radius(RADIUS_CONTROL_PT)
-        .fill(palette.surface_selected)
-        .child(
-            text(name)
-                .font(TYPE_BODY_STRONG)
-                .color(palette.text_primary),
-        )
-        .child(
-            text(snippet)
-                .font(TYPE_SMALL)
-                .color(palette.text_secondary)
-                .max_lines(1),
-        );
-    Some(col().w_full().px(SPACE_SM_PT).pb(SPACE_SM_PT).child(line))
+    super::pins_panel::peek_row(&original, open, palette)
 }
 
 /// The next page failed: "Couldn't search. Try again" past the last result.

@@ -192,7 +192,18 @@ fn peek_line(open: &OpenTimeline, state: &PinsPanel, palette: &Palette) -> Optio
         message: Arc::clone(&pin.message),
         content: Arc::clone(&pin.content),
     };
-    let OriginalText::Message { name, snippet, .. } = original_text(&original, open) else {
+    peek_row(&original, open, palette)
+}
+
+/// A shrunk panel's one line for the message opened from it (a pin, a
+/// search result), on `highlight.selected`: the author, then the reply
+/// line's snippet, cut with an ellipsis at the panel's edge.
+pub(super) fn peek_row(
+    original: &papo_sdk_ui::ReplyOriginal,
+    open: &OpenTimeline,
+    palette: &Palette,
+) -> Option<El> {
+    let OriginalText::Message { name, snippet, .. } = original_text(original, open) else {
         return None;
     };
     let line = row()
@@ -200,18 +211,22 @@ fn peek_line(open: &OpenTimeline, state: &PinsPanel, palette: &Palette) -> Optio
         .px(SPACE_LG_PT)
         .py(SPACE_MD_PT)
         .gap(SPACE_SM_PT)
+        .center_y()
         .radius(RADIUS_CONTROL_PT)
         .fill(palette.surface_selected)
         .child(
             text(name)
                 .font(TYPE_BODY_STRONG)
-                .color(palette.text_primary),
+                .color(palette.text_primary)
+                .max_lines(1),
         )
         .child(
             text(snippet)
                 .font(TYPE_SMALL)
                 .color(palette.text_secondary)
-                .max_lines(1),
+                .grow(1.0)
+                .min_w(0.0)
+                .truncate(),
         );
     // Inset by padding, so the highlight stays inside the panel's corners.
     Some(col().w_full().px(SPACE_SM_PT).pb(SPACE_SM_PT).child(line))
