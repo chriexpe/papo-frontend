@@ -201,7 +201,12 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         })
         .child(edge())
         .child(conversation)
-        .children(super::profile_pane::pane(shell, palette))
+        // A DM's profile pane, past the same hairline as the channel pane.
+        .children(
+            super::profile_pane::pane(shell, palette)
+                .into_iter()
+                .flat_map(|pane| [edge(), pane]),
+        )
 }
 
 /// "Connected to {server}", floating at the top until dismissed.

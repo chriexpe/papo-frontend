@@ -80,7 +80,8 @@ pub(crate) struct ServerEntry {
     pub(crate) voice_channels: Vec<ChannelEntry>,
     /// The shown account's direct conversations' badges, by channel.
     pub(crate) direct_badges: BTreeMap<Uuid, Badge>,
-    /// The server's badge: its shown account's unread and mentions.
+    /// The server's badge: its shown account's unread and mentions in the
+    /// server's channels (its DMs are Direct's).
     pub(crate) badge: Badge,
 }
 
@@ -170,11 +171,12 @@ pub(crate) fn project(
                 direct_badges: found
                     .map(|found| found.direct_badges.clone())
                     .unwrap_or_default(),
-                // The shown account's aggregate, so the tile always agrees
-                // with the rows below it, active account or not.
+                // The shown account's server channels, so the tile always
+                // agrees with the rows below it, active account or not; its
+                // DMs count on Direct instead.
                 badge: account
                     .and_then(|account| account_badges.get(&account.id))
-                    .map(|badges| Badge::of_aggregate(&badges.all))
+                    .map(|badges| Badge::of_aggregate(&badges.channels))
                     .unwrap_or_default(),
             }
         })

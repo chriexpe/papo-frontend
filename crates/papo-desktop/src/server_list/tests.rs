@@ -221,13 +221,21 @@ fn a_server_takes_the_aggregate_of_the_account_its_rows_show() {
         ..RegistrySnapshot::default()
     };
     let aggregate = |mentions| {
+        // A DM's uncertain mention is in `all` only: the tile leaves it to
+        // Direct.
         Arc::new(papo_sdk_ui::AccountBadges {
             all: papo_sdk_ui::BadgeAggregate {
+                mention_count: UnreadCount::AtLeast(mentions + 1),
+                has_unread: Some(true),
+            },
+            channels: papo_sdk_ui::BadgeAggregate {
                 mention_count: UnreadCount::Exact(mentions),
                 has_unread: Some(true),
             },
-            channels: papo_sdk_ui::BadgeAggregate::default(),
-            dms: papo_sdk_ui::BadgeAggregate::default(),
+            dms: papo_sdk_ui::BadgeAggregate {
+                mention_count: UnreadCount::AtLeast(1),
+                has_unread: None,
+            },
         })
     };
     let badges = ServerBadgesSnapshot {
@@ -236,6 +244,14 @@ fn a_server_takes_the_aggregate_of_the_account_its_rows_show() {
     };
     let list = project(&registry, &HashMap::new(), &badges);
     assert_eq!(list.servers[0].badge.mentions().unwrap().shown(), "99+");
+    assert_eq!(
+        list.servers[0].badge,
+        Badge::of_aggregate(&papo_sdk_ui::BadgeAggregate {
+            mention_count: UnreadCount::Exact(120),
+            has_unread: Some(true),
+        }),
+        "the server's channels only, exactly"
+    );
     assert_eq!(
         list.servers[1].badge,
         Badge::Nothing,
