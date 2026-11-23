@@ -10,7 +10,17 @@ fn id(n: u128) -> Uuid {
 
 /// A roster of `names`, in order, the first one the account's own; `owner` makes the account
 /// the server's owner, who may notify everyone.
+/// A server channel: not one of the snapshot's direct conversations.
+fn channel() -> Uuid {
+    id(50)
+}
+
 fn roster(names: &[&str], owner: bool) -> ResourceSnapshot {
+    roster_with_dm(names, owner, None)
+}
+
+/// [`roster`], with a direct conversation `dm` with person `peer`.
+fn roster_with_dm(names: &[&str], owner: bool, dm: Option<(Uuid, u128)>) -> ResourceSnapshot {
     let members = names
         .iter()
         .zip(0_u128..)
@@ -35,7 +45,20 @@ fn roster(names: &[&str], owner: bool) -> ResourceSnapshot {
         Vec::new(),
         members,
         Vec::new(),
-        Vec::new(),
+        dm.map(|(channel, peer)| papo_sdk::DirectConversation {
+            id: channel.to_string(),
+            user: UserSummary {
+                id: Some(id(peer).to_string()),
+                ..UserSummary::default()
+            },
+            created_at: "2026-01-01T00:00:00Z".into(),
+            last_message: None,
+            last_read_message: None,
+            last_read_at: None,
+            unread_count: 0,
+        })
+        .into_iter()
+        .collect(),
         Vec::new(),
         id(0),
     )
@@ -77,11 +100,11 @@ fn an_address_a_space_or_a_mention_already_made_is_no_query() {
 fn names_starting_with_the_query_come_first() {
     let snapshot = roster(&["ana", "mariana", "marina"], false);
     assert_eq!(
-        names(&mention_suggestions(&snapshot, id(0), "MAR")),
+        names(&mention_suggestions(&snapshot, id(0), channel(), "MAR")),
         ["mariana", "marina"]
     );
     assert_eq!(
-        names(&mention_suggestions(&snapshot, id(0), "ana")),
+        names(&mention_suggestions(&snapshot, id(0), channel(), "ana")),
         ["ana", "mariana"],
         "then names containing it"
     );
@@ -90,11 +113,14 @@ fn names_starting_with_the_query_come_first() {
 #[test]
 fn everyone_leads_only_where_allowed() {
     let owned = roster(&["eva"], true);
-    let found = mention_suggestions(&owned, id(0), "e");
+    let found = mention_suggestions(&owned, id(0), channel(), "e");
     assert_eq!(found[0].target, MentionTarget::Everyone);
     assert_eq!(names(&found), ["everyone", "eva"]);
     let member = roster(&["eva"], false);
-    assert_eq!(names(&mention_suggestions(&member, id(0), "e")), ["eva"]);
+    assert_eq!(
+        names(&mention_suggestions(&member, id(0), channel(), "e")),
+        ["eva"]
+    );
 }
 
 #[test]
@@ -102,4 +128,23 @@ fn an_empty_nickname_falls_back_to_the_username() {
     assert_eq!(display_name(Some(""), Some("ana")), Some("ana"));
     assert_eq!(display_name(Some("Ana"), Some("ana")), Some("Ana"));
     assert_eq!(display_name(Some(""), None), None);
+}
+
+#[test]
+fn a_direct_conversation_offers_only_its_two_people_and_never_everyone() {
+    let dm = id(60);
+    // The owner could mention everyone in a server channel.
+    let snapshot = roster_with_dm(&["me", "eva", "ana", "everton"], true, Some((dm, 1)));
+    assert_eq!(
+        names(&mention_suggestions(&snapshot, id(0), dm, "ev")),
+        ["eva"]
+    );
+    assert_eq!(
+        names(&mention_suggestions(&snapshot, id(0), dm, "")),
+        ["me", "eva"]
+    );
+    assert!(
+        names(&mention_suggestions(&snapshot, id(0), channel(), "e")).contains(&"everyone"),
+        "the same account still mentions everyone in a channel"
+    );
 }
