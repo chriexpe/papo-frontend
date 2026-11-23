@@ -199,7 +199,10 @@ fn peek_line(open: &OpenTimeline, state: &PinsPanel, palette: &Palette) -> Optio
             .w_full()
             .px(SPACE_LG_PT)
             .py(SPACE_MD_PT)
+            .mx(SPACE_SM_PT)
+            .mb(SPACE_SM_PT)
             .gap(SPACE_SM_PT)
+            .radius(RADIUS_CONTROL_PT)
             .fill(palette.surface_selected)
             .child(
                 text(name)
@@ -270,6 +273,10 @@ fn list(
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
+        // Inset, so each pin's rounded highlight sits inside the panel's
+        // corners, as a menu's rows do.
+        .px(SPACE_SM_PT)
+        .pb(SPACE_SM_PT)
         .role("list")
         .focus_group()
         .children(rows)
@@ -306,6 +313,7 @@ fn pin_row(
             .key(format!("pin-row-{id}"))
             .w_full()
             .padding(SPACE_LG_PT)
+            .radius(RADIUS_CONTROL_PT)
             .role("listitem")
             .label(strings::pins_jump())
             .focusable(true)
