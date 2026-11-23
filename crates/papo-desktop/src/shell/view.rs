@@ -166,7 +166,8 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
     };
     let style = timeline_style(shell, theme, palette);
     let header = super::pins_panel::header(shell, &title, palette);
-    let panel = super::pins_panel::panel(shell, &style, cx);
+    let panel = super::pins_panel::panel(shell, &style, cx)
+        .or_else(|| super::search_panel::panel(shell, &title, &style, cx));
     let conversation = col()
         .key("conversation")
         .grow(1.0)

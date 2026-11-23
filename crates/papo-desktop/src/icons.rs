@@ -207,6 +207,21 @@ line_icon!(
     REPLY_LINE,
     "reply-line"
 );
+line_icon!(
+    /// Search: the actions pill's 🔍.
+    SEARCH,
+    "search"
+);
+line_icon!(
+    /// The `has:` filter in the search field's list.
+    PAPERCLIP,
+    "paperclip"
+);
+line_icon!(
+    /// A choice that opens a menu: the search scope.
+    CHEVRON_DOWN,
+    "chevron-down"
+);
 
 presence_mark!(
     /// Available: a filled disc.

@@ -23,6 +23,7 @@ mod outgoing;
 mod pins;
 mod profile_card;
 mod replying;
+mod search;
 mod timeline;
 mod typing;
 mod writing;

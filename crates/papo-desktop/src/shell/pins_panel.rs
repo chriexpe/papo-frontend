@@ -1,7 +1,7 @@
 //! Draws the conversation's header and its pins panel (`docs/design.md`
 //! §3 and §10): the title pill on the left, the actions pill on the right
-//! (📌 alone in D5a: search and members come with their slices); the panel
-//! takes the actions pill's place, its header row "Pinned messages" and
+//! (🔍 and 📌; members come with their slice); the pins panel takes the
+//! actions pill's place, its header row "Pinned messages" and
 //! the count with 📌 where it was, and the pins grow down, each a message
 //! on its own divided by hairlines, Unpin on hover or focus. Shrunk
 //! (`PanelPeek`), it keeps its header and one line for the opened pin.
@@ -36,11 +36,9 @@ const EMPTY_ICON_PT: f32 = 32.0;
 pub(super) fn header(shell: &Shell, title: &Title<'_>, palette: &Palette) -> Option<El> {
     shell.tabs.shown()?;
     let title_pill = super::title::pill(title, palette);
-    // The open panel takes the actions pill's place.
-    let actions = shell
-        .shown_pins_panel()
-        .is_none()
-        .then(|| actions_pill(false, dm_profile(shell, title), palette));
+    // An open panel takes the actions pill's place.
+    let panel_open = shell.shown_pins_panel().is_some() || shell.shown_search().is_some();
+    let actions = (!panel_open).then(|| actions_pill(false, dm_profile(shell, title), palette));
     Some(
         row()
             .key("conversation-header")
@@ -59,8 +57,8 @@ fn dm_profile(shell: &Shell, title: &Title<'_>) -> Option<bool> {
     matches!(title, Title::Direct { .. }).then_some(shell.layout.dm_profile())
 }
 
-/// The actions pill: 📌, in the accent while the panel is open, and in a
-/// DM the person button.
+/// The actions pill: 🔍, 📌 (in the accent while its panel is open) and,
+/// in a DM, the person button.
 fn actions_pill(open: bool, profile: Option<bool>, palette: &Palette) -> El {
     row()
         .key("actions-pill")
@@ -72,6 +70,7 @@ fn actions_pill(open: bool, profile: Option<bool>, palette: &Palette) -> El {
         .border(PILL_OUTLINE_PT, palette.line_pill)
         .role("toolbar")
         .label(strings::header_actions())
+        .child(super::search_panel::search_button(false, palette))
         .child(pins_button(open, palette))
         .children(profile.map(|shown| super::profile_pane::button(shown, palette)))
 }

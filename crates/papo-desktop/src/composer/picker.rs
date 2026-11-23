@@ -39,13 +39,7 @@ pub(crate) struct Picker {
 impl Picker {
     /// Moves the highlight `by` rows, wrapping round the ends.
     pub(super) fn step(&mut self, by: isize) {
-        let count = self.candidates.len();
-        if count == 0 {
-            return;
-        }
-        let count = isize::try_from(count).unwrap_or(isize::MAX);
-        let at = isize::try_from(self.selected).unwrap_or(0);
-        self.selected = usize::try_from((at + by).rem_euclid(count)).unwrap_or(0);
+        self.selected = wrapped_step(self.selected, self.candidates.len(), by);
     }
 
     /// The highlighted row's key.
@@ -61,6 +55,17 @@ impl Picker {
     pub(super) fn chosen(&self) -> Option<&MentionSuggestion> {
         self.candidates.get(self.selected)
     }
+}
+
+/// Row `at` of a list of `count` rows moved `by` rows, wrapping round the
+/// ends: the mention picker's and the search field's ↑ and ↓.
+pub(crate) fn wrapped_step(at: usize, count: usize, by: isize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    let count = isize::try_from(count).unwrap_or(isize::MAX);
+    let at = isize::try_from(at).unwrap_or(0);
+    usize::try_from((at + by).rem_euclid(count)).unwrap_or(0)
 }
 
 /// The element key of the row of `target`, by who it mentions, so a row
