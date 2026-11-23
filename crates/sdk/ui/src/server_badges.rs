@@ -45,6 +45,15 @@ pub struct ServerBadgesSnapshot {
     pub servers: BTreeMap<ServerId, Arc<AccountBadges>>,
 }
 
+impl ServerBadgesSnapshot {
+    /// Each server's active account's direct conversations as one: what a cross-server Direct
+    /// entry shows. Unknown parts keep it a lower bound, as in one account's aggregate.
+    #[must_use]
+    pub fn direct_messages(&self) -> BadgeAggregate {
+        projection::combine(self.servers.values().map(|account| &account.dms))
+    }
+}
+
 /// A changed aggregate image. Equal values do not publish or replace their item `Arc`s.
 #[derive(Clone, Debug)]
 pub struct ServerBadgesUpdate {

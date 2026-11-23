@@ -311,3 +311,53 @@ fn closed_badge_watch_and_registry_shutdown_clear_retained_totals() {
             .all(|value| **value == AccountBadges::default())
     );
 }
+
+#[test]
+fn direct_messages_join_each_servers_active_account_and_stay_a_lower_bound_when_one_is() {
+    let aggregate = |mention_count, has_unread| {
+        Arc::new(AccountBadges {
+            all: BadgeAggregate::default(),
+            dms: BadgeAggregate {
+                mention_count,
+                has_unread,
+            },
+        })
+    };
+    let server = |address: &str| ServerAddress::parse(address).unwrap().id();
+    let mut snapshot = ServerBadgesSnapshot::default();
+    assert_eq!(
+        snapshot.direct_messages(),
+        BadgeAggregate {
+            mention_count: UnreadCount::Exact(0),
+            has_unread: Some(false),
+        },
+        "no server: nothing unread, exactly"
+    );
+    snapshot.servers.insert(
+        server("https://one.invalid"),
+        aggregate(UnreadCount::Exact(2), Some(false)),
+    );
+    snapshot.servers.insert(
+        server("https://two.invalid"),
+        aggregate(UnreadCount::Exact(3), Some(true)),
+    );
+    assert_eq!(
+        snapshot.direct_messages(),
+        BadgeAggregate {
+            mention_count: UnreadCount::Exact(5),
+            has_unread: Some(true),
+        }
+    );
+    snapshot.servers.insert(
+        server("https://three.invalid"),
+        aggregate(UnreadCount::AtLeast(1), None),
+    );
+    assert_eq!(
+        snapshot.direct_messages(),
+        BadgeAggregate {
+            mention_count: UnreadCount::AtLeast(6),
+            has_unread: Some(true),
+        },
+        "one unread part settles unread; one partial count makes the sum a lower bound"
+    );
+}

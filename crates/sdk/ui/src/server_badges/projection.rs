@@ -167,11 +167,31 @@ fn total<'a>(
     channels: impl Iterator<Item = &'a ChannelBadges>,
     channels_complete: bool,
 ) -> BadgeAggregate {
+    fold(
+        channels.map(|channel| (channel.mention_count, channel.has_unread)),
+        channels_complete,
+    )
+}
+
+/// Several accounts' aggregates as one: complete only when each of them is.
+pub(super) fn combine<'a>(aggregates: impl Iterator<Item = &'a BadgeAggregate>) -> BadgeAggregate {
+    fold(
+        aggregates.map(|aggregate| (aggregate.mention_count, aggregate.has_unread)),
+        true,
+    )
+}
+
+/// Sums mention counts (a lower bound once any part is one) and joins
+/// unread presence (unknown once any part is, unless another is unread).
+fn fold(
+    parts: impl Iterator<Item = (UnreadCount, Option<bool>)>,
+    complete: bool,
+) -> BadgeAggregate {
     let mut count = 0_u64;
-    let mut exact = channels_complete;
-    let mut unread = channels_complete.then_some(false);
-    for channel in channels {
-        let (lower_bound, complete) = match channel.mention_count {
+    let mut exact = complete;
+    let mut unread = complete.then_some(false);
+    for (mention_count, has_unread) in parts {
+        let (lower_bound, complete) = match mention_count {
             UnreadCount::Exact(value) => (value, true),
             UnreadCount::AtLeast(value) => (value, false),
             _ => (0, false),
@@ -179,7 +199,7 @@ fn total<'a>(
         let sum = count.checked_add(lower_bound);
         count = sum.unwrap_or(u64::MAX);
         exact &= complete && sum.is_some();
-        unread = match (unread, channel.has_unread) {
+        unread = match (unread, has_unread) {
             (Some(true), _) | (_, Some(true)) => Some(true),
             (Some(false), Some(false)) => Some(false),
             _ => None,
