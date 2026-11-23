@@ -62,8 +62,9 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx);
     /// A press on a message of timeline `key` that nothing in it took.
     fn message_pressed(&mut self, key: TimelineKey);
-    /// The pointer entered or left message `message`.
-    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool);
+    /// The pointer entered or left message `message`. Returns whether the
+    /// view changed.
+    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) -> bool;
     /// ⌛ was pressed.
     fn hourglass_pressed(&mut self, key: TimelineKey);
     /// ↓ was pressed.

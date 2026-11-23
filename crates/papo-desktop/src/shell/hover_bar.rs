@@ -46,6 +46,18 @@ impl Shell {
             .then_some(Stretched { key, id, chosen: 0 });
     }
 
+    /// The pointer came onto message `message`: a bar stretched on another
+    /// message folds, as the pointer has left it. Returns whether one did.
+    pub(super) fn fold_strip_for(&mut self, key: TimelineKey, message: Uuid) -> bool {
+        let elsewhere = self
+            .stretched
+            .is_some_and(|stretched| stretched.key != key || stretched.id != message);
+        if elsewhere {
+            self.stretched = None;
+        }
+        elsewhere
+    }
+
     /// The bar's top three, 1 2 3 on the focused message: reacts with the
     /// `index`th quick reaction, or takes yours back.
     pub(super) fn quick_react(&mut self, key: TimelineKey, id: Uuid, index: usize) -> bool {

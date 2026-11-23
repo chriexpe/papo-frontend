@@ -263,3 +263,31 @@ fn the_quick_reactions_lead_the_bar_and_the_menus_strip() {
     let (_, items) = menu(&rt);
     assert_eq!(items.first().map(String::as_str), Some("strip"));
 }
+
+#[test]
+fn a_stretched_bar_folds_when_the_pointer_moves_to_another_message() {
+    let mut rt = conversation("");
+    rt.update(|shell, tx| {
+        let account = shell.tabs.shown().unwrap().key.account;
+        let quick = ["🧀", "👍", "😂"].map(str::to_owned).to_vec();
+        shell.activity_posted(account, Posted::Quick(quick), tx);
+    });
+    let key = rt.state.tabs.shown().unwrap().key;
+    rt.update(move |shell, _tx| shell.toggle_strip(key, message_id(3)));
+    rt.frame(FRAME_S);
+    assert!(rt.state.reacting().stretched.is_some());
+    rt.update(move |shell, _tx| {
+        crate::timeline::TimelineHost::message_hovered(shell, key, message_id(3), true);
+    });
+    assert!(
+        rt.state.reacting().stretched.is_some(),
+        "its own message keeps it"
+    );
+    rt.update(move |shell, _tx| {
+        crate::timeline::TimelineHost::message_hovered(shell, key, message_id(4), true);
+    });
+    assert!(
+        rt.state.reacting().stretched.is_none(),
+        "another message folds it"
+    );
+}

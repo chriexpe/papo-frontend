@@ -90,8 +90,9 @@ impl TimelineHost for Shell {
         }
     }
 
-    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) {
+    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) -> bool {
         self.message_hovered_in(key, message, hovered);
+        hovered && self.fold_strip_for(key, message)
     }
 
     fn hourglass_pressed(&mut self, key: TimelineKey) {

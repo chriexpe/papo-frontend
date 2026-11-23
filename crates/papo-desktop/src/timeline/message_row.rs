@@ -138,8 +138,9 @@ pub(super) fn message_row<S: TimelineHost>(
                 })
                 // Ctrl+A selects the message under the pointer.
                 .on_hover_change(move |host: &mut S, hovered, tx| {
-                    host.message_hovered(key, id, hovered);
-                    tx.live_only();
+                    if !host.message_hovered(key, id, hovered) {
+                        tx.live_only();
+                    }
                 })
                 // A press anywhere on the message that nothing in it took
                 // (text, a link, the bar): the conversation was pressed.
