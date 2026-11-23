@@ -65,6 +65,8 @@ impl Lane {
 impl Shell {
     /// The field's text changed.
     pub(crate) fn composer_edited(&mut self, tx: &mut Tx) {
+        // Typing is work outside a header panel.
+        self.worked_outside();
         let effects = self.composer.edited(tx.clock());
         self.run_composer(effects, Some(tx));
         self.refresh_picker();

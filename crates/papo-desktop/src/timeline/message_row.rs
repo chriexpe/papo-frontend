@@ -29,10 +29,12 @@ use super::change_marks::{change_mark, delete_failed_line};
 use super::changes::ChangeState;
 use super::content::{self, Context, Doc, Draw, Edited};
 use super::echoes::SendState;
+use super::hover_bar;
 use super::local_time::LocalTime;
+use super::reactions;
 use super::reply_line::reply_line;
 use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
-use super::rows::{MESSAGE_PART, echo_key, message_key};
+use super::rows::{echo_key, message_key, message_part_key};
 use super::send_mark::send_mark;
 use super::view::{Style, TimelineHost};
 use crate::design::{
@@ -53,7 +55,7 @@ pub(super) fn message_row<S: TimelineHost>(
 ) -> El {
     let id = row_message.id;
     let layout = style.layout;
-    let history = matches!(row_message.origin, Origin::History);
+    let history = matches!(row_message.origin, Origin::History(_));
     let (parts, content) = parts(open, row_message, previous, style);
     let key = open.key;
     let revealed = open.revealed(id);
@@ -94,6 +96,10 @@ pub(super) fn message_row<S: TimelineHost>(
             }),
         };
         let mut body = content::body::<S>(&doc, &draw);
+        if let Some(chips) = reactions::chips::<S>(key, id, &parts.chips, parts.add_chip, &palette)
+        {
+            body = col().gap(MESSAGE_BLOCK_GAP_PT).child(body).child(chips);
+        }
         if let Some((local, ChangeState::DeleteFailed)) = parts.change {
             body = col()
                 .gap(MESSAGE_BLOCK_GAP_PT)
@@ -109,20 +115,37 @@ pub(super) fn message_row<S: TimelineHost>(
             let spacing = layout.density.spacing();
             reply_line::<S>(key, line, spacing.lead, spacing.lead_gap_pt, &style.palette)
         });
-        build(&parts, line, body, mark, style, |message| {
+        let bar = parts
+            .bar
+            .as_ref()
+            .map(|bar| hover_bar::bar::<S>(key, id, bar, &style.palette));
+        let (enter, exit) = hover_bar::row_motion();
+        build(id, &parts, line, body, mark, style, |message| {
             if !history {
                 return message;
             }
             message
+                // The pointer on the row, or the keyboard on it, shows its bar.
+                .hover_group()
+                .hover_motion(enter, exit)
+                .children(bar)
+                .on_secondary_press(move |host: &mut S, press, tx| {
+                    host.message_menu_requested(key, id, Some([press.x, press.y]), tx);
+                })
                 .on_layout_tx(move |host: &mut S, rect, tx| {
                     host.row_moved(key, id, [rect[1], rect[1] + rect[3]], tx);
                     tx.live_only();
                 })
                 // Ctrl+A selects the message under the pointer.
                 .on_hover_change(move |host: &mut S, hovered, tx| {
-                    host.message_hovered(key, id, hovered);
-                    tx.live_only();
+                    if !host.message_hovered(key, id, hovered) {
+                        tx.live_only();
+                    }
                 })
+                // A press anywhere on the message that nothing in it took
+                // (text, a link, the bar): the conversation was pressed.
+                // The row stays a list item, and still takes the keyboard.
+                .on_background_press_tx(move |host: &mut S, _tx| host.message_pressed(key))
                 .focusable(true)
                 // Only the keyboard focuses a message (Christian,
                 // 2026-11-22): a click leaves the keyboard where it was.
@@ -145,6 +168,7 @@ fn edited_hint(edited_at: &str, time: &LocalTime) -> Option<String> {
 /// leaves the text in place. `mark` takes the time's place: in the header,
 /// else in the lead column.
 fn build(
+    id: Uuid,
     parts: &Parts<'_>,
     line: Option<El>,
     body: El,
@@ -228,7 +252,7 @@ fn build(
         .child(lead)
         .child(content.key("content").grow(1.0).min_w(0.0));
     let mut message = col()
-        .key(MESSAGE_PART)
+        .key(message_part_key(id))
         .w_full()
         .px(MESSAGE_ROW_INSET_PT)
         .py(spacing.row_padding_pt)
@@ -280,7 +304,7 @@ pub(super) fn avatar(name: &str, size_pt: f32, palette: &Palette) -> El {
 
 /// The author's name: a member's nickname or username, a bridged author's
 /// name, else "Someone".
-pub(super) fn author_name(message: &Message, resources: Option<&ResourceSnapshot>) -> String {
+pub(crate) fn author_name(message: &Message, resources: Option<&ResourceSnapshot>) -> String {
     if let Some(external) = &message.external_author {
         return external
             .name
@@ -299,7 +323,7 @@ pub(super) fn author_name(message: &Message, resources: Option<&ResourceSnapshot
 }
 
 /// When the message was created, in Unix microseconds.
-pub(super) fn created_us(message: &Message) -> Option<i64> {
+pub(crate) fn created_us(message: &Message) -> Option<i64> {
     MessageKey::from_message(message)
         .ok()
         .map(|key| key.created_at_us)

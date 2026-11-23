@@ -37,18 +37,18 @@ impl Shell {
     /// edit grow from it.
     pub(super) fn open_change_menu(&mut self, key: TimelineKey, local: Uuid) {
         let items = vec![
-            MenuItem {
-                key: "menu-retry-edit",
-                label: strings::edit_retry(),
-                action: MenuAction::RetryChange { key, local },
-                danger: false,
-            },
-            MenuItem {
-                key: "menu-discard-edit",
-                label: strings::edit_discard(),
-                action: MenuAction::DiscardChange { key, local },
-                danger: true,
-            },
+            MenuItem::plain(
+                "menu-retry-edit",
+                strings::edit_retry(),
+                MenuAction::RetryChange { key, local },
+                false,
+            ),
+            MenuItem::plain(
+                "menu-discard-edit",
+                strings::edit_discard(),
+                MenuAction::DiscardChange { key, local },
+                true,
+            ),
         ];
         let mark = change_mark_key(local);
         self.nav.menu = Some(OpenMenu::new(Placement::Below(mark.clone()), mark, items));

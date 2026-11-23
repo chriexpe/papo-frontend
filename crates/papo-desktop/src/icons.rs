@@ -44,6 +44,61 @@ macro_rules! presence_mark {
 }
 
 line_icon!(
+    /// Add reaction, the add chip.
+    SMILE_PLUS,
+    "smile-plus"
+);
+line_icon!(
+    /// View reactions.
+    SMILE,
+    "smile"
+);
+line_icon!(
+    /// More: the message menu.
+    MORE,
+    "more"
+);
+line_icon!(
+    /// Pin message, pins.
+    PIN,
+    "pin"
+);
+line_icon!(
+    /// Unpin message.
+    PIN_OFF,
+    "pin-off"
+);
+line_icon!(
+    /// Copy text, Copy link.
+    COPY,
+    "copy"
+);
+line_icon!(
+    /// Copy as Markdown.
+    MARKDOWN,
+    "markdown"
+);
+line_icon!(
+    /// Copy ID.
+    ID,
+    "id"
+);
+line_icon!(
+    /// Delete message.
+    TRASH,
+    "trash"
+);
+line_icon!(
+    /// Open link.
+    EXTERNAL,
+    "external"
+);
+line_icon!(
+    /// Back: the reactions list to its menu.
+    ARROW_LEFT,
+    "arrow-left"
+);
+line_icon!(
     /// Close, cancel, clear.
     X,
     "x"

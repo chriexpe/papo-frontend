@@ -1,7 +1,9 @@
 //! A focused message's keys (`docs/design.md` §12): R replies, E edits
-//! yours, Delete asks to delete, Escape goes back to the composer. A key
-//! with a modifier passes on to the window (Ctrl+A on a focused message,
-//! selecting it, comes with D5's message keys). Also Ctrl+↑ from
+//! yours, P pins or unpins, 1 2 3 react with your top three, + stretches
+//! the hover bar into the strip, Enter opens the menu (Shift+F10 and the
+//! menu key reach it as a secondary click), Ctrl+C copies its text, Delete
+//! asks to delete, Escape goes back to the composer. Any other key with a
+//! modifier passes on to the window. Also Ctrl+↑ from
 //! an empty composer into the conversation, and a reply line's jump to its
 //! original, which then wears `highlight.selected` for 1.5 s.
 
@@ -13,7 +15,9 @@ use rune::{Key, KeyEvent, Tx};
 use super::Shell;
 use crate::composer::COMPOSER_KEY;
 use crate::design::JUMP_HIGHLIGHT_S;
+use crate::menu::{MessageAction, Placement};
 use crate::timeline::TimelineKey;
+use crate::timeline::hover_bar::more_key;
 use crate::timeline::rows::{anchor_key, message_key};
 
 impl Shell {
@@ -26,19 +30,55 @@ impl Shell {
         event: &KeyEvent,
         tx: &mut Tx,
     ) -> bool {
+        // A key on a message is work outside a header panel (Escape closes
+        // what is on top instead).
+        if event.key != Key::Escape {
+            self.worked_outside();
+        }
         let mods = event.mods;
+        // A selection copies itself; without one, the focused message does.
+        if event.is_command('c') && !mods.shift && !mods.alt && tx.text_selection().is_none() {
+            // The message's Text copy, as Copy text in its menu.
+            return match self.copy_of(key, id, MessageAction::CopyText) {
+                Some(text) => {
+                    tx.copy(text);
+                    true
+                }
+                None => false,
+            };
+        }
         if mods.cmd || mods.ctrl || mods.alt || mods.logo {
             return false;
+        }
+        // A stretched bar takes ← → Enter Space and Escape first.
+        if self.strip_key(key, id, event) {
+            return true;
         }
         match &event.key {
             Key::Text(letter) if letter.eq_ignore_ascii_case("r") => self.reply_to(key, id, tx),
             Key::Text(letter) if letter.eq_ignore_ascii_case("e") => self.edit(key, id, tx),
+            Key::Text(letter) if letter.eq_ignore_ascii_case("p") => self.toggle_pin(key, id),
+            Key::Text(digit) if matches!(digit.as_str(), "1" | "2" | "3") => {
+                let index = usize::from(digit.as_bytes()[0] - b'1');
+                self.quick_react(key, id, index)
+            }
+            Key::Text(plus) if plus == "+" => {
+                self.toggle_strip(key, id);
+                true
+            }
+            Key::Enter => {
+                self.stretched = None;
+                self.open_message_menu(key, id, Placement::BelowEnd(more_key(id)), message_key(id));
+                true
+            }
             Key::Delete => {
                 self.ask_delete(key, id);
                 true
             }
             Key::Escape => {
-                tx.focus(COMPOSER_KEY, false);
+                if !self.escape_on_top() {
+                    tx.focus(COMPOSER_KEY, false);
+                }
                 true
             }
             _ => false,

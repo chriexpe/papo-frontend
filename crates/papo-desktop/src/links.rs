@@ -42,6 +42,15 @@ pub(crate) enum Decision {
     Refuse,
 }
 
+/// The host `url` goes to, as a menu names it; none for an address with
+/// none (`mailto:`).
+pub(crate) fn host(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()?
+        .host_str()
+        .map(str::to_ascii_lowercase)
+}
+
 /// What pressing `url` does, in a server whose host is `server_host`.
 pub(crate) fn decide(url: &str, server_host: Option<&str>, trusted: &Trusted) -> Decision {
     let Ok(parsed) = url::Url::parse(url) else {

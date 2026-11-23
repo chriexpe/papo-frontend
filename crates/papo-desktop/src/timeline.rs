@@ -17,9 +17,14 @@ pub(crate) mod content;
 mod controls;
 pub(crate) mod echoes;
 mod grouping;
+pub(crate) mod hover_bar;
 pub(crate) mod local_time;
 mod message_row;
 mod paging;
+pub(crate) mod pinned;
+pub(crate) mod reacting;
+pub(crate) mod reactions;
+pub(crate) mod reactors;
 pub(crate) mod reading;
 pub(crate) mod replies;
 pub(crate) mod reply_line;
@@ -38,16 +43,18 @@ use std::sync::Arc;
 
 use eyeball_im::VectorDiff;
 use imbl::Vector;
-use papo_sdk::{AccountId, Generation, HistoryGap, ResourceSnapshot, Uuid};
-use papo_sdk_ui::{Timeline, TimelineItem, TimelineUpdate};
+use papo_sdk::{AccountId, Generation, HistoryGap, Message, ResourceSnapshot, Uuid};
+use papo_sdk_ui::{ChannelPins, Timeline, TimelineItem, TimelineUpdate};
 use tokio::sync::oneshot;
 
 pub(crate) use self::anchor::scroll_to;
 use self::anchor::{Anchor, Tracker};
 use self::changes::Changes;
 use self::echoes::Echoes;
+pub(crate) use self::message_row::{author_name, created_us};
 use self::paging::Paging;
 pub(crate) use self::paging::Request;
+pub(crate) use self::reacting::Reacting;
 use self::reading::Reading;
 pub(crate) use self::reading::Seek;
 use self::reports::Reports;
@@ -137,6 +144,12 @@ pub(crate) struct OpenTimeline {
     pub(crate) reports: Reports,
     /// ⌛'s paging toward the skipped block, while it runs.
     pub(crate) seek: Option<Seek>,
+    /// The channel's pins, newest pin first, parsed.
+    pub(crate) pins: pinned::Pins,
+    /// Their handle, which fetches them again.
+    pub(crate) pins_handle: Option<ChannelPins>,
+    /// Who reacted to its messages, as far as read.
+    pub(crate) reactors: reactors::ReactorLists,
 }
 
 impl OpenTimeline {
@@ -177,6 +190,9 @@ impl OpenTimeline {
             reading: Reading::default(),
             reports: Reports::default(),
             seek: None,
+            pins: pinned::Pins::default(),
+            pins_handle: None,
+            reactors: reactors::ReactorLists::default(),
         };
         (open, stopped)
     }
@@ -371,6 +387,25 @@ impl OpenTimeline {
         self.tracker.bottom_shown(false);
         self.reports.jumped();
         Some(anchor)
+    }
+
+    /// Message `id` with its parsed content, when among the items.
+    pub(crate) fn message(
+        &self,
+        id: Uuid,
+    ) -> Option<(
+        &Arc<Message>,
+        &Arc<papo_sdk_ui::message_content::MessageContent>,
+    )> {
+        self.items.iter().find_map(|item| match item.as_ref() {
+            TimelineItem::Message {
+                id: current,
+                message,
+                content,
+                ..
+            } if *current == id => Some((message, content)),
+            _ => None,
+        })
     }
 
     /// Whether message `id` is among the items.

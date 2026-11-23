@@ -3,21 +3,28 @@
 //! composer's target, a jump's flash): its parts, whose hash is the row's
 //! version. Drawing them is `message_row`'s.
 
-use papo_sdk::{Message, Uuid};
+use papo_sdk::{Message, Operation, Uuid};
 use papo_sdk_ui::message_content::MessageContent;
-use papo_sdk_ui::{ReplyOriginal, attention};
+use papo_sdk_ui::operations::ReactionEmoji;
+use papo_sdk_ui::{
+    ReactionChip, ReplyOriginal, attention, display_name, message_actions, reaction_chips,
+};
 
 use super::OpenTimeline;
 use super::changes::ChangeState;
 use super::content::mention_names;
 use super::echoes::SendState;
 use super::grouping::continues;
+use super::hover_bar::{BAR_REACTIONS, Bar};
 use super::message_row::{author_name, created_us};
+use super::reactions::Chip;
+use super::reactors::ReactorList;
 use super::reading::Boundary;
 use super::replies::original_text;
 use super::reply_line::ReplyLine;
 use super::view::Style;
 use crate::design::Density;
+use crate::strings;
 
 /// A row's background (§4, Highlights: one per row, the strongest reason).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -55,14 +62,20 @@ pub(super) struct Parts<'a> {
     pub(super) reply: Option<ReplyLine>,
     /// Your edit or deletion of it in flight, by its local identity.
     pub(super) change: Option<(Uuid, ChangeState)>,
+    /// Its hover bar: a message from history has one.
+    pub(super) bar: Option<Bar>,
+    /// Its reaction chips, and whether the add chip ends them.
+    pub(super) chips: Vec<Chip>,
+    pub(super) add_chip: bool,
 }
 
 /// Where a row's message comes from.
 #[derive(Clone, Copy)]
-pub(super) enum Origin {
-    /// The channel's history: the row reports where it is, for the anchor
-    /// and Ctrl+A, and takes keyboard focus.
-    History,
+pub(super) enum Origin<'a> {
+    /// The channel's history, with your edit or deletion of it in flight:
+    /// the row reports where it is, for the anchor and Ctrl+A, and takes
+    /// keyboard focus.
+    History(Option<&'a Operation>),
     /// A local echo of yours, with where its send stands (none once sent).
     /// It is no anchor: the SDK knows no such message yet.
     Echo(Option<SendState>),
@@ -76,7 +89,7 @@ pub(super) struct RowMessage<'a> {
     pub(super) content: &'a MessageContent,
     /// Its original, when it replies.
     pub(super) reply: Option<&'a ReplyOriginal>,
-    pub(super) origin: Origin,
+    pub(super) origin: Origin<'a>,
 }
 
 /// What the row of `row_message` shows, and the content it draws (an edit
@@ -111,7 +124,7 @@ pub(super) fn parts<'a>(
     };
     let (sending, history) = match origin {
         Origin::Echo(state) => (state, false),
-        Origin::History => (None, true),
+        Origin::History(_) => (None, true),
     };
     let me = open.key.account.user();
     let change = history.then(|| open.changes.get(id)).flatten();
@@ -142,6 +155,11 @@ pub(super) fn parts<'a>(
     // An edit in flight shows its own text.
     let edit = change.and_then(|change| change.edit.as_ref());
     let content = edit.map_or(content, |(_, parsed)| parsed.as_ref());
+    // Read once for the bar and the chips: the queue is scanned per chip.
+    let reactions = match origin {
+        Origin::History(_) => reaction_chips(message, &style.reacting.outgoing),
+        Origin::Echo(_) => Vec::new(),
+    };
     let parts = Parts {
         name: author_name(message, open.resources.as_deref()),
         time: at_us.map_or_else(String::new, |at_us| style.time.time_label(at_us)),
@@ -160,6 +178,103 @@ pub(super) fn parts<'a>(
         sending,
         reply: line,
         change: change.map(|change| (change.local, change.state)),
+        bar: match origin {
+            Origin::History(pending) => Some(bar(open, id, message, pending, &reactions, style)),
+            Origin::Echo(_) => None,
+        },
+        chips: chips(open, id, &reactions, style),
+        add_chip: false,
+    };
+    // The add chip is offered where the bar offers reacting.
+    let parts = Parts {
+        add_chip: parts.bar.as_ref().is_some_and(|bar| !bar.emoji.is_empty()),
+        ..parts
     };
     (parts, content)
+}
+
+/// What message `id`'s hover bar offers this account.
+fn bar(
+    open: &OpenTimeline,
+    id: Uuid,
+    message: &Message,
+    pending: Option<&Operation>,
+    chips: &[ReactionChip],
+    style: &Style,
+) -> Bar {
+    let reacting = &style.reacting;
+    let actions = message_actions(
+        message,
+        pending,
+        open.pins.pinned(id),
+        open.key.account.user(),
+        reacting.capabilities,
+    );
+    let stretched = reacting
+        .stretched
+        .and_then(|(on, chosen)| (on == id).then_some(chosen));
+    let emoji = if actions.react {
+        let shown = if stretched.is_some() {
+            reacting.quick.len()
+        } else {
+            BAR_REACTIONS
+        };
+        reacting
+            .quick
+            .iter()
+            .take(shown)
+            .map(|emoji| {
+                let unicode = ReactionEmoji::Unicode(emoji.clone());
+                let mine = chips.iter().any(|chip| chip.mine && chip.emoji == unicode);
+                (emoji.clone(), mine)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Bar {
+        emoji,
+        stretched,
+        reply: actions.reply,
+        edit: actions.edit,
+    }
+}
+
+/// Message `id`'s reaction chips, whether this account may toggle each
+/// now, and who reacted with each, once read.
+fn chips(open: &OpenTimeline, id: Uuid, chips: &[ReactionChip], style: &Style) -> Vec<Chip> {
+    let reacting = &style.reacting;
+    let list = open.reactors.get(id, chips).filter(|list| list.started);
+    chips
+        .iter()
+        .map(|chip| Chip {
+            toggles: chip.can_toggle(reacting.capabilities),
+            who: list.and_then(|list| who(open, list, chip)),
+            reaction: chip.clone(),
+        })
+        .collect()
+}
+
+/// "Lia, Yuki and 2 others reacted with 🧀": the first two people read
+/// whose names are known (you first), and the chip's count.
+fn who(open: &OpenTimeline, list: &ReactorList, chip: &ReactionChip) -> Option<String> {
+    let ReactionEmoji::Unicode(emoji) = &chip.emoji else {
+        return None;
+    };
+    let resources = open.resources.as_deref();
+    let names: Vec<String> = list
+        .reactors
+        .rows(Some(&chip.emoji))
+        .iter()
+        .filter_map(|reactor| {
+            if reactor.you {
+                return Some(strings::reaction_you().to_owned());
+            }
+            let user = resources?.users.get(reactor.user)?;
+            display_name(user.nickname.as_deref(), user.username.as_deref()).map(str::to_owned)
+        })
+        .take(2)
+        .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    Some(strings::reaction_who(&names, chip.count, emoji))
 }

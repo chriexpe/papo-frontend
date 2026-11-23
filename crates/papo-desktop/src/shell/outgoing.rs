@@ -34,22 +34,22 @@ impl Shell {
             return;
         }
         let items = vec![
-            MenuItem {
-                key: "menu-retry-send",
-                label: strings::outgoing_retry(),
-                action: MenuAction::RetrySend {
+            MenuItem::plain(
+                "menu-retry-send",
+                strings::outgoing_retry(),
+                MenuAction::RetrySend {
                     key,
                     local,
                     unknown: state == SendState::Unknown,
                 },
-                danger: false,
-            },
-            MenuItem {
-                key: "menu-discard-send",
-                label: strings::outgoing_discard(),
-                action: MenuAction::DiscardSend { key, local },
-                danger: true,
-            },
+                false,
+            ),
+            MenuItem::plain(
+                "menu-discard-send",
+                strings::outgoing_discard(),
+                MenuAction::DiscardSend { key, local },
+                true,
+            ),
         ];
         let mark = mark_key(local);
         self.nav.menu = Some(OpenMenu::new(Placement::Below(mark.clone()), mark, items));

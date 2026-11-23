@@ -58,7 +58,7 @@ impl Shell {
         }
     }
 
-    fn link_pressed(&mut self, key: TimelineKey, url: String, tx: &mut Tx) {
+    pub(super) fn link_pressed(&mut self, key: TimelineKey, url: String, tx: &mut Tx) {
         let server_host = self
             .nav
             .servers()

@@ -99,6 +99,11 @@ impl Tabs {
             .find(|open| open.key == key && open.ticket == ticket)
     }
 
+    /// The open timeline `key`, shown or not.
+    pub(crate) fn open_mut(&mut self, key: TimelineKey) -> Option<&mut OpenTimeline> {
+        self.open.iter_mut().find(|open| open.key == key)
+    }
+
     /// How many timelines are open.
     #[cfg(test)]
     pub(crate) fn open_count(&self) -> usize {

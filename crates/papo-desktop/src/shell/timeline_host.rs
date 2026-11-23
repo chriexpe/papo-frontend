@@ -8,8 +8,11 @@ use papo_sdk::Uuid;
 use rune::{KeyEvent, Tx};
 
 use super::Shell;
+use crate::menu::Placement;
 use crate::timeline::content::Press;
 use crate::timeline::echoes::SendState;
+use crate::timeline::hover_bar::{BarPress, more_key};
+use crate::timeline::reactors::Want;
 use crate::timeline::{OpenTimeline, Request, TimelineHost, TimelineKey};
 
 impl TimelineHost for Shell {
@@ -70,22 +73,37 @@ impl TimelineHost for Shell {
     }
 
     fn content_pressed(&mut self, key: TimelineKey, message: Uuid, press: Press, tx: &mut Tx) {
+        self.worked_outside();
         self.content_pressed_in(key, message, press, tx);
     }
 
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx) {
+        self.worked_outside();
         self.code_copied_in(key, message, index, tx);
     }
 
-    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) {
+    fn message_pressed(&mut self, key: TimelineKey) {
+        if self.tabs.is_shown(key) {
+            self.worked_outside();
+        }
+    }
+
+    fn timeline_wheeled(&mut self, key: TimelineKey) -> bool {
+        self.tabs.is_shown(key) && self.worked_outside()
+    }
+
+    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) -> bool {
         self.message_hovered_in(key, message, hovered);
+        hovered && self.fold_strip_for(key, message)
     }
 
     fn hourglass_pressed(&mut self, key: TimelineKey) {
+        self.worked_outside();
         self.hourglass_pressed(key);
     }
 
     fn down_pressed(&mut self, key: TimelineKey, tx: &mut Tx) {
+        self.worked_outside();
         self.down_pressed(key, tx);
     }
 
@@ -94,6 +112,7 @@ impl TimelineHost for Shell {
     }
 
     fn send_state_pressed(&mut self, key: TimelineKey, local: Uuid, state: SendState) {
+        self.worked_outside();
         self.open_send_menu(key, local, state);
     }
 
@@ -102,10 +121,12 @@ impl TimelineHost for Shell {
     }
 
     fn reply_line_pressed(&mut self, key: TimelineKey, original: Uuid, tx: &mut Tx) {
+        self.worked_outside();
         self.jump_to_original(key, original, tx);
     }
 
     fn change_mark_pressed(&mut self, key: TimelineKey, local: Uuid) {
+        self.worked_outside();
         self.open_change_menu(key, local);
     }
 
@@ -115,6 +136,49 @@ impl TimelineHost for Shell {
 
     fn change_discarded(&mut self, key: TimelineKey, local: Uuid) {
         self.discard_change(key, local);
+    }
+
+    fn bar_pressed(&mut self, key: TimelineKey, id: Uuid, press: BarPress, tx: &mut Tx) {
+        self.worked_outside();
+        if self.tabs.is_shown(key) {
+            self.bar_press(key, id, press, tx);
+        }
+    }
+
+    fn chip_hovered(&mut self, key: TimelineKey, id: Uuid) {
+        if self.tabs.is_shown(key) {
+            self.load_reactors(key, id, Want::Hint);
+        }
+    }
+
+    fn chip_menu_requested(&mut self, key: TimelineKey, id: Uuid, emoji: String, _tx: &mut Tx) {
+        self.worked_outside();
+        if self.tabs.is_shown(key) {
+            self.open_chip_reactions(key, id, &emoji);
+        }
+    }
+
+    fn link_menu_requested(&mut self, key: TimelineKey, url: String, at: [f32; 2], _tx: &mut Tx) {
+        self.worked_outside();
+        if self.tabs.is_shown(key) {
+            self.open_link_menu(key, url, at);
+        }
+    }
+
+    fn message_menu_requested(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        at: Option<[f32; 2]>,
+        tx: &mut Tx,
+    ) {
+        self.worked_outside();
+        let placement = match at {
+            Some(point) => Placement::AtPointer(point),
+            None => Placement::BelowEnd(more_key(id)),
+        };
+        let trigger = super::hover_bar::pointer_trigger(tx);
+        self.open_message_menu(key, id, placement, trigger);
     }
 
     fn retry_gap(&mut self, key: TimelineKey, cursor_id: &str) {

@@ -16,7 +16,7 @@ use crate::design::{
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
 use crate::strings;
-use crate::{channel_pane, composer, links, menu, rail, remove_server, timeline};
+use crate::{channel_pane, composer, links, menu, notice, rail, remove_server, timeline};
 
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
@@ -48,7 +48,7 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 .padding(SPACE_LG_PT)
                 .child(sign_in::screen(flow, &shell.fields, &palette)),
             _ => {
-                let mut app = app(shell, theme, &palette);
+                let mut app = app(shell, theme, &palette, cx);
                 if let Some(server) = connected {
                     app = app.child(connected_pill(server, &palette));
                 }
@@ -60,8 +60,17 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                         cx,
                     ));
                 }
+                if let Some(notice) = &shell.notice {
+                    app = app.child(notice::view(notice, composer::COMPOSER_PILL_KEY, &palette));
+                }
                 if let Some(menu) = &shell.nav.menu {
-                    app = app.child(menu::view(menu, &palette, cx));
+                    app = app.children(menu::pointer_point(menu));
+                    let body = super::reactions_list::body(shell, &palette);
+                    // A list whose message went away draws nothing; the
+                    // next poll closes it.
+                    if body.is_some() || menu.reactions.is_none() {
+                        app = app.child(menu::view(menu, body, &palette, cx));
+                    }
                 }
                 let removing = shell
                     .nav
@@ -121,12 +130,13 @@ fn timeline_style(shell: &Shell, theme: Theme, palette: &Palette) -> timeline::S
         today: shell.today,
         hourglass: shell.prefs.unread_hourglass,
         selected,
+        reacting: shell.reacting(),
     }
 }
 
 /// The rail, the channel pane and the conversation with the composer pill
 /// at its foot.
-fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
+fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
     let channel = shell
         .nav
         .selected()
@@ -147,19 +157,27 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette) -> El {
     };
     let composer = composer::pill(&shell.composer, &context, palette);
     let style = timeline_style(shell, theme, palette);
+    let header = super::pins_panel::header(shell, channel, palette);
+    let panel = super::pins_panel::panel(shell, &style, cx);
     let conversation = col()
         .key("conversation")
         .grow(1.0)
         .min_w(0.0)
         .h_full()
         .fill(palette.surface_content)
+        .children(header)
         .child(timeline::view(shell, style))
-        .child(col().w_full().padding(SPACE_LG_PT).child(composer));
+        .child(col().w_full().padding(SPACE_LG_PT).child(composer))
+        .children(panel);
     let edge = || el().w(PANE_EDGE_PT).h_full().fill(palette.line_subtle);
     row()
         .w_full()
         .h_full()
         .fill(palette.surface_content)
+        // A press anywhere no control takes: work outside a header panel.
+        .on_background_press(|shell: &mut Shell| {
+            shell.worked_outside();
+        })
         .child(rail::view(&shell.nav, &shell.icons, palette))
         .child(edge())
         .child(channel_pane::view(&shell.nav, &shell.icons, palette))

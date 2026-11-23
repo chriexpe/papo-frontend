@@ -265,6 +265,11 @@ fn channels(server: &ServerEntry, selected: Option<&str>, palette: &Palette) -> 
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
+        // A scroll here is work outside a header panel; it scrolls as usual.
+        .on_wheel(|shell: &mut Shell, _wheel, _tx| {
+            shell.worked_outside();
+            false
+        })
         .child(list)
 }
 

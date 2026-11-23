@@ -11,7 +11,7 @@ use rune::{Drag, Key, KeyEvent, Phase, Tx};
 use super::Shell;
 use crate::channel_pane::{SERVER_CARD_KEY, SERVER_OPTIONS_KEY, channel_key};
 use crate::composer::COMPOSER_KEY;
-use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
+use crate::menu::{MenuAction, MenuItem, MessageAction, OpenMenu, Placement};
 use crate::rail::tile_key;
 use crate::remove_server;
 use crate::server_list::ServerList;
@@ -47,11 +47,13 @@ impl Shell {
     }
 
     pub(crate) fn select_server(&mut self, server: ServerId, tx: &mut Tx) {
+        self.worked_outside();
         self.nav.select_server(server);
         self.sync_timeline(Some(tx));
     }
 
     pub(crate) fn select_channel(&mut self, channel: &str, tx: &mut Tx) {
+        self.worked_outside();
         self.nav.select_channel(channel);
         self.sync_timeline(Some(tx));
     }
@@ -59,7 +61,28 @@ impl Shell {
     /// Keys no control took: Alt+↑/↓ between channels, then Ctrl+A in the
     /// timeline.
     pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
-        self.channel_step_key(key, tx) || self.select_message_key(key, tx)
+        self.channel_step_key(key, tx)
+            || self.select_message_key(key, tx)
+            || self.pins_key(key, tx)
+            || self.escape_key(key)
+    }
+
+    /// Escape where nothing took it (the rail, a channel row, the header):
+    /// what is on top closes.
+    fn escape_key(&mut self, key: &KeyEvent) -> bool {
+        let mods = key.mods;
+        let bare = !(mods.cmd || mods.ctrl || mods.alt || mods.shift || mods.logo);
+        key.key == Key::Escape && bare && self.escape_on_top()
+    }
+
+    /// Ctrl+P: the pins panel opens, stretches back, or closes.
+    fn pins_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        if !key.is_command('p') || mods.shift || mods.alt || self.popup_shown() {
+            return false;
+        }
+        self.pins_pressed(true, tx);
+        true
     }
 
     /// Alt+↑ or Alt+↓ (Alt alone: Alt+⇧ is the unread channels'; macOS's
@@ -190,13 +213,18 @@ impl Shell {
     fn open_menu(&mut self, placement: Placement, trigger: String, server: ServerId) {
         // ⚙ shows on the grown pill too; the menu takes the pill's place.
         self.nav.close_accounts();
-        let items = vec![MenuItem {
-            key: "menu-remove-server",
-            label: strings::remove_server(),
-            action: MenuAction::RemoveServer(server),
-            danger: true,
-        }];
+        let items = vec![MenuItem::plain(
+            "menu-remove-server",
+            strings::remove_server(),
+            MenuAction::RemoveServer(server),
+            true,
+        )];
         self.nav.menu = Some(OpenMenu::new(placement, trigger, items));
+    }
+
+    /// The open menu, to change in place (the strip's chosen emoji).
+    pub(crate) fn open_menu_mut(&mut self) -> Option<&mut OpenMenu> {
+        self.nav.menu.as_mut()
     }
 
     pub(crate) fn close_menu(&mut self) {
@@ -206,6 +234,16 @@ impl Shell {
     /// Closes the menu, gives the keyboard back to its trigger, so a popup
     /// the action opens returns there, and carries the action out.
     pub(crate) fn menu_picked(&mut self, action: MenuAction, tx: &mut Tx) {
+        // View reactions keeps the menu: it turns into the list.
+        if let MenuAction::Message {
+            key,
+            id,
+            action: MessageAction::ViewReactions,
+        } = action
+        {
+            self.show_reactions(key, id, tx);
+            return;
+        }
         if let Some(menu) = self.nav.menu.take() {
             tx.focus(menu.trigger, false);
         }
@@ -236,6 +274,12 @@ impl Shell {
             MenuAction::DiscardChange { key, local } => {
                 self.discard_change(key, local);
                 tx.focus(COMPOSER_KEY, false);
+            }
+            MenuAction::Message { key, id, action } => self.message_action(key, id, action, tx),
+            MenuAction::OpenLink { key, url } => self.link_pressed(key, url, tx),
+            MenuAction::CopyLink(url) => tx.copy(url),
+            MenuAction::React { key, id, emoji } => {
+                self.toggle_reaction(key, id, &emoji);
             }
         }
     }

@@ -50,6 +50,7 @@ impl Shell {
         let Some(switch) = self.tabs.show(wanted, self.prefs.open_at_newest) else {
             return;
         };
+        self.conversation_left();
         if let Some(save) = switch.save {
             self.save_position(save.key, save.position);
         }
@@ -119,6 +120,7 @@ impl Shell {
             return false;
         };
         let opened = matches!(posted, Posted::Opened(_));
+        let pins = matches!(posted, Posted::Pins(_));
         match posted {
             Posted::Opened(window) => {
                 open.opened(window);
@@ -143,6 +145,9 @@ impl Shell {
             }
             Posted::Reading(overlay) => open.reading.overlay_changed(overlay),
             Posted::Resources(resources) => open.resources = Some(resources),
+            Posted::PinsOpened(handle) => open.pins_handle = Some(handle),
+            Posted::Pins(pins) => open.pins.set(pins, &open.items),
+            Posted::PinsFailed => open.pins.failed = true,
             Posted::Failed => open.phase = crate::timeline::Phase::Failed,
             Posted::Closed => open.phase = crate::timeline::Phase::Closed,
         }
@@ -151,6 +156,9 @@ impl Shell {
         }
         if opened {
             self.resolve_replies();
+        }
+        if pins {
+            self.pins_changed(key);
         }
         shown
     }
@@ -280,7 +288,9 @@ impl Shell {
         let copied_ended = self.end_copied(clock_s);
         let new_day = self.follow_the_day(clock_s, tx);
         let flash_ended = self.poll_flash(clock_s);
-        restored || copied_ended || new_day || flash_ended
+        let notice_ended = self.poll_notice(clock_s);
+        let list_closed = self.poll_reactions();
+        restored || copied_ended || new_day || flash_ended || notice_ended || list_closed
     }
 
     /// Keeps `today` current: checks once the local day should have ended,

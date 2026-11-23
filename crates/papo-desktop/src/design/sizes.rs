@@ -62,6 +62,9 @@ pub(crate) const PANE_EDGE_PT: f32 = 1.0;
 pub(crate) const MENU_ROW_HEIGHT_PT: f32 = 32.0;
 /// A context menu's width, in points.
 pub(crate) const CONTEXT_MENU_WIDTH_PT: f32 = 200.0;
+/// The message menu's width (`docs/design.md` §10: 200 to 280, sized for
+/// Portuguese with its shortcuts).
+pub(crate) const MESSAGE_MENU_WIDTH_PT: f32 = 260.0;
 /// The confirm popup's width, in points.
 pub(crate) const CONFIRM_WIDTH_PT: f32 = 360.0;
 

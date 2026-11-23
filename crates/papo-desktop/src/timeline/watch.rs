@@ -3,8 +3,9 @@
 //! when it is near the newest, focused around it when far), or takes one
 //! ⌛ opened, posts the baseline, then every batch of diffs, every change
 //! to the window's reading overlay (the skipped block, the arrivals) and
-//! to the account's resources, until the timeline is dropped or the SDK
-//! closes the window.
+//! to the account's resources and to the channel's pins (fetched whenever
+//! they are not known), until the timeline is dropped or the SDK closes
+//! the window.
 //!
 //! Every post carries the timeline's key and ticket; the shell drops posts
 //! from an opening it no longer holds.
@@ -14,12 +15,12 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use imbl::Vector;
 use papo_sdk::{
-    ClientHandle, Generation, HistoryClosedReason, HistoryError, ReadingPosition, ResourceSnapshot,
-    Session, Uuid,
+    ClientHandle, Generation, HistoryClosedReason, HistoryError, Message, ReadingPosition,
+    ResourceSnapshot, Session, Uuid,
 };
 use papo_sdk_ui::{
-    Timeline, TimelineConfig, TimelineError, TimelineEvent, TimelineItem, TimelineReadingEvent,
-    TimelineReadingState, TimelineUpdate, UtcOffsetProvider,
+    ChannelPins, PinsEvent, PinsStream, Timeline, TimelineConfig, TimelineError, TimelineEvent,
+    TimelineItem, TimelineReadingEvent, TimelineReadingState, TimelineUpdate, UtcOffsetProvider,
 };
 use rune::Tx;
 use tokio::sync::oneshot;
@@ -52,6 +53,12 @@ pub(crate) enum Posted {
     Reading(TimelineReadingState),
     /// The account's resources changed (author names among them).
     Resources(Arc<ResourceSnapshot>),
+    /// The channel's pins opened: their handle, which fetches them again.
+    PinsOpened(ChannelPins),
+    /// The channel's pins now, newest pin first; none while unknown.
+    Pins(Option<Vector<Arc<Message>>>),
+    /// A fetch of the pins did not succeed.
+    PinsFailed,
     /// The window could not open.
     Failed,
     /// The SDK closed the window for good.
@@ -138,6 +145,7 @@ impl<S: 'static> Watch<S> {
             &resources.borrow_and_update(),
         )));
         let mut resources_open = true;
+        let mut pins = follow_pins(&session, key.channel, &post).await;
         loop {
             tokio::select! {
                 biased;
@@ -164,8 +172,71 @@ impl<S: 'static> Watch<S> {
                     }
                     post(Posted::Resources(Arc::clone(&resources.borrow_and_update())));
                 }
+                event = next_pins(pins.as_mut()) => match event {
+                    Some(PinsEvent::Update(update)) => {
+                        if let (None, Some((handle, _))) = (&update, &pins) {
+                            // Unknown again (a new connection): fetched again.
+                            let post = post.clone();
+                            refresh(handle.clone(), move || post(Posted::PinsFailed));
+                        }
+                        post(Posted::Pins(update));
+                    }
+                    // The window's own closure follows on its item stream.
+                    Some(PinsEvent::Closed(_)) | None => pins = None,
+                    Some(_) => {}
+                },
             }
         }
+    }
+}
+
+/// Opens the channel's pins beside its window, posts their handle and the
+/// pins now, and fetches them when they are not known. None when they do
+/// not open; the window works without them (no pin actions, no panel).
+async fn follow_pins(
+    session: &Session,
+    channel: Uuid,
+    post: &(impl Fn(Posted) + Clone + Send + 'static),
+) -> Option<(ChannelPins, PinsStream)> {
+    let opened = match ChannelPins::open(session, channel).await {
+        Ok(pins) => pins
+            .subscribe()
+            .await
+            .map(|subscription| (pins, subscription)),
+        Err(error) => Err(error),
+    };
+    let (pins, subscription) = match opened {
+        Ok(opened) => opened,
+        Err(error) => {
+            log::debug!("a channel's pins are not followed: {error}");
+            return None;
+        }
+    };
+    post(Posted::PinsOpened(pins.clone()));
+    if subscription.pins.is_none() {
+        let post = post.clone();
+        refresh(pins.clone(), move || post(Posted::PinsFailed));
+    }
+    post(Posted::Pins(subscription.pins));
+    Some((pins, subscription.stream))
+}
+
+/// Fetches the pins on their own task: the stream posts what arrives, and
+/// `failed` hears when the fetch did not succeed.
+pub(crate) fn refresh(pins: ChannelPins, failed: impl FnOnce() + Send + 'static) {
+    tokio::spawn(async move {
+        if let Err(error) = pins.refresh().await {
+            log::debug!("a channel's pins were not fetched: {error}");
+            failed();
+        }
+    });
+}
+
+/// The next pins event; never, once the pins are gone.
+async fn next_pins(pins: Option<&mut (ChannelPins, PinsStream)>) -> Option<PinsEvent> {
+    match pins {
+        Some((_, stream)) => stream.next().await,
+        None => std::future::pending().await,
     }
 }
 

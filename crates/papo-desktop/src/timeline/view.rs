@@ -20,6 +20,7 @@ use super::content::copy::{self, Source};
 use super::controls::{jump_stack, seeking_pill};
 use super::echoes::SendState;
 use super::grouping::previous_message;
+use super::hover_bar::BarPress;
 use super::local_time::{LocalTime, day_label};
 use super::message_row::message_row;
 use super::row_parts::{Origin, RowMessage};
@@ -59,8 +60,15 @@ pub(crate) trait TimelineHost: Sized + 'static {
     /// Code block `index` (its text's index) of message `message` was
     /// copied.
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx);
-    /// The pointer entered or left message `message`.
-    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool);
+    /// A press on a message of timeline `key` that nothing in it took.
+    fn message_pressed(&mut self, key: TimelineKey);
+    /// A wheel or trackpad scroll over timeline `key`, by the reader (the
+    /// app's own scrolls never come here). Returns whether the view
+    /// changed; the viewport scrolls as usual.
+    fn timeline_wheeled(&mut self, key: TimelineKey) -> bool;
+    /// The pointer entered or left message `message`. Returns whether the
+    /// view changed.
+    fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool) -> bool;
     /// ⌛ was pressed.
     fn hourglass_pressed(&mut self, key: TimelineKey);
     /// ↓ was pressed.
@@ -80,6 +88,26 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn change_retried(&mut self, key: TimelineKey, local: Uuid);
     /// Dismiss on your failed change `local`: it is dropped.
     fn change_discarded(&mut self, key: TimelineKey, local: Uuid);
+    /// A press on message `id`'s hover bar.
+    fn bar_pressed(&mut self, key: TimelineKey, id: Uuid, press: BarPress, tx: &mut Tx);
+    /// The pointer came to rest on one of message `id`'s chips: who
+    /// reacted is read, for its hint.
+    fn chip_hovered(&mut self, key: TimelineKey, id: Uuid);
+    /// The reactions list was asked for beside message `id`'s chip for
+    /// `emoji`, by a secondary click on it.
+    fn chip_menu_requested(&mut self, key: TimelineKey, id: Uuid, emoji: String, tx: &mut Tx);
+    /// A link's menu was asked for, by a secondary click on `url` at `at`,
+    /// in window points.
+    fn link_menu_requested(&mut self, key: TimelineKey, url: String, at: [f32; 2], tx: &mut Tx);
+    /// Message `id`'s menu was asked for: by a secondary click at `at`, in
+    /// window points, else from its hover bar.
+    fn message_menu_requested(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        at: Option<[f32; 2]>,
+        tx: &mut Tx,
+    );
 }
 
 /// How the rows look: the same for every row of one view.
@@ -96,6 +124,8 @@ pub(crate) struct Style {
     /// The message the composer points at (a reply's original, or the
     /// message being edited): it wears `highlight.selected`.
     pub(crate) selected: Option<Uuid>,
+    /// What reacting reads, the same for every row.
+    pub(crate) reacting: super::reacting::Reacting,
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and
@@ -173,6 +203,12 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         })
         .label(strings::timeline_label())
         .on_at_bottom_if(move |host: &mut S, at_bottom| host.bottom_shown(key, at_bottom))
+        .on_wheel(move |host: &mut S, _wheel, tx| {
+            if !host.timeline_wheeled(key) {
+                tx.live_only();
+            }
+            false
+        })
         .on_layout_tx(move |host: &mut S, rect, tx| {
             host.viewport_moved(key, rect[1], rect[3], tx);
             tx.live_only();
@@ -210,6 +246,7 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
             message,
             content,
             reply,
+            pending,
             ..
         } => {
             let row = RowMessage {
@@ -217,7 +254,7 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
                 message,
                 content,
                 reply: reply.as_ref(),
-                origin: Origin::History,
+                origin: Origin::History(pending.as_deref()),
             };
             message_row::<S>(open, &row, previous, style)
         }

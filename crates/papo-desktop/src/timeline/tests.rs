@@ -18,7 +18,7 @@ use super::content::Press;
 use super::echoes::SendState;
 use super::local_time::LocalTime;
 use super::rows::message_key;
-use super::{OpenTimeline, Request, Style, TimelineHost, TimelineKey, view};
+use super::{OpenTimeline, Reacting, Request, Style, TimelineHost, TimelineKey, view};
 use crate::design::{Density, MessageLayout, Palette, Theme};
 
 const SIZE_PT: (f32, f32) = (800.0, 600.0);
@@ -89,7 +89,17 @@ impl TimelineHost for Host {
         self.open.code_copied(message, index, tx.clock() + 1.5);
     }
 
-    fn message_hovered(&mut self, _key: TimelineKey, _message: Uuid, _hovered: bool) {}
+    fn message_hovered(&mut self, _key: TimelineKey, _message: Uuid, _hovered: bool) -> bool {
+        false
+    }
+
+    fn message_pressed(&mut self, _key: TimelineKey) {
+        self.controls.push("message-pressed");
+    }
+
+    fn timeline_wheeled(&mut self, _key: TimelineKey) -> bool {
+        false
+    }
 
     fn hourglass_pressed(&mut self, _key: TimelineKey) {
         self.controls.push("hourglass");
@@ -132,6 +142,44 @@ impl TimelineHost for Host {
     fn change_discarded(&mut self, _key: TimelineKey, _local: Uuid) {
         self.controls.push("change-discarded");
     }
+
+    fn bar_pressed(
+        &mut self,
+        _key: TimelineKey,
+        _id: Uuid,
+        _press: super::hover_bar::BarPress,
+        _tx: &mut Tx,
+    ) {
+        self.controls.push("bar");
+    }
+
+    fn chip_hovered(&mut self, _key: TimelineKey, _id: Uuid) {
+        self.controls.push("chip-hovered");
+    }
+
+    fn chip_menu_requested(&mut self, _key: TimelineKey, _id: Uuid, _emoji: String, _tx: &mut Tx) {
+        self.controls.push("chip-menu");
+    }
+
+    fn link_menu_requested(
+        &mut self,
+        _key: TimelineKey,
+        _url: String,
+        _at: [f32; 2],
+        _tx: &mut Tx,
+    ) {
+        self.controls.push("link-menu");
+    }
+
+    fn message_menu_requested(
+        &mut self,
+        _key: TimelineKey,
+        _id: Uuid,
+        _at: Option<[f32; 2]>,
+        _tx: &mut Tx,
+    ) {
+        self.controls.push("menu");
+    }
 }
 
 fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
@@ -144,6 +192,7 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
         time,
         hourglass: host.hourglass,
         selected: None,
+        reacting: Reacting::unknown(),
     };
     col().w_full().h_full().child(view(host, style))
 }
@@ -227,7 +276,12 @@ fn rect(rt: &Runtime<Host>, suffix: &str) -> [f32; 4] {
 /// at any depth inside its row.
 fn find_part(rt: &Runtime<Host>, n: u128, part: &str) -> Option<ElementInfo> {
     let row = format!("/{}/", message_key(Uuid::from_u128(n)));
-    let part = format!("/{part}");
+    // The message itself is keyed by its ID.
+    let part = if part == "message" {
+        format!("/{}", super::rows::message_part_key(Uuid::from_u128(n)))
+    } else {
+        format!("/{part}")
+    };
     rt.elements().into_iter().find(|element| {
         element.path.contains(&row) && element.path.ends_with(&part) && !element.exiting
     })
@@ -258,5 +312,7 @@ mod changes;
 mod content;
 mod controls;
 mod echoes;
+mod hover_bar;
+mod reactions;
 mod reading;
 mod spacing;

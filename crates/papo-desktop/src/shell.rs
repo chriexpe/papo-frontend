@@ -21,6 +21,7 @@ use crate::composer::Composer;
 use crate::composer::prefs::WritingPrefs;
 use crate::design::MessageLayout;
 use crate::navigation::Navigation;
+use crate::reaction_watch;
 use crate::reading_prefs::ReadingPrefs;
 use crate::reconnect_hints;
 use crate::sdk_bridge::{BridgeHost, OpenFailure, RequestSlot, Sdk};
@@ -91,6 +92,19 @@ pub(crate) struct Shell {
     window_shown: bool,
     /// The last ⌛ press's number; each takes the next.
     seeks: u64,
+    /// Each signed-in account's queue and quick reactions.
+    activity: HashMap<AccountId, activity::Activity>,
+    /// The notice pill, while one shows.
+    notice: Option<crate::notice::Notice>,
+    /// Pins and unpins on their way.
+    pinning: reacting::Pinning,
+    /// The hover bar stretched into its strip, while one is.
+    stretched: Option<activity::Stretched>,
+    /// The pins panel, while open.
+    pins_panel: Option<pins::PinsPanel>,
+    /// What had the keyboard when the pins panel opened, which gets it
+    /// back when it closes.
+    pins_return_focus: Option<String>,
 }
 
 /// The reorder on its way to the SDK, and the newest one waiting for it.
@@ -151,6 +165,12 @@ impl Default for Shell {
             prefs: ReadingPrefs::default(),
             window_shown: true,
             seeks: 0,
+            activity: HashMap::new(),
+            notice: None,
+            pinning: reacting::Pinning::default(),
+            stretched: None,
+            pins_panel: None,
+            pins_return_focus: None,
         }
     }
 }
@@ -159,6 +179,7 @@ impl BridgeHost for Shell {
     fn sdk_opened(&mut self, sdk: Sdk<Self>) {
         sdk.watch(|client, updates| account_watch::run(client, updates, Shell::accounts_changed));
         sdk.watch(|client, updates| server_list::run(client, updates, Shell::servers_changed));
+        sdk.watch(|client, updates| reaction_watch::run(client, updates, Shell::activity_posted));
         sdk.run(reconnect_hints::run);
         self.sdk = Some(sdk);
     }
@@ -214,13 +235,21 @@ impl Shell {
 }
 
 mod accounts;
+mod activity;
 mod composer;
 mod composer_input;
 mod content;
 pub(crate) mod deleting;
+mod hover_bar;
 mod message_keys;
+mod message_menu;
 mod navigate;
 mod outgoing;
+pub(crate) mod pins;
+mod pins_panel;
+mod reacting;
+mod reactions_list;
+mod reactors;
 mod reading;
 mod replies;
 mod sign_in_flow;
