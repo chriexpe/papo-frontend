@@ -52,7 +52,9 @@ pub use capabilities::{
     AuthorIdentity, CapabilityService, CapabilitySubscription, CapabilityView, ChannelCapabilities,
     ServerCapabilities, capabilities,
 };
+mod direct_candidates;
 mod direct_messages;
+pub use direct_candidates::{DirectCandidate, direct_candidates};
 pub use direct_messages::{
     DirectMessageId, DirectMessageItem, DirectMessageService, DirectMessageSubscription,
     DirectMessageUpdate,
