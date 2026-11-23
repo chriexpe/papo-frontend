@@ -27,8 +27,8 @@ pub use operations::{OperationService, ReactionService};
 mod search;
 pub use search::{
     MAX_SEARCH_SUGGESTIONS, SearchCount, SearchResultItem, SearchResults, SearchService,
-    SearchSubscription, SearchSuggestion, SearchUpdate, SuggestedValue, search_candidates,
-    search_suggestions,
+    SearchSubscription, SearchSuggestion, SearchUpdate, SearchWindow, SuggestedValue,
+    localize_search, search_candidates, search_suggestions,
 };
 mod notifications;
 pub use notifications::{AccountInbox, NotificationClient, NotificationItem};

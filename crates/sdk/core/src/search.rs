@@ -9,7 +9,7 @@ pub use draft::{
     FilterValue, HasKind, MAX_SEARCH_BYTES, MAX_SEARCH_CANDIDATES, SearchDraft, SearchFilter,
     SearchKeyword, SearchNames, SearchProblem, SearchScope,
 };
-pub use grammar::SearchQuery;
+pub use grammar::{LocalDays, SearchQuery};
 #[cfg(test)]
 mod tests;
 

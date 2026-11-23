@@ -265,3 +265,89 @@ fn the_count_is_a_floor_until_the_last_page_is_in() {
     assert!(first.message.attachments.is_none());
     assert!(!first.content.is_empty());
 }
+
+fn local_day(raw: &str) -> chrono::NaiveDate {
+    chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").unwrap()
+}
+
+fn instant_us(raw: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .unwrap()
+        .timestamp_micros()
+}
+
+fn days_query(first: Option<&str>, last: Option<&str>) -> papo_sdk::SearchQuery {
+    papo_sdk::SearchQuery {
+        text: Some("openssl".into()),
+        local_days: Some(papo_sdk::LocalDays {
+            first: first.map(local_day),
+            last: last.map(local_day),
+        }),
+        ..papo_sdk::SearchQuery::default()
+    }
+}
+
+/// Brazil: three hours west of UTC.
+fn brasilia(_at_us: i64) -> crate::UtcOffset {
+    crate::UtcOffset::from_seconds_east(-3 * 3600).unwrap()
+}
+
+#[test]
+fn a_local_day_asks_every_utc_day_it_touches_and_keeps_its_own_hours() {
+    let (query, window) = localize_search(
+        days_query(Some("2026-11-20"), Some("2026-11-20")),
+        &brasilia,
+    )
+    .unwrap();
+    assert_eq!(query.local_days, None);
+    assert_eq!(query.date_start.as_deref(), Some("2026-11-20"));
+    assert_eq!(query.date_end.as_deref(), Some("2026-11-21"));
+    assert_eq!(window.start_us, Some(instant_us("2026-11-20T03:00:00Z")));
+    assert_eq!(window.end_us, Some(instant_us("2026-11-21T03:00:00Z")));
+    // 22:30 local on the 20th is the 21st in UTC, and is kept.
+    assert!(window.holds(instant_us("2026-11-21T01:30:00Z")));
+    assert!(!window.holds(instant_us("2026-11-20T02:59:59Z")));
+}
+
+#[test]
+fn before_alone_ends_at_the_local_midnight_and_starts_nowhere() {
+    let (query, window) = localize_search(days_query(None, Some("2026-11-19")), &brasilia).unwrap();
+    assert_eq!(query.date_start, None);
+    assert_eq!(query.date_end.as_deref(), Some("2026-11-20"));
+    assert_eq!(window.start_us, None);
+    assert_eq!(window.end_us, Some(instant_us("2026-11-20T03:00:00Z")));
+}
+
+#[test]
+fn a_midnight_after_a_clock_change_takes_the_new_offset() {
+    // UTC+1 until 2026-03-29T01:00Z, UTC+2 after: the 30th starts at
+    // 22:00 UTC on the 29th.
+    let change_us = instant_us("2026-03-29T01:00:00Z");
+    let europe = move |at_us: i64| {
+        let hours = if at_us < change_us { 1 } else { 2 };
+        crate::UtcOffset::from_seconds_east(hours * 3600).unwrap()
+    };
+    let (_, window) = localize_search(days_query(Some("2026-03-30"), None), &europe).unwrap();
+    assert_eq!(window.start_us, Some(instant_us("2026-03-29T22:00:00Z")));
+}
+
+#[test]
+fn results_keep_to_the_window_and_want_the_next_page_when_one_kept_nothing() {
+    let window = SearchWindow {
+        start_us: Some(instant_us("2026-11-20T03:00:00Z")),
+        end_us: Some(instant_us("2026-11-21T03:00:00Z")),
+    };
+    let results =
+        SearchResults::first_within(&page(vec![hit(1, "2026-11-21T04:00:00Z")], true), window);
+    assert!(results.wants_next(), "the whole page was past the window");
+    let mut results = results;
+    results.append(&page(
+        vec![
+            hit(2, "2026-11-21T01:30:00Z"),
+            hit(3, "2026-11-20T02:00:00Z"),
+        ],
+        false,
+    ));
+    assert_eq!(results.count(), SearchCount::Exact(1));
+    assert_eq!(results.items()[0].id(), id(102));
+}

@@ -132,7 +132,13 @@ value resolved against lightweight current metadata. A UUID, an `@username` or a
 `#channel` binds; a bare name is a prefix, and when it matches several people or
 channels the filter is `Ambiguous` with its candidates and nothing is searched until
 one is picked. `has:` takes `link` and `file` (any attachment); the backend filters
-no attachment kind. The draft reports the first problem (empty, open quote,
+no attachment kind. `before:`, `after:` and `during:` (`antes:`, `depois:`, `durante:`)
+take `YYYY-MM-DD` days of the reader's own calendar into `SearchQuery::local_days`;
+the backend counts UTC days, so `Session::search` refuses such a query until
+`papo_sdk_ui::localize_search` converts it with the client's UTC offsets: the
+local days become the exact instants they span, the request asks every UTC day
+those touch, and `SearchResults` keeps only results inside that window
+(`wants_next` when a whole page fell outside it). The draft reports the first problem (empty, open quote,
 unresolved or repeated filter) instead of a query. `SearchQuery::parse` is the
 server-scope reading that fails on any problem. `search_suggestions` and
 `search_candidates` list a filter's values with the text that binds each one.

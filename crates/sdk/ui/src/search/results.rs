@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use papo_sdk::{Message, MessageKey, SearchCursor, SearchHit, SearchPage, Uuid};
 
+use super::local_days::SearchWindow;
 use crate::message_content::MessageContent;
 
 /// One result.
@@ -82,6 +83,8 @@ pub enum SearchCount {
 /// The results loaded for one query.
 #[derive(Clone, Default)]
 pub struct SearchResults {
+    /// The instants kept: local date filters' exact days.
+    window: SearchWindow,
     items: Vec<Arc<SearchResultItem>>,
     /// The listed messages' ids.
     listed: HashSet<Uuid>,
@@ -93,18 +96,31 @@ impl SearchResults {
     /// The results of a query's first page.
     #[must_use]
     pub fn first(page: &SearchPage) -> Self {
-        let mut results = Self::default();
+        Self::first_within(page, SearchWindow::default())
+    }
+
+    /// The results of a query's first page, kept to `window` (from
+    /// [`crate::localize_search`]).
+    #[must_use]
+    pub fn first_within(page: &SearchPage, window: SearchWindow) -> Self {
+        let mut results = Self {
+            window,
+            ..Self::default()
+        };
         results.append(page);
         results
     }
 
-    /// Adds the next page. A hit already listed (the backend's pages overlap only on a bug) or
-    /// malformed is left out.
+    /// Adds the next page. A hit already listed (the backend's pages overlap only on a bug),
+    /// malformed or outside the window is left out.
     pub fn append(&mut self, page: &SearchPage) {
         for hit in &page.hits {
             let Some(item) = SearchResultItem::of(hit) else {
                 continue;
             };
+            if !self.window.holds(item.key.created_at_us) {
+                continue;
+            }
             if !self.listed.insert(item.id()) {
                 continue;
             }
@@ -124,6 +140,14 @@ impl SearchResults {
     #[must_use]
     pub fn next(&self) -> Option<&SearchCursor> {
         self.next.as_ref()
+    }
+
+    /// Whether the pages so far kept nothing while more exist (the window
+    /// trimmed them all): the next page is wanted at once, as no row can
+    /// come near to ask for it.
+    #[must_use]
+    pub fn wants_next(&self) -> bool {
+        self.items.is_empty() && self.next.is_some()
     }
 
     /// The count line's number.

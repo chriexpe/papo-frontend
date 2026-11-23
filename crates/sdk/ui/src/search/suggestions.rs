@@ -1,6 +1,6 @@
 //! What a search filter's value can be, as a client lists it under the field: people for
 //! `from:` (a DM's two only) and `mentions:` (none in a DM), channels for `in:` (none in a
-//! DM), the kinds for `has:`; names starting with what is typed first, then names containing
+//! DM), the kinds for `has:` (dates are typed); names starting with what is typed first, then names containing
 //! it, in roster or channel order, ignoring case. Each carries the text that binds it when
 //! picked (`SearchNames::binding`). The list's look and keys are the client's; reading the
 //! field is `papo_sdk::SearchDraft`'s.
@@ -71,6 +71,8 @@ pub fn search_suggestions(
                 .filter_map(|channel| self::channel(&names, channel.id, scope));
             ranked(channels, &typed)
         }
+        // Dates are typed (YYYY-MM-DD); the client says how.
+        SearchKeyword::Before | SearchKeyword::After | SearchKeyword::During => Vec::new(),
         SearchKeyword::Has => HasKind::ALL
             .into_iter()
             .filter(|kind| {

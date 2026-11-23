@@ -215,3 +215,46 @@ fn a_lone_at_or_hash_is_still_being_typed_and_a_long_field_is_too_long() {
         Err(&SearchProblem::TooLong)
     );
 }
+
+fn day(raw: &str) -> chrono::NaiveDate {
+    chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").unwrap()
+}
+
+#[test]
+fn date_filters_are_days_of_the_readers_calendar() {
+    let draft = read("antes:2026-11-20 after:2026-11-10", SearchScope::Server);
+    let days = draft.query().unwrap().local_days.unwrap();
+    assert_eq!(days.first, Some(day("2026-11-11")));
+    assert_eq!(days.last, Some(day("2026-11-19")));
+    let draft = read("durante:2026-11-20", SearchScope::Server);
+    let days = draft.query().unwrap().local_days.unwrap();
+    assert_eq!(
+        (days.first, days.last),
+        (Some(day("2026-11-20")), Some(day("2026-11-20")))
+    );
+}
+
+#[test]
+fn a_repeated_or_empty_date_range_and_a_bad_date_hold_the_search() {
+    assert_eq!(
+        read("during:2026-11-20 before:2026-11-25", SearchScope::Server).query(),
+        Err(&SearchProblem::Repeated(1))
+    );
+    assert_eq!(
+        read("after:2026-11-20 before:2026-11-21", SearchScope::Server).query(),
+        Err(&SearchProblem::NoDays)
+    );
+    assert_eq!(
+        read("before:20/11/2026", SearchScope::Server).filters[0].resolved,
+        FilterValue::Unknown
+    );
+}
+
+#[test]
+fn local_days_never_reach_the_backend_unconverted() {
+    let query = read("during:2026-11-20", SearchScope::Server)
+        .query()
+        .unwrap()
+        .clone();
+    assert!(query.into_request().is_err());
+}

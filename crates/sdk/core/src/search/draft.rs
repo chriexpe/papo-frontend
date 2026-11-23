@@ -17,7 +17,7 @@ mod tokens;
 pub use names::SearchNames;
 use tokens::{tokens, unquote};
 
-use super::SearchQuery;
+use super::{LocalDays, SearchQuery};
 use crate::Uuid;
 
 /// The longest search field text, in UTF-8 bytes, the backend request takes.
@@ -54,6 +54,12 @@ pub enum SearchKeyword {
     Has,
     /// A mentioned person.
     Mentions,
+    /// Days before a local date.
+    Before,
+    /// Days after a local date.
+    After,
+    /// A local date.
+    During,
 }
 
 impl SearchKeyword {
@@ -65,6 +71,9 @@ impl SearchKeyword {
             "in" | "em" => Some(Self::In),
             "has" | "tem" => Some(Self::Has),
             "mentions" => Some(Self::Mentions),
+            "before" | "antes" => Some(Self::Before),
+            "after" | "depois" => Some(Self::After),
+            "during" | "durante" => Some(Self::During),
             _ => None,
         }
     }
@@ -73,6 +82,12 @@ impl SearchKeyword {
     #[must_use]
     pub const fn takes_person(self) -> bool {
         matches!(self, Self::From | Self::Mentions)
+    }
+
+    /// Whether its values are dates (`YYYY-MM-DD`, in the reader's calendar).
+    #[must_use]
+    pub const fn takes_date(self) -> bool {
+        matches!(self, Self::Before | Self::After | Self::During)
     }
 }
 
@@ -129,6 +144,8 @@ pub enum FilterValue {
     Channel(Uuid),
     /// A `has:` kind.
     Has(HasKind),
+    /// A date of the reader's own calendar.
+    Date(chrono::NaiveDate),
     /// Several people or channels match, in roster or channel order, at most
     /// [`MAX_SEARCH_CANDIDATES`]; nothing is searched until one is picked.
     Ambiguous(Vec<Uuid>),
@@ -167,6 +184,8 @@ pub enum SearchProblem {
     Repeated(usize),
     /// Longer than the backend takes ([`MAX_SEARCH_BYTES`]).
     TooLong,
+    /// The date filters leave no day (`after:` a day not before `before:`'s).
+    NoDays,
 }
 
 /// The field's text, read.
@@ -249,6 +268,8 @@ fn compose(
 ) -> Result<SearchQuery, SearchProblem> {
     let mut query = SearchQuery::default();
     let mut typed_channel = None;
+    let mut days = LocalDays::default();
+    let mut during = false;
     for (index, filter) in filters.iter().enumerate() {
         let slot_taken = match (&filter.resolved, filter.keyword) {
             (FilterValue::Person(id), SearchKeyword::From) => query.author.replace(*id).is_some(),
@@ -260,12 +281,22 @@ fn compose(
             (FilterValue::Has(HasKind::File), _) => {
                 query.contains_attachment.replace(true).is_some()
             }
+            (FilterValue::Date(day), keyword) => {
+                let Some(taken) = take_day(&mut days, &mut during, keyword, *day) else {
+                    return Err(SearchProblem::Unresolved(index));
+                };
+                taken
+            }
             _ => return Err(SearchProblem::Unresolved(index)),
         };
         if slot_taken {
             return Err(SearchProblem::Repeated(index));
         }
     }
+    if !days.is_ordered() {
+        return Err(SearchProblem::NoDays);
+    }
+    query.local_days = (days != LocalDays::default()).then_some(days);
     let text = texts.join(" ");
     query.text = (!text.trim().is_empty()).then_some(text);
     // A scope alone is not a search: something must be typed.
@@ -277,10 +308,34 @@ fn compose(
         SearchScope::Channel(channel) => typed_channel.or(Some(channel)),
         SearchScope::Direct { channel, .. } => Some(channel),
     };
-    if query.clone().into_request().is_err() {
+    if query.check().is_err() {
         return Err(SearchProblem::Empty);
     }
     Ok(query)
+}
+
+/// Date filter `keyword` on `day` narrows `days`: `before:` ends the day
+/// before, `after:` starts the day after, `during:` is that day alone and
+/// takes no other date filter. Returns whether its end was already taken,
+/// or none when the day before or after does not exist.
+fn take_day(
+    days: &mut LocalDays,
+    during: &mut bool,
+    keyword: SearchKeyword,
+    day: chrono::NaiveDate,
+) -> Option<bool> {
+    let taken = match keyword {
+        SearchKeyword::Before => *during || days.last.replace(day.pred_opt()?).is_some(),
+        SearchKeyword::After => *during || days.first.replace(day.succ_opt()?).is_some(),
+        _ => {
+            let taken = *during || days.first.is_some() || days.last.is_some();
+            *during = true;
+            days.first = Some(day);
+            days.last = Some(day);
+            taken
+        }
+    };
+    Some(taken)
 }
 
 #[cfg(test)]

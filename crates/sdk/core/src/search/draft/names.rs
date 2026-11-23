@@ -32,6 +32,10 @@ impl SearchNames<'_> {
             SearchKeyword::Has => {
                 HasKind::from_spelling(value).map_or(FilterValue::Unknown, FilterValue::Has)
             }
+            SearchKeyword::Before | SearchKeyword::After | SearchKeyword::During => {
+                chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .map_or(FilterValue::Unknown, FilterValue::Date)
+            }
         }
     }
 
