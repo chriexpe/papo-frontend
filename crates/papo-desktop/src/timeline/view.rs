@@ -44,9 +44,17 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn timeline(&self) -> Option<&OpenTimeline>;
     /// Rows `range` are visible. Returns whether the view changed.
     fn rows_visible(&mut self, key: TimelineKey, range: Range<usize>) -> bool;
-    /// The viewport's top is at `top_pt` in window points, and it is
-    /// `height_pt` tall.
-    fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, height_pt: f32, tx: &mut Tx);
+    /// The viewport's top is at `top_pt` in window points, it is
+    /// `height_pt` tall, and the pills floating over it cover `insets_pt`
+    /// of its top and bottom.
+    fn viewport_moved(
+        &mut self,
+        key: TimelineKey,
+        top_pt: f32,
+        height_pt: f32,
+        insets_pt: [f32; 2],
+        tx: &mut Tx,
+    );
     /// Message `id` is laid out from `edges_pt[0]` to `edges_pt[1]`,
     /// top to bottom, in window points.
     fn row_moved(&mut self, key: TimelineKey, id: Uuid, edges_pt: [f32; 2], tx: &mut Tx);
@@ -129,6 +137,10 @@ pub(crate) struct Style {
     pub(crate) selected: Option<Uuid>,
     /// What reacting reads, the same for every row.
     pub(crate) reacting: super::reacting::Reacting,
+    /// How far the header pills reach over the conversation's top and the
+    /// composer over its bottom, in points: the rows keep that room at
+    /// their ends, and rows under them are not read.
+    pub(crate) insets_pt: [f32; 2],
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and
@@ -139,6 +151,8 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
     };
     let key = open.key;
     let look = &style.look;
+    let insets_pt = style.insets_pt;
+    let [above_pt, below_pt] = insets_pt;
     match open.phase {
         Phase::Open => {}
         Phase::Opening => {
@@ -149,6 +163,8 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
                 .min_h(0.0)
                 .justify_end()
                 .px(look.space(TIMELINE_INSET))
+                .pt(above_pt)
+                .pb(below_pt)
                 .busy(true)
                 .label(strings::loading_messages())
                 .child(skeleton(&style));
@@ -180,7 +196,11 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         .selection_copy(move |selection| copy::text_of(&source, selection))
         .w_full()
         .px(look.space(TIMELINE_INSET))
-        .pb(look.space(TIMELINE_INSET))
+        // Room under the header pills and over the composer, which float
+        // over the rows: the first and last messages rest clear of them,
+        // the last as far above the composer as before it floated.
+        .pt(above_pt)
+        .pb(below_pt + look.space(TIMELINE_INSET))
         .growth(GrowthSpec::default())
         .virtual_rows(
             open.items.len(),
@@ -206,6 +226,9 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
             stick_bottom: open.follows_newest(),
         })
         .label(strings::timeline_label())
+        // A message brought into view (a focused one, a jump) stops clear
+        // of the pills.
+        .scroll_margin(above_pt.max(below_pt))
         .on_at_bottom_if(move |host: &mut S, at_bottom| host.bottom_shown(key, at_bottom))
         .on_wheel(move |host: &mut S, _wheel, tx| {
             if !host.timeline_wheeled(key) {
@@ -214,7 +237,7 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
             false
         })
         .on_layout_tx(move |host: &mut S, rect, tx| {
-            host.viewport_moved(key, rect[1], rect[3], tx);
+            host.viewport_moved(key, rect[1], rect[3], insets_pt, tx);
             tx.live_only();
         })
         .child(rows);

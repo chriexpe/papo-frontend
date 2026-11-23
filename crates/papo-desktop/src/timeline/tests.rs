@@ -69,8 +69,17 @@ impl TimelineHost for Host {
         false
     }
 
-    fn viewport_moved(&mut self, _key: TimelineKey, top_pt: f32, height_pt: f32, _tx: &mut Tx) {
-        self.open.tracker.viewport_moved(top_pt, height_pt);
+    fn viewport_moved(
+        &mut self,
+        _key: TimelineKey,
+        top_pt: f32,
+        height_pt: f32,
+        insets_pt: [f32; 2],
+        _tx: &mut Tx,
+    ) {
+        self.open
+            .tracker
+            .viewport_moved(top_pt, height_pt, insets_pt);
     }
 
     fn row_moved(&mut self, _key: TimelineKey, id: Uuid, [top, bottom]: [f32; 2], _tx: &mut Tx) {
@@ -200,6 +209,7 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
         hourglass: host.hourglass,
         selected: None,
         reacting: Reacting::unknown(),
+        insets_pt: [0.0, 0.0],
     };
     col().w_full().h_full().child(view(host, style))
 }

@@ -197,9 +197,10 @@ impl Shell {
         }
     }
 
-    /// The pointer on the colour field's disc, `centre` its middle: a press
+    /// The pointer on the colour field, the disc in its middle: a press
     /// grabs or adds a colour, a move drags it, letting go saves it.
-    pub(crate) fn settings_field_drag(&mut self, drag: &mut Drag, centre: f32, tx: &mut Tx) {
+    pub(crate) fn settings_field_drag(&mut self, drag: &mut Drag, tx: &mut Tx) {
+        let centre = (drag.w / 2.0, drag.h / 2.0);
         let Some(panel) = self.settings.as_ref() else {
             return;
         };
@@ -242,11 +243,30 @@ impl Shell {
         self.settings_change(Change::Colours(change), tx);
     }
 
-    /// A colour on the field was pressed: the arrows and − act on it.
-    pub(crate) fn settings_select_colour(&mut self, index: usize) {
-        if let Some(panel) = self.settings.as_mut() {
+    /// A colour on the field dragged: from where it sat at the press
+    /// (`now`, the colour as drawn when the press began), by how far the
+    /// pointer has moved; it takes the arrows and − from then on.
+    pub(crate) fn settings_colour_drag(
+        &mut self,
+        index: usize,
+        now: BackgroundColour,
+        drag: &mut Drag,
+        tx: &mut Tx,
+    ) {
+        let Some(panel) = self.settings.as_mut() else {
+            return;
+        };
+        if drag.phase == Phase::Down {
             panel.colour.selected = index;
+            panel.colour.drag_origin = Some(now);
+            return;
         }
+        let origin = panel.colour.drag_origin.unwrap_or(now);
+        if drag.phase == Phase::Up {
+            panel.colour.drag_origin = None;
+        }
+        let change = colour_field::moved_by(index, origin, (drag.dx, drag.dy), drag.phase);
+        self.settings_change(Change::Colours(change), tx);
     }
 
     /// ‹ or › beside the presets.

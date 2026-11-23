@@ -10,7 +10,7 @@
 //! each step saved. Owns the field's geometry and what its input asks for;
 //! the shell applies it (`shell/settings.rs`).
 
-use rune::{Color, El, Key, KeyEvent, Tx, col, el, icon, row};
+use rune::{Color, El, Key, KeyEvent, Phase, Tx, col, el, icon, row};
 
 use super::{Change, ColourState};
 use crate::appearance::Appearance;
@@ -103,8 +103,7 @@ fn field(appearance: &Appearance, state: ColourState, look: &Look) -> El {
         .key("settings-colour-disc")
         .size(side, side)
         .role("group")
-        .label(strings::settings_field_spoken())
-        .on_drag(move |shell: &mut Shell, drag, tx| shell.settings_field_drag(drag, centre, tx));
+        .label(strings::settings_field_spoken());
     // The hue dots: a grid, each dot its hue at its distance's vividness.
     #[expect(
         clippy::cast_possible_truncation,
@@ -158,7 +157,11 @@ fn field(appearance: &Appearance, state: ColourState, look: &Look) -> El {
                 ))
                 .focusable(true)
                 .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-                .on_press_tx(move |shell: &mut Shell, _tx| shell.settings_select_colour(index))
+                // A press on a colour lands on it, not the field: it drags
+                // itself, from where it sits by how far the pointer moved.
+                .on_drag(move |shell: &mut Shell, drag, tx| {
+                    shell.settings_colour_drag(index, colour, drag, tx);
+                })
                 .on_key(move |shell: &mut Shell, key: &KeyEvent, tx: &mut Tx| {
                     let Some(moved) = colour_key(key, colour) else {
                         return false;
@@ -173,10 +176,17 @@ fn field(appearance: &Appearance, state: ColourState, look: &Look) -> El {
                 }),
         );
     }
+    // The whole field takes the pointer, the disc centred in it: a press
+    // anywhere grabs the nearest colour or adds one, and past the disc's
+    // edge a colour is at full vividness on that side. The colours
+    // themselves take only the keyboard, so a press on one starts the
+    // field's drag.
     let mut frame = el()
+        .key("settings-colour-field")
         .w_full()
         .h(side)
         .center()
+        .on_drag(|shell: &mut Shell, drag, tx| shell.settings_field_drag(drag, tx))
         .radius(look.radius(FIELD_RADIUS))
         .fill(look.palette.surface_code)
         .border(FIELD_OUTLINE_PT, look.palette.line_subtle)
@@ -190,6 +200,22 @@ fn field(appearance: &Appearance, state: ColourState, look: &Look) -> El {
         );
     }
     frame
+}
+
+/// Colour `index`, which sat at `colour` when the press began, dragged by
+/// `travel` points: drawn while the drag runs, saved when it lets go.
+pub(crate) fn moved_by(
+    index: usize,
+    colour: BackgroundColour,
+    travel: (f32, f32),
+    phase: Phase,
+) -> ColourChange {
+    let (x, y) = place(colour);
+    ColourChange::Move {
+        index,
+        colour: colour_at(x + travel.0, y + travel.1),
+        done: phase == Phase::Up,
+    }
 }
 
 /// Where an arrow key moves `colour`: ← → its hue, ↑ ↓ its vividness.
@@ -211,17 +237,17 @@ fn colour_key(key: &KeyEvent, colour: BackgroundColour) -> Option<BackgroundColo
     })
 }
 
-/// What a press at `(x, y)` on the disc does, `centre` its middle: grab a
-/// colour near it, add one there while there is room, or move the selected
-/// one there.
+/// What a press at `(x, y)` on the field does, `centre` the disc's middle
+/// in the field: grab a colour near it, add one there while there is room,
+/// or move the selected one there.
 pub(crate) fn pressed(
     appearance: &Appearance,
     selected: usize,
     (x, y): (f32, f32),
-    centre: f32,
+    centre: (f32, f32),
 ) -> (usize, ColourChange) {
     let colours = appearance.background.colours();
-    let (dx, dy) = (x - centre, y - centre);
+    let (dx, dy) = (x - centre.0, y - centre.1);
     let at = colour_at(dx, dy);
     let near = colours
         .iter()
@@ -257,10 +283,15 @@ pub(crate) fn pressed(
 }
 
 /// The colour a drag at `(x, y)` puts at `index`.
-pub(crate) fn dragged(index: usize, (x, y): (f32, f32), centre: f32, done: bool) -> ColourChange {
+pub(crate) fn dragged(
+    index: usize,
+    (x, y): (f32, f32),
+    centre: (f32, f32),
+    done: bool,
+) -> ColourChange {
     ColourChange::Move {
         index,
-        colour: colour_at(x - centre, y - centre),
+        colour: colour_at(x - centre.0, y - centre.1),
         done,
     }
 }

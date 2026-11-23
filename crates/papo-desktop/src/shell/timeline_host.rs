@@ -35,9 +35,16 @@ impl TimelineHost for Shell {
         filling
     }
 
-    fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, height_pt: f32, _tx: &mut Tx) {
+    fn viewport_moved(
+        &mut self,
+        key: TimelineKey,
+        top_pt: f32,
+        height_pt: f32,
+        insets_pt: [f32; 2],
+        _tx: &mut Tx,
+    ) {
         if let Some(open) = self.shown_timeline_mut(key) {
-            open.tracker.viewport_moved(top_pt, height_pt);
+            open.tracker.viewport_moved(top_pt, height_pt, insets_pt);
         }
     }
 

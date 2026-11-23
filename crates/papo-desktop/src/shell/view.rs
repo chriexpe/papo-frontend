@@ -8,9 +8,10 @@ use rune::{Cx, El, HelpLook, col, el, icon, row, text};
 use super::outgoing::resend_confirm;
 use super::{Shell, Stage};
 use crate::design::{
-    FOCUS_RING_PT, HEADER_PILL_HEIGHT, HINT_DELAY_S, HINT_GAP_PT, HINT_MAX_WIDTH_PT, HINT_PAD_PT,
-    HINT_RADIUS, Look, PANE_EDGE_PT, PILL_ICON_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL,
-    SPACE_LG, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_HINT, Theme,
+    COMPOSER_HEIGHT, FOCUS_RING_PT, HEADER_PILL_HEIGHT, HINT_DELAY_S, HINT_GAP_PT,
+    HINT_MAX_WIDTH_PT, HINT_PAD_PT, HINT_RADIUS, Look, PANE_EDGE_PT, PILL_ICON_PT, PILL_OUTLINE_PT,
+    RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_HINT,
+    Theme,
 };
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
@@ -149,7 +150,7 @@ fn body(
                 if let Some(resend) = resend_confirm(shell, &look) {
                     app = app.child(resend);
                 }
-                let style = timeline_style(shell, theme, &look);
+                let style = timeline_style(shell, theme, &look, [0.0, 0.0]);
                 if let Some(delete) = super::deleting::delete_confirm(shell, &style) {
                     app = app.child(delete);
                 }
@@ -181,7 +182,12 @@ fn hint_look(look: &Look, dark: bool) -> HelpLook {
 
 /// How the conversation's rows look, and the message a confirmation
 /// shows.
-fn timeline_style(shell: &Shell, theme: Theme, look: &Look) -> timeline::Style {
+fn timeline_style(
+    shell: &Shell,
+    theme: Theme,
+    look: &Look,
+    insets_pt: [f32; 2],
+) -> timeline::Style {
     let selected = shell
         .composer
         .shown()
@@ -195,7 +201,28 @@ fn timeline_style(shell: &Shell, theme: Theme, look: &Look) -> timeline::Style {
         hourglass: shell.prefs.unread_hourglass,
         selected,
         reacting: shell.reacting(),
+        insets_pt,
     }
+}
+
+/// The header row's and the composer area's keys: they float over the
+/// rows, which keep their heights as room at their ends.
+const HEADER_KEY: &str = "conversation-header";
+const FOOT_KEY: &str = "conversation-foot";
+
+/// How far the header pills and the composer area reach over the
+/// conversation, from the last frame's layout; before the first, their
+/// heights at rest.
+fn floating_insets(cx: &Cx<Shell>, look: &Look) -> [f32; 2] {
+    let header = cx.layout_size(HEADER_KEY).map_or_else(
+        || look.space(SPACE_LG) + look.space(HEADER_PILL_HEIGHT),
+        |[_, height]| height,
+    );
+    let foot = cx.layout_size(FOOT_KEY).map_or_else(
+        || look.space(SPACE_LG) * 2.0 + look.space(COMPOSER_HEIGHT),
+        |[_, height]| height,
+    );
+    [header, foot]
 }
 
 /// The rail, the channel pane and the conversation with the composer pill
@@ -222,10 +249,19 @@ fn app(shell: &Shell, theme: Theme, look: &Look, cx: &Cx<Shell>) -> El {
         }
         _ => composer::pill(&shell.composer, &context, look),
     };
-    let style = timeline_style(shell, theme, look);
+    let style = timeline_style(shell, theme, look, floating_insets(cx, look));
     let header = super::pins_panel::header(shell, &title, look);
     let panel = super::pins_panel::panel(shell, &style, cx)
         .or_else(|| super::search_panel::panel(shell, &title, &style, cx));
+    // The rows fill the conversation and scroll under the header pills and
+    // the composer, which float over them (`docs/design.md` §5, Glass).
+    let foot = col()
+        .key(FOOT_KEY)
+        .pin(Some(0.0), None, Some(0.0), Some(0.0))
+        .padding(look.space(SPACE_LG))
+        .child(composer)
+        .children(typing_line(shell, look));
+    let header = header.map(|header| header.pin(Some(0.0), Some(0.0), Some(0.0), None));
     let conversation = col()
         .key("conversation")
         // A landmark, so F6 reaches it (`docs/design.md` §12).
@@ -235,15 +271,9 @@ fn app(shell: &Shell, theme: Theme, look: &Look, cx: &Cx<Shell>) -> El {
         .min_w(0.0)
         .h_full()
         .fill(look.palette.surface_content)
-        .children(header)
         .child(timeline::view(shell, style))
-        .child(
-            col()
-                .w_full()
-                .padding(look.space(SPACE_LG))
-                .child(composer)
-                .children(typing_line(shell, look)),
-        )
+        .children(header)
+        .child(foot)
         .children(panel);
     let edge = || el().w(PANE_EDGE_PT).h_full().fill(look.palette.line_subtle);
     row()

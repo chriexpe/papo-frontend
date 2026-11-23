@@ -42,7 +42,8 @@ pub(super) fn jump_stack<S: TimelineHost>(open: &OpenTimeline, style: &Style) ->
             None,
             None,
             Some(look.space(JUMP_INSET)),
-            Some(look.space(JUMP_INSET)),
+            // Above the composer, which floats over the rows.
+            Some(style.insets_pt[1] + look.space(JUMP_INSET)),
         )
         .gap(look.space(JUMP_GAP))
         .items_end();

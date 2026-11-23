@@ -124,11 +124,14 @@ impl Change {
 
 /// The colour field's own state: which colour the arrows move, which page
 /// of presets shows, and the harmony arrangement the next press applies.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct ColourState {
     pub(crate) selected: usize,
     pub(crate) preset_page: usize,
     pub(crate) harmony: usize,
+    /// Where the colour being dragged sat when the press began: its drag
+    /// moves it from there, however often the field is drawn meanwhile.
+    pub(crate) drag_origin: Option<crate::design::BackgroundColour>,
 }
 
 /// The open panel.
