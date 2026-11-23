@@ -143,6 +143,8 @@ impl Shell {
             }
             Posted::Reading(overlay) => open.reading.overlay_changed(overlay),
             Posted::Resources(resources) => open.resources = Some(resources),
+            Posted::PinsOpened(handle) => open.pins_handle = Some(handle),
+            Posted::Pins(pins) => open.pins = pins,
             Posted::Failed => open.phase = crate::timeline::Phase::Failed,
             Posted::Closed => open.phase = crate::timeline::Phase::Closed,
         }
@@ -280,7 +282,8 @@ impl Shell {
         let copied_ended = self.end_copied(clock_s);
         let new_day = self.follow_the_day(clock_s, tx);
         let flash_ended = self.poll_flash(clock_s);
-        restored || copied_ended || new_day || flash_ended
+        let notice_ended = self.poll_notice(clock_s);
+        restored || copied_ended || new_day || flash_ended || notice_ended
     }
 
     /// Keeps `today` current: checks once the local day should have ended,

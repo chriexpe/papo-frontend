@@ -18,7 +18,7 @@ use super::content::Press;
 use super::echoes::SendState;
 use super::local_time::LocalTime;
 use super::rows::message_key;
-use super::{OpenTimeline, Request, Style, TimelineHost, TimelineKey, view};
+use super::{OpenTimeline, Reacting, Request, Style, TimelineHost, TimelineKey, view};
 use crate::design::{Density, MessageLayout, Palette, Theme};
 
 const SIZE_PT: (f32, f32) = (800.0, 600.0);
@@ -132,6 +132,36 @@ impl TimelineHost for Host {
     fn change_discarded(&mut self, _key: TimelineKey, _local: Uuid) {
         self.controls.push("change-discarded");
     }
+
+    fn bar_pressed(
+        &mut self,
+        _key: TimelineKey,
+        _id: Uuid,
+        _press: super::hover_bar::BarPress,
+        _tx: &mut Tx,
+    ) {
+        self.controls.push("bar");
+    }
+
+    fn link_menu_requested(
+        &mut self,
+        _key: TimelineKey,
+        _url: String,
+        _at: [f32; 2],
+        _tx: &mut Tx,
+    ) {
+        self.controls.push("link-menu");
+    }
+
+    fn message_menu_requested(
+        &mut self,
+        _key: TimelineKey,
+        _id: Uuid,
+        _at: Option<[f32; 2]>,
+        _tx: &mut Tx,
+    ) {
+        self.controls.push("menu");
+    }
 }
 
 fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
@@ -144,6 +174,7 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
         time,
         hourglass: host.hourglass,
         selected: None,
+        reacting: Reacting::unknown(),
     };
     col().w_full().h_full().child(view(host, style))
 }
@@ -258,5 +289,6 @@ mod changes;
 mod content;
 mod controls;
 mod echoes;
+mod hover_bar;
 mod reading;
 mod spacing;

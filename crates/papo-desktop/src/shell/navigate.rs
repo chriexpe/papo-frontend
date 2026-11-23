@@ -190,13 +190,18 @@ impl Shell {
     fn open_menu(&mut self, placement: Placement, trigger: String, server: ServerId) {
         // ⚙ shows on the grown pill too; the menu takes the pill's place.
         self.nav.close_accounts();
-        let items = vec![MenuItem {
-            key: "menu-remove-server",
-            label: strings::remove_server(),
-            action: MenuAction::RemoveServer(server),
-            danger: true,
-        }];
+        let items = vec![MenuItem::plain(
+            "menu-remove-server",
+            strings::remove_server(),
+            MenuAction::RemoveServer(server),
+            true,
+        )];
         self.nav.menu = Some(OpenMenu::new(placement, trigger, items));
+    }
+
+    /// The open menu, to change in place (the strip's chosen emoji).
+    pub(crate) fn open_menu_mut(&mut self) -> Option<&mut OpenMenu> {
+        self.nav.menu.as_mut()
     }
 
     pub(crate) fn close_menu(&mut self) {
@@ -237,6 +242,15 @@ impl Shell {
                 self.discard_change(key, local);
                 tx.focus(COMPOSER_KEY, false);
             }
+            MenuAction::Message { key, id, action } => self.message_action(key, id, action, tx),
+            MenuAction::OpenLink { key, url } => self.link_pressed(key, url, tx),
+            MenuAction::CopyLink(url) => tx.copy(url),
+            MenuAction::React {
+                key,
+                id,
+                emoji,
+                add,
+            } => self.react(key, id, emoji, add),
         }
     }
 

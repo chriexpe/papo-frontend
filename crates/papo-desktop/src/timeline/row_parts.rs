@@ -3,15 +3,17 @@
 //! composer's target, a jump's flash): its parts, whose hash is the row's
 //! version. Drawing them is `message_row`'s.
 
-use papo_sdk::{Message, Uuid};
+use papo_sdk::{Message, Operation, Uuid};
 use papo_sdk_ui::message_content::MessageContent;
-use papo_sdk_ui::{ReplyOriginal, attention};
+use papo_sdk_ui::operations::ReactionEmoji;
+use papo_sdk_ui::{ReplyOriginal, attention, message_actions, pinned, reaction_chips};
 
 use super::OpenTimeline;
 use super::changes::ChangeState;
 use super::content::mention_names;
 use super::echoes::SendState;
 use super::grouping::continues;
+use super::hover_bar::{BAR_REACTIONS, Bar};
 use super::message_row::{author_name, created_us};
 use super::reading::Boundary;
 use super::replies::original_text;
@@ -55,14 +57,17 @@ pub(super) struct Parts<'a> {
     pub(super) reply: Option<ReplyLine>,
     /// Your edit or deletion of it in flight, by its local identity.
     pub(super) change: Option<(Uuid, ChangeState)>,
+    /// Its hover bar: a message from history has one.
+    pub(super) bar: Option<Bar>,
 }
 
 /// Where a row's message comes from.
 #[derive(Clone, Copy)]
-pub(super) enum Origin {
-    /// The channel's history: the row reports where it is, for the anchor
-    /// and Ctrl+A, and takes keyboard focus.
-    History,
+pub(super) enum Origin<'a> {
+    /// The channel's history, with your edit or deletion of it in flight:
+    /// the row reports where it is, for the anchor and Ctrl+A, and takes
+    /// keyboard focus.
+    History(Option<&'a Operation>),
     /// A local echo of yours, with where its send stands (none once sent).
     /// It is no anchor: the SDK knows no such message yet.
     Echo(Option<SendState>),
@@ -76,7 +81,7 @@ pub(super) struct RowMessage<'a> {
     pub(super) content: &'a MessageContent,
     /// Its original, when it replies.
     pub(super) reply: Option<&'a ReplyOriginal>,
-    pub(super) origin: Origin,
+    pub(super) origin: Origin<'a>,
 }
 
 /// What the row of `row_message` shows, and the content it draws (an edit
@@ -111,7 +116,7 @@ pub(super) fn parts<'a>(
     };
     let (sending, history) = match origin {
         Origin::Echo(state) => (state, false),
-        Origin::History => (None, true),
+        Origin::History(_) => (None, true),
     };
     let me = open.key.account.user();
     let change = history.then(|| open.changes.get(id)).flatten();
@@ -160,6 +165,57 @@ pub(super) fn parts<'a>(
         sending,
         reply: line,
         change: change.map(|change| (change.local, change.state)),
+        bar: match origin {
+            Origin::History(pending) => Some(bar(open, id, message, pending, style)),
+            Origin::Echo(_) => None,
+        },
     };
     (parts, content)
+}
+
+/// What message `id`'s hover bar offers this account.
+fn bar(
+    open: &OpenTimeline,
+    id: Uuid,
+    message: &Message,
+    pending: Option<&Operation>,
+    style: &Style,
+) -> Bar {
+    let reacting = &style.reacting;
+    let actions = message_actions(
+        message,
+        pending,
+        pinned(open.pins.as_ref(), id),
+        open.key.account.user(),
+        reacting.capabilities,
+    );
+    let stretched = reacting
+        .stretched
+        .and_then(|(on, chosen)| (on == id).then_some(chosen));
+    let emoji = if actions.react {
+        let chips = reaction_chips(message, &reacting.outgoing);
+        let shown = if stretched.is_some() {
+            reacting.quick.len()
+        } else {
+            BAR_REACTIONS
+        };
+        reacting
+            .quick
+            .iter()
+            .take(shown)
+            .map(|emoji| {
+                let unicode = ReactionEmoji::Unicode(emoji.clone());
+                let mine = chips.iter().any(|chip| chip.mine && chip.emoji == unicode);
+                (emoji.clone(), mine)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Bar {
+        emoji,
+        stretched,
+        reply: actions.reply,
+        edit: actions.edit,
+    }
 }

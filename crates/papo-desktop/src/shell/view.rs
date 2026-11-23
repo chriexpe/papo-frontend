@@ -16,7 +16,7 @@ use crate::design::{
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
 use crate::strings;
-use crate::{channel_pane, composer, links, menu, rail, remove_server, timeline};
+use crate::{channel_pane, composer, links, menu, notice, rail, remove_server, timeline};
 
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
@@ -60,7 +60,11 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                         cx,
                     ));
                 }
+                if let Some(notice) = &shell.notice {
+                    app = app.child(notice::view(notice, composer::COMPOSER_PILL_KEY, &palette));
+                }
                 if let Some(menu) = &shell.nav.menu {
+                    app = app.children(menu::pointer_point(menu));
                     app = app.child(menu::view(menu, &palette, cx));
                 }
                 let removing = shell
@@ -121,6 +125,7 @@ fn timeline_style(shell: &Shell, theme: Theme, palette: &Palette) -> timeline::S
         today: shell.today,
         hourglass: shell.prefs.unread_hourglass,
         selected,
+        reacting: shell.reacting(),
     }
 }
 

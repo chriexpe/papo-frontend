@@ -11,8 +11,10 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use papo_sdk::Uuid;
-use papo_sdk_ui::TimelineItem;
+use std::sync::Arc;
+
+use papo_sdk::{OutgoingSnapshot, Uuid};
+use papo_sdk_ui::{ChannelCapabilities, TimelineItem};
 use rune::{El, GrowthSpec, KeyEvent, ScrollSpec, Tx, col, el, memo, row, text};
 
 use super::content::Press;
@@ -20,6 +22,7 @@ use super::content::copy::{self, Source};
 use super::controls::{jump_stack, seeking_pill};
 use super::echoes::SendState;
 use super::grouping::previous_message;
+use super::hover_bar::BarPress;
 use super::local_time::{LocalTime, day_label};
 use super::message_row::message_row;
 use super::row_parts::{Origin, RowMessage};
@@ -80,6 +83,20 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn change_retried(&mut self, key: TimelineKey, local: Uuid);
     /// Dismiss on your failed change `local`: it is dropped.
     fn change_discarded(&mut self, key: TimelineKey, local: Uuid);
+    /// A press on message `id`'s hover bar.
+    fn bar_pressed(&mut self, key: TimelineKey, id: Uuid, press: BarPress, tx: &mut Tx);
+    /// A link's menu was asked for, by a secondary click on `url` at `at`,
+    /// in window points.
+    fn link_menu_requested(&mut self, key: TimelineKey, url: String, at: [f32; 2], tx: &mut Tx);
+    /// Message `id`'s menu was asked for: by a secondary click at `at`, in
+    /// window points, else from its hover bar.
+    fn message_menu_requested(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        at: Option<[f32; 2]>,
+        tx: &mut Tx,
+    );
 }
 
 /// How the rows look: the same for every row of one view.
@@ -96,6 +113,40 @@ pub(crate) struct Style {
     /// The message the composer points at (a reply's original, or the
     /// message being edited): it wears `highlight.selected`.
     pub(crate) selected: Option<Uuid>,
+    /// What reacting reads, the same for every row.
+    pub(crate) reacting: Reacting,
+}
+
+/// What a row's reactions and hover bar read beyond the message.
+#[derive(Clone)]
+pub(crate) struct Reacting {
+    /// The account's outgoing queue: a chip whose change is in it waits.
+    pub(crate) outgoing: Arc<OutgoingSnapshot>,
+    /// The account's quick reactions, most used first.
+    pub(crate) quick: Arc<[String]>,
+    /// What the account may do in the channel; none while unknown.
+    pub(crate) capabilities: Option<ChannelCapabilities>,
+    /// The message whose bar Add reaction stretched, and the emoji ← and →
+    /// are on.
+    pub(crate) stretched: Option<(Uuid, usize)>,
+}
+
+impl Reacting {
+    /// Nothing known yet: no quick reactions, an empty queue.
+    pub(crate) fn unknown() -> Reacting {
+        Reacting {
+            outgoing: Arc::new(OutgoingSnapshot {
+                account: None,
+                version: 0,
+                operations: Vec::new(),
+                upload_progress: None,
+                fault: None,
+            }),
+            quick: Arc::from([]),
+            capabilities: None,
+            stretched: None,
+        }
+    }
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and
@@ -210,6 +261,7 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
             message,
             content,
             reply,
+            pending,
             ..
         } => {
             let row = RowMessage {
@@ -217,7 +269,7 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
                 message,
                 content,
                 reply: reply.as_ref(),
-                origin: Origin::History,
+                origin: Origin::History(pending.as_deref()),
             };
             message_row::<S>(open, &row, previous, style)
         }

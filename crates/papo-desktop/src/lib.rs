@@ -21,10 +21,12 @@ mod lifecycle;
 mod links;
 mod menu;
 mod navigation;
+mod notice;
 #[cfg(test)]
 mod private_bus;
 mod profile_dir;
 mod rail;
+mod reaction_watch;
 mod reading_prefs;
 mod reconnect_hints;
 mod remove_server;

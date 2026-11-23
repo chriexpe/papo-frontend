@@ -8,8 +8,10 @@ use papo_sdk::Uuid;
 use rune::{KeyEvent, Tx};
 
 use super::Shell;
+use crate::menu::Placement;
 use crate::timeline::content::Press;
 use crate::timeline::echoes::SendState;
+use crate::timeline::hover_bar::{BarPress, more_key};
 use crate::timeline::{OpenTimeline, Request, TimelineHost, TimelineKey};
 
 impl TimelineHost for Shell {
@@ -115,6 +117,32 @@ impl TimelineHost for Shell {
 
     fn change_discarded(&mut self, key: TimelineKey, local: Uuid) {
         self.discard_change(key, local);
+    }
+
+    fn bar_pressed(&mut self, key: TimelineKey, id: Uuid, press: BarPress, tx: &mut Tx) {
+        if self.tabs.is_shown(key) {
+            self.bar_press(key, id, press, tx);
+        }
+    }
+
+    fn link_menu_requested(&mut self, key: TimelineKey, url: String, at: [f32; 2], _tx: &mut Tx) {
+        if self.tabs.is_shown(key) {
+            self.open_link_menu(key, url, at);
+        }
+    }
+
+    fn message_menu_requested(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        at: Option<[f32; 2]>,
+        _tx: &mut Tx,
+    ) {
+        let placement = match at {
+            Some(point) => Placement::AtPointer(point),
+            None => Placement::BelowEnd(more_key(id)),
+        };
+        self.open_message_menu(key, id, placement);
     }
 
     fn retry_gap(&mut self, key: TimelineKey, cursor_id: &str) {

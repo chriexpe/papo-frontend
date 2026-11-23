@@ -9,7 +9,7 @@ use papo_sdk::{OperationKind, ResourceSnapshot, Uuid};
 use papo_sdk_ui::message_content::{DecodedComposerMentions, decode_composer_mentions};
 use papo_sdk_ui::{
     ChannelCapabilities, MessageActions, ReplyOriginal, TimelineItem, capabilities, display_name,
-    message_actions, newest_editable,
+    message_actions, newest_editable, pinned,
 };
 use rune::Tx;
 
@@ -195,8 +195,7 @@ pub(super) fn item_actions(
             let actions = message_actions(
                 message,
                 pending.as_deref(),
-                // Pin actions come with the pins panel.
-                None,
+                pinned(open.pins.as_ref(), id),
                 user,
                 channel_capabilities(open),
             );

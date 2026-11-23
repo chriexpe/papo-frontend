@@ -67,6 +67,7 @@ pub(crate) fn startup_open_failed() -> &'static str {
 
 mod composer;
 mod links;
+mod messages;
 mod reading;
 mod replies;
 mod servers;
@@ -75,6 +76,7 @@ mod timeline;
 
 pub(crate) use composer::*;
 pub(crate) use links::*;
+pub(crate) use messages::*;
 pub(crate) use reading::*;
 pub(crate) use replies::*;
 pub(crate) use servers::*;

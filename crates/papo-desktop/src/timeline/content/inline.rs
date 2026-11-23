@@ -93,11 +93,20 @@ pub(super) fn text<S: TimelineHost>(
         for link in links {
             el = el.link(link);
         }
-        el = el.on_link(move |host: &mut S, id: &str, tx| {
-            if let Some(press) = Press::parse(id) {
-                host.content_pressed(key, message, press, tx);
-            }
-        });
+        el = el
+            .on_link(move |host: &mut S, id: &str, tx| {
+                if let Some(press) = Press::parse(id) {
+                    host.content_pressed(key, message, press, tx);
+                }
+            })
+            // A link's own menu; anything else in the text has the message's.
+            .on_link_secondary(move |host: &mut S, id: &str, at, tx| {
+                let at = [at.x, at.y];
+                match Press::parse(id) {
+                    Some(Press::Url(url)) => host.link_menu_requested(key, url, at, tx),
+                    _ => host.message_menu_requested(key, message, Some(at), tx),
+                }
+            });
     }
     el
 }

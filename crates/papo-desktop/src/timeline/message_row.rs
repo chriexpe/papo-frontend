@@ -29,6 +29,7 @@ use super::change_marks::{change_mark, delete_failed_line};
 use super::changes::ChangeState;
 use super::content::{self, Context, Doc, Draw, Edited};
 use super::echoes::SendState;
+use super::hover_bar;
 use super::local_time::LocalTime;
 use super::reply_line::reply_line;
 use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
@@ -53,7 +54,7 @@ pub(super) fn message_row<S: TimelineHost>(
 ) -> El {
     let id = row_message.id;
     let layout = style.layout;
-    let history = matches!(row_message.origin, Origin::History);
+    let history = matches!(row_message.origin, Origin::History(_));
     let (parts, content) = parts(open, row_message, previous, style);
     let key = open.key;
     let revealed = open.revealed(id);
@@ -109,11 +110,21 @@ pub(super) fn message_row<S: TimelineHost>(
             let spacing = layout.density.spacing();
             reply_line::<S>(key, line, spacing.lead, spacing.lead_gap_pt, &style.palette)
         });
+        let bar = parts
+            .bar
+            .as_ref()
+            .map(|bar| hover_bar::bar::<S>(key, id, bar, &style.palette));
         build(&parts, line, body, mark, style, |message| {
             if !history {
                 return message;
             }
             message
+                // The pointer on the row, or the keyboard on it, shows its bar.
+                .hover_group()
+                .children(bar)
+                .on_secondary_press(move |host: &mut S, press, tx| {
+                    host.message_menu_requested(key, id, Some([press.x, press.y]), tx);
+                })
                 .on_layout_tx(move |host: &mut S, rect, tx| {
                     host.row_moved(key, id, [rect[1], rect[1] + rect[3]], tx);
                     tx.live_only();
@@ -280,7 +291,7 @@ pub(super) fn avatar(name: &str, size_pt: f32, palette: &Palette) -> El {
 
 /// The author's name: a member's nickname or username, a bridged author's
 /// name, else "Someone".
-pub(super) fn author_name(message: &Message, resources: Option<&ResourceSnapshot>) -> String {
+pub(crate) fn author_name(message: &Message, resources: Option<&ResourceSnapshot>) -> String {
     if let Some(external) = &message.external_author {
         return external
             .name
@@ -299,7 +310,7 @@ pub(super) fn author_name(message: &Message, resources: Option<&ResourceSnapshot
 }
 
 /// When the message was created, in Unix microseconds.
-pub(super) fn created_us(message: &Message) -> Option<i64> {
+pub(crate) fn created_us(message: &Message) -> Option<i64> {
     MessageKey::from_message(message)
         .ok()
         .map(|key| key.created_at_us)

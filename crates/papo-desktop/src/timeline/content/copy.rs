@@ -82,6 +82,56 @@ pub(crate) fn text_of(source: &Source, selection: &TextSelection) -> Option<Stri
     Some(pieces.join("\n\n"))
 }
 
+/// What one whole message copies as, from its menu: its Text copy, its
+/// Markdown copy and the links it holds, each once, in order.
+pub(crate) struct Copies {
+    pub(crate) text: String,
+    /// The message's source with each mention as its @name, so it pastes
+    /// anywhere.
+    pub(crate) markdown: String,
+    pub(crate) links: Vec<String>,
+}
+
+/// Message `id`'s copies; none when the source does not hold it.
+pub(crate) fn copies(source: &Source, id: Uuid) -> Option<Copies> {
+    let (message, content) = find(&source.items, id)?;
+    let revealed = source.revealed.get(&id).map_or(&[][..], Vec::as_slice);
+    let doc = Doc::new(
+        content,
+        &Context {
+            resources: source.resources.as_deref(),
+            revealed,
+            jumbo: source.jumbo,
+        },
+    );
+    let runs = doc.runs();
+    let whole: Vec<(usize, Range<usize>)> = runs
+        .iter()
+        .enumerate()
+        .map(|(index, run)| (index, 0..run.text.len()))
+        .collect();
+    let mut links: Vec<String> = Vec::new();
+    for mark in runs.iter().flat_map(|run| &run.marks) {
+        if let Mark::Link { url, .. } = mark
+            && !links.contains(url)
+        {
+            links.push(url.clone());
+        }
+    }
+    let wire = message.content.as_deref().unwrap_or_default();
+    let resources = source.resources.as_deref();
+    let markdown = papo_sdk_ui::message_content::decode_composer_mentions(wire, |user| {
+        let user = resources?.users.get(user)?;
+        papo_sdk_ui::display_name(user.nickname.as_deref(), user.username.as_deref())
+    })
+    .text;
+    Some(Copies {
+        text: message_text(&runs, &whole, whole.len() > 1),
+        markdown,
+        links,
+    })
+}
+
 /// One message's selected texts joined: a line between texts, a tab
 /// between cells side by side. A text taken from its start along with
 /// others gets its prefix (a list item's marker).

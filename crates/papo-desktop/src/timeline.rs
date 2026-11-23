@@ -17,6 +17,7 @@ pub(crate) mod content;
 mod controls;
 pub(crate) mod echoes;
 mod grouping;
+pub(crate) mod hover_bar;
 pub(crate) mod local_time;
 mod message_row;
 mod paging;
@@ -38,21 +39,22 @@ use std::sync::Arc;
 
 use eyeball_im::VectorDiff;
 use imbl::Vector;
-use papo_sdk::{AccountId, Generation, HistoryGap, ResourceSnapshot, Uuid};
-use papo_sdk_ui::{Timeline, TimelineItem, TimelineUpdate};
+use papo_sdk::{AccountId, Generation, HistoryGap, Message, ResourceSnapshot, Uuid};
+use papo_sdk_ui::{ChannelPins, Timeline, TimelineItem, TimelineUpdate};
 use tokio::sync::oneshot;
 
 pub(crate) use self::anchor::scroll_to;
 use self::anchor::{Anchor, Tracker};
 use self::changes::Changes;
 use self::echoes::Echoes;
+pub(crate) use self::message_row::{author_name, created_us};
 use self::paging::Paging;
 pub(crate) use self::paging::Request;
 use self::reading::Reading;
 pub(crate) use self::reading::Seek;
 use self::reports::Reports;
 pub(crate) use self::rows::row_key;
-pub(crate) use self::view::{Style, TimelineHost, view, viewport_key};
+pub(crate) use self::view::{Reacting, Style, TimelineHost, view, viewport_key};
 pub(crate) use self::watch::Opened;
 
 /// Which timeline: an account's channel. Another account on the same
@@ -137,6 +139,10 @@ pub(crate) struct OpenTimeline {
     pub(crate) reports: Reports,
     /// ⌛'s paging toward the skipped block, while it runs.
     pub(crate) seek: Option<Seek>,
+    /// The channel's pins, newest pin first; none while unknown.
+    pub(crate) pins: Option<Vector<Arc<Message>>>,
+    /// Their handle, which fetches them again.
+    pub(crate) pins_handle: Option<ChannelPins>,
 }
 
 impl OpenTimeline {
@@ -177,6 +183,8 @@ impl OpenTimeline {
             reading: Reading::default(),
             reports: Reports::default(),
             seek: None,
+            pins: None,
+            pins_handle: None,
         };
         (open, stopped)
     }
