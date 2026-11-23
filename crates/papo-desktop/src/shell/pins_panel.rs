@@ -171,6 +171,14 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
                 }
                 false
             })
+            // Leaving the panel after opening a pin shrinks it: a press on a
+            // message or a scroll of the conversation never reaches a handler
+            // of the panel's, and the pointer always leaves it first.
+            .on_hover_change(|shell: &mut Shell, hovered, _tx| {
+                if !hovered {
+                    shell.pins_left();
+                }
+            })
             // A press on the shrunk panel stretches it back.
             .on_background_press_tx(|shell: &mut Shell, tx| {
                 if shell.shown_pins_panel().is_some_and(|panel| panel.peek) {
@@ -194,28 +202,26 @@ fn peek_line(open: &OpenTimeline, state: &PinsPanel, palette: &Palette) -> Optio
     let OriginalText::Message { name, snippet, .. } = original_text(&original, open) else {
         return None;
     };
-    Some(
-        row()
-            .w_full()
-            .px(SPACE_LG_PT)
-            .py(SPACE_MD_PT)
-            .mx(SPACE_SM_PT)
-            .mb(SPACE_SM_PT)
-            .gap(SPACE_SM_PT)
-            .radius(RADIUS_CONTROL_PT)
-            .fill(palette.surface_selected)
-            .child(
-                text(name)
-                    .font(TYPE_BODY_STRONG)
-                    .color(palette.text_primary),
-            )
-            .child(
-                text(snippet)
-                    .font(TYPE_SMALL)
-                    .color(palette.text_secondary)
-                    .max_lines(1),
-            ),
-    )
+    let line = row()
+        .w_full()
+        .px(SPACE_LG_PT)
+        .py(SPACE_MD_PT)
+        .gap(SPACE_SM_PT)
+        .radius(RADIUS_CONTROL_PT)
+        .fill(palette.surface_selected)
+        .child(
+            text(name)
+                .font(TYPE_BODY_STRONG)
+                .color(palette.text_primary),
+        )
+        .child(
+            text(snippet)
+                .font(TYPE_SMALL)
+                .color(palette.text_secondary)
+                .max_lines(1),
+        );
+    // Inset by padding, so the highlight stays inside the panel's corners.
+    Some(col().w_full().px(SPACE_SM_PT).pb(SPACE_SM_PT).child(line))
 }
 
 /// The pins, newest first; the empty state; or skeleton rows while not

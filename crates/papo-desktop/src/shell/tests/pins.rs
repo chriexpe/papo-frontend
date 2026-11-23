@@ -70,7 +70,7 @@ fn ctrl_p_opens_the_panel_which_waits_then_says_there_are_none() {
 }
 
 #[test]
-fn a_pin_opens_marked_and_a_press_outside_shrinks_the_panel_to_it() {
+fn a_pin_opens_marked_and_leaving_the_panel_shrinks_it_to_that_pin() {
     let mut rt = conversation("");
     pin(&mut rt, &[3, 1]);
     ctrl_p(&mut rt);
@@ -86,10 +86,20 @@ fn a_pin_opens_marked_and_a_press_outside_shrinks_the_panel_to_it() {
         rt.state.shown_pins_panel().and_then(|panel| panel.opened),
         Some(message_id(3))
     );
-    rt.update(|shell, _tx| shell.pins_outside());
+    rt.update(|shell, _tx| shell.pins_left());
     rt.frame(FRAME_S);
     assert!(rt.state.shown_pins_panel().is_some_and(|panel| panel.peek));
     ctrl_p(&mut rt);
+    assert!(rt.state.shown_pins_panel().is_some_and(|panel| !panel.peek));
+}
+
+#[test]
+fn with_nothing_opened_the_pointer_leaving_keeps_the_panel_whole() {
+    let mut rt = conversation("");
+    pin(&mut rt, &[1]);
+    ctrl_p(&mut rt);
+    rt.update(|shell, _tx| shell.pins_left());
+    rt.frame(FRAME_S);
     assert!(rt.state.shown_pins_panel().is_some_and(|panel| !panel.peek));
 }
 
@@ -129,4 +139,26 @@ fn escape_closes_the_panel_then_folds_the_strip_then_goes_back_to_writing() {
         .find(|element| element.focused)
         .and_then(|element| element.key);
     assert_eq!(focused.as_deref(), Some(crate::composer::COMPOSER_KEY));
+}
+
+#[test]
+fn the_pointer_leaving_the_panel_for_the_conversation_shrinks_it() {
+    let mut rt = conversation("");
+    pin(&mut rt, &[3, 1]);
+    ctrl_p(&mut rt);
+    let key = rt.state.tabs.shown().unwrap().key;
+    rt.update(move |shell, tx| shell.open_pin(key, message_id(3), tx));
+    rt.frame(FRAME_S);
+    let panel = rt
+        .elements()
+        .into_iter()
+        .find(|element| element.key.as_deref() == Some(super::super::pins::PINS_PANEL_KEY))
+        .expect("the panel")
+        .rect;
+    rt.pointer_move(panel[0] + 20.0, panel[1] + panel[3] / 2.0);
+    rt.frame(FRAME_S);
+    assert!(rt.state.shown_pins_panel().is_some_and(|panel| !panel.peek));
+    rt.pointer_move(panel[0] - 40.0, panel[1] + panel[3] / 2.0);
+    rt.frame(FRAME_S);
+    assert!(rt.state.shown_pins_panel().is_some_and(|panel| panel.peek));
 }

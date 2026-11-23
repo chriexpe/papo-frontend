@@ -2,9 +2,11 @@
 //! PanelPeek): 📌 or Ctrl+P opens it (fetching the pins again, as a pin of
 //! a message never loaded arrives only with a fetch), a pin opens in the
 //! conversation the way ⌛ opens its block, with `highlight.selected`, and
-//! the panel stays open marking it. A click outside then shrinks it to its
-//! header and that pin (`PanelPeek`); 📌, Ctrl+P or a click on it stretch it
-//! back. With nothing opened, a click outside closes it. Escape closes it.
+//! the panel stays open marking it. The pointer leaving it then shrinks it
+//! to its header and that pin (`PanelPeek`): the pointer leaves before any
+//! press on a message or scroll of the conversation, which never reach the
+//! panel. 📌, Ctrl+P or a click on it stretch it back. With nothing opened,
+//! a press on the conversation's background closes it. Escape closes it.
 //! Unpin applies at once.
 
 use std::time::Duration;
@@ -75,6 +77,18 @@ impl Shell {
             Some(panel) if panel.opened.is_some() => panel.peek = true,
             Some(_) => self.pins_panel = None,
             None => {}
+        }
+    }
+
+    /// The pointer left the panel: once a pin was opened from it, the
+    /// panel shrinks to that pin (the conversation is where you work now).
+    pub(crate) fn pins_left(&mut self) {
+        if let Some(panel) = self
+            .pins_panel
+            .as_mut()
+            .filter(|panel| panel.opened.is_some())
+        {
+            panel.peek = true;
         }
     }
 
