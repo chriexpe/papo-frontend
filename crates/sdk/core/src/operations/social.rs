@@ -68,7 +68,7 @@ impl Operations {
         }
         match self.direct_conversation(conversation).await {
             Ok(_) => Ok(DirectAccess::Open),
-            Err(error) => closed_access(&error).ok_or(error),
+            Err(error) => DirectAccess::proven_by(&error).ok_or(error),
         }
     }
 
@@ -136,25 +136,30 @@ impl Operations {
     }
 }
 
-/// The access a failed conversation read proves, when it proves one.
-fn closed_access(error: &OperationError) -> Option<DirectAccess> {
-    let problem = match error {
-        OperationError::NotFound => return Some(DirectAccess::Gone),
-        OperationError::Session(ClientError::Api(papo_api::Error::Problem { status, problem })) => {
-            (*status, problem.kind())
+impl DirectAccess {
+    /// The access a failed conversation read, open or send proves, when it
+    /// proves one: a refusal (blocked in either direction) or absence.
+    #[must_use]
+    pub fn proven_by(error: &OperationError) -> Option<DirectAccess> {
+        let problem = match error {
+            OperationError::NotFound => return Some(DirectAccess::Gone),
+            OperationError::Session(ClientError::Api(papo_api::Error::Problem {
+                status,
+                problem,
+            })) => (*status, problem.kind()),
+            _ => return None,
+        };
+        match problem {
+            (404, _) => Some(DirectAccess::Gone),
+            (_, papo_api::ProblemKind::DirectMessageBlocked) => Some(DirectAccess::Refused),
+            _ => None,
         }
-        _ => return None,
-    };
-    match problem {
-        (404, _) => Some(DirectAccess::Gone),
-        (_, papo_api::ProblemKind::DirectMessageBlocked) => Some(DirectAccess::Refused),
-        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DirectAccess, OperationError, closed_access};
+    use super::{DirectAccess, OperationError};
     use crate::ClientError;
     use papo_api::wire::Problem;
 
@@ -174,7 +179,7 @@ mod tests {
     #[test]
     fn a_blocked_conversation_is_refused_without_saying_who_blocked() {
         assert_eq!(
-            closed_access(&problem(403, "dm-blocked")),
+            DirectAccess::proven_by(&problem(403, "dm-blocked")),
             Some(DirectAccess::Refused)
         );
     }
@@ -182,19 +187,19 @@ mod tests {
     #[test]
     fn a_conversation_the_account_is_not_in_is_gone() {
         assert_eq!(
-            closed_access(&problem(404, "not-found")),
+            DirectAccess::proven_by(&problem(404, "not-found")),
             Some(DirectAccess::Gone)
         );
         assert_eq!(
-            closed_access(&OperationError::NotFound),
+            DirectAccess::proven_by(&OperationError::NotFound),
             Some(DirectAccess::Gone)
         );
     }
 
     #[test]
     fn other_failures_prove_nothing() {
-        assert_eq!(closed_access(&problem(403, "forbidden")), None);
-        assert_eq!(closed_access(&problem(500, "internal")), None);
-        assert_eq!(closed_access(&OperationError::InvalidData), None);
+        assert_eq!(DirectAccess::proven_by(&problem(403, "forbidden")), None);
+        assert_eq!(DirectAccess::proven_by(&problem(500, "internal")), None);
+        assert_eq!(DirectAccess::proven_by(&OperationError::InvalidData), None);
     }
 }
