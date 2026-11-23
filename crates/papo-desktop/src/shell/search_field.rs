@@ -45,10 +45,15 @@ impl FieldList {
     }
 }
 
-/// The filters a scope offers, in the list's order: a DM has no channels
-/// and offers no mentions.
+/// The filters a scope offers, in the list's order, the dates last: a DM
+/// has no channels and offers no mentions.
 pub(crate) fn offered_filters(scope: SearchScope) -> Vec<SearchKeyword> {
-    if matches!(scope, SearchScope::Direct { .. }) {
+    let dates = [
+        SearchKeyword::Before,
+        SearchKeyword::After,
+        SearchKeyword::During,
+    ];
+    let mut keywords = if matches!(scope, SearchScope::Direct { .. }) {
         vec![SearchKeyword::From, SearchKeyword::Has]
     } else {
         vec![
@@ -57,7 +62,9 @@ pub(crate) fn offered_filters(scope: SearchScope) -> Vec<SearchKeyword> {
             SearchKeyword::Has,
             SearchKeyword::Mentions,
         ]
-    }
+    };
+    keywords.extend(dates);
+    keywords
 }
 
 /// A keyword as this locale writes it, colon included.
@@ -67,6 +74,9 @@ pub(crate) fn keyword_text(keyword: SearchKeyword) -> &'static str {
         SearchKeyword::In => strings::search_keyword_in(),
         SearchKeyword::Has => strings::search_keyword_has(),
         SearchKeyword::Mentions => strings::search_keyword_mentions(),
+        SearchKeyword::Before => strings::search_keyword_before(),
+        SearchKeyword::After => strings::search_keyword_after(),
+        SearchKeyword::During => strings::search_keyword_during(),
     }
 }
 
@@ -138,7 +148,10 @@ pub(crate) fn field_spans(draft: &SearchDraft, palette: &Palette) -> Vec<Span> {
         spans.push(Span::new(keyword.start, keyword.end).color(palette.text_muted));
         let bound = matches!(
             filter.resolved,
-            FilterValue::Person(_) | FilterValue::Channel(_) | FilterValue::Has(_)
+            FilterValue::Person(_)
+                | FilterValue::Channel(_)
+                | FilterValue::Has(_)
+                | FilterValue::Date(_)
         );
         let value = &filter.value_range;
         if bound && value.start < value.end {
@@ -286,7 +299,10 @@ impl Shell {
             filter.value_range.end == caret
                 && matches!(
                     filter.resolved,
-                    FilterValue::Person(_) | FilterValue::Channel(_) | FilterValue::Has(_)
+                    FilterValue::Person(_)
+                        | FilterValue::Channel(_)
+                        | FilterValue::Has(_)
+                        | FilterValue::Date(_)
                 )
         });
         let spaced = search

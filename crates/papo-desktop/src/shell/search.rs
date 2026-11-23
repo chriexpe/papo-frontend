@@ -99,6 +99,9 @@ pub(crate) struct Search {
     pub(super) revision: u64,
     /// The number of the search the results shown answer.
     pub(super) answered: u64,
+    /// The instants the current search keeps (its date filters' exact
+    /// days in the reader's zone).
+    pub(super) window: papo_sdk_ui::SearchWindow,
     /// The connection generation the results came from: a reconnect
     /// since makes them stale.
     pub(super) generation: Option<papo_sdk::Generation>,
@@ -127,6 +130,7 @@ impl Search {
             request: None,
             revision: 0,
             answered: 0,
+            window: papo_sdk_ui::SearchWindow::default(),
             generation: None,
             run_due_s: None,
             highlight: 0,

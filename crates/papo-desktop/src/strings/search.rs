@@ -43,6 +43,26 @@ pub(crate) fn search_keyword_mentions() -> &'static str {
     text!("search.keyword_mentions")
 }
 
+/// The before-a-date filter's keyword in this locale, colon included.
+pub(crate) fn search_keyword_before() -> &'static str {
+    text!("search.keyword_before")
+}
+
+/// The after-a-date filter's keyword in this locale, colon included.
+pub(crate) fn search_keyword_after() -> &'static str {
+    text!("search.keyword_after")
+}
+
+/// The on-a-date filter's keyword in this locale, colon included.
+pub(crate) fn search_keyword_during() -> &'static str {
+    text!("search.keyword_during")
+}
+
+/// What the date filters take, with an example of how it is typed.
+pub(crate) fn search_hint_date() -> &'static str {
+    text!("search.hint_date")
+}
+
 /// What `from:` and `mentions:` take.
 pub(crate) fn search_hint_person() -> &'static str {
     text!("search.hint_person")

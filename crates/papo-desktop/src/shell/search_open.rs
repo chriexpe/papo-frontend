@@ -137,6 +137,17 @@ impl Shell {
         true
     }
 
+    /// A page the date window trimmed to nothing: no row can come near to
+    /// ask for the next, so it is asked at once.
+    pub(super) fn search_more_if_trimmed(&mut self) {
+        let wanted = self.search.as_ref().is_some_and(
+            |search| matches!(&search.found, Found::Ready(results) if results.wants_next()),
+        );
+        if wanted {
+            self.search_next_page();
+        }
+    }
+
     /// The next page of search `revision` arrived.
     pub(super) fn search_paged(
         &mut self,
@@ -153,6 +164,7 @@ impl Shell {
             Ok(page) => {
                 results.append(&page);
                 search.paging = Paging::Idle;
+                self.search_more_if_trimmed();
             }
             // A reconnect since: the results are stale; search again.
             Err(SearchError::Session(ClientError::Superseded)) => {

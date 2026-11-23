@@ -308,5 +308,9 @@
   "search.loading": "Searching",
   "search.results_list": "Results",
   "search.jump": "Jump to message",
-  "shortcut.search": "Ctrl+F"
+  "shortcut.search": "Ctrl+F",
+  "search.keyword_before": "before:",
+  "search.keyword_after": "after:",
+  "search.keyword_during": "during:",
+  "search.hint_date": "a date, as 2026-11-20"
 }

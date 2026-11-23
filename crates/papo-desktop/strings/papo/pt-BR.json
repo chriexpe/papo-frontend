@@ -308,5 +308,9 @@
   "search.loading": "Buscando",
   "search.results_list": "Resultados",
   "search.jump": "Ir para a mensagem",
-  "shortcut.search": "Ctrl+F"
+  "shortcut.search": "Ctrl+F",
+  "search.keyword_before": "antes:",
+  "search.keyword_after": "depois:",
+  "search.keyword_during": "durante:",
+  "search.hint_date": "uma data, como 2026-11-20"
 }

@@ -103,7 +103,15 @@ fn ctrl_f_opens_the_panel_with_the_keyboard_in_its_field_and_the_filters_listed(
     assert_eq!(showing(&rt), Some(Showing::Open));
     assert_eq!(focused(&rt).as_deref(), Some(SEARCH_FIELD_KEY));
     assert!(shows(&rt, "Filters"));
-    for keyword in ["from:", "in:", "has:", "mentions:"] {
+    for keyword in [
+        "from:",
+        "in:",
+        "has:",
+        "mentions:",
+        "before:",
+        "after:",
+        "during:",
+    ] {
         assert!(shows(&rt, keyword), "{keyword} is listed");
     }
     assert!(
@@ -469,4 +477,26 @@ fn another_conversation_showing_cancels_an_opening_on_its_way() {
     let before = rt.state.openings;
     show_other_channel(&mut rt, account);
     assert_ne!(rt.state.openings, before);
+}
+
+#[test]
+fn a_date_typed_out_is_a_chip_and_dates_that_leave_no_day_find_nothing() {
+    let mut rt = conversation("");
+    ctrl(&mut rt, 'f');
+    type_text(&mut rt, "during:2026-11-20");
+    let draft = rt.state.search_draft().unwrap();
+    assert!(matches!(draft.filters[0].resolved, FilterValue::Date(_)));
+    rt.update(Shell::clear_search);
+    rt.frame(FRAME_S);
+    type_text(&mut rt, "after:2026-11-20 before:2026-11-21");
+    rt.update(|shell, _tx| shell.search_now());
+    rt.frame(FRAME_S);
+    assert!(matches!(
+        rt.state.search.as_ref().unwrap().found,
+        Found::Held
+    ));
+    assert!(shows(
+        &rt,
+        "No results for “after:2026-11-20 before:2026-11-21”"
+    ));
 }

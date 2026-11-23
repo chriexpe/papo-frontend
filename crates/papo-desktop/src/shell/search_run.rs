@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use papo_sdk::{SearchError, SearchPage, SearchProblem, SearchRequestHandle};
-use papo_sdk_ui::SearchResults;
+use papo_sdk_ui::{SearchResults, localize_search};
 use rune::Tx;
 
 use super::Shell;
@@ -53,6 +53,7 @@ impl Shell {
     /// already answer; text that asks for no search yet holds it.
     pub(crate) fn search_now(&mut self) {
         let draft = self.search_draft();
+        let offsets = std::sync::Arc::clone(&self.local_time.offsets);
         let Some(search) = self.search.as_mut() else {
             return;
         };
@@ -74,10 +75,18 @@ impl Shell {
         if search.revision != 0 && search.asked.as_ref() == Some(&query) {
             return;
         }
+        // Days of the reader's calendar become the instants they span,
+        // read in the zone the conversation shows times in.
+        let Some((request, window)) = localize_search(query.clone(), &*offsets) else {
+            search.stop();
+            search.found = Found::Held;
+            return;
+        };
         search.stop();
         self.search_runs += 1;
         search.revision = self.search_runs;
-        search.asked = Some(query.clone());
+        search.asked = Some(query);
+        search.window = window;
         search.opened = None;
         // The results shown stay while the next ones load.
         if !matches!(search.found, Found::Ready(_)) {
@@ -92,7 +101,7 @@ impl Shell {
             let request = client
                 .session(account)
                 .map_err(SearchError::from)
-                .and_then(|session| session.search(query));
+                .and_then(|session| session.search(request));
             let request = match request {
                 Ok(request) => request,
                 Err(error) => {
@@ -139,7 +148,7 @@ impl Shell {
         match answer {
             Ok(page) => {
                 search.generation = Some(page.generation);
-                search.found = Found::Ready(SearchResults::first(&page));
+                search.found = Found::Ready(SearchResults::first_within(&page, search.window));
             }
             // The search is still current, so the SDK cancelled it (its
             // connection went): said as a failure, never left waiting.
@@ -149,6 +158,7 @@ impl Shell {
             }
         }
         search.answered = revision;
+        self.search_more_if_trimmed();
         true
     }
 

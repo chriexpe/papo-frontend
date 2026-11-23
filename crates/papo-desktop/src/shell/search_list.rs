@@ -102,6 +102,9 @@ fn filter_row(keyword: SearchKeyword, index: usize, chosen: bool, palette: &Pale
         SearchKeyword::In => (&crate::icons::HASH, strings::search_hint_channel()),
         SearchKeyword::Has => (&crate::icons::PAPERCLIP, strings::search_hint_has()),
         SearchKeyword::Mentions => (&crate::icons::AT, strings::search_hint_person()),
+        SearchKeyword::Before | SearchKeyword::After | SearchKeyword::During => {
+            (&crate::icons::CALENDAR, strings::search_hint_date())
+        }
     };
     let spelled = keyword_text(keyword);
     option_row(index, format!("{spelled} {hint}"), chosen, palette)

@@ -6,7 +6,7 @@
 //! more paging in near the end. Shrunk (`PanelPeek`), it keeps its field
 //! and one line for the opened result. Pure: reads the shell.
 
-use papo_sdk::FilterValue;
+use papo_sdk::{FilterValue, SearchProblem};
 use papo_sdk_ui::{SearchCount, SearchResults};
 use rune::{Cx, El, KeyEvent, col, el, icon, row, text, text_input};
 
@@ -182,14 +182,16 @@ fn results_area(shell: &Shell, search: &Search, style: &Style, max_height_pt: f3
     match &search.found {
         Found::Nothing => None,
         Found::Held => {
-            // An unknown name finds nothing; an ambiguous one has its list.
+            // An unknown name, or dates that leave no day, find nothing;
+            // an ambiguous name has its list.
             let unknown = shell.search_draft().is_some_and(|draft| {
-                draft.filters.iter().any(|filter| {
-                    matches!(
-                        filter.resolved,
-                        FilterValue::Unknown | FilterValue::Unavailable
-                    )
-                })
+                draft.query() == Err(&SearchProblem::NoDays)
+                    || draft.filters.iter().any(|filter| {
+                        matches!(
+                            filter.resolved,
+                            FilterValue::Unknown | FilterValue::Unavailable
+                        )
+                    })
             });
             unknown.then(|| nothing_found(shell, search, &palette))
         }

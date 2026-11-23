@@ -218,6 +218,11 @@ line_icon!(
     "paperclip"
 );
 line_icon!(
+    /// The date filters in the search field's list.
+    CALENDAR,
+    "calendar"
+);
+line_icon!(
     /// A choice that opens a menu: the search scope.
     CHEVRON_DOWN,
     "chevron-down"
