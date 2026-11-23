@@ -11,17 +11,17 @@
 //! mentions take the dot's place. The New message picker waits for user
 //! search in the backend.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use papo_sdk_ui::{DirectMessageItem, display_name};
-use rune::{El, Key, KeyEvent, ScrollSpec, col, el, icon, row, text};
+use rune::{El, GrowthSpec, Key, KeyEvent, ScrollSpec, col, el, icon, row, text};
 
-use crate::badges::{Badge, mention_pill};
-use crate::channel_pane::{chrome, pill_row};
+use crate::badges::Badge;
+use crate::channel_pane::{chrome, pill_row, row_badge, row_name};
 use crate::design::{
     AVATAR_ROW, DM_ROW_HEIGHT_PT, FOCUS_RING_PT, PILL_BUTTON_PT, PILL_ICON_PT, Palette,
-    RADIUS_CONTROL_PT, SIDEBAR_WIDTH_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM,
-    TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_TITLE, UNREAD_DOT_PT,
+    RADIUS_CONTROL_PT, SIDEBAR_WIDTH_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_CAPTION, TYPE_TITLE,
 };
 use crate::icons::X;
 use crate::person_avatar::person_avatar;
@@ -44,25 +44,44 @@ pub(crate) fn view(shell: &Shell, palette: &Palette) -> El {
         ),
         palette,
     );
-    let picked = shell.navigation().picked_dm().map(|picked| &picked.id);
-    let rows = shell.direct_rows().iter().map(|item| {
-        let shown = Shown::of(shell, item, picked == Some(&item.id));
-        shown.view(palette)
-    });
+    let palette_copy = *palette;
+    // Only the rows on screen are built: a person can have many
+    // conversations.
     let list = col()
         .key("direct-list")
         .w_full()
         .role("listbox")
         .label(strings::direct_list())
         .focus_group()
-        .children(rows);
+        .growth(GrowthSpec::default())
+        .virtual_rows(
+            shell.direct_rows().len(),
+            DM_ROW_HEIGHT_PT,
+            |shell: &Shell, index| {
+                Cow::Owned(
+                    shell
+                        .direct_rows()
+                        .get(index)
+                        .map_or_else(|| format!("dm-gone-{index}"), |item| dm_row_key(item)),
+                )
+            },
+            move |shell: &Shell, index| match shell.direct_rows().get(index) {
+                Some(item) => {
+                    let picked = shell
+                        .navigation()
+                        .picked_dm()
+                        .is_some_and(|picked| picked.id == item.id);
+                    Shown::of(shell, item, picked).view(&palette_copy)
+                }
+                None => el(),
+            },
+        );
+    // With none, a line in the list's place.
     let list = if shell.direct_rows().is_empty() {
-        list.child(
-            el().padding(SPACE_MD_PT).child(
-                text(strings::direct_empty())
-                    .font(TYPE_CAPTION)
-                    .color(palette.text_muted),
-            ),
+        el().padding(SPACE_MD_PT).child(
+            text(strings::direct_empty())
+                .font(TYPE_CAPTION)
+                .color(palette.text_muted),
         )
     } else {
         list
@@ -132,14 +151,7 @@ impl<'a> Shown<'a> {
     }
 
     fn view(&self, palette: &Palette) -> El {
-        let unread = self.badge.is_unread();
-        let (style, colour) = if unread {
-            (TYPE_BODY_STRONG, palette.text_primary)
-        } else if self.picked {
-            (TYPE_BODY_MEDIUM, palette.text_primary)
-        } else {
-            (TYPE_BODY, palette.text_secondary)
-        };
+        let (style, colour) = row_name(self.badge, self.picked, palette);
         let sub_line = if self.typing {
             strings::direct_typing()
         } else {
@@ -214,16 +226,7 @@ impl<'a> Shown<'a> {
                             .max_lines(1),
                     ),
             );
-        line = match self.badge.mentions() {
-            Some(count) => line.child(mention_pill(count, None, palette)),
-            None if unread => line.child(
-                el().size(UNREAD_DOT_PT, UNREAD_DOT_PT)
-                    .radius(UNREAD_DOT_PT / 2.0)
-                    .fill(palette.text_primary)
-                    .a11y_hidden(),
-            ),
-            None => line,
-        };
+        line = line.children(row_badge(self.badge, palette));
         line = if self.picked {
             line.fill(palette.surface_selected)
         } else {

@@ -376,3 +376,26 @@ fn a_notice_shows_in_direct_with_no_conversation_open() {
     );
     assert!(tree(&rt).contains("Couldn't close the conversation."));
 }
+
+#[test]
+fn ctrl_shift_d_shows_direct_and_the_list_builds_its_rows() {
+    let mut rt = with_servers();
+    rt.update(|shell, tx| {
+        shell.direct_posted([dm(1, lia(), "Lia", "Lumen")].into_iter().collect(), tx);
+    });
+    rt.key(KeyEvent {
+        key: Key::Command('d'),
+        mods: Mods {
+            ctrl: true,
+            cmd: true,
+            shift: true,
+            ..Mods::default()
+        },
+    });
+    rt.frame(FRAME_S);
+    assert!(rt.state.navigation().direct_shown());
+    assert!(
+        tree(&rt).contains("Lia, on Lumen"),
+        "the virtual list's row"
+    );
+}

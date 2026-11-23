@@ -69,6 +69,7 @@ impl Shell {
             || self.select_message_key(key, tx)
             || self.pins_key(key, tx)
             || self.profile_key(key)
+            || self.direct_key(key, tx)
             || self.escape_key(key)
     }
 
@@ -87,6 +88,16 @@ impl Shell {
             return false;
         }
         self.pins_pressed(true, tx);
+        true
+    }
+
+    /// Ctrl+⇧D (`docs/design.md` §12): Direct, as its rail tile does.
+    fn direct_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        if !key.is_command('d') || !mods.shift || mods.alt || self.popup_shown() {
+            return false;
+        }
+        self.select_direct(tx);
         true
     }
 
