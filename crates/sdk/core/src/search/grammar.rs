@@ -1,6 +1,7 @@
 //! The backend query a search asks for and its request validation; reading the field's text is
 //! `draft`'s, and server execution stays authoritative.
 
+use super::SearchCalendar;
 use super::SearchError;
 use super::draft::{MAX_SEARCH_BYTES, SearchDraft, SearchNames, SearchScope};
 use crate::{HistoryOrder, Uuid};
@@ -40,11 +41,15 @@ impl SearchQuery {
     /// [`SearchDraft::read`] does. Ambiguous or unknown names fail.
     /// # Errors
     /// Returns invalid/unknown/ambiguous/repeated filters or unmatched quotes.
-    pub fn parse(raw: &str, names: &SearchNames<'_>) -> Result<Self, SearchError> {
+    pub fn parse(
+        raw: &str,
+        names: &SearchNames<'_>,
+        calendar: SearchCalendar,
+    ) -> Result<Self, SearchError> {
         if raw.len() > MAX_SEARCH_BYTES {
             return Err(SearchError::InvalidData);
         }
-        SearchDraft::read(raw, names, SearchScope::Server)
+        SearchDraft::read(raw, names, SearchScope::Server, calendar)
             .query()
             .cloned()
             .map_err(|_| SearchError::InvalidData)

@@ -132,7 +132,12 @@ fn every_binding_reads_back_as_its_own_value() {
     ] {
         for suggestion in search_suggestions(&snapshot, keyword, "", SearchScope::Server) {
             let field = format!("{spelling}{}", suggestion.binding);
-            let draft = SearchDraft::read(&field, &names, SearchScope::Server);
+            let calendar = papo_sdk::SearchCalendar {
+                today: local_day("2026-11-23"),
+                order: papo_sdk::DateOrder::DayFirst,
+                words: papo_sdk::DateWords::Portuguese,
+            };
+            let draft = SearchDraft::read(&field, &names, SearchScope::Server, calendar);
             let expected = match suggestion.value {
                 SuggestedValue::Person(id) => FilterValue::Person(id),
                 SuggestedValue::Channel(id) => FilterValue::Channel(id),
@@ -350,4 +355,55 @@ fn results_keep_to_the_window_and_want_the_next_page_when_one_kept_nothing() {
     ));
     assert_eq!(results.count(), SearchCount::Exact(1));
     assert_eq!(results.items()[0].id(), id(102));
+}
+
+fn november_23() -> papo_sdk::SearchCalendar {
+    papo_sdk::SearchCalendar {
+        today: local_day("2026-11-23"),
+        order: papo_sdk::DateOrder::DayFirst,
+        words: papo_sdk::DateWords::Portuguese,
+    }
+}
+
+fn date_bindings(typed: &str, calendar: papo_sdk::SearchCalendar) -> Vec<String> {
+    search_date_suggestions(typed, calendar)
+        .into_iter()
+        .map(|suggestion| suggestion.binding)
+        .collect()
+}
+
+#[test]
+fn an_empty_date_offers_the_common_ones_in_the_readers_language() {
+    assert_eq!(
+        date_bindings("", november_23()),
+        ["hoje", "ontem", "7d", "novembro", "outubro", "2026"]
+    );
+    let january = papo_sdk::SearchCalendar {
+        today: local_day("2027-01-05"),
+        words: papo_sdk::DateWords::English,
+        ..november_23()
+    };
+    assert_eq!(
+        date_bindings("", january),
+        ["today", "yesterday", "7d", "january", "12/2026", "2027"],
+        "last month of another year carries its year"
+    );
+}
+
+#[test]
+fn a_number_offers_each_unit_and_a_word_its_completions() {
+    let found = search_date_suggestions("2", november_23());
+    let bindings: Vec<&str> = found.iter().map(|s| s.binding.as_str()).collect();
+    assert_eq!(bindings, ["2d", "2s", "2m", "2a"]);
+    assert_eq!(
+        found[0].date,
+        papo_sdk::SearchDate::Day(local_day("2026-11-21"))
+    );
+    assert_eq!(date_bindings("no", november_23()), ["novembro"]);
+    assert_eq!(
+        date_bindings("21/11", november_23()),
+        ["21/11"],
+        "a read value shows itself"
+    );
+    assert_eq!(date_bindings("zz", november_23()), [""; 0]);
 }

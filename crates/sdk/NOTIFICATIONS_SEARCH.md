@@ -133,7 +133,11 @@ value resolved against lightweight current metadata. A UUID, an `@username` or a
 channels the filter is `Ambiguous` with its candidates and nothing is searched until
 one is picked. `has:` takes `link` and `file` (any attachment); the backend filters
 no attachment kind. `before:`, `after:` and `during:` (`antes:`, `depois:`, `durante:`)
-take `YYYY-MM-DD` days of the reader's own calendar into `SearchQuery::local_days`;
+take dates as people write them (`parse_search_date`: `2d`, `3w`, `1m`, `1y`;
+today and yesterday; `21/11/2026`, `211126` and more in the calendar's day/month
+order; `nov`, `11/2026`, `2025` for whole months and years), read against the
+client's `SearchCalendar` (today, order, language), into `SearchQuery::local_days`;
+`search_date_suggestions` lists what a date value can be, with its meaning;
 the backend counts UTC days, so `Session::search` refuses such a query until
 `papo_sdk_ui::localize_search` converts it with the client's UTC offsets: the
 local days become the exact instants they span, the request asks every UTC day

@@ -67,7 +67,17 @@ fn read(raw: &str, scope: SearchScope) -> SearchDraft {
             resources: &resources,
         },
         scope,
+        calendar(),
     )
+}
+
+/// Sunday, 23 November 2026, written day first.
+fn calendar() -> crate::SearchCalendar {
+    crate::SearchCalendar {
+        today: chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap(),
+        order: crate::DateOrder::DayFirst,
+        words: crate::DateWords::Portuguese,
+    }
 }
 
 fn id(n: u128) -> Uuid {
@@ -245,7 +255,7 @@ fn a_repeated_or_empty_date_range_and_a_bad_date_hold_the_search() {
         Err(&SearchProblem::NoDays)
     );
     assert_eq!(
-        read("before:20/11/2026", SearchScope::Server).filters[0].resolved,
+        read("before:32/13/2026", SearchScope::Server).filters[0].resolved,
         FilterValue::Unknown
     );
 }
@@ -257,4 +267,30 @@ fn local_days_never_reach_the_backend_unconverted() {
         .unwrap()
         .clone();
     assert!(query.into_request().is_err());
+}
+
+#[test]
+fn relative_days_and_whole_months_become_local_day_ranges() {
+    // Today is 23 November 2026: before:2d is before the 21st.
+    let days = read("before:2d", SearchScope::Server)
+        .query()
+        .unwrap()
+        .local_days
+        .unwrap();
+    assert_eq!((days.first, days.last), (None, Some(day("2026-11-20"))));
+    let days = read("durante:nov", SearchScope::Server)
+        .query()
+        .unwrap()
+        .local_days
+        .unwrap();
+    assert_eq!(
+        (days.first, days.last),
+        (Some(day("2026-11-01")), Some(day("2026-11-30")))
+    );
+    let days = read("after:2025", SearchScope::Server)
+        .query()
+        .unwrap()
+        .local_days
+        .unwrap();
+    assert_eq!(days.first, Some(day("2026-01-01")));
 }

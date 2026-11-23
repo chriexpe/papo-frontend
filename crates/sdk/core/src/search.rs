@@ -3,8 +3,10 @@
 mod detached;
 pub(crate) use detached::DetachedStore;
 pub use detached::{DetachedMessageRequest, DetachedMessageUpdate};
+mod dates;
 mod draft;
 mod grammar;
+pub use dates::{DateOrder, DateWords, SearchCalendar, SearchDate, parse_search_date};
 pub use draft::{
     FilterValue, HasKind, MAX_SEARCH_BYTES, MAX_SEARCH_CANDIDATES, SearchDraft, SearchFilter,
     SearchKeyword, SearchNames, SearchProblem, SearchScope,

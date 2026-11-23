@@ -3,7 +3,7 @@
 //! text that names one of them unambiguously when a client writes it back.
 
 use super::{FilterValue, MAX_SEARCH_CANDIDATES, SearchKeyword, SearchScope, unquote};
-use crate::search::HasKind;
+use crate::search::{HasKind, SearchCalendar, parse_search_date};
 use crate::{ChannelKind, ResourceSnapshot, Uuid};
 
 /// Borrowed lightweight labels used for parsing/local filtering; never fetches profiles or a roster.
@@ -18,6 +18,7 @@ impl SearchNames<'_> {
         keyword: SearchKeyword,
         value: &str,
         scope: SearchScope,
+        calendar: SearchCalendar,
     ) -> FilterValue {
         // A lone `@` or `#` is a name still being typed.
         if value.is_empty() || value == "@" || value == "#" {
@@ -33,8 +34,7 @@ impl SearchNames<'_> {
                 HasKind::from_spelling(value).map_or(FilterValue::Unknown, FilterValue::Has)
             }
             SearchKeyword::Before | SearchKeyword::After | SearchKeyword::During => {
-                chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
-                    .map_or(FilterValue::Unknown, FilterValue::Date)
+                parse_search_date(value, calendar).map_or(FilterValue::Unknown, FilterValue::Date)
             }
         }
     }
@@ -86,9 +86,26 @@ impl SearchNames<'_> {
             FilterValue::Channel(id)
         };
         match readable {
-            Some(text) if self.resolve(keyword, &unquote(&text), scope) == expected => text,
+            Some(text) if self.resolves_to(keyword, &unquote(&text), scope, &expected) => text,
             _ => id.to_string(),
         }
+    }
+
+    /// Whether `value` reads as `expected` alone (people and channels need
+    /// no calendar).
+    fn resolves_to(
+        &self,
+        keyword: SearchKeyword,
+        value: &str,
+        scope: SearchScope,
+        expected: &FilterValue,
+    ) -> bool {
+        let resolved = if keyword.takes_person() {
+            self.person(value, scope)
+        } else {
+            self.channel(value)
+        };
+        resolved == *expected
     }
 
     fn person(&self, raw: &str, scope: SearchScope) -> FilterValue {

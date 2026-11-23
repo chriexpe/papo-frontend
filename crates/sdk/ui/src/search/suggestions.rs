@@ -71,7 +71,7 @@ pub fn search_suggestions(
                 .filter_map(|channel| self::channel(&names, channel.id, scope));
             ranked(channels, &typed)
         }
-        // Dates are typed (YYYY-MM-DD); the client says how.
+        // Dates have their own list (`search_date_suggestions`).
         SearchKeyword::Before | SearchKeyword::After | SearchKeyword::During => Vec::new(),
         SearchKeyword::Has => HasKind::ALL
             .into_iter()

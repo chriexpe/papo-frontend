@@ -116,10 +116,10 @@ pub use notifications::{
 mod scoped_request;
 mod search;
 pub use search::{
-    DetachedMessageRequest, DetachedMessageUpdate, FilterValue, HasKind, LocalDays,
-    MAX_SEARCH_BYTES, MAX_SEARCH_CANDIDATES, SearchCursor, SearchDraft, SearchError, SearchFilter,
-    SearchHit, SearchKeyword, SearchNames, SearchPage, SearchProblem, SearchQuery,
-    SearchRequestHandle, SearchScope, SearchTarget,
+    DateOrder, DateWords, DetachedMessageRequest, DetachedMessageUpdate, FilterValue, HasKind,
+    LocalDays, MAX_SEARCH_BYTES, MAX_SEARCH_CANDIDATES, SearchCalendar, SearchCursor, SearchDate,
+    SearchDraft, SearchError, SearchFilter, SearchHit, SearchKeyword, SearchNames, SearchPage,
+    SearchProblem, SearchQuery, SearchRequestHandle, SearchScope, SearchTarget, parse_search_date,
 };
 mod session;
 mod session_pool;
