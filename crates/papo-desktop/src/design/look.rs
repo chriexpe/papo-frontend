@@ -68,6 +68,8 @@ pub(crate) struct LookSpec {
     pub(crate) font_family: Option<&'static str>,
 }
 
+/// How glass saturates what it blurs (§5: 1.5).
+const GLASS_SATURATE: f32 = 1.5;
 /// The opacity of a glass pill's tint over what it blurs, per theme in
 /// `Theme::ALL`'s order (the mock's values).
 const GLASS_TINT_ALPHA: [f32; 4] = [0.82, 0.74, 0.80, 0.84];
@@ -161,6 +163,7 @@ impl Look {
                 .position(|theme| *theme == self.theme)
                 .unwrap_or_default();
             el.backdrop_blur(self.glass.blur_pt)
+                .backdrop_saturate(GLASS_SATURATE)
                 .fill(colour.alpha(GLASS_TINT_ALPHA[index]))
         } else {
             el.fill(colour)
