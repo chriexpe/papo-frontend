@@ -49,6 +49,16 @@ impl Shell {
         if window_key(key, tx) {
             return true;
         }
+        // The sheet and Ctrl+K draw over the running app only, and never
+        // take the keyboard from a composition in progress.
+        let running = matches!(&self.stage, super::Stage::Running { flow: None, .. });
+        let composing = self
+            .composer
+            .shown()
+            .is_some_and(|(_, draft)| draft.edit.is_composing());
+        if !running || composing {
+            return false;
+        }
         if is_shortcuts_key(key) {
             self.toggle_shortcuts(tx);
             return true;
@@ -78,7 +88,7 @@ impl Shell {
             return;
         }
         self.shortcuts_open = true;
-        tx.focus(crate::shortcuts_sheet::SHORTCUTS_KEY, true);
+        tx.focus(crate::shortcuts_sheet::SHORTCUTS_ROWS_KEY, true);
     }
 
     /// Escape, or the sheet's key again.
@@ -140,7 +150,7 @@ impl Shell {
 
     /// Alt+⇧↑ / Alt+⇧↓: the previous or next unread channel, round the
     /// ends; nothing moves when no other is unread.
-    fn unread_step_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+    pub(super) fn unread_step_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
         let mods = key.mods;
         let alt_shift = mods.alt && mods.shift && !mods.cmd && !mods.ctrl && !mods.logo;
         let by = match key.key {
@@ -158,7 +168,7 @@ impl Shell {
     }
 
     /// Alt+← / Alt+→: back and forward through this server's channels.
-    fn history_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+    pub(super) fn history_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
         let mods = key.mods;
         let alt_alone = mods.alt && !mods.shift && !mods.cmd && !mods.ctrl && !mods.logo;
         let forward = match key.key {

@@ -350,7 +350,7 @@
   "shortcuts.reply_edit_pin": "Reply / edit yours / pin",
   "shortcuts.react_top": "React with your top three",
   "shortcuts.add_reaction": "Add a reaction (the strip)",
-  "shortcuts.copy_select": "Copy text / select it",
+  "shortcuts.copy_select": "Copy its text",
   "shortcuts.delete": "Delete (asks first)",
   "shortcuts.back_to_composer": "Back to the composer",
   "shortcuts.menus": "Menus, lists and strips",

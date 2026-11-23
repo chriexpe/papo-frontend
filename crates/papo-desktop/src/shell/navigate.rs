@@ -21,6 +21,16 @@ impl Shell {
     /// Takes the SDK's newest server list, and decodes the icons that
     /// changed.
     pub(crate) fn servers_changed(&mut self, list: ServerList, tx: &mut Tx) -> bool {
+        let shown = |list: &ServerList| -> Vec<_> {
+            list.servers
+                .iter()
+                .filter_map(|server| server.account.as_ref().map(|account| account.id))
+                .collect()
+        };
+        // Ctrl+K's places belong to the accounts shown when it opened.
+        if shown(self.nav.servers()) != shown(&list) {
+            self.jump_accounts_changed();
+        }
         if let Some(images) = &self.images {
             self.icons
                 .retain(|id, _| list.get(*id).is_some_and(|server| server.icon.is_some()));

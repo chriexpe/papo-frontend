@@ -75,9 +75,20 @@ impl Navigation {
         if self.pending_order.as_deref() == Some(list.order().as_slice()) {
             self.pending_order = None;
         }
+        let before = self.servers.clone();
         self.servers = list;
         let order = self.servers.order();
         self.channels.retain(|server, _| order.contains(server));
+        // A server keeps its history while it shows the same account: one
+        // removed, or showing another account, starts anew.
+        let shown = |list: &ServerList, server: ServerId| {
+            list.get(server)
+                .and_then(|entry| entry.account.as_ref().map(|account| account.id))
+        };
+        let servers = &self.servers;
+        self.history.retain(|server, _| {
+            servers.get(*server).is_some() && shown(&before, *server) == shown(servers, *server)
+        });
         if self
             .selected
             .is_none_or(|selected| !order.contains(&selected))

@@ -46,7 +46,7 @@ pub(super) fn view(shell: &Shell, palette: &Palette) -> Option<El> {
         .found
         .iter()
         .enumerate()
-        .map(|(index, target)| target_row(shell, target, index, index == jump.highlight, palette))
+        .map(|(index, target)| target_row(shell, target, index == jump.highlight, palette))
         .collect();
     let list = if rows.is_empty() {
         col().w_full().padding(SPACE_MD_PT).child(
@@ -108,13 +108,7 @@ pub(super) fn view(shell: &Shell, palette: &Palette) -> Option<El> {
 }
 
 /// One place: its kind, name and @username, its server, its badge.
-fn target_row(
-    shell: &Shell,
-    target: &JumpTarget,
-    index: usize,
-    chosen: bool,
-    palette: &Palette,
-) -> El {
+fn target_row(shell: &Shell, target: &JumpTarget, chosen: bool, palette: &Palette) -> El {
     let server = shell.navigation().servers().get(target.account.server());
     let server_name = server.map(|server| server.name.clone()).unwrap_or_default();
     let badge = badge_of(shell, target);
@@ -146,8 +140,10 @@ fn target_row(
         _ => server_name,
     };
     let spoken = format!("{}, {sub}", target.name);
+    let key = target_key(target);
+    let picked = key.clone();
     let line = row()
-        .key(target_key(target))
+        .key(key)
         .w_full()
         .h(DM_ROW_HEIGHT_PT)
         .px(SPACE_SM_PT)
@@ -156,7 +152,7 @@ fn target_row(
         .radius(RADIUS_CONTROL_PT)
         .role("option")
         .label(badge.label(&spoken))
-        .on_press_tx(move |shell: &mut Shell, tx| shell.jump_picked(index, tx))
+        .on_press_tx(move |shell: &mut Shell, tx| shell.jump_picked(&picked, tx))
         .child(lead)
         .child(
             col()

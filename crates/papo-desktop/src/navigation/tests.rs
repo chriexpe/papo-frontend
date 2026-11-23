@@ -196,3 +196,101 @@ fn the_open_accounts_close_when_another_server_is_selected_or_theirs_goes() {
     nav.select_server(id("Mirante"));
     assert!(!nav.accounts_open());
 }
+
+/// One server with `channels`, selected, the first channel showing.
+fn one_server(channels: &[&str]) -> Navigation {
+    let mut nav = Navigation::default();
+    nav.servers_changed(ServerList {
+        servers: vec![server("lumen", channels)],
+        direct: Badge::default(),
+        account_badges: std::collections::BTreeMap::new(),
+    });
+    nav
+}
+
+#[test]
+fn back_skips_a_channel_that_went_and_a_pick_clears_what_was_ahead() {
+    let mut nav = one_server(&["general", "media", "chat"]);
+    nav.select_channel("lumen-media");
+    nav.select_channel("lumen-chat");
+    nav.servers_changed(ServerList {
+        servers: vec![server("lumen", &["general", "chat"])],
+        direct: Badge::default(),
+        account_badges: std::collections::BTreeMap::new(),
+    });
+    assert_eq!(
+        nav.step_history(false).as_deref(),
+        Some("lumen-general"),
+        "media went"
+    );
+    assert_eq!(nav.step_history(true).as_deref(), Some("lumen-chat"));
+    nav.step_history(false);
+    nav.select_channel("lumen-chat");
+    assert_eq!(
+        nav.step_history(true),
+        None,
+        "the pick cleared what was ahead"
+    );
+}
+
+#[test]
+fn the_history_keeps_at_most_fifty_channels_behind() {
+    let names: Vec<String> = (0..60).map(|n| format!("c{n}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut nav = one_server(&refs);
+    for name in &names {
+        nav.select_channel(&format!("lumen-{name}"));
+    }
+    let mut steps = 0;
+    while nav.step_history(false).is_some() {
+        steps += 1;
+    }
+    assert_eq!(steps, 50);
+}
+
+#[test]
+fn another_account_on_the_server_starts_its_history_anew() {
+    let mut nav = one_server(&["general", "media"]);
+    nav.select_channel("lumen-media");
+    let mut switched = server("lumen", &["general", "media"]);
+    switched.account = Some(crate::server_list::AccountEntry {
+        id: AccountId::new(id("lumen"), papo_sdk::Uuid::from_u128(9)),
+        name: "Bia".to_owned(),
+        username: "bia".to_owned(),
+    });
+    nav.servers_changed(ServerList {
+        servers: vec![switched],
+        direct: Badge::default(),
+        account_badges: std::collections::BTreeMap::new(),
+    });
+    assert_eq!(nav.step_history(false), None);
+}
+
+#[test]
+fn no_other_unread_channel_or_a_voice_room_selected_steps_nowhere() {
+    let mut nav = one_server(&["general"]);
+    assert_eq!(
+        nav.unread_channel_beside(1),
+        None,
+        "one channel, nothing else unread"
+    );
+    let mut lumen = server("lumen", &["general", "media"]);
+    lumen.text_channels[1].badge = Badge::Unread;
+    lumen.voice_channels.push(ChannelEntry {
+        id: "lumen-hangout".to_owned(),
+        name: "hangout".to_owned(),
+        badge: Badge::default(),
+    });
+    nav.servers_changed(ServerList {
+        servers: vec![lumen],
+        direct: Badge::default(),
+        account_badges: std::collections::BTreeMap::new(),
+    });
+    assert_eq!(
+        nav.unread_channel_beside(-1),
+        Some("lumen-media"),
+        "round the start"
+    );
+    nav.select_channel("lumen-hangout");
+    assert_eq!(nav.unread_channel_beside(1), None);
+}

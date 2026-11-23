@@ -17,11 +17,17 @@ use crate::design::{
     RADIUS_POPUP_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, SPACE_XL_PT, SPACE_XXL_PT, TYPE_BODY,
     TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_DISPLAY, TYPE_SMALL,
 };
+mod rows;
+
+use rows::{Combo, Group, Shortcut, groups};
+
 use crate::shell::Shell;
 use crate::strings;
 
 /// The element key of the open sheet.
 pub(crate) const SHORTCUTS_KEY: &str = "shortcuts";
+/// The element key of its scrolling rows, which take the keyboard.
+pub(crate) const SHORTCUTS_ROWS_KEY: &str = "shortcuts-rows";
 
 /// The sheet's width, in points.
 const SHEET_WIDTH_PT: f32 = 720.0;
@@ -29,227 +35,6 @@ const SHEET_WIDTH_PT: f32 = 720.0;
 const KEYS_COLUMN_PT: f32 = 190.0;
 /// The tallest the sheet's rows grow before they scroll, in points.
 const SHEET_MAX_HEIGHT_PT: f32 = 560.0;
-
-/// Keys pressed together, cap by cap ("Ctrl", "K").
-type Combo = &'static [&'static str];
-
-/// One row: what it does, a note under it, then Papo's keys and the
-/// system's, each a list of alternatives.
-struct Shortcut {
-    action: &'static str,
-    note: Option<&'static str>,
-    papo: &'static [Combo],
-    system: &'static [Combo],
-}
-
-/// A group of rows under its title.
-struct Group {
-    title: &'static str,
-    rows: Vec<Shortcut>,
-}
-
-const fn row_of(
-    action: &'static str,
-    papo: &'static [Combo],
-    system: &'static [Combo],
-) -> Shortcut {
-    Shortcut {
-        action,
-        note: None,
-        papo,
-        system,
-    }
-}
-
-const fn noted(
-    action: &'static str,
-    note: &'static str,
-    papo: &'static [Combo],
-    system: &'static [Combo],
-) -> Shortcut {
-    Shortcut {
-        action,
-        note: Some(note),
-        papo,
-        system,
-    }
-}
-
-/// Every group, in the reference's order.
-fn groups() -> Vec<Group> {
-    vec![
-        anywhere(),
-        panels(),
-        composer(),
-        message(),
-        menus(),
-        window(),
-    ]
-}
-
-fn anywhere() -> Group {
-    Group {
-        title: strings::shortcuts_anywhere(),
-        rows: vec![
-            row_of(strings::shortcuts_jump(), &[&["Ctrl", "K"]], &[]),
-            row_of(
-                strings::shortcuts_server_number(),
-                &[&["Ctrl", "1 – 9"]],
-                &[],
-            ),
-            noted(
-                strings::shortcuts_server_step(),
-                strings::shortcuts_server_step_note(),
-                &[],
-                &[
-                    &["Ctrl", "Tab"],
-                    &["Ctrl", "⇧", "Tab"],
-                    &["Ctrl", "PgDn"],
-                    &["Ctrl", "PgUp"],
-                ],
-            ),
-            row_of(
-                strings::shortcuts_channel_step(),
-                &[&["Alt", "↑"], &["Alt", "↓"]],
-                &[],
-            ),
-            row_of(
-                strings::shortcuts_unread_step(),
-                &[&["Alt", "⇧", "↑"], &["Alt", "⇧", "↓"]],
-                &[],
-            ),
-            row_of(
-                strings::shortcuts_history(),
-                &[],
-                &[&["Alt", "←"], &["Alt", "→"]],
-            ),
-            row_of(strings::direct_title(), &[&["Ctrl", "⇧", "D"]], &[]),
-            row_of(
-                strings::shortcuts_title(),
-                &[&["Ctrl", "/"]],
-                &[&["F1"], &["Ctrl", "?"]],
-            ),
-            row_of(strings::shortcuts_region(), &[], &[&["F6"], &["⇧", "F6"]]),
-        ],
-    }
-}
-
-fn panels() -> Group {
-    Group {
-        title: strings::shortcuts_panels(),
-        rows: vec![
-            row_of(strings::search_title(), &[], &[&["Ctrl", "F"]]),
-            row_of(strings::pins_title(), &[&["Ctrl", "P"]], &[]),
-            row_of(strings::shortcuts_dm_profile(), &[&["Ctrl", "U"]], &[]),
-            row_of(strings::shortcuts_close_top(), &[], &[&["Esc"]]),
-        ],
-    }
-}
-
-fn composer() -> Group {
-    Group {
-        title: strings::shortcuts_composer(),
-        rows: vec![
-            noted(
-                strings::shortcuts_send(),
-                strings::shortcuts_send_note(),
-                &[&["Enter"]],
-                &[],
-            ),
-            row_of(strings::shortcuts_send_always(), &[&["Ctrl", "Enter"]], &[]),
-            noted(
-                strings::shortcuts_into_conversation(),
-                strings::shortcuts_into_conversation_note(),
-                &[&["Ctrl", "↑"]],
-                &[&["⇧", "Tab"], &["F6"]],
-            ),
-            noted(
-                strings::shortcuts_edit_newest(),
-                strings::shortcuts_field_empty(),
-                &[&["↑"]],
-                &[],
-            ),
-            row_of(strings::shortcuts_cancel_mode(), &[&["Esc"]], &[]),
-            row_of(
-                strings::shortcuts_bold_italic(),
-                &[],
-                &[&["Ctrl", "B"], &["Ctrl", "I"]],
-            ),
-            row_of(
-                strings::shortcuts_undo(),
-                &[],
-                &[&["Ctrl", "Z"], &["Ctrl", "⇧", "Z"]],
-            ),
-        ],
-    }
-}
-
-fn message() -> Group {
-    Group {
-        title: strings::shortcuts_message(),
-        rows: vec![
-            row_of(
-                strings::shortcuts_move(),
-                &[],
-                &[&["↑"], &["↓"], &["Home"], &["End"]],
-            ),
-            row_of(
-                strings::shortcuts_open_menu(),
-                &[&["Enter"]],
-                &[&["⇧", "F10"], &["Menu"]],
-            ),
-            row_of(
-                strings::shortcuts_reply_edit_pin(),
-                &[&["R"], &["E"], &["P"]],
-                &[],
-            ),
-            row_of(
-                strings::shortcuts_react_top(),
-                &[&["1"], &["2"], &["3"]],
-                &[],
-            ),
-            row_of(strings::shortcuts_add_reaction(), &[&["+"]], &[]),
-            row_of(
-                strings::shortcuts_copy_select(),
-                &[],
-                &[&["Ctrl", "C"], &["Ctrl", "A"]],
-            ),
-            row_of(strings::shortcuts_delete(), &[], &[&["Delete"]]),
-            row_of(strings::shortcuts_back_to_composer(), &[&["Esc"]], &[]),
-        ],
-    }
-}
-
-fn menus() -> Group {
-    Group {
-        title: strings::shortcuts_menus(),
-        rows: vec![
-            row_of(
-                strings::shortcuts_list_move(),
-                &[],
-                &[&["↑"], &["↓"], &["Home"], &["End"]],
-            ),
-            row_of(strings::shortcuts_letter(), &[], &[&["a – z"]]),
-            row_of(
-                strings::shortcuts_run(),
-                &[],
-                &[&["Enter"], &["Space"], &["→"]],
-            ),
-            row_of(strings::shortcuts_close_back(), &[], &[&["Esc"]]),
-        ],
-    }
-}
-
-fn window() -> Group {
-    Group {
-        title: strings::shortcuts_window(),
-        rows: vec![
-            row_of(strings::shortcuts_close_window(), &[], &[&["Ctrl", "W"]]),
-            row_of(strings::shortcuts_quit(), &[], &[&["Ctrl", "Q"]]),
-            row_of(strings::shortcuts_full_screen(), &[], &[&["F11"]]),
-        ],
-    }
-}
 
 /// The sheet over the dimmed app. Escape closes it.
 pub(crate) fn view(palette: &Palette) -> El {
@@ -270,8 +55,6 @@ pub(crate) fn view(palette: &Palette) -> El {
         .role("dialog")
         .label(strings::shortcuts_title())
         .modal(false, Shell::close_shortcuts)
-        .focusable(true)
-        .autofocus()
         .child(
             text(strings::shortcuts_title())
                 .font(TYPE_DISPLAY)
@@ -280,12 +63,17 @@ pub(crate) fn view(palette: &Palette) -> El {
                 .level(2),
         )
         .child(
+            // The keyboard sits on the rows, so ↑ ↓ and the page keys
+            // scroll them.
             col()
+                .key(SHORTCUTS_ROWS_KEY)
                 .w_full()
                 .max_h(SHEET_MAX_HEIGHT_PT)
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
+                .focusable(true)
+                .autofocus()
                 .child(body),
         );
     el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))

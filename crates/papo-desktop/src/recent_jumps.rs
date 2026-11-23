@@ -207,4 +207,19 @@ mod tests {
             "a removed account's are skipped"
         );
     }
+
+    #[test]
+    fn a_malformed_row_or_a_list_of_another_shape_reads_as_none() {
+        let mut prefs = Prefs::memory();
+        prefs
+            .set(
+                super::RECENT_JUMPS_KEY,
+                &vec![vec!["only", "three", "fields"]],
+            )
+            .unwrap();
+        assert_eq!(RecentJumps::read(prefs).targets(&[account()]).len(), 0);
+        let mut prefs = Prefs::memory();
+        prefs.set(super::RECENT_JUMPS_KEY, &42).unwrap();
+        assert_eq!(RecentJumps::read(prefs).targets(&[account()]).len(), 0);
+    }
 }

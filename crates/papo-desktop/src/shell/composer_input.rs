@@ -66,7 +66,16 @@ impl Shell {
             .composer
             .shown()
             .is_some_and(|(_, draft)| draft.edit.is_composing());
-        if self.picker_key(key, tx) || (!composing && self.channel_step_key(key, tx)) {
+        if self.picker_key(key, tx) {
+            return true;
+        }
+        // The editor would take Alt+arrows as word moves; these move between
+        // channels instead (`docs/design.md` §12).
+        let moved = !composing
+            && (self.channel_step_key(key, tx)
+                || self.unread_step_key(key, tx)
+                || self.history_key(key, tx));
+        if moved {
             return true;
         }
         let bare = !key.mods.ctrl && !key.mods.cmd && !key.mods.alt && !key.mods.shift;

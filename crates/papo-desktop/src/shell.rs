@@ -122,6 +122,8 @@ pub(crate) struct Shell {
     shortcuts_open: bool,
     /// Ctrl+K's field and what it finds, while it is open.
     jump: Option<jump::Jump>,
+    /// The last ask Ctrl+K's field sent; each takes the next.
+    jump_asks: u64,
     /// The last places Ctrl+K jumped to, remembered across launches.
     recent_jumps: crate::recent_jumps::RecentJumps,
     /// The New message picker's state, while it is open.
@@ -210,6 +212,7 @@ impl Default for Shell {
             pins_panel: None,
             shortcuts_open: false,
             jump: None,
+            jump_asks: 0,
             recent_jumps: crate::recent_jumps::RecentJumps::default(),
             dm_picker: None,
             search: None,

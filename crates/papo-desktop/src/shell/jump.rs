@@ -47,7 +47,8 @@ pub(crate) struct Jump {
     pub(crate) found: Vec<JumpTarget>,
     /// The highlighted row: what Enter jumps to.
     pub(crate) highlight: usize,
-    /// Each ask takes the next; only the newest answer counts.
+    /// The newest ask's number, from the shell's counter; only its answer
+    /// counts, whichever opening of the field asked.
     asked: u64,
 }
 
@@ -65,7 +66,7 @@ impl Shell {
             edit: TextEdit::new(""),
             found: self.places_to_start(),
             highlight: 0,
-            asked: 0,
+            asked: self.jump_asks,
         });
         tx.focus(JUMP_FIELD_KEY, true);
     }
@@ -92,18 +93,29 @@ impl Shell {
     /// The field changed: an empty one lists the places to start from, else
     /// the SDK is asked.
     pub(crate) fn jump_edited(&mut self, _tx: &mut Tx) {
-        let start = self.places_to_start();
+        let empty = self
+            .jump
+            .as_ref()
+            .is_some_and(|jump| jump.edit.text.trim().is_empty());
+        let start = if empty {
+            self.places_to_start()
+        } else {
+            Vec::new()
+        };
         let accounts = self.shown_accounts();
+        self.jump_asks += 1;
+        let asked = self.jump_asks;
         let Some(jump) = self.jump.as_mut() else {
             return;
         };
         jump.highlight = 0;
-        jump.asked += 1;
-        if jump.edit.text.trim().is_empty() {
-            jump.found = start;
+        jump.asked = asked;
+        // Until the answer comes, nothing to jump to: Enter waits for it.
+        jump.found = start;
+        if empty {
             return;
         }
-        let (asked, query) = (jump.asked, jump.edit.text.clone());
+        let query = jump.edit.text.clone();
         let Some(sdk) = &self.sdk else {
             return;
         };
@@ -156,8 +168,9 @@ impl Shell {
                 true
             }
             rune::Key::Enter if rows > 0 => {
-                let at = jump.highlight;
-                self.jump_picked(at, tx);
+                if let Some(target) = jump.found.get(jump.highlight).map(target_key) {
+                    self.jump_picked(&target, tx);
+                }
                 true
             }
             rune::Key::Escape => {
@@ -168,20 +181,27 @@ impl Shell {
         }
     }
 
-    /// Row `at` was picked: the field closes and the jump happens.
-    pub(crate) fn jump_picked(&mut self, at: usize, tx: &mut Tx) {
-        let Some(target) = self
-            .jump
-            .take()
-            .and_then(|jump| jump.found.get(at).cloned())
-        else {
+    /// The row keyed `picked` (by its target, as rows change while answers
+    /// arrive) was picked: the field closes and the jump happens, loading
+    /// the conversation once. The keyboard goes to its text field, if it
+    /// has one; a person's conversation takes it once it opens.
+    pub(crate) fn jump_picked(&mut self, picked: &str, tx: &mut Tx) {
+        let Some(target) = self.jump.take().and_then(|jump| {
+            jump.found
+                .into_iter()
+                .find(|target| target_key(target) == picked)
+        }) else {
             return;
         };
         self.recent_jumps.jumped(&target);
+        let server = target.account.server();
         match target.kind {
             JumpKind::Channel { channel } => {
-                self.select_server(target.account.server(), tx);
-                self.select_channel(&channel.to_string(), tx);
+                self.worked_outside();
+                self.awaited_dm = None;
+                self.nav.select_server(server);
+                self.nav.select_channel(&channel.to_string());
+                self.sync_timeline(Some(tx));
             }
             JumpKind::Direct { channel, peer } => {
                 let row = self
@@ -189,20 +209,33 @@ impl Shell {
                     .iter()
                     .find(|row| row.id.account == target.account && row.id.channel == channel)
                     .cloned();
-                self.select_direct(tx);
-                match row {
-                    Some(row) => self.pick_dm(row, tx),
-                    // Closed since: messaging them reopens it.
-                    None => self.open_dm(target.account, peer),
-                }
+                let Some(row) = row else {
+                    // Closed since: messaging them reopens it, and it takes
+                    // the keyboard once it shows.
+                    self.select_direct(tx);
+                    self.open_dm(target.account, peer);
+                    return;
+                };
+                self.pick_dm(row, tx);
             }
             JumpKind::Person { user } => {
                 self.select_direct(tx);
                 self.open_dm(target.account, user);
+                return;
             }
-            JumpKind::Server => self.select_server(target.account.server(), tx),
+            JumpKind::Server => self.select_server(server, tx),
         }
-        tx.focus(COMPOSER_KEY, true);
+        let writable = self.composer.shown().is_some() && self.picked_dm_access().is_none();
+        if writable {
+            tx.focus(COMPOSER_KEY, true);
+        }
+    }
+
+    /// The shown accounts changed (a switch, a sign-out, a server added or
+    /// removed): an open field's places may belong to an account no longer
+    /// shown, so it closes.
+    pub(super) fn jump_accounts_changed(&mut self) {
+        self.jump = None;
     }
 
     /// Each server's shown account, in the rail's order.
@@ -220,17 +253,43 @@ impl Shell {
     /// once.
     fn places_to_start(&self) -> Vec<JumpTarget> {
         let accounts = self.shown_accounts();
-        let mut places = self.recent_jumps.targets(&accounts);
+        let mut places: Vec<JumpTarget> = self
+            .recent_jumps
+            .targets(&accounts)
+            .into_iter()
+            .filter(|target| self.still_there(target))
+            .collect();
         places.truncate(RECENT_JUMPS);
         let mut unread: Vec<(Badge, JumpTarget)> = self.unread_places();
         // Mentions first, then the rest, keeping the rail's order.
         unread.sort_by_key(|(badge, _)| badge.mentions().is_none());
         places.extend(unread.into_iter().map(|(_, target)| target));
         places.extend(self.recent_places());
+        // A person and their conversation are one place.
         let mut seen = BTreeSet::new();
-        places.retain(|target| seen.insert(target_key(target)));
+        places.retain(|target| seen.insert(place_identity(target)));
         places.truncate(EMPTY_LIST_ROWS);
         places
+    }
+
+    /// Whether a remembered jump still goes somewhere: its channel is still
+    /// there, its conversation still listed, its person not blocked.
+    fn still_there(&self, target: &JumpTarget) -> bool {
+        let Some(server) = self.nav.servers().get(target.account.server()) else {
+            return false;
+        };
+        match target.kind {
+            JumpKind::Channel { channel } => {
+                let id = channel.to_string();
+                server.text_channels.iter().any(|entry| entry.id == id)
+            }
+            JumpKind::Direct { channel, .. } => self
+                .direct
+                .iter()
+                .any(|row| row.id.account == target.account && row.id.channel == channel),
+            JumpKind::Person { user } => !server.blocked.iter().any(|blocked| blocked.id == user),
+            JumpKind::Server => true,
+        }
     }
 
     /// Every unread channel and conversation, in the rail's order.
@@ -304,6 +363,19 @@ fn dm_place(row: &papo_sdk_ui::DirectMessageItem) -> JumpTarget {
         },
         name: name.to_owned(),
         username: row.username.clone(),
+    }
+}
+
+/// What makes two places one: a person and their conversation are the
+/// same place, on the same account.
+fn place_identity(target: &JumpTarget) -> String {
+    match target.kind {
+        JumpKind::Direct { peer: user, .. } | JumpKind::Person { user } => format!(
+            "person-{}-{}-{user}",
+            target.account.server(),
+            target.account.user()
+        ),
+        _ => target_key(target),
     }
 }
 

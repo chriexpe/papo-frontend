@@ -5,9 +5,11 @@
 
 use rune::{Key, KeyEvent, Mods, Runtime};
 
+use super::composer::{channel_id, writing};
 use super::navigation::{entry, focused, named};
 use super::*;
 use crate::badges::Badge;
+use crate::composer::COMPOSER_KEY;
 use crate::server_list::ServerList;
 
 fn key(rt: &mut Runtime<Shell>, key: Key, mods: Mods) {
@@ -182,7 +184,7 @@ fn jump_rows(rt: &Runtime<Shell>) -> Vec<String> {
 }
 
 #[test]
-fn ctrl_k_lists_unread_places_first_and_a_jump_shows_the_channel_with_the_keyboard_in_it() {
+fn ctrl_k_lists_unread_places_first_and_a_jump_shows_the_channel_and_comes_first_next_time() {
     let mut rt = three_servers();
     // Real channel ids are UUIDs.
     let id = |n: u128| Uuid::from_u128(0x6100 + n).to_string();
@@ -243,4 +245,42 @@ fn ctrl_k_opens_centred_near_the_top_of_the_window() {
         card[1] < window[1] + window[3] / 3.0,
         "near the top: {card:?} in {window:?}"
     );
+}
+
+#[test]
+fn the_unread_and_history_keys_work_from_the_text_field() {
+    let mut rt = writing("");
+    let mut servers = rt.state.navigation().servers().servers.clone();
+    servers[0].text_channels[1].badge = Badge::Unread;
+    rt.update(move |shell, tx| {
+        shell.servers_changed(
+            ServerList {
+                servers,
+                direct: Badge::default(),
+                account_badges: std::collections::BTreeMap::new(),
+            },
+            tx,
+        );
+        tx.focus(COMPOSER_KEY, true);
+    });
+    rt.frame(FRAME_S);
+    let first = channel(&rt);
+    key(&mut rt, Key::Down, alt(true));
+    assert_eq!(
+        channel(&rt),
+        Some(channel_id(2)),
+        "the editor's word move gave way"
+    );
+    key(&mut rt, Key::Left, alt(false));
+    assert_eq!(channel(&rt), first, "back, from the field too");
+}
+
+#[test]
+fn an_open_sheet_keeps_the_app_keys_for_itself() {
+    let mut rt = three_servers();
+    key(&mut rt, Key::Command('/'), ctrl());
+    key(&mut rt, Key::Command('2'), ctrl());
+    assert_eq!(selected(&rt).as_deref(), Some("Lumen"), "Ctrl+2 waited");
+    key(&mut rt, Key::Command('k'), ctrl());
+    assert!(rt.state.jump.is_none(), "no second overlay");
 }
