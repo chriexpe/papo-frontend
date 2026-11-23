@@ -102,6 +102,9 @@ pub(crate) struct Shell {
     awaited_dm: Option<papo_sdk_ui::DirectMessageId>,
     /// Whether a DM shows its profile pane, remembered across launches.
     layout: crate::layout_prefs::LayoutPrefs,
+    /// The people this run has seen a conversation with, by account: an
+    /// unblock reopens it (`set_blocked`).
+    dm_peers: std::collections::BTreeSet<(AccountId, papo_sdk::Uuid)>,
     /// What the backend said about conversations that left the list.
     dm_access: std::collections::BTreeMap<papo_sdk_ui::DirectMessageId, direct::Asked>,
     /// The notice pill, while one shows.
@@ -178,6 +181,7 @@ impl Default for Shell {
             activity: HashMap::new(),
             direct: direct_list::DirectRows::new(),
             awaited_dm: None,
+            dm_peers: std::collections::BTreeSet::new(),
             layout: crate::layout_prefs::LayoutPrefs::default(),
             dm_access: std::collections::BTreeMap::new(),
             notice: None,

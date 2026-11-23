@@ -208,7 +208,12 @@ impl Shell {
         });
     }
 
+    /// Blocks or unblocks `user` for `account`, at once. The backend hides
+    /// a conversation from both people when one blocks, and unblocking
+    /// leaves it hidden, so an unblock reopens a conversation this run has
+    /// seen with them (the backend's own unhide, as Message is).
     pub(crate) fn set_blocked(&mut self, account: AccountId, user: Uuid, blocked: bool) {
+        let reopen = !blocked && self.dm_peers.contains(&(account, user));
         let Some(sdk) = &self.sdk else {
             return;
         };
@@ -222,27 +227,34 @@ impl Shell {
                     } else {
                         operations.unblock_user(user).await
                     };
-                    sent.map(|_| ()).map_err(|error| error.to_string())
+                    let sent = sent.map(|_| ()).map_err(|error| error.to_string());
+                    if sent.is_ok()
+                        && reopen
+                        && let Err(error) = operations.open_direct_conversation(user).await
+                    {
+                        log::warn!("an unblocked conversation was not reopened: {error}");
+                    }
+                    sent
                 }
                 Err(error) => Err(error.to_string()),
             };
-            if done.is_ok() {
-                updates.send(move |shell| {
+            match done {
+                Ok(()) => updates.send(move |shell| {
                     shell.blocks_changed(user);
                     true
-                });
-            }
-            if let Err(error) = done {
-                log::warn!("a block was not changed: {error}");
-                let refusal = if blocked {
-                    Refusal::Block
-                } else {
-                    Refusal::Unblock
-                };
-                updates.send_tx(move |shell, tx| {
-                    shell.refuse(refusal, tx);
-                    true
-                });
+                }),
+                Err(error) => {
+                    log::warn!("a block was not changed: {error}");
+                    let refusal = if blocked {
+                        Refusal::Block
+                    } else {
+                        Refusal::Unblock
+                    };
+                    updates.send_tx(move |shell, tx| {
+                        shell.refuse(refusal, tx);
+                        true
+                    });
+                }
             }
         });
     }

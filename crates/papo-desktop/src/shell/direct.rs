@@ -44,6 +44,9 @@ impl Shell {
     /// changed.
     pub(crate) fn direct_posted(&mut self, rows: DirectRows, tx: &mut Tx) -> bool {
         self.nav.direct_changed(rows.iter());
+        // Remembered for an unblock, which reopens what a block hid.
+        self.dm_peers
+            .extend(rows.iter().map(|row| (row.id.account, row.user)));
         self.direct = rows;
         self.drop_unshown_dms();
         self.check_picked_dm();
