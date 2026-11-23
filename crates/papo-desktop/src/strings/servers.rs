@@ -54,11 +54,6 @@ pub(crate) fn account_row(name: &str, username: &str) -> String {
     template!("accounts.row", "name" => name, "username" => username)
 }
 
-/// "2 accounts", for the ⇄'s label when a server has more than one.
-pub(crate) fn account_count(count: u64) -> String {
-    plural!("accounts.count", count)
-}
-
 /// The switch's last row: another account on this server.
 pub(crate) fn add_account() -> &'static str {
     text!("accounts.add")
@@ -122,4 +117,9 @@ pub(crate) fn badge_count_more(count: u64) -> String {
 /// A row's or tile's name followed by what its badge says.
 pub(crate) fn badge_labelled(name: &str, badge: &str) -> String {
     template!("badge.labelled", "name" => name, "badge" => badge)
+}
+
+/// Direct's accounts list, grown from its ⇄: every account on every server.
+pub(crate) fn direct_accounts() -> &'static str {
+    text!("accounts.direct")
 }

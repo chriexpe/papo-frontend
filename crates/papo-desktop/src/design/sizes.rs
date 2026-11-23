@@ -54,10 +54,8 @@ pub(crate) const PILL_AVATAR_PT: f32 = 24.0;
 pub(crate) const PANE_PILL_HEIGHT_PT: f32 = 48.0;
 /// A pill's icon buttons (⇄, ⚙), square.
 pub(crate) const PILL_BUTTON_PT: f32 = 28.0;
-/// The account count on the server pill's ⇄: its height and least width.
-pub(crate) const ACCOUNT_COUNT_PT: f32 = 14.0;
-/// How far the account count sits out past the ⇄'s top-right corner.
-pub(crate) const ACCOUNT_COUNT_OVERHANG_PT: f32 = 4.0;
+/// How far ⇄'s unread marker sits out past its top-right corner.
+pub(crate) const CORNER_MARKER_OVERHANG_PT: f32 = 4.0;
 /// The width of the line between panes, in points.
 pub(crate) const PANE_EDGE_PT: f32 = 1.0;
 /// One row of a menu, in points tall.

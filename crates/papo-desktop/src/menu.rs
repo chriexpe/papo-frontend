@@ -245,6 +245,8 @@ pub(crate) struct OpenMenu {
     pub(crate) reactions: Option<ReactionsView>,
     /// The profile card it is, or turned into, while it shows one.
     pub(crate) card: Option<CardView>,
+    /// It is the New message picker (`Shell::dm_picker` holds its state).
+    pub(crate) people: bool,
 }
 
 /// The element key of the open menu.
@@ -277,6 +279,7 @@ impl OpenMenu {
             width_pt,
             reactions: None,
             card: None,
+            people: false,
         }
     }
 

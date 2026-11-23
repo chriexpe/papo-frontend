@@ -153,7 +153,7 @@ impl Shell {
         tx: &mut Tx,
     ) {
         match action {
-            PersonAction::Message => self.message_person(key, user),
+            PersonAction::Message => self.open_dm(key.account, user),
             PersonAction::CopyId => tx.copy(user.to_string()),
             PersonAction::Block => self.set_blocked(key.account, user, true),
             PersonAction::Unblock => self.set_blocked(key.account, user, false),
@@ -163,15 +163,16 @@ impl Shell {
         }
     }
 
-    /// Opens or reopens the direct conversation with `user`, and picks it
-    /// once the SDK's list holds it.
-    fn message_person(&mut self, key: TimelineKey, user: Uuid) {
+    /// Opens or reopens `account`'s direct conversation with `user`, and
+    /// picks it once the SDK's list holds it: a card's Message, a New
+    /// message pick.
+    pub(crate) fn open_dm(&mut self, account: AccountId, user: Uuid) {
         let Some(sdk) = &self.sdk else {
             return;
         };
         let updates = sdk.updates();
         sdk.run(move |client| async move {
-            let Ok(session) = client.session(key.account) else {
+            let Ok(session) = client.session(account) else {
                 return;
             };
             let operations = session.operations();
@@ -181,10 +182,7 @@ impl Shell {
                 .map(|receipt| Uuid::parse_str(&receipt.value.id).ok());
             let refusal = match opened {
                 Ok(Some(channel)) => {
-                    let id = DirectMessageId {
-                        account: key.account,
-                        channel,
-                    };
+                    let id = DirectMessageId { account, channel };
                     updates.send_tx(move |shell, tx| {
                         shell.await_dm(id, tx);
                         true

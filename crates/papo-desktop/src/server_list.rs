@@ -31,6 +31,10 @@ pub(crate) struct ServerList {
     /// The direct conversations' badge: each server's shown account's, as
     /// one (`ServerBadgesSnapshot::direct_messages`).
     pub(crate) direct: Badge,
+    /// Every saved account's badge, its channels and DMs together, shown
+    /// or not: the SDK keeps each account's session live. An account with
+    /// no open session has none.
+    pub(crate) account_badges: BTreeMap<AccountId, Badge>,
 }
 
 impl ServerList {
@@ -49,6 +53,7 @@ impl std::fmt::Debug for ServerList {
         f.debug_struct("ServerList")
             .field("servers", &self.servers.len())
             .field("direct", &self.direct)
+            .field("account_badges", &self.account_badges.len())
             .finish()
     }
 }
@@ -205,9 +210,14 @@ pub(crate) fn project(
             .map(|account| &account.id)
             .filter(|account| resources.contains_key(*account)),
     );
+    let account_badges = account_badges
+        .iter()
+        .map(|(account, badges)| (*account, Badge::of_aggregate(&badges.all)))
+        .collect();
     ServerList {
         servers,
         direct: Badge::of_aggregate(&direct),
+        account_badges,
     }
 }
 

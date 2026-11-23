@@ -15,11 +15,11 @@ use rune::{Color, El, Icon, Image, ScrollSpec, TextStyle, col, el, icon, row, te
 use crate::account_switch;
 use crate::badges::{Badge, mention_pill};
 use crate::design::{
-    ACCOUNT_COUNT_OVERHANG_PT, ACCOUNT_COUNT_PT, CHANNEL_ROW_HEIGHT_PT, FOCUS_RING_PT,
-    PANE_PILL_HEIGHT_PT, PILL_AVATAR_PT, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
-    RADIUS_CONTROL_PT, RADIUS_PILL_PT, ROW_ICON_PT, SIDEBAR_WIDTH_PT, SPACE_LG_PT, SPACE_MD_PT,
-    SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
-    TYPE_COUNT, TYPE_TITLE, UNREAD_DOT_PT,
+    CHANNEL_ROW_HEIGHT_PT, CORNER_MARKER_OVERHANG_PT, FOCUS_RING_PT, PANE_PILL_HEIGHT_PT,
+    PILL_AVATAR_PT, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT,
+    RADIUS_PILL_PT, ROW_ICON_PT, SIDEBAR_WIDTH_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT,
+    TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_TITLE,
+    UNREAD_DOT_PT,
 };
 use crate::icons::{GEAR, HASH, SPEAKER, SWITCH};
 use crate::navigation::Navigation;
@@ -53,8 +53,14 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, palette: 
         return pane;
     };
     let accounts_open = nav.accounts_open();
-    let server_row =
-        server_row(server, icons.get(&server.id), accounts_open, palette).key(SERVER_CARD_KEY);
+    let server_row = server_row(
+        server,
+        icons.get(&server.id),
+        accounts_open,
+        accounts_badge(nav, server),
+        palette,
+    )
+    .key(SERVER_CARD_KEY);
     let (head, grown) = if accounts_open {
         // The pill grows over the channels; the spacer holds its place, so
         // they stay where they were.
@@ -70,7 +76,7 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, palette: 
         .child(head)
         .child(channels(server, nav.selected_channel(), palette));
     if let Some(account) = &server.account {
-        pane = pane.child(account_pill(account, palette));
+        pane = pane.child(account_pill(account, None, palette));
     }
     // Last, so it draws over the channels and the account pill.
     if let Some(grown) = grown {
@@ -84,6 +90,7 @@ fn server_row(
     server: &ServerEntry,
     image: Option<&Image>,
     accounts_open: bool,
+    badge: Badge,
     palette: &Palette,
 ) -> El {
     let mut names = col().grow(1.0).min_w(0.0).child(
@@ -106,53 +113,75 @@ fn server_row(
     pill_row()
         .child(avatar(&server.name, image, palette))
         .child(names)
-        .child(switch_button(server, accounts_open, palette))
+        .child(switch_button(
+            SWITCH_ACCOUNT_KEY,
+            badge,
+            accounts_open,
+            Shell::toggle_accounts,
+            palette,
+        ))
         .child(options)
 }
 
-/// ⇄: opens the server's accounts, and closes them again while they show.
-/// With two or more accounts it carries their count.
-fn switch_button(server: &ServerEntry, accounts_open: bool, palette: &Palette) -> El {
-    let count = server.accounts.len();
-    let label = if count > 1 {
-        let spoken = strings::account_count(u64::try_from(count).unwrap_or(u64::MAX));
-        strings::badge_labelled(strings::switch_account(), &spoken)
-    } else {
-        strings::switch_account().to_owned()
-    };
-    let mut button = pill_button(SWITCH_ACCOUNT_KEY, &SWITCH, palette)
-        .label(label)
-        .expanded(accounts_open)
-        .on_press_tx(|shell: &mut Shell, tx| shell.toggle_accounts(tx));
-    if accounts_open {
+/// What the accounts on `server` have unread, all of them together: the
+/// marker on its ⇄.
+fn accounts_badge(nav: &Navigation, server: &ServerEntry) -> Badge {
+    let badges = &nav.servers().account_badges;
+    Badge::sum(
+        server
+            .accounts
+            .iter()
+            .filter_map(|account| badges.get(&account.id).copied()),
+    )
+}
+
+/// ⇄ (`key`): opens accounts and closes them again while they show,
+/// carrying `badge`, what those accounts have unread, on its corner.
+pub(crate) fn switch_button(
+    key: &'static str,
+    badge: Badge,
+    open: bool,
+    toggle: fn(&mut Shell, &mut rune::Tx),
+    palette: &Palette,
+) -> El {
+    let mut button = pill_button(key, &SWITCH, palette)
+        .label(badge.label(strings::switch_account()))
+        .expanded(open)
+        .on_press_tx(toggle);
+    if open {
         button = button.fill(palette.surface_selected);
-    } else if count > 1 {
-        button = button.child(account_count(count, palette));
+    } else if let Some(marker) = corner_marker(badge, palette) {
+        button = button.child(marker);
     }
     button
 }
 
-/// The accent badge on ⇄'s top-right corner.
-fn account_count(count: usize, palette: &Palette) -> El {
-    row()
-        .pin(
+/// What a badge shows on a button's top-right corner: the mention count,
+/// ringed in the pill's surface, else the unread dot.
+fn corner_marker(badge: Badge, palette: &Palette) -> Option<El> {
+    let pinned = |marker: El| {
+        marker.pin(
             None,
-            Some(-ACCOUNT_COUNT_OVERHANG_PT),
-            Some(-ACCOUNT_COUNT_OVERHANG_PT),
+            Some(-CORNER_MARKER_OVERHANG_PT),
+            Some(-CORNER_MARKER_OVERHANG_PT),
             None,
         )
-        .min_w(ACCOUNT_COUNT_PT)
-        .h(ACCOUNT_COUNT_PT)
-        .px(SPACE_SM_PT / 2.0)
-        .center()
-        .radius(ACCOUNT_COUNT_PT / 2.0)
-        .fill(palette.accent)
-        .a11y_hidden()
-        .child(
-            text(count.to_string())
-                .font(TYPE_COUNT)
-                .color(palette.accent_on),
+    };
+    if let Some(count) = badge.mentions() {
+        return Some(pinned(mention_pill(
+            count,
+            Some(palette.surface_pill),
+            palette,
+        )));
+    }
+    badge.is_unread().then(|| {
+        pinned(
+            el().size(UNREAD_DOT_PT, UNREAD_DOT_PT)
+                .radius(UNREAD_DOT_PT / 2.0)
+                .fill(palette.text_primary)
+                .a11y_hidden(),
         )
+    })
 }
 
 /// A square icon button on a pill: ⇄ or ⚙.
@@ -169,7 +198,9 @@ fn pill_button(key: &'static str, glyph: &'static Icon, palette: &Palette) -> El
         .child(icon(glyph, PILL_ICON_PT).color(palette.text_secondary))
 }
 
-fn account_pill(account: &AccountEntry, palette: &Palette) -> El {
+/// The account pill: the account's avatar, name and handle, then
+/// `trailing` at its end (Direct's ⇄; a server's settings later).
+pub(crate) fn account_pill(account: &AccountEntry, trailing: Option<El>, palette: &Palette) -> El {
     let names = col()
         .grow(1.0)
         .min_w(0.0)
@@ -189,7 +220,8 @@ fn account_pill(account: &AccountEntry, palette: &Palette) -> El {
         pill_row()
             .key("account")
             .child(avatar(&account.name, None, palette))
-            .child(names),
+            .child(names)
+            .children(trailing),
         palette,
     )
 }

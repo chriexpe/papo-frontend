@@ -1,5 +1,6 @@
 //! The shell's side of the account switch: opening and closing the server
-//! pill's accounts, making one the server's active account, and Add account.
+//! pill's accounts and Direct's (every server's), making one its server's
+//! active account, and Add account.
 //!
 //! What the switch shows is `account_switch`'s; which account is active is
 //! the SDK registry's. Switching asks the SDK and changes nothing here: the
@@ -10,7 +11,7 @@ use papo_sdk::AccountId;
 use rune::Tx;
 
 use super::Shell;
-use crate::account_switch::account_key;
+use crate::account_switch::{DIRECT_ACCOUNTS_KEY, account_key};
 use crate::channel_pane::SWITCH_ACCOUNT_KEY;
 use crate::sign_in::{Host, SignIn};
 
@@ -37,18 +38,42 @@ impl Shell {
         self.nav.close_accounts();
     }
 
-    /// A row: `account` becomes the selected server's active account, and
-    /// one that is signed out gets its sign-in screen. The keyboard goes
-    /// back to ⇄.
-    pub(crate) fn pick_account(&mut self, account: AccountId, tx: &mut Tx) {
-        self.nav.close_accounts();
-        tx.focus(SWITCH_ACCOUNT_KEY, false);
-        let Some(server) = self.nav.selected() else {
-            return;
-        };
-        if account.server() != server.id {
+    /// Direct's Accounts: every account on every server opens, with the
+    /// keyboard on the first shown one, or closes.
+    pub(crate) fn toggle_direct_accounts(&mut self, tx: &mut Tx) {
+        if self.nav.direct_accounts_open() {
+            self.close_accounts();
             return;
         }
+        let first_shown = self
+            .nav
+            .servers()
+            .servers
+            .iter()
+            .find_map(|server| server.account.as_ref().map(|account| account.id));
+        self.nav.open_direct_accounts();
+        if let Some(shown) = first_shown {
+            tx.focus(account_key(shown), false);
+        }
+    }
+
+    /// A row of either list: `account` becomes its server's active account,
+    /// and one that is signed out gets its sign-in screen. The keyboard goes
+    /// back to the button that opened the list.
+    pub(crate) fn pick_account(&mut self, account: AccountId, tx: &mut Tx) {
+        let from_direct = self.nav.direct_accounts_open();
+        self.nav.close_accounts();
+        tx.focus(
+            if from_direct {
+                DIRECT_ACCOUNTS_KEY
+            } else {
+                SWITCH_ACCOUNT_KEY
+            },
+            false,
+        );
+        let Some(server) = self.nav.servers().get(account.server()) else {
+            return;
+        };
         let already = server.account.as_ref().map(|shown| shown.id) == Some(account);
         // Its channels need a working session; without the screen the pane
         // would just go empty.

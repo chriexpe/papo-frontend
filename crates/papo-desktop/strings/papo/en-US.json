@@ -76,8 +76,6 @@
   "server_card.switch_account": "Switch account",
   "accounts.title": "ACCOUNTS ON {{server}}",
   "accounts.row": "{{name}}, @{{username}}",
-  "accounts.count.one": "{{count}} account",
-  "accounts.count.other": "{{count}} accounts",
   "accounts.add": "Add account",
   "timeline.label": "Messages",
   "timeline.today": "Today",
@@ -316,5 +314,10 @@
   "search.month_year": "{{month}} {{year}}",
   "search.year": "All of {{year}}",
   "search.date_order": "month_first",
-  "search.date_words": "en"
+  "search.date_words": "en",
+  "direct.new": "New message",
+  "direct.find": "Find someone",
+  "direct.find_none": "No one found",
+  "direct.find_list": "People",
+  "accounts.direct": "Accounts"
 }

@@ -66,8 +66,9 @@ impl Shell {
         self.pick_awaited_dm(tx);
     }
 
-    /// Picks the awaited conversation when the list holds it. Returns
-    /// whether it did.
+    /// Picks the awaited conversation when the list holds it, the
+    /// keyboard in its text field: it was opened to write in (a card's
+    /// Message, a New message pick). Returns whether it did.
     fn pick_awaited_dm(&mut self, tx: &mut Tx) -> bool {
         let Some(awaited) = &self.awaited_dm else {
             return false;
@@ -77,6 +78,7 @@ impl Shell {
         };
         self.awaited_dm = None;
         self.pick_dm(row, tx);
+        tx.focus(crate::composer::COMPOSER_KEY, true);
         true
     }
 

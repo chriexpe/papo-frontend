@@ -44,6 +44,8 @@ pub(crate) struct Navigation {
     pub(crate) menu: Option<OpenMenu>,
     /// The server whose accounts are open: its pill grown from ⇄.
     accounts: Option<ServerId>,
+    /// Whether Direct's accounts are open: every account on every server.
+    direct_accounts: bool,
     /// The server whose removal waits for the person to confirm.
     pub(crate) removing: Option<ServerId>,
 }
@@ -219,6 +221,18 @@ impl Navigation {
 
     pub(crate) fn close_accounts(&mut self) {
         self.accounts = None;
+        self.direct_accounts = false;
+    }
+
+    /// Whether Direct's accounts are open.
+    pub(crate) fn direct_accounts_open(&self) -> bool {
+        self.direct_accounts && self.direct_shown()
+    }
+
+    /// Opens Direct's accounts, closing the other overlays.
+    pub(crate) fn open_direct_accounts(&mut self) {
+        self.dismiss_overlays();
+        self.direct_accounts = true;
     }
 
     /// The selected server's channel: the one picked, else its first text
@@ -306,6 +320,7 @@ impl Navigation {
         self.drag = None;
         self.menu = None;
         self.accounts = None;
+        self.direct_accounts = false;
         self.removing = None;
     }
 

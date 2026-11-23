@@ -3,7 +3,7 @@
 
 use rune::accesskit::Action;
 
-use super::navigation::{ana, click, entry, focused, named, with_servers};
+use super::navigation::{ana, click, entry, focused, named};
 use super::*;
 use crate::account_switch::{ACCOUNTS_KEY, ADD_ACCOUNT_KEY, account_key};
 use crate::channel_pane::SWITCH_ACCOUNT_KEY;
@@ -28,6 +28,7 @@ fn two_accounts() -> Runtime<Shell> {
             ServerList {
                 servers: vec![lumen],
                 direct: crate::badges::Badge::default(),
+                account_badges: std::collections::BTreeMap::new(),
             },
             tx,
         );
@@ -37,16 +38,29 @@ fn two_accounts() -> Runtime<Shell> {
 }
 
 #[test]
-fn with_two_accounts_the_switch_says_how_many() {
-    let rt = two_accounts();
+fn the_switch_carries_what_the_servers_accounts_have_unread() {
+    let mut rt = two_accounts();
+    assert!(tree(&rt).contains("\"Switch account\""), "nothing unread");
+    let lumen = rt.state.navigation().servers().servers.clone();
+    rt.update(move |shell, tx| {
+        shell.servers_changed(
+            ServerList {
+                servers: lumen,
+                direct: crate::badges::Badge::default(),
+                account_badges: std::collections::BTreeMap::from([(
+                    bia().id,
+                    crate::badges::Badge::new(Some(true), papo_sdk::UnreadCount::Exact(3)),
+                )]),
+            },
+            tx,
+        );
+    });
+    rt.frame(FRAME_S);
     assert!(
-        tree(&rt).contains("Switch account, 2 accounts"),
+        tree(&rt).contains("Switch account, 3 mentions"),
         "{}",
         tree(&rt)
     );
-    let single = with_servers();
-    assert!(!tree(&single).contains("2 accounts"));
-    assert!(tree(&single).contains("\"Switch account\""));
 }
 
 #[test]

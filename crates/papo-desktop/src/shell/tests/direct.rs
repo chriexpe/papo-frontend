@@ -7,7 +7,7 @@ use std::sync::Arc;
 use papo_sdk::{Generation, Presence, PresenceStatus};
 use papo_sdk_ui::{AccountActivity, DirectMessageId, DirectMessageItem, TypingItem};
 
-use super::navigation::{ana, click, entry, named, with_servers};
+use super::navigation::{ana, click, entry, focused, named, with_servers};
 use super::replying::{lia, resources_owned_by};
 use super::*;
 use crate::direct_list::DirectRows;
@@ -158,7 +158,7 @@ fn delete_on_a_row_closes_it_and_a_picked_one_is_no_longer_picked() {
 }
 
 #[test]
-fn a_conversation_a_card_opened_is_picked_once_the_list_holds_it() {
+fn a_conversation_a_card_opened_is_picked_once_the_list_holds_it_with_the_keyboard_in_it() {
     let mut rt = with_servers();
     let row = dm(7, lia(), "Lia", "Lumen");
     let id = row.id.clone();
@@ -177,6 +177,12 @@ fn a_conversation_a_card_opened_is_picked_once_the_list_holds_it() {
         .map(|picked| picked.id.clone());
     assert_eq!(picked, Some(dm(7, lia(), "Lia", "Lumen").id.clone()));
     assert!(rt.state.navigation().direct_shown());
+    rt.frame(FRAME_S);
+    assert_eq!(
+        focused(&rt).as_deref(),
+        Some(COMPOSER_KEY),
+        "opened to write in: the keyboard is in its text field"
+    );
 }
 
 #[test]
@@ -290,6 +296,7 @@ fn an_account_switch_drops_the_other_accounts_conversation() {
             crate::server_list::ServerList {
                 servers: vec![lumen, entry("Mirante", &["avisos"])],
                 direct: crate::badges::Badge::default(),
+                account_badges: BTreeMap::new(),
             },
             tx,
         );
