@@ -313,7 +313,7 @@ fn closed_badge_watch_and_registry_shutdown_clear_retained_totals() {
 }
 
 #[test]
-fn direct_messages_join_each_servers_active_account_and_stay_a_lower_bound_when_one_is() {
+fn direct_messages_join_the_named_accounts_and_stay_a_lower_bound_when_one_is_unknown() {
     let aggregate = |mention_count, has_unread| {
         Arc::new(AccountBadges {
             all: BadgeAggregate::default(),
@@ -323,41 +323,40 @@ fn direct_messages_join_each_servers_active_account_and_stay_a_lower_bound_when_
             },
         })
     };
-    let server = |address: &str| ServerAddress::parse(address).unwrap().id();
+    let server = ServerAddress::parse("https://one.invalid").unwrap().id();
+    let account = |user| AccountId::new(server, Uuid::from_u128(user));
     let mut snapshot = ServerBadgesSnapshot::default();
     assert_eq!(
-        snapshot.direct_messages(),
+        snapshot.direct_messages([]),
         BadgeAggregate {
             mention_count: UnreadCount::Exact(0),
             has_unread: Some(false),
         },
-        "no server: nothing unread, exactly"
+        "no account: nothing unread, exactly"
     );
-    snapshot.servers.insert(
-        server("https://one.invalid"),
-        aggregate(UnreadCount::Exact(2), Some(false)),
-    );
-    snapshot.servers.insert(
-        server("https://two.invalid"),
-        aggregate(UnreadCount::Exact(3), Some(true)),
-    );
+    snapshot
+        .accounts
+        .insert(account(1), aggregate(UnreadCount::Exact(2), Some(false)));
+    snapshot
+        .accounts
+        .insert(account(2), aggregate(UnreadCount::Exact(3), Some(true)));
+    snapshot
+        .accounts
+        .insert(account(3), aggregate(UnreadCount::Exact(40), Some(true)));
     assert_eq!(
-        snapshot.direct_messages(),
+        snapshot.direct_messages(&[account(1), account(2)]),
         BadgeAggregate {
             mention_count: UnreadCount::Exact(5),
             has_unread: Some(true),
-        }
-    );
-    snapshot.servers.insert(
-        server("https://three.invalid"),
-        aggregate(UnreadCount::AtLeast(1), None),
+        },
+        "only the named accounts"
     );
     assert_eq!(
-        snapshot.direct_messages(),
+        snapshot.direct_messages(&[account(1), account(9)]),
         BadgeAggregate {
-            mention_count: UnreadCount::AtLeast(6),
-            has_unread: Some(true),
+            mention_count: UnreadCount::AtLeast(2),
+            has_unread: None,
         },
-        "one unread part settles unread; one partial count makes the sum a lower bound"
+        "an account without badges is unknown"
     );
 }

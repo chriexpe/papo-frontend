@@ -25,6 +25,7 @@ pub struct TypingItem {
 
 /// The mark a person's presence draws, a shape first and a colour second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PresenceMark {
     /// Connected; also a backend status this SDK does not know yet, which still means connected.
     Available,
@@ -37,7 +38,7 @@ pub enum PresenceMark {
 }
 
 /// An account's current live activity.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountActivity {
     /// Connection owning these entries.
     pub generation: Generation,
@@ -84,7 +85,8 @@ impl AccountActivity {
 pub struct ActivitySubscription {
     /// Current view at subscription capture.
     pub snapshot: AccountActivity,
-    /// Views after any relevant live/resource/connection change; ends on revocation.
+    /// Views after any live/resource/connection change that changes the view; ends on
+    /// revocation.
     pub stream: Pin<Box<dyn Stream<Item = AccountActivity> + Send>>,
 }
 
@@ -122,22 +124,30 @@ impl ActivityService {
         let status = *connection.borrow_and_update();
         let snapshot = project(&self.session, &live, &image, status);
         let session = self.session.clone();
+        let last = snapshot.clone();
         let changes = stream::unfold(
-            (activity, resources, connection, session),
-            move |(mut activity, mut resources, mut connection, session)| async move {
-                tokio::select! {
-                    result = activity.changed() => result.ok()?,
-                    result = resources.changed() => result.ok()?,
-                    result = connection.changed() => result.ok()?,
+            (activity, resources, connection, session, last),
+            move |(mut activity, mut resources, mut connection, session, mut last)| async move {
+                // Most resource changes (a message, a channel) change no one's activity:
+                // only a different view is published.
+                loop {
+                    tokio::select! {
+                        result = activity.changed() => result.ok()?,
+                        result = resources.changed() => result.ok()?,
+                        result = connection.changed() => result.ok()?,
+                    }
+                    if session.is_closed() {
+                        return None;
+                    }
+                    let live = activity.borrow_and_update().clone();
+                    let image = Arc::clone(&resources.borrow_and_update());
+                    let status = *connection.borrow_and_update();
+                    let view = project(&session, &live, &image, status);
+                    if view != last {
+                        last = view.clone();
+                        return Some((view, (activity, resources, connection, session, last)));
+                    }
                 }
-                if session.is_closed() {
-                    return None;
-                }
-                let live = activity.borrow_and_update().clone();
-                let image = Arc::clone(&resources.borrow_and_update());
-                let status = *connection.borrow_and_update();
-                let view = project(&session, &live, &image, status);
-                Some((view, (activity, resources, connection, session)))
             },
         );
         ActivitySubscription {

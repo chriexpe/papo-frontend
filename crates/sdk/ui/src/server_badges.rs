@@ -46,11 +46,24 @@ pub struct ServerBadgesSnapshot {
 }
 
 impl ServerBadgesSnapshot {
-    /// Each server's active account's direct conversations as one: what a cross-server Direct
-    /// entry shows. Unknown parts keep it a lower bound, as in one account's aggregate.
+    /// `accounts`' direct conversations as one: what a cross-server Direct entry shows for
+    /// the accounts its list holds. An account without badges (its session closed) is an
+    /// unknown part; unknown parts keep it a lower bound, as in one account's aggregate.
     #[must_use]
-    pub fn direct_messages(&self) -> BadgeAggregate {
-        projection::combine(self.servers.values().map(|account| &account.dms))
+    pub fn direct_messages<'a>(
+        &self,
+        accounts: impl IntoIterator<Item = &'a AccountId>,
+    ) -> BadgeAggregate {
+        let unknown = BadgeAggregate::default();
+        let parts: Vec<&BadgeAggregate> = accounts
+            .into_iter()
+            .map(|account| {
+                self.accounts
+                    .get(account)
+                    .map_or(&unknown, |badges| &badges.dms)
+            })
+            .collect();
+        projection::combine(parts.into_iter())
     }
 }
 
