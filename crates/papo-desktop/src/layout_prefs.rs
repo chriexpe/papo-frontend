@@ -48,6 +48,7 @@ impl LayoutPrefs {
     /// keeps it for this run.
     pub(crate) fn set_dm_profile(&mut self, shown: bool) {
         self.dm_profile = shown;
+        crate::device_settings::reload(&mut self.prefs);
         if let Err(error) = self.prefs.set(DM_PROFILE_KEY, &shown) {
             log::warn!("the profile pane's choice was not saved: {error}");
         }

@@ -8,7 +8,7 @@ use papo_sdk::{Generation, Presence, PresenceStatus};
 use papo_sdk_ui::{AccountActivity, DirectMessageId, DirectMessageItem, TypingItem};
 
 use super::navigation::{ana, click, entry, named, with_servers};
-use super::replying::{conversation, lia, resources_owned_by};
+use super::replying::{lia, resources_owned_by};
 use super::*;
 use crate::direct_list::DirectRows;
 use crate::direct_pane::dm_row_key;
@@ -155,54 +155,6 @@ fn delete_on_a_row_closes_it_and_a_picked_one_is_no_longer_picked() {
     rt.frame(FRAME_S);
     press(&mut rt, Key::Delete);
     assert!(rt.state.navigation().picked_dm().is_none());
-}
-
-/// `account`'s people's activity with `typists` typing in `channel`.
-fn typing(rt: &mut Runtime<Shell>, channel: Uuid, typists: &[(Uuid, Option<&str>)]) {
-    let items = typists
-        .iter()
-        .map(|(user, phrase)| TypingItem {
-            user: *user,
-            nickname: None,
-            phrase: phrase.map(str::to_owned),
-        })
-        .collect();
-    let activity = AccountActivity {
-        generation: Generation::for_test(1),
-        live: true,
-        presence: BTreeMap::new(),
-        typing: BTreeMap::from([(channel, items)]),
-    };
-    let account = rt.state.tabs.shown().unwrap().key.account;
-    rt.update(move |shell, tx| {
-        shell.activity_posted(account, Posted::People(Arc::new(activity)), tx);
-    });
-    rt.frame(FRAME_S);
-}
-
-fn typing_line(rt: &Runtime<Shell>) -> Option<String> {
-    let line = rt
-        .elements()
-        .into_iter()
-        .position(|element| element.key.as_deref() == Some("typing-line") && !element.exiting)?;
-    let elements = rt.elements();
-    elements[line..]
-        .iter()
-        .find_map(|element| element.text.clone().filter(|text| text.contains("typing")))
-}
-
-#[test]
-fn the_typing_line_names_who_else_types_in_the_shown_conversation_and_goes_when_they_stop() {
-    let mut rt = conversation("");
-    let channel = rt.state.tabs.shown().unwrap().key.channel;
-    assert_eq!(typing_line(&rt), None);
-    typing(&mut rt, channel, &[(lia(), None)]);
-    // The fixture knows Lia by username only.
-    assert_eq!(typing_line(&rt).as_deref(), Some("lia is typing…"));
-    // Someone typing elsewhere is not this conversation's.
-    typing(&mut rt, Uuid::from_u128(0x99), &[(lia(), None)]);
-    assert_eq!(typing_line(&rt), None);
-    assert!(settles(&mut rt), "no frames while nobody types");
 }
 
 #[test]
@@ -398,4 +350,65 @@ fn ctrl_shift_d_shows_direct_and_the_list_builds_its_rows() {
         tree(&rt).contains("Lia, on Lumen"),
         "the virtual list's row"
     );
+}
+
+/// Direct with `count` conversations with people on Lumen.
+fn many(count: u128) -> (Runtime<Shell>, Vec<Arc<DirectMessageItem>>) {
+    let mut rt = with_servers();
+    let rows: Vec<_> = (0..count)
+        .map(|n| {
+            dm(
+                100 + n,
+                Uuid::from_u128(0x500 + n),
+                &format!("P{n}"),
+                "Lumen",
+            )
+        })
+        .collect();
+    let posted = rows.clone();
+    rt.update(move |shell, tx| {
+        shell.direct_posted(posted.into_iter().collect(), tx);
+        shell.select_direct(tx);
+    });
+    rt.frame(FRAME_S);
+    (rt, rows)
+}
+
+#[test]
+fn the_arrows_walk_a_long_list_past_the_rows_built_on_screen() {
+    let (mut rt, rows) = many(40);
+    let first = dm_row_key(&rows[0]);
+    rt.update(move |_shell, tx| tx.focus(first, true));
+    rt.frame(FRAME_S);
+    for _ in 0..30 {
+        press(&mut rt, Key::Down);
+    }
+    let focused = rt
+        .elements()
+        .into_iter()
+        .find(|element| element.focused)
+        .and_then(|element| element.key);
+    assert_eq!(focused, Some(dm_row_key(&rows[30])));
+}
+
+#[test]
+fn coming_back_to_direct_shows_the_picked_conversation_far_down() {
+    let (mut rt, rows) = many(40);
+    let picked = Arc::clone(&rows[35]);
+    rt.update(move |shell, tx| {
+        shell.pick_dm(picked, tx);
+        shell.select_server(named("Lumen"), tx);
+    });
+    rt.frame(FRAME_S);
+    rt.update(Shell::select_direct);
+    for _ in 0..10 {
+        rt.frame(FRAME_S);
+    }
+    let key = dm_row_key(&rows[35]);
+    let shown = rt.elements().into_iter().any(|element| {
+        element.key.as_deref() == Some(key.as_str())
+            && element.visible[2] > 0.0
+            && element.visible[3] > 0.0
+    });
+    assert!(shown, "its row is built and on screen");
 }

@@ -94,6 +94,7 @@ pub(super) fn message_row<S: TimelineHost>(
             edited: parts.edited_at.map(|at| Edited {
                 hint: edited_hint(at, &style.time),
             }),
+            standalone: false,
         };
         let mut body = content::body::<S>(&doc, &draw);
         if let Some(chips) = reactions::chips::<S>(key, id, &parts.chips, parts.add_chip, &palette)

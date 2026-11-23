@@ -33,7 +33,14 @@ fn presses_survive_the_trip_through_a_link_id() {
         Press::Url("mailto:lia@example.com".to_owned()),
         Press::Spoiler(7),
         Press::Edited,
-        Press::Person(Uuid::from_u128(5)),
+        Press::Person {
+            user: Uuid::from_u128(5),
+            standalone: false,
+        },
+        Press::Person {
+            user: Uuid::from_u128(5),
+            standalone: true,
+        },
     ] {
         assert_eq!(Press::parse(&press.id()), Some(press));
     }

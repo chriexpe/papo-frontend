@@ -31,8 +31,10 @@ use crate::timeline::TimelineKey;
 pub(crate) enum Asked {
     /// Asked; no answer yet.
     Pending,
-    /// Refused or gone.
+    /// The backend's answer.
     Answered(DirectAccess),
+    /// The read failed: asked again when the conversation is picked again.
+    Failed,
 }
 
 impl Shell {
@@ -81,9 +83,8 @@ impl Shell {
 
     /// Forgets the picked and the awaited conversation of an account the
     /// rail no longer shows (an account switch, a sign-out): its title,
-    /// typing and composer would be that account's. Returns whether the
-    /// picked one went.
-    pub(super) fn drop_unshown_dms(&mut self) -> bool {
+    /// typing and composer would be that account's.
+    pub(super) fn drop_unshown_dms(&mut self) {
         let shown: Vec<_> = self
             .nav
             .servers()
@@ -106,7 +107,6 @@ impl Shell {
         if unshown {
             self.nav.unpick_dm();
         }
-        unshown
     }
 
     /// The direct conversations, newest activity first.
@@ -119,6 +119,11 @@ impl Shell {
         self.worked_outside();
         self.awaited_dm = None;
         self.nav.select_direct();
+        // The list builds only the rows on screen: the picked one, the
+        // list's Tab stop, is brought there.
+        if let Some(picked) = self.nav.picked_dm() {
+            tx.scroll_into_view(crate::direct_pane::dm_row_key(picked));
+        }
         self.sync_timeline(Some(tx));
     }
 
@@ -126,6 +131,10 @@ impl Shell {
     pub(crate) fn pick_dm(&mut self, row: Arc<DirectMessageItem>, tx: &mut Tx) {
         self.worked_outside();
         self.awaited_dm = None;
+        // Picked again: a failed read may be asked again.
+        if self.dm_access.get(&row.id) == Some(&Asked::Failed) {
+            self.dm_access.remove(&row.id);
+        }
         let (key, user) = (
             TimelineKey {
                 account: row.id.account,
@@ -193,9 +202,11 @@ impl Shell {
         if blocked {
             return Some(DirectAccess::YouBlocked);
         }
+        // Only a refusal says so: "you blocked" is read live above, and
+        // an open or unknown conversation needs no pill.
         match self.dm_access.get(&picked.id) {
-            Some(Asked::Answered(access)) => Some(*access),
-            Some(Asked::Pending) | None => None,
+            Some(Asked::Answered(DirectAccess::Refused)) => Some(DirectAccess::Refused),
+            _ => None,
         }
     }
 
@@ -228,13 +239,13 @@ impl Shell {
         });
     }
 
-    /// The backend's answer about conversation `id`. A failed read is
-    /// asked again with the next list; an answer for a conversation back
-    /// in the list, or no longer asked about, is dropped. A refusal is
-    /// kept for the state pill; a conversation the account is no longer
-    /// in closes; open needs no note (a hide elsewhere reads as open), and
-    /// "you blocked" is read from the live block list. Returns whether the
-    /// view changed.
+    /// The backend's answer about conversation `id`, kept until it is back
+    /// in the list or its account goes; an answer for one back in the list,
+    /// or no longer asked about, is dropped. A refusal shows the state
+    /// pill; a conversation the account is no longer in closes; open (a
+    /// hide elsewhere reads as open) needs no pill, and "you blocked" is
+    /// read from the live block list. A failed read waits for the next
+    /// pick. Returns whether the view changed.
     pub(super) fn dm_access_answered(
         &mut self,
         id: DirectMessageId,
@@ -259,13 +270,19 @@ impl Shell {
                 }
                 true
             }
+            // Kept, so a conversation hidden elsewhere is asked about once,
+            // not on every list change.
+            Ok(access) if !listed => {
+                self.dm_access.insert(id, Asked::Answered(access));
+                false
+            }
             Ok(_) => {
                 self.dm_access.remove(&id);
                 false
             }
             Err(error) => {
                 log::debug!("a conversation's access was not read: {error}");
-                self.dm_access.remove(&id);
+                self.dm_access.insert(id, Asked::Failed);
                 false
             }
         }

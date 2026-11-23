@@ -81,6 +81,7 @@ fn draw<S: TimelineHost>(
         message: id,
         copied: None,
         edited: None,
+        standalone: true,
     };
     // Extra compact has no avatar in the conversation; on its own, a
     // message keeps Normal's.

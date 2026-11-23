@@ -181,12 +181,15 @@ pub(crate) fn project(
             }
         })
         .collect();
-    // The accounts the DM list holds: each server's shown one.
+    // The accounts the DM list holds: each server's shown one with an open
+    // session (its resources read), so a signed-out one makes no part of
+    // the count unknown.
     let direct = badges.direct_messages(
         servers
             .iter()
             .filter_map(|server| server.account.as_ref())
-            .map(|account| &account.id),
+            .map(|account| &account.id)
+            .filter(|account| resources.contains_key(*account)),
     );
     ServerList {
         servers,

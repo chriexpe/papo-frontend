@@ -74,14 +74,17 @@ impl TimelineHost for Shell {
     }
 
     fn content_pressed(&mut self, key: TimelineKey, message: Uuid, press: Press, tx: &mut Tx) {
-        // A mention in one of the open pins panel's pins is a press inside
-        // the panel: it stays, and the card opens beside the mention.
-        let in_pins = matches!(press, Press::Person(_))
-            && self.shown_pins_panel().is_some()
-            && self
-                .shown_timeline(key)
-                .is_some_and(|open| open.pins.get(message).is_some());
-        if !in_pins {
+        // A mention in a message drawn on its own (a pin in its panel) is
+        // a press inside that panel: it stays, and the card opens beside
+        // the mention.
+        let in_panel = matches!(
+            press,
+            Press::Person {
+                standalone: true,
+                ..
+            }
+        );
+        if !in_panel {
             self.worked_outside();
         }
         self.content_pressed_in(key, message, press, tx);

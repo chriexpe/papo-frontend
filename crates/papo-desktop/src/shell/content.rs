@@ -56,7 +56,12 @@ impl Shell {
                 }
             }
             Press::Edited => {}
-            Press::Person(user) => {
+            Press::Person { user, .. } => {
+                // A mention inside a dialog (the delete confirmation's
+                // message) opens nothing under it.
+                if self.popup_shown() {
+                    return;
+                }
                 // Beside the mention, where Rune drew it; a press moves no
                 // keyboard focus, so what had it gets it back.
                 let Some(rect) = tx.link_rect() else {

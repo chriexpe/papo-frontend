@@ -14,6 +14,7 @@ mod channel_pane;
 mod composer;
 mod confirm;
 mod design;
+mod device_settings;
 mod direct_list;
 mod direct_pane;
 mod fonts;

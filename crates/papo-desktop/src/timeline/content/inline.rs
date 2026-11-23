@@ -194,9 +194,11 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
                 drawn.spans.push(span);
                 // A known person's mention opens their card beside it.
                 if let (Some(person), false) = (person, hidden) {
-                    drawn
-                        .links
-                        .push(Link::new(range.clone(), Press::Person(*person).id()));
+                    let press = Press::Person {
+                        user: *person,
+                        standalone: draw.standalone,
+                    };
+                    drawn.links.push(Link::new(range.clone(), press.id()));
                 }
             }
             Mark::Spoiler {

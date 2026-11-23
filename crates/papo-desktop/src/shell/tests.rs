@@ -23,6 +23,7 @@ mod pins;
 mod profile_card;
 mod replying;
 mod timeline;
+mod typing;
 mod writing;
 
 const SIZE_PT: (f32, f32) = (1000.0, 700.0);

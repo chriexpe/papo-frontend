@@ -140,7 +140,10 @@ pub(crate) enum Placement {
     /// Beside the pointer, at this point in window points.
     AtPointer([f32; 2]),
     /// Beside this box (left, top, width, height) in window points, top
-    /// aligned with it: a mention, which is no element of its own.
+    /// aligned with it: a mention, which is no element of its own. Taken
+    /// at the press, as `AtPointer` is: the overlay keeps the conversation
+    /// from scrolling, and what still moves it (a resize) moves the card
+    /// no more than a pointer menu.
     BesideBox([f32; 4]),
 }
 
