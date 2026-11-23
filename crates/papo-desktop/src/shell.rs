@@ -118,6 +118,8 @@ pub(crate) struct Shell {
     openings: u64,
     /// The pins panel, while open.
     pins_panel: Option<pins::PinsPanel>,
+    /// The New message picker's state, while it is open.
+    dm_picker: Option<new_message::DmPicker>,
     /// The search, open or folded with its query.
     search: Option<search::Search>,
     /// The last search's number; each search takes the next
@@ -200,6 +202,7 @@ impl Default for Shell {
             stretched: None,
             openings: 0,
             pins_panel: None,
+            dm_picker: None,
             search: None,
             search_runs: 0,
             search_spare: rune::TextEdit::new(""),
@@ -286,6 +289,7 @@ mod message_keys;
 mod message_menu;
 mod message_open;
 mod navigate;
+mod new_message;
 mod outgoing;
 pub(crate) mod pins;
 mod pins_panel;
@@ -312,4 +316,7 @@ mod timeline_host;
 mod title;
 mod view;
 
+pub(crate) use new_message::{
+    DIRECT_PILL_KEY, FIND_FIELD_KEY, NEW_MESSAGE_BUTTON_KEY, candidate_key,
+};
 pub(crate) use view::view;

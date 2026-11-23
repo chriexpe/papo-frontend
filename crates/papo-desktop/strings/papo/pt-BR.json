@@ -316,5 +316,9 @@
   "search.month_year": "{{month}} de {{year}}",
   "search.year": "Todo o ano de {{year}}",
   "search.date_order": "day_first",
-  "search.date_words": "pt"
+  "search.date_words": "pt",
+  "direct.new": "Nova mensagem",
+  "direct.find": "Procurar alguém",
+  "direct.find_none": "Ninguém encontrado",
+  "direct.find_list": "Pessoas"
 }

@@ -208,6 +208,11 @@ line_icon!(
     "reply-line"
 );
 line_icon!(
+    /// New message, in Direct's pill.
+    NEW_MESSAGE,
+    "new-message"
+);
+line_icon!(
     /// Search: the actions pill's 🔍.
     SEARCH,
     "search"

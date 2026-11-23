@@ -19,6 +19,7 @@ mod direct_lists;
 mod links;
 mod message_menu;
 mod navigation;
+mod new_message;
 mod outgoing;
 mod pins;
 mod profile_card;

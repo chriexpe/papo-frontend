@@ -8,8 +8,8 @@
 //! press opens a row and Delete or its ✕ closes it. A row shows the
 //! person's avatar with presence, their name, and the server under it, or
 //! "typing…" while they type; unread is bold with a dot at its end, and
-//! mentions take the dot's place. The New message picker waits for user
-//! search in the backend.
+//! mentions take the dot's place. New message opens the people picker
+//! (`new_message`).
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -29,8 +29,10 @@ use crate::shell::Shell;
 use crate::strings;
 
 pub(crate) mod blocked;
+pub(crate) mod new_message;
 
 use blocked::{blocked_button, blocked_list};
+use new_message::new_message_button;
 
 /// The element key of a direct conversation's row.
 pub(crate) fn dm_row_key(row: &DirectMessageItem) -> String {
@@ -56,9 +58,14 @@ pub(crate) fn view(shell: &Shell, palette: &Palette) -> El {
                     .grow(1.0)
                     .min_w(0.0),
             )
+            .child(new_message_button(
+                shell.shown_dm_picker().is_some(),
+                palette,
+            ))
             .child(blocked_button(blocked, palette)),
         palette,
-    );
+    )
+    .key(crate::shell::DIRECT_PILL_KEY);
     let list = if blocked {
         blocked_list(shell, palette)
     } else {

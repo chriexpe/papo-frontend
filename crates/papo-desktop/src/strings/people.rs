@@ -164,3 +164,23 @@ pub(crate) fn direct_blocked_empty() -> &'static str {
 pub(crate) fn direct_unblock(name: &str) -> String {
     template!("direct.unblock", "name" => name)
 }
+
+/// Direct's New message button, and the picker's name.
+pub(crate) fn direct_new() -> &'static str {
+    text!("direct.new")
+}
+
+/// The New message picker's field, empty.
+pub(crate) fn direct_find() -> &'static str {
+    text!("direct.find")
+}
+
+/// The New message picker when the field finds no one.
+pub(crate) fn direct_find_none() -> &'static str {
+    text!("direct.find_none")
+}
+
+/// The New message picker's list, spoken.
+pub(crate) fn direct_find_list() -> &'static str {
+    text!("direct.find_list")
+}
