@@ -7,6 +7,8 @@ use papo_api::{
     wire::{Message, MessageReactionSummary},
 };
 
+use serde::{Deserialize, Serialize};
+
 use super::{
     HistoryError,
     merge::Ticket,
@@ -54,6 +56,7 @@ impl Model {
                 entry.own_reactions.clear();
                 entry.revision = revision;
                 self.dirty.insert(id);
+                self.pin_ranks.remove(&id);
                 self.record_deletions(revision, vec![id]);
             }
             KnownEvent::MessageEmbedsUpdate(event) => {
@@ -84,11 +87,18 @@ impl Model {
                     return Ok(false);
                 }
                 entry.pinned = event.is_pinned;
-                entry.pin_rank = PinRank {
-                    revision,
-                    position: 0,
-                };
                 entry.pin_revision = revision;
+                if event.is_pinned {
+                    self.pin_ranks.insert(
+                        id,
+                        PinRank {
+                            revision,
+                            position: 0,
+                        },
+                    );
+                } else {
+                    self.pin_ranks.remove(&id);
+                }
                 entry.revision = revision;
                 self.dirty.insert(id);
             }
@@ -161,13 +171,14 @@ impl Model {
             count: Some(event.count),
         };
         entry.pending_reactions.retain(|existing| {
-            existing.emoji_id != total.emoji_id || existing.unicode != total.unicode
+            existing.total.emoji_id != total.emoji_id || existing.total.unicode != total.unicode
         });
-        entry.pending_reactions.push(total.clone());
         if let Some(message) = &mut entry.message {
             replace_total(message.reactions.get_or_insert_with(Vec::new), &total);
         }
-        entry.reaction_revision = revision;
+        entry
+            .pending_reactions
+            .push(PendingTotal { total, revision });
         entry.revision = revision;
         self.dirty.insert(id);
         Ok(true)
@@ -238,19 +249,31 @@ impl Model {
         for (id, entry) in &mut self.entries {
             if entry.pin_revision <= ticket.revision && !entry.deleted {
                 let rank = pinned.get(id).copied();
-                let value = rank.is_some();
-                let rank = rank.unwrap_or(entry.pin_rank);
-                if entry.pinned != value || entry.pin_rank != rank {
-                    entry.pinned = value;
-                    entry.pin_rank = rank;
+                if entry.pinned != rank.is_some() {
+                    entry.pinned = rank.is_some();
                     entry.revision = revision;
                     self.dirty.insert(*id);
                 }
+                match rank {
+                    Some(rank) => self.pin_ranks.insert(*id, rank),
+                    None => self.pin_ranks.remove(id),
+                };
             }
         }
         self.pins_generation = ticket.generation;
         Ok(())
     }
+}
+
+/// A live total and the model revision it arrived at: a page asked for before that revision
+/// cannot hold it.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct PendingTotal {
+    #[serde(flatten)]
+    pub total: MessageReactionSummary,
+    /// 0 for a total stored before revisions were kept: any page replaces it.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 /// Sets one emoji's total. An emoji keeps its place (the backend lists them by first

@@ -105,10 +105,11 @@ impl Operations {
         let boundary = cursor.clone();
         let result = self
             .read(move |rest| async move {
+                // The order goes as `message_reactions`' own parameter, first page included.
                 let wire = boundary.as_ref().map(|cursor| Cursor {
                     since: &cursor.created_at,
                     last_id: None,
-                    order: Some(order),
+                    order: None,
                 });
                 let id = boundary.as_ref().map(|cursor| cursor.id.to_string());
                 let wire = wire.map(|mut cursor| {

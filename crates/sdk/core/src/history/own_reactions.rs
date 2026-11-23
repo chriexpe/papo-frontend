@@ -17,12 +17,17 @@ use super::{
 /// One confirmed change of this account's membership for one emoji.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct OwnReaction {
-    /// Custom emoji identity, exactly as sent; exclusive with `unicode`.
+    /// Custom emoji identity, exactly as sent; exclusive with `unicode` (the outgoing queue
+    /// validates that before sending).
     pub emoji_id: Option<String>,
     /// Unicode sequence, exactly as sent; exclusive with `emoji_id`.
     pub unicode: Option<String>,
     /// Whether this account now has the reaction.
     pub add: bool,
+    /// The model revision it was settled at: a page asked for before it cannot hold it.
+    /// Set by `Model::own_reaction`.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 impl OwnReaction {
@@ -52,15 +57,17 @@ impl OwnReaction {
 }
 
 impl Model {
-    /// Settles a confirmed change of this account's reaction on `message`. False when the
-    /// message is deleted: nothing remains to react to. Settling again reaches the same state.
+    /// Settles a confirmed change of this account's reaction on `message`. False when there is
+    /// nothing to settle: the message is deleted, or a removal names a message this history
+    /// does not hold (a removal may be confirmed by a not-found, which proves nothing about the
+    /// message, so it never creates an entry). Settling again reaches the same state.
     pub fn own_reaction(
         &mut self,
         message: [u8; 16],
-        change: OwnReaction,
+        mut change: OwnReaction,
     ) -> Result<bool, HistoryError> {
-        if change.emoji_id.is_none() == change.unicode.is_none() {
-            return Err(HistoryError::InvalidPage);
+        if !change.add && !self.entries.contains_key(&message) {
+            return Ok(false);
         }
         let revision = self.next_revision()?;
         let entry = self
@@ -76,8 +83,8 @@ impl Model {
         entry.own_reactions.retain(|existing| {
             !existing.same_emoji(change.emoji_id.as_deref(), change.unicode.as_deref())
         });
+        change.revision = revision;
         entry.own_reactions.push(change);
-        entry.own_reaction_revision = revision;
         entry.revision = revision;
         self.dirty.insert(message);
         Ok(true)

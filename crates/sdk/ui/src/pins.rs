@@ -52,7 +52,8 @@ impl ChannelPins {
     /// Fetches the channel's pin list, so the pins become known in this connection and live
     /// pin events keep them current. Call it when the pins are `None`, and whenever they are
     /// shown: a pin of a message the client never loaded arrives only with a fetch (the
-    /// backend's pin event names no channel).
+    /// backend's pin event names no channel). Offline it fetches nothing and still succeeds;
+    /// the reconnect refresh fetches the open channels' pins.
     /// # Errors
     /// Returns the pin fetch errors (`HistoryHandle::pins`).
     pub async fn refresh(&self) -> Result<(), HistoryError> {

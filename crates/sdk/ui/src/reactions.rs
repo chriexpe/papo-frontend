@@ -114,11 +114,23 @@ pub fn quick_reactions(usage: &[(String, u64)], count: usize) -> Vec<String> {
         if quick.len() == count {
             break;
         }
-        if !quick.iter().any(|held| held == key) {
+        if !quick.iter().any(|held| same_glyph(held, key)) {
             quick.push(key.to_owned());
         }
     }
     quick
+}
+
+/// The same emoji drawn, but for the emoji presentation selector (U+FE0F): "❤" and "❤️" are
+/// distinct reactions to the backend, but one heart in a strip.
+fn same_glyph(left: &str, right: &str) -> bool {
+    let bare = |value: &str| {
+        value
+            .chars()
+            .filter(|c| *c != '\u{fe0f}')
+            .collect::<String>()
+    };
+    bare(left) == bare(right)
 }
 
 /// Someone who reacted to the message, with every emoji of theirs the loaded pages hold.
@@ -144,6 +156,9 @@ pub struct Reactors {
     /// Everyone else, in the order of their first reaction.
     others: Vec<Reactor>,
     index: HashMap<Uuid, usize>,
+    /// When each person reacted with each emoji, as an ordinal over all pages: a tab lists
+    /// its people in the order they used its emoji.
+    reacted: HashMap<(Uuid, ReactionEmoji), usize>,
     exhausted: bool,
 }
 
@@ -160,17 +175,24 @@ impl Reactors {
                 .collect(),
             others: Vec::new(),
             index: HashMap::new(),
+            reacted: HashMap::new(),
             exhausted: false,
         }
     }
 
-    /// Adds the next page. This account's own rows in it are skipped: its membership comes
-    /// from the chips, which a confirmed change reaches before any page does.
+    /// Adds the next page. This account's rows in it join its own (the chips may not know a
+    /// change made on another device yet); its row stays first either way. Rebuild the list
+    /// when the chips change.
     pub fn push(&mut self, page: &ReactorPage) {
         for (user, emoji) in in_order(&page.groups) {
             if user == self.account_user {
+                if !self.yours.contains(&emoji) {
+                    self.yours.push(emoji);
+                }
                 continue;
             }
+            let ordinal = self.reacted.len();
+            self.reacted.entry((user, emoji.clone())).or_insert(ordinal);
             let at = *self.index.entry(user).or_insert_with(|| {
                 self.others.push(Reactor {
                     user,
@@ -195,14 +217,16 @@ impl Reactors {
                 emoji: self.yours.clone(),
                 you: true,
             });
-        you.into_iter()
-            .chain(
-                self.others
-                    .iter()
-                    .filter(|reactor| filter.is_none_or(|emoji| reactor.emoji.contains(emoji)))
-                    .cloned(),
-            )
-            .collect()
+        let mut others: Vec<Reactor> = self
+            .others
+            .iter()
+            .filter(|reactor| filter.is_none_or(|emoji| reactor.emoji.contains(emoji)))
+            .cloned()
+            .collect();
+        if let Some(emoji) = filter {
+            others.sort_by_key(|reactor| self.reacted.get(&(reactor.user, emoji.clone())));
+        }
+        you.into_iter().chain(others).collect()
     }
 
     /// Whether another page is needed to show everyone `filter` counts on `chips` (every

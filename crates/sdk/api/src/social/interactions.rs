@@ -53,6 +53,7 @@ impl RestClient {
         cursor: Option<&Cursor<'_>>,
         order: crate::HistoryOrder,
     ) -> Result<MessageReactionList, Error> {
+        // `order` wins over a cursor's own, so the first page and its continuations agree.
         let mut parameters = cursor.map_or_else(Vec::new, Cursor::parameters);
         parameters.retain(|(key, _)| *key != routes::ORDER);
         parameters.push((routes::ORDER, order.as_str().to_owned()));

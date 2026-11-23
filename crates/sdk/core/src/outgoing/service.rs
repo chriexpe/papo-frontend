@@ -315,7 +315,7 @@ impl OutgoingService {
         .await
     }
     /// Explicitly retries Failed work, or Unknown with `AcceptPossibleDuplicate`. Never runs automatically.
-    /// A reaction followed by a later one on the same message and emoji is not retried.
+    /// A refused or unknown reaction is never retried; discard it.
     /// # Errors
     /// Returns duplicate-risk acknowledgement, invalid transition, revoked or durable failures.
     pub async fn retry(&self, local: Uuid, decision: RetryDecision) -> Result<(), OutgoingError> {
@@ -337,7 +337,12 @@ impl OutgoingService {
             ) {
                 return Err(OutgoingError::InvalidState);
             }
-            if this.superseded_reaction(&operation) {
+            // An unresolved reaction is discard-only: a later reaction on the same emoji may
+            // already stand, and resending this one would undo it.
+            if matches!(
+                operation.kind.as_ref(),
+                super::OperationKind::Reaction { .. }
+            ) {
                 return Err(OutgoingError::InvalidState);
             }
             this.session
@@ -379,17 +384,6 @@ impl OutgoingService {
             Ok(())
         })
         .await
-    }
-    /// A reaction enqueued after `operation` for the same message and emoji exists: resending
-    /// `operation` would undo that later intent.
-    fn superseded_reaction(&self, operation: &Operation) -> bool {
-        let image = self.session.inner.outgoing.image.borrow();
-        image
-            .operations
-            .iter()
-            .skip_while(|op| op.id != operation.id)
-            .skip(1)
-            .any(|op| op.kind.same_reaction(&operation.kind))
     }
     fn operation(&self, id: Uuid) -> Result<Arc<Operation>, OutgoingError> {
         self.session

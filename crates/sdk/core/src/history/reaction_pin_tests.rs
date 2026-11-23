@@ -37,12 +37,17 @@ fn ticket(model: &Model) -> Ticket {
     }
 }
 
-fn thumbs(add: bool) -> OwnReaction {
+fn own(unicode: &str, add: bool) -> OwnReaction {
     OwnReaction {
         emoji_id: None,
-        unicode: Some("👍".into()),
+        unicode: Some(unicode.into()),
         add,
+        revision: 0,
     }
+}
+
+fn thumbs(add: bool) -> OwnReaction {
+    own("👍", add)
 }
 
 fn mine(model: &Model, index: u128) -> Vec<String> {
@@ -167,14 +172,55 @@ fn a_deleted_message_takes_no_reaction() {
 }
 
 #[test]
-fn a_reaction_names_exactly_one_emoji() {
+fn a_removal_never_creates_history_for_a_message_it_does_not_hold() {
     let mut model = Model::default();
-    let both = OwnReaction {
-        emoji_id: Some(Uuid::from_u128(9).to_string()),
-        unicode: Some("👍".into()),
-        add: true,
-    };
-    assert!(model.own_reaction(id(0), both).is_err());
+    assert!(!model.own_reaction(id(0), thumbs(false)).unwrap());
+    assert!(!model.entries.contains_key(&id(0)));
+}
+
+#[test]
+fn an_older_page_does_not_bring_back_a_change_a_newer_page_replaced() {
+    let mut model = Model::default();
+    model
+        .merge_page(&ticket(&model), &[message(0)], false)
+        .unwrap();
+    model.own_reaction(id(0), thumbs(true)).unwrap();
+    // Removed on another device: a newer page says so.
+    model
+        .merge_page(&ticket(&model), &[message(0)], false)
+        .unwrap();
+    let older = ticket(&model);
+    model.own_reaction(id(0), own("🔥", true)).unwrap();
+    model.merge_page(&older, &[message(0)], false).unwrap();
+    assert_eq!(mine(&model, 0), ["🔥"]);
+}
+
+#[test]
+fn an_older_page_does_not_bring_back_a_total_a_newer_page_replaced() {
+    let mut model = Model::default();
+    model
+        .merge_page(&ticket(&model), &[message(0)], false)
+        .unwrap();
+    model.event(&react(0, "🧀", 3), GENERATION).unwrap();
+    let mut newer = message(0);
+    newer.reactions = Some(vec![total("🧀", 1)]);
+    model
+        .merge_page(&ticket(&model), std::slice::from_ref(&newer), false)
+        .unwrap();
+    let older = ticket(&model);
+    model.event(&react(0, "👍", 2), GENERATION).unwrap();
+    model.merge_page(&older, &[newer], false).unwrap();
+    let totals: Vec<_> = model.entries[&id(0)]
+        .message
+        .as_ref()
+        .unwrap()
+        .reactions
+        .clone()
+        .unwrap()
+        .into_iter()
+        .map(|total| (total.unicode.unwrap(), total.count.unwrap()))
+        .collect();
+    assert_eq!(totals, [("🧀".into(), 1), ("👍".into(), 2)]);
 }
 
 #[test]

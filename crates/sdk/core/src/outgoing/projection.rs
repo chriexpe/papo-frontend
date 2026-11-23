@@ -143,11 +143,14 @@ pub(super) async fn finish(
             }
             // Settled once, at confirmation: a replayed receipt carries no evidence that it is
             // newer than a page fetched since, so `reconcile_receipts` never settles it again.
+            // A settle that fails, or a connection replaced meanwhile, leaves this account's
+            // membership as the last page said until a page fetched after it arrives.
             let target = target.ok_or(OutgoingError::InvalidData)?;
             let change = crate::history::own_reactions::OwnReaction {
                 emoji_id: emoji_id.map(|id| id.to_string()),
                 unicode: unicode.clone(),
                 add: *add,
+                revision: 0,
             };
             crate::history::live::settle_own_reaction(
                 &service.session,

@@ -60,7 +60,8 @@ pub struct HistorySnapshot {
     pub live_arrival_start: Option<HistoryCursor>,
     /// The channel's pinned messages, newest pin first, including pins outside `messages`.
     /// `None` until a pin list fetch (`HistoryHandle::pins`, or the reconnect refresh) has
-    /// succeeded in `generation`; while it is `None` no message's pinned state is known. Live
+    /// succeeded in `generation`, and again after this history is reloaded from storage (pin
+    /// order is not stored); while it is `None` no message's pinned state is known. Live
     /// pin events keep it current for messages this history holds. The backend's pin event
     /// names no channel, so a pin of a message no channel's history holds appears only with the
     /// next fetch: fetch again whenever the pins are shown.

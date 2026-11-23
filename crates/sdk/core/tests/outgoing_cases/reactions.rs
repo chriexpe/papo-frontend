@@ -1,5 +1,6 @@
 //! A reaction's outcome against the loopback backend: confirmed membership reaches history, a
-//! removal that finds nothing is done, and an unresolved reaction never holds its channel.
+//! removal that finds nothing is done, and an unresolved reaction never holds its channel and
+//! is never resent.
 
 use super::*;
 
@@ -90,7 +91,7 @@ fn removing_a_reaction_that_is_not_there_is_done() -> Result {
 }
 
 #[test]
-fn a_refused_reaction_holds_no_one_and_a_later_one_supersedes_it() -> Result {
+fn a_refused_reaction_holds_no_one_and_is_never_retried() -> Result {
     let f = Fixture::new(Config::default())?;
     f.run(async {
         let (session, channel) = signed_in(&f).await?;

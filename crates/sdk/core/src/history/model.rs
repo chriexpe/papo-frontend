@@ -25,20 +25,15 @@ pub(super) struct Entry {
     pub timeline: bool,
     pub revision: u64,
     pub validated_generation: u64,
-    pub reaction_revision: u64,
     pub embeds_revision: u64,
     pub pin_revision: u64,
     pub pinned: bool,
     pub edit: Option<(String, String)>,
     pub pending_embeds: Option<Vec<papo_api::wire::Embed>>,
-    pub pending_reactions: Vec<papo_api::wire::MessageReactionSummary>,
-    /// Where this pin sits in the channel's pin order (see `pins`); meaningful while `pinned`.
-    #[serde(default)]
-    pub pin_rank: super::pins::PinRank,
-    /// Revision of this account's last settled reaction change; an older page keeps them.
-    #[serde(default)]
-    pub own_reaction_revision: u64,
-    /// This account's settled reaction changes, one per emoji, re-applied over older pages.
+    /// Live totals newer than some page in flight, each with the revision it arrived at.
+    pub pending_reactions: Vec<super::mutations::PendingTotal>,
+    /// This account's settled reaction changes, one per emoji, each re-applied over a page
+    /// fetched before it and dropped by a page fetched after it.
     #[serde(default)]
     pub own_reactions: Vec<super::own_reactions::OwnReaction>,
 }
@@ -52,15 +47,12 @@ impl Entry {
             timeline: false,
             revision,
             validated_generation: 0,
-            reaction_revision: 0,
             embeds_revision: 0,
             pin_revision: 0,
             pinned: false,
             edit: None,
             pending_embeds: None,
             pending_reactions: Vec::new(),
-            pin_rank: super::pins::PinRank::default(),
-            own_reaction_revision: 0,
             own_reactions: Vec::new(),
         }
     }
@@ -144,8 +136,12 @@ pub(super) struct Model {
     pub dirty: BTreeSet<[u8; 16]>,
     pub deletions: BTreeMap<[u8; 16], Vec<[u8; 16]>>,
     /// Connection generation whose pin list fetch this model's pins reflect (0: none yet).
-    /// Live pin events keep a fetched list current within that generation only.
+    /// Live pin events keep a fetched list current within that generation only. Not stored:
+    /// a reloaded model's pins are unknown until fetched again.
     pub pins_generation: u64,
+    /// Each pinned message's place in the pin order (see `pins`). Not stored, like
+    /// `pins_generation`, so reordering never rewrites an entry.
+    pub pin_ranks: BTreeMap<[u8; 16], super::pins::PinRank>,
 }
 
 pub(super) struct CachedPage {

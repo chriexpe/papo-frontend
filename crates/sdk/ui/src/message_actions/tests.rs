@@ -165,7 +165,7 @@ fn pin_and_unpin_need_known_pins_and_their_permission() {
 }
 
 #[test]
-fn reacting_needs_send_and_seeing_who_reacted_needs_reactions_and_read() {
+fn reacting_needs_the_add_permission_and_seeing_who_reacted_needs_reactions_and_read() {
     let mut reacted = Message::clone(&message(11, OTHER, "theirs"));
     reacted.reactions = Some(vec![
         papo_sdk::operations::interactions::MessageReactionSummary {
@@ -190,6 +190,16 @@ fn reacting_needs_send_and_seeing_who_reacted_needs_reactions_and_read() {
     );
     assert!(silent.react && !silent.view_reactions);
     assert!(!message_actions(&reacted, None, None, me(), None).view_reactions);
+    let blind = ChannelCapabilities {
+        read: false,
+        ..member
+    };
+    assert!(!message_actions(&reacted, None, None, me(), Some(blind)).view_reactions);
+    let muted = ChannelCapabilities {
+        add_reaction: false,
+        ..member
+    };
+    assert!(!message_actions(&reacted, None, None, me(), Some(muted)).react);
 }
 
 #[test]

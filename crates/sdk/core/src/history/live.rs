@@ -54,8 +54,9 @@ pub(crate) async fn apply(
         state
             .ensure(&connection.cache, *channel.id.as_bytes(), generation)
             .await?;
-        // A pin event names no channel, so a pin of a message no channel holds is left to the
-        // next pin list fetch (`HistorySnapshot::pins`): it may be any channel's.
+        // Reaction and pin events name no channel: only a channel holding the message takes
+        // one. A pin of a message no channel holds waits for the next pin list fetch
+        // (`HistorySnapshot::pins`).
         if unscoped_id.is_some_and(|id| !state.model.entries.contains_key(&id)) {
             continue;
         }

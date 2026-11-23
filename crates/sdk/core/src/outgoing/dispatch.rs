@@ -117,8 +117,9 @@ fn next(snapshot: &OutgoingSnapshot) -> Option<Arc<Operation>> {
         .iter()
         .find(|operation| {
             // Completed sends do not block followers in the same channel, and neither does an
-            // unresolved reaction: later sends never depend on it, and a later reaction on the
-            // same emoji supersedes it (`OutgoingService::retry` refuses to resend it then).
+            // unresolved reaction: later sends never depend on it, and it is never resent
+            // (`OutgoingService::retry` refuses it). An Unknown one may still land after a
+            // later reaction on the same emoji; the next page fetched shows what holds.
             if operation.state == OperationState::Sent || unresolved_reaction(operation) {
                 return false;
             }
