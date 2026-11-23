@@ -12,6 +12,11 @@ use tokio_util::sync::CancellationToken;
 pub struct Generation(pub(crate) u64);
 
 impl Generation {
+    /// The epoch of fictional data (`ResourceSnapshot::fictional`): sessions number their
+    /// epochs from 1, so no session ever has this one, and nothing fictional is ever taken for
+    /// an account's.
+    pub const FICTIONAL: Self = Self(0);
+
     /// Construct a deterministic epoch for isolated projection tests, never session admission.
     #[cfg(feature = "test-support")]
     #[must_use]

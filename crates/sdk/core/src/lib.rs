@@ -105,7 +105,7 @@ pub use read_points::ServerReadPoint;
 pub use resources::{
     BackendMode, ChannelKind, ChannelRecord, DirectRecord, EntityTable, MessageHead, Overwrite,
     OverwriteKey, ProfileRecord, ResourceIds, ResourceSnapshot, ResourceTable, RoleFlags,
-    RoleRecord, ServerRecord, UserRecord,
+    RoleRecord, ServerRecord, SnapshotRows, UserRecord,
 };
 mod notifications;
 pub use notifications::{

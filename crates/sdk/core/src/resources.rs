@@ -63,11 +63,43 @@ impl ResourceSnapshot {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+/// Wire rows for a snapshot built outside a session: a test fixture or a fictional preview.
+#[derive(Clone, Default)]
+pub struct SnapshotRows {
+    /// The server's metadata.
+    pub server: Option<papo_api::wire::Server>,
+    /// Channels in backend order.
+    pub channels: Vec<papo_api::wire::Channel>,
+    /// Role definitions.
+    pub roles: Vec<papo_api::wire::Role>,
+    /// The roster.
+    pub members: Vec<papo_api::wire::UserSummary>,
+    /// Requested full profiles.
+    pub profiles: Vec<papo_api::wire::UserProfile>,
+    /// Direct conversations.
+    pub dms: Vec<papo_api::wire::DirectConversation>,
+    /// Blocked people.
+    pub blocks: Vec<papo_api::wire::UserSummary>,
+}
+
 impl ResourceSnapshot {
+    /// A snapshot of fictional people and places for a client's preview (an appearance preview,
+    /// a first-run showroom), admitted through the same converters as a session's data and seen
+    /// as `own`. Its generation is [`Generation::FICTIONAL`], which no session has, so it can
+    /// never be applied to or mistaken for an account's resources.
+    /// # Errors
+    /// Returns the group and fault of malformed rows.
+    pub fn fictional(
+        rows: SnapshotRows,
+        own: crate::Uuid,
+    ) -> Result<Self, crate::ResourceRejection> {
+        Self::admit(Generation::FICTIONAL, rows, own)
+    }
+
     /// Builds a deterministic projection fixture through the production admission converters.
     /// # Errors
     /// Returns the group and fault of malformed input.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fixture(
         generation: Generation,
         server: Option<papo_api::wire::Server>,
@@ -79,10 +111,37 @@ impl ResourceSnapshot {
         blocks: Vec<papo_api::wire::UserSummary>,
         own: crate::Uuid,
     ) -> Result<Self, crate::ResourceRejection> {
+        let rows = SnapshotRows {
+            server,
+            channels,
+            roles,
+            members,
+            profiles,
+            dms,
+            blocks,
+        };
+        Self::admit(generation, rows, own)
+    }
+
+    /// `rows` admitted as one mutation onto an empty image at `generation`.
+    fn admit(
+        generation: Generation,
+        rows: SnapshotRows,
+        own: crate::Uuid,
+    ) -> Result<Self, crate::ResourceRejection> {
         use crate::resource_admission::{Admission, Diagnostics};
         use papo_api::wire::{
             BlockListResponse, ChannelList, DirectConversationList, RoleListResponse,
         };
+        let SnapshotRows {
+            server,
+            channels,
+            roles,
+            members,
+            profiles,
+            dms,
+            blocks,
+        } = rows;
         let diagnostics = Diagnostics::default();
         let admission = Admission::for_disk(own, &diagnostics);
         let requested: Vec<_> = profiles
@@ -162,3 +221,42 @@ mod sharing_tests;
 
 #[cfg(test)]
 mod user_observation_tests;
+
+#[cfg(test)]
+mod fictional_tests {
+    //! A fictional snapshot is admitted as a session's data is, at an epoch no session has.
+
+    use super::{ResourceSnapshot, SnapshotRows};
+    use crate::{Generation, Uuid};
+    use papo_api::wire::UserSummary;
+
+    fn person(id: u128, name: &str) -> UserSummary {
+        UserSummary {
+            id: Some(Uuid::from_u128(id).to_string()),
+            username: Some(name.to_lowercase()),
+            nickname: papo_api::NullableText::Value(name.to_owned()),
+            ..UserSummary::default()
+        }
+    }
+
+    #[test]
+    fn fictional_people_are_named_as_a_sessions_are_at_an_epoch_no_session_has() {
+        let rows = SnapshotRows {
+            members: vec![person(1, "Lia"), person(2, "Tomás")],
+            ..SnapshotRows::default()
+        };
+        let snapshot = ResourceSnapshot::fictional(rows, Uuid::from_u128(9)).unwrap();
+        assert_eq!(snapshot.generation, Generation::FICTIONAL);
+        let lia = snapshot.users.get(Uuid::from_u128(1)).unwrap();
+        assert_eq!(lia.nickname.as_deref(), Some("Lia"));
+        assert_eq!(
+            snapshot
+                .users
+                .get(Uuid::from_u128(2))
+                .unwrap()
+                .username
+                .as_deref(),
+            Some("tomás")
+        );
+    }
+}
