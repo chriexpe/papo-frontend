@@ -1,0 +1,141 @@
+//! Keys that work from anywhere in the window (`docs/design.md` §12, Go
+//! anywhere and Window): Ctrl+1–9 shows the server in that place of the
+//! rail; Ctrl+Tab, Ctrl+⇧Tab, Ctrl+PgDn and Ctrl+PgUp move between servers
+//! as tabs; Alt+⇧↑ and Alt+⇧↓ move to the previous or next unread channel;
+//! Alt+← and Alt+→ go back and forward through this server's channels;
+//! Ctrl+W closes the window, Ctrl+Q quits, F11 toggles full screen.
+//!
+//! Owns which key does what. Where the moves go is `navigation`'s; a popup
+//! or an open overlay keeps these keys for itself.
+
+use rune::{Key, KeyEvent, Mods, Tx};
+
+use super::Shell;
+
+/// Ctrl+W, Ctrl+Q, F11: the window's own keys, from anywhere.
+fn window_key(key: &KeyEvent, tx: &mut Tx) -> bool {
+    let mods = key.mods;
+    if key.is_command('w') && primary_only(mods) {
+        tx.close_window();
+    } else if key.is_command('q') && primary_only(mods) {
+        tx.quit();
+    } else if key.key == Key::Function(11) && mods == Mods::default() {
+        tx.toggle_full_screen();
+    } else {
+        return false;
+    }
+    true
+}
+
+/// Ctrl (⌘ on macOS) alone.
+fn primary_only(mods: Mods) -> bool {
+    (mods.cmd || mods.ctrl) && !mods.alt && !mods.shift && !mods.logo
+}
+
+impl Shell {
+    /// One of this module's keys, if it is one. Returns whether it was
+    /// taken.
+    pub(super) fn app_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        if window_key(key, tx) {
+            return true;
+        }
+        // A popup or an overlay holds the keyboard like a dialog does.
+        if self.popup_shown() || self.nav.accounts_open() || self.nav.direct_accounts_open() {
+            return false;
+        }
+        self.server_number_key(key, tx)
+            || self.server_step_key(key, tx)
+            || self.unread_step_key(key, tx)
+            || self.history_key(key, tx)
+    }
+
+    /// Ctrl+1–9: the server in that place of the rail.
+    fn server_number_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        if !primary_only(key.mods) {
+            return false;
+        }
+        let Some(place) = ('1'..='9').position(|digit| key.is_command(digit)) else {
+            return false;
+        };
+        if let Some(server) = self
+            .nav
+            .servers()
+            .servers
+            .get(place)
+            .map(|server| server.id)
+        {
+            self.select_server(server, tx);
+        }
+        true
+    }
+
+    /// Ctrl+Tab / Ctrl+PgDn to the next server, Ctrl+⇧Tab / Ctrl+PgUp to
+    /// the previous one, round the ends, as tabs do.
+    fn server_step_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        let ctrl = (mods.cmd || mods.ctrl) && !mods.alt && !mods.logo;
+        let by: isize = match key.key {
+            Key::Tab | Key::PageDown if ctrl && !mods.shift => 1,
+            Key::Tab if ctrl => -1,
+            Key::PageUp if ctrl && !mods.shift => -1,
+            _ => return false,
+        };
+        let servers = &self.nav.servers().servers;
+        if servers.is_empty() {
+            return true;
+        }
+        let count = servers.len();
+        let from = self
+            .nav
+            .selected()
+            .and_then(|selected| servers.iter().position(|server| server.id == selected.id));
+        let to = match from {
+            // From Direct, the first or last server.
+            None if by > 0 => 0,
+            None => count - 1,
+            Some(from) if by > 0 => (from + 1) % count,
+            Some(from) => (from + count - 1) % count,
+        };
+        let server = servers[to].id;
+        self.select_server(server, tx);
+        true
+    }
+
+    /// Alt+⇧↑ / Alt+⇧↓: the previous or next unread channel, round the
+    /// ends; nothing moves when no other is unread.
+    fn unread_step_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        let alt_shift = mods.alt && mods.shift && !mods.cmd && !mods.ctrl && !mods.logo;
+        let by = match key.key {
+            Key::Up if alt_shift => -1,
+            Key::Down if alt_shift => 1,
+            _ => return false,
+        };
+        if self.nav.direct_shown() {
+            return false;
+        }
+        if let Some(next) = self.nav.unread_channel_beside(by).map(str::to_owned) {
+            self.select_channel(&next, tx);
+        }
+        true
+    }
+
+    /// Alt+← / Alt+→: back and forward through this server's channels.
+    fn history_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        let alt_alone = mods.alt && !mods.shift && !mods.cmd && !mods.ctrl && !mods.logo;
+        let forward = match key.key {
+            Key::Left if alt_alone => false,
+            Key::Right if alt_alone => true,
+            _ => return false,
+        };
+        if self.nav.direct_shown() {
+            return false;
+        }
+        self.worked_outside();
+        if self.nav.step_history(forward).is_some() {
+            self.sync_timeline(Some(tx));
+        }
+        true
+    }
+}

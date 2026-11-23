@@ -279,6 +279,7 @@ impl Shell {
 
 mod accounts;
 mod activity;
+mod app_keys;
 mod composer;
 mod composer_input;
 mod content;

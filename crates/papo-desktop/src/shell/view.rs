@@ -173,6 +173,9 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         .or_else(|| super::search_panel::panel(shell, &title, &style, cx));
     let conversation = col()
         .key("conversation")
+        // A landmark, so F6 reaches it (`docs/design.md` §12).
+        .role("main")
+        .label(title.name())
         .grow(1.0)
         .min_w(0.0)
         .h_full()

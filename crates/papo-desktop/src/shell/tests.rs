@@ -12,6 +12,7 @@ use crate::composer::COMPOSER_KEY;
 use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 
 mod accounts;
+mod app_keys;
 mod channel_keys;
 mod composer;
 mod direct;

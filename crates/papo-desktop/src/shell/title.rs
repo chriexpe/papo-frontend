@@ -31,6 +31,14 @@ pub(crate) enum Title<'a> {
 }
 
 impl Title<'_> {
+    /// The conversation's name: "#general", or the person in a DM.
+    pub(crate) fn name(&self) -> String {
+        match self {
+            Title::Channel(channel) => format!("#{channel}"),
+            Title::Direct { name, .. } => name.clone(),
+        }
+    }
+
     /// The composer's prompt.
     pub(crate) fn placeholder(&self) -> String {
         match self {

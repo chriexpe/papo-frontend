@@ -65,7 +65,8 @@ impl Shell {
     /// Keys no control took: Alt+↑/↓ between channels, then Ctrl+A in the
     /// timeline.
     pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
-        self.channel_step_key(key, tx)
+        self.app_key(key, tx)
+            || self.channel_step_key(key, tx)
             || self.select_message_key(key, tx)
             || self.pins_key(key, tx)
             || self.search_shortcut(key, tx)
