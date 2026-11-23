@@ -44,6 +44,8 @@ pub(crate) fn channel_key(channel: &str) -> String {
 pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, palette: &Palette) -> El {
     let pane = col()
         .key("channel-pane")
+        .role("navigation")
+        .label(strings::channels_label())
         .w(SIDEBAR_WIDTH_PT)
         .h_full()
         .padding(SPACE_MD_PT)

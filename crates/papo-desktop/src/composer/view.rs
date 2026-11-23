@@ -136,6 +136,9 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, palette: &Pal
     };
     col()
         .key("composer-area")
+        // Its own landmark, so F6 reaches the field from the conversation.
+        .role("form")
+        .label(strings::composer_label())
         .w_full()
         .gap(SPACE_SM_PT)
         .children(note.map(|note| {

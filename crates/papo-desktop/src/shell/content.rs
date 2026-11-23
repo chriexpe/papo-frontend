@@ -205,6 +205,8 @@ impl Shell {
             || self.nav.removing.is_some()
             || self.resend.is_some()
             || self.deleting.is_some()
+            || self.shortcuts_open
+            || self.jump.is_some()
     }
 }
 

@@ -80,6 +80,8 @@ pub(crate) fn view(shell: &Shell, palette: &Palette) -> El {
     let grown = accounts_open.then(|| crate::account_switch::direct_grown(servers, palette));
     col()
         .key("channel-pane")
+        .role("navigation")
+        .label(strings::direct_title())
         .w(SIDEBAR_WIDTH_PT)
         .h_full()
         .padding(SPACE_MD_PT)

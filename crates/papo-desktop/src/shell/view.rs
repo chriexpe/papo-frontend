@@ -88,6 +88,12 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 if let Some(server) = removing {
                     app = app.child(remove_server::confirm(&server.name, &palette));
                 }
+                if let Some(jump) = super::jump_view::view(shell, &palette) {
+                    app = app.child(jump);
+                }
+                if shell.shortcuts_open {
+                    app = app.child(crate::shortcuts_sheet::view(&palette));
+                }
                 if let Some(prompt) = &shell.content.link {
                     app = app.child(links::confirm(prompt, &palette));
                 }
@@ -173,6 +179,9 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         .or_else(|| super::search_panel::panel(shell, &title, &style, cx));
     let conversation = col()
         .key("conversation")
+        // A landmark, so F6 reaches it (`docs/design.md` §12).
+        .role("main")
+        .label(title.name())
         .grow(1.0)
         .min_w(0.0)
         .h_full()

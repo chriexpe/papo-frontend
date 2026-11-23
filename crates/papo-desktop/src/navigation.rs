@@ -38,6 +38,8 @@ pub(crate) struct Navigation {
     picked_dm: Option<Arc<DirectMessageItem>>,
     /// The channel picked on each server, by the server's channel id.
     channels: HashMap<ServerId, String>,
+    /// Each server's history of shown channels, for Back and Forward.
+    history: HashMap<ServerId, moves::ChannelHistory>,
     /// The order sent to the SDK, shown until the registry has it.
     pending_order: Option<Vec<ServerId>>,
     drag: Option<RailDrag>,
@@ -73,9 +75,20 @@ impl Navigation {
         if self.pending_order.as_deref() == Some(list.order().as_slice()) {
             self.pending_order = None;
         }
+        let before = self.servers.clone();
         self.servers = list;
         let order = self.servers.order();
         self.channels.retain(|server, _| order.contains(server));
+        // A server keeps its history while it shows the same account: one
+        // removed, or showing another account, starts anew.
+        let shown = |list: &ServerList, server: ServerId| {
+            list.get(server)
+                .and_then(|entry| entry.account.as_ref().map(|account| account.id))
+        };
+        let servers = &self.servers;
+        self.history.retain(|server, _| {
+            servers.get(*server).is_some() && shown(&before, *server) == shown(servers, *server)
+        });
         if self
             .selected
             .is_none_or(|selected| !order.contains(&selected))
@@ -268,8 +281,14 @@ impl Navigation {
         channels.nth(to).map(|channel| channel.id.as_str())
     }
 
+    /// Shows `channel` in the selected server; the one left is where Back
+    /// goes.
     pub(crate) fn select_channel(&mut self, channel: &str) {
+        let left = self.selected_channel().map(str::to_owned);
         if let Some(server) = self.selected {
+            if let Some(left) = left.filter(|left| left != channel) {
+                self.history.entry(server).or_default().left(left);
+            }
             self.channels.insert(server, channel.to_owned());
         }
     }
@@ -382,6 +401,8 @@ fn moved(order: &mut Vec<ServerId>, from: usize, to: usize) {
 fn same_servers(a: &[ServerId], b: &[ServerId]) -> bool {
     a.len() == b.len() && a.iter().all(|id| b.contains(id))
 }
+
+mod moves;
 
 #[cfg(test)]
 mod tests;

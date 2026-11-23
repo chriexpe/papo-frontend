@@ -78,6 +78,16 @@ pub(crate) enum Showing {
 }
 
 impl Tabs {
+    /// The timelines shown this run, most recently shown first: the open
+    /// ones, then the closed ones whose place is kept.
+    pub(crate) fn recently_shown(&self) -> impl Iterator<Item = TimelineKey> + '_ {
+        self.open
+            .iter()
+            .rev()
+            .map(|open| open.key)
+            .chain(self.places.iter().rev().map(|(key, _)| *key))
+    }
+
     pub(crate) fn shown(&self) -> Option<&OpenTimeline> {
         let key = self.shown?;
         self.open.last().filter(|open| open.key == key)

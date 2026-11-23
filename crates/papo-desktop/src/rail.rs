@@ -74,6 +74,9 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, palette: 
         .child(servers);
     col()
         .key("rail")
+        // A landmark, so F6 reaches it (`docs/design.md` §12).
+        .role("navigation")
+        .label(strings::rail_label())
         .w(RAIL_WIDTH_PT)
         .h_full()
         .items_center()

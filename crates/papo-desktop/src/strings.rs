@@ -74,6 +74,7 @@ mod reading;
 mod replies;
 mod search;
 mod servers;
+mod shortcuts;
 mod sign_in;
 mod timeline;
 
@@ -86,6 +87,7 @@ pub(crate) use reading::*;
 pub(crate) use replies::*;
 pub(crate) use search::*;
 pub(crate) use servers::*;
+pub(crate) use shortcuts::*;
 pub(crate) use sign_in::*;
 pub(crate) use timeline::*;
 
