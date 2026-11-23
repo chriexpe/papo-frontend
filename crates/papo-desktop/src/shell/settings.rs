@@ -305,6 +305,11 @@ fn applied(
             next.background = Background::new(&colours, *value);
         }
         Change::Slider {
+            row: RowId::Grain,
+            value,
+            ..
+        } => next.grain = value.clamp(0.0, 1.0),
+        Change::Slider {
             row: RowId::Slider(value_of),
             value,
             ..

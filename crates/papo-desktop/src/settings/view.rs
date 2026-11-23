@@ -36,6 +36,8 @@ pub(crate) struct PanelView<'a> {
     pub(crate) system_dark: bool,
     pub(crate) system_font_known: bool,
     pub(crate) reduced_transparency: bool,
+    /// The grain's tile for the theme drawn, for Grain's slider.
+    pub(crate) grain: Option<&'a rune::Pixels>,
 }
 
 /// The panel over the app. Escape closes a menu first (its own), then the
@@ -52,7 +54,7 @@ pub(crate) fn view(panel: &PanelView<'_>, look: &Look) -> El {
     // bottom edge one gap above the account pill.
     let margin = RAIL_WIDTH_PT + look.space(SPACE_MD);
     let bottom = look.space(SPACE_MD) * 2.0 + look.space(PANE_PILL_HEIGHT);
-    let body = main(panel.panel, &context, look);
+    let body = main(panel.panel, &context, panel.grain, look);
     let frame = row()
         .key(SETTINGS_KEY)
         .w_full()
@@ -207,12 +209,18 @@ fn nav_row(page: PageId, summary: &str, current: bool, look: &Look) -> El {
 }
 
 /// The page or the search results, under their head.
-fn main(panel: &SettingsPanel, context: &Context<'_>, look: &Look) -> El {
+fn main(
+    panel: &SettingsPanel,
+    context: &Context<'_>,
+    grain: Option<&rune::Pixels>,
+    look: &Look,
+) -> El {
     let cx = Ctx {
         look,
         appearance: context.appearance,
         failed: panel.failed().map(super::Change::row),
         colour: panel.colour,
+        grain,
     };
     let query = panel.query();
     let (title, scope, back, blocks) = if query.is_empty() {

@@ -19,6 +19,9 @@ use crate::{
     channel_pane, composer, direct_pane, links, menu, notice, rail, remove_server, timeline,
 };
 
+/// The window's root element, whose size the grain is tiled to.
+const ROOT_KEY: &str = "shell-root";
+
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
 pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
@@ -27,6 +30,34 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
         reduced_transparency: false,
     };
     let look = shell.look(system);
+    let grain = shell.grain.as_ref().and_then(|tiles| {
+        crate::grain::overlay(
+            tiles,
+            shell.shown_appearance().grain,
+            look.theme().is_dark(),
+            cx.layout_size(ROOT_KEY),
+            cx.env().scale,
+        )
+    });
+    // The grain lies over everything (`docs/design.md` §4), taking no
+    // input.
+    col()
+        .key(ROOT_KEY)
+        .w_full()
+        .h_full()
+        .child(body(shell, system, &look, cx))
+        .children(grain)
+}
+
+/// The shell itself: nothing while starting, why the app cannot work, the
+/// first-run screens, or the app with its overlays.
+fn body(
+    shell: &Shell,
+    system: super::appearance::SystemLook,
+    look: &Look,
+    cx: &mut Cx<Shell>,
+) -> El {
+    let look = *look;
     let theme = look.theme();
     cx.help_look(hint_look(&look, look.theme().is_dark()));
     let surface = col().w_full().h_full().fill(look.palette.surface_content);
@@ -76,6 +107,10 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                         system_dark: cx.system_dark(),
                         system_font_known: shell.system_font.is_some(),
                         reduced_transparency: system.reduced_transparency,
+                        grain: shell
+                            .grain
+                            .as_ref()
+                            .map(|tiles| tiles.pixels(look.theme().is_dark())),
                     };
                     app = app.child(crate::settings::view(&view, &look));
                 }

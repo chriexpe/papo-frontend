@@ -74,6 +74,7 @@ pub(crate) enum RowId {
     Glass,
     Field,
     Strength,
+    Grain,
     Directions,
     Slider(ShapeValue),
 }

@@ -64,6 +64,8 @@ pub(crate) enum Track {
     Strength,
     /// A plain track in the hover colour.
     Plain,
+    /// Grain (§4): from clean to coarse, the thumb showing the grain.
+    Grain,
 }
 
 /// What the rows are built from.
@@ -187,6 +189,19 @@ fn background(cx: &Context<'_>) -> Vec<Group> {
             track: Track::Strength,
         }),
     };
+    let oled = appearance.theme_or(cx.system_dark) == Theme::Oled;
+    let grain = Row {
+        id: RowId::Grain,
+        title: strings::settings_grain().to_owned(),
+        sub: oled.then(|| strings::settings_grain_oled().to_owned()),
+        kind: Kind::Slider(Slider {
+            value: appearance.grain,
+            min: 0.0,
+            max: 1.0,
+            step: 0.05,
+            track: Track::Grain,
+        }),
+    };
     vec![
         Group {
             title: None,
@@ -199,7 +214,7 @@ fn background(cx: &Context<'_>) -> Vec<Group> {
         },
         Group {
             title: None,
-            rows: vec![strength],
+            rows: vec![strength, grain],
         },
     ]
 }

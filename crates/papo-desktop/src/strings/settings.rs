@@ -186,6 +186,16 @@ pub(crate) fn settings_field_spoken() -> &'static str {
     text!("settings.field_spoken")
 }
 
+/// Grain.
+pub(crate) fn settings_grain() -> &'static str {
+    text!("settings.grain")
+}
+
+/// Grain's summary on OLED.
+pub(crate) fn settings_grain_oled() -> &'static str {
+    text!("settings.grain_oled")
+}
+
 /// Text size.
 pub(crate) fn settings_text_size() -> &'static str {
     text!("settings.text_size")

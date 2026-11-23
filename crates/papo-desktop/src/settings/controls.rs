@@ -34,6 +34,8 @@ pub(super) struct Ctx<'a> {
     pub(super) appearance: &'a Appearance,
     pub(super) failed: Option<RowId>,
     pub(super) colour: super::ColourState,
+    /// The grain's tile for this theme, for Grain's slider.
+    pub(super) grain: Option<&'a rune::Pixels>,
 }
 
 /// A group: its optional title, then its rows as one block of tiles.
@@ -327,34 +329,7 @@ fn slider_row(setting: &Row, slider: Slider, cx: &Ctx<'_>) -> El {
                 .color(look.palette.text_secondary),
         );
     let span = (slider.max - slider.min).max(f32::EPSILON);
-    let share = ((slider.value - slider.min) / span).clamp(0.0, 1.0);
-    let (track_fill, thumb_fill) = track_colours(slider.track, share, cx);
-    let thumb = el()
-        .size(SLIDER_THUMB_PT, SLIDER_THUMB_PT)
-        .radius(SLIDER_THUMB_PT / 2.0)
-        .fill(thumb_fill)
-        .border(SLIDER_THUMB_RING_PT, Color::WHITE)
-        .shadow(1.0, 4.0, Color::BLACK.alpha(0.3));
-    // The thumb rides between two spacers that share what is left of the
-    // track, so it sits at `share` of the way without knowing the width.
-    let rail = row()
-        .w_full()
-        .h(SLIDER_THUMB_PT)
-        .center_y()
-        .child(el().grow(share.max(1e-4)))
-        .child(thumb)
-        .child(el().grow((1.0 - share).max(1e-4)));
-    let track = el()
-        .w_full()
-        .h(SLIDER_TRACK_PT)
-        .radius(SLIDER_TRACK_PT / 2.0)
-        .border(FIELD_OUTLINE_PT, look.palette.line_strong);
-    let track = match track_fill {
-        TrackFill::Solid(colour) => track.fill(colour),
-        TrackFill::Gradient(from, to) => track
-            .fill(from)
-            .linear_gradient(90.0, [(0.0, from), (1.0, to)]),
-    };
+    let (track, rail) = slider_track(slider, span, cx);
     let control = el()
         .key(id.key())
         .w_full()
@@ -412,6 +387,72 @@ fn slider_row(setting: &Row, slider: Slider, cx: &Ctx<'_>) -> El {
         .child(control)
 }
 
+/// A slider's track and the rail its thumb rides on, at `slider`'s value
+/// over its `span`.
+fn slider_track(slider: Slider, span: f32, cx: &Ctx<'_>) -> (El, El) {
+    let look = cx.look;
+    let share = ((slider.value - slider.min) / span).clamp(0.0, 1.0);
+    let (track_fill, thumb_fill) = track_colours(slider.track, share, cx);
+    let mut thumb = el()
+        .size(SLIDER_THUMB_PT, SLIDER_THUMB_PT)
+        .radius(SLIDER_THUMB_PT / 2.0)
+        .clip_rounded(SLIDER_THUMB_PT / 2.0)
+        .fill(thumb_fill)
+        .border(SLIDER_THUMB_RING_PT, Color::WHITE)
+        .shadow(1.0, 4.0, Color::BLACK.alpha(0.3));
+    if let (Track::Grain, Some(grain)) = (slider.track, cx.grain) {
+        thumb = thumb.child(
+            el().w_full()
+                .h_full()
+                .pixels(grain)
+                .opacity(grain_shown(slider.value, cx)),
+        );
+    }
+    // The thumb rides between two spacers that share what is left of the
+    // track, so it sits at `share` of the way without knowing the width.
+    let rail = row()
+        .w_full()
+        .h(SLIDER_THUMB_PT)
+        .center_y()
+        .child(el().grow(share.max(1e-4)))
+        .child(thumb)
+        .child(el().grow((1.0 - share).max(1e-4)));
+    let track = el()
+        .w_full()
+        .h(SLIDER_TRACK_PT)
+        .radius(SLIDER_TRACK_PT / 2.0)
+        .border(FIELD_OUTLINE_PT, look.palette.line_strong);
+    let track = match track_fill {
+        TrackFill::Solid(colour) => track.fill(colour),
+        TrackFill::Gradient(from, to) => track
+            .fill(from)
+            .linear_gradient(90.0, [(0.0, from), (1.0, to)]),
+    };
+    // Grain's track runs from clean to coarse in steps, each the grain at
+    // its share of the way (§4).
+    let track = match (slider.track, cx.grain) {
+        (Track::Grain, Some(grain)) => {
+            track
+                .clip_rounded(SLIDER_TRACK_PT / 2.0)
+                .child(
+                    row()
+                        .w_full()
+                        .h_full()
+                        .children((0..GRAIN_STEPS).map(|step| {
+                            #[expect(clippy::cast_precision_loss, reason = "a handful of steps")]
+                            let at = step as f32 / (GRAIN_STEPS - 1) as f32;
+                            el().grow(1.0)
+                                .h_full()
+                                .pixels(grain)
+                                .opacity(grain_shown(at, cx))
+                        })),
+                )
+        }
+        _ => track,
+    };
+    (track, rail)
+}
+
 /// Where a key moves `slider`: a step, ten steps, or an end.
 fn slider_key(key: &KeyEvent, slider: Slider) -> Option<f32> {
     let next = match key.key {
@@ -457,5 +498,21 @@ fn track_colours(track: Track, share: f32, cx: &Ctx<'_>) -> (TrackFill, Color) {
             TrackFill::Solid(look.palette.surface_hover),
             look.palette.surface_pill,
         ),
+        Track::Grain => (
+            TrackFill::Solid(look.palette.surface_hover),
+            look.palette.surface_hover,
+        ),
     }
+}
+
+/// The steps of Grain's track.
+const GRAIN_STEPS: usize = 8;
+/// How much stronger the grain shows on its slider than over the window,
+/// so a small track and thumb show it (the mock's 3).
+const GRAIN_SLIDER_EMPHASIS: f32 = 3.0;
+
+/// The grain's opacity on its slider at `grain` (0–1).
+fn grain_shown(grain: f32, cx: &Ctx<'_>) -> f32 {
+    (crate::grain::GrainTiles::strength(grain, cx.look.theme().is_dark()) * GRAIN_SLIDER_EMPHASIS)
+        .min(1.0)
 }

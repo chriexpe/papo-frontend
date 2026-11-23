@@ -19,6 +19,7 @@ mod device_settings;
 mod direct_list;
 mod direct_pane;
 mod fonts;
+mod grain;
 mod icons;
 mod keyring;
 mod layout_prefs;

@@ -72,6 +72,8 @@ pub(crate) struct Shell {
     appearance: crate::appearance::AppearanceStore,
     /// The settings panel, while open.
     settings: Option<crate::settings::SettingsPanel>,
+    /// The grain's tiles, made when the window starts.
+    grain: Option<crate::grain::GrainTiles>,
     /// The system's interface font family, for "Use the system font"; none
     /// when the desktop names none.
     system_font: Option<&'static str>,
@@ -195,6 +197,7 @@ impl Default for Shell {
             tabs: Tabs::default(),
             appearance: crate::appearance::AppearanceStore::default(),
             settings: None,
+            grain: None,
             system_font: None,
             local_time: LocalTime::system(),
             save_due_s: None,
@@ -254,7 +257,9 @@ impl Shell {
     /// decoder and reads this device's trusted domains and reading
     /// settings.
     pub(crate) fn setup(&mut self, waker: rune::Waker) {
-        self.images = Some(ImageCache::new(waker));
+        let images = ImageCache::new(waker);
+        self.grain = Some(crate::grain::GrainTiles::new(&images));
+        self.images = Some(images);
         self.content.load();
         self.prefs = ReadingPrefs::load();
         self.layout = crate::layout_prefs::LayoutPrefs::load();
