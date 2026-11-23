@@ -71,10 +71,10 @@ pub fn mention_query(text: &str, caret: usize, mentions: &[Range<usize>]) -> Opt
     })
 }
 
-/// The people `query` finds for a message in `channel`, ranked, for `account_user`: in a
-/// server channel the roster, with `@everyone` leading when it matches and the account's
-/// global permissions allow it (unknown permissions leave it out); in a direct conversation
-/// only its two people, and never `@everyone`.
+/// The people `query` finds for a message in `channel`, ranked, for `account_user`: the
+/// roster, with `@everyone` leading when it matches and the account's global permissions
+/// allow it (unknown permissions leave it out). A direct conversation offers none: its two
+/// people need no mention.
 #[must_use]
 pub fn mention_suggestions(
     snapshot: &ResourceSnapshot,
@@ -82,18 +82,13 @@ pub fn mention_suggestions(
     channel: Uuid,
     query: &str,
 ) -> Vec<MentionSuggestion> {
+    if snapshot.dms.get(channel).is_some() {
+        return Vec::new();
+    }
     let query = query.to_lowercase();
-    let direct = snapshot
-        .dms
-        .get(channel)
-        .map(|dm| [account_user, dm.peer_id]);
     let mut starting = Vec::new();
     let mut containing = Vec::new();
-    let people: Vec<Uuid> = match direct {
-        Some(people) => people.into_iter().collect(),
-        None => snapshot.members.iter().collect(),
-    };
-    for id in people {
+    for id in snapshot.members.iter() {
         let Some(user) = snapshot.users.get(id) else {
             continue;
         };
@@ -121,8 +116,8 @@ pub fn mention_suggestions(
             break;
         }
     }
-    let everyone_allowed = direct.is_none()
-        && global_permissions(snapshot, account_user).is_ok_and(|granted| granted.everyone_message);
+    let everyone_allowed =
+        global_permissions(snapshot, account_user).is_ok_and(|granted| granted.everyone_message);
     let everyone = (everyone_allowed && EVERYONE.starts_with(&query)).then(|| MentionSuggestion {
         target: MentionTarget::Everyone,
         name: EVERYONE.to_owned(),

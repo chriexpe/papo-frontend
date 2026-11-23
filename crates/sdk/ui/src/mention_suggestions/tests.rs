@@ -8,13 +8,13 @@ fn id(n: u128) -> Uuid {
     Uuid::from_u128(0x1000 + n)
 }
 
-/// A roster of `names`, in order, the first one the account's own; `owner` makes the account
-/// the server's owner, who may notify everyone.
 /// A server channel: not one of the snapshot's direct conversations.
 fn channel() -> Uuid {
     id(50)
 }
 
+/// A roster of `names`, in order, the first one the account's own; `owner` makes the account
+/// the server's owner, who may notify everyone.
 fn roster(names: &[&str], owner: bool) -> ResourceSnapshot {
     roster_with_dm(names, owner, None)
 }
@@ -131,20 +131,20 @@ fn an_empty_nickname_falls_back_to_the_username() {
 }
 
 #[test]
-fn a_direct_conversation_offers_only_its_two_people_and_never_everyone() {
+fn a_direct_conversation_offers_no_mentions() {
     let dm = id(60);
     // The owner could mention everyone in a server channel.
-    let snapshot = roster_with_dm(&["me", "eva", "ana", "everton"], true, Some((dm, 1)));
-    assert_eq!(
-        names(&mention_suggestions(&snapshot, id(0), dm, "ev")),
-        ["eva"]
-    );
+    let snapshot = roster_with_dm(&["me", "eva", "ana"], true, Some((dm, 1)));
     assert_eq!(
         names(&mention_suggestions(&snapshot, id(0), dm, "")),
-        ["me", "eva"]
+        [""; 0]
+    );
+    assert_eq!(
+        names(&mention_suggestions(&snapshot, id(0), dm, "ev")),
+        [""; 0]
     );
     assert!(
         names(&mention_suggestions(&snapshot, id(0), channel(), "e")).contains(&"everyone"),
-        "the same account still mentions everyone in a channel"
+        "the same account still mentions in a channel"
     );
 }

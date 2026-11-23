@@ -382,3 +382,37 @@ fn direct_access_answers_from_the_lists_and_asks_only_for_a_conversation_they_le
     })??;
     fixture.finish()
 }
+
+#[test]
+fn account_activity_publishes_only_a_view_that_changed() -> Result {
+    let fixture = Fixture::new(0, vec![])?;
+    fixture.run(async {
+        let session = fixture.signed_in("activity-quiet").await?;
+        let mut activity = ActivityService::new(session.clone()).subscribe();
+        let lia = Uuid::from_u128(0x2000_0000_0000_4000_8000_0000_0000_0061);
+        // The account's own typing changes the SDK's memory, not the view.
+        for event in [
+            serde_json::json!({"type": "typing", "channel_id": channel().to_string(),
+                "user_id": session.account().user().to_string(), "is_typing": true}),
+            serde_json::json!({"type": "presence_update", "user_id": lia.to_string(),
+                "status": "busy"}),
+        ] {
+            fixture
+                .server()
+                .emit_event(serde_json::from_value(event)?)
+                .await?;
+        }
+        let view = activity
+            .stream
+            .next()
+            .await
+            .ok_or("activity stream closed")?;
+        assert_eq!(
+            view.presence_mark(lia),
+            Some(PresenceMark::Busy),
+            "the first view published is the one with news"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}
