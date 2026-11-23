@@ -50,6 +50,11 @@ pub(crate) enum Request {
 }
 
 impl OpenTimeline {
+    /// The rows last reported visible.
+    pub(crate) fn visible_range(&self) -> Range<usize> {
+        self.visible_rows.clone()
+    }
+
     /// The rows `range` are visible: records them for the anchor and
     /// returns the history requests the reader's place calls for.
     pub(crate) fn rows_visible(&mut self, range: Range<usize>) -> Vec<Request> {

@@ -91,6 +91,10 @@ impl TimelineHost for Host {
 
     fn message_hovered(&mut self, _key: TimelineKey, _message: Uuid, _hovered: bool) {}
 
+    fn message_pressed(&mut self, _key: TimelineKey) {
+        self.controls.push("message-pressed");
+    }
+
     fn hourglass_pressed(&mut self, _key: TimelineKey) {
         self.controls.push("hourglass");
     }

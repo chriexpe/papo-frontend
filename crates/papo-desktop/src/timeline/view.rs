@@ -60,6 +60,8 @@ pub(crate) trait TimelineHost: Sized + 'static {
     /// Code block `index` (its text's index) of message `message` was
     /// copied.
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx);
+    /// A press on a message of timeline `key` that nothing in it took.
+    fn message_pressed(&mut self, key: TimelineKey);
     /// The pointer entered or left message `message`.
     fn message_hovered(&mut self, key: TimelineKey, message: Uuid, hovered: bool);
     /// ⌛ was pressed.

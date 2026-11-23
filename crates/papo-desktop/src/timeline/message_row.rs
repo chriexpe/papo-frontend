@@ -141,6 +141,10 @@ pub(super) fn message_row<S: TimelineHost>(
                     host.message_hovered(key, id, hovered);
                     tx.live_only();
                 })
+                // A press anywhere on the message that nothing in it took
+                // (text, a link, the bar): the conversation was pressed.
+                // The row stays a list item, and still takes the keyboard.
+                .on_background_press_tx(move |host: &mut S, _tx| host.message_pressed(key))
                 .focusable(true)
                 // Only the keyboard focuses a message (Christian,
                 // 2026-11-22): a click leaves the keyboard where it was.

@@ -136,3 +136,29 @@ fn moving_to_the_next_row_never_shows_two_bars() {
     settle(&mut rt);
     assert_eq!(bar_opacity(&rt, second), Some(1.0));
 }
+
+#[test]
+fn the_bars_half_over_the_row_above_keeps_its_own_row() {
+    let mut rt = runtime(turns(12), MessageLayout::default());
+    let x = 400.0;
+    rt.pointer_move(x, 560.0);
+    settle(&mut rt);
+    let row = message_at(&rt, x, 560.0).expect("a message under the pointer");
+    let path = format!("/{}/", message_key(Uuid::from_u128(row)));
+    let bar = rt
+        .elements()
+        .into_iter()
+        .find(|element| element.path.contains(&path) && element.path.ends_with("/bar"))
+        .expect("its bar")
+        .rect;
+    // A point on the bar above the row's top edge: over the row above.
+    let (bx, by) = (bar[0] + bar[2] / 2.0, bar[1] + 3.0);
+    rt.pointer_move(bx, by);
+    settle(&mut rt);
+    assert_eq!(bar_opacity(&rt, row), Some(1.0), "the bar stays on its row");
+    assert_eq!(
+        bar_opacity(&rt, row - 1),
+        Some(0.0),
+        "and the row above shows none"
+    );
+}

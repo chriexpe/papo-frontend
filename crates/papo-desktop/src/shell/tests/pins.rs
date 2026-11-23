@@ -180,3 +180,36 @@ fn the_pointer_coming_back_onto_the_shrunk_panel_stretches_it() {
     rt.frame(FRAME_S);
     assert!(rt.state.shown_pins_panel().is_some_and(|panel| !panel.peek));
 }
+
+#[test]
+fn with_nothing_opened_a_press_on_a_message_closes_the_panel_and_leaving_does_not() {
+    let mut rt = conversation("");
+    pin(&mut rt, &[1]);
+    ctrl_p(&mut rt);
+    rt.update(|shell, _tx| shell.pins_left());
+    rt.frame(FRAME_S);
+    assert!(
+        rt.state.shown_pins_panel().is_some(),
+        "leaving it alone keeps it"
+    );
+    let row = rt
+        .elements()
+        .into_iter()
+        .find(|element| {
+            element
+                .path
+                .ends_with(&format!("{}/message", message_key(message_id(2))))
+        })
+        .expect("message 2's row")
+        .rect;
+    // The row's left edge, past its avatar and text: nothing in it takes the press.
+    let (x, y) = (row[0] + row[2] - 4.0, row[1] + row[3] - 2.0);
+    rt.pointer_move(x, y);
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    rt.frame(FRAME_S);
+    assert!(
+        rt.state.shown_pins_panel().is_none(),
+        "a press on a message closes it"
+    );
+}

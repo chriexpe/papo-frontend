@@ -5,8 +5,10 @@
 //! the panel stays open marking it. The pointer leaving it then shrinks it
 //! to its header and that pin (`PanelPeek`): the pointer leaves before any
 //! press on a message or scroll of the conversation, which never reach the
-//! panel. 📌, Ctrl+P or a click on it stretch it back. With nothing opened,
-//! a press on the conversation's background closes it. Escape closes it.
+//! panel. 📌, Ctrl+P, the pointer coming back onto it or a click on it
+//! stretch it back. With nothing opened, a press on the conversation or a
+//! scroll of it under the pointer closes it (leaving it alone does not).
+//! Escape closes it.
 //! Unpin applies at once.
 
 use std::time::Duration;
@@ -81,6 +83,20 @@ impl Shell {
             Some(_) => self.pins_panel = None,
             None => {}
         }
+    }
+
+    /// The conversation scrolled under the pointer: the panel shrinks to
+    /// the opened pin, or closes with none opened, as for a press outside.
+    /// Returns whether it changed.
+    pub(crate) fn pins_scrolled(&mut self) -> bool {
+        let Some(panel) = self.shown_pins_panel() else {
+            return false;
+        };
+        if panel.peek {
+            return false;
+        }
+        self.pins_outside();
+        true
     }
 
     /// The pointer left the panel: once a pin was opened from it, the
