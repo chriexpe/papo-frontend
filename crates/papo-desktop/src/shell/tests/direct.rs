@@ -200,3 +200,25 @@ fn the_typing_line_names_who_else_types_in_the_shown_conversation_and_goes_when_
     assert_eq!(typing_line(&rt), None);
     assert!(settles(&mut rt), "no frames while nobody types");
 }
+
+#[test]
+fn a_conversation_a_card_opened_is_picked_once_the_list_holds_it() {
+    let mut rt = with_servers();
+    let row = dm(7, lia(), "Lia", "Lumen");
+    let id = row.id.clone();
+    rt.update(move |shell, tx| shell.await_dm(id, tx));
+    assert!(
+        rt.state.navigation().picked_dm().is_none(),
+        "not in the list yet"
+    );
+    rt.update(move |shell, tx| {
+        shell.direct_posted([row].into_iter().collect(), tx);
+    });
+    let picked = rt
+        .state
+        .navigation()
+        .picked_dm()
+        .map(|picked| picked.id.clone());
+    assert_eq!(picked, Some(dm(7, lia(), "Lia", "Lumen").id.clone()));
+    assert!(rt.state.navigation().direct_shown());
+}

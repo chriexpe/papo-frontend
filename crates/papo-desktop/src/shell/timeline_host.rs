@@ -8,11 +8,13 @@ use papo_sdk::Uuid;
 use rune::{KeyEvent, Tx};
 
 use super::Shell;
+use crate::composer::COMPOSER_KEY;
 use crate::menu::Placement;
 use crate::timeline::content::Press;
 use crate::timeline::echoes::SendState;
 use crate::timeline::hover_bar::{BarPress, more_key};
 use crate::timeline::reactors::Want;
+use crate::timeline::rows::author_key;
 use crate::timeline::{OpenTimeline, Request, TimelineHost, TimelineKey};
 
 impl TimelineHost for Shell {
@@ -80,6 +82,13 @@ impl TimelineHost for Shell {
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx) {
         self.worked_outside();
         self.code_copied_in(key, message, index, tx);
+    }
+
+    fn author_pressed(&mut self, key: TimelineKey, id: Uuid, user: Uuid, tx: &mut Tx) {
+        // A press moves no keyboard focus: what had it gets it back, as
+        // from a menu the pointer opened.
+        let trigger = tx.focused().unwrap_or(COMPOSER_KEY).to_owned();
+        self.open_card(key, user, Placement::Beside(author_key(id)), trigger, tx);
     }
 
     fn message_pressed(&mut self, key: TimelineKey) {

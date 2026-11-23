@@ -183,6 +183,16 @@ line_icon!(
     "edit"
 );
 line_icon!(
+    /// Ban, on a profile card.
+    BAN,
+    "ban"
+);
+line_icon!(
+    /// Block and Unblock, on a profile card.
+    BLOCK,
+    "block"
+);
+line_icon!(
     /// Direct messages: the rail's Direct.
     DIRECT,
     "direct"

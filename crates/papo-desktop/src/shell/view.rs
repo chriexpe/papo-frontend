@@ -67,10 +67,14 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 }
                 if let Some(menu) = &shell.nav.menu {
                     app = app.children(menu::pointer_point(menu));
-                    let body = super::reactions_list::body(shell, &palette);
-                    // A list whose message went away draws nothing; the
-                    // next poll closes it.
-                    if body.is_some() || menu.reactions.is_none() {
+                    let body = if menu.card.is_some() {
+                        super::profile_card::body(shell, &palette)
+                    } else {
+                        super::reactions_list::body(shell, &palette)
+                    };
+                    // A list or card whose conversation went away draws
+                    // nothing; the next poll closes it.
+                    if body.is_some() || (menu.reactions.is_none() && menu.card.is_none()) {
                         app = app.child(menu::view(menu, body, &palette, cx));
                     }
                 }

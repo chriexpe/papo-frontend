@@ -252,5 +252,21 @@
   "typing.one_phrase": "{{name}} {{phrase}}",
   "typing.two": "{{first}} e {{second}} estão digitando…",
   "typing.three": "{{first}}, {{second}} e {{third}} estão digitando…",
-  "typing.many": "Várias pessoas estão digitando…"
+  "typing.many": "Várias pessoas estão digitando…",
+  "card.label": "Perfil de {{name}}",
+  "card.roles": "Cargos",
+  "card.about": "Sobre",
+  "card.member_since": "Membro desde {{date}}",
+  "card.message": "Mensagem",
+  "card.copy_id": "Copiar ID",
+  "card.block": "Bloquear",
+  "card.unblock": "Desbloquear",
+  "card.ban": "Banir",
+  "card.ban_ask": "Banir {{name}} de {{server}}?",
+  "card.cancel": "Cancelar",
+  "notice.block_failed": "Não deu para bloquear.",
+  "notice.unblock_failed": "Não deu para desbloquear.",
+  "notice.ban_failed": "Não deu para banir.",
+  "notice.dm_open_failed": "Não deu para abrir a conversa.",
+  "notice.dm_refused": "Você não pode mandar mensagem para essa pessoa."
 }

@@ -97,6 +97,9 @@ pub(crate) struct Shell {
     activity: HashMap<AccountId, activity::Activity>,
     /// The direct conversations, newest activity first.
     direct: direct_list::DirectRows,
+    /// The conversation a card's Message opened, picked once the list
+    /// holds it.
+    awaited_dm: Option<papo_sdk_ui::DirectMessageId>,
     /// The notice pill, while one shows.
     notice: Option<crate::notice::Notice>,
     /// Pins and unpins on their way.
@@ -170,6 +173,7 @@ impl Default for Shell {
             seeks: 0,
             activity: HashMap::new(),
             direct: direct_list::DirectRows::new(),
+            awaited_dm: None,
             notice: None,
             pinning: reacting::Pinning::default(),
             stretched: None,
@@ -258,6 +262,7 @@ mod navigate;
 mod outgoing;
 pub(crate) mod pins;
 mod pins_panel;
+mod profile_card;
 mod reacting;
 mod reactions_list;
 mod reactors;

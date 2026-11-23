@@ -162,6 +162,16 @@ pub(crate) const AVATAR_ROW: AvatarSize = AvatarSize {
     letter: super::TYPE_SMALL_MEDIUM,
 };
 
+/// The avatar on a profile card or pane.
+pub(crate) const AVATAR_CARD: AvatarSize = AvatarSize {
+    side_pt: 64.0,
+    radius_pt: 20.0,
+    ring_pt: 22.0,
+    mark_pt: 16.0,
+    overhang_pt: 4.0,
+    letter: super::TYPE_DISPLAY,
+};
+
 /// A direct conversation's row in Direct, in points tall.
 pub(crate) const DM_ROW_HEIGHT_PT: f32 = 44.0;
 

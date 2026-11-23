@@ -331,6 +331,10 @@ impl Shell {
         }
     }
 
+    pub(super) fn shown_timeline(&self, key: TimelineKey) -> Option<&OpenTimeline> {
+        self.tabs.shown().filter(|open| open.key == key)
+    }
+
     pub(super) fn shown_timeline_mut(&mut self, key: TimelineKey) -> Option<&mut OpenTimeline> {
         self.tabs.shown_mut().filter(|open| open.key == key)
     }

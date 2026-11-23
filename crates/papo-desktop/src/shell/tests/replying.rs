@@ -73,6 +73,11 @@ pub(super) fn conversation(draft: &str) -> Runtime<Shell> {
 /// The account, Lia, the shown channel (no overwrites: everyone writes) and
 /// a server owned by someone else.
 fn resources(key: TimelineKey) -> ResourceSnapshot {
+    resources_owned_by(key, Uuid::from_u128(0x4001))
+}
+
+/// [`resources`], with the server owned by `owner`.
+pub(super) fn resources_owned_by(key: TimelineKey, owner: Uuid) -> ResourceSnapshot {
     let person = |id: Uuid, name: &str| UserSummary {
         id: Some(id.to_string()),
         username: Some(name.to_owned()),
@@ -82,7 +87,7 @@ fn resources(key: TimelineKey) -> ResourceSnapshot {
     let server = serde_json::from_value(serde_json::json!({
         "id": Uuid::from_u128(0x4000).to_string(),
         "name": "Lumen",
-        "owner_id": Uuid::from_u128(0x4001).to_string(),
+        "owner_id": owner.to_string(),
     }))
     .unwrap();
     let channel = Channel {

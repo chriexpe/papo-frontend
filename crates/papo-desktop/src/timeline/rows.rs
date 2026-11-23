@@ -49,3 +49,9 @@ pub(crate) fn message_part_key(id: papo_sdk::Uuid) -> String {
 pub(crate) fn anchor_key(id: papo_sdk::Uuid) -> String {
     format!("{}/{}", message_key(id), message_part_key(id))
 }
+
+/// The element key of message `id`'s author name, which their card opens
+/// beside.
+pub(crate) fn author_key(id: papo_sdk::Uuid) -> String {
+    format!("author-{id}")
+}

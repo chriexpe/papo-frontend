@@ -130,6 +130,9 @@ impl Shell {
     /// Escape on the open menu: the reactions list goes back first.
     /// Returns whether the key was taken.
     pub(crate) fn menu_escape(&mut self, event: &KeyEvent, tx: &mut Tx) -> bool {
+        if event.key == Key::Escape && self.card_back(tx) {
+            return true;
+        }
         let showing = self
             .nav
             .menu

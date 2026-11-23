@@ -34,7 +34,7 @@ use super::local_time::LocalTime;
 use super::reactions;
 use super::reply_line::reply_line;
 use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
-use super::rows::{echo_key, message_key, message_part_key};
+use super::rows::{author_key, echo_key, message_key, message_part_key};
 use super::send_mark::send_mark;
 use super::view::{Style, TimelineHost};
 use crate::design::{
@@ -120,7 +120,18 @@ pub(super) fn message_row<S: TimelineHost>(
             .as_ref()
             .map(|bar| hover_bar::bar::<S>(key, id, bar, &style.palette));
         let (enter, exit) = hover_bar::row_motion();
-        build(id, &parts, line, body, mark, style, |message| {
+        // A person's name opens their card beside it; a bridged author has
+        // no person behind the name.
+        let author = papo_sdk_ui::AuthorIdentity::for_message(row_message.message);
+        let name_press = move |name: El| match (&author, history) {
+            (papo_sdk_ui::AuthorIdentity::Person(user), true) => {
+                let user = *user;
+                name.key(author_key(id))
+                    .on_press_tx(move |host: &mut S, tx| host.author_pressed(key, id, user, tx))
+            }
+            _ => name,
+        };
+        build(id, &parts, line, body, mark, style, name_press, |message| {
             if !history {
                 return message;
             }
@@ -167,6 +178,10 @@ fn edited_hint(edited_at: &str, time: &LocalTime) -> Option<String> {
 /// and its row), whose top is the anchor, so a change of the distance above
 /// leaves the text in place. `mark` takes the time's place: in the header,
 /// else in the lead column.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row's parts, each built by its own owner"
+)]
 fn build(
     id: Uuid,
     parts: &Parts<'_>,
@@ -174,6 +189,7 @@ fn build(
     body: El,
     mark: Option<El>,
     style: &Style,
+    name_press: impl Fn(El) -> El,
     report: impl FnOnce(El) -> El,
 ) -> El {
     let palette = style.palette;
@@ -184,10 +200,12 @@ fn build(
         spacing.between_groups_pt
     };
     let name = || {
-        text(parts.name.clone())
-            .key("name")
-            .font(TYPE_BODY_STRONG)
-            .color(palette.text_primary)
+        name_press(
+            text(parts.name.clone())
+                .key("name")
+                .font(TYPE_BODY_STRONG)
+                .color(palette.text_primary),
+        )
     };
     // The mark, when there is one, stands where the time would.
     let time = |mark: Option<El>| {

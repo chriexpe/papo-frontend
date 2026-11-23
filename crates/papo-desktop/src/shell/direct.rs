@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use papo_sdk_ui::DirectMessageItem;
+use papo_sdk_ui::{DirectMessageId, DirectMessageItem};
 use rune::Tx;
 
 use super::Shell;
@@ -16,14 +16,39 @@ use crate::notice::Refusal;
 use crate::timeline::TimelineKey;
 
 impl Shell {
-    /// Takes the newest list of direct conversations. Returns whether the
-    /// view changed.
+    /// Takes the newest list of direct conversations, picking the one a
+    /// card's Message waits for once it is there. Returns whether the view
+    /// changed.
     pub(crate) fn direct_posted(&mut self, rows: DirectRows, tx: &mut Tx) -> bool {
         self.nav.direct_changed(rows.iter());
         self.direct = rows;
+        if self.pick_awaited_dm(tx) {
+            return true;
+        }
         if self.nav.direct_shown() {
             self.sync_timeline(Some(tx));
         }
+        true
+    }
+
+    /// A card's Message opened or reopened conversation `id`: it is picked
+    /// as soon as the SDK's list holds it (perhaps already).
+    pub(crate) fn await_dm(&mut self, id: DirectMessageId, tx: &mut Tx) {
+        self.awaited_dm = Some(id);
+        self.pick_awaited_dm(tx);
+    }
+
+    /// Picks the awaited conversation when the list holds it. Returns
+    /// whether it did.
+    fn pick_awaited_dm(&mut self, tx: &mut Tx) -> bool {
+        let Some(awaited) = &self.awaited_dm else {
+            return false;
+        };
+        let Some(row) = self.direct.iter().find(|row| &row.id == awaited).cloned() else {
+            return false;
+        };
+        self.awaited_dm = None;
+        self.pick_dm(row, tx);
         true
     }
 

@@ -11,7 +11,7 @@ use rune::{Drag, Key, KeyEvent, Phase, Tx};
 use super::Shell;
 use crate::channel_pane::{SERVER_CARD_KEY, SERVER_OPTIONS_KEY, channel_key};
 use crate::composer::COMPOSER_KEY;
-use crate::menu::{MenuAction, MenuItem, MessageAction, OpenMenu, Placement};
+use crate::menu::{MenuAction, MenuItem, MessageAction, OpenMenu, PersonAction, Placement};
 use crate::rail::tile_key;
 use crate::remove_server;
 use crate::server_list::ServerList;
@@ -244,6 +244,15 @@ impl Shell {
             self.show_reactions(key, id, tx);
             return;
         }
+        // Asking about a ban, or not, keeps the card.
+        if let MenuAction::Person {
+            action: action @ (PersonAction::AskBan | PersonAction::CancelBan),
+            ..
+        } = action
+        {
+            self.card_ban_asked(action == PersonAction::AskBan);
+            return;
+        }
         if let Some(menu) = self.nav.menu.take() {
             tx.focus(menu.trigger, false);
         }
@@ -281,6 +290,7 @@ impl Shell {
             MenuAction::React { key, id, emoji } => {
                 self.toggle_reaction(key, id, &emoji);
             }
+            MenuAction::Person { key, user, action } => self.person_action(key, user, action, tx),
         }
     }
 

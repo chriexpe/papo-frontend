@@ -60,6 +60,28 @@ pub(crate) enum MenuAction {
         id: Uuid,
         emoji: String,
     },
+    /// Something a profile card does about person `user`, seen from
+    /// timeline `key`.
+    Person {
+        key: TimelineKey,
+        user: Uuid,
+        action: PersonAction,
+    },
+}
+
+/// What a profile card does about its person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PersonAction {
+    /// Open a direct conversation with them.
+    Message,
+    CopyId,
+    Block,
+    Unblock,
+    /// Ask, inside the Ban row, whether to ban them.
+    AskBan,
+    /// Not ban them after all.
+    CancelBan,
+    Ban,
 }
 
 /// What the message menu does to its message.
@@ -87,6 +109,17 @@ pub(crate) struct ReactionsView {
     pub(crate) filter: Option<papo_sdk_ui::operations::ReactionEmoji>,
     /// Opened from a chip, not the menu: Escape closes it.
     pub(crate) from_chip: bool,
+}
+
+/// Someone's profile card a menu shows in place of its entries
+/// (`docs/design.md` §10, Someone else's profile card).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CardView {
+    /// The conversation it was opened from: its account and resources.
+    pub(crate) key: TimelineKey,
+    pub(crate) user: Uuid,
+    /// Ban asks inside its row, while this is set.
+    pub(crate) banning: bool,
 }
 
 /// Where an open menu sits.
@@ -200,6 +233,8 @@ pub(crate) struct OpenMenu {
     pub(crate) width_pt: f32,
     /// The reactions list it turned into, while it shows one.
     pub(crate) reactions: Option<ReactionsView>,
+    /// The profile card it is, or turned into, while it shows one.
+    pub(crate) card: Option<CardView>,
 }
 
 /// The element key of the open menu.
@@ -231,6 +266,7 @@ impl OpenMenu {
             entries,
             width_pt,
             reactions: None,
+            card: None,
         }
     }
 
@@ -245,6 +281,9 @@ impl OpenMenu {
 
 /// The reactions list's width, in points (`docs/design.md` §10).
 pub(crate) const REACTIONS_WIDTH_PT: f32 = 340.0;
+
+/// A profile card's width, in points (`size.profile-card`).
+pub(crate) const PROFILE_CARD_WIDTH_PT: f32 = 300.0;
 
 /// Draws `menu` over everything, anchored by its placement: its entries,
 /// or `body` in their place (the reactions list). Escape and a click
@@ -274,10 +313,10 @@ pub(crate) fn view(menu: &OpenMenu, body: Option<El>, palette: &Palette, cx: &Cx
         .iter()
         .enumerate()
         .map(|(index, entry)| line(entry, Some(index) == first, palette));
-    let (width, role) = if body.is_some() {
-        (REACTIONS_WIDTH_PT, "dialog")
-    } else {
-        (width, "menu")
+    let (width, role) = match (&body, &menu.card) {
+        (Some(_), Some(_)) => (PROFILE_CARD_WIDTH_PT, "dialog"),
+        (Some(_), None) => (REACTIONS_WIDTH_PT, "dialog"),
+        (None, _) => (width, "menu"),
     };
     let content: Vec<El> = match body {
         Some(body) => vec![body],
@@ -330,7 +369,7 @@ fn line(entry: &Entry, first: bool, palette: &Palette) -> El {
     }
 }
 
-fn item_row(item: &MenuItem, first: bool, palette: &Palette) -> El {
+pub(crate) fn item_row(item: &MenuItem, first: bool, palette: &Palette) -> El {
     let action = item.action.clone();
     let color = if item.danger {
         palette.danger

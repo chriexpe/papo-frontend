@@ -252,5 +252,21 @@
   "typing.one_phrase": "{{name}} {{phrase}}",
   "typing.two": "{{first}} and {{second}} are typing…",
   "typing.three": "{{first}}, {{second}} and {{third}} are typing…",
-  "typing.many": "Several people are typing…"
+  "typing.many": "Several people are typing…",
+  "card.label": "{{name}}'s profile",
+  "card.roles": "Roles",
+  "card.about": "About",
+  "card.member_since": "Member since {{date}}",
+  "card.message": "Message",
+  "card.copy_id": "Copy ID",
+  "card.block": "Block",
+  "card.unblock": "Unblock",
+  "card.ban": "Ban",
+  "card.ban_ask": "Ban {{name}} from {{server}}?",
+  "card.cancel": "Cancel",
+  "notice.block_failed": "Couldn't block them.",
+  "notice.unblock_failed": "Couldn't unblock them.",
+  "notice.ban_failed": "Couldn't ban them.",
+  "notice.dm_open_failed": "Couldn't open the conversation.",
+  "notice.dm_refused": "You can't message them."
 }

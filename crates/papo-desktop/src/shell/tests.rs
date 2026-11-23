@@ -20,6 +20,7 @@ mod message_menu;
 mod navigation;
 mod outgoing;
 mod pins;
+mod profile_card;
 mod replying;
 mod timeline;
 mod writing;
