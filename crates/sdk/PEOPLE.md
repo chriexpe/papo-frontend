@@ -5,6 +5,12 @@ predicates and ephemeral activity. `papo-sdk-ui` exposes `PeopleService`,
 `CapabilityService`, `DirectMessageService` and `ActivityService`. None owns
 native widgets, navigation, media downloads, notification policy or search.
 Administrative/profile/block mutations remain separate operations work.
+`direct_candidates` lists the people a New message picker offers across the
+accounts given: everyone on their servers from the complete rosters the SDK
+already holds (nothing is fetched), one row per server since a DM belongs to one
+account, never the account's own person, a person it blocks or a banned member;
+A–Z with nothing typed, else names starting with the query before names
+containing it.
 
 ## Authorization specification
 
