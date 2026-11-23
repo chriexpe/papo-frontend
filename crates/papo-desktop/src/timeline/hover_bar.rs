@@ -1,10 +1,10 @@
 //! A message's hover bar (`docs/design.md` §10, MessageActions): a small
 //! pill at the row's top-right, 12 px in and centred on the row's top edge,
 //! shown while the pointer is on the row or the row has the keyboard (a
-//! 120 ms fade). Left to right: your three most used emoji, a divider, Add
-//! reaction, Reply, Edit (your own messages), More. Add reaction stretches
-//! the bar to the left into your eight most used, its own buttons kept
-//! where they were. The bar's buttons are not Tab stops: a focused
+//! 120 ms fade in; it goes at once). Left to right: your three most used
+//! emoji, a divider, Add reaction, Reply, Edit (your own messages), More.
+//! Add reaction stretches the bar to the left into your eight most used,
+//! its own buttons kept where they were. The bar's buttons are not Tab stops: a focused
 //! message's keys reach them (`message_keys`). It never changes the row's
 //! height: it floats over the distance above it.
 //!
@@ -26,8 +26,19 @@ use crate::strings;
 pub(super) const BAR_HEIGHT_PT: f32 = 32.0;
 /// `radius.card`.
 const RADIUS_CARD_PT: f32 = 10.0;
-/// The bar's fade in and out, in seconds.
+/// The bar's fade in, in seconds.
 const FADE_S: f32 = 0.12;
+
+/// The row's hover curves, which its bar follows: a 120 ms fade in, and
+/// gone at once when the pointer or the keyboard leaves, so moving down the
+/// rows never shows two bars.
+pub(super) fn row_motion() -> (Anim, Anim) {
+    let fade = Anim::new(Curve::Tween {
+        duration: FADE_S,
+        easing: Easing::EASE_OUT,
+    });
+    (fade, Anim::INSTANT)
+}
 /// How many quick reactions lead the folded bar.
 pub(crate) const BAR_REACTIONS: usize = 3;
 
@@ -67,10 +78,6 @@ pub(crate) fn more_key(id: Uuid) -> String {
 /// Message `id`'s bar, pinned over the row's top-right and seen while its
 /// hover group (the row) is lit.
 pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, palette: &Palette) -> El {
-    let fade = Anim::new(Curve::Tween {
-        duration: FADE_S,
-        easing: Easing::EASE_OUT,
-    });
     let mut buttons = emoji_buttons::<S>(key, id, bar, palette);
     if !buttons.is_empty() {
         buttons.push(
@@ -141,7 +148,6 @@ pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, palett
         .label(strings::action_bar())
         .pin(None, Some(-BAR_HEIGHT_PT / 2.0), Some(SPACE_LG_PT), None)
         .group_opacity(0.0, 1.0)
-        .hover_motion(fade, fade)
         .children(buttons)
 }
 

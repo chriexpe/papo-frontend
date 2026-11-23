@@ -112,3 +112,27 @@ fn after_a_scroll_under_a_still_pointer_the_bar_is_on_the_row_under_it() {
     );
     assert_ne!(bar_opacity(&rt, before), Some(1.0), "and nowhere else");
 }
+
+#[test]
+fn moving_to_the_next_row_never_shows_two_bars() {
+    let mut rt = runtime(turns(12), MessageLayout::default());
+    let x = 400.0;
+    rt.pointer_move(x, 560.0);
+    settle(&mut rt);
+    let first = message_at(&rt, x, 560.0).expect("a message under the pointer");
+    let above = (300_u16..560)
+        .rev()
+        .map(f32::from)
+        .find(|y| message_at(&rt, x, *y).is_some_and(|n| n != first))
+        .expect("a row above");
+    let second = message_at(&rt, x, above).unwrap();
+    rt.pointer_move(x, above);
+    rt.frame(FRAME_S);
+    assert_eq!(
+        bar_opacity(&rt, first),
+        Some(0.0),
+        "the old bar goes at once"
+    );
+    settle(&mut rt);
+    assert_eq!(bar_opacity(&rt, second), Some(1.0));
+}

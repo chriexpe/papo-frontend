@@ -114,6 +114,7 @@ pub(super) fn message_row<S: TimelineHost>(
             .bar
             .as_ref()
             .map(|bar| hover_bar::bar::<S>(key, id, bar, &style.palette));
+        let (enter, exit) = hover_bar::row_motion();
         build(&parts, line, body, mark, style, |message| {
             if !history {
                 return message;
@@ -121,6 +122,7 @@ pub(super) fn message_row<S: TimelineHost>(
             message
                 // The pointer on the row, or the keyboard on it, shows its bar.
                 .hover_group()
+                .hover_motion(enter, exit)
                 .children(bar)
                 .on_secondary_press(move |host: &mut S, press, tx| {
                     host.message_menu_requested(key, id, Some([press.x, press.y]), tx);
