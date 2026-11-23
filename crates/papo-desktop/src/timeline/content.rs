@@ -36,6 +36,9 @@ pub(crate) enum Press {
     Spoiler(u32),
     /// The "(edited)" marker, which only explains itself.
     Edited,
+    /// A person's mention: their card. `standalone`: in a message drawn on
+    /// its own, such as a pin in its panel.
+    Person { user: Uuid, standalone: bool },
 }
 
 impl Press {
@@ -46,6 +49,14 @@ impl Press {
             Press::Url(url) => url.clone(),
             Press::Spoiler(index) => format!("#spoiler/{index}"),
             Press::Edited => "#edited".to_owned(),
+            Press::Person {
+                user,
+                standalone: false,
+            } => format!("#person/{user}"),
+            Press::Person {
+                user,
+                standalone: true,
+            } => format!("#standalone-person/{user}"),
         }
     }
 
@@ -55,6 +66,20 @@ impl Press {
         }
         if let Some(index) = id.strip_prefix("#spoiler/") {
             return index.parse().ok().map(Press::Spoiler);
+        }
+        if let Some(user) = id.strip_prefix("#person/") {
+            let user = Uuid::parse_str(user).ok()?;
+            return Some(Press::Person {
+                user,
+                standalone: false,
+            });
+        }
+        if let Some(user) = id.strip_prefix("#standalone-person/") {
+            let user = Uuid::parse_str(user).ok()?;
+            return Some(Press::Person {
+                user,
+                standalone: true,
+            });
         }
         Some(Press::Url(id.to_owned()))
     }
@@ -69,6 +94,9 @@ pub(crate) struct Draw<'a> {
     pub(crate) copied: Option<usize>,
     /// Set when the message was edited.
     pub(crate) edited: Option<Edited>,
+    /// Drawn on its own (a header panel, a dialog), not in the
+    /// conversation: a press on it is no work outside that panel.
+    pub(crate) standalone: bool,
 }
 
 /// A message was edited.

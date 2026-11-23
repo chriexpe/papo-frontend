@@ -13,6 +13,7 @@ use rune::{KeyEvent, Tx};
 use super::Shell;
 use crate::design::COPIED_FOR_S;
 use crate::links::{self, Decision, Prompt, Trusted};
+use crate::menu::Placement;
 use crate::timeline::content::Press;
 use crate::timeline::content::copy::message_of;
 use crate::timeline::{TimelineKey, rows};
@@ -55,6 +56,23 @@ impl Shell {
                 }
             }
             Press::Edited => {}
+            Press::Person { user, .. } => {
+                // A mention inside a dialog (the delete confirmation's
+                // message) opens nothing under it.
+                if self.popup_shown() {
+                    return;
+                }
+                // Beside the mention, where Rune drew it; a press moves no
+                // keyboard focus, so what had it gets it back.
+                let Some(rect) = tx.link_rect() else {
+                    return;
+                };
+                let trigger = tx
+                    .focused()
+                    .unwrap_or(crate::composer::COMPOSER_KEY)
+                    .to_owned();
+                self.open_card(key, user, Placement::BesideBox(rect), trigger, tx);
+            }
         }
     }
 

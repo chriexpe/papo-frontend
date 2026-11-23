@@ -11,7 +11,7 @@ use rune::{Drag, Key, KeyEvent, Phase, Tx};
 use super::Shell;
 use crate::channel_pane::{SERVER_CARD_KEY, SERVER_OPTIONS_KEY, channel_key};
 use crate::composer::COMPOSER_KEY;
-use crate::menu::{MenuAction, MenuItem, MessageAction, OpenMenu, Placement};
+use crate::menu::{MenuAction, MenuItem, MessageAction, OpenMenu, PersonAction, Placement};
 use crate::rail::tile_key;
 use crate::remove_server;
 use crate::server_list::ServerList;
@@ -41,6 +41,8 @@ impl Shell {
             self.icon_bytes.retain(|id, _| self.icons.contains_key(id));
         }
         self.nav.servers_changed(list);
+        // An account switch: the other account's conversation goes.
+        self.drop_unshown_dms();
         self.retain_timelines();
         self.sync_timeline(Some(tx));
         true
@@ -48,6 +50,8 @@ impl Shell {
 
     pub(crate) fn select_server(&mut self, server: ServerId, tx: &mut Tx) {
         self.worked_outside();
+        // A card's Message no longer takes the person back to Direct.
+        self.awaited_dm = None;
         self.nav.select_server(server);
         self.sync_timeline(Some(tx));
     }
@@ -64,6 +68,8 @@ impl Shell {
         self.channel_step_key(key, tx)
             || self.select_message_key(key, tx)
             || self.pins_key(key, tx)
+            || self.profile_key(key)
+            || self.direct_key(key, tx)
             || self.escape_key(key)
     }
 
@@ -82,6 +88,30 @@ impl Shell {
             return false;
         }
         self.pins_pressed(true, tx);
+        true
+    }
+
+    /// Ctrl+⇧D (`docs/design.md` §12): Direct, as its rail tile does.
+    fn direct_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        let mods = key.mods;
+        if !key.is_command('d') || !mods.shift || mods.alt || self.popup_shown() {
+            return false;
+        }
+        self.select_direct(tx);
+        true
+    }
+
+    /// Ctrl+U in a DM: its profile pane (in a channel, the members pane's
+    /// key, which comes with the roles session).
+    fn profile_key(&mut self, key: &KeyEvent) -> bool {
+        let mods = key.mods;
+        if !key.is_command('u') || mods.shift || mods.alt || self.popup_shown() {
+            return false;
+        }
+        if self.nav.picked_dm().is_none() {
+            return false;
+        }
+        self.toggle_dm_profile();
         true
     }
 
@@ -244,6 +274,25 @@ impl Shell {
             self.show_reactions(key, id, tx);
             return;
         }
+        // So does View profile: it turns into the author's card.
+        if let MenuAction::Message {
+            key,
+            id,
+            action: MessageAction::ViewProfile,
+        } = action
+        {
+            self.show_author_card(key, id, tx);
+            return;
+        }
+        // Asking about a ban, or not, keeps the card.
+        if let MenuAction::Person {
+            action: action @ (PersonAction::AskBan | PersonAction::CancelBan),
+            ..
+        } = action
+        {
+            self.card_ban_asked(action == PersonAction::AskBan, tx);
+            return;
+        }
         if let Some(menu) = self.nav.menu.take() {
             tx.focus(menu.trigger, false);
         }
@@ -281,6 +330,7 @@ impl Shell {
             MenuAction::React { key, id, emoji } => {
                 self.toggle_reaction(key, id, &emoji);
             }
+            MenuAction::Person { key, user, action } => self.person_action(key, user, action, tx),
         }
     }
 

@@ -15,6 +15,11 @@ pub(crate) fn composer_placeholder(channel: &str) -> String {
     template!("composer.placeholder", "channel" => channel)
 }
 
+/// The empty field's prompt in a direct conversation: "Message @Lia".
+pub(crate) fn composer_placeholder_direct(name: &str) -> String {
+    template!("composer.placeholder_direct", "name" => name)
+}
+
 /// Send's label.
 pub(crate) fn composer_send() -> &'static str {
     text!("composer.send")

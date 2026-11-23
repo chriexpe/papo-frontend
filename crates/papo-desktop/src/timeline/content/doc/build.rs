@@ -174,10 +174,15 @@ impl Builder<'_, '_> {
                     pad(run, Pad::Chip);
                     let label = name.as_deref().unwrap_or_else(|| strings::unknown_person());
                     let range = push(run, label);
+                    let person = match target {
+                        MentionTarget::User(user) if name.is_some() => Some(*user),
+                        _ => None,
+                    };
                     run.marks.push(Mark::Mention {
                         range: range.clone(),
                         known: name.is_some(),
                         bold: style.bold,
+                        person,
                     });
                     styles(
                         run,

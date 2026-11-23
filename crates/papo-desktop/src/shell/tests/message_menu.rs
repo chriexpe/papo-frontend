@@ -15,8 +15,8 @@ use rune::{Key, KeyEvent, Mods, Runtime};
 
 use super::replying::{conversation, message_id};
 use super::{FRAME_S, Shell, press};
+use crate::live_watch::Posted;
 use crate::menu::Entry;
-use crate::reaction_watch::Posted;
 use crate::timeline::rows::message_key;
 
 /// The message whose row has the keyboard.
@@ -66,6 +66,7 @@ fn enter_opens_your_messages_menu_with_what_you_may_do() {
         [
             "Reply",
             "Edit",
+            "View profile",
             "Copy text",
             "Copy as Markdown",
             "Copy ID",
@@ -80,7 +81,16 @@ fn someone_elses_message_offers_no_edit_and_no_delete() {
     focus_message(&mut rt, 3);
     press(&mut rt, Key::Enter);
     let (_, items) = menu(&rt);
-    assert_eq!(items, ["Reply", "Copy text", "Copy as Markdown", "Copy ID"]);
+    assert_eq!(
+        items,
+        [
+            "Reply",
+            "View profile",
+            "Copy text",
+            "Copy as Markdown",
+            "Copy ID"
+        ]
+    );
 }
 
 #[test]

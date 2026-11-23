@@ -33,6 +33,14 @@ fn presses_survive_the_trip_through_a_link_id() {
         Press::Url("mailto:lia@example.com".to_owned()),
         Press::Spoiler(7),
         Press::Edited,
+        Press::Person {
+            user: Uuid::from_u128(5),
+            standalone: false,
+        },
+        Press::Person {
+            user: Uuid::from_u128(5),
+            standalone: true,
+        },
     ] {
         assert_eq!(Press::parse(&press.id()), Some(press));
     }
@@ -152,4 +160,49 @@ fn edited_follows_text_but_not_a_block() {
     assert!(doc("words", &[]).ends_in_text());
     assert!(!doc("```\ncode\n```", &[]).ends_in_text());
     assert!(!doc("- item", &[]).ends_in_text());
+}
+
+#[test]
+fn a_known_persons_mention_names_them_and_is_a_link_to_their_card() {
+    let lia = Uuid::from_u128(5);
+    let resources = papo_sdk::ResourceSnapshot::fixture(
+        papo_sdk::Generation::for_test(1),
+        None,
+        Vec::new(),
+        Vec::new(),
+        vec![papo_sdk::UserSummary {
+            id: Some(lia.to_string()),
+            username: Some("lia".to_owned()),
+            ..papo_sdk::UserSummary::default()
+        }],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Uuid::from_u128(1),
+    )
+    .unwrap();
+    let source = format!("hi {}", papo_sdk::mentions::encode_user_mention(lia));
+    let content = MessageContent::parse(&source);
+    let doc = Doc::new(
+        &content,
+        &Context {
+            resources: Some(&resources),
+            revealed: &[],
+            jumbo: true,
+        },
+    );
+    let run = doc.runs()[0];
+    assert!(
+        run.marks.iter().any(
+            |mark| matches!(mark, Mark::Mention { person: Some(person), .. } if *person == lia)
+        )
+    );
+    // Unknown, the mention names nobody to open.
+    let unknown = self::doc(&source, &[]);
+    assert!(
+        unknown.runs()[0]
+            .marks
+            .iter()
+            .any(|mark| matches!(mark, Mark::Mention { person: None, .. }))
+    );
 }

@@ -61,7 +61,7 @@ fn servers_keep_their_saved_order_and_fall_back_to_their_address() {
         servers: vec![mirante.clone(), lumen.clone()],
         ..RegistrySnapshot::default()
     };
-    let list = project(&registry, &HashMap::new(), &BTreeMap::new());
+    let list = project(&registry, &HashMap::new(), &ServerBadgesSnapshot::default());
     let names: Vec<_> = list.servers.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["http://mirante.local", "lumen.example.invalid"]);
     assert_eq!(list.order(), [mirante.address.id(), lumen.address.id()]);
@@ -96,9 +96,11 @@ fn a_signed_in_server_takes_its_name_owner_icon_and_channels_from_its_resources(
             icon: Some(Arc::from(&b"png"[..])),
             text_channels,
             voice_channels,
+            direct_badges: BTreeMap::new(),
+            blocked: Vec::new(),
         },
     )]);
-    let list = project(&registry, &resources, &BTreeMap::new());
+    let list = project(&registry, &resources, &ServerBadgesSnapshot::default());
     let shown = &list.servers[0];
     assert_eq!(shown.name, "Lumen");
     assert_eq!(shown.owner.as_deref(), Some("nadia"));
@@ -122,7 +124,7 @@ fn without_an_active_account_the_first_saved_one_is_shown() {
         accounts: vec![first.clone(), account(&lumen, 3, false)],
         ..RegistrySnapshot::default()
     };
-    let list = project(&registry, &HashMap::new(), &BTreeMap::new());
+    let list = project(&registry, &HashMap::new(), &ServerBadgesSnapshot::default());
     assert_eq!(list.servers[0].account.as_ref().unwrap().id, first.id);
 }
 
@@ -141,7 +143,7 @@ fn a_server_lists_every_account_saved_on_it_in_the_registry_s_order() {
         ],
         ..RegistrySnapshot::default()
     };
-    let list = project(&registry, &HashMap::new(), &BTreeMap::new());
+    let list = project(&registry, &HashMap::new(), &ServerBadgesSnapshot::default());
     let names: Vec<_> = list.servers[0]
         .accounts
         .iter()
@@ -220,18 +222,37 @@ fn a_server_takes_the_aggregate_of_the_account_its_rows_show() {
         ..RegistrySnapshot::default()
     };
     let aggregate = |mentions| {
-        Arc::new(AccountBadges {
+        // A DM's uncertain mention is in `all` only: the tile leaves it to
+        // Direct.
+        Arc::new(papo_sdk_ui::AccountBadges {
             all: papo_sdk_ui::BadgeAggregate {
+                mention_count: UnreadCount::AtLeast(mentions + 1),
+                has_unread: Some(true),
+            },
+            channels: papo_sdk_ui::BadgeAggregate {
                 mention_count: UnreadCount::Exact(mentions),
                 has_unread: Some(true),
             },
-            channels: papo_sdk_ui::BadgeAggregate::default(),
-            dms: papo_sdk_ui::BadgeAggregate::default(),
+            dms: papo_sdk_ui::BadgeAggregate {
+                mention_count: UnreadCount::AtLeast(1),
+                has_unread: None,
+            },
         })
     };
-    let accounts = BTreeMap::from([(first.id, aggregate(120)), (second.id, aggregate(2))]);
-    let list = project(&registry, &HashMap::new(), &accounts);
+    let badges = ServerBadgesSnapshot {
+        accounts: BTreeMap::from([(first.id, aggregate(120)), (second.id, aggregate(2))]),
+        ..ServerBadgesSnapshot::default()
+    };
+    let list = project(&registry, &HashMap::new(), &badges);
     assert_eq!(list.servers[0].badge.mentions().unwrap().shown(), "99+");
+    assert_eq!(
+        list.servers[0].badge,
+        Badge::of_aggregate(&papo_sdk_ui::BadgeAggregate {
+            mention_count: UnreadCount::Exact(120),
+            has_unread: Some(true),
+        }),
+        "the server's channels only, exactly"
+    );
     assert_eq!(
         list.servers[1].badge,
         Badge::Nothing,

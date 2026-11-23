@@ -183,9 +183,23 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
             }
             // Inside a hidden spoiler: nothing shows through.
             Mark::Strike(_) | Mark::Link { .. } => {}
-            Mark::Mention { range, known, bold } => {
-                let span = mention_chip(range, *known, *bold, run.is_hidden(range), palette);
+            Mark::Mention {
+                range,
+                known,
+                bold,
+                person,
+            } => {
+                let hidden = run.is_hidden(range);
+                let span = mention_chip(range, *known, *bold, hidden, palette);
                 drawn.spans.push(span);
+                // A known person's mention opens their card beside it.
+                if let (Some(person), false) = (person, hidden) {
+                    let press = Press::Person {
+                        user: *person,
+                        standalone: draw.standalone,
+                    };
+                    drawn.links.push(Link::new(range.clone(), press.id()));
+                }
             }
             Mark::Spoiler {
                 range,

@@ -10,10 +10,10 @@
 use std::collections::HashMap;
 
 use papo_sdk::ServerId;
-use rune::{El, Icon, Image, ScrollSpec, col, el, icon, row, text};
+use rune::{Color, El, Icon, Image, ScrollSpec, TextStyle, col, el, icon, row, text};
 
 use crate::account_switch;
-use crate::badges::mention_pill;
+use crate::badges::{Badge, mention_pill};
 use crate::design::{
     ACCOUNT_COUNT_OVERHANG_PT, ACCOUNT_COUNT_PT, CHANNEL_ROW_HEIGHT_PT, FOCUS_RING_PT,
     PANE_PILL_HEIGHT_PT, PILL_AVATAR_PT, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
@@ -195,7 +195,7 @@ fn account_pill(account: &AccountEntry, palette: &Palette) -> El {
 }
 
 /// A pill's row: both pills are one height (`docs/design.md` §8).
-fn pill_row() -> El {
+pub(crate) fn pill_row() -> El {
     row()
         .w_full()
         .h(PANE_PILL_HEIGHT_PT)
@@ -205,7 +205,7 @@ fn pill_row() -> El {
 }
 
 /// A floating pill's surface around `content`.
-fn chrome(content: El, palette: &Palette) -> El {
+pub(crate) fn chrome(content: El, palette: &Palette) -> El {
     content
         .radius(RADIUS_PILL_PT)
         .fill(palette.surface_pill)
@@ -291,20 +291,7 @@ fn channel_row(
     palette: &Palette,
 ) -> El {
     let id = channel.id.clone();
-    let unread = channel.badge.is_unread();
-    // Unread wins the weight; selection keeps its colours.
-    let style = if unread {
-        TYPE_BODY_STRONG
-    } else if selected {
-        TYPE_BODY_MEDIUM
-    } else {
-        TYPE_BODY
-    };
-    let color = if unread || selected {
-        palette.text_primary
-    } else {
-        palette.text_secondary
-    };
+    let (style, color) = row_name(channel.badge, selected, palette);
     let mark_color = if selected {
         palette.accent
     } else {
@@ -334,19 +321,34 @@ fn channel_row(
                 .grow(1.0)
                 .min_w(0.0),
         );
-    // The mention pill takes the unread dot's place.
-    if let Some(count) = channel.badge.mentions() {
-        row_el = row_el.child(mention_pill(count, None, palette));
-    } else if unread {
-        row_el = row_el.child(
-            el().size(UNREAD_DOT_PT, UNREAD_DOT_PT)
-                .radius(UNREAD_DOT_PT / 2.0)
-                .fill(palette.text_primary)
-                .a11y_hidden(),
-        );
-    }
     if selected {
         row_el = row_el.fill(palette.surface_selected);
     }
-    row_el
+    row_el.children(row_badge(channel.badge, palette))
+}
+
+/// How a channel's or a conversation's name reads on its row: unread wins
+/// the weight (600), selection keeps its colours (500, primary), else
+/// regular in `text.secondary`.
+pub(crate) fn row_name(badge: Badge, selected: bool, palette: &Palette) -> (TextStyle, Color) {
+    if badge.is_unread() {
+        (TYPE_BODY_STRONG, palette.text_primary)
+    } else if selected {
+        (TYPE_BODY_MEDIUM, palette.text_primary)
+    } else {
+        (TYPE_BODY, palette.text_secondary)
+    }
+}
+
+/// A row's end: the mention pill, else the unread dot, else nothing.
+pub(crate) fn row_badge(badge: Badge, palette: &Palette) -> Option<El> {
+    if let Some(count) = badge.mentions() {
+        return Some(mention_pill(count, None, palette));
+    }
+    badge.is_unread().then(|| {
+        el().size(UNREAD_DOT_PT, UNREAD_DOT_PT)
+            .radius(UNREAD_DOT_PT / 2.0)
+            .fill(palette.text_primary)
+            .a11y_hidden()
+    })
 }

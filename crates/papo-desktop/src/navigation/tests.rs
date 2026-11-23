@@ -32,6 +32,8 @@ fn server(name: &str, channels: &[&str]) -> ServerEntry {
             })
             .collect(),
         voice_channels: Vec::new(),
+        direct_badges: std::collections::BTreeMap::new(),
+        blocked: Vec::new(),
         badge: Badge::default(),
     }
 }
@@ -42,6 +44,7 @@ fn list(names: &[&str]) -> ServerList {
             .iter()
             .map(|name| server(name, &["general", "media"]))
             .collect(),
+        direct: Badge::default(),
     }
 }
 
@@ -102,6 +105,7 @@ fn a_picked_channel_the_server_deleted_falls_back_to_the_first() {
     nav.select_channel("lumen-media");
     nav.servers_changed(ServerList {
         servers: vec![server("lumen", &["general"])],
+        direct: Badge::default(),
     });
     assert_eq!(nav.selected_channel(), Some("lumen-general"));
 }

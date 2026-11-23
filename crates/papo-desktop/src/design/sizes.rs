@@ -3,6 +3,8 @@
 //! design project's "Onboarding and Sign In" page). Each is a design value in
 //! points; views take them from here, never write their own.
 
+use rune::TextStyle;
+
 /// The server rail's width, in points.
 pub(crate) const RAIL_WIDTH_PT: f32 = 60.0;
 /// A server's tile in the rail, in points square.
@@ -121,3 +123,65 @@ pub(crate) const SKELETON_BAR_PT: (f32, f32) = (10.0, 5.0);
 /// The widths of a skeleton row's name bar and text bar, as fractions of its
 /// content column, for each of the three placeholder rows.
 pub(crate) const SKELETON_WIDTHS: [(f32, f32); 3] = [(0.18, 0.62), (0.14, 0.45), (0.22, 0.7)];
+
+/// A person's avatar at one size, and the presence badge on its bottom-right
+/// corner (`docs/design.md` §10, Presence): the mark on a disc of the
+/// surface the avatar sits on, overhanging the corner. In points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct AvatarSize {
+    pub(crate) side_pt: f32,
+    /// `radius.avatar` (11 at the timeline's 34) scaled to this side.
+    pub(crate) radius_pt: f32,
+    /// The badge's disc, in the surface's colour.
+    pub(crate) ring_pt: f32,
+    /// The mark inside the disc.
+    pub(crate) mark_pt: f32,
+    /// How far the disc reaches past the avatar's right and bottom edges.
+    pub(crate) overhang_pt: f32,
+    /// The letter a person without a picture shows.
+    pub(crate) letter: TextStyle,
+}
+
+/// The avatar in a DM's title pill.
+pub(crate) const AVATAR_TITLE: AvatarSize = AvatarSize {
+    side_pt: 20.0,
+    radius_pt: 7.0,
+    ring_pt: 11.0,
+    mark_pt: 8.0,
+    overhang_pt: 3.0,
+    letter: super::TYPE_CAPTION_MEDIUM,
+};
+
+/// The avatar on a DM row.
+pub(crate) const AVATAR_ROW: AvatarSize = AvatarSize {
+    side_pt: 32.0,
+    radius_pt: 10.0,
+    ring_pt: 14.0,
+    mark_pt: 10.0,
+    overhang_pt: 3.0,
+    letter: super::TYPE_SMALL_MEDIUM,
+};
+
+/// The avatar on a profile card or pane.
+pub(crate) const AVATAR_CARD: AvatarSize = AvatarSize {
+    side_pt: 64.0,
+    radius_pt: 20.0,
+    ring_pt: 22.0,
+    mark_pt: 16.0,
+    overhang_pt: 4.0,
+    letter: super::TYPE_DISPLAY,
+};
+
+/// A direct conversation's row in Direct, in points tall.
+pub(crate) const DM_ROW_HEIGHT_PT: f32 = 44.0;
+
+/// The typing line over the composer, in points tall: `type.small`'s line.
+pub(crate) const TYPING_LINE_PT: f32 = 18.0;
+/// A typing line's dot, in points square.
+pub(crate) const TYPING_DOT_PT: f32 = 4.0;
+/// The typing line's dots' pulse: one dot after another over this period,
+/// in seconds.
+pub(crate) const TYPING_PULSE_S: f64 = 1.2;
+
+/// The members pane's width, which a DM's profile pane takes, in points.
+pub(crate) const MEMBERS_WIDTH_PT: f32 = 214.0;

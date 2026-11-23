@@ -16,7 +16,9 @@ use crate::design::{
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
 use crate::strings;
-use crate::{channel_pane, composer, links, menu, notice, rail, remove_server, timeline};
+use crate::{
+    channel_pane, composer, direct_pane, links, menu, notice, rail, remove_server, timeline,
+};
 
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
@@ -65,10 +67,14 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
                 }
                 if let Some(menu) = &shell.nav.menu {
                     app = app.children(menu::pointer_point(menu));
-                    let body = super::reactions_list::body(shell, &palette);
-                    // A list whose message went away draws nothing; the
-                    // next poll closes it.
-                    if body.is_some() || menu.reactions.is_none() {
+                    let body = if menu.card.is_some() {
+                        super::profile_card::body(shell, &palette)
+                    } else {
+                        super::reactions_list::body(shell, &palette)
+                    };
+                    // A list or card whose conversation went away draws
+                    // nothing; the next poll closes it.
+                    if body.is_some() || (menu.reactions.is_none() && menu.card.is_none()) {
                         app = app.child(menu::view(menu, body, &palette, cx));
                     }
                 }
@@ -137,12 +143,8 @@ fn timeline_style(shell: &Shell, theme: Theme, palette: &Palette) -> timeline::S
 /// The rail, the channel pane and the conversation with the composer pill
 /// at its foot.
 fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
-    let channel = shell
-        .nav
-        .selected()
-        .zip(shell.nav.selected_channel())
-        .and_then(|(server, id)| server.text_channels.iter().find(|entry| entry.id == id))
-        .map_or("", |entry| entry.name.as_str());
+    let title = shell.title();
+    let placeholder = title.placeholder();
     let shown = shell.composer.shown();
     let open = shown.and_then(|(key, _)| shell.tabs.shown().filter(|open| open.key == key));
     let original = shown.and_then(|(_, draft)| {
@@ -150,14 +152,20 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         timeline::replies::reply_text(open, reply.id, reply.original.as_ref())
     });
     let context = composer::PillContext {
-        channel,
+        placeholder: &placeholder,
         enter_sends: shell.writing.enter_sends,
         original: original.as_ref(),
         me: shown.map_or(papo_sdk::Uuid::nil(), |(key, _)| key.account.user()),
     };
-    let composer = composer::pill(&shell.composer, &context, palette);
+    let state = shell.picked_dm_access().zip(shell.nav.picked_dm());
+    let composer = match (state, &title) {
+        (Some((access, picked)), super::title::Title::Direct { name, .. }) => {
+            super::direct::state_pill(access, name, picked, palette)
+        }
+        _ => composer::pill(&shell.composer, &context, palette),
+    };
     let style = timeline_style(shell, theme, palette);
-    let header = super::pins_panel::header(shell, channel, palette);
+    let header = super::pins_panel::header(shell, &title, palette);
     let panel = super::pins_panel::panel(shell, &style, cx);
     let conversation = col()
         .key("conversation")
@@ -167,7 +175,13 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         .fill(palette.surface_content)
         .children(header)
         .child(timeline::view(shell, style))
-        .child(col().w_full().padding(SPACE_LG_PT).child(composer))
+        .child(
+            col()
+                .w_full()
+                .padding(SPACE_LG_PT)
+                .child(composer)
+                .children(typing_line(shell, palette)),
+        )
         .children(panel);
     let edge = || el().w(PANE_EDGE_PT).h_full().fill(palette.line_subtle);
     row()
@@ -180,9 +194,19 @@ fn app(shell: &Shell, theme: Theme, palette: &Palette, cx: &Cx<Shell>) -> El {
         })
         .child(rail::view(&shell.nav, &shell.icons, palette))
         .child(edge())
-        .child(channel_pane::view(&shell.nav, &shell.icons, palette))
+        .child(if shell.nav.direct_shown() {
+            direct_pane::view(shell, palette)
+        } else {
+            channel_pane::view(&shell.nav, &shell.icons, palette)
+        })
         .child(edge())
         .child(conversation)
+        // A DM's profile pane, past the same hairline as the channel pane.
+        .children(
+            super::profile_pane::pane(shell, palette)
+                .into_iter()
+                .flat_map(|pane| [edge(), pane]),
+        )
 }
 
 /// "Connected to {server}", floating at the top until dismissed.
@@ -223,4 +247,15 @@ fn connected_pill(server: &str, palette: &Palette) -> El {
         .pin(Some(0.0), Some(SPACE_XL_PT), Some(0.0), None)
         .justify_center()
         .child(pill)
+}
+
+/// Who else is typing in the shown conversation, over its composer.
+fn typing_line(shell: &Shell, palette: &Palette) -> Option<El> {
+    let open = shell.tabs.shown()?;
+    let people = shell.people(open.key.account)?;
+    crate::typing_line::view(
+        people.typing_in(open.key.channel),
+        open.resources.as_deref(),
+        palette,
+    )
 }

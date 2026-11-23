@@ -1,19 +1,22 @@
-//! Watches each signed-in account for what reacting needs beyond a
+//! Watches each signed-in account for what the shell draws live beyond a
 //! timeline: its outgoing queue (a chip waits while its change is in
-//! flight; a refused reaction is said and dropped) and its quick reactions,
-//! ranked by the SDK from the account's own use (`quick_reactions`).
+//! flight; a refused reaction is said and dropped), its quick reactions,
+//! ranked by the SDK from the account's own use (`quick_reactions`), and
+//! its people's activity (presence marks, status phrases, who types where).
 //!
 //! Owns only the watch loops and what they post. The queue, the usage
-//! counts and the ranking stay in the SDK; what the shell draws and says
-//! from them is the shell's.
+//! counts, the ranking and the activity stay in the SDK; what the shell
+//! draws and says from them is the shell's.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use papo_sdk::{AccountId, ClientHandle, OutgoingSnapshot, Session};
 use papo_sdk_ui::{
-    ExpressionLibraryService, ExpressionLibraryUpdate, ExpressionLibraryView, quick_reactions,
+    AccountActivity, ActivityService, ExpressionLibraryService, ExpressionLibraryUpdate,
+    ExpressionLibraryView, quick_reactions,
 };
 use rune::Tx;
 use tokio::task::{AbortHandle, JoinSet};
@@ -29,6 +32,8 @@ pub(crate) enum Posted {
     Outgoing(Arc<OutgoingSnapshot>),
     /// Its quick reactions now, most used first.
     Quick(Vec<String>),
+    /// Its people's activity now.
+    People(Arc<AccountActivity>),
     /// The account's session closed: nothing more comes for it.
     Closed,
 }
@@ -81,7 +86,7 @@ pub(crate) async fn run<S: 'static>(client: ClientHandle, updates: Updates<S>, a
     }
 }
 
-/// One account's queue and library, until its session closes.
+/// One account's queue, library and activity, until its session closes.
 async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply: Apply<S>) {
     let account = session.account();
     let post =
@@ -94,6 +99,9 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
         }
     };
     post(Posted::Outgoing(Arc::clone(&outgoing.borrow_and_update())));
+    let people = ActivityService::new(session.clone()).subscribe();
+    post(Posted::People(Arc::new(people.snapshot)));
+    let mut people = people.stream;
     let library = ExpressionLibraryService::new(session.clone())
         .subscribe()
         .await;
@@ -122,6 +130,8 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
                 }
                 post(Posted::Outgoing(Arc::clone(&outgoing.borrow_and_update())));
             }
+            // The stream ends with the session, which the queue reports.
+            Some(activity) = people.next() => post(Posted::People(Arc::new(activity))),
             update = next_library(library.as_mut()) => match update {
                 ExpressionLibraryUpdate::Closed => library = None,
                 update => {

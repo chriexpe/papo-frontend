@@ -21,7 +21,6 @@ use crate::composer::Composer;
 use crate::composer::prefs::WritingPrefs;
 use crate::design::MessageLayout;
 use crate::navigation::Navigation;
-use crate::reaction_watch;
 use crate::reading_prefs::ReadingPrefs;
 use crate::reconnect_hints;
 use crate::sdk_bridge::{BridgeHost, OpenFailure, RequestSlot, Sdk};
@@ -29,6 +28,7 @@ use crate::server_list;
 use crate::sign_in::{Fields, Host, SignIn};
 use crate::tabs::Tabs;
 use crate::timeline::local_time::LocalTime;
+use crate::{direct_list, live_watch};
 
 /// The root view's state.
 pub(crate) struct Shell {
@@ -92,8 +92,21 @@ pub(crate) struct Shell {
     window_shown: bool,
     /// The last ⌛ press's number; each takes the next.
     seeks: u64,
-    /// Each signed-in account's queue and quick reactions.
+    /// Each signed-in account's queue, quick reactions and people's
+    /// activity.
     activity: HashMap<AccountId, activity::Activity>,
+    /// The direct conversations, newest activity first.
+    direct: direct_list::DirectRows,
+    /// The conversation a card's Message opened, picked once the list
+    /// holds it.
+    awaited_dm: Option<papo_sdk_ui::DirectMessageId>,
+    /// Whether a DM shows its profile pane, remembered across launches.
+    layout: crate::layout_prefs::LayoutPrefs,
+    /// The people this run has seen a conversation with, by account: an
+    /// unblock reopens it (`set_blocked`).
+    dm_peers: std::collections::BTreeSet<(AccountId, papo_sdk::Uuid)>,
+    /// What the backend said about conversations that left the list.
+    dm_access: std::collections::BTreeMap<papo_sdk_ui::DirectMessageId, direct::Asked>,
     /// The notice pill, while one shows.
     notice: Option<crate::notice::Notice>,
     /// Pins and unpins on their way.
@@ -166,6 +179,11 @@ impl Default for Shell {
             window_shown: true,
             seeks: 0,
             activity: HashMap::new(),
+            direct: direct_list::DirectRows::new(),
+            awaited_dm: None,
+            dm_peers: std::collections::BTreeSet::new(),
+            layout: crate::layout_prefs::LayoutPrefs::default(),
+            dm_access: std::collections::BTreeMap::new(),
             notice: None,
             pinning: reacting::Pinning::default(),
             stretched: None,
@@ -179,7 +197,8 @@ impl BridgeHost for Shell {
     fn sdk_opened(&mut self, sdk: Sdk<Self>) {
         sdk.watch(|client, updates| account_watch::run(client, updates, Shell::accounts_changed));
         sdk.watch(|client, updates| server_list::run(client, updates, Shell::servers_changed));
-        sdk.watch(|client, updates| reaction_watch::run(client, updates, Shell::activity_posted));
+        sdk.watch(|client, updates| live_watch::run(client, updates, Shell::activity_posted));
+        sdk.watch(|client, updates| direct_list::run(client, updates, Shell::direct_posted));
         sdk.run(reconnect_hints::run);
         self.sdk = Some(sdk);
     }
@@ -190,6 +209,11 @@ impl BridgeHost for Shell {
 }
 
 impl Shell {
+    /// Where the person is.
+    pub(crate) fn navigation(&self) -> &Navigation {
+        &self.nav
+    }
+
     /// The window starts (`AppSpec::setup`): the shell takes its image
     /// decoder and reads this device's trusted domains and reading
     /// settings.
@@ -197,6 +221,7 @@ impl Shell {
         self.images = Some(ImageCache::new(waker));
         self.content.load();
         self.prefs = ReadingPrefs::load();
+        self.layout = crate::layout_prefs::LayoutPrefs::load();
         self.writing = WritingPrefs::load();
     }
 
@@ -240,6 +265,7 @@ mod composer;
 mod composer_input;
 mod content;
 pub(crate) mod deleting;
+pub(crate) mod direct;
 mod hover_bar;
 mod message_keys;
 mod message_menu;
@@ -247,6 +273,8 @@ mod navigate;
 mod outgoing;
 pub(crate) mod pins;
 mod pins_panel;
+mod profile_card;
+mod profile_pane;
 mod reacting;
 mod reactions_list;
 mod reactors;
@@ -257,6 +285,7 @@ mod sign_in_flow;
 mod tests;
 mod timeline;
 mod timeline_host;
+mod title;
 mod view;
 
 pub(crate) use view::view;

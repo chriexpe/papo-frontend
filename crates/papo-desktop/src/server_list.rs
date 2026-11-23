@@ -14,9 +14,9 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use papo_sdk::{
     AccountId, BadgesSnapshot, ChannelKind, ChannelRecord, ClientHandle, MAX_ICON_BYTES,
-    MediaSource, RegistrySnapshot, ResourceSnapshot, SavedAccount, ServerId, Session,
+    MediaSource, RegistrySnapshot, ResourceSnapshot, SavedAccount, ServerId, Session, Uuid,
 };
-use papo_sdk_ui::{AccountBadges, ServerListService};
+use papo_sdk_ui::{ServerBadgesSnapshot, ServerListService};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
@@ -28,6 +28,9 @@ use crate::sign_in::shown_address;
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct ServerList {
     pub(crate) servers: Vec<ServerEntry>,
+    /// The direct conversations' badge: each server's shown account's, as
+    /// one (`ServerBadgesSnapshot::direct_messages`).
+    pub(crate) direct: Badge,
 }
 
 impl ServerList {
@@ -45,6 +48,7 @@ impl std::fmt::Debug for ServerList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerList")
             .field("servers", &self.servers.len())
+            .field("direct", &self.direct)
             .finish()
     }
 }
@@ -74,7 +78,13 @@ pub(crate) struct ServerEntry {
     pub(crate) text_channels: Vec<ChannelEntry>,
     /// Voice channels in the server's order.
     pub(crate) voice_channels: Vec<ChannelEntry>,
-    /// The server's badge: its shown account's unread and mentions.
+    /// The shown account's direct conversations' badges, by channel.
+    pub(crate) direct_badges: BTreeMap<Uuid, Badge>,
+    /// The people the shown account blocks: their conversations are not in
+    /// Direct's list, so its Blocked list shows them.
+    pub(crate) blocked: Vec<BlockedPerson>,
+    /// The server's badge: its shown account's unread and mentions in the
+    /// server's channels (its DMs are Direct's).
     pub(crate) badge: Badge,
 }
 
@@ -109,6 +119,14 @@ pub(crate) struct ChannelEntry {
     pub(crate) badge: Badge,
 }
 
+/// A person the account blocks, as Direct's Blocked list shows them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BlockedPerson {
+    pub(crate) id: Uuid,
+    /// Their nickname or username; none when the account does not know it.
+    pub(crate) name: Option<String>,
+}
+
 /// What one account session's resources say about its server.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct ServerResources {
@@ -117,6 +135,10 @@ pub(crate) struct ServerResources {
     pub(crate) icon: Option<Arc<[u8]>>,
     pub(crate) text_channels: Vec<ChannelEntry>,
     pub(crate) voice_channels: Vec<ChannelEntry>,
+    /// Each direct conversation's badge, by channel.
+    pub(crate) direct_badges: BTreeMap<Uuid, Badge>,
+    /// The people the account blocks, in the backend's order.
+    pub(crate) blocked: Vec<BlockedPerson>,
 }
 
 /// Builds the rail from the registry and the resources of each server's
@@ -124,9 +146,10 @@ pub(crate) struct ServerResources {
 pub(crate) fn project(
     registry: &RegistrySnapshot,
     resources: &HashMap<AccountId, ServerResources>,
-    account_badges: &BTreeMap<AccountId, Arc<AccountBadges>>,
+    badges: &ServerBadgesSnapshot,
 ) -> ServerList {
-    let servers = registry
+    let account_badges = &badges.accounts;
+    let servers: Vec<ServerEntry> = registry
         .servers
         .iter()
         .map(|saved| {
@@ -158,21 +181,39 @@ pub(crate) fn project(
                 voice_channels: found
                     .map(|found| found.voice_channels.clone())
                     .unwrap_or_default(),
-                // The shown account's aggregate, so the tile always agrees
-                // with the rows below it, active account or not.
+                direct_badges: found
+                    .map(|found| found.direct_badges.clone())
+                    .unwrap_or_default(),
+                blocked: found.map(|found| found.blocked.clone()).unwrap_or_default(),
+                // The shown account's server channels, so the tile always
+                // agrees with the rows below it, active account or not; its
+                // DMs count on Direct instead.
                 badge: account
                     .and_then(|account| account_badges.get(&account.id))
-                    .map(|badges| Badge::of_aggregate(&badges.all))
+                    .map(|badges| Badge::of_aggregate(&badges.channels))
                     .unwrap_or_default(),
             }
         })
         .collect();
-    ServerList { servers }
+    // The accounts the DM list holds: each server's shown one with an open
+    // session (its resources read), so a signed-out one makes no part of
+    // the count unknown.
+    let direct = badges.direct_messages(
+        servers
+            .iter()
+            .filter_map(|server| server.account.as_ref())
+            .map(|account| &account.id)
+            .filter(|account| resources.contains_key(*account)),
+    );
+    ServerList {
+        servers,
+        direct: Badge::of_aggregate(&direct),
+    }
 }
 
 /// The account the channel list shows for server `id`: the active one, else
 /// the first saved.
-fn shown_account(accounts: &[SavedAccount], id: ServerId) -> Option<&SavedAccount> {
+pub(crate) fn shown_account(accounts: &[SavedAccount], id: ServerId) -> Option<&SavedAccount> {
     let mut on_server = accounts.iter().filter(|account| account.id.server() == id);
     let first = on_server.clone().next();
     on_server.find(|account| account.active).or(first)
@@ -219,7 +260,7 @@ pub(crate) async fn run<S: 'static>(
     let mut registry = client.subscribe_registry();
     let mut sessions = client.subscribe_session_changes();
     let badges = ServerListService::new(client.clone()).subscribe_badges();
-    let mut account_badges = badges.snapshot.accounts;
+    let mut server_badges = badges.snapshot;
     let mut badge_changes = badges.stream;
     let mut icons = Icons::default();
     let mut posted = None;
@@ -229,7 +270,7 @@ pub(crate) async fn run<S: 'static>(
         // Rebuilt on every pass; dropping the old set stops its waits.
         let mut resource_changes = JoinSet::new();
         let resources = read_resources(&client, &snapshot, &mut icons, &mut resource_changes);
-        let list = project(&snapshot, &resources, &account_badges);
+        let list = project(&snapshot, &resources, &server_badges);
         if posted.as_ref() != Some(&list) {
             posted = Some(list.clone());
             updates.send_tx(move |state, tx| apply(state, list, tx));
@@ -242,7 +283,7 @@ pub(crate) async fn run<S: 'static>(
             // stream keeps its pending read across select! rounds.
             update = badge_changes.next() => match update {
                 Some(update) => {
-                    account_badges = update.snapshot.accounts;
+                    server_badges = update.snapshot;
                     Wake::Change
                 }
                 // The client closed: the subscription ends with it.
@@ -397,6 +438,14 @@ fn resources(
 ) -> ServerResources {
     let server = snapshot.server.as_deref();
     let (text_channels, voice_channels) = channels(snapshot.channels.iter(), badges);
+    let direct_badges = snapshot
+        .dms
+        .iter()
+        .filter_map(|dm| {
+            let badge = badges?.channels.get(&dm.id)?;
+            Some((dm.id, Badge::of_channel(badge)))
+        })
+        .collect();
     ServerResources {
         name: server
             .and_then(|server| server.name.clone())
@@ -405,6 +454,25 @@ fn resources(
         icon,
         text_channels,
         voice_channels,
+        direct_badges,
+        blocked: snapshot
+            .blocks
+            .iter()
+            .map(|id| {
+                let user = snapshot.users.get(id);
+                BlockedPerson {
+                    id,
+                    name: user
+                        .and_then(|user| {
+                            papo_sdk_ui::display_name(
+                                user.nickname.as_deref(),
+                                user.username.as_deref(),
+                            )
+                        })
+                        .map(str::to_owned),
+                }
+            })
+            .collect(),
     }
 }
 

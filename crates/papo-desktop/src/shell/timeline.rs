@@ -27,6 +27,9 @@ impl Shell {
     /// The timeline the navigation shows: the selected server's account and
     /// its selected text channel.
     pub(super) fn wanted_timeline(&self) -> Option<TimelineKey> {
+        if self.nav.direct_shown() {
+            return self.wanted_direct_timeline();
+        }
         let server = self.nav.selected()?;
         let account = server.account.as_ref()?.id;
         let channel = self.nav.selected_channel()?;
@@ -290,7 +293,14 @@ impl Shell {
         let flash_ended = self.poll_flash(clock_s);
         let notice_ended = self.poll_notice(clock_s);
         let list_closed = self.poll_reactions();
-        restored || copied_ended || new_day || flash_ended || notice_ended || list_closed
+        let card_closed = self.poll_card();
+        restored
+            || copied_ended
+            || new_day
+            || flash_ended
+            || notice_ended
+            || list_closed
+            || card_closed
     }
 
     /// Keeps `today` current: checks once the local day should have ended,
@@ -326,6 +336,10 @@ impl Shell {
             self.save_wake_s = Some(due_s);
             tx.wake_after(Duration::from_secs_f64(SAVE_AFTER_S));
         }
+    }
+
+    pub(super) fn shown_timeline(&self, key: TimelineKey) -> Option<&OpenTimeline> {
+        self.tabs.shown().filter(|open| open.key == key)
     }
 
     pub(super) fn shown_timeline_mut(&mut self, key: TimelineKey) -> Option<&mut OpenTimeline> {

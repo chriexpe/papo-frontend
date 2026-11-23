@@ -145,6 +145,15 @@ impl Shell {
                 MessageAction::ViewReactions,
             ));
         }
+        // A person's message: the keyboard's way to their card.
+        if author_person(open, id).is_some() {
+            group.push(item(
+                "menu-view-profile",
+                strings::menu_view_profile(),
+                &icons::USER,
+                MessageAction::ViewProfile,
+            ));
+        }
         push_group(&mut entries, group);
         let copies = copy::copies(&self.copy_source(open), id)?;
         push_group(&mut entries, link_items(key, &copies.links));
@@ -229,8 +238,9 @@ impl Shell {
                 }
             }
             MessageAction::Delete => self.ask_delete(key, id),
-            // The menu turned into the list instead (`menu_picked`).
-            MessageAction::ViewReactions => {}
+            // The menu turned into the list or the card instead
+            // (`menu_picked`).
+            MessageAction::ViewReactions | MessageAction::ViewProfile => {}
         }
     }
 
@@ -319,4 +329,14 @@ fn push_group(entries: &mut Vec<Entry>, group: Vec<MenuItem>) {
         entries.push(Entry::Divider);
     }
     entries.extend(group.into_iter().map(Entry::Item));
+}
+
+/// The person who wrote message `id` of `open`; none for a bridged author or
+/// a message the timeline does not hold.
+pub(super) fn author_person(open: &OpenTimeline, id: Uuid) -> Option<Uuid> {
+    let (message, _) = open.message(id)?;
+    match papo_sdk_ui::AuthorIdentity::for_message(message) {
+        papo_sdk_ui::AuthorIdentity::Person(user) => Some(user),
+        _ => None,
+    }
 }

@@ -65,6 +65,16 @@ impl LocalTime {
         self.local_seconds(at_us).div_euclid(SECONDS_PER_DAY)
     }
 
+    /// "3 March 2025": the local date of an RFC 3339 instant, with its
+    /// year; none for one that does not parse.
+    pub(crate) fn full_date(&self, instant: &str) -> Option<String> {
+        let at_us = chrono::DateTime::parse_from_rfc3339(instant)
+            .ok()?
+            .timestamp_micros();
+        let date = Civil::of(self.day_of(at_us));
+        Some(strings::day_month(date.day, date.month, Some(date.year)))
+    }
+
     /// "14:02": the local hour and minute of a Unix time in microseconds.
     pub(crate) fn time_label(&self, at_us: i64) -> String {
         let (hour, minute) = self.hour_minute(at_us);

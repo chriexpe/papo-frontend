@@ -93,6 +93,8 @@ impl TimelineHost for Host {
         false
     }
 
+    fn author_pressed(&mut self, _key: TimelineKey, _user: Uuid, _anchor: String, _tx: &mut Tx) {}
+
     fn message_pressed(&mut self, _key: TimelineKey) {
         self.controls.push("message-pressed");
     }
@@ -276,14 +278,25 @@ fn rect(rt: &Runtime<Host>, suffix: &str) -> [f32; 4] {
 /// at any depth inside its row.
 fn find_part(rt: &Runtime<Host>, n: u128, part: &str) -> Option<ElementInfo> {
     let row = format!("/{}/", message_key(Uuid::from_u128(n)));
-    // The message itself is keyed by its ID.
-    let part = if part == "message" {
-        format!("/{}", super::rows::message_part_key(Uuid::from_u128(n)))
-    } else {
-        format!("/{part}")
+    // The message itself is keyed by its ID, and so is a person's name,
+    // which their card opens beside.
+    let id = Uuid::from_u128(n);
+    let parts = match part {
+        "message" => vec![format!("/{}", super::rows::message_part_key(id))],
+        "name" => vec![
+            "/name".to_owned(),
+            format!("/{}", super::rows::author_key(id)),
+        ],
+        "avatar" => vec![
+            "/avatar".to_owned(),
+            format!("/{}", super::rows::avatar_key(id)),
+        ],
+        _ => vec![format!("/{part}")],
     };
     rt.elements().into_iter().find(|element| {
-        element.path.contains(&row) && element.path.ends_with(&part) && !element.exiting
+        element.path.contains(&row)
+            && parts.iter().any(|part| element.path.ends_with(part))
+            && !element.exiting
     })
 }
 

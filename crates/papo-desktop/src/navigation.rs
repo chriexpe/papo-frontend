@@ -1,15 +1,18 @@
-//! Where the person is in the app: the selected server and, per server, the
-//! selected channel; the rail's order while a reorder is on its way to the
-//! SDK or a tile is being dragged; the open menu, the open accounts and the
-//! remove confirmation.
+//! Where the person is in the app: Direct or the selected server and, per
+//! server, the selected channel; the direct conversation picked in Direct;
+//! the rail's order while a reorder is on its way to the SDK or a tile is
+//! being dragged; the open menu, the open accounts and the remove
+//! confirmation.
 //!
 //! Owns these transitions and nothing the SDK holds: the server list itself
 //! comes from `server_list`, and reordering or removing is sent to the SDK by
 //! the shell. Selection is per window and not saved yet (D2 keeps it).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use papo_sdk::ServerId;
+use papo_sdk::{AccountId, ServerId};
+use papo_sdk_ui::DirectMessageItem;
 
 use crate::design::{RAIL_TILE_PT, SPACE_MD_PT};
 use crate::menu::OpenMenu;
@@ -23,6 +26,16 @@ pub(crate) const RAIL_STEP_PT: f32 = RAIL_TILE_PT + SPACE_MD_PT;
 pub(crate) struct Navigation {
     servers: ServerList,
     selected: Option<ServerId>,
+    /// Direct is shown in the selected server's place; the server stays
+    /// remembered for when the person goes back to it.
+    direct: bool,
+    /// Direct shows the people the accounts block instead of the
+    /// conversations.
+    direct_blocked: bool,
+    /// The direct conversation picked in Direct, as its row last read: it
+    /// stays picked when it leaves the list (a block, a hide elsewhere), so
+    /// the conversation can say why.
+    picked_dm: Option<Arc<DirectMessageItem>>,
     /// The channel picked on each server, by the server's channel id.
     channels: HashMap<ServerId, String>,
     /// The order sent to the SDK, shown until the registry has it.
@@ -105,13 +118,87 @@ impl Navigation {
         }
     }
 
+    /// The selected server; none while Direct is shown.
     pub(crate) fn selected(&self) -> Option<&ServerEntry> {
+        if self.direct {
+            return None;
+        }
         self.selected.and_then(|id| self.servers.get(id))
     }
 
-    /// Selects server `id`; the accounts of another server close.
+    /// Whether Direct is shown.
+    pub(crate) fn direct_shown(&self) -> bool {
+        self.direct
+    }
+
+    /// Whether Direct shows the blocked people instead of the
+    /// conversations.
+    pub(crate) fn direct_blocked(&self) -> bool {
+        self.direct_blocked
+    }
+
+    /// Switches Direct between the conversations and the blocked people.
+    pub(crate) fn toggle_direct_blocked(&mut self) {
+        self.direct_blocked = !self.direct_blocked;
+    }
+
+    /// Shows Direct in the server's place; the server's accounts close.
+    pub(crate) fn select_direct(&mut self) {
+        self.direct = true;
+        self.accounts = None;
+    }
+
+    /// The direct conversation picked in Direct, while Direct is shown.
+    pub(crate) fn picked_dm(&self) -> Option<&DirectMessageItem> {
+        self.picked_dm.as_deref().filter(|_| self.direct)
+    }
+
+    /// Picks direct conversation `row`, showing Direct.
+    pub(crate) fn pick_dm(&mut self, row: Arc<DirectMessageItem>) {
+        self.select_direct();
+        self.picked_dm = Some(row);
+    }
+
+    /// The picked conversation's row, Direct shown or not.
+    pub(crate) fn picked_dm_row(&self) -> Option<&DirectMessageItem> {
+        self.picked_dm.as_deref()
+    }
+
+    /// Picks no direct conversation.
+    pub(crate) fn unpick_dm(&mut self) {
+        self.picked_dm = None;
+    }
+
+    /// Takes the newest list: the picked row follows its update, and stays
+    /// as it was when it left the list.
+    pub(crate) fn direct_changed<'a>(
+        &mut self,
+        rows: impl IntoIterator<Item = &'a Arc<DirectMessageItem>>,
+    ) {
+        let Some(picked) = &self.picked_dm else {
+            return;
+        };
+        if let Some(row) = rows.into_iter().find(|row| row.id == picked.id) {
+            self.picked_dm = Some(Arc::clone(row));
+        }
+    }
+
+    /// Forgets the picked conversation when its account signed out.
+    pub(crate) fn account_closed(&mut self, account: AccountId) {
+        if self
+            .picked_dm
+            .as_ref()
+            .is_some_and(|picked| picked.id.account == account)
+        {
+            self.picked_dm = None;
+        }
+    }
+
+    /// Selects server `id`, leaving Direct; the accounts of another server
+    /// close.
     pub(crate) fn select_server(&mut self, id: ServerId) {
         if self.servers.get(id).is_some() {
+            self.direct = false;
             self.selected = Some(id);
             if self.accounts != Some(id) {
                 self.accounts = None;

@@ -8,6 +8,7 @@ use papo_sdk::Uuid;
 use rune::{KeyEvent, Tx};
 
 use super::Shell;
+use crate::composer::COMPOSER_KEY;
 use crate::menu::Placement;
 use crate::timeline::content::Press;
 use crate::timeline::echoes::SendState;
@@ -73,13 +74,33 @@ impl TimelineHost for Shell {
     }
 
     fn content_pressed(&mut self, key: TimelineKey, message: Uuid, press: Press, tx: &mut Tx) {
-        self.worked_outside();
+        // A mention in a message drawn on its own (a pin in its panel) is
+        // a press inside that panel: it stays, and the card opens beside
+        // the mention.
+        let in_panel = matches!(
+            press,
+            Press::Person {
+                standalone: true,
+                ..
+            }
+        );
+        if !in_panel {
+            self.worked_outside();
+        }
         self.content_pressed_in(key, message, press, tx);
     }
 
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx) {
         self.worked_outside();
         self.code_copied_in(key, message, index, tx);
+    }
+
+    fn author_pressed(&mut self, key: TimelineKey, user: Uuid, anchor: String, tx: &mut Tx) {
+        // A press moves no keyboard focus: what had it gets it back, as
+        // from a menu the pointer opened.
+        self.worked_outside();
+        let trigger = tx.focused().unwrap_or(COMPOSER_KEY).to_owned();
+        self.open_card(key, user, Placement::Beside(anchor), trigger, tx);
     }
 
     fn message_pressed(&mut self, key: TimelineKey) {

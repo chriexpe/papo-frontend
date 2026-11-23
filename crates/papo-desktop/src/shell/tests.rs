@@ -14,13 +14,17 @@ use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 mod accounts;
 mod channel_keys;
 mod composer;
+mod direct;
+mod direct_lists;
 mod links;
 mod message_menu;
 mod navigation;
 mod outgoing;
 mod pins;
+mod profile_card;
 mod replying;
 mod timeline;
+mod typing;
 mod writing;
 
 const SIZE_PT: (f32, f32) = (1000.0, 700.0);

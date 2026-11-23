@@ -62,6 +62,9 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn code_copied(&mut self, key: TimelineKey, message: Uuid, index: usize, tx: &mut Tx);
     /// A press on a message of timeline `key` that nothing in it took.
     fn message_pressed(&mut self, key: TimelineKey);
+    /// A message's author name or avatar, the element keyed `anchor`, was
+    /// pressed: person `user`'s card, beside it.
+    fn author_pressed(&mut self, key: TimelineKey, user: Uuid, anchor: String, tx: &mut Tx);
     /// A wheel or trackpad scroll over timeline `key`, by the reader (the
     /// app's own scrolls never come here). Returns whether the view
     /// changed; the viewport scrolls as usual.

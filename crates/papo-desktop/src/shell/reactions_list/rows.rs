@@ -4,7 +4,7 @@
 
 use papo_sdk_ui::operations::ReactionEmoji;
 use papo_sdk_ui::{ReactionChip, Reactor};
-use rune::{El, el, icon, row, text};
+use rune::{El, Key, KeyEvent, el, icon, row, text};
 
 use super::super::Shell;
 use crate::design::{
@@ -120,15 +120,28 @@ fn tab(
 }
 
 /// One person: the avatar, the name, "you" by yours, and on All every
-/// emoji they used.
+/// emoji they used. A press or Enter opens their card.
 pub(super) fn reactor_row(reactor: &Reactor, name: &str, all: bool, palette: &Palette) -> El {
+    let user = reactor.user;
     let mut line = row()
         .w_full()
         .h(ROW_PT)
         .px(SPACE_MD_PT)
         .gap(SPACE_MD_PT)
         .center_y()
+        .radius(RADIUS_CONTROL_PT)
         .role("listitem")
+        .label(name.to_owned())
+        .focusable(true)
+        .focus_highlight(palette.surface_hover)
+        .on_press_tx(move |shell: &mut Shell, tx| shell.reactor_pressed(user, tx))
+        .on_key(move |shell: &mut Shell, event: &KeyEvent, tx| {
+            if event.key != Key::Enter {
+                return false;
+            }
+            shell.reactor_pressed(user, tx);
+            true
+        })
         .child(person_avatar(name, palette))
         .child(
             text(name.to_owned())

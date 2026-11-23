@@ -130,6 +130,7 @@ impl Trusted {
         if !self.hosts.insert(host) {
             return;
         }
+        crate::device_settings::reload(&mut self.prefs);
         if let Err(error) = self.prefs.set(TRUSTED_KEY, &self.hosts) {
             log::warn!("the trusted domains were not saved: {error}");
         }

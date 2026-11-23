@@ -65,18 +65,22 @@ pub(crate) fn startup_open_failed() -> &'static str {
     text!("startup.open_failed")
 }
 
+mod card;
 mod composer;
 mod links;
 mod messages;
+mod people;
 mod reading;
 mod replies;
 mod servers;
 mod sign_in;
 mod timeline;
 
+pub(crate) use card::*;
 pub(crate) use composer::*;
 pub(crate) use links::*;
 pub(crate) use messages::*;
+pub(crate) use people::*;
 pub(crate) use reading::*;
 pub(crate) use replies::*;
 pub(crate) use servers::*;
@@ -101,6 +105,42 @@ mod tests {
         // Tests run in the source locale, en-US; nothing switches it.
         assert_eq!(super::badge_mentions(1), "1 mention");
         assert_eq!(super::badge_mentions(2), "2 mentions");
+    }
+
+    #[test]
+    fn the_typing_line_names_up_to_three_and_marks_where_each_name_is() {
+        let line = |names: &[&str], phrase| {
+            let (line, ranges) = super::typing_line(names, phrase);
+            let named: Vec<String> = ranges
+                .iter()
+                .map(|range| line[range.clone()].to_owned())
+                .collect();
+            (line, named)
+        };
+        assert_eq!(line(&[], None).0, "");
+        assert_eq!(
+            line(&["Lia"], None),
+            ("Lia is typing…".to_owned(), vec!["Lia".to_owned()])
+        );
+        assert_eq!(
+            line(&["Yuki"], Some("is thinking very hard…")).0,
+            "Yuki is thinking very hard…"
+        );
+        let (two, named) = line(&["Lia", "Yuki"], None);
+        assert_eq!(two, "Lia and Yuki are typing…");
+        assert_eq!(named, ["Lia", "Yuki"]);
+        let (three, named) = line(&["Lia", "Yuki", "Caio"], Some("ignored"));
+        assert_eq!(three, "Lia, Yuki and Caio are typing…");
+        assert_eq!(named, ["Lia", "Yuki", "Caio"]);
+        // A phrase from the server is words, never markers.
+        assert_eq!(
+            line(&["Yuki"], Some("\u{E001}\u{E002} hm")).0,
+            "Yuki \u{E001}\u{E002} hm"
+        );
+        assert_eq!(
+            line(&["A", "B", "C", "D"], None),
+            ("Several people are typing…".to_owned(), Vec::new())
+        );
     }
 
     #[test]

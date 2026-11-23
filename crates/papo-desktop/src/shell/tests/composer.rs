@@ -44,6 +44,7 @@ pub(super) fn in_general() -> Runtime<Shell> {
         shell.servers_changed(
             ServerList {
                 servers: vec![lumen],
+                direct: crate::badges::Badge::default(),
             },
             tx,
         );
@@ -356,4 +357,34 @@ fn a_field_past_its_lines_scrolls_under_the_wheel() {
         (after - scrolled).abs() < 1.0,
         "an empty preedit leaves the scroll alone"
     );
+}
+
+#[test]
+fn an_account_switch_shows_the_other_accounts_draft_not_this_ones() {
+    let mut rt = writing("half a thought");
+    let before = shown(&rt.state);
+    // Lumen now shows another account, as a switch does.
+    rt.update(|shell, tx| {
+        let mut lumen = shell.navigation().servers().servers[0].clone();
+        let other = crate::server_list::AccountEntry {
+            id: papo_sdk::AccountId::new(lumen.id, papo_sdk::Uuid::from_u128(0x77)),
+            name: "Ana Two".to_owned(),
+            username: "ana2".to_owned(),
+        };
+        lumen.account = Some(other.clone());
+        lumen.accounts.push(other);
+        shell.servers_changed(
+            ServerList {
+                servers: vec![lumen],
+                direct: crate::badges::Badge::default(),
+            },
+            tx,
+        );
+    });
+    rt.frame(FRAME_S);
+    let after = shown(&rt.state);
+    assert_eq!(after.channel, before.channel, "the same channel");
+    assert_ne!(after.account, before.account, "as the other account");
+    load(&mut rt, "");
+    assert_eq!(field(&rt), "", "the other account's own draft");
 }
