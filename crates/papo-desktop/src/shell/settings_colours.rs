@@ -12,8 +12,8 @@ use rune::{Drag, Phase, Tx};
 use super::Shell;
 use crate::appearance::presets::{self, PRESETS, PRESETS_PER_PAGE};
 use crate::design::{Background, BackgroundColour, MAX_BACKGROUND_COLOURS};
-use crate::settings::Change;
 use crate::settings::colour_field::{self, ColourChange};
+use crate::settings::{Change, HeldEvent};
 
 impl Shell {
     /// The pointer on the colour field, the disc in its middle: a press
@@ -54,7 +54,7 @@ impl Shell {
                 colours.push(colour);
                 added.background = Background::new(&colours, current.background.strength);
                 if let Some(panel) = self.settings.as_mut() {
-                    panel.set_draft(added);
+                    panel.held(HeldEvent::Drew(added));
                 }
                 return;
             }
@@ -78,17 +78,15 @@ impl Shell {
         };
         if drag.phase == Phase::Down {
             panel.colour.selected = index;
-            panel.colour.drag_origin = Some(now);
+            panel.held(HeldEvent::ColourPressed(now));
             return;
         }
         if drag.phase == Phase::Up && drag.cancelled() {
             self.settings_drag_cancelled();
             return;
         }
-        let origin = panel.colour.drag_origin.unwrap_or(now);
-        if drag.phase == Phase::Up {
-            panel.colour.drag_origin = None;
-        }
+        // Letting go ends the drag in `settings_change`, which saves.
+        let origin = panel.drag_origin().unwrap_or(now);
         let change = colour_field::moved_by(index, origin, (drag.dx, drag.dy), drag.phase);
         self.settings_change(Change::Colours(change), tx);
     }

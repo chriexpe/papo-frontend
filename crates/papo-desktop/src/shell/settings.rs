@@ -18,7 +18,9 @@ use crate::design::{Background, Density, Theme};
 use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::settings::colour_field::ColourChange;
 use crate::settings::rows::{density_name, theme_name};
-use crate::settings::{Change, PageId, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel};
+use crate::settings::{
+    Change, HeldEvent, PageId, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel,
+};
 
 /// What a choice's menu sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,10 +176,10 @@ impl Shell {
             panel.colour.harmony += 1;
         }
         if dragging(&change) {
-            panel.set_draft(next);
+            panel.held(HeldEvent::Drew(next));
             return;
         }
-        panel.take_draft();
+        panel.held(HeldEvent::Ended);
         self.settings_save(change.row(), next, tx);
     }
 
@@ -205,8 +207,7 @@ impl Shell {
     /// the pointer taken away): what it drew goes, and nothing is saved.
     pub(crate) fn settings_drag_cancelled(&mut self) {
         if let Some(panel) = self.settings.as_mut() {
-            panel.take_draft();
-            panel.colour.drag_origin = None;
+            panel.held(HeldEvent::Ended);
         }
     }
 

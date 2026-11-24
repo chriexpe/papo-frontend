@@ -79,3 +79,23 @@ fn glass_is_a_slider_from_solid_to_liquid() {
         "frosted at first"
     );
 }
+
+#[test]
+fn a_drag_draws_from_its_press_and_ends_without_a_draft() {
+    use super::{Held, HeldEvent};
+    use crate::design::BackgroundColour;
+    let origin = BackgroundColour {
+        hue_degrees: 30.0,
+        vividness: 0.5,
+    };
+    let drawn = Appearance::default();
+    let pressed = Held::Idle.step(HeldEvent::ColourPressed(origin));
+    assert_eq!(pressed.origin(), Some(origin));
+    assert_eq!(pressed.draft(), None, "nothing drawn before it moves");
+    let moving = pressed.step(HeldEvent::Drew(drawn));
+    assert_eq!(moving.origin(), Some(origin), "it moves from where it sat");
+    assert_eq!(moving.draft(), Some(&drawn));
+    let slider = Held::Idle.step(HeldEvent::Drew(drawn));
+    assert_eq!(slider.origin(), None, "a slider has no colour to move");
+    assert_eq!(moving.step(HeldEvent::Ended), Held::Idle);
+}
