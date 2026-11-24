@@ -185,11 +185,15 @@ impl Composer {
             reply: before.reply,
         };
         self.picker = None;
-        if !before.send_failed {
+        if before.send_failed {
+            draft.state = DraftState::Unsaved { due_s: 0.0 };
+            self.failed = Some(key);
+        }
+        // A tray tile that finished copying during the edit waited for it
+        // to end (an edit is never saved).
+        if !draft.state.unsaved() {
             return Some(Vec::new());
         }
-        draft.state = DraftState::Unsaved { due_s: 0.0 };
-        self.failed = Some(key);
         Some(self.save(key).into_iter().collect())
     }
 

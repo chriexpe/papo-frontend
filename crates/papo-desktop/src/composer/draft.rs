@@ -11,6 +11,7 @@ use rune::TextEdit;
 use super::mentions;
 use super::mode::Mode;
 use super::pairs::Pairs;
+use super::tray::Tray;
 
 /// One channel's buffer.
 pub(crate) struct Draft {
@@ -26,6 +27,9 @@ pub(crate) struct Draft {
     pub(super) wire_chars: usize,
     /// A new message, a reply or an edit.
     pub(crate) mode: Mode,
+    /// The files attached to the draft (`docs/design.md` §14.2). An edit
+    /// leaves them alone: only the text is edited (§11).
+    pub(crate) tray: Tray,
 }
 
 /// Where a buffer stands against the SDK's stored draft.
@@ -63,6 +67,7 @@ impl Draft {
             preview: Vec::new(),
             wire_chars: 0,
             mode: Mode::default(),
+            tray: Tray::default(),
         }
     }
 

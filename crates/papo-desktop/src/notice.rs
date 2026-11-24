@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use rune::{Align, El, Side, Tx, icon, row, text};
 
+use crate::attaching::Refused;
 use crate::design::{
     FOCUS_RING_PT, Look, PILL_ICON_PT, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, Surfaces,
     TYPE_SMALL,
@@ -26,7 +27,7 @@ const NOTICE_HEIGHT_PT: f32 = 32.0;
 pub(crate) const NOTICE_KEY: &str = "notice";
 
 /// What did not happen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Refusal {
     /// A reaction you added or removed.
     Reaction,
@@ -43,11 +44,16 @@ pub(crate) enum Refusal {
     Block,
     Unblock,
     Ban,
+    /// Files offered to the tray that it did not take (`docs/design.md`
+    /// §14.1).
+    Attach(Refused),
+    /// Files offered while a message is edited: the edit must end first.
+    FinishEdit,
 }
 
 impl Refusal {
-    fn words(self) -> &'static str {
-        match self {
+    fn words(&self) -> std::borrow::Cow<'static, str> {
+        let words = match self {
             Refusal::Reaction => strings::notice_reaction_failed(),
             Refusal::Pin => strings::notice_pin_failed(),
             Refusal::Unpin => strings::notice_unpin_failed(),
@@ -57,12 +63,15 @@ impl Refusal {
             Refusal::Block => strings::notice_block_failed(),
             Refusal::Unblock => strings::notice_unblock_failed(),
             Refusal::Ban => strings::notice_ban_failed(),
-        }
+            Refusal::FinishEdit => strings::drop_editing(),
+            Refusal::Attach(refused) => return strings::attach_refused(refused).into(),
+        };
+        words.into()
     }
 }
 
 /// The notice shown, and until when.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Notice {
     pub(crate) refusal: Refusal,
     /// When it goes, on the window's clock; none while the pointer is on it.
@@ -90,7 +99,7 @@ impl Notice {
         if hovered {
             self.until_s = None;
         } else {
-            *self = Notice::show(self.refusal, tx);
+            *self = Notice::show(self.refusal.clone(), tx);
         }
     }
 }

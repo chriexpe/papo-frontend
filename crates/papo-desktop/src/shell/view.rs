@@ -138,6 +138,15 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                 if let Some(flow) = flow {
                     app = app.child(sign_in::popup(flow, &shell.fields, &look));
                 }
+                if let Some(target) = shell.drop_target() {
+                    app = app
+                        .child(crate::drop_card::dim())
+                        .child(crate::drop_card::card(
+                            &target,
+                            shell.conversation_rect,
+                            &look,
+                        ));
+                }
                 app
             }
         },
@@ -242,6 +251,7 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
         enter_sends: shell.conversations.settings().enter_sends,
         original: original.as_ref(),
         me: shown.map_or(papo_sdk::Uuid::nil(), |(key, _)| key.account.user()),
+        tray_ui: &shell.tray_ui,
     };
     let state = shell.picked_dm_access().zip(shell.nav.picked_dm());
     let composer = match (state, &title) {
@@ -266,7 +276,15 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
         })
         .padding(look.space(SPACE_LG))
         .child(composer)
-        .children(typing_line(shell, look));
+        // The typing line shares the notice's strip, so it steps aside
+        // while a notice shows (`docs/design.md` §14.1).
+        .children(
+            shell
+                .notice
+                .is_none()
+                .then(|| typing_line(shell, look))
+                .flatten(),
+        );
     let header = header.map(|header| {
         header
             .pin(Some(0.0), Some(0.0), Some(0.0), None)
@@ -277,6 +295,11 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
     });
     let conversation = col()
         .key("conversation")
+        // Where the drop card centres while files are dragged in.
+        .on_drawn_layout_tx(|shell: &mut Shell, rect, tx| {
+            shell.conversation_rect = rect;
+            tx.live_only();
+        })
         // A landmark, so F6 reaches it (`docs/design.md` §12).
         .role("main")
         .label(title.name())
@@ -297,6 +320,12 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
         .on_background_press(|shell: &mut Shell| {
             shell.worked_outside();
         })
+        // Files dropped anywhere go to the shown conversation (§14.1).
+        .on_drop_files(|shell: &mut Shell, files: &[std::path::PathBuf], _tx| {
+            shell.files_dropped(files);
+        })
+        .accepts_drag(|shell: &Shell, _files| shell.takes_drags())
+        .on_drop_hover(|shell: &mut Shell, over, _tx| shell.drop_hovered(over))
         .child(rail::view(&shell.nav, &shell.icons, look))
         .child(edge())
         .child(if shell.nav.direct_shown() {

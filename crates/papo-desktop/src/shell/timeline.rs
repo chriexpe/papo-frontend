@@ -110,6 +110,8 @@ impl Shell {
             .retain_accounts(|account| accounts.contains(&account));
         self.composer
             .retain_accounts(|account| accounts.contains(&account));
+        // Their drafts went: their trays' copies stop.
+        self.forget_lost_copies();
         self.draft_writes
             .retain_accounts(|account| accounts.contains(&account));
         // A removed account's panels go with it, though nothing showed.

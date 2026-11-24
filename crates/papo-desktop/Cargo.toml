@@ -25,6 +25,9 @@ rune = { git = "https://github.com/chriexpe/rune", rev = "e5fe90a1ddeeff1610a282
     "accessibility",
     "dbus",
     "metal-backend",
+    # The FileChooser portal on Linux (rfd on macOS and Windows), for
+    # attaching files (docs/design.md §14.1).
+    "native-file-dialog",
     "ogg-audio",
     "svg",
 ] }

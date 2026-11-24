@@ -13,11 +13,14 @@ use rune::{El, KeyEvent, PillStyle, auto_grow, col, icon, row, text, text_input}
 use super::Composer;
 use super::bars::bar;
 use super::picker::Picker;
+use super::tray_ui::TrayUi;
+use super::tray_view::tray;
 use crate::design::{
     COMPOSER_HEIGHT, COMPOSER_MAX_LINES, FOCUS_RING_PT, Look, PILL_ICON_PT, PILL_OUTLINE_PT,
-    RADIUS_COMPOSER, SEND_BUTTON, SPACE_LG, SPACE_SM, Surfaces, TYPE_BODY, TYPE_SMALL,
+    RADIUS_COMPOSER, RADIUS_PILL, SEND_BUTTON, SPACE_LG, SPACE_MD, SPACE_SM, Surfaces, TYPE_BODY,
+    TYPE_SMALL,
 };
-use crate::icons::{CHECK, SEND};
+use crate::icons::{CHECK, PAPERCLIP, SEND};
 use crate::shell::Shell;
 use crate::strings;
 use crate::timeline::replies::OriginalText;
@@ -27,6 +30,9 @@ pub(crate) const COMPOSER_KEY: &str = "composer";
 
 /// The element key of the text pill, which the @ picker grows out of.
 pub(crate) const COMPOSER_PILL_KEY: &str = "composer-pill";
+
+/// The element key of the paperclip squircle.
+pub(crate) const ATTACH_KEY: &str = "composer-attach";
 
 /// The element key of Save, Send's place while editing.
 pub(crate) const SAVE_KEY: &str = "composer-save";
@@ -44,6 +50,8 @@ pub(crate) struct PillContext<'a> {
     pub(crate) original: Option<&'a OriginalText>,
     /// The account's user.
     pub(crate) me: Uuid,
+    /// The tray's keyboard and drag state.
+    pub(crate) tray_ui: &'a TrayUi,
 }
 
 /// The pill for the shown channel, with the line over it when there is
@@ -54,45 +62,14 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         enter_sends,
         original,
         me,
+        tray_ui,
     } = *context;
     let Some((_, draft)) = composer.shown() else {
         // Nothing to write in: still the notice pill's anchor, at no height.
         return col().key(COMPOSER_PILL_KEY).w_full();
     };
     let loading = composer.is_loading();
-    let style = composer.field_style(look);
-    let (chip, ink) = (look.palette.accent_soft, look.palette.link);
-    let mut field = text_input(&draft.edit, look.font(TYPE_BODY))
-        .key(COMPOSER_KEY)
-        .label(strings::composer_label())
-        // A long link or word breaks at the field's edge instead of running
-        // past it.
-        .wrap_anywhere()
-        .grow(1.0)
-        .color(look.palette.text_primary)
-        .placeholder(placeholder, look.palette.text_muted)
-        .caret(look.palette.accent, look.palette.text_selection)
-        .spans(style.spans)
-        .strikes(style.strikes)
-        // Every pill is a mention, drawn as a message draws one.
-        .pill_style(move |_| PillStyle::default().bg(chip).fg(ink));
-    if let Some(row) = composer.picker().and_then(Picker::chosen_key) {
-        field = field.active_descendant(row).expanded(true);
-    }
-    if loading {
-        // No `on_edit` while the draft loads: typing waits for it.
-        field = field.busy(true);
-    } else {
-        field = field
-            .on_edit(|shell: &mut Shell| shell.composer.field_mut())
-            .on_input_change(Shell::composer_edited)
-            // With "Enter to send" on, plain Enter submits and Shift+Enter
-            // is the editor's own line break.
-            .on_submit(Shell::composer_send)
-            .on_input_key(move |shell: &mut Shell, key: &KeyEvent, tx| {
-                shell.composer_key(key, enter_sends, tx)
-            });
-    }
+    let field = field(composer, &draft.edit, placeholder, enter_sends, look);
     let line_pt = look.font(TYPE_BODY).line_px();
     // One line sits level with Send; more lines grow the pill upward.
     let field = col()
@@ -123,6 +100,15 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         .radius(look.radius(RADIUS_COMPOSER))
         .pill_surface(look)
         .children(bar(&draft.mode, original, me, look))
+        // An edit leaves the attachments alone (§11), so they are not shown.
+        .children(
+            draft
+                .mode
+                .editing()
+                .is_none()
+                .then(|| tray(&draft.tray, tray_ui, look))
+                .flatten(),
+        )
         .child(writing);
     let note = if composer.chars_over() > 0 {
         let over = u64::try_from(composer.chars_over()).unwrap_or(u64::MAX);
@@ -132,12 +118,10 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
     } else {
         None
     };
-    col()
-        .key("composer-area")
-        // Its own landmark, so F6 reaches the field from the conversation.
-        .role("form")
-        .label(strings::composer_label())
-        .w_full()
+    let attach = draft.mode.editing().is_none().then(|| paperclip(look));
+    let stack = col()
+        .grow(1.0)
+        .min_w(0.0)
         .gap(look.space(SPACE_SM))
         .children(note.map(|note| {
             text(note)
@@ -149,7 +133,90 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
                 .live_region(rune::LiveRegion::Polite)
                 .wrap()
         }))
-        .child(pill)
+        .child(pill);
+    row()
+        .key("composer-area")
+        // Its own landmark, so F6 reaches the field from the conversation.
+        .role("form")
+        .label(strings::composer_label())
+        .w_full()
+        .gap(look.space(SPACE_MD))
+        .items_end()
+        .children(attach)
+        .child(stack)
+}
+
+/// The paperclip squircle beside the text pill (§3, §14.1): the system's
+/// file chooser. Left out while a message is edited, never greyed (§10).
+fn paperclip(look: &Look) -> El {
+    let side = look.space(COMPOSER_HEIGHT);
+    row()
+        .key(ATTACH_KEY)
+        .size(side, side)
+        .center()
+        .radius(look.radius(RADIUS_PILL))
+        .pill_surface(look)
+        .role("button")
+        .label(strings::attach_button())
+        .help(strings::attach_button())
+        .help_keys([strings::shortcut_attach()])
+        .focusable(true)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+        .on_press_tx(|shell: &mut Shell, tx| shell.attach_pressed(tx))
+        .hover_group()
+        .child(
+            icon(&PAPERCLIP, PILL_ICON_PT)
+                .color(look.palette.text_secondary)
+                .group_color(look.palette.text_primary),
+        )
+}
+
+/// The message field: Markdown styled in place, mentions as pills, Enter
+/// and Send, pastes of files, and no typing while the draft loads.
+fn field(
+    composer: &Composer,
+    edit: &rune::TextEdit,
+    placeholder: &str,
+    enter_sends: bool,
+    look: &Look,
+) -> El {
+    let loading = composer.is_loading();
+    let style = composer.field_style(look);
+    let (chip, ink) = (look.palette.accent_soft, look.palette.link);
+    let mut field = text_input(edit, look.font(TYPE_BODY))
+        .key(COMPOSER_KEY)
+        .label(strings::composer_label())
+        // A long link or word breaks at the field's edge instead of running
+        // past it.
+        .wrap_anywhere()
+        .grow(1.0)
+        .color(look.palette.text_primary)
+        .placeholder(placeholder, look.palette.text_muted)
+        .caret(look.palette.accent, look.palette.text_selection)
+        .spans(style.spans)
+        .strikes(style.strikes)
+        // Every pill is a mention, drawn as a message draws one.
+        .pill_style(move |_| PillStyle::default().bg(chip).fg(ink));
+    if let Some(row) = composer.picker().and_then(Picker::chosen_key) {
+        field = field.active_descendant(row).expanded(true);
+    }
+    if loading {
+        // No `on_edit` while the draft loads: typing waits for it.
+        field = field.busy(true);
+    } else {
+        field = field
+            .on_edit(|shell: &mut Shell| shell.composer.field_mut())
+            .on_input_change(Shell::composer_edited)
+            // With "Enter to send" on, plain Enter submits and Shift+Enter
+            // is the editor's own line break.
+            .on_submit(Shell::composer_send)
+            // Files and pictures pasted become tiles; text stays text.
+            .on_input_paste(Shell::composer_paste)
+            .on_input_key(move |shell: &mut Shell, key: &KeyEvent, tx| {
+                shell.composer_key(key, enter_sends, tx)
+            });
+    }
+    field
 }
 
 /// Send's and Save's corner radius: concentric with the pill, whose edge

@@ -199,6 +199,12 @@ impl Shell {
     /// account blocks them (its own block list, at once), or the backend
     /// refuses it (asked once it left the list). None while open or not
     /// yet known.
+    /// Whether a direct conversation's state pill stands where the field
+    /// would: nothing can be written or attached there.
+    pub(super) fn composer_hidden(&self) -> bool {
+        self.picked_dm_access().is_some()
+    }
+
     pub(super) fn picked_dm_access(&self) -> Option<DirectAccess> {
         let picked = self.nav.picked_dm()?;
         let key = self.wanted_direct_timeline()?;

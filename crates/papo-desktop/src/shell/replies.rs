@@ -160,7 +160,7 @@ pub(super) fn queue_edit(sdk: &Sdk<Shell>, key: TimelineKey, id: Uuid, text: Str
                 };
                 session
                     .outgoing()
-                    .enqueue(key.channel, local, kind, super::composer::now())
+                    .enqueue(key.channel, local, kind, super::draft_writes::now())
                     .await
             }
             Err(error) => Err(error.into()),

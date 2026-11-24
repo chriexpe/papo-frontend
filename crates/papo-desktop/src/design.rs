@@ -121,6 +121,7 @@ pub(crate) const RADIUS_PILL: Radius = Radius(14.0);
 /// The header pills' height.
 pub(crate) const HEADER_PILL_HEIGHT: Space = Space(36.0);
 
+mod attachments;
 mod background;
 mod code_ink;
 mod colour;
@@ -138,6 +139,7 @@ mod tests;
 mod theme;
 mod tint;
 
+pub(crate) use attachments::*;
 pub(crate) use background::{
     Accent, Background, BackgroundColour, CHROME_GRADIENT_DEGREES, ChromeFill,
     MAX_BACKGROUND_COLOURS,
