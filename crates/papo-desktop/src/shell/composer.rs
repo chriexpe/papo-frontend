@@ -133,7 +133,7 @@ impl Shell {
                 }
                 effect => {
                     if let Some(sdk) = &self.sdk {
-                        let mention = self.writing.mention_when_replying;
+                        let mention = self.conversations.settings().mention_when_replying;
                         run_effect(sdk, &self.draft_writes, effect, mention);
                     }
                 }

@@ -19,7 +19,7 @@ use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::settings::colour_field::ColourChange;
 use crate::settings::rows::{density_name, theme_name};
 use crate::settings::{
-    Change, HeldEvent, PageId, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel,
+    Change, HeldEvent, PageId, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel, Target,
 };
 
 /// What a choice's menu sets.
@@ -159,9 +159,16 @@ impl Shell {
 
     /// A row's change: drawn while a drag runs, else saved.
     pub(crate) fn settings_change(&mut self, change: Change, tx: &mut Tx) {
-        let Some(panel) = self.settings.as_ref() else {
+        let Some(panel) = self.settings.as_mut() else {
             return;
         };
+        if let Some(next) =
+            super::settings_conversations::applied(self.conversations.settings(), &change)
+        {
+            panel.held(HeldEvent::Ended);
+            self.settings_save(change.row(), Target::Conversations(next), tx);
+            return;
+        }
         let current = panel
             .draft()
             .copied()
@@ -180,14 +187,19 @@ impl Shell {
             return;
         }
         panel.held(HeldEvent::Ended);
-        self.settings_save(change.row(), next, tx);
+        self.settings_save(change.row(), Target::Appearance(next), tx);
     }
 
     /// Saves `target` for `row`'s change; a failure shows under the row
-    /// when the write comes back (`appearance_written`).
-    fn settings_save(&mut self, row: RowId, target: Appearance, tx: &mut Tx) {
-        self.saving_row = Some(row);
-        self.set_appearance(target, tx);
+    /// when the write comes back.
+    fn settings_save(&mut self, row: RowId, target: Target, tx: &mut Tx) {
+        match target {
+            Target::Appearance(appearance) => {
+                self.saving_row = Some(row);
+                self.set_appearance(appearance, tx);
+            }
+            Target::Conversations(settings) => self.set_conversations(settings, Some(row), tx),
+        }
     }
 
     /// Try again under a row whose save failed: the same settings, saved
@@ -271,7 +283,8 @@ fn applied(
             value,
             ..
         } => next.shape = current.shape.with(*value_of, *value),
-        Change::Switch(..) | Change::Slider { .. } => {}
+        // The other rows' changes are their stores' (Conversations').
+        Change::Switch(..) | Change::Slider { .. } | Change::Hue(..) => {}
         Change::Colours(colour) => {
             let (background, now) = super::settings_colours::colours_applied(
                 &current.background,

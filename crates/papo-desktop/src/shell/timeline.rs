@@ -63,7 +63,10 @@ impl Shell {
             return;
         }
         let wanted = self.wanted_timeline();
-        let Some(switch) = self.tabs.show(wanted, self.prefs.open_at_newest) else {
+        let Some(switch) = self
+            .tabs
+            .show(wanted, self.conversations.settings().open_at_newest)
+        else {
             return;
         };
         self.conversation_left();

@@ -219,7 +219,11 @@ fn a_mention_is_written_as_its_token() {
 fn the_picker_leaves_with_the_caret_and_enter_goes_back_to_the_field() {
     let mut rt = with_roster("");
     // Enter adds a line, so what it did stays in the field.
-    rt.update(|shell, _tx| shell.writing.enter_sends = false);
+    rt.update(|shell, _tx| {
+        shell
+            .conversations
+            .set_for_test(|settings| settings.enter_sends = false);
+    });
     keys(&mut rt, "oi @mar");
     assert!(rt.find(PICKER_KEY).is_some());
     press(&mut rt, Key::Left);

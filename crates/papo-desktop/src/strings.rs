@@ -68,6 +68,7 @@ pub(crate) fn startup_open_failed() -> &'static str {
 mod appearance_names;
 mod card;
 mod composer;
+mod conversations;
 mod links;
 mod messages;
 mod people;
@@ -83,6 +84,7 @@ mod timeline;
 pub(crate) use appearance_names::*;
 pub(crate) use card::*;
 pub(crate) use composer::*;
+pub(crate) use conversations::*;
 pub(crate) use links::*;
 pub(crate) use messages::*;
 pub(crate) use people::*;

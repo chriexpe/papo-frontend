@@ -32,7 +32,7 @@ impl Shell {
         if !actions.reply {
             return false;
         }
-        let mention = self.writing.mention_when_replying;
+        let mention = self.conversations.settings().mention_when_replying;
         let effects = self.composer.start_reply(key, id, Some(original), mention);
         self.run_composer(effects, Some(tx));
         tx.scroll_into_view(anchor_key(id));

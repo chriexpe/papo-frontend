@@ -14,6 +14,7 @@ use super::rows::{self, Context, page_title};
 use super::search::results;
 use super::{PageId, SEARCH_KEY, SETTINGS_KEY, SettingsPanel};
 use crate::appearance::Appearance;
+use crate::conversation_settings::ConversationSettings;
 use crate::design::settings::{
     BODY_PADDING_PT, GROUP_GAP, HEAD_BUTTON_PT, HEAD_MIN_HEIGHT_PT, HEAD_PADDING_PT,
     NAV_ICON_CIRCLE_PT, NAV_PADDING, NAV_ROW_INSET_PT, NAV_ROW_PADDING, NAV_WIDTH_PT,
@@ -24,7 +25,7 @@ use crate::design::{
     RAIL_WIDTH_PT, ROW_ICON_PT, SPACE_MD, SPACE_SM, SPACE_XS, Surfaces, TYPE_BODY,
     TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_SMALL, TYPE_TITLE,
 };
-use crate::icons::{ARROW_LEFT, PALETTE, SEARCH, X};
+use crate::icons::{ARROW_LEFT, CHAT, PALETTE, SEARCH, X};
 use crate::shell::Shell;
 use crate::strings;
 
@@ -33,6 +34,7 @@ pub(crate) struct PanelView<'a> {
     pub(crate) panel: &'a SettingsPanel,
     /// The saved settings (the draft is the panel's own).
     pub(crate) saved: &'a Appearance,
+    pub(crate) conversations: &'a ConversationSettings,
     pub(crate) system_dark: bool,
     pub(crate) system_font_known: bool,
     /// The grain's tile for the theme drawn, for Grain's slider.
@@ -45,6 +47,7 @@ pub(crate) fn view(panel: &PanelView<'_>, look: &Look) -> El {
     let appearance = panel.panel.draft().unwrap_or(panel.saved);
     let context = Context {
         appearance,
+        conversations: panel.conversations,
         system_dark: panel.system_dark,
         system_font_known: panel.system_font_known,
     };
@@ -64,7 +67,7 @@ pub(crate) fn view(panel: &PanelView<'_>, look: &Look) -> El {
         .label(strings::settings_title())
         .modal_tx(true, Shell::dismiss_settings)
         .on_key(|shell: &mut Shell, key: &rune::KeyEvent, tx| shell.settings_key(key, tx))
-        .child(nav(panel.panel, appearance, panel.system_dark, look))
+        .child(nav(panel.panel, &context, look))
         .child(body);
     // The holder spans the margins and centres the panel in them, so a
     // wide window caps it and a narrow one keeps it at the margin.
@@ -75,14 +78,15 @@ pub(crate) fn view(panel: &PanelView<'_>, look: &Look) -> El {
 }
 
 /// The nav: the search field, then the pages under "App".
-fn nav(panel: &SettingsPanel, appearance: &Appearance, system_dark: bool, look: &Look) -> El {
+fn nav(panel: &SettingsPanel, context: &Context<'_>, look: &Look) -> El {
     let current = panel.query().is_empty().then(|| panel.page().nav());
-    let appearance_row = nav_row(
-        PageId::Appearance,
-        &rows::appearance_summary(appearance, system_dark),
-        current == Some(PageId::Appearance),
-        look,
-    );
+    let pages = PageId::NAV.into_iter().map(|page| {
+        let summary = match page {
+            PageId::Appearance => rows::appearance_summary(context.appearance, context.system_dark),
+            _ => rows::conversations_summary().to_owned(),
+        };
+        nav_row(page, &summary, current == Some(page), look)
+    });
     col()
         .w(NAV_WIDTH_PT)
         .h_full()
@@ -102,7 +106,15 @@ fn nav(panel: &SettingsPanel, appearance: &Appearance, system_dark: bool, look: 
                         .color(look.palette.text_muted),
                 ),
         )
-        .child(appearance_row)
+        .children(pages)
+}
+
+/// A nav page's icon.
+fn nav_icon(page: PageId) -> &'static rune::Icon {
+    match page {
+        PageId::Conversations | PageId::Highlights => &CHAT,
+        PageId::Appearance | PageId::Background | PageId::Shape => &PALETTE,
+    }
 }
 
 /// The search field: the search icon, the field, and ✕ while it holds text.
@@ -195,7 +207,7 @@ fn nav_row(page: PageId, summary: &str, current: bool, look: &Look) -> El {
                 .center()
                 .fill(look.palette.surface_tile)
                 .a11y_hidden()
-                .child(icon(&PALETTE, PILL_ICON_PT).color(look.palette.text_secondary)),
+                .child(icon(nav_icon(page), PILL_ICON_PT).color(look.palette.text_secondary)),
         )
         .child(
             col()

@@ -7,8 +7,8 @@ use rune::Tx;
 
 use super::Shell;
 use crate::appearance::{Appearance, ShapeValue, TEXT_SIZE_DEFAULT_PT, text_size_step};
-use crate::design::{Glass, Look, LookSpec, Scale};
-use crate::settings::RowId;
+use crate::design::{Glass, Look, LookSpec, MessageLayout, Scale};
+use crate::settings::{RowId, Target};
 use crate::timeline::OpenTimeline;
 use crate::timeline::anchor::{Anchor, scroll_to};
 
@@ -24,7 +24,12 @@ impl Shell {
     /// The frame's look: the Appearance settings, the theme following the
     /// system's light or dark when it is set to.
     pub(crate) fn look(&self, system_dark: bool) -> Look {
-        look_of(&self.shown_appearance(), system_dark, self.system_font)
+        look_of(
+            &self.shown_appearance(),
+            self.conversations.settings().mention_hue_degrees,
+            system_dark,
+            self.system_font,
+        )
     }
 
     /// Shows `appearance` and saves it, the message being read kept in its
@@ -66,11 +71,22 @@ impl Shell {
         }
         let next = self.appearance.written(appearance, ok);
         if let (Some(panel), Some(row)) = (self.settings.as_mut(), row) {
-            panel.saved(row, appearance, ok);
+            panel.saved(row, Target::Appearance(appearance), ok);
         }
         keep_place(reading, tx);
         if let Some(next) = next {
             self.write_appearance(next, tx);
+        }
+    }
+
+    /// How rows are laid out: Appearance's density and grouping, with the
+    /// Conversations page's times and avatars.
+    pub(crate) fn message_layout(&self) -> MessageLayout {
+        let conversations = self.conversations.settings();
+        MessageLayout {
+            times: conversations.show_times,
+            avatars: conversations.show_avatars,
+            ..self.shown_appearance().messages
         }
     }
 
@@ -92,7 +108,7 @@ impl Shell {
     }
 
     /// The shown timeline's anchor before a change that reflows its rows.
-    fn reading_place(&self) -> Option<Anchor> {
+    pub(super) fn reading_place(&self) -> Option<Anchor> {
         self.tabs.shown().map(OpenTimeline::current_anchor)
     }
 
@@ -120,7 +136,7 @@ impl Shell {
 
 /// Text size, spacing or density changed: the message being read keeps its
 /// place on screen, by its anchor (`docs/design.md` §5).
-fn keep_place(reading: Option<Anchor>, tx: &mut Tx) {
+pub(super) fn keep_place(reading: Option<Anchor>, tx: &mut Tx) {
     if let Some(anchor) = reading {
         scroll_to(anchor, tx);
     }
@@ -130,6 +146,7 @@ fn keep_place(reading: Option<Anchor>, tx: &mut Tx) {
 /// that setting is on and one was found.
 pub(crate) fn look_of(
     appearance: &Appearance,
+    mention_hue_degrees: f32,
     system_dark: bool,
     system_font: Option<&'static str>,
 ) -> Look {
@@ -150,5 +167,6 @@ pub(crate) fn look_of(
             shadow_depth: shape.shadow_depth,
         },
         font_family: system_font.filter(|_| appearance.system_font),
+        mention_hue_degrees,
     })
 }

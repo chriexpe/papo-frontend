@@ -30,6 +30,7 @@ use super::content::{self, Context, Doc, Draw, Edited};
 use super::echoes::SendState;
 use super::hover_bar;
 use super::local_time::LocalTime;
+use super::no_avatar::without_avatars;
 use super::reactions;
 use super::reply_line::reply_line;
 use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
@@ -39,8 +40,8 @@ use super::view::{Style, TimelineHost};
 use super::{OpenTimeline, TimelineKey};
 use crate::design::{
     AVATAR_TOP, DELETING_OPACITY, Density, FOCUS_RING_PT, HIGHLIGHT_ROW_RADIUS, Lead, Look,
-    MESSAGE_BLOCK_GAP, MESSAGE_HEADER_GAP, MESSAGE_NAME_GAP, MESSAGE_ROW_INSET, RADIUS_AVATAR,
-    TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
+    MESSAGE_BLOCK_GAP, MESSAGE_HEADER_GAP, MESSAGE_ROW_INSET, RADIUS_AVATAR, TYPE_BODY_STRONG,
+    TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
 };
 use crate::rail::initial;
 use crate::strings;
@@ -116,7 +117,7 @@ pub(super) fn message_row<S: TimelineHost>(
             (None, None) => None,
         };
         let line = parts.reply.as_ref().map(|line| {
-            let spacing = look.spacing(layout.density);
+            let spacing = look.row_spacing(layout);
             reply_line::<S>(key, line, spacing.lead, spacing.lead_gap_pt, &style.look)
         });
         let bar = parts
@@ -187,20 +188,23 @@ fn build(
     report: impl FnOnce(El) -> El,
 ) -> El {
     let look = style.look;
-    let spacing = look.spacing(style.layout.density);
+    let spacing = look.row_spacing(style.layout);
     let above_pt = if parts.continued {
         spacing.within_group_pt
     } else {
         spacing.between_groups_pt
     };
     let name = || name_press(name_text(&parts.name, &look), author_key(id));
-    // The mark, when there is one, stands where the time would.
+    // The mark, when there is one, stands where the time would; with Show
+    // times off there is only the mark.
     let time = |mark: Option<El>| {
-        mark.unwrap_or_else(|| {
-            text(parts.time.clone())
-                .key("time")
-                .font(look.font(TYPE_CAPTION))
-                .color(look.palette.text_muted)
+        mark.or_else(|| {
+            style.layout.times.then(|| {
+                text(parts.time.clone())
+                    .key("time")
+                    .font(look.font(TYPE_CAPTION))
+                    .color(look.palette.text_muted)
+            })
         })
     };
     let (lead, content) = match spacing.lead {
@@ -216,48 +220,31 @@ fn build(
                         .gap(look.space(MESSAGE_HEADER_GAP))
                         .items_end()
                         .child(name())
-                        .child(time(mark)),
+                        .children(time(mark)),
                 );
                 avatar(&parts.name, size_pt, &look, |tile| {
                     name_press(tile, avatar_key(id))
                 })
             };
-            (lead, content.child(body))
+            (Some(lead), content.child(body))
         }
         Lead::Gutter(width_pt) => {
             let mut lead = el().key("lead").w(width_pt);
             if parts.show_time || mark.is_some() {
-                lead = lead.child(time(mark));
+                lead = lead.children(time(mark));
             }
-            let content = if style.layout.stacked {
-                let mut stack = col().gap(look.space(MESSAGE_BLOCK_GAP));
-                if !parts.continued {
-                    stack = stack.child(name());
-                }
-                stack.child(body)
-            } else {
-                // A continued row keeps the hidden name's width, so its
-                // text stays on the column.
-                let name = if parts.continued {
-                    // Only a placeholder: it opens no card.
-                    name_text(&parts.name, &look).opacity(0.0).a11y_hidden()
-                } else {
-                    name()
-                };
-                row()
-                    .gap(look.space(MESSAGE_NAME_GAP))
-                    .items_start()
-                    .child(name)
-                    .child(col().grow(1.0).min_w(0.0).child(body))
-            };
-            (lead, content)
+            (Some(lead), without_avatars(parts, body, None, style, name))
         }
+        // No time column (Show times off without avatars): the mark goes
+        // after the name, or on a continued row at the right end of its
+        // first line, where it moves no text (§8).
+        Lead::None => (None, without_avatars(parts, body, mark, style, name)),
     };
     let row_part = row()
         .w_full()
         .gap(spacing.lead_gap_pt)
         .items_start()
-        .child(lead)
+        .children(lead)
         .child(content.key("content").grow(1.0).min_w(0.0));
     let mut message = col()
         .key(message_part_key(id))
@@ -312,7 +299,7 @@ fn author_press<S: TimelineHost>(
 }
 
 /// The author's name at the head of a group.
-fn name_text(name: &str, look: &Look) -> El {
+pub(super) fn name_text(name: &str, look: &Look) -> El {
     text(name.to_owned())
         .key("name")
         .font(look.font(TYPE_BODY_STRONG))

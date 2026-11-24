@@ -29,6 +29,7 @@ mod replying;
 mod search;
 mod settings;
 mod settings_colours;
+mod settings_conversations;
 mod timeline;
 mod typing;
 mod writing;

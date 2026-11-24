@@ -5,11 +5,16 @@ use super::rows::{Context, Kind, page};
 use super::search::{fold, results};
 use super::{PageId, RowId};
 use crate::appearance::Appearance;
+use crate::conversation_settings::ConversationSettings;
 use crate::design::Density;
+
+static CONVERSATIONS: std::sync::LazyLock<ConversationSettings> =
+    std::sync::LazyLock::new(ConversationSettings::default);
 
 fn context(appearance: &Appearance) -> Context<'_> {
     Context {
         appearance,
+        conversations: &CONVERSATIONS,
         system_dark: true,
         system_font_known: false,
     }

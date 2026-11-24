@@ -111,6 +111,8 @@ fn messages(value: Option<&Value>) -> Option<MessageLayout> {
         density: density_named(density.as_str()?)?,
         grouped: grouped.as_bool()?,
         stacked: stacked.as_bool()?,
+        // The Conversations page's, joined by the shell.
+        ..MessageLayout::default()
     })
 }
 

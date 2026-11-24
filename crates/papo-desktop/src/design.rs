@@ -143,7 +143,7 @@ pub(crate) use background::{
     MAX_BACKGROUND_COLOURS,
 };
 pub(crate) use code_ink::CodeInk;
-pub(crate) use colour::Palette;
+pub(crate) use colour::{MENTION_HIGHLIGHT_HUE_DEGREES, Palette};
 pub(crate) use content::*;
 pub(crate) use density::*;
 pub(crate) use look::{Glass, Look, LookSpec, Scale};

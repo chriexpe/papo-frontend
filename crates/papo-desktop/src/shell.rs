@@ -18,9 +18,7 @@ use rune::{Image, ImageCache};
 
 use crate::account_watch::{self, Accounts};
 use crate::composer::Composer;
-use crate::composer::prefs::WritingPrefs;
 use crate::navigation::Navigation;
-use crate::reading_prefs::ReadingPrefs;
 use crate::reconnect_hints;
 use crate::sdk_bridge::{BridgeHost, OpenFailure, RequestSlot, Sdk};
 use crate::server_list;
@@ -38,7 +36,8 @@ pub(crate) struct Shell {
     /// A new message's local identity: random in the app, fixed in tests.
     local_ids: fn() -> papo_sdk::Uuid,
     /// "Enter to send".
-    writing: WritingPrefs,
+    /// The Conversations settings.
+    pub(crate) conversations: crate::conversation_settings::ConversationStore,
     /// The unsent message whose "Send again?" is open.
     resend: Option<outgoing::Resend>,
     /// The deletion waiting for its confirmation.
@@ -98,9 +97,6 @@ pub(crate) struct Shell {
     day_ends_s: Option<f64>,
     /// Links waiting to open, trusted domains, the message under the pointer.
     content: content::Content,
-    /// The device's reading settings: open at the newest message, the
-    /// hourglass.
-    prefs: ReadingPrefs,
     /// Whether the window is on screen: read reports wait while it is not.
     window_shown: bool,
     /// The last ⌛ press's number; each takes the next.
@@ -186,7 +182,7 @@ impl Default for Shell {
             composer: Composer::default(),
             draft_writes: composer::DraftWrites::default(),
             local_ids: papo_sdk::Uuid::new_v4,
-            writing: WritingPrefs::default(),
+            conversations: crate::conversation_settings::ConversationStore::default(),
             resend: None,
             deleting: None,
             sdk: None,
@@ -214,7 +210,6 @@ impl Default for Shell {
             today: LocalTime::system().today(),
             day_ends_s: None,
             content: content::Content::default(),
-            prefs: ReadingPrefs::default(),
             window_shown: true,
             seeks: 0,
             activity: HashMap::new(),
@@ -272,10 +267,9 @@ impl Shell {
         self.images = Some(images);
         let prefs = crate::device_settings::SettingsFile::read();
         self.content.trusted = crate::links::Trusted::read(&prefs);
-        self.prefs = ReadingPrefs::read(&prefs);
         self.layout = crate::layout_prefs::LayoutPrefs::read(&prefs);
         self.recent_jumps = crate::recent_jumps::RecentJumps::read(&prefs);
-        self.writing = WritingPrefs::read(&prefs);
+        self.conversations = crate::conversation_settings::ConversationStore::read(&prefs);
         self.appearance = crate::appearance::AppearanceStore::read(&prefs);
     }
 
@@ -351,6 +345,7 @@ mod search_panel;
 mod search_run;
 mod settings;
 mod settings_colours;
+mod settings_conversations;
 mod settings_file;
 mod sign_in_flow;
 #[cfg(test)]

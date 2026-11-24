@@ -20,6 +20,7 @@ mod grouping;
 pub(crate) mod hover_bar;
 pub(crate) mod local_time;
 mod message_row;
+mod no_avatar;
 mod paging;
 pub(crate) mod pinned;
 pub(crate) mod reacting;

@@ -1,19 +1,20 @@
 //! The settings panel (`docs/design.md` §8): grown from the account pill's
 //! ⚙ (or Ctrl+,), a nav of pages with one-line summaries, search across
-//! every row, sub-pages with ←, and rows that save as they change. D6a's
-//! pages are Appearance and its two sub-pages; the others come with the
-//! slices that make their rows work.
+//! every row, sub-pages with ←, and rows that save as they change. The App
+//! pages are Appearance and Conversations, each with its sub-pages; the
+//! others come with the slices that make their rows work.
 //!
 //! Owns the panel's own state: the page shown, the search, a slider or the
 //! colour field's value while it is dragged, the row whose save failed and
-//! the colour field's selection. The settings themselves are
-//! `appearance`'s; what a row's change does is the shell's
-//! (`shell/settings.rs`).
+//! the colour field's selection. The settings themselves are their
+//! stores' (`appearance`, `conversation_settings`); what a row's change does
+//! is the shell's (`shell/settings.rs`).
 
 use rune::TextEdit;
 
 use crate::appearance::presets::Direction;
 use crate::appearance::{Appearance, ShapeValue};
+use crate::conversation_settings::ConversationSettings;
 use crate::design::{Accent, BackgroundColour, Density, Theme};
 
 pub(crate) mod colour_field;
@@ -42,17 +43,31 @@ pub(crate) enum PageId {
     Background,
     /// Appearance › Shape and type.
     Shape,
+    Conversations,
+    /// Conversations › Message highlights.
+    Highlights,
 }
 
 impl PageId {
-    /// Every page, nav pages first: what the search looks through.
-    pub(crate) const ALL: [PageId; 3] = [PageId::Appearance, PageId::Background, PageId::Shape];
+    /// Every page, nav pages first and in the nav's order: what the search
+    /// looks through.
+    pub(crate) const ALL: [PageId; 5] = [
+        PageId::Appearance,
+        PageId::Conversations,
+        PageId::Background,
+        PageId::Shape,
+        PageId::Highlights,
+    ];
+
+    /// The pages in the nav, in order.
+    pub(crate) const NAV: [PageId; 2] = [PageId::Appearance, PageId::Conversations];
 
     /// The page a sub-page's ← goes back to.
     pub(crate) fn parent(self) -> Option<PageId> {
         match self {
-            PageId::Appearance => None,
+            PageId::Appearance | PageId::Conversations => None,
             PageId::Background | PageId::Shape => Some(PageId::Appearance),
+            PageId::Highlights => Some(PageId::Conversations),
         }
     }
 
@@ -74,6 +89,14 @@ pub(crate) enum RowId {
     Shape,
     SystemFont,
     Glass,
+    EnterSends,
+    ShowTimes,
+    ShowAvatars,
+    OpenAtNewest,
+    Hourglass,
+    ChannelDescription,
+    Highlights,
+    MentionHue,
     Field,
     Strength,
     Grain,
@@ -105,6 +128,8 @@ pub(crate) enum Change {
     },
     /// The colour field's colours, strength aside.
     Colours(colour_field::ColourChange),
+    /// A hue swatch picked, in OKLCH degrees.
+    Hue(RowId, f32),
 }
 
 impl Change {
@@ -113,7 +138,7 @@ impl Change {
         match self {
             Change::Theme(_) => RowId::Theme,
             Change::Density(_) => RowId::Density,
-            Change::Switch(row, _) | Change::Slider { row, .. } => *row,
+            Change::Switch(row, _) | Change::Slider { row, .. } | Change::Hue(row, _) => *row,
             Change::Accent(_) => RowId::Accent,
             Change::Direction(_) => RowId::Directions,
             Change::Colours(_) => RowId::Field,
@@ -197,12 +222,19 @@ impl Held {
     }
 }
 
+/// What a row saves: the settings its store holds after the change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Target {
+    Appearance(Appearance),
+    Conversations(ConversationSettings),
+}
+
 /// A save that failed: the row that shows its danger line, and the
 /// settings it was saving, which Try again saves as they were.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Failed {
     row: RowId,
-    target: Appearance,
+    target: Target,
 }
 
 /// The open panel.
@@ -250,12 +282,12 @@ impl SettingsPanel {
     }
 
     /// The settings whose save failed, for Try again.
-    pub(crate) fn failed_target(&self) -> Option<Appearance> {
+    pub(crate) fn failed_target(&self) -> Option<Target> {
         self.failed.map(|failed| failed.target)
     }
 
     /// The save of `target` under `row` worked, or did not.
-    pub(crate) fn saved(&mut self, row: RowId, target: Appearance, ok: bool) {
+    pub(crate) fn saved(&mut self, row: RowId, target: Target, ok: bool) {
         if ok {
             if self.failed_row() == Some(row) {
                 self.failed = None;

@@ -48,6 +48,12 @@ line_icon!(
     "palette"
 );
 line_icon!(
+    /// The Conversations page in the settings nav: square, so it never
+    /// reads as Direct messages.
+    CHAT,
+    "chat"
+);
+line_icon!(
     /// Remove the selected background colour.
     MINUS,
     "minus"

@@ -94,6 +94,7 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                     let view = crate::settings::view::PanelView {
                         panel,
                         saved: shell.appearance.appearance(),
+                        conversations: shell.conversations.settings(),
                         system_dark: cx.system_dark(),
                         system_font_known: shell.system_font.is_some(),
                         grain: shell
@@ -176,11 +177,11 @@ fn timeline_style(shell: &Shell, look: &Look, insets_pt: [f32; 2]) -> timeline::
         .shown()
         .and_then(|(_, draft)| draft.mode.target());
     timeline::Style {
-        layout: shell.appearance.appearance().messages,
+        layout: shell.message_layout(),
         look: *look,
         time: shell.local_time.clone(),
         today: shell.today,
-        hourglass: shell.prefs.unread_hourglass,
+        hourglass: shell.conversations.settings().unread_hourglass,
         selected,
         reacting: shell.reacting(),
         insets_pt,
@@ -220,7 +221,7 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
     });
     let context = composer::PillContext {
         placeholder: &placeholder,
-        enter_sends: shell.writing.enter_sends,
+        enter_sends: shell.conversations.settings().enter_sends,
         original: original.as_ref(),
         me: shown.map_or(papo_sdk::Uuid::nil(), |(key, _)| key.account.user()),
     };

@@ -9,8 +9,8 @@ use rune::{Family, TextStyle};
 
 use super::density::GUTTER;
 use super::{
-    Accent, Background, Density, Font, Lead, Palette, Radius, Space, Spacing, TYPE_BODY_PT,
-    TextMultiple, Theme,
+    Accent, Background, Density, Font, Lead, MessageLayout, Palette, Radius, Space, Spacing,
+    TYPE_BODY_PT, TextMultiple, Theme,
 };
 
 /// What the Shape and type settings multiply.
@@ -69,6 +69,8 @@ pub(crate) struct LookSpec {
     /// The system's interface font family instead of Inter, when the
     /// setting is on and the system names one.
     pub(crate) font_family: Option<&'static str>,
+    /// `highlight.mention`'s hue, in OKLCH degrees.
+    pub(crate) mention_hue_degrees: f32,
 }
 
 /// The look of one frame.
@@ -122,6 +124,7 @@ impl LookSpec {
             glassy,
             blur_pt,
             shadow_depth,
+            self.mention_hue_degrees,
         ] {
             value.to_bits().hash(&mut hasher);
         }
@@ -141,6 +144,7 @@ impl Look {
             scale: Scale::default(),
             glass: Glass::default(),
             font_family: None,
+            mention_hue_degrees: super::colour::MENTION_HIGHLIGHT_HUE_DEGREES,
         })
     }
 
@@ -155,12 +159,18 @@ impl Look {
             scale,
             glass: Glass::default(),
             font_family: None,
+            mention_hue_degrees: super::colour::MENTION_HIGHLIGHT_HUE_DEGREES,
         })
     }
 
     pub(crate) fn with(spec: &LookSpec) -> Look {
         Look {
-            palette: Palette::with(spec.theme, spec.accent, &spec.background),
+            palette: Palette::with(
+                spec.theme,
+                spec.accent,
+                &spec.background,
+                spec.mention_hue_degrees,
+            ),
             theme: spec.theme,
             scale: spec.scale,
             glass: spec.glass,
@@ -224,6 +234,7 @@ impl Look {
         let lead = match base.lead {
             Lead::Avatar(side_pt) => Lead::Avatar(side_pt),
             Lead::Gutter(_) => Lead::Gutter(self.text_multiple(GUTTER)),
+            Lead::None => Lead::None,
         };
         Spacing {
             between_groups_pt: self.space(Space(base.between_groups_pt)),
@@ -232,6 +243,24 @@ impl Look {
             lead,
             lead_gap_pt: self.space(Space(base.lead_gap_pt)),
         }
+    }
+
+    /// `layout`'s distances at the settings: its density's, the lead as
+    /// Show avatars and Show times leave it (§8). Without avatars a row
+    /// takes Extra compact's time gutter and gap; without times too, it has
+    /// no lead at all.
+    pub(crate) fn row_spacing(&self, layout: MessageLayout) -> Spacing {
+        let mut spacing = self.spacing(layout.density);
+        if !layout.has_avatars() {
+            let gutter = self.spacing(Density::ExtraCompact);
+            spacing.lead = gutter.lead;
+            spacing.lead_gap_pt = gutter.lead_gap_pt;
+        }
+        if !layout.times && matches!(spacing.lead, Lead::Gutter(_)) {
+            spacing.lead = Lead::None;
+            spacing.lead_gap_pt = 0.0;
+        }
+        spacing
     }
 }
 

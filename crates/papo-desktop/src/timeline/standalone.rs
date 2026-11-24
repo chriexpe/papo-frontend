@@ -76,7 +76,7 @@ fn draw<S: TimelineHost>(
     fallback_name: Option<&str>,
 ) -> El {
     let look = style.look;
-    let spacing = look.spacing(style.layout.density);
+    let spacing = look.row_spacing(style.layout);
     let resources = open.resources.as_deref();
     let known = message.external_author.is_some()
         || message
@@ -113,13 +113,13 @@ fn draw<S: TimelineHost>(
         edited: None,
         standalone: true,
     };
-    // Extra compact has no avatar in the conversation; on its own, a
-    // message keeps Normal's.
+    // Without avatars in the conversation, a message on its own keeps
+    // Normal's.
     let lead_pt = [spacing.lead, look.spacing(Density::Normal).lead]
         .into_iter()
         .find_map(|lead| match lead {
             Lead::Avatar(size_pt) => Some(size_pt),
-            Lead::Gutter(_) => None,
+            Lead::Gutter(_) | Lead::None => None,
         })
         .unwrap_or_default();
     row()

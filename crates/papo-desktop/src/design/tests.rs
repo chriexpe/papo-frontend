@@ -5,7 +5,7 @@
 
 use rune::Color;
 
-use super::colour::contrast;
+use super::colour::{MENTION_HIGHLIGHT_HUE_DEGREES, contrast};
 use super::floors;
 use super::*;
 
@@ -48,7 +48,9 @@ fn sweep() -> impl Iterator<Item = (Case, Palette)> {
                         hue_degrees,
                         tint,
                     };
-                    (case, Palette::with(theme, accent, &background))
+                    // The mention highlight is the user's hue too: the
+                    // sweep's hue tries every one.
+                    (case, Palette::with(theme, accent, &background, hue_degrees))
                 })
             })
         })
@@ -134,7 +136,12 @@ fn text_on_the_accent_is_whichever_of_black_and_white_reads_better() {
 #[test]
 fn with_no_background_colour_the_neutrals_are_grey() {
     for theme in THEMES {
-        let palette = Palette::with(theme, Accent::Blue, &Background::new(&[], 0.4));
+        let palette = Palette::with(
+            theme,
+            Accent::Blue,
+            &Background::new(&[], 0.4),
+            MENTION_HIGHLIGHT_HUE_DEGREES,
+        );
         let pill = palette.surface_pill;
         assert!(
             (pill.r - pill.g).abs() < 1e-4 && (pill.g - pill.b).abs() < 1e-4,
@@ -183,7 +190,12 @@ fn a_second_colour_makes_a_gradient_across_the_chrome_only() {
             vividness: 0.55,
         },
     ];
-    let palette = Palette::with(Theme::Graphite, Accent::Blue, &Background::new(&two, 0.5));
+    let palette = Palette::with(
+        Theme::Graphite,
+        Accent::Blue,
+        &Background::new(&two, 0.5),
+        MENTION_HIGHLIGHT_HUE_DEGREES,
+    );
     assert_eq!(
         palette.rail_fill.gradient().map(|stops| stops.len()),
         Some(2)
@@ -196,6 +208,7 @@ fn a_second_colour_makes_a_gradient_across_the_chrome_only() {
         Theme::Graphite,
         Accent::Blue,
         &Background::new(&two[..1], 0.5),
+        MENTION_HIGHLIGHT_HUE_DEGREES,
     );
     assert_eq!(one.rail_fill.gradient(), None);
     assert_eq!(

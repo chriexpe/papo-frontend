@@ -10,7 +10,7 @@
 
 use rune::{Color, El, col, el, icon, row, text};
 
-use super::rows::{Group, Kind, Row, direction_name};
+use super::rows::{Group, Kind, MENTION_HUES, Row, direction_name};
 use super::{Change, RowId, colour_field};
 use crate::appearance::Appearance;
 use crate::appearance::presets::Direction;
@@ -172,6 +172,9 @@ fn plain_row(setting: Row, look: &Look) -> El {
             .child(value_text(&value, look))
             .child(icon(&CHEVRON_RIGHT, ROW_ICON_PT).color(look.palette.text_muted)),
         Kind::Accents(current) => line.label(spoken).child(accents(current, look)),
+        Kind::Hues(current) => line
+            .label(spoken.clone())
+            .child(hues(id, &spoken, current, look)),
         Kind::Slider(_) | Kind::ColourField | Kind::Directions(_) => line,
     }
 }
@@ -253,6 +256,44 @@ fn accents(current: Accent, look: &Look) -> El {
                 .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
                 .on_press_tx(move |shell: &mut Shell, tx| {
                     shell.settings_change(Change::Accent(accent), tx);
+                })
+        }))
+}
+
+/// A highlight's hue swatches (Message highlights): one per hue in
+/// `MENTION_HUES`, the chosen one ringed.
+fn hues(id: RowId, name: &str, current: f32, look: &Look) -> El {
+    let dark = look.theme().is_dark();
+    row()
+        .gap(look.space(SPACE_MD))
+        .role("radiogroup")
+        .label(name.to_owned())
+        .focus_group()
+        .children(MENTION_HUES.into_iter().map(|hue| {
+            let lightness = if dark { 0.70 } else { 0.555 };
+            let colour = rune::oklch(lightness, 0.15, hue);
+            let chosen = (hue - current).abs() < 0.5;
+            let degrees = strings::decimal(hue, 0);
+            el().key(format!("{}-{degrees}", id.key()))
+                .size(SWATCH_PT, SWATCH_PT)
+                .radius(look.radius(SWATCH_RADIUS))
+                .fill(colour)
+                .border(
+                    SWATCH_RING_PT,
+                    if chosen {
+                        look.palette.text_primary
+                    } else {
+                        Color::TRANSPARENT
+                    },
+                )
+                .role("radio")
+                .checked(chosen)
+                .label(strings::settings_hue_spoken(&degrees))
+                .focusable(true)
+                .focus_selected(chosen)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+                .on_press_tx(move |shell: &mut Shell, tx| {
+                    shell.settings_change(Change::Hue(id, hue), tx);
                 })
         }))
 }

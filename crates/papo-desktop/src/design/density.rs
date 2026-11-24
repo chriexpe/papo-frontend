@@ -1,7 +1,8 @@
-//! Message density (`docs/design.md` §5 and §6): the four spacings and the
-//! two grouping switches. Owns the numbers at spacing ×1 and the default text
-//! size; `Look::spacing` scales them, and the timeline lays rows out with
-//! that.
+//! Message density (`docs/design.md` §5, §6 and §8): the four spacings,
+//! the two grouping switches, and whether rows show their time and avatar.
+//! Owns the numbers at spacing ×1 and the default text size;
+//! `Look::row_spacing` scales them for a layout, and the timeline lays rows
+//! out with that.
 
 use super::{SPACE_SM, Space, TextMultiple};
 
@@ -16,15 +17,26 @@ pub(crate) enum Density {
     ExtraCompact,
 }
 
-/// The density and the two grouping switches, as one value a row's memo
-/// can depend on.
+/// How rows are laid out, as one value a row's memo can depend on: the
+/// density and grouping switches (Appearance's), and whether rows show
+/// their time and avatar (Conversations'; the shell joins the two,
+/// `Shell::message_layout`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is one of the settings' independent switches"
+)]
 pub(crate) struct MessageLayout {
     pub(crate) density: Density,
     /// Consecutive messages from one author hide the repeated header.
     pub(crate) grouped: bool,
-    /// Extra compact only: the name sits on its own line above the text.
+    /// Without avatars only: the name sits on its own line above the text.
     pub(crate) stacked: bool,
+    /// "Show times": off, no row draws its time.
+    pub(crate) times: bool,
+    /// "Show avatars": off, every density draws Extra compact's shapes at
+    /// its own spacing.
+    pub(crate) avatars: bool,
 }
 
 impl Default for MessageLayout {
@@ -33,7 +45,17 @@ impl Default for MessageLayout {
             density: Density::Normal,
             grouped: true,
             stacked: true,
+            times: true,
+            avatars: true,
         }
+    }
+}
+
+impl MessageLayout {
+    /// Whether rows draw avatars: not at Extra compact, nor with Show
+    /// avatars off. Without them, Stack messages applies.
+    pub(crate) fn has_avatars(self) -> bool {
+        self.avatars && self.density != Density::ExtraCompact
     }
 }
 
@@ -44,6 +66,8 @@ pub(crate) enum Lead {
     Avatar(f32),
     /// A time gutter this many points wide.
     Gutter(f32),
+    /// Nothing: no avatars and no times, the name at the row's start.
+    None,
 }
 
 /// One density's distances, in points at spacing ×1.

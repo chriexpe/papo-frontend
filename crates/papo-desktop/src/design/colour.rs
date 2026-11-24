@@ -35,8 +35,9 @@ const SUCCESS_CHROMA: f32 = 0.09;
 /// The warning colour's OKLCH chroma; its hue moves with the theme.
 const WARNING_CHROMA: f32 = 0.09;
 /// The mention highlight's default OKLCH hue in degrees: amber
-/// (`docs/design.md` §4; the user's to change once Settings exist).
-const MENTION_HIGHLIGHT_HUE_DEGREES: f32 = 75.0;
+/// (`docs/design.md` §4); Settings › Conversations › Message highlights
+/// changes it.
+pub(crate) const MENTION_HIGHLIGHT_HUE_DEGREES: f32 = 75.0;
 /// Available's OKLCH hue, chroma, and lightness on dark and light themes
 /// (§4, Other colours added for D5).
 pub(super) const PRESENCE_ONLINE: Oklch = Oklch {
@@ -194,12 +195,23 @@ impl Palette {
     /// `theme` with the default accent and background colour.
     #[cfg(test)]
     pub(crate) fn new(theme: Theme) -> Palette {
-        Palette::with(theme, Accent::default(), &Background::default())
+        Palette::with(
+            theme,
+            Accent::default(),
+            &Background::default(),
+            MENTION_HIGHLIGHT_HUE_DEGREES,
+        )
     }
 
-    /// `theme` with the user's `accent` and `background`: the design's
-    /// values as targets, each fitted to its floors (`floors`).
-    pub(crate) fn with(theme: Theme, accent: Accent, background: &Background) -> Palette {
+    /// `theme` with the user's `accent`, `background` and mention
+    /// highlight hue: the design's values as targets, each fitted to its
+    /// floors (`floors`).
+    pub(crate) fn with(
+        theme: Theme,
+        accent: Accent,
+        background: &Background,
+        mention_hue_degrees: f32,
+    ) -> Palette {
         let lightness = theme.lightness();
         let dark = theme.is_dark();
         let pick = |pair: (f32, f32)| if dark { pair.0 } else { pair.1 };
@@ -287,7 +299,7 @@ impl Palette {
             mention,
             mention_on: Color::WHITE,
             accent_soft,
-            highlight_mention: highlight(theme, MENTION_HIGHLIGHT_HUE_DEGREES, &text),
+            highlight_mention: highlight(theme, mention_hue_degrees, &text),
             focus_ring: accent,
             presence_online: PRESENCE_ONLINE.on(dark),
             presence_away: PRESENCE_AWAY.on(dark),

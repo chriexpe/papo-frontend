@@ -21,7 +21,6 @@ pub(crate) mod mentions;
 pub(crate) mod mode;
 mod pairs;
 pub(crate) mod picker;
-pub(crate) mod prefs;
 mod replying;
 mod saving;
 #[cfg(test)]

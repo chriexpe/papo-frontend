@@ -176,7 +176,11 @@ fn enter_sends_and_shift_enter_adds_a_line() {
 #[test]
 fn with_enter_to_send_off_the_keys_swap() {
     let mut rt = writing("");
-    rt.update(|shell, _tx| shell.writing.enter_sends = false);
+    rt.update(|shell, _tx| {
+        shell
+            .conversations
+            .set_for_test(|settings| settings.enter_sends = false);
+    });
     rt.frame(FRAME_S);
     type_text(&mut rt, "oi");
     press(&mut rt, Key::Enter);
@@ -190,7 +194,11 @@ fn with_enter_to_send_off_the_keys_swap() {
 fn ctrl_enter_sends_whatever_enter_does() {
     for enter_sends in [true, false] {
         let mut rt = writing("");
-        rt.update(move |shell, _tx| shell.writing.enter_sends = enter_sends);
+        rt.update(move |shell, _tx| {
+            shell
+                .conversations
+                .set_for_test(|settings| settings.enter_sends = enter_sends);
+        });
         rt.frame(FRAME_S);
         type_text(&mut rt, "oi");
         rt.key(KeyEvent {
@@ -262,7 +270,11 @@ fn a_draft_that_cannot_be_read_is_never_written_over() {
 #[test]
 fn holding_enter_adds_a_line_per_repeat_when_enter_does_not_send() {
     let mut rt = writing("");
-    rt.update(|shell, _tx| shell.writing.enter_sends = false);
+    rt.update(|shell, _tx| {
+        shell
+            .conversations
+            .set_for_test(|settings| settings.enter_sends = false);
+    });
     rt.frame(FRAME_S);
     type_text(&mut rt, "a");
     press(&mut rt, Key::Enter);
