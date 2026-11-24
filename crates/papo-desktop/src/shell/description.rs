@@ -94,6 +94,12 @@ impl Shell {
         }
     }
 
+    /// The topic's measured width, for tests.
+    #[cfg(test)]
+    pub(crate) fn description_width(&self) -> Option<f32> {
+        self.description.topic_pt
+    }
+
     /// Whether the strip shows now.
     pub(super) fn strip_shown(&self) -> bool {
         self.shown_topic().is_some()

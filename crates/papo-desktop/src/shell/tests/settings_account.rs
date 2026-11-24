@@ -189,3 +189,17 @@ fn sign_out_asks_in_its_row_first() {
         "nothing happens until confirmed"
     );
 }
+
+/// Whether `rt` stops asking for frames within two seconds.
+fn rests(rt: &mut Runtime<Shell>) -> bool {
+    (0..120).any(|_| !rt.frame(FRAME_S))
+}
+
+#[test]
+fn profile_and_diagnostics_at_rest_ask_for_no_frames() {
+    let mut rt = signed_in(true);
+    page(&mut rt, PageId::Profile);
+    assert!(rests(&mut rt), "Profile rests");
+    page(&mut rt, PageId::Diagnostics);
+    assert!(rests(&mut rt), "Diagnostics rests");
+}

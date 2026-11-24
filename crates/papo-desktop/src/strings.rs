@@ -62,7 +62,7 @@ pub(crate) fn locale_id(id: &str) -> Option<&'static str> {
 pub(crate) fn use_language(language: crate::general_settings::Language) -> bool {
     let locale = match language {
         crate::general_settings::Language::System => {
-            I18N.negotiate(rune_i18n::system_languages().iter().map(String::as_str))
+            I18N.negotiate(system_languages().iter().map(String::as_str))
         }
         crate::general_settings::Language::Locale(id) => {
             I18N.find_locale(id).unwrap_or_else(locale_index)
@@ -79,6 +79,11 @@ pub(crate) fn locale_index() -> usize {
 }
 
 #[cfg(not(test))]
+fn system_languages() -> Vec<String> {
+    rune_i18n::system_languages()
+}
+
+#[cfg(not(test))]
 fn set_locale(locale: usize) -> bool {
     I18N.set_locale(locale)
 }
@@ -89,6 +94,13 @@ fn set_locale(locale: usize) -> bool {
 #[cfg(test)]
 thread_local! {
     static TEST_LOCALE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+// The system's languages are the machine's, not the test's: in a test
+// "System" is the source locale.
+#[cfg(test)]
+fn system_languages() -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(test)]

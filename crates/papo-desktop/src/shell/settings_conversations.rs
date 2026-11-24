@@ -22,6 +22,7 @@ impl Shell {
         tx: &mut Tx,
     ) {
         let reading = self.reading_place();
+        self.latest_rows.conversations = row;
         if let Some(next) = self.conversations.change(settings) {
             self.write_conversations(next, row, tx);
         }
@@ -62,7 +63,8 @@ impl Shell {
         }
         super::appearance::keep_place(reading, tx);
         if let Some(next) = next {
-            self.write_conversations(next, row, tx);
+            // The change that waited is the latest one: its row hears.
+            self.write_conversations(next, self.latest_rows.conversations, tx);
         }
     }
 }

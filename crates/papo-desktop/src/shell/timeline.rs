@@ -70,8 +70,10 @@ impl Shell {
             return;
         };
         self.conversation_left();
-        if let Some(tx) = tx.as_deref_mut() {
-            self.description_opened(tx);
+        match tx.as_deref_mut() {
+            Some(tx) => self.description_opened(tx),
+            // No clock to time a strip by: the last channel's goes anyway.
+            None => self.description = super::description::Description::default(),
         }
         if let Some(save) = switch.save {
             self.save_position(save.key, save.position);

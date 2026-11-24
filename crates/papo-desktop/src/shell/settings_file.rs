@@ -9,6 +9,15 @@ use rune::Tx;
 
 use super::Shell;
 use crate::device_settings::Write;
+use crate::settings::RowId;
+
+/// The settings row behind each store's latest change, if a row asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LatestRows {
+    pub(crate) conversations: Option<RowId>,
+    pub(crate) general: Option<RowId>,
+    pub(crate) trusted: Option<RowId>,
+}
 
 impl Shell {
     /// Runs `write`, then `done` with whether it landed. Before the client

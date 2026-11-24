@@ -99,3 +99,42 @@ fn a_channel_without_a_topic_shows_and_opens_nothing() {
     click(&mut rt, TITLE_PILL_KEY);
     assert!(rt.state.nav.menu.is_none());
 }
+
+#[test]
+fn a_long_topic_scrolls_inside_a_strip_of_its_widest() {
+    let long = "A channel for everything that happens around the place, ".repeat(3);
+    let mut rt = on_general(Some(&long));
+    opened(&mut rt);
+    for _ in 0..3 {
+        rt.frame(FRAME_S);
+    }
+    let measured = rt.state.description_width();
+    assert!(
+        measured.is_some_and(|width_pt| width_pt > 320.0),
+        "the topic measures on one line: {measured:?}"
+    );
+    let strip = rt
+        .elements()
+        .into_iter()
+        .find(|element| element.key.as_deref() == Some("title-description"))
+        .expect("the strip");
+    assert!(
+        strip.rect[2] < 340.0,
+        "held to its widest: {:?}",
+        strip.rect
+    );
+}
+
+#[test]
+fn once_the_strip_has_gone_the_window_rests() {
+    let long = "A channel for everything that happens around the place, ".repeat(3);
+    let mut rt = on_general(Some(&long));
+    opened(&mut rt);
+    rt.update(|shell, tx| {
+        shell.poll_description(tx.clock() + 6.5);
+    });
+    assert!(
+        (0..120).any(|_| !rt.frame(FRAME_S)),
+        "the scrolling stops with the strip"
+    );
+}

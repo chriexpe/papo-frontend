@@ -262,6 +262,7 @@ impl Shell {
             Target::Conversations(settings) => self.set_conversations(settings, Some(row), tx),
             Target::General(settings) => self.set_general(settings, Some(row), tx),
             Target::Trusted(hosts) => {
+                self.latest_rows.trusted = Some(row);
                 if let Some(hosts) = self.content.trusted.replace(hosts) {
                     self.write_trusted(hosts, Some(row), tx);
                 }

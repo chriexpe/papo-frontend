@@ -101,6 +101,9 @@ impl Shell {
         let Some(prompt) = self.content.link.take() else {
             return;
         };
+        if prompt.always {
+            self.latest_rows.trusted = None;
+        }
         if prompt.always
             && let Some(hosts) = self.content.trusted.add(prompt.host)
         {

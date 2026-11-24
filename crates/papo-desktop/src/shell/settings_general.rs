@@ -27,6 +27,7 @@ impl Shell {
         tx: &mut Tx,
     ) {
         let reading = self.reading_place();
+        self.latest_rows.general = row;
         if let Some(next) = self.general.change(settings) {
             self.write_general(next, row, tx);
         }
@@ -73,7 +74,8 @@ impl Shell {
         }
         super::appearance::keep_place(reading, tx);
         if let Some(next) = next {
-            self.write_general(next, row, tx);
+            // The change that waited is the latest one: its row hears.
+            self.write_general(next, self.latest_rows.general, tx);
         }
     }
 
@@ -105,6 +107,7 @@ impl Shell {
         };
         panel.domain = TextEdit::new("");
         panel.domain_refused = false;
+        self.latest_rows.trusted = Some(RowId::TrustedAdd);
         if let Some(hosts) = self.content.trusted.add(host) {
             self.write_trusted(hosts, Some(RowId::TrustedAdd), tx);
         }
@@ -119,7 +122,11 @@ impl Shell {
             .hosts()
             .iter()
             .position(|known| known == host);
-        if let (Some(index), Some(hosts)) = (index, self.content.trusted.remove(host)) {
+        let Some(index) = index else {
+            return;
+        };
+        self.latest_rows.trusted = Some(RowId::TrustedHost(index));
+        if let Some(hosts) = self.content.trusted.remove(host) {
             self.write_trusted(hosts, Some(RowId::TrustedHost(index)), tx);
         }
     }
@@ -141,7 +148,8 @@ impl Shell {
                     panel.saved(row, Target::Trusted(hosts), ok);
                 }
                 if let Some(next) = next {
-                    shell.write_trusted(next, row, tx);
+                    // The change that waited is the latest one: its row hears.
+                    shell.write_trusted(next, shell.latest_rows.trusted, tx);
                 }
             },
             tx,

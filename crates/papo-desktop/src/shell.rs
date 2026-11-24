@@ -120,6 +120,9 @@ pub(crate) struct Shell {
     dm_peers: std::collections::BTreeSet<(AccountId, papo_sdk::Uuid)>,
     /// What the backend said about conversations that left the list.
     dm_access: std::collections::BTreeMap<papo_sdk_ui::DirectMessageId, direct::Asked>,
+    /// The settings row that asked for each store's latest change: a write
+    /// queued behind another reports to it.
+    latest_rows: settings_file::LatestRows,
     /// The shown channel's description strip.
     description: description::Description,
     /// The notice pill, while one shows.
@@ -227,6 +230,7 @@ impl Default for Shell {
             layout: crate::layout_prefs::LayoutPrefs::default(),
             dm_access: std::collections::BTreeMap::new(),
             description: description::Description::default(),
+            latest_rows: settings_file::LatestRows::default(),
             notice: None,
             pinning: reacting::Pinning::default(),
             stretched: None,
