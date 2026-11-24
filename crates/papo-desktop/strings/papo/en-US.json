@@ -546,5 +546,8 @@
   "settings.clear_cache_confirm": "Clear",
   "settings.group_about": "About",
   "settings.version": "Papo for desktop",
-  "channel.description_open": "Channel description"
+  "channel.description_open": "Channel description",
+  "size.kb": "{{value}} KB",
+  "size.mb": "{{value}} MB",
+  "size.gb": "{{value}} GB"
 }

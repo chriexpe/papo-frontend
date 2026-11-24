@@ -1,8 +1,9 @@
 //! Watches each signed-in account for what the shell draws live beyond a
 //! timeline: its outgoing queue (a chip waits while its change is in
 //! flight; a refused reaction is said and dropped), its quick reactions,
-//! ranked by the SDK from the account's own use (`quick_reactions`), and
-//! its people's activity (presence marks, status phrases, who types where).
+//! ranked by the SDK from the account's own use (`quick_reactions`), its
+//! people's activity (presence marks, status phrases, who types where), and
+//! its connection with the heartbeat's round trip (Settings › Diagnostics).
 //!
 //! Owns only the watch loops and what they post. The queue, the usage
 //! counts, the ranking and the activity stay in the SDK; what the shell
@@ -21,6 +22,7 @@ use papo_sdk_ui::{
 use rune::Tx;
 use tokio::task::{AbortHandle, JoinSet};
 
+use crate::diagnostics::Link;
 use crate::sdk_bridge::Updates;
 
 /// How many quick reactions an account keeps: the message menu's strip.
@@ -34,6 +36,8 @@ pub(crate) enum Posted {
     Quick(Vec<String>),
     /// Its people's activity now.
     People(Arc<AccountActivity>),
+    /// Its connection now.
+    Link(Link),
     /// The account's session closed: nothing more comes for it.
     Closed,
 }
@@ -86,7 +90,8 @@ pub(crate) async fn run<S: 'static>(client: ClientHandle, updates: Updates<S>, a
     }
 }
 
-/// One account's queue, library and activity, until its session closes.
+/// One account's queue, library, activity and connection, until its
+/// session closes.
 async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply: Apply<S>) {
     let account = session.account();
     let post =
@@ -99,6 +104,19 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
         }
     };
     post(Posted::Outgoing(Arc::clone(&outgoing.borrow_and_update())));
+    let mut connection = session.subscribe_connection();
+    let mut round_trip = session.subscribe_round_trip();
+    let link = |connection: &mut tokio::sync::watch::Receiver<_>,
+                round_trip: &mut tokio::sync::watch::Receiver<_>| {
+        Link::of(
+            *connection.borrow_and_update(),
+            *round_trip.borrow_and_update(),
+        )
+    };
+    post(Posted::Link(link(&mut connection, &mut round_trip)));
+    // A watch that closes stops being read; the queue says the session
+    // closed.
+    let mut watching_link = true;
     let people = ActivityService::new(session.clone()).subscribe();
     post(Posted::People(Arc::new(people.snapshot)));
     let mut people = people.stream;
@@ -132,6 +150,14 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
             }
             // The stream ends with the session, which the queue reports.
             Some(activity) = people.next() => post(Posted::People(Arc::new(activity))),
+            changed = connection.changed(), if watching_link => {
+                watching_link = changed.is_ok();
+                post(Posted::Link(link(&mut connection, &mut round_trip)));
+            }
+            changed = round_trip.changed(), if watching_link => {
+                watching_link = changed.is_ok();
+                post(Posted::Link(link(&mut connection, &mut round_trip)));
+            }
             update = next_library(library.as_mut()) => match update {
                 ExpressionLibraryUpdate::Closed => library = None,
                 update => {

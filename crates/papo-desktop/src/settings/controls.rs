@@ -82,6 +82,7 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
         Kind::ColourField => colour_field::view(cx.appearance, cx.colour, look),
         Kind::Directions(current) => directions(&setting, current, look),
         Kind::DomainField => super::domain_field::view(cx.domain, look),
+        Kind::Destructive { .. } => super::actions::destructive(setting, look),
         _ => plain_row(setting, look),
     };
     let corners = [top, top, bottom, bottom];
@@ -189,15 +190,28 @@ fn plain_row(setting: Row, look: &Look) -> El {
         Kind::Hues(current) => line
             .label(spoken.clone())
             .child(hues(id, &spoken, current, look)),
-        Kind::Remove(host) => line.label(spoken).child(remove_button(id, &host, look)),
-        Kind::Note => line.role("status"),
-        Kind::Slider(_) | Kind::ColourField | Kind::Directions(_) | Kind::DomainField => line,
+        Kind::Remove(host) => line
+            .label(spoken)
+            .child(super::actions::remove_button(id, &host, look)),
+        Kind::Note | Kind::Info => line.role("status").label(spoken),
+        Kind::Value(value) => line
+            .label(format!("{spoken}, {value}"))
+            .child(value_text(&value, look)),
+        Kind::Action => pressable(line, look)
+            .role("button")
+            .label(spoken)
+            .on_press_tx(move |shell: &mut Shell, tx| shell.settings_action(id, tx)),
+        Kind::Slider(_)
+        | Kind::ColourField
+        | Kind::Directions(_)
+        | Kind::DomainField
+        | Kind::Destructive { .. } => line,
     }
 }
 
 /// A row that is one control: it takes the keyboard and the pointer, and
 /// lights under them.
-fn pressable(line: El, look: &Look) -> El {
+pub(super) fn pressable(line: El, look: &Look) -> El {
     line.focusable(true)
         .focus_highlight(look.palette.surface_hover)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
@@ -274,32 +288,6 @@ fn accents(current: Accent, look: &Look) -> El {
                     shell.settings_change(Change::Accent(accent), tx);
                 })
         }))
-}
-
-/// A list item's Remove: a small button in the row's end.
-fn remove_button(id: RowId, host: &str, look: &Look) -> El {
-    let host = host.to_owned();
-    el().key(format!("{}-remove", id.key()))
-        .h(look.space(CHIP_HEIGHT))
-        .px(look.space(SPACE_MD))
-        .center()
-        // As Shape and type's chips: concentric with a tile one
-        // `space.md` out.
-        .radius(Look::nested_radius(
-            look.radius(TILE_OUTER_RADIUS),
-            look.space(SPACE_MD),
-        ))
-        .fill(look.palette.surface_hover)
-        .role("button")
-        .label(strings::settings_trusted_remove_spoken(&host))
-        .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .on_press_tx(move |shell: &mut Shell, tx| shell.settings_untrust(&host, tx))
-        .child(
-            text(strings::settings_trusted_remove())
-                .font(look.font(TYPE_SMALL_MEDIUM))
-                .color(look.palette.text_primary),
-        )
 }
 
 /// A highlight's hue swatches (Message highlights): one per hue in

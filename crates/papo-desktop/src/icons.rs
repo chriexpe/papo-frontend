@@ -48,6 +48,11 @@ line_icon!(
     "palette"
 );
 line_icon!(
+    /// The Diagnostics page in the settings nav.
+    PULSE,
+    "pulse"
+);
+line_icon!(
     /// The General page in the settings nav.
     GLOBE,
     "globe"

@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use rune::{El, ScrollSpec, col, el, icon, row, text, text_input};
 
 use super::controls::{self, Ctx};
-use super::rows::{self, Context, page_title};
+use super::rows::{self, Context, DiagnosticsFacts, page_title};
 use super::search::results;
 use super::{PageId, SEARCH_KEY, SETTINGS_KEY, SettingsPanel};
 use crate::appearance::Appearance;
@@ -28,7 +28,7 @@ use crate::design::{
     TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_SMALL, TYPE_TITLE,
 };
 use crate::general_settings::GeneralSettings;
-use crate::icons::{ARROW_LEFT, CHAT, GLOBE, PALETTE, SEARCH, X};
+use crate::icons::{ARROW_LEFT, CHAT, GLOBE, PALETTE, PULSE, SEARCH, X};
 use crate::shell::Shell;
 use crate::strings;
 
@@ -40,6 +40,7 @@ pub(crate) struct PanelView<'a> {
     pub(crate) conversations: &'a ConversationSettings,
     pub(crate) general: &'a GeneralSettings,
     pub(crate) trusted: &'a BTreeSet<String>,
+    pub(crate) diagnostics: &'a DiagnosticsFacts,
     pub(crate) system_dark: bool,
     pub(crate) system_font_known: bool,
     /// The grain's tile for the theme drawn, for Grain's slider.
@@ -55,6 +56,7 @@ pub(crate) fn view(panel: &PanelView<'_>, look: &Look) -> El {
         conversations: panel.conversations,
         general: panel.general,
         trusted: panel.trusted,
+        diagnostics: panel.diagnostics,
         system_dark: panel.system_dark,
         system_font_known: panel.system_font_known,
     };
@@ -91,6 +93,7 @@ fn nav(panel: &SettingsPanel, context: &Context<'_>, look: &Look) -> El {
         let summary = match page {
             PageId::Appearance => rows::appearance_summary(context.appearance, context.system_dark),
             PageId::General => rows::general_summary(context),
+            PageId::Diagnostics => strings::settings_diagnostics_summary().to_owned(),
             _ => rows::conversations_summary().to_owned(),
         };
         nav_row(page, &summary, current == Some(page), look)
@@ -122,6 +125,7 @@ fn nav_icon(page: PageId) -> &'static rune::Icon {
     match page {
         PageId::Conversations | PageId::Highlights => &CHAT,
         PageId::General | PageId::Trusted => &GLOBE,
+        PageId::Diagnostics => &PULSE,
         PageId::Appearance | PageId::Background | PageId::Shape => &PALETTE,
     }
 }

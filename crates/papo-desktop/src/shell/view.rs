@@ -161,12 +161,14 @@ fn hint_look(look: &Look, dark: bool) -> HelpLook {
 /// The settings panel, while it is open.
 fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
     let panel = shell.settings.as_ref()?;
+    let diagnostics = shell.diagnostics_facts();
     let view = crate::settings::view::PanelView {
         panel,
         saved: shell.appearance.appearance(),
         conversations: shell.conversations.settings(),
         general: shell.general.settings(),
         trusted: shell.content.trusted.hosts(),
+        diagnostics: &diagnostics,
         system_dark,
         system_font_known: shell.system_font.is_some(),
         grain: shell

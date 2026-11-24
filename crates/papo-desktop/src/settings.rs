@@ -1,12 +1,14 @@
 //! The settings panel (`docs/design.md` §8): grown from the account pill's
 //! ⚙ (or Ctrl+,), a nav of pages with one-line summaries, search across
 //! every row, sub-pages with ←, and rows that save as they change. The App
-//! pages are Appearance, Conversations and General, each with its
-//! sub-pages; the others come with the slices that make their rows work.
+//! pages are Appearance, Conversations, General (each with its sub-pages)
+//! and Diagnostics; the others come with the slices that make their rows
+//! work.
 //!
 //! Owns the panel's own state: the page shown, the search, a slider or the
 //! colour field's value while it is dragged, the row whose save failed,
-//! the colour field's selection and the domain being typed. The settings
+//! the colour field's selection, the domain being typed, the media cache's
+//! measured size and the destructive row that is asking. The settings
 //! themselves are their stores' (`appearance`, `conversation_settings`,
 //! `general_settings`, `trusted_domains`); what a row's change does is the
 //! shell's (`shell/settings.rs`).
@@ -21,6 +23,7 @@ use crate::conversation_settings::ConversationSettings;
 use crate::design::{Accent, BackgroundColour, Density, Theme};
 use crate::general_settings::{GeneralSettings, Language};
 
+mod actions;
 pub(crate) mod colour_field;
 mod colour_tools;
 mod controls;
@@ -54,15 +57,17 @@ pub(crate) enum PageId {
     General,
     /// General › Trusted domains.
     Trusted,
+    Diagnostics,
 }
 
 impl PageId {
     /// Every page, nav pages first and in the nav's order: what the search
     /// looks through.
-    pub(crate) const ALL: [PageId; 7] = [
+    pub(crate) const ALL: [PageId; 8] = [
         PageId::Appearance,
         PageId::Conversations,
         PageId::General,
+        PageId::Diagnostics,
         PageId::Background,
         PageId::Shape,
         PageId::Highlights,
@@ -70,13 +75,19 @@ impl PageId {
     ];
 
     /// The pages in the nav, in order.
-    pub(crate) const NAV: [PageId; 3] =
-        [PageId::Appearance, PageId::Conversations, PageId::General];
+    pub(crate) const NAV: [PageId; 4] = [
+        PageId::Appearance,
+        PageId::Conversations,
+        PageId::General,
+        PageId::Diagnostics,
+    ];
 
     /// The page a sub-page's ← goes back to.
     pub(crate) fn parent(self) -> Option<PageId> {
         match self {
-            PageId::Appearance | PageId::Conversations | PageId::General => None,
+            PageId::Appearance | PageId::Conversations | PageId::General | PageId::Diagnostics => {
+                None
+            }
             PageId::Background | PageId::Shape => Some(PageId::Appearance),
             PageId::Highlights => Some(PageId::Conversations),
             PageId::Trusted => Some(PageId::General),
@@ -117,6 +128,11 @@ pub(crate) enum RowId {
     TrustedAdd,
     /// The trusted domain at this place in the list.
     TrustedHost(usize),
+    Connected,
+    Reconnect,
+    Cache,
+    ClearCache,
+    Version,
     Field,
     Strength,
     Grain,
@@ -275,6 +291,12 @@ pub(crate) struct SettingsPanel {
     /// Trusted domains' field, and whether what it holds was refused.
     pub(crate) domain: TextEdit,
     pub(crate) domain_refused: bool,
+    /// The media cache's size in bytes, once measured.
+    pub(crate) cache_bytes: Option<u64>,
+    /// The cache is being cleared.
+    pub(crate) clearing: bool,
+    /// The destructive row asking its question, if one is.
+    pub(crate) asking: Option<RowId>,
 }
 
 impl SettingsPanel {
@@ -287,6 +309,9 @@ impl SettingsPanel {
             colour: ColourState::default(),
             domain: TextEdit::new(""),
             domain_refused: false,
+            cache_bytes: None,
+            clearing: false,
+            asking: None,
         }
     }
 
@@ -298,6 +323,7 @@ impl SettingsPanel {
     pub(crate) fn go(&mut self, page: PageId) {
         self.page = page;
         self.failed = None;
+        self.asking = None;
         self.search = TextEdit::new("");
     }
 

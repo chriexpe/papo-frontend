@@ -66,6 +66,8 @@ pub(crate) struct Shell {
     icon_bytes: HashMap<ServerId, Arc<[u8]>>,
     /// The newest reorder sent; only its answer counts.
     reorder_requests: RequestSlot,
+    /// Diagnostics' media cache measurements.
+    diagnostics_requests: RequestSlot,
     reorder: Reorder,
     /// The open timelines and the places of closed ones.
     tabs: Tabs,
@@ -192,6 +194,7 @@ impl Default for Shell {
             stage: Stage::Starting,
             fields: Fields::default(),
             sign_in_requests: RequestSlot::default(),
+            diagnostics_requests: RequestSlot::default(),
             server_card_requests: RequestSlot::default(),
             images: None,
             registry_writes: Arc::default(),
@@ -352,6 +355,7 @@ mod search_run;
 mod settings;
 mod settings_colours;
 mod settings_conversations;
+mod settings_diagnostics;
 mod settings_file;
 mod settings_general;
 mod sign_in_flow;

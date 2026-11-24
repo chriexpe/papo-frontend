@@ -105,8 +105,12 @@ impl Shell {
 
     /// A nav row, a sub-page's row or ←: shows `page`.
     pub(crate) fn settings_page(&mut self, page: PageId, _tx: &mut Tx) {
-        if let Some(panel) = self.settings.as_mut() {
-            panel.go(page);
+        let Some(panel) = self.settings.as_mut() else {
+            return;
+        };
+        panel.go(page);
+        if page == PageId::Diagnostics {
+            self.measure_media_cache();
         }
     }
 

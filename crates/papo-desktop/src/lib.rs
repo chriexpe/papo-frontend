@@ -17,6 +17,7 @@ mod confirm;
 mod conversation_settings;
 mod design;
 mod device_settings;
+mod diagnostics;
 mod direct_list;
 mod direct_pane;
 mod fonts;
