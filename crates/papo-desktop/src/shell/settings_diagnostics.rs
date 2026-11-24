@@ -9,8 +9,8 @@
 use rune::Tx;
 
 use super::Shell;
-use crate::settings::RowId;
 use crate::settings::rows::DiagnosticsFacts;
+use crate::settings::{RowId, Target};
 
 impl Shell {
     /// The server the panel is about and its shown account: the selected
@@ -100,7 +100,7 @@ impl Shell {
     }
 
     /// Clears the media cache, then shows what it measures afterwards.
-    fn clear_media_cache(&mut self, tx: &mut Tx) {
+    pub(crate) fn clear_media_cache(&mut self, tx: &mut Tx) {
         let (Some(sdk), Some(panel)) = (self.sdk.clone(), self.settings.as_mut()) else {
             return;
         };
@@ -112,12 +112,14 @@ impl Shell {
             ticket,
             |shell: &Shell| &shell.clear_requests,
             crate::diagnostics::clear_media,
-            |shell: &mut Shell, (_cleared, bytes)| {
+            |shell: &mut Shell, (cleared, bytes)| {
                 let Some(panel) = shell.settings.as_mut() else {
                     return false;
                 };
                 panel.clearing = false;
                 panel.cache_bytes = bytes;
+                // A failed clear says so under its row, with Try again.
+                panel.saved(RowId::ClearCache, Target::ClearCache, cleared);
                 true
             },
         );

@@ -95,6 +95,11 @@ pub(crate) fn settings_cache_sub(size: &str) -> String {
     template!("settings.cache_sub", "size" => size)
 }
 
+/// Under Clear media cache when the clear failed.
+pub(crate) fn settings_clear_cache_failed() -> &'static str {
+    text!("settings.clear_cache_failed")
+}
+
 /// A whole number in the locale's format.
 pub(crate) fn integer(value: i64) -> String {
     I18N.integer(value)

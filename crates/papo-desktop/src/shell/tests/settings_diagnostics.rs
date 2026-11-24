@@ -30,3 +30,24 @@ fn diagnostics_shows_the_version() {
     click(&mut rt, &format!("settings-nav-{:?}", PageId::Diagnostics));
     assert!(tree(&rt).contains(env!("CARGO_PKG_VERSION")));
 }
+
+#[test]
+fn a_failed_clear_says_so_under_its_row_with_try_again() {
+    let mut rt = app();
+    open(&mut rt);
+    click(&mut rt, &format!("settings-nav-{:?}", PageId::Diagnostics));
+    rt.update(|shell, _tx| {
+        if let Some(panel) = shell.settings.as_mut() {
+            panel.saved(
+                RowId::ClearCache,
+                crate::settings::Target::ClearCache,
+                false,
+            );
+        }
+    });
+    rt.frame(FRAME_S);
+    let shown = tree(&rt);
+    assert!(shown.contains("Couldn't clear the media cache."), "{shown}");
+    assert!(!shown.contains("Couldn't save this setting."));
+    assert!(rt.find("settings-retry").is_some());
+}

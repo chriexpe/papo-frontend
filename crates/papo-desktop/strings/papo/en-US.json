@@ -549,5 +549,6 @@
   "size.kb": "{{value}} KB",
   "size.mb": "{{value}} MB",
   "size.gb": "{{value}} GB",
-  "settings.stay_signed_in": "Stay signed in on this device"
+  "settings.stay_signed_in": "Stay signed in on this device",
+  "settings.clear_cache_failed": "Couldn't clear the media cache."
 }

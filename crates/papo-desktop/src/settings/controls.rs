@@ -80,6 +80,7 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
     );
     let top = if first { outer } else { inner };
     let bottom = if last { outer } else { inner };
+    let setting_id = setting.id;
     let failed = cx.failed == Some(setting.id);
     let refused = matches!(setting.kind, Kind::DomainField) && cx.domain_refused;
     let body = match setting.kind {
@@ -145,9 +146,13 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
             .gap(look.space(SPACE_MD))
             .role("alert")
             .child(
-                text(strings::settings_save_failed())
-                    .font(look.font(TYPE_SMALL))
-                    .color(look.palette.danger),
+                text(if setting_id == RowId::ClearCache {
+                    strings::settings_clear_cache_failed()
+                } else {
+                    strings::settings_save_failed()
+                })
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.danger),
             )
             .child(
                 text(strings::settings_save_retry())

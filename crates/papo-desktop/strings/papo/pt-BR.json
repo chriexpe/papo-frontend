@@ -549,5 +549,6 @@
   "size.kb": "{{value}} KB",
   "size.mb": "{{value}} MB",
   "size.gb": "{{value}} GB",
-  "settings.stay_signed_in": "Continuar conectado neste aparelho"
+  "settings.stay_signed_in": "Continuar conectado neste aparelho",
+  "settings.clear_cache_failed": "Não deu para limpar o cache de mídia."
 }

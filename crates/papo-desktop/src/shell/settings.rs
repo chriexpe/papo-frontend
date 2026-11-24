@@ -270,6 +270,7 @@ impl Shell {
             Target::Profile(change) => self.save_profile(row, change),
             Target::Presence(presence) => self.save_presence(presence),
             Target::Password => self.settings_password_save(tx),
+            Target::ClearCache => self.clear_media_cache(tx),
         }
     }
 

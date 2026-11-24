@@ -257,6 +257,8 @@ pub(crate) enum Target {
     Presence(Presence),
     /// Change password: the form still holds what it sends.
     Password,
+    /// Clear media cache, run again.
+    ClearCache,
 }
 
 impl Target {
