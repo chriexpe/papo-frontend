@@ -232,7 +232,7 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
         _ => composer::pill(&shell.composer, &context, look),
     };
     let style = timeline_style(shell, look, floating_insets(cx, look));
-    let header = super::pins_panel::header(shell, &title, look);
+    let header = super::header::header(shell, &title, look);
     let panel = super::pins_panel::panel(shell, &style, cx)
         .or_else(|| super::search_panel::panel(shell, &title, &style, cx));
     // The rows fill the conversation and scroll under the header pills and

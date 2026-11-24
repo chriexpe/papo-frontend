@@ -16,7 +16,8 @@
 use rune::{Color, oklch};
 
 use super::Palette;
-use super::colour::{Theme, contrast};
+use super::colour::contrast;
+use super::theme::Theme;
 
 /// How far the lightness moves per step while it looks for the floors.
 const LIGHTNESS_STEP: f32 = 0.002;

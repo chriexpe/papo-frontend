@@ -53,7 +53,7 @@ pub(super) fn button(shown: bool, look: &Look) -> El {
         .key(PROFILE_BUTTON_KEY)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(super::pins_panel::header_button_radius(look))
+        .radius(super::header::header_button_radius(look))
         .role("button")
         .label(strings::direct_profile())
         .help(strings::direct_profile())

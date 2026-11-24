@@ -18,8 +18,8 @@ use super::search_field::{FieldList, field_spans};
 use super::title::Title;
 use super::{search_hits, search_list};
 use crate::design::{
-    FOCUS_RING_PT, HEADER_PILL_HEIGHT, Look, PILL_BUTTON_PT, PILL_ICON_PT, RADIUS_CONTROL,
-    RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_SMALL,
+    FOCUS_RING_PT, HEADER_PILL_HEIGHT, Look, PILL_BUTTON_PT, PILL_ICON_PT, RADIUS_PILL, SPACE_LG,
+    SPACE_MD, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_SMALL,
 };
 use crate::strings;
 use crate::timeline::Style;
@@ -40,7 +40,7 @@ pub(super) fn search_button(open: bool, look: &Look) -> El {
         .key(SEARCH_BUTTON_KEY)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(super::pins_panel::header_button_radius(look))
+        .radius(super::header::header_button_radius(look))
         .role("button")
         .label(strings::search_title())
         .help(strings::search_title())
@@ -189,7 +189,7 @@ fn head(
             .key("search-clear")
             .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
             .center()
-            .radius(super::pins_panel::header_button_radius(look))
+            .radius(super::header::header_button_radius(look))
             .role("button")
             .label(strings::search_clear())
             .focusable(true)
@@ -294,7 +294,11 @@ fn scope_button(scope: Scope, look: &Look) -> El {
         .px(look.space(SPACE_SM))
         .gap(look.space(SPACE_SM) / 2.0)
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // As the panel's rows around it, concentric with the panel.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("button")
         .label(format!("{}: {label}", strings::search_scope()))
         .expanded(false)
@@ -324,7 +328,11 @@ fn nothing_found(shell: &Shell, search: &Search, look: &Look) -> El {
             .px(look.space(SPACE_MD))
             .h(PILL_BUTTON_PT)
             .center()
-            .radius(look.radius(RADIUS_CONTROL))
+            // As the panel's rows around it, concentric with the panel.
+            .radius(Look::nested_radius(
+                look.radius(RADIUS_PILL),
+                look.space(SPACE_SM),
+            ))
             .fill(look.on_pill(look.palette.surface_hover))
             .role("button")
             .label(strings::search_clear_filters())

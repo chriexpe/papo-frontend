@@ -317,6 +317,7 @@ mod composer_input;
 mod content;
 pub(crate) mod deleting;
 pub(crate) mod direct;
+mod header;
 mod hover_bar;
 mod jump;
 mod jump_view;
@@ -344,6 +345,7 @@ mod search_open;
 mod search_panel;
 mod search_run;
 mod settings;
+mod settings_colours;
 mod sign_in_flow;
 #[cfg(test)]
 mod tests;

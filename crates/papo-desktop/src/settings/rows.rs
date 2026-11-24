@@ -287,7 +287,7 @@ pub(crate) fn appearance_summary(appearance: &Appearance, system_dark: bool) -> 
 /// colour's hue, else "none".
 fn background_summary(appearance: &Appearance) -> String {
     if let Some(preset) = Preset::matching(&appearance.background) {
-        return super::colour_field::preset_name(preset.id).to_owned();
+        return super::colour_tools::preset_name(preset.id).to_owned();
     }
     let colours = appearance.background.colours();
     if colours.is_empty() {

@@ -132,8 +132,10 @@ mod reading;
 mod replies;
 pub(crate) mod settings;
 mod sizes;
+mod surfaces;
 #[cfg(test)]
 mod tests;
+mod theme;
 mod tint;
 
 pub(crate) use background::{
@@ -141,10 +143,12 @@ pub(crate) use background::{
     MAX_BACKGROUND_COLOURS,
 };
 pub(crate) use code_ink::CodeInk;
-pub(crate) use colour::{Palette, Theme};
+pub(crate) use colour::Palette;
 pub(crate) use content::*;
 pub(crate) use density::*;
-pub(crate) use look::{GLASS_MARK, Glass, GlassData, Look, LookSpec, Scale, Surfaces};
+pub(crate) use look::{Glass, Look, LookSpec, Scale};
 pub(crate) use reading::*;
 pub(crate) use replies::*;
 pub(crate) use sizes::*;
+pub(crate) use surfaces::{GLASS_MARK, GlassData, Surfaces};
+pub(crate) use theme::Theme;

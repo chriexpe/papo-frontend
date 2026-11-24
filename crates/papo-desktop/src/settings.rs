@@ -17,9 +17,11 @@ use crate::appearance::{Appearance, ShapeValue};
 use crate::design::{Accent, Density, Theme};
 
 pub(crate) mod colour_field;
+mod colour_tools;
 mod controls;
 pub(crate) mod rows;
 mod search;
+mod slider;
 pub(crate) mod view;
 
 pub(crate) use view::view;

@@ -3,6 +3,8 @@
 //! the row tiles, and the controls rows end in. Values in points at the
 //! defaults; what scales is typed so (`Space`, `Radius`).
 
+use rune::Color;
+
 use super::{Radius, Space};
 
 /// The panel's widest, in points: past it, it is centred in the window.
@@ -48,6 +50,18 @@ pub(crate) const SLIDER_TRACK_PT: f32 = 22.0;
 pub(crate) const SLIDER_THUMB_PT: f32 = 28.0;
 /// The ring round a slider's thumb, in points.
 pub(crate) const SLIDER_THUMB_RING_PT: f32 = 3.0;
+/// A switch's knob, a slider thumb's ring and an unchosen colour dot's
+/// ring: white in every theme, as the mock draws them. They carry no text,
+/// so no contrast pairing applies.
+pub(crate) const KNOB: Color = Color::WHITE;
+/// The soft shadow under a slider's thumb and a colour dot: black at 30 %,
+/// so a white knob still shows on a light tile.
+pub(crate) const KNOB_SHADOW: Color = Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.3,
+};
 /// An accent swatch, in points square, its radius, and the ring that marks
 /// the chosen one.
 pub(crate) const SWATCH_PT: f32 = 26.0;
