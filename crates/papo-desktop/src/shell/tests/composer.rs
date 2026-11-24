@@ -37,6 +37,7 @@ pub(super) fn in_general() -> Runtime<Shell> {
         .map(|(name, n)| ChannelEntry {
             id: channel_id(n),
             name: (*name).to_owned(),
+            topic: None,
             badge: crate::badges::Badge::default(),
         })
         .collect();

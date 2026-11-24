@@ -28,6 +28,7 @@ fn server(name: &str, channels: &[&str]) -> ServerEntry {
             .map(|channel| ChannelEntry {
                 id: format!("{name}-{channel}"),
                 name: (*channel).to_owned(),
+                topic: None,
                 badge: Badge::default(),
             })
             .collect(),
@@ -280,6 +281,7 @@ fn no_other_unread_channel_or_a_voice_room_selected_steps_nowhere() {
     lumen.voice_channels.push(ChannelEntry {
         id: "lumen-hangout".to_owned(),
         name: "hangout".to_owned(),
+        topic: None,
         badge: Badge::default(),
     });
     nav.servers_changed(ServerList {

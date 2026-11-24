@@ -21,7 +21,13 @@ use crate::strings;
 /// pill. None while no conversation shows.
 pub(super) fn header(shell: &Shell, title: &Title<'_>, look: &Look) -> Option<El> {
     shell.tabs.shown()?;
-    let title_pill = super::title::pill(title, look);
+    let topic = matches!(title, Title::Channel(_))
+        .then(|| shell.shown_topic())
+        .flatten();
+    let strip = topic
+        .filter(|_| shell.strip_shown())
+        .map(|topic| shell.strip(topic, look));
+    let title_pill = super::title::pill(title, strip, topic.is_some(), look);
     // An open panel takes the actions pill's place.
     let panel_open = shell.shown_pins_panel().is_some() || shell.shown_search().is_some();
     let actions = (!panel_open).then(|| actions_pill(false, dm_profile(shell, title), look));

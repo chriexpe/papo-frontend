@@ -55,7 +55,7 @@ impl Shell {
     /// channel, which opens nothing at the reader's place first.
     pub(super) fn sync_timeline_at(
         &mut self,
-        tx: Option<&mut Tx>,
+        mut tx: Option<&mut Tx>,
         focus: Option<(Timeline, Anchor)>,
     ) {
         self.sync_composer();
@@ -70,6 +70,9 @@ impl Shell {
             return;
         };
         self.conversation_left();
+        if let Some(tx) = tx.as_deref_mut() {
+            self.description_opened(tx);
+        }
         if let Some(save) = switch.save {
             self.save_position(save.key, save.position);
         }
@@ -334,6 +337,7 @@ impl Shell {
             self.search_now();
         }
         let flash_ended = self.poll_flash(clock_s);
+        let description_ended = self.poll_description(clock_s);
         let notice_ended = self.poll_notice(clock_s);
         let list_closed = self.poll_reactions();
         let card_closed = self.poll_card();
@@ -342,6 +346,7 @@ impl Shell {
             || copied_ended
             || new_day
             || flash_ended
+            || description_ended
             || notice_ended
             || list_closed
             || card_closed

@@ -124,6 +124,8 @@ pub(crate) struct ChannelEntry {
     /// The server's identity for it: the row's key.
     pub(crate) id: String,
     pub(crate) name: String,
+    /// Its description, when it has one (§8: shown as the channel opens).
+    pub(crate) topic: Option<String>,
     pub(crate) badge: Badge,
 }
 
@@ -259,6 +261,10 @@ pub(crate) fn channels<'a>(
         rows.push(ChannelEntry {
             id: channel.id.to_string(),
             name: name.clone(),
+            topic: channel
+                .topic
+                .clone()
+                .filter(|topic| !topic.trim().is_empty()),
             badge,
         });
     }

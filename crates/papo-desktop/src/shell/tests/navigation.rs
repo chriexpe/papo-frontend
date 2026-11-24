@@ -37,12 +37,14 @@ pub(super) fn entry(name: &str, channels: &[&str]) -> ServerEntry {
             .map(|channel| ChannelEntry {
                 id: format!("{name}-{channel}"),
                 name: (*channel).to_owned(),
+                topic: None,
                 badge: Badge::default(),
             })
             .collect(),
         voice_channels: vec![ChannelEntry {
             id: format!("{name}-hangout"),
             name: "hangout".to_owned(),
+            topic: None,
             badge: Badge::default(),
         }],
         direct_badges: std::collections::BTreeMap::new(),

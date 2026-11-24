@@ -15,6 +15,7 @@ mod accounts;
 mod app_keys;
 mod channel_keys;
 mod composer;
+mod description;
 mod direct;
 mod direct_accounts;
 mod direct_lists;

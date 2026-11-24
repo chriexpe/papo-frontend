@@ -94,6 +94,12 @@ pub(crate) fn settings_highlight_replies() -> &'static str {
     text!("settings.highlight_replies")
 }
 
+/// The title pill's spoken label when its channel has a description,
+/// and the description panel's.
+pub(crate) fn channel_description_open() -> &'static str {
+    text!("channel.description_open")
+}
+
 /// A hue swatch's spoken label: "Hue 75°".
 pub(crate) fn settings_hue_spoken(hue: &str) -> String {
     template!("settings.hue_spoken", "hue" => hue)

@@ -93,7 +93,9 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                 app = app.children(settings_panel(shell, &look, cx.system_dark()));
                 if let Some(menu) = &shell.nav.menu {
                     app = app.children(menu::pointer_point(menu));
-                    let body = if menu.people {
+                    let body = if menu.description.is_some() {
+                        super::description::body(shell, &look)
+                    } else if menu.people {
                         direct_pane::new_message::body(shell, &look)
                     } else if menu.card.is_some() {
                         super::profile_card::body(shell, &look)
@@ -102,7 +104,10 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                     };
                     // A list or card whose conversation went away draws
                     // nothing; the next poll closes it.
-                    let bodiless = menu.reactions.is_none() && menu.card.is_none() && !menu.people;
+                    let bodiless = menu.reactions.is_none()
+                        && menu.card.is_none()
+                        && !menu.people
+                        && menu.description.is_none();
                     if body.is_some() || bodiless {
                         app = app.child(menu::view(menu, body, &look, cx));
                     }

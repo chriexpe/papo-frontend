@@ -257,6 +257,8 @@ pub(crate) struct OpenMenu {
     pub(crate) card: Option<CardView>,
     /// It is the New message picker (`Shell::dm_picker` holds its state).
     pub(crate) people: bool,
+    /// It is a channel's description panel, with this topic.
+    pub(crate) description: Option<String>,
 }
 
 /// The element key of the open menu.
@@ -290,6 +292,7 @@ impl OpenMenu {
             reactions: None,
             card: None,
             people: false,
+            description: None,
         }
     }
 

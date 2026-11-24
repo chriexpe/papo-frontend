@@ -120,6 +120,8 @@ pub(crate) struct Shell {
     dm_peers: std::collections::BTreeSet<(AccountId, papo_sdk::Uuid)>,
     /// What the backend said about conversations that left the list.
     dm_access: std::collections::BTreeMap<papo_sdk_ui::DirectMessageId, direct::Asked>,
+    /// The shown channel's description strip.
+    description: description::Description,
     /// The notice pill, while one shows.
     notice: Option<crate::notice::Notice>,
     /// Pins and unpins on their way.
@@ -224,6 +226,7 @@ impl Default for Shell {
             dm_peers: std::collections::BTreeSet::new(),
             layout: crate::layout_prefs::LayoutPrefs::default(),
             dm_access: std::collections::BTreeMap::new(),
+            description: description::Description::default(),
             notice: None,
             pinning: reacting::Pinning::default(),
             stretched: None,
@@ -324,6 +327,7 @@ mod composer;
 mod composer_input;
 mod content;
 pub(crate) mod deleting;
+mod description;
 pub(crate) mod direct;
 mod header;
 mod hover_bar;

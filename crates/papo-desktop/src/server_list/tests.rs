@@ -47,6 +47,7 @@ fn entry(id: u128, name: &str) -> ChannelEntry {
     ChannelEntry {
         id: Uuid::from_u128(id).to_string(),
         name: name.to_owned(),
+        topic: None,
         badge: Badge::Nothing,
     }
 }
