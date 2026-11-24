@@ -13,9 +13,8 @@ use super::jump::{JUMP_FIELD_KEY, target_key};
 use crate::badges::Badge;
 use crate::channel_pane::{avatar, row_badge};
 use crate::design::{
-    AVATAR_ROW, DM_ROW_HEIGHT_PT, Look, MENU_ROW_HEIGHT_PT, PILL_ICON_PT, PILL_OUTLINE_PT,
-    POPUP_SHADOW_PT, RADIUS_CONTROL, RADIUS_POPUP, SPACE_MD, SPACE_SM, SPACE_XXL, TYPE_BODY,
-    TYPE_CAPTION, TYPE_SMALL,
+    AVATAR_ROW, DM_ROW_HEIGHT_PT, Look, MENU_ROW_HEIGHT_PT, PILL_ICON_PT, RADIUS_CONTROL,
+    RADIUS_POPUP, SPACE_MD, SPACE_SM, SPACE_XXL, Surfaces, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL,
 };
 use crate::person_avatar::person_avatar;
 use crate::strings;
@@ -28,7 +27,6 @@ const VISIBLE_ROWS: f32 = 9.0;
 /// The open field over the dimmed app; none while it is closed.
 pub(super) fn view(shell: &Shell, look: &Look) -> Option<El> {
     let jump = shell.jump.as_ref()?;
-    let (drop, blur) = POPUP_SHADOW_PT;
     let mut field = text_input(&jump.edit, look.font(TYPE_BODY))
         .key(JUMP_FIELD_KEY)
         .label(strings::shortcuts_jump())
@@ -75,12 +73,15 @@ pub(super) fn view(shell: &Shell, look: &Look) -> Option<El> {
         .padding(look.space(SPACE_SM))
         .gap(look.space(SPACE_SM))
         .radius(look.radius(RADIUS_POPUP))
-        .fill(look.palette.surface_content)
-        .border(PILL_OUTLINE_PT, look.palette.line_subtle)
-        .shadow(drop, blur, look.palette.popup_shadow)
+        // Glass like the menus (§5).
+        .pill_surface(look)
         .role("dialog")
         .label(strings::shortcuts_jump())
-        .modal(false, Shell::close_jump)
+        // A press or a wheel on the card stays with it (the list's own
+        // scroll view hears a wheel first, so the list still scrolls); the
+        // scrim around it closes on either.
+        .on_background_press(|_: &mut Shell| {})
+        .on_wheel(|_: &mut Shell, _wheel, _tx| true)
         .child(
             row()
                 .w_full()
@@ -92,10 +93,19 @@ pub(super) fn view(shell: &Shell, look: &Look) -> Option<El> {
                 .child(field),
         )
         .child(list);
-    // Over the whole window, the card centred near its top.
+    // Over the whole window, the card centred near its top. The scrim is
+    // the modal (focus kept inside, the app inert, Escape closes), so it
+    // hears what lands outside the card: a press or a scroll there closes
+    // it, as a press outside a menu does.
     Some(
         el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
             .fill(look.palette.scrim)
+            .modal(false, Shell::close_jump)
+            .on_press(Shell::close_jump)
+            .on_wheel(|shell: &mut Shell, _wheel, _tx| {
+                shell.close_jump();
+                true
+            })
             .child(
                 col()
                     .w_full()

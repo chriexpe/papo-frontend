@@ -199,7 +199,11 @@ impl Look {
         } else {
             el.fill(colour).border(PILL_OUTLINE_PT, palette.line_pill)
         };
-        self.shadows(el)
+        // A floating surface covers what is under it: Rune lights a hover
+        // group (a message row) whose box holds the pointer unless another
+        // group is over it there, so the surface is one, and the rows the
+        // conversation scrolls under it don't light through it.
+        self.shadows(el.hover_group())
     }
 
     /// The lift and contact shadows at the depth setting; none at 0.
