@@ -19,9 +19,9 @@ use crate::design::{
     FOCUS_RING_PT, Look, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TASK_BOX, TASK_BOX_OUTLINE_PT,
     TASK_BOX_RADIUS, TASK_CHECK, TYPE_CODE, TYPE_SMALL, WEIGHT_SEMIBOLD,
 };
+use crate::device_settings::{SettingsFile, Stored, Write};
 use crate::shell::Shell;
 use crate::strings;
-use crate::window::APP_ID;
 
 /// The settings file's key for the trusted domains.
 const TRUSTED_KEY: &str = "trusted_domains";
@@ -96,44 +96,57 @@ fn mail_only(mail: &url::Url) -> String {
     mail.into()
 }
 
-/// The hosts whose links open without asking: this device's preference.
+/// The hosts whose links open without asking: this device's preference,
+/// changed from the link confirmation's box and, with D6b, from General ›
+/// Trusted domains. A change shows at once and is written off the UI
+/// thread; a failed write takes the list back to what the file holds.
 pub(crate) struct Trusted {
-    hosts: BTreeSet<String>,
-    prefs: Prefs,
+    stored: Stored<BTreeSet<String>>,
+    file: SettingsFile,
 }
 
 impl Default for Trusted {
     /// None, kept nowhere: before the settings file is read, and in tests.
     fn default() -> Trusted {
-        Trusted {
-            hosts: BTreeSet::new(),
-            prefs: Prefs::memory(),
-        }
+        Trusted::read(&Prefs::memory())
     }
 }
 
 impl Trusted {
-    /// The trusted domains in this user's settings file.
-    pub(crate) fn load() -> Trusted {
-        let prefs = Prefs::open(APP_ID);
-        let hosts = prefs.get(TRUSTED_KEY).unwrap_or_default();
-        Trusted { hosts, prefs }
+    /// The trusted domains in `prefs`, this device's settings file.
+    pub(crate) fn read(prefs: &Prefs) -> Trusted {
+        Trusted {
+            stored: Stored::new(prefs.get(TRUSTED_KEY).unwrap_or_default()),
+            file: SettingsFile::of(prefs),
+        }
     }
 
     pub(crate) fn contains(&self, host: &str) -> bool {
-        self.hosts.contains(host)
+        self.stored.shown().contains(host)
     }
 
-    /// Trusts `host` from now on, and saves the list. A failed save keeps
-    /// it trusted until the app closes.
-    pub(crate) fn add(&mut self, host: String) {
-        if !self.hosts.insert(host) {
-            return;
-        }
-        crate::device_settings::reload(&mut self.prefs);
-        if let Err(error) = self.prefs.set(TRUSTED_KEY, &self.hosts) {
-            log::warn!("the trusted domains were not saved: {error}");
-        }
+    /// Trusts `host` from now on; the list to write now, unless a write is
+    /// running (it then follows) or the host was trusted already.
+    pub(crate) fn add(&mut self, host: String) -> Option<BTreeSet<String>> {
+        let mut hosts = self.stored.shown().clone();
+        hosts.insert(host);
+        self.stored.change(hosts)
+    }
+
+    /// The write of `hosts` landed (`ok`) or did not, which takes the list
+    /// back to what the file holds; the list to write next.
+    pub(crate) fn written(
+        &mut self,
+        hosts: BTreeSet<String>,
+        ok: bool,
+    ) -> Option<BTreeSet<String>> {
+        self.stored.written(hosts, ok)
+    }
+
+    /// The write that saves `hosts`.
+    pub(crate) fn write_of(&self, hosts: &BTreeSet<String>) -> Write {
+        self.file
+            .write(vec![(TRUSTED_KEY, serde_json::json!(hosts))])
     }
 }
 
@@ -297,7 +310,7 @@ mod tests {
             host: "lumen.example.org".to_owned(),
         };
         assert_eq!(decide(guide, server, &trusted), ask);
-        trusted.add("lumen.example.org".to_owned());
+        let _ = trusted.add("lumen.example.org".to_owned());
         assert_eq!(decide(guide, server, &trusted), open(guide));
         assert_eq!(
             decide("https://docs.lumen.example.org/", server, &trusted),

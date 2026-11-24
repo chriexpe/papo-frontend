@@ -6,8 +6,9 @@
 use rune::Tx;
 
 use super::Shell;
-use crate::appearance::{Appearance, ShapeValue, TEXT_SIZE_DEFAULT_PT, Write, text_size_step};
+use crate::appearance::{Appearance, ShapeValue, TEXT_SIZE_DEFAULT_PT, text_size_step};
 use crate::design::{Glass, Look, LookSpec, Scale};
+use crate::settings::RowId;
 use crate::timeline::OpenTimeline;
 use crate::timeline::anchor::{Anchor, scroll_to};
 
@@ -31,43 +32,40 @@ impl Shell {
     /// back to what the file holds (`appearance_written`).
     pub(crate) fn set_appearance(&mut self, appearance: Appearance, tx: &mut Tx) {
         let reading = self.reading_place();
-        if let Some(write) = self.appearance.change(appearance) {
-            self.write_appearance(write, tx);
+        if let Some(next) = self.appearance.change(appearance) {
+            self.write_appearance(next, tx);
         }
         keep_place(reading, tx);
     }
 
-    /// Runs `write` on the SDK client's runtime, which the exit fence lets
-    /// finish; before the client opens (and in tests), here.
-    fn write_appearance(&mut self, write: Write, tx: &mut Tx) {
-        let Some(sdk) = &self.sdk else {
-            let ok = write.run().is_ok();
-            self.appearance_written(write.appearance(), ok, tx);
-            return;
-        };
-        let updates = sdk.updates();
-        sdk.finish(move |_client| async move {
-            let appearance = write.appearance();
-            let ok = tokio::task::spawn_blocking(move || write.run().is_ok())
-                .await
-                .unwrap_or(false);
-            updates.send_tx(move |shell, tx| {
-                shell.appearance_written(appearance, ok, tx);
-                true
-            });
-        });
+    /// Writes `appearance`. The settings row that asked for it, if any, is
+    /// taken now: it hears how the write went.
+    fn write_appearance(&mut self, appearance: Appearance, tx: &mut Tx) {
+        let write = self.appearance.write_of(&appearance);
+        let row = self.saving_row;
+        self.run_write(
+            write,
+            move |shell, ok, tx| shell.appearance_written(appearance, row, ok, tx),
+            tx,
+        );
     }
 
-    /// The write of `appearance` landed, or did not: a failure takes the
-    /// settings back, the message being read kept in its place, and shows
-    /// under the settings row that asked for it.
-    pub(crate) fn appearance_written(&mut self, appearance: Appearance, ok: bool, tx: &mut Tx) {
+    /// The write of `appearance`, asked for by `row`, landed, or did not: a
+    /// failure takes the settings back, the message being read kept in its
+    /// place, and shows under the row.
+    pub(crate) fn appearance_written(
+        &mut self,
+        appearance: Appearance,
+        row: Option<RowId>,
+        ok: bool,
+        tx: &mut Tx,
+    ) {
         let reading = (!ok).then(|| self.reading_place()).flatten();
         if !ok {
             log::warn!("an Appearance setting was not saved");
         }
         let next = self.appearance.written(appearance, ok);
-        if let (Some(panel), Some(row)) = (self.settings.as_mut(), self.saving_row) {
+        if let (Some(panel), Some(row)) = (self.settings.as_mut(), row) {
             panel.saved(row, appearance, ok);
         }
         keep_place(reading, tx);

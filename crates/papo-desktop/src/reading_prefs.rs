@@ -8,8 +8,6 @@
 
 use rune::prefs::Prefs;
 
-use crate::window::APP_ID;
-
 /// "Open at the newest message".
 const OPEN_AT_NEWEST_KEY: &str = "open_at_newest";
 /// "Unread hourglass".
@@ -36,13 +34,9 @@ impl Default for ReadingPrefs {
 }
 
 impl ReadingPrefs {
-    /// The settings in this user's settings file; a missing or unreadable
-    /// one takes the default.
-    pub(crate) fn load() -> ReadingPrefs {
-        ReadingPrefs::read(&Prefs::open(APP_ID))
-    }
-
-    fn read(prefs: &Prefs) -> ReadingPrefs {
+    /// The settings in `prefs`, this device's settings file; a missing or
+    /// unreadable one takes the default.
+    pub(crate) fn read(prefs: &Prefs) -> ReadingPrefs {
         let defaults = ReadingPrefs::default();
         ReadingPrefs {
             open_at_newest: prefs

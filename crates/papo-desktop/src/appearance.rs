@@ -12,12 +12,10 @@
 //! what the settings show is what is saved (§8, Saving). The tokens drawn
 //! from them are `design`'s (`Look`).
 
-use std::path::PathBuf;
-
 use rune::prefs::Prefs;
 
 use crate::design::{Accent, Background, MessageLayout, TYPE_BODY_PT, Theme};
-use crate::window::APP_ID;
+use crate::device_settings::{SettingsFile, Stored, Write};
 
 pub(crate) mod presets;
 mod stored;
@@ -170,94 +168,12 @@ impl Appearance {
     }
 }
 
-/// A write to the settings file that did not land; the setting keeps its
-/// earlier value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NotSaved;
-
 /// The Appearance settings and where they are saved. A change shows at
-/// once and is written off the UI thread (`Write`), one write at a time;
-/// a failed write takes the settings back to what the file holds.
+/// once and is written off the UI thread, one write at a time; a failed
+/// write takes the settings back to what the file holds.
 pub(crate) struct AppearanceStore {
-    /// What draws: the saved settings, or a change on its way to the file.
-    appearance: Appearance,
-    /// What the file holds, as far as this store knows.
-    saved: Appearance,
-    /// The settings file; none for a store kept nowhere.
-    path: Option<PathBuf>,
-    saving: Saving,
-}
-
-/// The writes to the settings file: none running, or one running with the
-/// latest change since waiting for it (§8: a change is saved, in order).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-enum Saving {
-    #[default]
-    Idle,
-    Writing {
-        next: Option<Appearance>,
-    },
-}
-
-/// What happens to the writes.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum SavingEvent {
-    /// A change to write.
-    Changed(Appearance),
-    /// The running write landed, or did not.
-    Written { ok: bool },
-}
-
-impl Saving {
-    /// The writes after `event`, and what to write now.
-    fn step(self, event: SavingEvent) -> (Saving, Option<Appearance>) {
-        match (self, event) {
-            (Saving::Idle, SavingEvent::Changed(appearance)) => {
-                (Saving::Writing { next: None }, Some(appearance))
-            }
-            // The latest change waits; one before it that never ran is
-            // replaced, as the file only needs the last.
-            (Saving::Writing { .. }, SavingEvent::Changed(appearance)) => (
-                Saving::Writing {
-                    next: Some(appearance),
-                },
-                None,
-            ),
-            (Saving::Writing { next: Some(next) }, SavingEvent::Written { ok: true }) => {
-                (Saving::Writing { next: None }, Some(next))
-            }
-            // Done, or failed: a failure drops the change waiting behind it,
-            // whose write would fail too.
-            (Saving::Writing { .. } | Saving::Idle, SavingEvent::Written { .. }) => {
-                (Saving::Idle, None)
-            }
-        }
-    }
-}
-
-/// One write of the settings, which may run on any thread.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Write {
-    appearance: Appearance,
-    path: Option<PathBuf>,
-}
-
-impl Write {
-    /// The settings it writes.
-    pub(crate) fn appearance(&self) -> Appearance {
-        self.appearance
-    }
-
-    /// Writes them, blocking: the file is read afresh first, so what
-    /// another window saved since stays. A store kept nowhere has nothing
-    /// to write.
-    pub(crate) fn run(&self) -> Result<(), NotSaved> {
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        let mut prefs = Prefs::at(path.clone());
-        stored::write(&mut prefs, &self.appearance)
-    }
+    stored: Stored<Appearance>,
+    file: SettingsFile,
 }
 
 impl Default for AppearanceStore {
@@ -269,62 +185,35 @@ impl Default for AppearanceStore {
 }
 
 impl AppearanceStore {
-    /// The settings in this user's settings file; a missing or unreadable
-    /// value takes its default.
-    pub(crate) fn load() -> AppearanceStore {
-        AppearanceStore::read(&Prefs::open(APP_ID))
-    }
-
-    /// The settings in `prefs`, for tests that need a file of their own
-    /// (one that cannot be written, say).
-    #[cfg(test)]
-    pub(crate) fn from_prefs(prefs: &Prefs) -> AppearanceStore {
-        AppearanceStore::read(prefs)
-    }
-
-    fn read(prefs: &Prefs) -> AppearanceStore {
-        let appearance = stored::read(prefs);
+    /// The settings in `prefs`, this device's settings file; a missing or
+    /// unreadable value takes its default.
+    pub(crate) fn read(prefs: &Prefs) -> AppearanceStore {
         AppearanceStore {
-            appearance,
-            saved: appearance,
-            path: prefs.path().map(std::path::Path::to_path_buf),
-            saving: Saving::Idle,
+            stored: Stored::new(stored::read(prefs)),
+            file: SettingsFile::of(prefs),
         }
     }
 
     /// The settings drawn.
     pub(crate) fn appearance(&self) -> &Appearance {
-        &self.appearance
+        self.stored.shown()
     }
 
-    /// Shows `appearance` at once; the write it needs, unless one is
-    /// running (it then follows that one) or nothing changed.
-    pub(crate) fn change(&mut self, appearance: Appearance) -> Option<Write> {
-        if appearance == self.appearance {
-            return None;
-        }
-        self.appearance = appearance;
-        self.step(SavingEvent::Changed(appearance))
+    /// Shows `appearance` at once; the settings to write now, unless a
+    /// write is running (they then follow it) or nothing changed.
+    pub(crate) fn change(&mut self, appearance: Appearance) -> Option<Appearance> {
+        self.stored.change(appearance)
     }
 
     /// The write of `appearance` landed (`ok`) or did not, which takes the
-    /// settings back to what the file holds; the write to run next, if any.
-    pub(crate) fn written(&mut self, appearance: Appearance, ok: bool) -> Option<Write> {
-        if ok {
-            self.saved = appearance;
-        } else {
-            self.appearance = self.saved;
-        }
-        self.step(SavingEvent::Written { ok })
+    /// settings back to what the file holds; the settings to write next.
+    pub(crate) fn written(&mut self, appearance: Appearance, ok: bool) -> Option<Appearance> {
+        self.stored.written(appearance, ok)
     }
 
-    fn step(&mut self, event: SavingEvent) -> Option<Write> {
-        let (saving, write) = self.saving.step(event);
-        self.saving = saving;
-        write.map(|appearance| Write {
-            appearance,
-            path: self.path.clone(),
-        })
+    /// The write that saves `appearance`.
+    pub(crate) fn write_of(&self, appearance: &Appearance) -> Write {
+        self.file.write(vec![stored::entry(appearance)])
     }
 }
 

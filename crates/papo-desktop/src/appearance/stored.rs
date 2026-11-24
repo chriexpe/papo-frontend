@@ -11,7 +11,7 @@
 use rune::prefs::Prefs;
 use serde_json::{Map, Value, json};
 
-use super::{Appearance, NotSaved, ShapeValue};
+use super::{Appearance, ShapeValue};
 use crate::design::{Accent, Background, BackgroundColour, Density, MessageLayout, Theme};
 
 /// The settings file's key.
@@ -49,12 +49,10 @@ pub(super) fn read(prefs: &Prefs) -> Appearance {
     }
 }
 
-/// Saves `appearance` in one write.
-pub(super) fn write(prefs: &mut Prefs, appearance: &Appearance) -> Result<(), NotSaved> {
-    prefs.set(KEY, &value_of(appearance)).map_err(|error| {
-        log::warn!("the Appearance settings were not saved: {error}");
-        NotSaved
-    })
+/// The settings file's entry for `appearance`: its one key, so a change is
+/// one write.
+pub(super) fn entry(appearance: &Appearance) -> (&'static str, Value) {
+    (KEY, value_of(appearance))
 }
 
 fn value_of(appearance: &Appearance) -> Value {

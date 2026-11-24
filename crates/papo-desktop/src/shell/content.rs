@@ -29,13 +29,6 @@ pub(crate) struct Content {
     hovered: Option<(TimelineKey, Uuid)>,
 }
 
-impl Content {
-    /// Reads this device's trusted domains.
-    pub(crate) fn load(&mut self) {
-        self.trusted = Trusted::load();
-    }
-}
-
 impl Shell {
     /// A press inside message content.
     pub(crate) fn content_pressed_in(
@@ -106,8 +99,10 @@ impl Shell {
         let Some(prompt) = self.content.link.take() else {
             return;
         };
-        if prompt.always {
-            self.content.trusted.add(prompt.host);
+        if prompt.always
+            && let Some(hosts) = self.content.trusted.add(prompt.host)
+        {
+            self.write_trusted(hosts, tx);
         }
         open(&prompt.url, tx);
     }

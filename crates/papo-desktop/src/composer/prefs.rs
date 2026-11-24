@@ -8,8 +8,6 @@
 
 use rune::prefs::Prefs;
 
-use crate::window::APP_ID;
-
 /// "Enter to send".
 const ENTER_SENDS_KEY: &str = "enter_sends";
 /// "Mention when replying".
@@ -35,13 +33,9 @@ impl Default for WritingPrefs {
 }
 
 impl WritingPrefs {
-    /// The setting in this user's settings file; a missing or unreadable
-    /// one takes the default.
-    pub(crate) fn load() -> WritingPrefs {
-        WritingPrefs::read(&Prefs::open(APP_ID))
-    }
-
-    fn read(prefs: &Prefs) -> WritingPrefs {
+    /// The settings in `prefs`, this device's settings file; a missing or
+    /// unreadable one takes the default.
+    pub(crate) fn read(prefs: &Prefs) -> WritingPrefs {
         let default = WritingPrefs::default();
         WritingPrefs {
             enter_sends: prefs.get(ENTER_SENDS_KEY).unwrap_or(default.enter_sends),

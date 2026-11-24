@@ -11,7 +11,7 @@ use papo_sdk::{AccountId, Uuid};
 use papo_sdk_ui::{JumpKind, JumpTarget};
 use rune::prefs::Prefs;
 
-use crate::window::APP_ID;
+use crate::device_settings::{Remembered, SettingsFile, Write};
 
 /// The settings key.
 const RECENT_JUMPS_KEY: &str = "recent_jumps";
@@ -37,13 +37,13 @@ struct Saved {
 /// The last jumps, and where they are saved.
 pub(crate) struct RecentJumps {
     saved: Vec<Saved>,
-    prefs: Prefs,
+    remembered: Remembered,
 }
 
 impl Default for RecentJumps {
     /// None, kept nowhere: before the settings file is read, and in tests.
     fn default() -> RecentJumps {
-        RecentJumps::read(Prefs::memory())
+        RecentJumps::read(&Prefs::memory())
     }
 }
 
@@ -84,19 +84,16 @@ fn account_text(account: AccountId) -> String {
 }
 
 impl RecentJumps {
-    /// The jumps in this user's settings file; an unreadable list is empty.
-    pub(crate) fn load() -> RecentJumps {
-        RecentJumps::read(Prefs::open(APP_ID))
-    }
-
-    fn read(prefs: Prefs) -> RecentJumps {
+    /// The jumps in `prefs`, this device's settings file; an unreadable
+    /// list is empty.
+    pub(crate) fn read(prefs: &Prefs) -> RecentJumps {
         let fields: Vec<Vec<String>> = prefs.get(RECENT_JUMPS_KEY).unwrap_or_default();
         RecentJumps {
             saved: fields
                 .iter()
                 .filter_map(|fields| Saved::from_fields(fields))
                 .collect(),
-            prefs,
+            remembered: Remembered::new(RECENT_JUMPS_KEY, SettingsFile::of(prefs)),
         }
     }
 
@@ -126,8 +123,9 @@ impl RecentJumps {
     }
 
     /// `target` was jumped to: it goes first, once, and the list keeps
-    /// [`RECENT_JUMPS`]. A failed save keeps it for this run.
-    pub(crate) fn jumped(&mut self, target: &JumpTarget) {
+    /// [`RECENT_JUMPS`]; the write that saves the list, unless one is
+    /// running (it then follows). A failed save keeps it for this run.
+    pub(crate) fn jumped(&mut self, target: &JumpTarget) -> Option<Write> {
         let (kind, id, peer) = match target.kind {
             JumpKind::Channel { channel } => ("channel", Some(channel), None),
             JumpKind::Direct { channel, peer } => ("direct", Some(channel), Some(peer)),
@@ -147,11 +145,13 @@ impl RecentJumps {
         });
         self.saved.insert(0, saved);
         self.saved.truncate(RECENT_JUMPS);
-        crate::device_settings::reload(&mut self.prefs);
         let fields: Vec<Vec<String>> = self.saved.iter().map(Saved::fields).collect();
-        if let Err(error) = self.prefs.set(RECENT_JUMPS_KEY, &fields) {
-            log::warn!("the recent jumps were not saved: {error}");
-        }
+        self.remembered.remember(serde_json::json!(fields))
+    }
+
+    /// The running write landed, or did not; the one to run next.
+    pub(crate) fn written(&mut self, ok: bool) -> Option<Write> {
+        self.remembered.written(ok)
     }
 }
 
@@ -185,9 +185,16 @@ mod tests {
 
     #[test]
     fn the_last_three_jumps_newest_first_each_once_and_read_back() {
-        let mut recent = RecentJumps::read(Prefs::memory());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        let mut recent = RecentJumps::read(&Prefs::at(&path));
         for n in [1, 2, 3, 2, 4] {
-            recent.jumped(&channel(n));
+            if let Some(write) = recent.jumped(&channel(n)) {
+                write.run().unwrap();
+            }
+            while let Some(next) = recent.written(true) {
+                next.run().unwrap();
+            }
         }
         let names: Vec<_> = recent
             .targets(&[account()])
@@ -196,7 +203,7 @@ mod tests {
             .collect();
         assert_eq!(names, ["c4", "c2", "c3"]);
         assert_eq!(names.len(), RECENT_JUMPS);
-        let again = RecentJumps::read(recent.prefs);
+        let again = RecentJumps::read(&Prefs::at(&path));
         assert_eq!(
             again.targets(&[account()]).len(),
             3,
@@ -217,9 +224,9 @@ mod tests {
                 &vec![vec!["only", "three", "fields"]],
             )
             .unwrap();
-        assert_eq!(RecentJumps::read(prefs).targets(&[account()]).len(), 0);
+        assert_eq!(RecentJumps::read(&prefs).targets(&[account()]).len(), 0);
         let mut prefs = Prefs::memory();
         prefs.set(super::RECENT_JUMPS_KEY, &42).unwrap();
-        assert_eq!(RecentJumps::read(prefs).targets(&[account()]).len(), 0);
+        assert_eq!(RecentJumps::read(&prefs).targets(&[account()]).len(), 0);
     }
 }

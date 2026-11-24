@@ -270,12 +270,13 @@ impl Shell {
         let images = ImageCache::new(waker);
         self.grain = Some(crate::grain::GrainTiles::new(&images));
         self.images = Some(images);
-        self.content.load();
-        self.prefs = ReadingPrefs::load();
-        self.layout = crate::layout_prefs::LayoutPrefs::load();
-        self.recent_jumps = crate::recent_jumps::RecentJumps::load();
-        self.writing = WritingPrefs::load();
-        self.appearance = crate::appearance::AppearanceStore::load();
+        let prefs = crate::device_settings::SettingsFile::read();
+        self.content.trusted = crate::links::Trusted::read(&prefs);
+        self.prefs = ReadingPrefs::read(&prefs);
+        self.layout = crate::layout_prefs::LayoutPrefs::read(&prefs);
+        self.recent_jumps = crate::recent_jumps::RecentJumps::read(&prefs);
+        self.writing = WritingPrefs::read(&prefs);
+        self.appearance = crate::appearance::AppearanceStore::read(&prefs);
     }
 
     /// Takes the account watch's summary, and opens the screens it calls for.
@@ -350,6 +351,7 @@ mod search_panel;
 mod search_run;
 mod settings;
 mod settings_colours;
+mod settings_file;
 mod sign_in_flow;
 #[cfg(test)]
 mod tests;

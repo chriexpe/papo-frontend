@@ -37,9 +37,9 @@ fn a_change_shows_at_once_and_its_write_is_read_back() {
     changed.grain = 0.3;
     changed.shape = changed.shape.with(ShapeValue::TextSize, 16.0);
     changed.glass = 0.9;
-    let write = store.change(changed).expect("a write");
+    let written = store.change(changed).expect("a write");
     assert_eq!(*store.appearance(), changed, "shown before it is written");
-    write.run().unwrap();
+    store.write_of(&written).run().unwrap();
     assert_eq!(store.written(changed, true), None, "nothing waits");
     let again = AppearanceStore::read(&Prefs::at(&path));
     assert_eq!(*again.appearance(), changed);
@@ -57,10 +57,8 @@ fn changes_during_a_write_wait_for_it_and_only_the_last_is_written() {
     let running = store.change(first).expect("written at once");
     assert_eq!(store.change(second), None, "waits for the running write");
     assert_eq!(store.change(third), None, "replaces the one waiting");
-    let next = store
-        .written(running.appearance(), true)
-        .expect("the last one");
-    assert_eq!(next.appearance(), third);
+    let next = store.written(running, true).expect("the last one");
+    assert_eq!(next, third);
     assert_eq!(store.written(third, true), None);
 }
 
@@ -74,11 +72,7 @@ fn a_failed_write_takes_the_settings_back_and_drops_what_waited() {
     second.grain = 0.6;
     let running = store.change(first).unwrap();
     assert_eq!(store.change(second), None);
-    assert_eq!(
-        store.written(running.appearance(), false),
-        None,
-        "nothing more"
-    );
+    assert_eq!(store.written(running, false), None, "nothing more");
     assert_eq!(*store.appearance(), before, "back to what the file holds");
 }
 
