@@ -199,7 +199,7 @@ fn run(file: &[u8], edit: &AttachmentEdit) -> Result<(Vec<u8>, ImageFormat), Ima
 
 fn anonymize() -> AttachmentEdit {
     AttachmentEdit {
-        anonymize: true,
+        anonymize: Anonymize::Required,
         ..AttachmentEdit::default()
     }
 }
@@ -465,5 +465,18 @@ fn an_animated_picture_cannot_become_a_fixed_upload() {
     assert_eq!(
         fixed(&mut Cursor::new(gif(2)), FixedImage::Avatar, 0, None).map(|_| ()),
         Err(ImageError::Animated)
+    );
+}
+
+#[test]
+fn only_a_cleanable_image_reads_as_one_to_clean_and_a_known_other_image_is_refused() {
+    let mut photo = Cursor::new(b"\xFF\xD8\xFF\xE0rest of a jpeg".to_vec());
+    assert_eq!(cleans_kind(&mut photo), Ok(true));
+    let mut pdf = Cursor::new(b"%PDF-1.7 minutes".to_vec());
+    assert_eq!(cleans_kind(&mut pdf), Ok(false));
+    let mut heic = Cursor::new(b"\0\0\0\x18ftypheic\0\0\0\0mif1".to_vec());
+    assert_eq!(
+        cleans_kind(&mut heic),
+        Err(ImageError::Unsupported(UnsupportedFormat::Heic))
     );
 }

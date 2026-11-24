@@ -63,8 +63,8 @@ pub mod operations;
 pub use operations::{OperationError, OperationReceipt, Operations, RefreshFault, RefreshStatus};
 mod outgoing;
 pub use images::{
-    AttachmentEdit, CropRect, FixedImage, ImageError, ImageFormat, ImageInfo, NAME_LENGTH,
-    UnsupportedFormat, random_attachment_name,
+    Anonymize, AttachmentEdit, CropRect, FixedImage, ImageError, ImageFormat, ImageInfo,
+    NAME_LENGTH, UnsupportedFormat, random_attachment_name,
 };
 pub use outgoing::OutgoingFault;
 pub use outgoing::{

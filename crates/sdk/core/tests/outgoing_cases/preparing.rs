@@ -2,7 +2,7 @@
 //! a failed copy and a restart while preparing.
 
 use super::*;
-use papo_sdk::{AttachmentEdit, OperationFailure, PendingAttachment, StagingFailure};
+use papo_sdk::{Anonymize, AttachmentEdit, OperationFailure, PendingAttachment, StagingFailure};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -304,6 +304,79 @@ fn an_edit_on_a_copying_file_is_applied_once_it_is_ready() -> Result {
                 .map(|(_, extension)| extension),
             Some("pdf")
         );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn a_copying_document_anonymized_where_supported_goes_unchanged() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let (session, channel) = signed_in(&f).await?;
+        let queue = session.outgoing();
+        let gate = Gate::new();
+        let original = b"%PDF-1.7 a document".to_vec();
+        let pending = queue.begin_staging(gate.reader(original.clone()))?;
+        let edit = AttachmentEdit {
+            anonymize: Anonymize::WhereSupported,
+            ..AttachmentEdit::default()
+        };
+        let attachment = OutgoingAttachment::from_pending("notes.pdf", pending).with_edit(edit);
+        queue
+            .enqueue(
+                channel,
+                id(1),
+                OperationKind::Message(OutgoingMessage {
+                    attachments: vec![attachment],
+                    ..Default::default()
+                }),
+                UnixMicros(0),
+            )
+            .await?;
+        state(&session, id(1), OperationState::Preparing).await?;
+        gate.open(true);
+        state(&session, id(1), OperationState::Sent).await?;
+        let upload = f.server().take_received_upload().await.ok_or("no upload")?;
+        assert_eq!(upload.files[0].filename, "notes.pdf");
+        assert_eq!(
+            upload.files[0].sha256,
+            <[u8; 32]>::from(Sha256::digest(&original))
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn a_copying_heic_anonymized_where_supported_is_refused_once_copied() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let (session, channel) = signed_in(&f).await?;
+        let queue = session.outgoing();
+        let gate = Gate::new();
+        let heic = [b"\0\0\0\x18ftypheic".as_slice(), &[0; 64]].concat();
+        let pending = queue.begin_staging(gate.reader(heic))?;
+        let edit = AttachmentEdit {
+            anonymize: Anonymize::WhereSupported,
+            ..AttachmentEdit::default()
+        };
+        let attachment = OutgoingAttachment::from_pending("IMG_1.HEIC", pending).with_edit(edit);
+        queue
+            .enqueue(
+                channel,
+                id(1),
+                OperationKind::Message(OutgoingMessage {
+                    attachments: vec![attachment],
+                    ..Default::default()
+                }),
+                UnixMicros(0),
+            )
+            .await?;
+        gate.open(true);
+        let failed = state(&session, id(1), OperationState::Failed).await?;
+        assert_eq!(failed.failure, Some(OperationFailure::AttachmentRefused));
+        assert!(f.server().take_received_upload().await.is_none());
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()

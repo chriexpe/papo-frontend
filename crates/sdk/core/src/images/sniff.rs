@@ -11,8 +11,9 @@ pub(crate) enum Container {
     Webp,
 }
 
-/// Bytes `sniff` needs to decide.
-pub(crate) const SNIFF_BYTES: usize = 32;
+/// Bytes `sniff` needs to decide: enough for an `ftyp` box's major brand
+/// and its first compatible brands.
+pub(crate) const SNIFF_BYTES: usize = 64;
 
 /// Classifies the first bytes of a file.
 ///
@@ -47,30 +48,69 @@ fn refusal(head: &[u8]) -> ImageError {
     {
         return unsupported(UnsupportedFormat::Raw);
     }
-    if head.len() >= 12 && &head[4..8] == b"ftyp" {
-        return match &head[8..12] {
-            b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" | b"hevm" | b"hevs"
-            | b"mif1" | b"msf1" => unsupported(UnsupportedFormat::Heic),
-            b"crx " => unsupported(UnsupportedFormat::Raw),
-            b"avif" | b"avis" | b"jxl " => unsupported(UnsupportedFormat::Other),
-            _ => ImageError::NotAnImage,
-        };
+    if let Some(brands) = ftyp_brands(head) {
+        // A HEIF or AVIF photo may name its image brand only among the
+        // compatible brands; any image brand anywhere makes it an image.
+        let mut kind = None;
+        for brand in brands {
+            kind = kind.or(match brand {
+                b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" | b"hevm" | b"hevs"
+                | b"mif1" | b"msf1" => Some(UnsupportedFormat::Heic),
+                b"crx " => Some(UnsupportedFormat::Raw),
+                b"avif" | b"avis" | b"jxl " => Some(UnsupportedFormat::Other),
+                _ => None,
+            });
+        }
+        return kind.map_or(ImageError::NotAnImage, unsupported);
     }
-    let other_images: [&[u8]; 6] = [
-        b"BM",
+    let other_images: [&[u8]; 7] = [
         b"\0\0\x01\0",
         b"8BPS",
         b"\xFF\x0A",
         b"\0\0\0\x0CJXL ",
         b"qoif",
+        // JPEG 2000: the JP2 signature box, and a bare codestream.
+        b"\0\0\0\x0CjP  \r\n\x87\n",
+        b"\xFF\x4F\xFF\x51",
     ];
-    if other_images
-        .iter()
-        .any(|signature| head.starts_with(signature))
+    if is_bmp(head)
+        || other_images
+            .iter()
+            .any(|signature| head.starts_with(signature))
     {
         return unsupported(UnsupportedFormat::Other);
     }
     ImageError::NotAnImage
+}
+
+/// The brands of a leading ISO base media `ftyp` box (major, then the
+/// compatible ones within the box and `head`); none for another file.
+fn ftyp_brands(head: &[u8]) -> Option<impl Iterator<Item = &[u8; 4]>> {
+    if head.len() < 12 || &head[4..8] != b"ftyp" {
+        return None;
+    }
+    let declared = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
+    let end = usize::try_from(declared)
+        .unwrap_or(usize::MAX)
+        .min(head.len());
+    let major = head[8..12].as_chunks::<4>().0.iter();
+    let compatible = head
+        .get(16..end)
+        .unwrap_or_default()
+        .as_chunks::<4>()
+        .0
+        .iter();
+    Some(major.chain(compatible))
+}
+
+/// A Windows bitmap: "BM", zero reserved fields and a known DIB header
+/// size, so a text file that starts with "BM" is not one.
+fn is_bmp(head: &[u8]) -> bool {
+    if head.len() < 18 || !head.starts_with(b"BM") || head[6..10] != [0; 4] {
+        return false;
+    }
+    let dib = u32::from_le_bytes([head[14], head[15], head[16], head[17]]);
+    matches!(dib, 12 | 16 | 40 | 52 | 56 | 64 | 108 | 124)
 }
 
 #[cfg(test)]
@@ -105,6 +145,39 @@ mod tests {
         assert_eq!(mp4, Err(ImageError::NotAnImage));
         assert_eq!(sniff(b"%PDF-1.7"), Err(ImageError::NotAnImage));
         assert_eq!(sniff(b""), Err(ImageError::NotAnImage));
+    }
+
+    #[test]
+    fn an_image_brand_among_the_compatible_ones_makes_an_image() {
+        let heif = sniff(b"\0\0\0\x1cftypisom\0\0\0\0mp41mif1heic");
+        assert_eq!(heif, Err(ImageError::Unsupported(UnsupportedFormat::Heic)));
+        let avif = sniff(b"\0\0\0\x18ftypmp42\0\0\0\0avif");
+        assert_eq!(avif, Err(ImageError::Unsupported(UnsupportedFormat::Other)));
+        // A brand past the box's end belongs to the next box.
+        let video = sniff(b"\0\0\0\x14ftypisom\0\0\0\0mp41heic");
+        assert_eq!(video, Err(ImageError::NotAnImage));
+    }
+
+    #[test]
+    fn jpeg_2000_is_a_typed_refusal() {
+        let jp2 = sniff(b"\0\0\0\x0CjP  \r\n\x87\n\0\0\0\x14ftypjp2 ");
+        assert_eq!(jp2, Err(ImageError::Unsupported(UnsupportedFormat::Other)));
+        let j2k = sniff(b"\xFF\x4F\xFF\x51\0\x2F");
+        assert_eq!(j2k, Err(ImageError::Unsupported(UnsupportedFormat::Other)));
+    }
+
+    #[test]
+    fn a_bitmap_needs_its_header_and_text_starting_with_bm_is_not_one() {
+        let mut bmp = b"BM\x36\0\0\0\0\0\0\0\x36\0\0\0".to_vec();
+        bmp.extend_from_slice(&40_u32.to_le_bytes());
+        assert_eq!(
+            sniff(&bmp),
+            Err(ImageError::Unsupported(UnsupportedFormat::Other))
+        );
+        assert_eq!(
+            sniff(b"BMW invoice, March 2026\n"),
+            Err(ImageError::NotAnImage)
+        );
     }
 
     #[test]

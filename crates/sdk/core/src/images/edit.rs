@@ -22,9 +22,9 @@ pub struct CropRect {
 /// The default changes nothing: the bytes go as staged, byte for byte.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentEdit {
-    /// Send only what shows the picture (see the image path's keep-list) under a random name.
-    /// A file the SDK cannot clean is refused, never sent as it is.
-    pub anonymize: bool,
+    /// Whether to send only what shows the picture (see the image path's keep-list), under a
+    /// random name.
+    pub anonymize: Anonymize,
     /// Send under a random 15-character name (extension kept), whatever the file is. The bytes
     /// are not touched; anonymizing implies it.
     #[serde(default)]
@@ -35,20 +35,75 @@ pub struct AttachmentEdit {
     pub crop: Option<CropRect>,
 }
 
+/// Whether an attachment is anonymized, and what happens to a file the SDK cannot clean.
+///
+/// Read from a stored draft, `true` and `false` (the earlier boolean) are [`Self::Required`] and
+/// [`Self::Off`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub enum Anonymize {
+    /// The bytes go as staged.
+    #[default]
+    Off,
+    /// Cleaned; any file the SDK cannot clean is refused, never sent as it is.
+    Required,
+    /// Cleaned when the SDK can clean its kind of file, told by its magic bytes only. An image
+    /// it recognises but cannot clean (HEIC and other HEIF, AVIF, TIFF, camera RAW, JPEG 2000,
+    /// JPEG XL, BMP, ICO, PSD, QOI) or a damaged one is refused, as with [`Self::Required`]. Any
+    /// other file (video, audio, documents, text) goes unchanged under its own name, its
+    /// metadata included, until the SDK can clean its kind. This is what a "new attachments are
+    /// anonymized" default asks for, decided only at enqueue, so a file still copying needs no
+    /// inspection first.
+    WhereSupported,
+}
+
+impl Anonymize {
+    /// True unless [`Self::Off`].
+    #[must_use]
+    pub const fn is_on(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+impl<'de> Deserialize<'de> for Anonymize {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The current form, or the boolean drafts stored before [`Anonymize::WhereSupported`].
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Flag(bool),
+            Named(Named),
+        }
+        #[derive(Deserialize)]
+        enum Named {
+            Off,
+            Required,
+            WhereSupported,
+        }
+        Ok(match Stored::deserialize(deserializer)? {
+            Stored::Flag(false) | Stored::Named(Named::Off) => Self::Off,
+            Stored::Flag(true) | Stored::Named(Named::Required) => Self::Required,
+            Stored::Named(Named::WhereSupported) => Self::WhereSupported,
+        })
+    }
+}
+
 impl AttachmentEdit {
     /// True when the edit changes nothing.
     #[must_use]
     pub const fn is_identity(&self) -> bool {
-        !self.anonymize
+        !self.anonymize.is_on()
             && !self.random_name
             && self.quarter_turns.is_multiple_of(4)
             && self.crop.is_none()
     }
 
-    /// True when the staged bytes must be rewritten (anonymizing, a turn or a crop).
+    /// True when the staged bytes may be rewritten (anonymizing, a turn or a crop). With
+    /// [`Anonymize::WhereSupported`] and no pixel change, a file the SDK does not clean is left
+    /// as it is.
     #[must_use]
     pub const fn rewrites_bytes(&self) -> bool {
-        self.anonymize || self.changes_pixels()
+        self.anonymize.is_on() || self.changes_pixels()
     }
 
     /// True when pixels must change (turns or a crop), whatever anonymizing needs.
@@ -177,10 +232,51 @@ mod tests {
     #[test]
     fn anonymizing_alone_leaves_pixels_to_the_cleaner() {
         let edit = AttachmentEdit {
-            anonymize: true,
+            anonymize: Anonymize::Required,
             ..AttachmentEdit::default()
         };
         assert!(!edit.is_identity() && !edit.changes_pixels());
+    }
+
+    #[test]
+    fn anonymizing_where_supported_may_rewrite_but_changes_no_pixels() {
+        let edit = AttachmentEdit {
+            anonymize: Anonymize::WhereSupported,
+            ..AttachmentEdit::default()
+        };
+        assert!(edit.rewrites_bytes() && !edit.changes_pixels() && !edit.is_identity());
+    }
+
+    #[test]
+    fn a_stored_boolean_reads_as_off_or_required() {
+        let read = |json: &str| {
+            serde_json::from_str::<AttachmentEdit>(json)
+                .unwrap()
+                .anonymize
+        };
+        let edit = |flag: &str| format!(r#"{{"anonymize":{flag},"quarter_turns":0,"crop":null}}"#);
+        assert_eq!(read(&edit("false")), Anonymize::Off);
+        assert_eq!(read(&edit("true")), Anonymize::Required);
+        assert_eq!(
+            read(&edit(r#""WhereSupported""#)),
+            Anonymize::WhereSupported
+        );
+    }
+
+    #[test]
+    fn every_value_survives_a_round_trip() {
+        for anonymize in [
+            Anonymize::Off,
+            Anonymize::Required,
+            Anonymize::WhereSupported,
+        ] {
+            let edit = AttachmentEdit {
+                anonymize,
+                ..AttachmentEdit::default()
+            };
+            let json = serde_json::to_string(&edit).unwrap();
+            assert_eq!(serde_json::from_str::<AttachmentEdit>(&json).unwrap(), edit);
+        }
     }
 
     #[test]
