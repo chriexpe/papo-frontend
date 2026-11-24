@@ -19,8 +19,6 @@ use rune_fx::{Fx, FxFrame, FxLayer, FxOptions, FxRenderer, FxSlot, LensParams, R
 use crate::design::{GLASS_MARK, GlassData};
 use crate::shell::Shell;
 
-/// Blur, in points, of a fully frosted lens (rune-fx's `LENS_FROST_SIGMA`).
-const FULL_FROST_PT: f32 = 18.0;
 /// The veil of the surface's colour over the bent backdrop at full glass:
 /// never thinner, so text on a pill keeps a surface to read on.
 const VEIL_LEAST: f32 = 0.35;
@@ -37,16 +35,16 @@ const DEPTH_SHARE: f32 = 0.45;
 /// body that shows what is behind it, bent inwards at the rim. Every term
 /// starts from the solid surface at 0 and moves with `glassy`: the veil
 /// of the surface's colour thins, the rim widens and bends further,
-/// and the frost eases to clear. The lens's own light (the rim's lit line
+/// and the frost (Glass blur, in full at 0) eases to clear. The lens's own light (the rim's lit line
 /// and sheen) stays off: on an interface it reads as a raised button
 /// (Christian, 2026-11-23).
 fn lens(data: [f32; 4], shape: Shape) -> FxLayer {
     let (glassy, blur_pt, word) = GlassData::unpack(data);
     let tint: Rgb = rune_fx::rgb(word);
     let g = glassy.clamp(0.0, 1.0);
-    // How clear the body is: the frost and veil together hide what is
-    // behind until they are nearly gone, so they follow the square root
-    // and the slider's middle looks half way.
+    // How thin the veil is: it hides what is behind until it is nearly
+    // gone, so it follows the square root and the slider's middle looks
+    // half way. The frost eases linearly, so Glass blur still shows there.
     let clear = g.sqrt();
     let side = shape.rect.w.min(shape.rect.h);
     Fx::lens(LensParams {
@@ -55,7 +53,8 @@ fn lens(data: [f32; 4], shape: Shape) -> FxLayer {
         dispersion: 0.08 * g,
         magnification: 1.0 + 0.04 * g,
         presence: 1.0,
-        frost: (blur_pt / FULL_FROST_PT).clamp(0.0, 1.0) * (1.0 - clear),
+        frost: 1.0 - g,
+        frost_sigma: blur_pt.max(0.0),
         shadow: 0.0,
         rim: 0.0,
         tint,
