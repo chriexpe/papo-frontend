@@ -19,7 +19,6 @@ use rune::{Image, ImageCache};
 use crate::account_watch::{self, Accounts};
 use crate::composer::Composer;
 use crate::composer::prefs::WritingPrefs;
-use crate::design::MessageLayout;
 use crate::navigation::Navigation;
 use crate::reading_prefs::ReadingPrefs;
 use crate::reconnect_hints;
@@ -69,8 +68,22 @@ pub(crate) struct Shell {
     reorder: Reorder,
     /// The open timelines and the places of closed ones.
     tabs: Tabs,
-    /// How messages are laid out: Normal until the Appearance settings.
-    message_layout: MessageLayout,
+    /// The Appearance settings.
+    appearance: crate::appearance::AppearanceStore,
+    /// The settings panel, while open.
+    settings: Option<crate::settings::SettingsPanel>,
+    /// The grain's tiles, made when the window starts.
+    grain: Option<crate::grain::GrainTiles>,
+    /// The system's interface font family, for "Use the system font"; none
+    /// when the desktop names none.
+    system_font: Option<&'static str>,
+    /// How far the header and the foot floating over the conversation
+    /// reach into it, top and bottom, as last laid out: what the shown
+    /// timeline's rows count as hidden.
+    floating_insets_pt: [f32; 2],
+    /// The settings row whose change the Appearance writes carry, for its
+    /// danger line if one fails; none for a change no row made (Ctrl+=).
+    saving_row: Option<crate::settings::RowId>,
     /// The time zone and clock message times are read in.
     local_time: LocalTime,
     /// When the shown timeline's place is next saved, on the window's
@@ -189,7 +202,12 @@ impl Default for Shell {
             reorder_requests: RequestSlot::default(),
             reorder: Reorder::default(),
             tabs: Tabs::default(),
-            message_layout: MessageLayout::default(),
+            appearance: crate::appearance::AppearanceStore::default(),
+            settings: None,
+            grain: None,
+            system_font: None,
+            floating_insets_pt: [0.0, 0.0],
+            saving_row: None,
             local_time: LocalTime::system(),
             save_due_s: None,
             save_wake_s: None,
@@ -230,6 +248,7 @@ impl BridgeHost for Shell {
         sdk.watch(|client, updates| live_watch::run(client, updates, Shell::activity_posted));
         sdk.watch(|client, updates| direct_list::run(client, updates, Shell::direct_posted));
         sdk.run(reconnect_hints::run);
+        sdk.watch(crate::system_font::run);
         self.sdk = Some(sdk);
     }
 
@@ -248,12 +267,15 @@ impl Shell {
     /// decoder and reads this device's trusted domains and reading
     /// settings.
     pub(crate) fn setup(&mut self, waker: rune::Waker) {
-        self.images = Some(ImageCache::new(waker));
+        let images = ImageCache::new(waker);
+        self.grain = Some(crate::grain::GrainTiles::new(&images));
+        self.images = Some(images);
         self.content.load();
         self.prefs = ReadingPrefs::load();
         self.layout = crate::layout_prefs::LayoutPrefs::load();
         self.recent_jumps = crate::recent_jumps::RecentJumps::load();
         self.writing = WritingPrefs::load();
+        self.appearance = crate::appearance::AppearanceStore::load();
     }
 
     /// Takes the account watch's summary, and opens the screens it calls for.
@@ -293,11 +315,13 @@ impl Shell {
 mod accounts;
 mod activity;
 mod app_keys;
+pub(crate) mod appearance;
 mod composer;
 mod composer_input;
 mod content;
 pub(crate) mod deleting;
 pub(crate) mod direct;
+mod header;
 mod hover_bar;
 mod jump;
 mod jump_view;
@@ -324,6 +348,8 @@ mod search_list;
 mod search_open;
 mod search_panel;
 mod search_run;
+mod settings;
+mod settings_colours;
 mod sign_in_flow;
 #[cfg(test)]
 mod tests;
@@ -335,4 +361,5 @@ mod view;
 pub(crate) use new_message::{
     DIRECT_PILL_KEY, FIND_FIELD_KEY, NEW_MESSAGE_BUTTON_KEY, candidate_key,
 };
+pub(crate) use settings::SettingChoice;
 pub(crate) use view::view;

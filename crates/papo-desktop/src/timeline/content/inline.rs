@@ -16,8 +16,8 @@ use super::copy::spoken;
 use super::doc::{Mark, PAD, Pad, Run};
 use super::{Draw, Press};
 use crate::design::{
-    CHIP_PAD_PT, CHIP_RADIUS_PT, CODE_CHIP_OUTLINE_PT, LINK_UNDERLINE_ALPHA, Palette,
-    SPOILER_PAD_PT, TYPE_CODE, WEIGHT_MEDIUM, WEIGHT_SEMIBOLD,
+    CHIP_PAD, CHIP_RADIUS, CODE_CHIP_OUTLINE_PT, LINK_UNDERLINE_ALPHA, Look, SPOILER_PAD_PT,
+    TYPE_CODE, WEIGHT_MEDIUM, WEIGHT_SEMIBOLD,
 };
 use crate::strings;
 use crate::timeline::TimelineHost;
@@ -74,11 +74,11 @@ pub(super) fn text<S: TimelineHost>(
         .color(ink)
         .wrap_anywhere()
         .w_full()
-        .span_radius(CHIP_RADIUS_PT)
+        .span_radius(draw.look.radius(CHIP_RADIUS))
         .span_rings(marks.rings)
         .strikes(marks.strikes)
         .selectable(true)
-        .selection_color(draw.palette.text_selection);
+        .selection_color(draw.look.palette.text_selection);
     for range in uncopied {
         el = el.uncopied(range);
     }
@@ -136,7 +136,7 @@ pub(super) fn layout_spans(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Vec<S
 }
 
 fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
-    let palette = draw.palette;
+    let look = draw.look;
     let mut drawn = Drawn::default();
     // Inline code keeps its own weight in bold text, and a hidden spoiler
     // covers everything inside it, so both go after the rest: of
@@ -155,11 +155,11 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
                 drawn.strikes.push((range.start, range.end, None));
             }
             Mark::Code(range) => {
-                code.push(code_chip(range, run.is_hidden(range), palette, &mut drawn));
+                code.push(code_chip(range, run.is_hidden(range), look, &mut drawn));
             }
             Mark::Pad { range, pad_pt } => {
                 let pad_pt = match pad_pt {
-                    Pad::Chip => CHIP_PAD_PT,
+                    Pad::Chip => look.space(CHIP_PAD),
                     Pad::Spoiler => SPOILER_PAD_PT,
                 };
                 drawn
@@ -170,10 +170,10 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
             Mark::Link { range, url } if !run.is_hidden(range) => {
                 drawn.spans.push(
                     Span::new(range.start, range.end)
-                        .color(palette.link)
-                        .underline(palette.link.alpha(LINK_UNDERLINE_ALPHA)),
+                        .color(look.palette.link)
+                        .underline(look.palette.link.alpha(LINK_UNDERLINE_ALPHA)),
                 );
-                let whole = LinkPaint::new().underline(palette.link);
+                let whole = LinkPaint::new().underline(look.palette.link);
                 drawn.links.push(
                     Link::new(range.clone(), Press::Url(url.clone()).id())
                         .hover(whole)
@@ -190,7 +190,7 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
                 person,
             } => {
                 let hidden = run.is_hidden(range);
-                let span = mention_chip(range, *known, *bold, hidden, palette);
+                let span = mention_chip(range, *known, *bold, hidden, look);
                 drawn.spans.push(span);
                 // A known person's mention opens their card beside it.
                 if let (Some(person), false) = (person, hidden) {
@@ -209,7 +209,7 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
                 covers.push(
                     Span::new(range.start, range.end)
                         .color(Color::TRANSPARENT)
-                        .bg(palette.line_strong, SPOILER_PAD_PT),
+                        .bg(look.palette.line_strong, SPOILER_PAD_PT),
                 );
                 // One inside another hidden one takes no press until the
                 // outer is revealed: it cannot be seen.
@@ -217,12 +217,13 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
                     outer != *range && outer.start <= range.start && range.end <= outer.end
                 });
                 if !enclosed {
-                    drawn.links.push(spoiler_press(run, range, *index, palette));
+                    drawn.links.push(spoiler_press(run, range, *index, look));
                 }
             }
             Mark::Spoiler { range, .. } => {
                 drawn.spans.push(
-                    Span::new(range.start, range.end).bg(palette.surface_hover, SPOILER_PAD_PT),
+                    Span::new(range.start, range.end)
+                        .bg(look.palette.surface_hover, SPOILER_PAD_PT),
                 );
             }
         }
@@ -233,54 +234,48 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
 }
 
 /// Inline code: mono at `type.small`, on its outlined chip unless hidden.
-fn code_chip(range: &Range<usize>, hidden: bool, palette: &Palette, drawn: &mut Drawn) -> Span {
+fn code_chip(range: &Range<usize>, hidden: bool, look: &Look, drawn: &mut Drawn) -> Span {
     let span = Span::new(range.start, range.end)
         .mono()
-        .size(TYPE_CODE.size)
-        .weight(TYPE_CODE.weight);
+        .size(look.font(TYPE_CODE).size)
+        .weight(look.font(TYPE_CODE).weight);
     if hidden {
         return span;
     }
     drawn.rings.push((
         range.start,
         range.end,
-        palette.line_subtle,
+        look.palette.line_subtle,
         CODE_CHIP_OUTLINE_PT,
     ));
-    span.color(palette.text_primary)
-        .bg(palette.surface_code, CHIP_PAD_PT)
+    span.color(look.palette.text_primary)
+        .bg(look.palette.surface_code, look.space(CHIP_PAD))
 }
 
 /// A mention: weight 500 (600 in bold), on its chip unless hidden; a
 /// person the server does not know is muted.
-fn mention_chip(
-    range: &Range<usize>,
-    known: bool,
-    bold: bool,
-    hidden: bool,
-    palette: &Palette,
-) -> Span {
+fn mention_chip(range: &Range<usize>, known: bool, bold: bool, hidden: bool, look: &Look) -> Span {
     let weight = if bold { WEIGHT_SEMIBOLD } else { WEIGHT_MEDIUM };
     let span = Span::new(range.start, range.end).weight(weight);
     match (hidden, known) {
         (true, _) => span,
         (false, true) => span
-            .color(palette.link)
-            .bg(palette.accent_soft, CHIP_PAD_PT),
+            .color(look.palette.link)
+            .bg(look.palette.accent_soft, look.space(CHIP_PAD)),
         (false, false) => span
-            .color(palette.text_muted)
-            .bg(palette.surface_hover, CHIP_PAD_PT),
+            .color(look.palette.text_muted)
+            .bg(look.palette.surface_hover, look.space(CHIP_PAD)),
     }
 }
 
 /// What reveals a hidden spoiler: a press on its chip, pads included.
-fn spoiler_press(run: &Run, range: &Range<usize>, index: u32, palette: &Palette) -> Link {
+fn spoiler_press(run: &Run, range: &Range<usize>, index: u32, look: &Look) -> Link {
     let start = range.start.saturating_sub(PAD.len());
     let end = (range.end + PAD.len()).min(run.text.len());
     Link::new(start..end, Press::Spoiler(index).id())
         .role("button")
         .label(strings::spoiler_hidden())
-        .hover(LinkPaint::new().bg(palette.text_muted))
+        .hover(LinkPaint::new().bg(look.palette.text_muted))
 }
 
 /// The size that sets a [`PAD`] in `font` to `pad_pt` points, so the words

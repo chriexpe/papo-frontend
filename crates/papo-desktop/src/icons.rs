@@ -43,6 +43,31 @@ macro_rules! presence_mark {
 }
 
 line_icon!(
+    /// The Appearance page in the settings nav.
+    PALETTE,
+    "palette"
+);
+line_icon!(
+    /// Remove the selected background colour.
+    MINUS,
+    "minus"
+);
+line_icon!(
+    /// Arrange the background colours in harmony.
+    SHUFFLE,
+    "shuffle"
+);
+line_icon!(
+    /// A sub-page row's end; the next presets.
+    CHEVRON_RIGHT,
+    "chevron-right"
+);
+line_icon!(
+    /// The previous presets.
+    CHEVRON_LEFT,
+    "chevron-left"
+);
+line_icon!(
     /// Add reaction, the add chip.
     SMILE_PLUS,
     "smile-plus"

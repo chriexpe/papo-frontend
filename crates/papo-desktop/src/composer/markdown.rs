@@ -14,7 +14,7 @@ use papo_sdk_ui::message_content::{PreviewSpan, PreviewSpanKind};
 use rune::{Color, Span};
 
 use crate::design::{
-    CHIP_PAD_PT, LINK_UNDERLINE_ALPHA, Palette, SPOILER_PAD_PT, WEIGHT_MEDIUM, WEIGHT_SEMIBOLD,
+    CHIP_PAD, LINK_UNDERLINE_ALPHA, Look, SPOILER_PAD_PT, WEIGHT_MEDIUM, WEIGHT_SEMIBOLD,
 };
 
 /// What the field draws over its text.
@@ -28,7 +28,7 @@ pub(crate) struct FieldStyle {
 }
 
 /// The style of `source`, whose preview spans are `preview`.
-pub(crate) fn field_style(source: &str, preview: &[PreviewSpan], palette: &Palette) -> FieldStyle {
+pub(crate) fn field_style(source: &str, preview: &[PreviewSpan], look: &Look) -> FieldStyle {
     let mut style = FieldStyle::default();
     let mut markers = Vec::new();
     for span in preview {
@@ -51,29 +51,29 @@ pub(crate) fn field_style(source: &str, preview: &[PreviewSpan], palette: &Palet
             PreviewSpanKind::Code => style.spans.push(
                 content_span(&content)
                     .mono()
-                    .bg(palette.surface_code, SPOILER_PAD_PT),
+                    .bg(look.palette.surface_code, SPOILER_PAD_PT),
             ),
             PreviewSpanKind::CodeBlock => style.spans.push(content_span(&content).mono()),
             // Code's chip: the pill's own surface is too close to the
             // hover tone a sent spoiler shows (Christian, 2026-11-22).
             PreviewSpanKind::Spoiler => style
                 .spans
-                .push(content_span(&content).bg(palette.surface_code, SPOILER_PAD_PT)),
+                .push(content_span(&content).bg(look.palette.surface_code, SPOILER_PAD_PT)),
             PreviewSpanKind::Link => style.spans.push(
                 content_span(&content)
-                    .color(palette.link)
-                    .underline(palette.link.alpha(LINK_UNDERLINE_ALPHA)),
+                    .color(look.palette.link)
+                    .underline(look.palette.link.alpha(LINK_UNDERLINE_ALPHA)),
             ),
             PreviewSpanKind::BlockQuote => {
                 style
                     .spans
-                    .push(content_span(&content).color(palette.text_secondary));
+                    .push(content_span(&content).color(look.palette.text_secondary));
             }
             PreviewSpanKind::Mention(_) => style.spans.push(
                 content_span(&content)
                     .weight(WEIGHT_MEDIUM)
-                    .color(palette.link)
-                    .bg(palette.accent_soft, CHIP_PAD_PT),
+                    .color(look.palette.link)
+                    .bg(look.palette.accent_soft, look.space(CHIP_PAD)),
             ),
         }
         markers.extend(parts.markers);
@@ -82,7 +82,7 @@ pub(crate) fn field_style(source: &str, preview: &[PreviewSpan], palette: &Palet
         markers
             .into_iter()
             .filter(|marker| marker.start < marker.end)
-            .map(|marker| Span::new(marker.start, marker.end).color(palette.text_muted)),
+            .map(|marker| Span::new(marker.start, marker.end).color(look.palette.text_muted)),
     );
     style
 }

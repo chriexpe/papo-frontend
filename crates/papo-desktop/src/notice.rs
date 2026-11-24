@@ -12,8 +12,8 @@ use std::time::Duration;
 use rune::{Align, El, Side, Tx, icon, row, text};
 
 use crate::design::{
-    FOCUS_RING_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT,
-    SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_SMALL,
+    FOCUS_RING_PT, Look, PILL_ICON_PT, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, Surfaces,
+    TYPE_SMALL,
 };
 use crate::shell::Shell;
 use crate::strings;
@@ -97,40 +97,43 @@ impl Notice {
 
 /// The pill, one gap above the element keyed `above` (the composer's text
 /// pill), from its left edge.
-pub(crate) fn view(notice: &Notice, above: &str, palette: &Palette) -> El {
+pub(crate) fn view(notice: &Notice, above: &str, look: &Look) -> El {
     let close = row()
         .key("notice-close")
         .size(
-            NOTICE_HEIGHT_PT - SPACE_SM_PT,
-            NOTICE_HEIGHT_PT - SPACE_SM_PT,
+            NOTICE_HEIGHT_PT - look.space(SPACE_SM),
+            NOTICE_HEIGHT_PT - look.space(SPACE_SM),
         )
         .center()
-        .radius(RADIUS_CONTROL_PT)
+        // Concentric with the pill, whose edge is half a `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM) / 2.0,
+        ))
         .role("button")
         .label(strings::dismiss())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(Shell::close_notice)
-        .child(icon(&crate::icons::X, PILL_ICON_PT).color(palette.text_secondary));
+        .child(icon(&crate::icons::X, PILL_ICON_PT).color(look.palette.text_secondary));
     let pill = row()
         .key(NOTICE_KEY)
         .h(NOTICE_HEIGHT_PT)
-        .pl(SPACE_LG_PT)
-        .pr(SPACE_SM_PT / 2.0)
-        .gap(SPACE_SM_PT)
+        .pl(look.space(SPACE_LG))
+        .pr(look.space(SPACE_SM) / 2.0)
+        .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .radius(look.radius(RADIUS_PILL))
+        .pill_surface(look)
         .role("status")
         .live_region(rune::LiveRegion::Polite)
         .on_hover_change(|shell: &mut Shell, hovered, tx| shell.notice_hovered(hovered, tx))
-        .child(icon(&crate::icons::WARNING, PILL_ICON_PT).color(palette.danger))
+        .child(icon(&crate::icons::WARNING, PILL_ICON_PT).color(look.palette.danger))
         .child(
             text(notice.refusal.words())
-                .font(TYPE_SMALL)
-                .color(palette.text_primary),
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_primary),
         )
         .child(close);
-    pill.anchored(above, Side::Top, Align::Start, SPACE_MD_PT)
+    pill.anchored(above, Side::Top, Align::Start, look.space(SPACE_MD))
 }

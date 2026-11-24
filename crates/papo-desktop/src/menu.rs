@@ -15,9 +15,8 @@ use papo_sdk::{ServerId, Uuid};
 use rune::{Align, Cx, El, Icon, Side, col, el, icon, row, text};
 
 use crate::design::{
-    CONTEXT_MENU_WIDTH_PT, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT,
-    RADIUS_PILL_PT, ROW_ICON_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_CAPTION,
-    TYPE_HINT,
+    CONTEXT_MENU_WIDTH_PT, Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_PILL, ROW_ICON_PT,
+    SPACE_LG, SPACE_MD, SPACE_SM, Surfaces, TYPE_BODY, TYPE_CAPTION, TYPE_HINT,
 };
 use crate::shell::Shell;
 use crate::timeline::TimelineKey;
@@ -62,6 +61,8 @@ pub(crate) enum MenuAction {
     },
     /// The search scope: this channel, or the whole server.
     SearchScope { channel: bool },
+    /// A settings choice's value (`docs/design.md` §8: a menu under the row).
+    Setting(crate::shell::SettingChoice),
     /// Something a profile card does about person `user`, seen from
     /// timeline `key`.
     Person {
@@ -163,6 +164,8 @@ pub(crate) struct MenuItem {
     pub(crate) action: MenuAction,
     /// Destroys something: drawn in the danger colour.
     pub(crate) danger: bool,
+    /// One of a choice's values: whether it is the current one, ticked.
+    pub(crate) radio: Option<bool>,
 }
 
 impl MenuItem {
@@ -181,7 +184,14 @@ impl MenuItem {
             shortcut: None,
             action,
             danger,
+            radio: None,
         }
+    }
+
+    /// The item as one of a choice's values, ticked when `current`.
+    pub(crate) fn with_radio(mut self, current: bool) -> MenuItem {
+        self.radio = Some(current);
+        self
     }
 
     /// The item with `shape` before its label.
@@ -301,7 +311,7 @@ pub(crate) const PROFILE_CARD_WIDTH_PT: f32 = 300.0;
 /// Draws `menu` over everything, anchored by its placement: its entries,
 /// or `body` in their place (the reactions list). Escape and a click
 /// outside close it; Return or a click picks an item.
-pub(crate) fn view(menu: &OpenMenu, body: Option<El>, palette: &Palette, cx: &Cx<Shell>) -> El {
+pub(crate) fn view(menu: &OpenMenu, body: Option<El>, look: &Look, cx: &Cx<Shell>) -> El {
     let (anchor, side, align, width) = match &menu.placement {
         Placement::GrowFrom(key) => {
             let width = cx.layout_size(key).map_or(menu.width_pt, |[w, _]| w);
@@ -325,7 +335,7 @@ pub(crate) fn view(menu: &OpenMenu, body: Option<El>, palette: &Palette, cx: &Cx
         .entries
         .iter()
         .enumerate()
-        .map(|(index, entry)| line(entry, Some(index) == first, palette));
+        .map(|(index, entry)| line(entry, Some(index) == first, look));
     let (width, role) = match (&body, &menu.card) {
         (Some(_), Some(_)) => (PROFILE_CARD_WIDTH_PT, "dialog"),
         (Some(_), None) => (REACTIONS_WIDTH_PT, "dialog"),
@@ -338,15 +348,14 @@ pub(crate) fn view(menu: &OpenMenu, body: Option<El>, palette: &Palette, cx: &Cx
     col()
         .key(MENU_KEY)
         .w(width)
-        .padding(SPACE_SM_PT)
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .padding(look.space(SPACE_SM))
+        .radius(look.radius(RADIUS_PILL))
+        .pill_surface(look)
         .role(role)
         .focus_group()
         .modal(true, Shell::close_menu)
         .on_key(|shell: &mut Shell, event: &rune::KeyEvent, tx| shell.menu_escape(event, tx))
-        .anchored_fit(anchor, side, align, SPACE_SM_PT)
+        .anchored_fit(anchor, side, align, look.space(SPACE_SM))
         .children(content)
 }
 
@@ -366,42 +375,46 @@ pub(crate) fn pointer_point(menu: &OpenMenu) -> Option<El> {
     )
 }
 
-fn line(entry: &Entry, first: bool, palette: &Palette) -> El {
+fn line(entry: &Entry, first: bool, look: &Look) -> El {
     match entry {
-        Entry::Header(words) => el().w_full().px(SPACE_LG_PT).py(SPACE_MD_PT).child(
-            text(words.clone())
-                .font(TYPE_CAPTION)
-                .color(palette.text_muted),
-        ),
-        Entry::Strip(strip) => strip::view(strip, first, palette),
-        Entry::Item(item) => item_row(item, first, palette),
+        Entry::Header(words) => el()
+            .w_full()
+            .px(look.space(SPACE_LG))
+            .py(look.space(SPACE_MD))
+            .child(
+                text(words.clone())
+                    .font(look.font(TYPE_CAPTION))
+                    .color(look.palette.text_muted),
+            ),
+        Entry::Strip(strip) => strip::view(strip, first, look),
+        Entry::Item(item) => item_row(item, first, look),
         Entry::Divider => el()
             .w_full()
-            .my(SPACE_SM_PT)
+            .my(look.space(SPACE_SM))
             .h(PILL_OUTLINE_PT)
-            .fill(palette.line_subtle)
+            .fill(look.palette.line_subtle)
             .a11y_hidden(),
     }
 }
 
-pub(crate) fn item_row(item: &MenuItem, first: bool, palette: &Palette) -> El {
+pub(crate) fn item_row(item: &MenuItem, first: bool, look: &Look) -> El {
     let action = item.action.clone();
     let color = if item.danger {
-        palette.danger
+        look.palette.danger
     } else {
-        palette.text_primary
+        look.palette.text_primary
     };
     let mut words = col().grow(1.0).min_w(0.0).child(
         text(item.label.clone())
-            .font(TYPE_BODY)
+            .font(look.font(TYPE_BODY))
             .color(color)
             .max_lines(1),
     );
     if let Some(sub) = &item.sub {
         words = words.child(
             text(sub.clone())
-                .font(TYPE_CAPTION)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_CAPTION))
+                .color(look.palette.text_muted)
                 .max_lines(1),
         );
     }
@@ -413,28 +426,47 @@ pub(crate) fn item_row(item: &MenuItem, first: bool, palette: &Palette) -> El {
         .key(item.key.clone())
         .w_full()
         .min_h(MENU_ROW_HEIGHT_PT)
-        .px(SPACE_LG_PT)
-        .gap(SPACE_MD_PT)
+        .px(look.space(SPACE_LG))
+        .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
+        // Concentric with the menu, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("menuitem")
         .label(label)
         .focusable(true)
         .focus_selected(first)
         // One highlight for the pointer and the keyboard, as a menu has.
-        .focus_highlight(palette.surface_hover)
+        .focus_highlight(look.on_pill(look.palette.surface_hover))
         .on_press_tx(move |shell: &mut Shell, tx| shell.menu_picked(action.clone(), tx));
+    if let Some(current) = item.radio {
+        // The tick's column is kept on every value, so the names line up.
+        row = row
+            .role("menuitemradio")
+            .checked(current)
+            .child(if current {
+                icon(&crate::icons::CHECK, ROW_ICON_PT).color(look.palette.accent)
+            } else {
+                el().size(ROW_ICON_PT, ROW_ICON_PT)
+            });
+    }
     if let Some(MenuIcon(shape)) = item.icon {
         let tone = if item.danger {
-            palette.danger
+            look.palette.danger
         } else {
-            palette.text_secondary
+            look.palette.text_secondary
         };
         row = row.child(icon(shape, ROW_ICON_PT).color(tone));
     }
     row = row.child(words);
     if let Some(shortcut) = item.shortcut {
-        row = row.child(text(shortcut).font(TYPE_HINT).color(palette.text_muted));
+        row = row.child(
+            text(shortcut)
+                .font(look.font(TYPE_HINT))
+                .color(look.palette.text_muted),
+        );
     }
     row
 }

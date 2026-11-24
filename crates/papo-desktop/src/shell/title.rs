@@ -11,8 +11,8 @@ use rune::{El, icon, row, text};
 
 use super::Shell;
 use crate::design::{
-    AVATAR_TITLE, HEADER_PILL_HEIGHT_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette, RADIUS_PILL_PT,
-    SPACE_LG_PT, SPACE_SM_PT, TYPE_BODY_STRONG, TYPE_CAPTION,
+    AVATAR_TITLE, HEADER_PILL_HEIGHT, Look, PILL_ICON_PT, RADIUS_PILL, SPACE_LG, SPACE_SM,
+    Surfaces, TYPE_BODY_STRONG, TYPE_CAPTION,
 };
 use crate::icons::HASH;
 use crate::person_avatar::person_avatar;
@@ -81,25 +81,24 @@ impl Shell {
 
 /// The title pill: # and the channel's name, or the person's avatar, name
 /// and server.
-pub(super) fn pill(title: &Title<'_>, palette: &Palette) -> El {
+pub(super) fn pill(title: &Title<'_>, look: &Look) -> El {
     let pill = row()
         .key("title-pill")
-        .h(HEADER_PILL_HEIGHT_PT)
-        .px(SPACE_LG_PT)
-        .gap(SPACE_SM_PT)
+        .h(look.space(HEADER_PILL_HEIGHT))
+        .px(look.space(SPACE_LG))
+        .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .radius(look.radius(RADIUS_PILL))
+        .pill_surface(look)
         .role("heading");
     match title {
         Title::Channel(channel) => pill
             .label((*channel).to_owned())
-            .child(icon(&HASH, PILL_ICON_PT).color(palette.text_secondary))
+            .child(icon(&HASH, PILL_ICON_PT).color(look.palette.text_secondary))
             .child(
                 text((*channel).to_owned())
-                    .font(TYPE_BODY_STRONG)
-                    .color(palette.text_primary),
+                    .font(look.font(TYPE_BODY_STRONG))
+                    .color(look.palette.text_primary),
             ),
         Title::Direct {
             name,
@@ -115,19 +114,19 @@ pub(super) fn pill(title: &Title<'_>, palette: &Palette) -> El {
                     name,
                     AVATAR_TITLE,
                     *presence,
-                    palette.surface_pill,
-                    palette,
+                    look.palette.surface_pill,
+                    look,
                 ))
                 .child(
                     text(name.as_str())
-                        .font(TYPE_BODY_STRONG)
-                        .color(palette.text_primary)
+                        .font(look.font(TYPE_BODY_STRONG))
+                        .color(look.palette.text_primary)
                         .a11y_hidden(),
                 )
                 .child(
                     text(server.as_str())
-                        .font(TYPE_CAPTION)
-                        .color(palette.text_muted)
+                        .font(look.font(TYPE_CAPTION))
+                        .color(look.palette.text_muted)
                         .a11y_hidden(),
                 )
         }

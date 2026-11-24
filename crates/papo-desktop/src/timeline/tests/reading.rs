@@ -11,7 +11,7 @@ use rune::Runtime;
 use super::{
     FRAME_S, HOLD_PT, Host, SIZE_PT, assert_near, bottom, message, rect, runtime, until_idle,
 };
-use crate::design::{Density, MessageLayout};
+use crate::design::{Density, Look, MessageLayout, Scale, Theme};
 use crate::timeline::anchor::Anchor;
 use crate::timeline::rows::anchor_key;
 use crate::timeline::{Request, scroll_to};
@@ -82,6 +82,51 @@ fn the_message_being_read_keeps_its_place_when_the_density_changes() {
         let now_pt = rect(&rt, &anchor_key(id))[1] - rect(&rt, &viewport)[1];
         let moved = now_pt - offset_pt;
         assert!(moved.abs() < HOLD_PT, "{density:?} moved it {moved}");
+    }
+}
+
+#[test]
+fn the_message_being_read_keeps_its_place_when_text_size_or_spacing_changes() {
+    let mut rt = runtime(long_history(300), MessageLayout::default());
+    read_up(&mut rt, 1_500.0);
+    let viewport = format!("timeline-{}-{}", Uuid::nil(), Uuid::from_u128(7));
+    for (text_pt, spacing) in [
+        (16.0, 1.0),
+        (12.0, 1.0),
+        (14.0, 1.25),
+        (12.0, 0.8),
+        (14.0, 1.0),
+    ] {
+        let Anchor::Message { id, offset_pt } = rt.state.open.current_anchor() else {
+            panic!("reading, not following the newest");
+        };
+        // What the Appearance settings do: change it, keep the place.
+        rt.update(|host, tx| {
+            let anchor = host.open.current_anchor();
+            host.look = Look::scaled(
+                Theme::Graphite,
+                Scale {
+                    text_pt,
+                    spacing,
+                    roundness: 1.0,
+                },
+            );
+            scroll_to(anchor, tx);
+        });
+        let before_pt = rect(&rt, &anchor_key(id))[3];
+        until_idle(&mut rt);
+        let now_pt = rect(&rt, &anchor_key(id))[1] - rect(&rt, &viewport)[1];
+        let moved = now_pt - offset_pt;
+        assert!(
+            moved.abs() < HOLD_PT,
+            "{text_pt} pt ×{spacing} moved it {moved}"
+        );
+        // The row was drawn again at the new size, not kept from before.
+        let after_pt = rect(&rt, &anchor_key(id))[3];
+        assert!(
+            (after_pt - before_pt).abs() > 0.5,
+            "{text_pt} pt ×{spacing} left the row {before_pt} tall"
+        );
     }
 }
 

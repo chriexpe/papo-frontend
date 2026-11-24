@@ -1,7 +1,6 @@
-//! Draws the conversation's header and its pins panel (`docs/design.md`
-//! §3 and §10): the title pill on the left, the actions pill on the right
-//! (🔍 and 📌; members come with their slice); the pins panel takes the
-//! actions pill's place, its header row "Pinned messages" and
+//! Draws the conversation's pins panel (`docs/design.md` §10; the header
+//! it opens from is `header`'s): it takes the actions pill's place, its
+//! header row "Pinned messages" and
 //! the count with 📌 where it was, and the pins grow down, each a message
 //! on its own divided by hairlines, Unpin on hover or focus. Shrunk
 //! (`PanelPeek`), it keeps its header and one line for the opened pin.
@@ -11,12 +10,11 @@ use std::sync::Arc;
 use rune::{Cx, El, KeyEvent, ScrollSpec, col, el, icon, memo, row, text};
 
 use super::Shell;
-use super::pins::{PINS_BUTTON_KEY, PINS_PANEL_KEY, PinsPanel, pin_row_key};
-use super::title::Title;
+use super::pins::{PINS_PANEL_KEY, PinsPanel, pin_row_key};
 use crate::design::{
-    FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
-    RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, SPACE_XL_PT,
-    TYPE_BODY_STRONG, TYPE_SMALL, TYPE_TITLE,
+    FOCUS_RING_PT, HEADER_PILL_HEIGHT, Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT,
+    RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY_STRONG, TYPE_SMALL,
+    TYPE_TITLE,
 };
 use crate::strings;
 use crate::timeline::pinned::Pin;
@@ -31,106 +29,39 @@ const PANEL_HEIGHT_SHARE: f32 = 0.7;
 /// The empty panel's pin icon, in points.
 const EMPTY_ICON_PT: f32 = 32.0;
 
-/// The header row over the conversation: the title pill and the actions
-/// pill. None while no conversation shows.
-pub(super) fn header(shell: &Shell, title: &Title<'_>, palette: &Palette) -> Option<El> {
-    shell.tabs.shown()?;
-    let title_pill = super::title::pill(title, palette);
-    // An open panel takes the actions pill's place.
-    let panel_open = shell.shown_pins_panel().is_some() || shell.shown_search().is_some();
-    let actions = (!panel_open).then(|| actions_pill(false, dm_profile(shell, title), palette));
-    Some(
-        row()
-            .key("conversation-header")
-            .w_full()
-            .px(SPACE_LG_PT)
-            .pt(SPACE_LG_PT)
-            .center_y()
-            .justify_between()
-            .child(title_pill)
-            .children(actions),
-    )
-}
-
-/// In a DM, whether its profile pane shows: the person button is there.
-fn dm_profile(shell: &Shell, title: &Title<'_>) -> Option<bool> {
-    matches!(title, Title::Direct { .. }).then_some(shell.layout.dm_profile())
-}
-
-/// The actions pill: 🔍, 📌 (in the accent while its panel is open) and,
-/// in a DM, the person button.
-fn actions_pill(open: bool, profile: Option<bool>, palette: &Palette) -> El {
-    row()
-        .key("actions-pill")
-        .h(HEADER_PILL_HEIGHT_PT)
-        .px(SPACE_SM_PT)
-        .center_y()
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
-        .role("toolbar")
-        .label(strings::header_actions())
-        .child(super::search_panel::search_button(false, palette))
-        .child(pins_button(open, palette))
-        .children(profile.map(|shown| super::profile_pane::button(shown, palette)))
-}
-
-fn pins_button(open: bool, palette: &Palette) -> El {
-    let tone = if open {
-        palette.accent
-    } else {
-        palette.text_secondary
-    };
-    row()
-        .key(PINS_BUTTON_KEY)
-        .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
-        .center()
-        .radius(RADIUS_CONTROL_PT)
-        .role("button")
-        .label(strings::pins_title())
-        .help(strings::pins_title())
-        .help_keys([strings::shortcut_pins()])
-        .expanded(open)
-        .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
-        .hover(palette.surface_hover)
-        .on_press_tx(|shell: &mut Shell, tx| shell.pins_pressed(false, tx))
-        .child(icon(&crate::icons::PIN, PILL_ICON_PT).color(tone))
-}
-
 /// The open panel over the conversation's top-right, when it is open on
 /// the shown conversation.
 pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> {
     let state = shell.shown_pins_panel()?;
     let open = shell.tabs.shown()?;
-    let palette = style.palette;
+    let look = style.look;
     let [width_pt, height_pt] = cx
         .layout_size("conversation")
         .unwrap_or([PANEL_MAX_PT, 600.0]);
-    let width = PANEL_MAX_PT.min(width_pt - 2.0 * SPACE_LG_PT);
+    let width = PANEL_MAX_PT.min(width_pt - 2.0 * look.space(SPACE_LG));
     let count = open.pins.list().map(<[_]>::len);
     let head = row()
         .w_full()
-        .h(HEADER_PILL_HEIGHT_PT)
-        .pl(SPACE_LG_PT)
-        .pr(SPACE_SM_PT)
-        .gap(SPACE_SM_PT)
+        .h(look.space(HEADER_PILL_HEIGHT))
+        .pl(look.space(SPACE_LG))
+        .pr(look.space(SPACE_SM))
+        .gap(look.space(SPACE_SM))
         .center_y()
         .child(
             text(strings::pins_title())
-                .font(TYPE_TITLE)
-                .color(palette.text_primary)
+                .font(look.font(TYPE_TITLE))
+                .color(look.palette.text_primary)
                 .role("heading"),
         )
         .children(count.map(|count| {
             text(count.to_string())
-                .font(TYPE_SMALL)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted)
         }))
         .child(el().grow(1.0))
-        .child(pins_button(true, &palette));
+        .child(super::header::pins_button(true, &look));
     let body = if state.peek {
-        peek_line(open, &state, &palette)
+        peek_line(open, &state, &look)
     } else {
         Some(list(
             shell,
@@ -144,12 +75,16 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
         col()
             .key(PINS_PANEL_KEY)
             .w(width)
-            .radius(RADIUS_PILL_PT)
-            .fill(palette.surface_pill)
-            .border(PILL_OUTLINE_PT, palette.line_pill)
+            .radius(look.radius(RADIUS_PILL))
+            .pill_surface(&look)
             .role("dialog")
             .label(strings::pins_title())
-            .pin(None, Some(SPACE_LG_PT), Some(SPACE_LG_PT), None)
+            .pin(
+                None,
+                Some(look.space(SPACE_LG)),
+                Some(look.space(SPACE_LG)),
+                None,
+            )
             .on_key(|shell: &mut Shell, event: &KeyEvent, tx| {
                 if event.key == rune::Key::Escape {
                     shell.close_pins(tx);
@@ -184,7 +119,7 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
 }
 
 /// The opened pin in one line, on `highlight.selected`.
-fn peek_line(open: &OpenTimeline, state: &PinsPanel, palette: &Palette) -> Option<El> {
+fn peek_line(open: &OpenTimeline, state: &PinsPanel, look: &Look) -> Option<El> {
     let id = state.opened?;
     let pin = open.pins.get(id)?;
     let original = papo_sdk_ui::ReplyOriginal::Held {
@@ -192,7 +127,7 @@ fn peek_line(open: &OpenTimeline, state: &PinsPanel, palette: &Palette) -> Optio
         message: Arc::clone(&pin.message),
         content: Arc::clone(&pin.content),
     };
-    peek_row(&original, open, palette)
+    peek_row(&original, open, look)
 }
 
 /// A shrunk panel's one line for the message opened from it (a pin, a
@@ -201,35 +136,45 @@ fn peek_line(open: &OpenTimeline, state: &PinsPanel, palette: &Palette) -> Optio
 pub(super) fn peek_row(
     original: &papo_sdk_ui::ReplyOriginal,
     open: &OpenTimeline,
-    palette: &Palette,
+    look: &Look,
 ) -> Option<El> {
     let OriginalText::Message { name, snippet, .. } = original_text(original, open) else {
         return None;
     };
     let line = row()
         .w_full()
-        .px(SPACE_LG_PT)
-        .py(SPACE_MD_PT)
-        .gap(SPACE_SM_PT)
+        .px(look.space(SPACE_LG))
+        .py(look.space(SPACE_MD))
+        .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
-        .fill(palette.surface_selected)
+        // Concentric with the panel, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
+        .fill(look.on_pill(look.palette.surface_selected))
         .child(
             text(name)
-                .font(TYPE_BODY_STRONG)
-                .color(palette.text_primary)
+                .font(look.font(TYPE_BODY_STRONG))
+                .color(look.palette.text_primary)
                 .max_lines(1),
         )
         .child(
             text(snippet)
-                .font(TYPE_SMALL)
-                .color(palette.text_secondary)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_secondary)
                 .grow(1.0)
                 .min_w(0.0)
                 .truncate(),
         );
     // Inset by padding, so the highlight stays inside the panel's corners.
-    Some(col().w_full().px(SPACE_SM_PT).pb(SPACE_SM_PT).child(line))
+    Some(
+        col()
+            .w_full()
+            .px(look.space(SPACE_SM))
+            .pb(look.space(SPACE_SM))
+            .child(line),
+    )
 }
 
 /// The pins, newest first; the empty state; a failure; or a wait while
@@ -241,33 +186,37 @@ fn list(
     style: &Style,
     max_height_pt: f32,
 ) -> El {
-    let palette = style.palette;
+    let look = style.look;
     let Some(pins) = open.pins.list() else {
         if open.pins.failed {
-            return el().w_full().px(SPACE_LG_PT).pb(SPACE_MD_PT).child(
-                text(strings::pins_failed())
-                    .font(TYPE_SMALL)
-                    .color(palette.danger)
-                    .role("alert"),
-            );
+            return el()
+                .w_full()
+                .px(look.space(SPACE_LG))
+                .pb(look.space(SPACE_MD))
+                .child(
+                    text(strings::pins_failed())
+                        .font(look.font(TYPE_SMALL))
+                        .color(look.palette.danger)
+                        .role("alert"),
+                );
         }
         return el()
             .w_full()
-            .h(HEADER_PILL_HEIGHT_PT * 2.0)
+            .h(look.space(HEADER_PILL_HEIGHT) * 2.0)
             .busy(true)
             .label(strings::pins_loading());
     };
     if pins.is_empty() {
         return col()
             .w_full()
-            .py(SPACE_XL_PT)
-            .gap(SPACE_MD_PT)
+            .py(look.space(SPACE_XL))
+            .gap(look.space(SPACE_MD))
             .center()
-            .child(icon(&crate::icons::PIN, EMPTY_ICON_PT).color(palette.text_muted))
+            .child(icon(&crate::icons::PIN, EMPTY_ICON_PT).color(look.palette.text_muted))
             .child(
                 text(strings::pins_empty())
-                    .font(TYPE_SMALL)
-                    .color(palette.text_secondary),
+                    .font(look.font(TYPE_SMALL))
+                    .color(look.palette.text_secondary),
             );
     }
     let key = open.key;
@@ -277,7 +226,7 @@ fn list(
             rows.push(
                 el().w_full()
                     .h(PILL_OUTLINE_PT)
-                    .fill(palette.line_subtle)
+                    .fill(look.palette.line_subtle)
                     .a11y_hidden(),
             );
         }
@@ -293,8 +242,8 @@ fn list(
         })
         // Inset, so each pin's rounded highlight sits inside the panel's
         // corners, as a menu's rows do.
-        .px(SPACE_SM_PT)
-        .pb(SPACE_SM_PT)
+        .px(look.space(SPACE_SM))
+        .pb(look.space(SPACE_SM))
         .role("list")
         .focus_group()
         .children(rows)
@@ -305,11 +254,11 @@ fn list(
 fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &Style) -> El {
     let key = open.key;
     let id = pin.id;
-    let palette = style.palette;
+    let look = style.look;
     // Everything the drawn message reads: its payload and parse, the
     // names it shows, the day its time is read against, the density.
     let version = (
-        style.theme,
+        style.look,
         style.layout,
         style.today,
         Arc::as_ptr(&pin.message) as usize,
@@ -321,17 +270,19 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
         unpin,
         open.revealed(id),
     );
+    // Concentric with the panel, whose edge is one `space.sm` out.
+    let row_radius_pt = Look::nested_radius(look.radius(RADIUS_PILL), look.space(SPACE_SM));
     memo(format!("pin-{id}"), version, || {
         let shown = standalone_message::<Shell>(open, id, &pin.message, &pin.content, style);
         let mut line = col()
             .key(pin_row_key(id))
             .w_full()
-            .padding(SPACE_LG_PT)
-            .radius(RADIUS_CONTROL_PT)
+            .padding(look.space(SPACE_LG))
+            .radius(row_radius_pt)
             .role("listitem")
             .label(strings::pins_jump())
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
             .hover_group()
             .on_press_tx(move |shell: &mut Shell, tx| shell.open_pin(key, id, false, tx))
             .on_key(move |shell: &mut Shell, event: &KeyEvent, tx| {
@@ -343,9 +294,9 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
             })
             .child(shown);
         line = if marked {
-            line.fill(palette.surface_selected)
+            line.fill(look.on_pill(look.palette.surface_selected))
         } else {
-            line.hover(palette.surface_hover)
+            line.hover(look.on_pill(look.palette.surface_hover))
         };
         if unpin {
             line = line.child(
@@ -353,18 +304,25 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
                     .key(format!("unpin-{id}"))
                     .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
                     .center()
-                    .radius(RADIUS_CONTROL_PT)
-                    .fill(palette.surface_pill)
+                    // Concentric with its row, one `space.sm` in.
+                    .radius(Look::nested_radius(row_radius_pt, look.space(SPACE_SM)))
+                    .fill(look.palette.surface_pill)
                     .role("button")
                     .label(strings::pins_unpin())
                     .help(strings::pins_unpin())
                     .focusable(true)
-                    .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+                    .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
                     .group_opacity(0.0, 1.0)
-                    .pin(None, Some(SPACE_SM_PT), Some(SPACE_SM_PT), None)
+                    .pin(
+                        None,
+                        Some(look.space(SPACE_SM)),
+                        Some(look.space(SPACE_SM)),
+                        None,
+                    )
                     .on_press(move |shell: &mut Shell| shell.unpin_from_panel(key, id))
                     .child(
-                        icon(&crate::icons::PIN_OFF, PILL_ICON_PT).color(palette.text_secondary),
+                        icon(&crate::icons::PIN_OFF, PILL_ICON_PT)
+                            .color(look.palette.text_secondary),
                     ),
             );
         }

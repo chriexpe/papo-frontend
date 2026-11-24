@@ -27,6 +27,8 @@ mod pins;
 mod profile_card;
 mod replying;
 mod search;
+mod settings;
+mod settings_colours;
 mod timeline;
 mod typing;
 mod writing;

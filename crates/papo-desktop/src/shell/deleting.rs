@@ -170,7 +170,7 @@ pub(super) fn delete_confirm(shell: &Shell, style: &Style) -> Option<El> {
         _ => strings::delete_title_own().to_owned(),
     };
     let note = (as_who == DeleteAs::Moderator)
-        .then(|| confirm::note(strings::delete_audit(), &style.palette));
+        .then(|| confirm::note(strings::delete_audit(), &style.look));
     let question = Question {
         key: DELETE_KEY,
         title: &title,
@@ -187,6 +187,6 @@ pub(super) fn delete_confirm(shell: &Shell, style: &Style) -> Option<El> {
         question,
         Shell::cancel_delete,
         Shell::confirm_delete,
-        &style.palette,
+        &style.look,
     ))
 }

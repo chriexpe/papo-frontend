@@ -1,19 +1,28 @@
-//! `docs/design.md` §4's one rule for a colour that must stay readable: keep
-//! its hue and chroma (lowered only where sRGB cannot hold them) and move
-//! its lightness until its contrast floors hold. Highlights (a row's
-//! background, held against the text on it) and role colours (a name, held
-//! against the surfaces it sits on) are made by it.
+//! Fitting a colour to its contrast floors (`docs/design.md` §4). The
+//! design's values are targets; with any accent and background colour, a
+//! colour that would break a floor gives way as little as it must, never
+//! more:
 //!
-//! Owns the rule and its two uses; the tokens and the contrast measure are
+//! - a background that carries meaning (a highlight, the selected row, a
+//!   tile), and a colour drawn on surfaces (a link, a role-coloured name),
+//!   keep their hue and chroma and move their lightness until the floors
+//!   hold;
+//! - a tinted neutral surface keeps its lightness, so the steps between
+//!   surfaces stay as authored, and loses tint until the text on it holds.
+//!
+//! Owns the rules and their uses; the tokens and the contrast measure are
 //! `colour`'s.
 
 use rune::{Color, oklch};
 
 use super::Palette;
-use super::colour::{Theme, contrast};
+use super::colour::contrast;
+use super::theme::Theme;
 
 /// How far the lightness moves per step while it looks for the floors.
 const LIGHTNESS_STEP: f32 = 0.002;
+/// How much chroma a tinted surface gives up per step.
+const CHROMA_STEP: f32 = 0.001;
 /// The contrast a role-coloured name keeps on `surface.sidebar` and
 /// `surface.hover`.
 #[cfg_attr(
@@ -33,6 +42,78 @@ pub(super) struct Text {
     pub(super) link: Color,
 }
 
+impl Text {
+    /// Whether every text floor holds on `background`: `text.primary`
+    /// 13:1, `text.secondary` 7:1, `text.muted` 4.5:1. Links are fitted to
+    /// the surfaces afterwards (`link`).
+    pub(super) fn reads_on(&self, background: Color) -> bool {
+        contrast(self.primary, background) >= 13.0
+            && contrast(self.secondary, background) >= 7.0
+            && contrast(self.muted, background) >= 4.5
+    }
+}
+
+/// A neutral surface at OKLCH `lightness` tinted `chroma` at `hue_degrees`,
+/// with as much of the tint as keeps `text` readable on it. At no tint it
+/// is the authored grey, which holds by the untinted floors.
+pub(super) fn tinted_surface(lightness: f32, chroma: f32, hue_degrees: f32, text: &Text) -> Color {
+    let mut chroma = chroma;
+    loop {
+        let surface = oklch(lightness, chroma, hue_degrees);
+        if chroma <= 0.0 || text.reads_on(surface) {
+            return surface;
+        }
+        chroma = (chroma - CHROMA_STEP).max(0.0);
+    }
+}
+
+/// `background` (a mix the design gives as a share, such as the selected
+/// row) as authored when `text` reads on it, else with its lightness moved
+/// away from the text until it does; `dark` says which way that is.
+pub(super) fn readable_background(background: Color, dark: bool, text: &Text) -> Color {
+    let (lightness, chroma, hue_degrees) = lch(background);
+    let step = if dark {
+        -LIGHTNESS_STEP
+    } else {
+        LIGHTNESS_STEP
+    };
+    reach_floor(lightness, chroma, hue_degrees, step, |candidate| {
+        text.reads_on(candidate)
+    })
+}
+
+/// A link at `lightness`, `chroma` and `hue_degrees` as authored when it
+/// keeps 4.5:1 on every one of `surfaces`, else with its lightness moved
+/// away from them (lighter on dark themes) until it does.
+pub(super) fn link(
+    lightness: f32,
+    chroma: f32,
+    hue_degrees: f32,
+    dark: bool,
+    surfaces: &[Color],
+) -> Color {
+    let step = if dark {
+        LIGHTNESS_STEP
+    } else {
+        -LIGHTNESS_STEP
+    };
+    reach_floor(lightness, chroma, hue_degrees, step, |candidate| {
+        surfaces
+            .iter()
+            .all(|surface| contrast(candidate, *surface) >= 4.5)
+    })
+}
+
+/// `colour`'s OKLCH lightness, chroma and hue in degrees.
+fn lch(colour: Color) -> (f32, f32, f32) {
+    let [lightness, a, b, _] = colour.to_oklab();
+    (
+        lightness,
+        a.hypot(b),
+        b.atan2(a).to_degrees().rem_euclid(360.0),
+    )
+}
+
 /// A highlight at `hue_degrees` (§4, Highlights): from the theme's
 /// background lightness and fixed chroma, the lightness moves away from the
 /// text until `text.primary` keeps 13:1, `text.secondary` 7:1, and
@@ -46,10 +127,7 @@ pub(super) fn highlight(theme: Theme, hue_degrees: f32, text: &Text) -> Color {
         LIGHTNESS_STEP
     };
     reach_floor(start, chroma, hue_degrees, step, |background| {
-        contrast(text.primary, background) >= 13.0
-            && contrast(text.secondary, background) >= 7.0
-            && contrast(text.muted, background) >= 4.5
-            && contrast(text.link, background) >= 4.5
+        text.reads_on(background) && contrast(text.link, background) >= 4.5
     })
 }
 
@@ -66,9 +144,7 @@ pub(super) fn highlight(theme: Theme, hue_degrees: f32, text: &Text) -> Color {
     )
 )]
 pub(crate) fn role_name(role: Color, palette: &Palette) -> Color {
-    let [lightness, a, b, _] = role.to_oklab();
-    let chroma = a.hypot(b);
-    let hue_degrees = b.atan2(a).to_degrees().rem_euclid(360.0);
+    let (lightness, chroma, hue_degrees) = lch(role);
     let text_is_lighter =
         palette.text_primary.to_oklab()[0] > palette.surface_sidebar.to_oklab()[0];
     let step = if text_is_lighter {

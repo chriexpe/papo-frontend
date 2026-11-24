@@ -280,3 +280,111 @@ fn an_opened_pin_that_goes_is_forgotten() {
     let panel = rt.state.shown_pins_panel().unwrap();
     assert_eq!((panel.opened, panel.peek), (None, false));
 }
+
+/// Message `n`'s hover bar's opacity, once its fade is done.
+fn bar_opacity(rt: &mut Runtime<Shell>, n: u128) -> Option<f32> {
+    for _ in 0..30 {
+        rt.frame(FRAME_S);
+    }
+    let row = format!("/{}/", message_key(message_id(n)));
+    rt.elements()
+        .into_iter()
+        .find(|element| element.path.contains(&row) && element.path.ends_with("/bar"))
+        .map(|element| element.opacity)
+}
+
+#[test]
+fn a_message_under_the_panel_does_not_see_the_pointer_on_the_panel() {
+    let mut rt = conversation("");
+    pin(&mut rt, &[3, 1]);
+    ctrl_p(&mut rt);
+    let panel = rt
+        .elements()
+        .into_iter()
+        .find(|element| element.key.as_deref() == Some(super::super::pins::PINS_PANEL_KEY))
+        .expect("the panel")
+        .rect;
+    let row_at = |rt: &Runtime<Shell>, y: f32| {
+        (1..=5u128).find(|n| {
+            let key = message_key(message_id(*n));
+            rt.elements().into_iter().any(|element| {
+                let [_, top, _, height] = element.rect;
+                element.key.as_deref() == Some(key.as_str()) && y >= top && y < top + height
+            })
+        })
+    };
+    // The header, the padding and the middle: none lets a row under it hover.
+    for (x, y) in [
+        (panel[0] + 40.0, panel[1] + 14.0),
+        (panel[0] + 3.0, panel[1] + panel[3] / 2.0),
+        (panel[0] + panel[2] / 2.0, panel[1] + panel[3] / 2.0),
+    ] {
+        let Some(row) = row_at(&rt, y) else {
+            continue;
+        };
+        rt.pointer_move(x, y);
+        assert_eq!(
+            bar_opacity(&mut rt, row),
+            Some(0.0),
+            "the panel covers message {row} at ({x}, {y})"
+        );
+        // Off the panel, over the same row, the bar shows.
+        rt.pointer_move(panel[0] - 40.0, y);
+        assert_eq!(bar_opacity(&mut rt, row), Some(1.0));
+    }
+}
+
+#[test]
+fn a_message_under_a_floating_pill_does_not_see_the_pointer_on_it() {
+    let mut rt = conversation("");
+    // Enough messages that rows sit under the header and the composer.
+    rt.update(|shell, _tx| {
+        let open = shell.tabs.shown_mut().unwrap();
+        let items = (1..=40)
+            .map(|n| {
+                super::replying::item(n, super::replying::lia(), &format!("message {n}"), None)
+            })
+            .collect();
+        let key = open.key;
+        let resources = open.resources.clone();
+        *open = crate::timeline::OpenTimeline::loaded(key, items);
+        open.resources = resources;
+    });
+    for _ in 0..10 {
+        rt.frame(FRAME_S);
+    }
+    let mut checked = 0;
+    for key in [
+        "title-pill",
+        "actions-pill",
+        crate::composer::COMPOSER_PILL_KEY,
+    ] {
+        let Some(pill) = rt
+            .elements()
+            .into_iter()
+            .find(|element| element.key.as_deref() == Some(key))
+            .map(|element| element.rect)
+        else {
+            panic!("no {key}");
+        };
+        let (x, y) = (pill[0] + 6.0, pill[1] + pill[3] / 2.0);
+        let row = (1..=40u128).find(|n| {
+            let row_key = message_key(message_id(*n));
+            rt.elements().into_iter().any(|element| {
+                let [_, top, _, height] = element.rect;
+                element.key.as_deref() == Some(row_key.as_str()) && y >= top && y < top + height
+            })
+        });
+        let Some(row) = row else {
+            continue;
+        };
+        rt.pointer_move(x, y);
+        assert_eq!(
+            bar_opacity(&mut rt, row),
+            Some(0.0),
+            "{key} covers message {row}"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 2, "rows sit under the pills: {checked} checked");
+}

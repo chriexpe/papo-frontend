@@ -3,18 +3,21 @@
 //! design project's "Onboarding and Sign In" page). Each is a design value in
 //! points; views take them from here, never write their own.
 
-use rune::TextStyle;
+use super::{Font, Radius, Space};
 
 /// The server rail's width, in points.
 pub(crate) const RAIL_WIDTH_PT: f32 = 60.0;
+/// From one rail tile to the next, in points. Fixed like the rail's
+/// width, so a dragged tile's steps stay whole tiles.
+pub(crate) const RAIL_GAP_PT: f32 = 8.0;
 /// A server's tile in the rail, in points square.
 pub(crate) const RAIL_TILE_PT: f32 = 40.0;
 /// `radius.icon`: a rail tile's corner radius, in points.
-pub(crate) const RADIUS_ICON_PT: f32 = 12.0;
+pub(crate) const RADIUS_ICON: Radius = Radius(12.0);
 /// The bar beside the selected server's tile: its width and height, in points.
 pub(crate) const RAIL_INDICATOR_PT: (f32, f32) = (4.0, 24.0);
 /// `radius.indicator`: the selection bar's corner radius, in points.
-pub(crate) const RADIUS_INDICATOR_PT: f32 = 3.0;
+pub(crate) const RADIUS_INDICATOR: Radius = Radius(3.0);
 /// The outline of the rail's + tile, dashed, in points.
 pub(crate) const ADD_TILE_OUTLINE_PT: f32 = 1.0;
 /// The + tile's dashes and the gaps between them, in points.
@@ -51,7 +54,7 @@ pub(crate) const PILL_ICON_PT: f32 = 18.0;
 pub(crate) const PILL_AVATAR_PT: f32 = 24.0;
 /// The server and account pills' height (`docs/design.md` §8: one height for
 /// both, so what grows from them sits one gap away).
-pub(crate) const PANE_PILL_HEIGHT_PT: f32 = 48.0;
+pub(crate) const PANE_PILL_HEIGHT: Space = Space(48.0);
 /// A pill's icon buttons (⇄, ⚙), square.
 pub(crate) const PILL_BUTTON_PT: f32 = 28.0;
 /// How far ⇄'s unread marker sits out past its top-right corner.
@@ -73,7 +76,7 @@ pub(crate) const FORM_WIDTH_PT: f32 = 340.0;
 /// A form field's and a primary button's height, in points.
 pub(crate) const FIELD_HEIGHT_PT: f32 = 40.0;
 /// A form field's and a primary button's corner radius, in points.
-pub(crate) const RADIUS_FIELD_PT: f32 = 10.0;
+pub(crate) const RADIUS_FIELD: Radius = Radius(10.0);
 /// The height of a button inside a field (Show, Hide), in points.
 pub(crate) const FIELD_BUTTON_HEIGHT_PT: f32 = 28.0;
 /// The width of a field's outline, in points.
@@ -85,7 +88,7 @@ pub(crate) const BUTTON_DISABLED_OPACITY: f32 = 0.45;
 /// The server's icon above the account steps, in points square.
 pub(crate) const SERVER_ICON_PT: f32 = 56.0;
 /// The server icon's corner radius, in points.
-pub(crate) const RADIUS_SERVER_ICON_PT: f32 = 16.0;
+pub(crate) const RADIUS_SERVER_ICON: Radius = Radius(16.0);
 /// A busy button's spinner, in points square.
 pub(crate) const SPINNER_PT: f32 = 14.0;
 /// The time a busy button's spinner takes to turn once, in seconds.
@@ -95,7 +98,7 @@ pub(crate) const POPUP_SIZE_PT: (f32, f32) = (460.0, 580.0);
 /// The popup's padding, in points.
 pub(crate) const POPUP_PADDING_PT: f32 = 32.0;
 /// The popup's corner radius, in points.
-pub(crate) const RADIUS_POPUP_PT: f32 = 16.0;
+pub(crate) const RADIUS_POPUP: Radius = Radius(16.0);
 /// The popup's close button, in points square.
 pub(crate) const POPUP_CLOSE_PT: f32 = 32.0;
 /// The popup's close button's inset from the popup's corner, in points.
@@ -108,14 +111,14 @@ pub(crate) const CROSS_PT: f32 = 16.0;
 pub(crate) const FOCUS_RING_PT: (f32, f32) = (2.0, 2.0);
 /// `radius.avatar`: a message avatar's corner radius (a rounded square), in
 /// points.
-pub(crate) const RADIUS_AVATAR_PT: f32 = 11.0;
+pub(crate) const RADIUS_AVATAR: Radius = Radius(11.0);
 /// The timeline's padding around its rows, in points (the mock's 12 px
 /// sides).
-pub(crate) const TIMELINE_INSET_PT: f32 = 12.0;
+pub(crate) const TIMELINE_INSET: Space = Space(12.0);
 /// A date separator's hairlines, in points thick.
 pub(crate) const DATE_RULE_PT: f32 = 1.0;
 /// From a date separator's hairlines to its label, in points.
-pub(crate) const DATE_RULE_GAP_PT: f32 = 12.0;
+pub(crate) const DATE_RULE_GAP: Space = Space(12.0);
 /// A skeleton row's text bars: their height and corner radius, in points.
 pub(crate) const SKELETON_BAR_PT: (f32, f32) = (10.0, 5.0);
 /// The widths of a skeleton row's name bar and text bar, as fractions of its
@@ -129,7 +132,7 @@ pub(crate) const SKELETON_WIDTHS: [(f32, f32); 3] = [(0.18, 0.62), (0.14, 0.45),
 pub(crate) struct AvatarSize {
     pub(crate) side_pt: f32,
     /// `radius.avatar` (11 at the timeline's 34) scaled to this side.
-    pub(crate) radius_pt: f32,
+    pub(crate) radius: Radius,
     /// The badge's disc, in the surface's colour.
     pub(crate) ring_pt: f32,
     /// The mark inside the disc.
@@ -137,13 +140,13 @@ pub(crate) struct AvatarSize {
     /// How far the disc reaches past the avatar's right and bottom edges.
     pub(crate) overhang_pt: f32,
     /// The letter a person without a picture shows.
-    pub(crate) letter: TextStyle,
+    pub(crate) letter: Font,
 }
 
 /// The avatar in a DM's title pill.
 pub(crate) const AVATAR_TITLE: AvatarSize = AvatarSize {
     side_pt: 20.0,
-    radius_pt: 7.0,
+    radius: Radius(7.0),
     ring_pt: 11.0,
     mark_pt: 8.0,
     overhang_pt: 3.0,
@@ -153,7 +156,7 @@ pub(crate) const AVATAR_TITLE: AvatarSize = AvatarSize {
 /// The avatar on a DM row.
 pub(crate) const AVATAR_ROW: AvatarSize = AvatarSize {
     side_pt: 32.0,
-    radius_pt: 10.0,
+    radius: Radius(10.0),
     ring_pt: 14.0,
     mark_pt: 10.0,
     overhang_pt: 3.0,
@@ -163,7 +166,7 @@ pub(crate) const AVATAR_ROW: AvatarSize = AvatarSize {
 /// The avatar on a profile card or pane.
 pub(crate) const AVATAR_CARD: AvatarSize = AvatarSize {
     side_pt: 64.0,
-    radius_pt: 20.0,
+    radius: Radius(20.0),
     ring_pt: 22.0,
     mark_pt: 16.0,
     overhang_pt: 4.0,

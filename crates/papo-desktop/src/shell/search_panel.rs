@@ -18,9 +18,8 @@ use super::search_field::{FieldList, field_spans};
 use super::title::Title;
 use super::{search_hits, search_list};
 use crate::design::{
-    FOCUS_RING_PT, HEADER_PILL_HEIGHT_PT, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette,
-    RADIUS_CONTROL_PT, RADIUS_PILL_PT, SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, SPACE_XL_PT,
-    TYPE_BODY, TYPE_SMALL,
+    FOCUS_RING_PT, HEADER_PILL_HEIGHT, Look, PILL_BUTTON_PT, PILL_ICON_PT, RADIUS_PILL, SPACE_LG,
+    SPACE_MD, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_SMALL,
 };
 use crate::strings;
 use crate::timeline::Style;
@@ -31,25 +30,25 @@ const PANEL_MAX_PT: f32 = 440.0;
 const PANEL_HEIGHT_SHARE: f32 = 0.7;
 
 /// 🔍, in the accent while the panel is open.
-pub(super) fn search_button(open: bool, palette: &Palette) -> El {
+pub(super) fn search_button(open: bool, look: &Look) -> El {
     let tone = if open {
-        palette.accent
+        look.palette.accent
     } else {
-        palette.text_secondary
+        look.palette.text_secondary
     };
     row()
         .key(SEARCH_BUTTON_KEY)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(RADIUS_CONTROL_PT)
+        .radius(super::header::header_button_radius(look))
         .role("button")
         .label(strings::search_title())
         .help(strings::search_title())
         .help_keys([strings::shortcut_search()])
         .expanded(open)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
-        .hover(palette.surface_hover)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press_tx(|shell: &mut Shell, tx| shell.search_pressed(false, tx))
         .child(icon(&crate::icons::SEARCH, PILL_ICON_PT).color(tone))
 }
@@ -58,15 +57,15 @@ pub(super) fn search_button(open: bool, palette: &Palette) -> El {
 pub(super) fn panel(shell: &Shell, title: &Title<'_>, style: &Style, cx: &Cx<Shell>) -> Option<El> {
     let search = shell.shown_search()?;
     let open = shell.tabs.shown()?;
-    let palette = style.palette;
+    let look = style.look;
     let [width_pt, height_pt] = cx
         .layout_size("conversation")
         .unwrap_or([PANEL_MAX_PT, 600.0]);
-    let width = PANEL_MAX_PT.min(width_pt - 2.0 * SPACE_LG_PT);
+    let width = PANEL_MAX_PT.min(width_pt - 2.0 * look.space(SPACE_LG));
     let list = shell.search_list();
-    let head = head(shell, search, title, list.as_ref(), &palette);
+    let head = head(shell, search, title, list.as_ref(), &look);
     let body = if search.showing == Showing::Peek {
-        search_hits::peek_line(open, search, &palette)
+        search_hits::peek_line(open, search, &look)
     } else {
         open_body(
             shell,
@@ -80,12 +79,16 @@ pub(super) fn panel(shell: &Shell, title: &Title<'_>, style: &Style, cx: &Cx<She
         col()
             .key(SEARCH_PANEL_KEY)
             .w(width)
-            .radius(RADIUS_PILL_PT)
-            .fill(palette.surface_pill)
-            .border(PILL_OUTLINE_PT, palette.line_pill)
+            .radius(look.radius(RADIUS_PILL))
+            .pill_surface(&look)
             .role("dialog")
             .label(strings::search_title())
-            .pin(None, Some(SPACE_LG_PT), Some(SPACE_LG_PT), None)
+            .pin(
+                None,
+                Some(look.space(SPACE_LG)),
+                Some(look.space(SPACE_LG)),
+                None,
+            )
             .on_key(|shell: &mut Shell, event: &KeyEvent, tx| {
                 if event.key == rune::Key::Escape {
                     shell.close_search(tx);
@@ -119,12 +122,12 @@ fn open_body(
     style: &Style,
     max_height_pt: f32,
 ) -> Option<El> {
-    let palette = style.palette;
+    let look = style.look;
     let this_year = chrono::Datelike::year(&shell.search_calendar().today);
     match list {
         // A date already read: what it means, over the results.
         Some(list @ FieldList::Dates { read: true, .. }) => {
-            let meaning = search_list::list_view(list, usize::MAX, this_year, &palette);
+            let meaning = search_list::list_view(list, usize::MAX, this_year, &look);
             Some(col().w_full().child(meaning).children(results_area(
                 shell,
                 search,
@@ -135,7 +138,7 @@ fn open_body(
         Some(list) => {
             // The same row the field names to assistive technology.
             let at = search.highlight.min(list.len().saturating_sub(1));
-            Some(search_list::list_view(list, at, this_year, &palette))
+            Some(search_list::list_view(list, at, this_year, &look))
         }
         None => results_area(shell, search, style, max_height_pt),
     }
@@ -147,7 +150,7 @@ fn head(
     search: &Search,
     title: &Title<'_>,
     list: Option<&FieldList>,
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     let placeholder = match title {
         Title::Direct { name, .. } => strings::search_placeholder_dm(name),
@@ -161,16 +164,16 @@ fn head(
     };
     let spans = shell
         .search_draft()
-        .map(|draft| field_spans(&draft, palette))
+        .map(|draft| field_spans(&draft, look))
         .unwrap_or_default();
-    let mut field = text_input(&search.edit, TYPE_BODY)
+    let mut field = text_input(&search.edit, look.font(TYPE_BODY))
         .key(SEARCH_FIELD_KEY)
         .label(strings::search_title())
         .grow(1.0)
         .min_w(0.0)
-        .color(palette.text_primary)
-        .placeholder(&placeholder, palette.text_muted)
-        .caret(palette.accent, palette.text_selection)
+        .color(look.palette.text_primary)
+        .placeholder(&placeholder, look.palette.text_muted)
+        .caret(look.palette.accent, look.palette.text_selection)
         .spans(spans)
         .on_edit(Shell::search_field_mut)
         .on_input_change(Shell::search_edited)
@@ -186,30 +189,30 @@ fn head(
             .key("search-clear")
             .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
             .center()
-            .radius(RADIUS_CONTROL_PT)
+            .radius(super::header::header_button_radius(look))
             .role("button")
             .label(strings::search_clear())
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
-            .hover(palette.surface_hover)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+            .hover(look.on_pill(look.palette.surface_hover))
             .on_press_tx(|shell: &mut Shell, tx| shell.clear_search(tx))
-            .child(icon(&crate::icons::X, PILL_ICON_PT).color(palette.text_secondary))
+            .child(icon(&crate::icons::X, PILL_ICON_PT).color(look.palette.text_secondary))
     });
     row()
         .w_full()
-        .h(HEADER_PILL_HEIGHT_PT)
-        .pl(SPACE_LG_PT)
-        .pr(SPACE_SM_PT)
-        .gap(SPACE_SM_PT)
+        .h(look.space(HEADER_PILL_HEIGHT))
+        .pl(look.space(SPACE_LG))
+        .pr(look.space(SPACE_SM))
+        .gap(look.space(SPACE_SM))
         .center_y()
         .child(field)
         .children(clear)
-        .child(search_button(true, palette))
+        .child(search_button(true, look))
 }
 
 /// The results, their count and scope; nothing found; a failure; a wait.
 fn results_area(shell: &Shell, search: &Search, style: &Style, max_height_pt: f32) -> Option<El> {
-    let palette = style.palette;
+    let look = style.look;
     match &search.found {
         Found::Nothing => None,
         Found::Held => {
@@ -222,32 +225,32 @@ fn results_area(shell: &Shell, search: &Search, style: &Style, max_height_pt: f3
                     .any(|filter| matches!(filter.resolved, FilterValue::Ambiguous(_)));
                 !ambiguous && draft.query() != Err(&SearchProblem::UnclosedQuote)
             });
-            says.then(|| nothing_found(shell, search, &palette))
+            says.then(|| nothing_found(shell, search, &look))
         }
         Found::Loading => Some(
             el().w_full()
-                .h(HEADER_PILL_HEIGHT_PT * 2.0)
+                .h(look.space(HEADER_PILL_HEIGHT) * 2.0)
                 .busy(true)
                 .label(strings::search_loading()),
         ),
-        Found::Failed => Some(failed(&palette)),
+        Found::Failed => Some(failed(&look)),
         Found::Ready(results) if results.items().is_empty() => Some(
             col()
                 .w_full()
-                .child(count_row(search, results, &palette))
-                .child(nothing_found(shell, search, &palette)),
+                .child(count_row(search, results, &look))
+                .child(nothing_found(shell, search, &look)),
         ),
         Found::Ready(results) => Some(
             col()
                 .w_full()
-                .child(count_row(search, results, &palette))
+                .child(count_row(search, results, &look))
                 .child(search_hits::hits(search, style, max_height_pt)),
         ),
     }
 }
 
 /// "{n} results" and, on a server, the scope choice.
-fn count_row(search: &Search, results: &SearchResults, palette: &Palette) -> El {
+fn count_row(search: &Search, results: &SearchResults, look: &Look) -> El {
     // The next search's answer is on its way: these results stay meanwhile.
     let loading = search.loading();
     let count = match results.count() {
@@ -255,22 +258,22 @@ fn count_row(search: &Search, results: &SearchResults, palette: &Palette) -> El 
         SearchCount::AtLeast(count) => strings::search_results_more(count as u64),
     };
     let scope =
-        matches!(search.place, Place::Server { .. }).then(|| scope_button(search.scope, palette));
+        matches!(search.place, Place::Server { .. }).then(|| scope_button(search.scope, look));
     row()
         .w_full()
-        .px(SPACE_LG_PT)
-        .pb(SPACE_SM_PT)
-        .gap(SPACE_SM_PT)
+        .px(look.space(SPACE_LG))
+        .pb(look.space(SPACE_SM))
+        .gap(look.space(SPACE_SM))
         .center_y()
         .busy(loading)
         .child(
             text(count)
-                .font(TYPE_SMALL)
+                .font(look.font(TYPE_SMALL))
                 // Dimmed while the next answer loads.
                 .color(if loading {
-                    palette.text_muted
+                    look.palette.text_muted
                 } else {
-                    palette.text_secondary
+                    look.palette.text_secondary
                 })
                 .role("status")
                 .live_region(rune::LiveRegion::Polite),
@@ -280,7 +283,7 @@ fn count_row(search: &Search, results: &SearchResults, palette: &Palette) -> El 
 }
 
 /// "This server ⌄": opens the scope menu.
-fn scope_button(scope: Scope, palette: &Palette) -> El {
+fn scope_button(scope: Scope, look: &Look) -> El {
     let label = match scope {
         Scope::Server => strings::search_scope_server(),
         Scope::Channel => strings::search_scope_channel(),
@@ -288,57 +291,69 @@ fn scope_button(scope: Scope, palette: &Palette) -> El {
     row()
         .key(SCOPE_KEY)
         .h(PILL_BUTTON_PT)
-        .px(SPACE_SM_PT)
-        .gap(SPACE_SM_PT / 2.0)
+        .px(look.space(SPACE_SM))
+        .gap(look.space(SPACE_SM) / 2.0)
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
+        // As the panel's rows around it, concentric with the panel.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("button")
         .label(format!("{}: {label}", strings::search_scope()))
         .expanded(false)
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
-        .hover(palette.surface_hover)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press_tx(|shell: &mut Shell, tx| shell.open_scope_menu(tx))
-        .child(text(label).font(TYPE_SMALL).color(palette.text_primary))
-        .child(icon(&crate::icons::CHEVRON_DOWN, PILL_ICON_PT).color(palette.text_secondary))
+        .child(
+            text(label)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_primary),
+        )
+        .child(icon(&crate::icons::CHEVRON_DOWN, PILL_ICON_PT).color(look.palette.text_secondary))
 }
 
 /// The scope button's element key, which its menu grows from.
 pub(crate) const SCOPE_KEY: &str = "search-scope";
 
 /// "No results for “…”", with Clear filters when there are any.
-fn nothing_found(shell: &Shell, search: &Search, palette: &Palette) -> El {
+fn nothing_found(shell: &Shell, search: &Search, look: &Look) -> El {
     let filtered = shell
         .search_draft()
         .is_some_and(|draft| !draft.filters.is_empty());
     let clear = filtered.then(|| {
         row()
             .key("search-clear-filters")
-            .px(SPACE_MD_PT)
+            .px(look.space(SPACE_MD))
             .h(PILL_BUTTON_PT)
             .center()
-            .radius(RADIUS_CONTROL_PT)
-            .fill(palette.surface_hover)
+            // As the panel's rows around it, concentric with the panel.
+            .radius(Look::nested_radius(
+                look.radius(RADIUS_PILL),
+                look.space(SPACE_SM),
+            ))
+            .fill(look.on_pill(look.palette.surface_hover))
             .role("button")
             .label(strings::search_clear_filters())
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
             .on_press_tx(|shell: &mut Shell, tx| shell.search_clear_filters(tx))
             .child(
                 text(strings::search_clear_filters())
-                    .font(TYPE_SMALL)
-                    .color(palette.text_primary),
+                    .font(look.font(TYPE_SMALL))
+                    .color(look.palette.text_primary),
             )
     });
     col()
         .w_full()
-        .py(SPACE_XL_PT)
-        .gap(SPACE_MD_PT)
+        .py(look.space(SPACE_XL))
+        .gap(look.space(SPACE_MD))
         .center()
         .child(
             text(strings::search_none(search.edit.text.trim()))
-                .font(TYPE_SMALL)
-                .color(palette.text_secondary)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_secondary)
                 .role("status")
                 .wrap(),
         )
@@ -346,17 +361,17 @@ fn nothing_found(shell: &Shell, search: &Search, palette: &Palette) -> El {
 }
 
 /// "Couldn't search. Try again".
-fn failed(palette: &Palette) -> El {
+fn failed(look: &Look) -> El {
     row()
         .w_full()
-        .px(SPACE_LG_PT)
-        .pb(SPACE_MD_PT)
-        .gap(SPACE_SM_PT)
+        .px(look.space(SPACE_LG))
+        .pb(look.space(SPACE_MD))
+        .gap(look.space(SPACE_SM))
         .center_y()
         .child(
             text(strings::search_failed())
-                .font(TYPE_SMALL)
-                .color(palette.danger)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.danger)
                 .role("alert"),
         )
         .child(
@@ -365,12 +380,12 @@ fn failed(palette: &Palette) -> El {
                 .role("button")
                 .label(strings::search_retry())
                 .focusable(true)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
                 .on_press(|shell: &mut Shell| shell.search_retry())
                 .child(
                     text(strings::search_retry())
-                        .font(TYPE_SMALL)
-                        .color(palette.link),
+                        .font(look.font(TYPE_SMALL))
+                        .color(look.palette.link),
                 ),
         )
 }

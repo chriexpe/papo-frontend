@@ -12,15 +12,15 @@ use rune::{El, el, icon, row, text};
 
 use super::reading::Boundary;
 use crate::design::{
-    BOUNDARY_CHIP_PAD_PT, BOUNDARY_GAP_PT, BOUNDARY_LINE_ALPHA, BOUNDARY_LINE_PT, CHIP_ICON_PT,
-    CHIP_RADIUS_PT, Palette, SPACE_XS_PT, TYPE_CAPTION_MEDIUM,
+    BOUNDARY_CHIP_PAD_PT, BOUNDARY_GAP, BOUNDARY_LINE_ALPHA, BOUNDARY_LINE_PT, CHIP_ICON_PT,
+    CHIP_RADIUS, Look, SPACE_XS, TYPE_CAPTION_MEDIUM,
 };
 use crate::icons::{ARROW_DOWN, ARROW_UP};
 use crate::strings;
 
 /// `boundary` over the `gap_pt` above a message row's top, pinned to the
 /// row.
-pub(super) fn boundary(boundary: Boundary, gap_pt: f32, palette: &Palette) -> El {
+pub(super) fn boundary(boundary: Boundary, gap_pt: f32, look: &Look) -> El {
     let (shown, arrow, spoken) = match boundary {
         Boundary::NewMessages => (
             strings::new_messages(),
@@ -37,25 +37,29 @@ pub(super) fn boundary(boundary: Boundary, gap_pt: f32, palette: &Palette) -> El
     let (pad_y, pad_x) = BOUNDARY_CHIP_PAD_PT;
     let chip = row()
         .center_y()
-        .gap(SPACE_XS_PT)
-        .child(text(shown).font(TYPE_CAPTION_MEDIUM).color(palette.link))
-        .child(icon(arrow, CHIP_ICON_PT).color(palette.link))
-        .fill(palette.accent_soft)
-        .radius(CHIP_RADIUS_PT)
+        .gap(look.space(SPACE_XS))
+        .child(
+            text(shown)
+                .font(look.font(TYPE_CAPTION_MEDIUM))
+                .color(look.palette.link),
+        )
+        .child(icon(arrow, CHIP_ICON_PT).color(look.palette.link))
+        .fill(look.palette.accent_soft)
+        .radius(look.radius(CHIP_RADIUS))
         .px(pad_x)
         .py(pad_y)
         .a11y_hidden();
     let line = el()
         .grow(1.0)
         .h(BOUNDARY_LINE_PT)
-        .fill(palette.accent.alpha(BOUNDARY_LINE_ALPHA))
+        .fill(look.palette.accent.alpha(BOUNDARY_LINE_ALPHA))
         .a11y_hidden();
     row()
         .key("boundary")
         .pin(Some(0.0), Some(0.0), Some(0.0), None)
         .h(gap_pt)
         .center_y()
-        .gap(BOUNDARY_GAP_PT)
+        .gap(look.space(BOUNDARY_GAP))
         // A labelled group: Rune leaves a separator that takes no press
         // out of the tree, so its name would never be heard.
         .label(spoken)

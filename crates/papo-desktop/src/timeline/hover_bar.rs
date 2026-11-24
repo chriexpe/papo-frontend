@@ -17,15 +17,15 @@ use rune::{Anim, El, Icon, el, icon, row, text};
 use super::TimelineKey;
 use super::view::TimelineHost;
 use crate::design::{
-    PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, SPACE_LG_PT,
-    SPACE_SM_PT, SPACE_XS_PT, TYPE_BODY,
+    Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Radius, SPACE_LG, SPACE_SM, SPACE_XS,
+    Surfaces, TYPE_BODY,
 };
 use crate::strings;
 
 /// The bar's height, in points (`size.hover-bar`).
 pub(super) const BAR_HEIGHT_PT: f32 = 32.0;
 /// `radius.card`.
-const RADIUS_CARD_PT: f32 = 10.0;
+const RADIUS_CARD: Radius = Radius(10.0);
 /// The row's hover curves, which its bar follows: it shows and goes at
 /// once (Christian, 2026-11-23: a fade either way is in the way when the
 /// pointer moves down the rows).
@@ -69,14 +69,14 @@ pub(crate) fn more_key(id: Uuid) -> String {
 
 /// Message `id`'s bar, pinned over the row's top-right and seen while its
 /// hover group (the row) is lit.
-pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, palette: &Palette) -> El {
-    let mut buttons = emoji_buttons::<S>(key, id, bar, palette);
+pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, look: &Look) -> El {
+    let mut buttons = emoji_buttons::<S>(key, id, bar, look);
     if !buttons.is_empty() {
         buttons.push(
             el().w(PILL_OUTLINE_PT)
-                .h(PILL_BUTTON_PT - 2.0 * SPACE_SM_PT)
-                .mx(SPACE_XS_PT)
-                .fill(palette.line_subtle)
+                .h(PILL_BUTTON_PT - 2.0 * look.space(SPACE_SM))
+                .mx(look.space(SPACE_XS))
+                .fill(look.palette.line_subtle)
                 .a11y_hidden(),
         );
         buttons.push(icon_button::<S>(
@@ -87,7 +87,7 @@ pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, palett
             strings::action_add_reaction(),
             None,
             BarPress::AddReaction,
-            palette,
+            look,
         ));
     }
     if bar.reply {
@@ -99,7 +99,7 @@ pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, palett
             strings::action_reply(),
             Some(strings::shortcut_reply()),
             BarPress::Reply,
-            palette,
+            look,
         ));
     }
     if bar.edit {
@@ -111,7 +111,7 @@ pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, palett
             strings::action_edit(),
             Some(strings::shortcut_edit()),
             BarPress::Edit,
-            palette,
+            look,
         ));
     }
     buttons.push(
@@ -123,19 +123,18 @@ pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, palett
             strings::action_more(),
             None,
             BarPress::More,
-            palette,
+            look,
         )
         .key(more_key(id)),
     );
     row()
         .key("bar")
         .h(BAR_HEIGHT_PT)
-        .px(SPACE_XS_PT)
-        .gap(SPACE_XS_PT)
+        .px(look.space(SPACE_XS))
+        .gap(look.space(SPACE_XS))
         .center_y()
-        .radius(RADIUS_CARD_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .radius(look.radius(RADIUS_CARD))
+        .pill_surface(look)
         .role("toolbar")
         .label(strings::action_bar())
         // The bar's whole surface takes the pointer, not only its buttons
@@ -143,19 +142,19 @@ pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, palett
         // above, the bar stays its row's, and a press there falls through
         // to nothing.
         .on_background_press(|_: &mut S| {})
-        .pin(None, Some(-BAR_HEIGHT_PT / 2.0), Some(SPACE_LG_PT), None)
+        .pin(
+            None,
+            Some(-BAR_HEIGHT_PT / 2.0),
+            Some(look.space(SPACE_LG)),
+            None,
+        )
         .group_opacity(0.0, 1.0)
         .children(buttons)
 }
 
 /// The bar's quick reactions: yours wear your chip's colours, and the one
 /// ← and → are on while it is stretched wears the focus ring.
-fn emoji_buttons<S: TimelineHost>(
-    key: TimelineKey,
-    id: Uuid,
-    bar: &Bar,
-    palette: &Palette,
-) -> Vec<El> {
+fn emoji_buttons<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, look: &Look) -> Vec<El> {
     bar.emoji
         .iter()
         .enumerate()
@@ -168,16 +167,16 @@ fn emoji_buttons<S: TimelineHost>(
             } else {
                 strings::reaction_react(emoji)
             };
-            let mut cell = button::<S>(key, id, format!("bar-emoji-{index}"), press, palette)
+            let mut cell = button::<S>(key, id, format!("bar-emoji-{index}"), press, look)
                 .label(label)
-                .child(text(emoji.clone()).font(TYPE_BODY));
+                .child(text(emoji.clone()).font(look.font(TYPE_BODY)));
             if *mine {
                 cell = cell
-                    .fill(palette.accent_soft)
-                    .border(PILL_OUTLINE_PT, palette.accent);
+                    .fill(look.palette.accent_soft)
+                    .border(PILL_OUTLINE_PT, look.palette.accent);
             }
             if bar.stretched == Some(index) {
-                cell = cell.border(PILL_OUTLINE_PT * 2.0, palette.focus_ring);
+                cell = cell.border(PILL_OUTLINE_PT * 2.0, look.palette.focus_ring);
             }
             cell
         })
@@ -190,15 +189,21 @@ fn button<S: TimelineHost>(
     id: Uuid,
     name: String,
     press: BarPress,
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     row()
         .key(name)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(RADIUS_CONTROL_PT)
+        // Concentric with the bar; the corner's gap is the smaller of its
+        // side padding and the space above the button.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_CARD),
+            look.space(SPACE_XS)
+                .min((BAR_HEIGHT_PT - PILL_BUTTON_PT) / 2.0),
+        ))
         .role("button")
-        .hover(palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press_tx(move |host: &mut S, tx| host.bar_pressed(key, id, press.clone(), tx))
 }
 
@@ -214,12 +219,12 @@ fn icon_button<S: TimelineHost>(
     label: &'static str,
     shortcut: Option<&'static str>,
     press: BarPress,
-    palette: &Palette,
+    look: &Look,
 ) -> El {
-    let button = button::<S>(key, id, name.to_owned(), press, palette)
+    let button = button::<S>(key, id, name.to_owned(), press, look)
         .label(label)
         .help(label)
-        .child(icon(shape, PILL_ICON_PT).color(palette.text_secondary));
+        .child(icon(shape, PILL_ICON_PT).color(look.palette.text_secondary));
     match shortcut {
         Some(shortcut) => button.help_keys([shortcut]),
         None => button,

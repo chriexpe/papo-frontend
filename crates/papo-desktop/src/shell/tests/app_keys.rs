@@ -284,3 +284,43 @@ fn an_open_sheet_keeps_the_app_keys_for_itself() {
     key(&mut rt, Key::Command('k'), ctrl());
     assert!(rt.state.jump.is_none(), "no second overlay");
 }
+
+#[test]
+fn ctrl_k_closes_on_a_press_or_a_scroll_outside_and_keeps_a_scroll_on_it() {
+    let mut rt = three_servers();
+    let field = super::super::jump::JUMP_FIELD_KEY;
+    let field_rect = |rt: &Runtime<Shell>| {
+        rt.elements()
+            .into_iter()
+            .find(|element| element.key.as_deref() == Some(field))
+            .map(|element| element.rect)
+    };
+    key(&mut rt, Key::Command('k'), ctrl());
+    let [x, y, _, height] = field_rect(&rt).expect("Ctrl+K open");
+    rt.pointer_move(x + 4.0, y + height / 2.0);
+    rt.wheel_event(rune::WheelEvent::new(0.0, 40.0).at(x + 4.0, y + height / 2.0));
+    // The fingers lift: the next scroll is a gesture of its own.
+    rt.wheel_event(rune::WheelEvent::new(0.0, 0.0).phase(rune::GesturePhase::Ended));
+    rt.frame(FRAME_S);
+    assert!(rt.state.jump.is_some(), "a scroll on the card keeps it");
+    // Well below the card, on the dimmed app.
+    let (out_x, out_y) = (x + 4.0, y + 400.0);
+    rt.pointer_move(out_x, out_y);
+    rt.wheel_event(rune::WheelEvent::new(0.0, 40.0).at(out_x, out_y));
+    rt.frame(FRAME_S);
+    assert!(rt.state.jump.is_none(), "a scroll outside closes it");
+    key(&mut rt, Key::Command('k'), ctrl());
+    assert!(rt.state.jump.is_some());
+    // The card's padding, beside the field, is the card's.
+    let (pad_x, pad_y) = (x - 4.0, y + height / 2.0);
+    rt.pointer_move(pad_x, pad_y);
+    rt.pointer_down(pad_x, pad_y);
+    rt.pointer_up(pad_x, pad_y);
+    rt.frame(FRAME_S);
+    assert!(rt.state.jump.is_some(), "a press on the card keeps it");
+    rt.pointer_move(out_x, out_y);
+    rt.pointer_down(out_x, out_y);
+    rt.pointer_up(out_x, out_y);
+    rt.frame(FRAME_S);
+    assert!(rt.state.jump.is_none(), "a press outside closes it");
+}

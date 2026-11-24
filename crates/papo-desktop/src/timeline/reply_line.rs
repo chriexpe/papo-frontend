@@ -15,9 +15,8 @@ use super::TimelineKey;
 use super::replies::OriginalText;
 use super::view::TimelineHost;
 use crate::design::{
-    AVATAR_TOP_PT, FOCUS_RING_PT, Lead, Palette, RADIUS_AVATAR_PT, RADIUS_CONTROL_PT,
-    REPLY_AVATAR_PT, REPLY_DELETED_PT, REPLY_ELBOW_PT, REPLY_LINE_ICON_PT, SPACE_SM_PT, TYPE_SMALL,
-    WEIGHT_SEMIBOLD,
+    AVATAR_TOP, FOCUS_RING_PT, Lead, Look, RADIUS_AVATAR, RADIUS_CONTROL, REPLY_AVATAR_PT,
+    REPLY_DELETED_PT, REPLY_ELBOW_PT, REPLY_LINE_ICON_PT, SPACE_SM, TYPE_SMALL, WEIGHT_SEMIBOLD,
 };
 use crate::icons::REPLY_LINE;
 use crate::rail::initial;
@@ -40,30 +39,33 @@ pub(super) fn reply_line<S: TimelineHost>(
     line: &ReplyLine,
     lead: Lead,
     lead_gap_pt: f32,
-    palette: &Palette,
+    look: &Look,
 ) -> El {
-    let line_pt = TYPE_SMALL.line_px();
-    let content = content::<S>(key, line, palette);
+    let line_pt = look.font(TYPE_SMALL).line_px();
+    let content = content::<S>(key, line, look);
     match lead {
         Lead::Avatar(size_pt) => {
             let (stroke_pt, radius_pt) = REPLY_ELBOW_PT;
             // From the avatar's top up to the line's middle, then across to
-            // it. The avatar sits `AVATAR_TOP_PT` below the line's box, so
+            // it. The avatar sits `look.text_multiple(AVATAR_TOP)` below the line's box, so
             // the leg reaches past the box, out of flow: the line keeps its
             // height.
-            let elbow_w_pt = size_pt / 2.0 + lead_gap_pt - SPACE_SM_PT;
+            let elbow_w_pt = size_pt / 2.0 + lead_gap_pt - look.space(SPACE_SM);
             let elbow = el().w(elbow_w_pt).h(line_pt).a11y_hidden().child(
                 el().key("elbow")
                     .absolute(0.0, line_pt / 2.0 - stroke_pt / 2.0)
-                    .size(elbow_w_pt, line_pt / 2.0 + stroke_pt / 2.0 + AVATAR_TOP_PT)
+                    .size(
+                        elbow_w_pt,
+                        line_pt / 2.0 + stroke_pt / 2.0 + look.text_multiple(AVATAR_TOP),
+                    )
                     .corners([radius_pt, 0.0, 0.0, 0.0])
-                    .border_sides([stroke_pt, 0.0, 0.0, stroke_pt], palette.line_strong),
+                    .border_sides([stroke_pt, 0.0, 0.0, stroke_pt], look.palette.line_strong),
             );
             row()
                 .key("reply-line")
                 .w_full()
                 .pl(size_pt / 2.0 - stroke_pt / 2.0)
-                .gap(SPACE_SM_PT)
+                .gap(look.space(SPACE_SM))
                 .items_start()
                 .child(elbow)
                 .child(content)
@@ -80,7 +82,7 @@ pub(super) fn reply_line<S: TimelineHost>(
                     .justify_end()
                     .center_y()
                     .a11y_hidden()
-                    .child(icon(&REPLY_LINE, REPLY_LINE_ICON_PT).color(palette.line_strong)),
+                    .child(icon(&REPLY_LINE, REPLY_LINE_ICON_PT).color(look.palette.line_strong)),
             )
             .child(content),
     }
@@ -88,8 +90,8 @@ pub(super) fn reply_line<S: TimelineHost>(
 
 /// The line itself: avatar, name and snippet, or what stands for an
 /// original that is gone.
-fn content<S: TimelineHost>(key: TimelineKey, line: &ReplyLine, palette: &Palette) -> El {
-    let line_pt = TYPE_SMALL.line_px();
+fn content<S: TimelineHost>(key: TimelineKey, line: &ReplyLine, look: &Look) -> El {
+    let line_pt = look.font(TYPE_SMALL).line_px();
     let (lead, words, spans) = match &line.original {
         OriginalText::Message { name, snippet, .. } => {
             let name = if line.pinged {
@@ -100,18 +102,18 @@ fn content<S: TimelineHost>(key: TimelineKey, line: &ReplyLine, palette: &Palett
             let spans = vec![
                 Span::new(0, name.len())
                     .weight(WEIGHT_SEMIBOLD)
-                    .color(palette.text_secondary),
+                    .color(look.palette.text_secondary),
             ];
             let avatar = el()
                 .size(REPLY_AVATAR_PT, REPLY_AVATAR_PT)
-                .radius(RADIUS_AVATAR_PT / 2.0)
+                .radius(look.radius(RADIUS_AVATAR) / 2.0)
                 .center()
-                .fill(palette.surface_hover)
+                .fill(look.palette.surface_hover)
                 .a11y_hidden()
                 .child(
                     text(initial(&name))
-                        .font(TYPE_SMALL)
-                        .color(palette.text_secondary),
+                        .font(look.font(TYPE_SMALL))
+                        .color(look.palette.text_secondary),
                 );
             (Some(avatar), format!("{name} {snippet}"), spans)
         }
@@ -119,8 +121,8 @@ fn content<S: TimelineHost>(key: TimelineKey, line: &ReplyLine, palette: &Palett
             let words = strings::reply_deleted().to_owned();
             let square = el()
                 .size(REPLY_DELETED_PT, REPLY_DELETED_PT)
-                .radius(RADIUS_AVATAR_PT / 2.0)
-                .border(1.0, palette.line_strong)
+                .radius(look.radius(RADIUS_AVATAR) / 2.0)
+                .border(1.0, look.palette.line_strong)
                 .border_dash(2.0, 2.0)
                 .a11y_hidden();
             let spans = vec![Span::new(0, words.len()).italic()];
@@ -138,24 +140,24 @@ fn content<S: TimelineHost>(key: TimelineKey, line: &ReplyLine, palette: &Palett
         .grow(1.0)
         .min_w(0.0)
         .h(line_pt)
-        .gap(SPACE_SM_PT)
+        .gap(look.space(SPACE_SM))
         .center_y()
         .children(lead)
         .child(
             text(words)
-                .font(TYPE_SMALL)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted)
                 .spans(spans)
                 .truncate()
                 .min_w(0.0),
         );
     if let Some(original) = line.jump {
         content = content
-            .radius(RADIUS_CONTROL_PT)
+            .radius(look.radius(RADIUS_CONTROL))
             .role("link")
             .label(strings::reply_open(&spoken))
             .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
             .on_press_tx(move |host: &mut S, tx| host.reply_line_pressed(key, original, tx));
     }
     content

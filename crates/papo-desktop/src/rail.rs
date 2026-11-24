@@ -17,9 +17,9 @@ use rune::{Drag, El, Image, Key, KeyEvent, ScrollSpec, col, el, icon, row, text}
 use crate::badges::Badge;
 use crate::badges::mention_pill;
 use crate::design::{
-    ADD_TILE_DASH_PT, ADD_TILE_OUTLINE_PT, FOCUS_RING_PT, MENTION_PILL_OVERHANG_PT,
-    MENTION_PILL_RING_PT, PILL_OUTLINE_PT, Palette, RADIUS_ICON_PT, RADIUS_INDICATOR_PT,
-    RAIL_ICON_PT, RAIL_INDICATOR_PT, RAIL_TILE_PT, RAIL_UNREAD_BAR_PT, RAIL_WIDTH_PT, SPACE_MD_PT,
+    ADD_TILE_DASH_PT, ADD_TILE_OUTLINE_PT, FOCUS_RING_PT, Look, MENTION_PILL_OVERHANG_PT,
+    MENTION_PILL_RING_PT, PILL_OUTLINE_PT, RADIUS_ICON, RADIUS_INDICATOR, RAIL_GAP_PT,
+    RAIL_ICON_PT, RAIL_INDICATOR_PT, RAIL_TILE_PT, RAIL_UNREAD_BAR_PT, RAIL_WIDTH_PT, Surfaces,
     TYPE_TITLE,
 };
 use crate::icons::{DIRECT, PLUS};
@@ -37,7 +37,7 @@ pub(crate) fn tile_key(server: ServerId) -> String {
 pub(crate) const ADD_KEY: &str = "add-server";
 
 /// The rail: the servers, then +.
-pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, palette: &Palette) -> El {
+pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, look: &Look) -> El {
     let selected = nav.selected().map(|server| server.id);
     let tiles = nav.shown().into_iter().map(|server| {
         let tile = Tile {
@@ -46,13 +46,13 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, palette: 
             icon: icons.get(&server.id),
             offset_pt: nav.drag_offset(server.id),
         };
-        tile.view(palette)
+        tile.view(look)
     });
     let servers = col()
         .key("rail-servers")
         .w_full()
         .items_center()
-        .gap(SPACE_MD_PT)
+        .gap(RAIL_GAP_PT)
         // Room for the last tile's badge, which overhangs its corner.
         .pb(MENTION_PILL_OVERHANG_PT + MENTION_PILL_RING_PT)
         .role("tablist")
@@ -80,16 +80,12 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, palette: 
         .w(RAIL_WIDTH_PT)
         .h_full()
         .items_center()
-        .gap(SPACE_MD_PT)
-        .py(SPACE_MD_PT)
-        .fill(palette.surface_rail)
-        .child(direct_tile(
-            nav.direct_shown(),
-            nav.servers().direct,
-            palette,
-        ))
+        .gap(RAIL_GAP_PT)
+        .py(RAIL_GAP_PT)
+        .chrome_fill(&look.palette.rail_fill)
+        .child(direct_tile(nav.direct_shown(), nav.servers().direct, look))
         .child(servers)
-        .child(add_tile(palette))
+        .child(add_tile(look))
 }
 
 /// One server's place in the rail.
@@ -102,23 +98,23 @@ struct Tile<'a> {
 }
 
 impl Tile<'_> {
-    fn view(&self, palette: &Palette) -> El {
+    fn view(&self, look: &Look) -> El {
         let id = self.server.id;
         let face = match self.icon {
             Some(image) => el()
                 .size(RAIL_TILE_PT, RAIL_TILE_PT)
-                .radius(RADIUS_ICON_PT)
+                .radius(look.radius(RADIUS_ICON))
                 .pixels(image.pixels()),
             None => el()
                 .size(RAIL_TILE_PT, RAIL_TILE_PT)
                 .center()
-                .radius(RADIUS_ICON_PT)
-                .fill(palette.surface_pill)
-                .border(PILL_OUTLINE_PT, palette.line_pill)
+                .radius(look.radius(RADIUS_ICON))
+                .fill(look.palette.surface_pill)
+                .border(PILL_OUTLINE_PT, look.palette.line_pill)
                 .child(
                     text(initial(&self.server.name))
-                        .font(TYPE_TITLE)
-                        .color(palette.text_secondary)
+                        .font(look.font(TYPE_TITLE))
+                        .color(look.palette.text_secondary)
                         .a11y_hidden(),
                 ),
         };
@@ -129,21 +125,21 @@ impl Tile<'_> {
             .description(strings::rail_move_hint())
             .focusable(true)
             .focus_selected(self.selected)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
             .on_press_tx(move |shell: &mut Shell, tx| shell.select_server(id, tx))
             .on_drag(move |shell: &mut Shell, drag: &mut Drag, tx| shell.drag_server(id, drag, tx))
             .on_key(move |shell: &mut Shell, key: &KeyEvent, _tx| move_key(shell, id, key))
             .on_secondary_press(move |shell: &mut Shell, _press, _tx| {
                 shell.open_server_menu_beside(id);
             });
-        let face = with_mentions(face, self.server.badge, self.icon.is_none(), palette);
+        let face = with_mentions(face, self.server.badge, self.icon.is_none(), look);
         // Keyed by server, so a reorder moves the whole place and a held
         // press on its tile survives the preview.
         place(
             format!("rail-place-{id}"),
             self.selected,
             self.server.badge,
-            palette,
+            look,
         )
         .offset(0.0, self.offset_pt)
         .child(face)
@@ -153,7 +149,7 @@ impl Tile<'_> {
 /// `face` with `badge`'s mention count on its corner. Pinned inside the
 /// tile's border, so an `outlined` tile's 1 pt outline is added back: every
 /// badge overhangs the tile's corner alike.
-fn with_mentions(face: El, badge: Badge, outlined: bool, palette: &Palette) -> El {
+fn with_mentions(face: El, badge: Badge, outlined: bool, look: &Look) -> El {
     let overhang_pt = if outlined {
         MENTION_PILL_OVERHANG_PT + PILL_OUTLINE_PT
     } else {
@@ -162,7 +158,7 @@ fn with_mentions(face: El, badge: Badge, outlined: bool, palette: &Palette) -> E
     match badge.mentions() {
         Some(count) => face.child(
             el().pin(None, None, Some(-overhang_pt), Some(-overhang_pt))
-                .child(mention_pill(count, Some(palette.surface_rail), palette)),
+                .child(mention_pill(count, Some(look.palette.surface_rail), look)),
         ),
         None => face,
     }
@@ -170,7 +166,7 @@ fn with_mentions(face: El, badge: Badge, outlined: bool, palette: &Palette) -> E
 
 /// A tile's place in the rail, with the bar beside the tile: tall when
 /// selected, short when `badge` is unread.
-fn place(key: String, selected: bool, badge: Badge, palette: &Palette) -> El {
+fn place(key: String, selected: bool, badge: Badge, look: &Look) -> El {
     let place = row().key(key).w(RAIL_WIDTH_PT).h(RAIL_TILE_PT).center();
     let bar = if selected {
         Some(RAIL_INDICATOR_PT)
@@ -183,8 +179,8 @@ fn place(key: String, selected: bool, badge: Badge, palette: &Palette) -> El {
         Some((width, height)) => place.child(
             el().absolute(0.0, (RAIL_TILE_PT - height) / 2.0)
                 .size(width, height)
-                .radius(RADIUS_INDICATOR_PT)
-                .fill(palette.text_primary)
+                .radius(look.radius(RADIUS_INDICATOR))
+                .fill(look.palette.text_primary)
                 .a11y_hidden(),
         ),
         None => place,
@@ -195,23 +191,23 @@ fn place(key: String, selected: bool, badge: Badge, palette: &Palette) -> El {
 pub(crate) const DIRECT_KEY: &str = "rail-direct";
 
 /// The rail's Direct: the direct conversations, in the channel pane.
-fn direct_tile(shown: bool, badge: Badge, palette: &Palette) -> El {
+fn direct_tile(shown: bool, badge: Badge, look: &Look) -> El {
     let face = el()
         .key(DIRECT_KEY)
         .size(RAIL_TILE_PT, RAIL_TILE_PT)
         .center()
-        .radius(RADIUS_ICON_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .radius(look.radius(RADIUS_ICON))
+        .fill(look.palette.surface_pill)
+        .border(PILL_OUTLINE_PT, look.palette.line_pill)
         .role("tab")
         .label(badge.label(strings::direct_title()))
         .focusable(true)
         .focus_selected(shown)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press_tx(|shell: &mut Shell, tx| shell.select_direct(tx))
-        .child(icon(&DIRECT, RAIL_ICON_PT).color(palette.text_secondary));
-    let face = with_mentions(face, badge, true, palette);
-    place("rail-place-direct".to_owned(), shown, badge, palette).child(face)
+        .child(icon(&DIRECT, RAIL_ICON_PT).color(look.palette.text_secondary));
+    let face = with_mentions(face, badge, true, look);
+    place("rail-place-direct".to_owned(), shown, badge, look).child(face)
 }
 
 /// Alt+↑ and Alt+↓ move the focused server; other keys pass on.
@@ -229,20 +225,20 @@ fn move_key(shell: &mut Shell, server: ServerId, key: &KeyEvent) -> bool {
 }
 
 /// The rail's +: the add-server popup.
-fn add_tile(palette: &Palette) -> El {
+fn add_tile(look: &Look) -> El {
     el().key(ADD_KEY)
         .size(RAIL_TILE_PT, RAIL_TILE_PT)
         .center()
-        .radius(RADIUS_ICON_PT)
-        .border(ADD_TILE_OUTLINE_PT, palette.line_strong)
+        .radius(look.radius(RADIUS_ICON))
+        .border(ADD_TILE_OUTLINE_PT, look.palette.line_strong)
         .border_dash(ADD_TILE_DASH_PT.0, ADD_TILE_DASH_PT.1)
-        .hover(palette.surface_hover)
+        .hover(look.palette.surface_hover)
         .role("button")
         .label(strings::rail_add_server())
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(Shell::add_server)
-        .child(icon(&PLUS, RAIL_ICON_PT).color(palette.text_muted))
+        .child(icon(&PLUS, RAIL_ICON_PT).color(look.palette.text_muted))
 }
 
 /// A server without an icon: the first letter of its name.

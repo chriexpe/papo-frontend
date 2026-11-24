@@ -12,7 +12,7 @@ use papo_sdk::{ChannelBadges, UnreadCount};
 use papo_sdk_ui::BadgeAggregate;
 use rune::{Color, El, el, row, text};
 
-use crate::design::{MENTION_PILL_PT, MENTION_PILL_RING_PT, Palette, SPACE_SM_PT, TYPE_BADGE};
+use crate::design::{Look, MENTION_PILL_PT, MENTION_PILL_RING_PT, SPACE_SM, TYPE_BADGE};
 use crate::strings;
 
 /// The largest count a badge spells out; more shows as "99+".
@@ -153,13 +153,23 @@ impl Count {
 /// it sits on, where it overlaps another shape (a rail tile's corner); the
 /// ring is outside the badge, so the count keeps all of it. Assistive
 /// technology hears the count through the row's or tile's label.
-pub(crate) fn mention_pill(count: Count, ring: Option<Color>, palette: &Palette) -> El {
-    count_pill(count, (palette.mention, palette.mention_on), ring)
+pub(crate) fn mention_pill(count: Count, ring: Option<Color>, look: &Look) -> El {
+    count_pill(
+        count,
+        (look.palette.mention, look.palette.mention_on),
+        ring,
+        look,
+    )
 }
 
 /// [`mention_pill`]'s shape in other colours: `fill` behind `ink`. ↓'s
 /// arrivals take the accent, so they never read as mentions.
-pub(crate) fn count_pill(count: Count, (fill, ink): (Color, Color), ring: Option<Color>) -> El {
+pub(crate) fn count_pill(
+    count: Count,
+    (fill, ink): (Color, Color),
+    ring: Option<Color>,
+    look: &Look,
+) -> El {
     let shown = count.shown();
     let badge = row()
         .h(MENTION_PILL_PT)
@@ -170,9 +180,9 @@ pub(crate) fn count_pill(count: Count, (fill, ink): (Color, Color), ring: Option
     let badge = if shown.chars().count() <= CIRCLE_MAX_CHARS {
         badge.w(MENTION_PILL_PT)
     } else {
-        badge.px(SPACE_SM_PT)
+        badge.px(look.space(SPACE_SM))
     };
-    let badge = badge.child(text(shown).font(TYPE_BADGE).color(ink));
+    let badge = badge.child(text(shown).font(look.font(TYPE_BADGE)).color(ink));
     match ring {
         Some(ring) => el()
             .padding(MENTION_PILL_RING_PT)

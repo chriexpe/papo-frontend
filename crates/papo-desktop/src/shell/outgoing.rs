@@ -9,7 +9,7 @@ use rune::{El, Tx};
 use super::Shell;
 use crate::composer::COMPOSER_KEY;
 use crate::confirm::{Question, confirm};
-use crate::design::Palette;
+use crate::design::Look;
 use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::strings;
 use crate::timeline::TimelineKey;
@@ -114,7 +114,7 @@ impl Shell {
 }
 
 /// "Send again?" over the dimmed app, while it is open.
-pub(super) fn resend_confirm(shell: &Shell, palette: &Palette) -> Option<El> {
+pub(super) fn resend_confirm(shell: &Shell, look: &Look) -> Option<El> {
     shell.resend?;
     let question = Question {
         key: RESEND_KEY,
@@ -132,6 +132,6 @@ pub(super) fn resend_confirm(shell: &Shell, palette: &Palette) -> Option<El> {
         question,
         Shell::cancel_resend,
         Shell::confirm_resend,
-        palette,
+        look,
     ))
 }

@@ -65,6 +65,7 @@ pub(crate) fn startup_open_failed() -> &'static str {
     text!("startup.open_failed")
 }
 
+mod appearance_names;
 mod card;
 mod composer;
 mod links;
@@ -74,10 +75,12 @@ mod reading;
 mod replies;
 mod search;
 mod servers;
+mod settings;
 mod shortcuts;
 mod sign_in;
 mod timeline;
 
+pub(crate) use appearance_names::*;
 pub(crate) use card::*;
 pub(crate) use composer::*;
 pub(crate) use links::*;
@@ -87,6 +90,7 @@ pub(crate) use reading::*;
 pub(crate) use replies::*;
 pub(crate) use search::*;
 pub(crate) use servers::*;
+pub(crate) use settings::*;
 pub(crate) use shortcuts::*;
 pub(crate) use sign_in::*;
 pub(crate) use timeline::*;

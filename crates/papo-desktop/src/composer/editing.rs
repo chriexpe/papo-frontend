@@ -13,7 +13,7 @@ use super::mentions;
 use super::pairs::{self, Keystroke};
 use super::picker::Picker;
 use super::{Composer, DraftState};
-use crate::design::Palette;
+use crate::design::Look;
 use crate::timeline::TimelineKey;
 use papo_sdk_ui::message_content::SelectionFormat;
 
@@ -41,9 +41,9 @@ impl Composer {
     }
 
     /// The shown field's style over its text.
-    pub(crate) fn field_style(&self, palette: &Palette) -> FieldStyle {
+    pub(crate) fn field_style(&self, look: &Look) -> FieldStyle {
         self.shown().map_or_else(FieldStyle::default, |(_, draft)| {
-            field_style(&draft.edit.text, &draft.preview, palette)
+            field_style(&draft.edit.text, &draft.preview, look)
         })
     }
 

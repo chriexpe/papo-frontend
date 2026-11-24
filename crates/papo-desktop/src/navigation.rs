@@ -14,12 +14,12 @@ use std::sync::Arc;
 use papo_sdk::{AccountId, ServerId};
 use papo_sdk_ui::DirectMessageItem;
 
-use crate::design::{RAIL_TILE_PT, SPACE_MD_PT};
+use crate::design::{RAIL_GAP_PT, RAIL_TILE_PT};
 use crate::menu::OpenMenu;
 use crate::server_list::{ServerEntry, ServerList};
 
 /// The distance from one rail tile to the next, in points.
-pub(crate) const RAIL_STEP_PT: f32 = RAIL_TILE_PT + SPACE_MD_PT;
+pub(crate) const RAIL_STEP_PT: f32 = RAIL_TILE_PT + RAIL_GAP_PT;
 
 /// The app's navigation state.
 #[derive(Default)]

@@ -13,8 +13,8 @@ use super::Shell;
 use super::search_field::{FieldList, has_text, keyword_text};
 use crate::channel_pane::avatar;
 use crate::design::{
-    MENU_ROW_HEIGHT_PT, PILL_ICON_PT, Palette, RADIUS_CONTROL_PT, SPACE_SM_PT, TYPE_BODY,
-    TYPE_CAPTION, TYPE_SMALL,
+    Look, MENU_ROW_HEIGHT_PT, PILL_ICON_PT, RADIUS_PILL, SPACE_SM, TYPE_BODY, TYPE_CAPTION,
+    TYPE_SMALL,
 };
 use crate::strings;
 
@@ -28,19 +28,14 @@ pub(crate) fn option_key(index: usize) -> String {
 
 /// The filters, or a filter's values with "Which Lia?" over an
 /// ambiguous name's.
-pub(super) fn list_view(
-    list: &FieldList,
-    highlight: usize,
-    this_year: i32,
-    palette: &Palette,
-) -> El {
+pub(super) fn list_view(list: &FieldList, highlight: usize, this_year: i32, look: &Look) -> El {
     let (heading, rows): (Option<String>, Vec<El>) = match list {
         FieldList::Filters(keywords) => (
             Some(strings::search_filters().to_owned()),
             keywords
                 .iter()
                 .enumerate()
-                .map(|(index, keyword)| filter_row(*keyword, index, index == highlight, palette))
+                .map(|(index, keyword)| filter_row(*keyword, index, index == highlight, look))
                 .collect(),
         ),
         FieldList::Values { which, items, .. } => (
@@ -48,7 +43,7 @@ pub(super) fn list_view(
             items
                 .iter()
                 .enumerate()
-                .map(|(index, item)| value_row(item, index, index == highlight, palette))
+                .map(|(index, item)| value_row(item, index, index == highlight, look))
                 .collect(),
         ),
         FieldList::Dates { items, .. } => (
@@ -56,23 +51,23 @@ pub(super) fn list_view(
             items
                 .iter()
                 .enumerate()
-                .map(|(index, item)| date_row(item, index, index == highlight, this_year, palette))
+                .map(|(index, item)| date_row(item, index, index == highlight, this_year, look))
                 .collect(),
         ),
     };
     col()
         .key("search-list")
         .w_full()
-        .px(SPACE_SM_PT)
-        .pb(SPACE_SM_PT)
+        .px(look.space(SPACE_SM))
+        .pb(look.space(SPACE_SM))
         .role("listbox")
         .label(strings::search_filters())
         .children(heading.map(|heading| {
             text(heading)
-                .font(TYPE_CAPTION)
-                .color(palette.text_muted)
-                .px(SPACE_SM_PT)
-                .py(SPACE_SM_PT)
+                .font(look.font(TYPE_CAPTION))
+                .color(look.palette.text_muted)
+                .px(look.space(SPACE_SM))
+                .py(look.space(SPACE_SM))
         }))
         .child(
             col()
@@ -90,27 +85,31 @@ pub(super) fn list_view(
 }
 
 /// One option row: what `body` holds, highlighted when `chosen`.
-fn option_row(index: usize, label: String, chosen: bool, palette: &Palette) -> El {
+fn option_row(index: usize, label: String, chosen: bool, look: &Look) -> El {
     let line = row()
         .key(option_key(index))
         .w_full()
         .h(MENU_ROW_HEIGHT_PT)
-        .px(SPACE_SM_PT)
-        .gap(SPACE_SM_PT)
+        .px(look.space(SPACE_SM))
+        .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
+        // Concentric with the panel, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("option")
         .label(label)
         .focus_selected(chosen);
     // `surface.hover` is too close to the pill's own surface to show.
     if chosen {
-        line.fill(palette.surface_selected)
+        line.fill(look.on_pill(look.palette.surface_selected))
     } else {
         line
     }
 }
 
-fn filter_row(keyword: SearchKeyword, index: usize, chosen: bool, palette: &Palette) -> El {
+fn filter_row(keyword: SearchKeyword, index: usize, chosen: bool, look: &Look) -> El {
     let (shape, hint) = match keyword {
         SearchKeyword::From => (&crate::icons::USER, strings::search_hint_person()),
         SearchKeyword::In => (&crate::icons::HASH, strings::search_hint_channel()),
@@ -121,18 +120,22 @@ fn filter_row(keyword: SearchKeyword, index: usize, chosen: bool, palette: &Pale
         }
     };
     let spelled = keyword_text(keyword);
-    option_row(index, format!("{spelled} {hint}"), chosen, palette)
-        .child(icon(shape, PILL_ICON_PT).color(palette.text_secondary))
-        .child(text(spelled).font(TYPE_BODY).color(palette.text_primary))
+    option_row(index, format!("{spelled} {hint}"), chosen, look)
+        .child(icon(shape, PILL_ICON_PT).color(look.palette.text_secondary))
+        .child(
+            text(spelled)
+                .font(look.font(TYPE_BODY))
+                .color(look.palette.text_primary),
+        )
         .child(
             text(hint)
-                .font(TYPE_SMALL)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted)
                 .truncate(),
         )
 }
 
-fn value_row(item: &SearchSuggestion, index: usize, chosen: bool, palette: &Palette) -> El {
+fn value_row(item: &SearchSuggestion, index: usize, chosen: bool, look: &Look) -> El {
     match item.value {
         SuggestedValue::Person(_) => {
             let name = item.name.clone().unwrap_or_default();
@@ -144,68 +147,63 @@ fn value_row(item: &SearchSuggestion, index: usize, chosen: bool, palette: &Pale
             let label = handle
                 .as_ref()
                 .map_or_else(|| name.clone(), |handle| format!("{name} {handle}"));
-            option_row(index, label, chosen, palette)
-                .child(avatar(&name, None, palette))
+            option_row(index, label, chosen, look)
+                .child(avatar(&name, None, look))
                 .child(
                     text(name)
-                        .font(TYPE_BODY)
-                        .color(palette.text_primary)
+                        .font(look.font(TYPE_BODY))
+                        .color(look.palette.text_primary)
                         .truncate(),
                 )
                 .children(handle.map(|handle| {
                     text(handle)
-                        .font(TYPE_SMALL)
-                        .color(palette.text_muted)
+                        .font(look.font(TYPE_SMALL))
+                        .color(look.palette.text_muted)
                         .truncate()
                 }))
         }
         SuggestedValue::Channel(_) => {
             let name = item.name.clone().unwrap_or_default();
-            option_row(index, format!("#{name}"), chosen, palette)
-                .child(icon(&crate::icons::HASH, PILL_ICON_PT).color(palette.text_secondary))
+            option_row(index, format!("#{name}"), chosen, look)
+                .child(icon(&crate::icons::HASH, PILL_ICON_PT).color(look.palette.text_secondary))
                 .child(
                     text(name)
-                        .font(TYPE_BODY)
-                        .color(palette.text_primary)
+                        .font(look.font(TYPE_BODY))
+                        .color(look.palette.text_primary)
                         .truncate(),
                 )
         }
         SuggestedValue::Has(kind) => {
             let spelled = has_text(kind);
-            option_row(index, spelled.to_owned(), chosen, palette)
-                .child(icon(&crate::icons::PAPERCLIP, PILL_ICON_PT).color(palette.text_secondary))
-                .child(text(spelled).font(TYPE_BODY).color(palette.text_primary))
+            option_row(index, spelled.to_owned(), chosen, look)
+                .child(
+                    icon(&crate::icons::PAPERCLIP, PILL_ICON_PT).color(look.palette.text_secondary),
+                )
+                .child(
+                    text(spelled)
+                        .font(look.font(TYPE_BODY))
+                        .color(look.palette.text_primary),
+                )
         }
     }
 }
 
 /// A date value and what it means: "2d · Friday, 21 November".
-fn date_row(
-    item: &DateSuggestion,
-    index: usize,
-    chosen: bool,
-    this_year: i32,
-    palette: &Palette,
-) -> El {
+fn date_row(item: &DateSuggestion, index: usize, chosen: bool, this_year: i32, look: &Look) -> El {
     let meaning = date_meaning(item.date, this_year);
-    option_row(
-        index,
-        format!("{} {meaning}", item.binding),
-        chosen,
-        palette,
-    )
-    .child(icon(&crate::icons::CALENDAR, PILL_ICON_PT).color(palette.text_secondary))
-    .child(
-        text(item.binding.clone())
-            .font(TYPE_BODY)
-            .color(palette.text_primary),
-    )
-    .child(
-        text(meaning)
-            .font(TYPE_SMALL)
-            .color(palette.text_muted)
-            .truncate(),
-    )
+    option_row(index, format!("{} {meaning}", item.binding), chosen, look)
+        .child(icon(&crate::icons::CALENDAR, PILL_ICON_PT).color(look.palette.text_secondary))
+        .child(
+            text(item.binding.clone())
+                .font(look.font(TYPE_BODY))
+                .color(look.palette.text_primary),
+        )
+        .child(
+            text(meaning)
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted)
+                .truncate(),
+        )
 }
 
 /// What a date value means, in words: a day with its weekday (and its

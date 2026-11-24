@@ -2,149 +2,18 @@
 //! lightnesses, the accent, feedback, presence and search colours, and the
 //! mixes built from them, authored in OKLCH and converted to Rune colours
 //! here, with the WCAG contrast the floors are tested with. Highlights are
-//! made by `lightness_rule`.
+//! fitted to their floors by `floors`.
 //!
-//! Not built yet: the user's background colour, strength and grain (every
-//! neutral below is untinted) and the accent choice (the default blue only).
+//! The neutrals take the user's background colour (`background`); grain is
+//! drawn over the surfaces, not mixed into them.
 
 use rune::{Color, oklch};
 
 use super::CodeInk;
-use super::lightness_rule::{Text, highlight, in_gamut};
+use super::background::{Accent, Background, BackgroundColour, ChromeFill};
+use super::floors::{self, Text, highlight, in_gamut};
+use super::theme::Theme;
 
-/// The colour theme. It is a setting of its own, not the system's light or
-/// dark preference.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Theme {
-    /// True black on every large surface.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the Appearance settings that choose it are not built yet"
-        )
-    )]
-    Oled,
-    Graphite,
-    Light,
-    /// Every surface a step below white, so white pills stand out.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the Appearance settings that choose it are not built yet"
-        )
-    )]
-    SoftLight,
-}
-
-impl Theme {
-    /// The theme used until the user picks one: Graphite or Light, following
-    /// the system's preference.
-    pub(crate) fn following_system(system_dark: bool) -> Theme {
-        if system_dark {
-            Theme::Graphite
-        } else {
-            Theme::Light
-        }
-    }
-
-    pub(super) fn is_dark(self) -> bool {
-        matches!(self, Theme::Oled | Theme::Graphite)
-    }
-
-    /// Where a highlight starts (`docs/design.md` §4, Highlights): the
-    /// theme's background lightness and its fixed chroma.
-    pub(super) fn highlight_start(self) -> (f32, f32) {
-        match self {
-            Theme::Oled => (0.170, 0.040),
-            Theme::Graphite => (0.262, 0.030),
-            Theme::Light => (0.962, 0.035),
-            Theme::SoftLight => (0.942, 0.040),
-        }
-    }
-
-    /// The OKLCH lightness (0–1) of each neutral token in this theme.
-    fn lightness(self) -> Lightness {
-        match self {
-            Theme::Oled => Lightness {
-                surface_rail: 0.000,
-                surface_sidebar: 0.000,
-                surface_hover: 0.195,
-                surface_content: 0.000,
-                surface_pill: 0.175,
-                surface_code: 0.135,
-                line_subtle: 0.225,
-                line_strong: 0.320,
-                line_pill: 0.255,
-                text_primary: 0.965,
-                text_secondary: 0.800,
-                text_muted: 0.645,
-            },
-            Theme::Graphite => Lightness {
-                surface_rail: 0.205,
-                surface_sidebar: 0.228,
-                surface_hover: 0.275,
-                surface_content: 0.252,
-                surface_pill: 0.270,
-                surface_code: 0.222,
-                line_subtle: 0.310,
-                line_strong: 0.390,
-                line_pill: 0.360,
-                text_primary: 0.955,
-                text_secondary: 0.800,
-                text_muted: 0.665,
-            },
-            Theme::Light => Lightness {
-                surface_rail: 0.952,
-                surface_sidebar: 0.972,
-                surface_hover: 0.940,
-                surface_content: 1.000,
-                surface_pill: 1.000,
-                surface_code: 0.968,
-                line_subtle: 0.918,
-                line_strong: 0.840,
-                line_pill: 0.905,
-                text_primary: 0.215,
-                text_secondary: 0.400,
-                text_muted: 0.520,
-            },
-            Theme::SoftLight => Lightness {
-                surface_rail: 0.925,
-                surface_sidebar: 0.950,
-                surface_hover: 0.918,
-                surface_content: 0.975,
-                surface_pill: 1.000,
-                surface_code: 0.945,
-                line_subtle: 0.900,
-                line_strong: 0.820,
-                line_pill: 0.890,
-                text_primary: 0.215,
-                text_secondary: 0.395,
-                text_muted: 0.505,
-            },
-        }
-    }
-}
-
-/// OKLCH lightness of the neutral tokens a theme defines.
-struct Lightness {
-    surface_rail: f32,
-    surface_sidebar: f32,
-    surface_hover: f32,
-    surface_content: f32,
-    surface_pill: f32,
-    surface_code: f32,
-    line_subtle: f32,
-    line_strong: f32,
-    line_pill: f32,
-    text_primary: f32,
-    text_secondary: f32,
-    text_muted: f32,
-}
-
-/// The default accent, Blue, as an OKLCH hue in degrees.
-pub(super) const ACCENT_HUE_DEGREES: f32 = 256.0;
 /// Every accent's OKLCH chroma.
 const ACCENT_CHROMA: f32 = 0.18;
 /// The opacity of the accent behind selected text.
@@ -188,6 +57,27 @@ pub(super) const PRESENCE_AWAY: Oklch = Oklch {
 const SCRIM_ALPHA: f32 = 0.5;
 /// The opacity of a popup's black shadow.
 const POPUP_SHADOW_ALPHA: f32 = 0.45;
+/// How far a light theme's settings tile moves from the pill towards
+/// `text.primary`, in linear light as the mock does (§8, Open). On dark
+/// themes nothing lighter than the pill keeps 13:1, so the tile is the pill
+/// and the panel behind it the sidebar (Christian, 2026-11-23).
+const LIGHT_TILE_SHARE: f32 = 0.035;
+/// `accent.soft`'s share of the accent, mixed into `surface.content` in
+/// OKLab: 20 % on dark themes, 12 % on light ones (§4). The link is fitted
+/// to it, not the other way round.
+const ACCENT_SOFT_SHARE: (f32, f32) = (0.20, 0.12);
+/// The accent's share of `surface.selected`, mixed in OKLab: 10 % on dark
+/// themes, 9 % on light ones (§4), a target `floors` gives way from.
+const SELECTED_SHARE: (f32, f32) = (0.10, 0.09);
+/// A link's target OKLCH lightness on dark and light themes; `floors`
+/// moves it where a surface it sits on needs more (Teal and Green, which
+/// read brighter, come out darker on light themes).
+const LINK_LIGHTNESS: (f32, f32) = (0.76, 0.50);
+/// OLED's sidebar is black, where the mix shows nothing (1.01:1), so its
+/// selected row mixes into this lightness instead: the result sits at
+/// `surface.hover`'s lightness with the accent's tint, as Graphite's does
+/// (Christian, 2026-11-23: 1.15:1 against the pane).
+const OLED_SELECTED_BASE_LIGHTNESS: f32 = 0.139;
 
 /// A colour authored as an OKLCH hue and chroma, at one lightness on dark
 /// themes and another on light ones.
@@ -213,10 +103,22 @@ impl Oklch {
 /// A theme's colours, ready to draw with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Palette {
-    /// The server rail.
+    /// The server rail: `rail_fill`'s first colour, the one contrast is
+    /// measured on.
     pub(crate) surface_rail: Color,
-    /// The channel list.
+    /// The channel list: `sidebar_fill`'s first colour.
     pub(crate) surface_sidebar: Color,
+    /// What the rail is filled with: a gradient with two or three
+    /// background colours.
+    pub(crate) rail_fill: ChromeFill,
+    /// What the channel and DM lists are filled with.
+    pub(crate) sidebar_fill: ChromeFill,
+    /// A settings row's tile (§8): the pill, on light themes a step
+    /// towards the text.
+    pub(crate) surface_tile: Color,
+    /// The settings panel behind the tiles: the sidebar on dark themes,
+    /// the pill on light ones.
+    pub(crate) surface_panel: Color,
     /// A row under the pointer.
     pub(crate) surface_hover: Color,
     /// The selected channel: the accent mixed into the sidebar.
@@ -263,7 +165,7 @@ pub(crate) struct Palette {
     /// (`docs/design.md` §3, Badges), held to 3:1.
     pub(crate) mention_on: Color,
     /// A mention's chip, behind its text in the link colour: the accent
-    /// mixed into `surface.content` in OKLab, 20 % dark and 12 % light.
+    /// mixed into `surface.content` in OKLab, 20 % dark and 10 % light.
     pub(crate) accent_soft: Color,
     /// `highlight.mention`: the background of a message that mentions you,
     /// with no bar beside it (§4, Highlights: the rule at the mention hue).
@@ -289,36 +191,84 @@ pub(crate) struct Palette {
 }
 
 impl Palette {
+    /// `theme` with the default accent and background colour.
+    #[cfg(test)]
     pub(crate) fn new(theme: Theme) -> Palette {
+        Palette::with(theme, Accent::default(), &Background::default())
+    }
+
+    /// `theme` with the user's `accent` and `background`: the design's
+    /// values as targets, each fitted to its floors (`floors`).
+    pub(crate) fn with(theme: Theme, accent: Accent, background: &Background) -> Palette {
         let lightness = theme.lightness();
-        let neutral = |l: f32| oklch(l, 0.0, 0.0);
         let dark = theme.is_dark();
-        let accent_lightness = if dark { 0.70 } else { 0.555 };
-        let accent = oklch(accent_lightness, ACCENT_CHROMA, ACCENT_HUE_DEGREES);
-        let link_lightness = if dark { 0.76 } else { 0.50 };
-        let danger_lightness = if dark { 0.74 } else { 0.52 };
-        let danger = oklch(danger_lightness, DANGER_CHROMA, DANGER_HUE_DEGREES);
-        let mention_lightness = if dark { 0.66 } else { 0.60 };
-        let mention = oklch(mention_lightness, MENTION_CHROMA, MENTION_HUE_DEGREES);
-        let success_lightness = if dark { 0.76 } else { 0.50 };
+        let pick = |pair: (f32, f32)| if dark { pair.0 } else { pair.1 };
+        let accent_choice = accent;
+        let accent_hue = accent.hue_degrees();
+        let accent = oklch(pick((0.70, 0.555)), ACCENT_CHROMA, accent_hue);
+        let danger = oklch(pick((0.74, 0.52)), DANGER_CHROMA, DANGER_HUE_DEGREES);
+        let mention = oklch(pick((0.66, 0.60)), MENTION_CHROMA, MENTION_HUE_DEGREES);
         let (warning_lightness, warning_hue) = if dark { (0.82, 80.0) } else { (0.50, 65.0) };
-        let sidebar = neutral(lightness.surface_sidebar);
-        let content = neutral(lightness.surface_content);
-        let code = neutral(lightness.surface_code);
-        let text = Text {
-            primary: neutral(lightness.text_primary),
-            secondary: neutral(lightness.text_secondary),
-            muted: neutral(lightness.text_muted),
-            link: oklch(link_lightness, LINK_CHROMA, ACCENT_HUE_DEGREES),
+        let textual = |l: f32| background.neutral(l, true);
+        let mut text = Text {
+            primary: textual(lightness.text_primary),
+            secondary: textual(lightness.text_secondary),
+            muted: textual(lightness.text_muted),
+            // Fitted below, once the surfaces it sits on are known.
+            link: oklch(pick(LINK_LIGHTNESS), LINK_CHROMA, accent_hue),
         };
-        let selected_share = if dark { 0.10 } else { 0.09 };
+        // A surface text sits on: the tint, as much of it as the text allows.
+        let surface_with = |colour: Option<BackgroundColour>, l: f32| {
+            let (chroma, hue) = background.tint(colour, l, false);
+            floors::tinted_surface(l, chroma, hue, &text)
+        };
+        let surface = |l: f32| surface_with(background.first(), l);
+        let neutral = |l: f32| background.neutral(l, false);
+        let rail_fill = ChromeFill::new(background, |colour| {
+            surface_with(colour, lightness.surface_rail)
+        });
+        let sidebar_fill = ChromeFill::new(background, |colour| {
+            surface_with(colour, lightness.surface_sidebar)
+        });
+        let sidebar = sidebar_fill.first();
+        let content = surface(lightness.surface_content);
+        let code = surface(lightness.surface_code);
+        let pill = surface(lightness.surface_pill);
+        let hover = surface(lightness.surface_hover);
+        let selected_base = match theme {
+            Theme::Oled => neutral(OLED_SELECTED_BASE_LIGHTNESS),
+            _ => sidebar,
+        };
+        let selected = floors::readable_background(
+            mix_oklab(selected_base, accent, pick(SELECTED_SHARE)),
+            dark,
+            &text,
+        );
+        let (surface_tile, surface_panel) = if dark {
+            (pill, sidebar)
+        } else {
+            let tile = mix_linear(pill, text.primary, LIGHT_TILE_SHARE);
+            (floors::readable_background(tile, dark, &text), pill)
+        };
+        let accent_soft = mix_oklab(content, accent, pick(ACCENT_SOFT_SHARE));
+        text.link = floors::link(
+            pick(LINK_LIGHTNESS),
+            LINK_CHROMA,
+            accent_hue,
+            dark,
+            &[content, pill, hover, sidebar, code, selected, accent_soft],
+        );
         Palette {
-            surface_rail: neutral(lightness.surface_rail),
+            surface_rail: rail_fill.first(),
             surface_sidebar: sidebar,
-            surface_hover: neutral(lightness.surface_hover),
-            surface_selected: mix_oklab(sidebar, accent, selected_share),
+            rail_fill,
+            sidebar_fill,
+            surface_tile,
+            surface_panel,
+            surface_hover: hover,
+            surface_selected: selected,
             surface_content: content,
-            surface_pill: neutral(lightness.surface_pill),
+            surface_pill: pill,
             surface_code: code,
             line_subtle: neutral(lightness.line_subtle),
             line_strong: neutral(lightness.line_strong),
@@ -333,10 +283,10 @@ impl Palette {
             danger,
             danger_on: text_on(danger),
             warning: oklch(warning_lightness, WARNING_CHROMA, warning_hue),
-            success: oklch(success_lightness, SUCCESS_CHROMA, SUCCESS_HUE_DEGREES),
+            success: oklch(pick((0.76, 0.50)), SUCCESS_CHROMA, SUCCESS_HUE_DEGREES),
             mention,
             mention_on: Color::WHITE,
-            accent_soft: mix_oklab(content, accent, if dark { 0.20 } else { 0.12 }),
+            accent_soft,
             highlight_mention: highlight(theme, MENTION_HIGHLIGHT_HUE_DEGREES, &text),
             focus_ring: accent,
             presence_online: PRESENCE_ONLINE.on(dark),
@@ -344,7 +294,7 @@ impl Palette {
             presence_busy: mention,
             presence_offline: text.muted,
             search_match: PRESENCE_AWAY.on(dark),
-            code: CodeInk::new(dark, code),
+            code: CodeInk::new(dark, code, accent_choice),
             scrim: Color::BLACK.alpha(SCRIM_ALPHA),
             popup_shadow: Color::BLACK.alpha(POPUP_SHADOW_ALPHA),
         }
@@ -361,6 +311,16 @@ fn mix_oklab(base: Color, tint: Color, share: f32) -> Color {
         *channel = a + (b - a) * share;
     }
     Color::from_oklab(mixed)
+}
+
+/// `share` of the way from `base` to `tint` in linear light.
+fn mix_linear(base: Color, tint: Color, share: f32) -> Color {
+    Color {
+        r: base.r + (tint.r - base.r) * share,
+        g: base.g + (tint.g - base.g) * share,
+        b: base.b + (tint.b - base.b) * share,
+        a: base.a,
+    }
 }
 
 /// Black or white, whichever contrasts more with `background`.

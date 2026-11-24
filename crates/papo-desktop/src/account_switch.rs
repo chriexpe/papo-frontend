@@ -16,9 +16,8 @@ use rune::{El, col, el, icon, row, text};
 use crate::badges::Badge;
 use crate::channel_pane::{account_pill, avatar, row_badge, switch_button};
 use crate::design::{
-    FOCUS_RING_PT, PANE_EDGE_PT, PANE_PILL_HEIGHT_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT,
-    RADIUS_PILL_PT, ROW_ICON_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_MEDIUM,
-    TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
+    FOCUS_RING_PT, Look, PANE_EDGE_PT, PANE_PILL_HEIGHT, RADIUS_PILL, ROW_ICON_PT, SPACE_MD,
+    SPACE_SM, Surfaces, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
 };
 use crate::icons::{CHECK, PLUS};
 use crate::server_list::{AccountEntry, ServerEntry, ServerList};
@@ -44,12 +43,12 @@ pub(crate) fn account_key(account: AccountId) -> String {
 /// accounts and Add account. Pinned over the top of the channel pane, so it
 /// covers the pill and grows over the channels. Escape or a click outside
 /// closes it.
-pub(crate) fn grown(server: &ServerEntry, pill_row: El, palette: &Palette) -> El {
+pub(crate) fn grown(server: &ServerEntry, pill_row: El, look: &Look) -> El {
     let shown = server.account.as_ref().map(|account| account.id);
     let rows = server
         .accounts
         .iter()
-        .map(|account| account_row(account, Some(account.id) == shown, None, palette));
+        .map(|account| account_row(account, Some(account.id) == shown, None, look));
     // Written in capitals, as the catalog writes the rest of the caption.
     let title = strings::accounts_on(&server.name.to_uppercase());
     let accounts = col()
@@ -62,12 +61,12 @@ pub(crate) fn grown(server: &ServerEntry, pill_row: El, palette: &Palette) -> El
     let caption = el()
         .w_full()
         .min_w(0.0)
-        .px(SPACE_MD_PT)
-        .pb(SPACE_SM_PT)
+        .px(look.space(SPACE_MD))
+        .pb(look.space(SPACE_SM))
         .child(
             text(title)
-                .font(TYPE_CAPTION_MEDIUM)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_CAPTION_MEDIUM))
+                .color(look.palette.text_muted)
                 .max_lines(1)
                 .w_full()
                 .a11y_hidden(),
@@ -75,94 +74,101 @@ pub(crate) fn grown(server: &ServerEntry, pill_row: El, palette: &Palette) -> El
     col()
         .key(ACCOUNTS_KEY)
         .pin(
-            Some(SPACE_MD_PT),
-            Some(SPACE_MD_PT),
-            Some(SPACE_MD_PT),
+            Some(look.space(SPACE_MD)),
+            Some(look.space(SPACE_MD)),
+            Some(look.space(SPACE_MD)),
             None,
         )
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .radius(look.radius(RADIUS_PILL))
+        .pill_surface(look)
         .role("dialog")
         .label(strings::switch_account())
         .modal(true, Shell::close_accounts)
         .child(pill_row)
-        .child(divider(palette))
-        .child(section().child(caption).child(accounts))
-        .child(divider(palette))
-        .child(section().child(add_account(palette)))
+        .child(divider(look))
+        .child(section(look).child(caption).child(accounts))
+        .child(divider(look))
+        .child(section(look).child(add_account(look)))
 }
 
-fn section() -> El {
-    col().w_full().padding(SPACE_SM_PT).py(SPACE_MD_PT)
+fn section(look: &Look) -> El {
+    col()
+        .w_full()
+        .padding(look.space(SPACE_SM))
+        .py(look.space(SPACE_MD))
 }
 
-fn divider(palette: &Palette) -> El {
-    el().w_full().h(PANE_EDGE_PT).fill(palette.line_subtle)
+fn divider(look: &Look) -> El {
+    el().w_full().h(PANE_EDGE_PT).fill(look.palette.line_subtle)
 }
 
 /// One account: its avatar, name and handle, its `badge` when given, ticked
 /// when it is the one its server shows.
-fn account_row(account: &AccountEntry, shown: bool, badge: Option<Badge>, palette: &Palette) -> El {
+fn account_row(account: &AccountEntry, shown: bool, badge: Option<Badge>, look: &Look) -> El {
     let id = account.id;
     let names = col()
         .grow(1.0)
         .min_w(0.0)
         .child(
             text(account.name.as_str())
-                .font(TYPE_BODY_MEDIUM)
-                .color(palette.text_primary)
+                .font(look.font(TYPE_BODY_MEDIUM))
+                .color(look.palette.text_primary)
                 .max_lines(1),
         )
         .child(
             text(strings::account_handle(&account.username))
-                .font(TYPE_CAPTION)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_CAPTION))
+                .color(look.palette.text_muted)
                 .max_lines(1),
         );
     let spoken = strings::account_row(&account.name, &account.username);
     let label = badge.map_or_else(|| spoken.clone(), |badge| badge.label(&spoken));
-    let mut line = choice(account_key(id), palette)
+    let mut line = choice(account_key(id), look)
         .role("radio")
         .label(label)
         .checked(shown)
         .focus_selected(shown)
         .on_press_tx(move |shell: &mut Shell, tx| shell.pick_account(id, tx))
-        .child(avatar(&account.name, None, palette))
+        .child(avatar(&account.name, None, look))
         .child(names)
-        .children(badge.and_then(|badge| row_badge(badge, palette)));
+        .children(badge.and_then(|badge| row_badge(badge, look)));
     if shown {
-        line = line.child(icon(&CHECK, ROW_ICON_PT).color(palette.accent));
+        line = line.child(icon(&CHECK, ROW_ICON_PT).color(look.palette.accent));
     }
     line
 }
 
-fn add_account(palette: &Palette) -> El {
-    choice(ADD_ACCOUNT_KEY.to_owned(), palette)
+fn add_account(look: &Look) -> El {
+    choice(ADD_ACCOUNT_KEY.to_owned(), look)
         .role("button")
         .label(strings::add_account())
         .on_press(Shell::add_account)
-        .child(icon(&PLUS, ROW_ICON_PT).color(palette.text_secondary))
+        .child(icon(&PLUS, ROW_ICON_PT).color(look.palette.text_secondary))
         .child(
             text(strings::add_account())
-                .font(TYPE_BODY)
-                .color(palette.text_primary),
+                .font(look.font(TYPE_BODY))
+                .color(look.palette.text_primary),
         )
 }
 
 /// A pressable row in the grown pill.
-fn choice(key: String, palette: &Palette) -> El {
+fn choice(key: String, look: &Look) -> El {
     row()
         .key(key)
         .w_full()
-        .px(SPACE_MD_PT)
-        .py(SPACE_SM_PT)
-        .gap(SPACE_MD_PT)
+        .px(look.space(SPACE_MD))
+        .py(look.space(SPACE_SM))
+        .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
-        .hover(palette.surface_hover)
+        // Concentric with the grown pill: a section's side padding, one
+        // `space.sm`, is the smaller gap at its corners.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
+        .hover(look.on_pill(look.palette.surface_hover))
         .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
 }
 
 /// Direct's account pill, at the bottom of the pane: `account` (the one
@@ -173,7 +179,7 @@ pub(crate) fn direct_pill(
     account: &AccountEntry,
     servers: &ServerList,
     open: bool,
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     let badge = Badge::sum(servers.account_badges.values().copied());
     let switch = switch_button(
@@ -181,41 +187,41 @@ pub(crate) fn direct_pill(
         badge,
         open,
         Shell::toggle_direct_accounts,
-        palette,
+        look,
     );
-    account_pill(account, Some(switch), palette)
+    account_pill(account, Some(switch), look)
 }
 
 /// Every server's accounts, grown upward from Direct's account pill over
 /// the bottom of the pane: a section per server, each account with its
 /// unread badge and the shown one ticked. Escape or a click outside
 /// closes it.
-pub(crate) fn direct_grown(servers: &ServerList, palette: &Palette) -> El {
+pub(crate) fn direct_grown(servers: &ServerList, look: &Look) -> El {
     let mut list = col().w_full();
     for (index, server) in servers.servers.iter().enumerate() {
         if server.accounts.is_empty() {
             continue;
         }
         if index > 0 {
-            list = list.child(divider(palette));
+            list = list.child(divider(look));
         }
         let shown = server.account.as_ref().map(|account| account.id);
         let title = strings::accounts_on(&server.name.to_uppercase());
         let rows = server.accounts.iter().map(|account| {
             let badge = servers.account_badges.get(&account.id).copied();
-            account_row(account, Some(account.id) == shown, badge, palette)
+            account_row(account, Some(account.id) == shown, badge, look)
         });
         list = list.child(
-            section()
+            section(look)
                 .child(
                     el().w_full()
                         .min_w(0.0)
-                        .px(SPACE_MD_PT)
-                        .pb(SPACE_SM_PT)
+                        .px(look.space(SPACE_MD))
+                        .pb(look.space(SPACE_SM))
                         .child(
                             text(title.as_str())
-                                .font(TYPE_CAPTION_MEDIUM)
-                                .color(palette.text_muted)
+                                .font(look.font(TYPE_CAPTION_MEDIUM))
+                                .color(look.palette.text_muted)
                                 .max_lines(1)
                                 .w_full()
                                 .a11y_hidden(),
@@ -234,14 +240,13 @@ pub(crate) fn direct_grown(servers: &ServerList, palette: &Palette) -> El {
     col()
         .key(DIRECT_ACCOUNTS_LIST_KEY)
         .pin(
-            Some(SPACE_MD_PT),
+            Some(look.space(SPACE_MD)),
             None,
-            Some(SPACE_MD_PT),
-            Some(SPACE_MD_PT + PANE_PILL_HEIGHT_PT + SPACE_SM_PT),
+            Some(look.space(SPACE_MD)),
+            Some(look.space(SPACE_MD) + look.space(PANE_PILL_HEIGHT) + look.space(SPACE_SM)),
         )
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .radius(look.radius(RADIUS_PILL))
+        .pill_surface(look)
         .role("dialog")
         .label(strings::direct_accounts())
         .modal(true, Shell::close_accounts)

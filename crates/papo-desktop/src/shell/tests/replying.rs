@@ -380,3 +380,18 @@ fn alt_down_on_a_focused_message_goes_to_the_next_channel() {
         Some(super::composer::channel_id(2).as_str())
     );
 }
+
+#[test]
+fn the_rows_under_the_foot_follow_the_composer_as_it_grows() {
+    let mut rt = conversation("");
+    rt.frame(FRAME_S);
+    let before = rt.state.floating_insets_pt[1];
+    assert!(before > 40.0, "the composer's foot: {before}");
+    let mut rt = conversation("one\ntwo\nthree\nfour");
+    rt.frame(FRAME_S);
+    let after = rt.state.floating_insets_pt[1];
+    assert!(
+        after > before + 10.0,
+        "a taller composer covers more rows: {before} → {after}"
+    );
+}

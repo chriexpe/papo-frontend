@@ -38,9 +38,9 @@ use super::send_mark::send_mark;
 use super::view::{Style, TimelineHost};
 use super::{OpenTimeline, TimelineKey};
 use crate::design::{
-    AVATAR_TOP_PT, DELETING_OPACITY, Density, FOCUS_RING_PT, HIGHLIGHT_ROW_RADIUS_PT, Lead,
-    MESSAGE_BLOCK_GAP_PT, MESSAGE_HEADER_GAP_PT, MESSAGE_NAME_GAP_PT, MESSAGE_ROW_INSET_PT,
-    Palette, RADIUS_AVATAR_PT, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
+    AVATAR_TOP, DELETING_OPACITY, Density, FOCUS_RING_PT, HIGHLIGHT_ROW_RADIUS, Lead, Look,
+    MESSAGE_BLOCK_GAP, MESSAGE_HEADER_GAP, MESSAGE_NAME_GAP, MESSAGE_ROW_INSET, RADIUS_AVATAR,
+    TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
 };
 use crate::rail::initial;
 use crate::strings;
@@ -62,7 +62,8 @@ pub(super) fn message_row<S: TimelineHost>(
     let copied = open.copied(id);
     // The key too: two accounts on one server can show the same message,
     // and the row's handlers name their timeline.
-    let version = (key, style.theme, layout, &parts, revealed, copied);
+    // The look too: a row is drawn at every Appearance setting.
+    let version = (key, style.look, layout, &parts, revealed, copied);
     let row_key = if history {
         message_key(id)
     } else {
@@ -77,17 +78,17 @@ pub(super) fn message_row<S: TimelineHost>(
                 jumbo: layout.density != Density::ExtraCompact,
             },
         );
-        let mut palette = style.palette;
+        let mut look = style.look;
         let quiet = matches!(
             parts.change,
             Some((_, ChangeState::Saving | ChangeState::EditFailed))
         );
         if parts.sending == Some(SendState::Pending) || quiet {
             // A message or edit still on its way reads quieter.
-            palette.text_primary = palette.text_secondary;
+            look.palette.text_primary = look.palette.text_secondary;
         }
         let draw = Draw {
-            palette: &palette,
+            look: &look,
             key,
             message: id,
             copied,
@@ -97,29 +98,31 @@ pub(super) fn message_row<S: TimelineHost>(
             standalone: false,
         };
         let mut body = content::body::<S>(&doc, &draw);
-        if let Some(chips) = reactions::chips::<S>(key, id, &parts.chips, parts.add_chip, &palette)
-        {
-            body = col().gap(MESSAGE_BLOCK_GAP_PT).child(body).child(chips);
+        if let Some(chips) = reactions::chips::<S>(key, id, &parts.chips, parts.add_chip, &look) {
+            body = col()
+                .gap(look.space(MESSAGE_BLOCK_GAP))
+                .child(body)
+                .child(chips);
         }
         if let Some((local, ChangeState::DeleteFailed)) = parts.change {
             body = col()
-                .gap(MESSAGE_BLOCK_GAP_PT)
+                .gap(look.space(MESSAGE_BLOCK_GAP))
                 .child(body)
-                .child(delete_failed_line::<S>(key, local, &style.palette));
+                .child(delete_failed_line::<S>(key, local, &style.look));
         }
         let mark = match (parts.sending, parts.change) {
-            (Some(state), _) => Some(send_mark::<S>(key, id, state, &style.palette)),
-            (None, Some((local, state))) => change_mark::<S>(key, local, state, &style.palette),
+            (Some(state), _) => Some(send_mark::<S>(key, id, state, &style.look)),
+            (None, Some((local, state))) => change_mark::<S>(key, local, state, &style.look),
             (None, None) => None,
         };
         let line = parts.reply.as_ref().map(|line| {
-            let spacing = layout.density.spacing();
-            reply_line::<S>(key, line, spacing.lead, spacing.lead_gap_pt, &style.palette)
+            let spacing = look.spacing(layout.density);
+            reply_line::<S>(key, line, spacing.lead, spacing.lead_gap_pt, &style.look)
         });
         let bar = parts
             .bar
             .as_ref()
-            .map(|bar| hover_bar::bar::<S>(key, id, bar, &style.palette));
+            .map(|bar| hover_bar::bar::<S>(key, id, bar, &style.look));
         let (enter, exit) = hover_bar::row_motion();
         let name_press = author_press::<S>(key, row_message.message, history);
         build(id, &parts, line, body, mark, style, name_press, |message| {
@@ -183,26 +186,26 @@ fn build(
     name_press: impl Fn(El, String) -> El,
     report: impl FnOnce(El) -> El,
 ) -> El {
-    let palette = style.palette;
-    let spacing = style.layout.density.spacing();
+    let look = style.look;
+    let spacing = look.spacing(style.layout.density);
     let above_pt = if parts.continued {
         spacing.within_group_pt
     } else {
         spacing.between_groups_pt
     };
-    let name = || name_press(name_text(&parts.name, &palette), author_key(id));
+    let name = || name_press(name_text(&parts.name, &look), author_key(id));
     // The mark, when there is one, stands where the time would.
     let time = |mark: Option<El>| {
         mark.unwrap_or_else(|| {
             text(parts.time.clone())
                 .key("time")
-                .font(TYPE_CAPTION)
-                .color(palette.text_muted)
+                .font(look.font(TYPE_CAPTION))
+                .color(look.palette.text_muted)
         })
     };
     let (lead, content) = match spacing.lead {
         Lead::Avatar(size_pt) => {
-            let mut content = col().gap(MESSAGE_BLOCK_GAP_PT);
+            let mut content = col().gap(look.space(MESSAGE_BLOCK_GAP));
             let lead = if parts.continued {
                 // No header to hold the mark: the lead column does.
                 row().key("lead").w(size_pt).justify_center().children(mark)
@@ -210,12 +213,12 @@ fn build(
                 content = content.child(
                     row()
                         .key("header")
-                        .gap(MESSAGE_HEADER_GAP_PT)
+                        .gap(look.space(MESSAGE_HEADER_GAP))
                         .items_end()
                         .child(name())
                         .child(time(mark)),
                 );
-                avatar(&parts.name, size_pt, &palette, |tile| {
+                avatar(&parts.name, size_pt, &look, |tile| {
                     name_press(tile, avatar_key(id))
                 })
             };
@@ -227,7 +230,7 @@ fn build(
                 lead = lead.child(time(mark));
             }
             let content = if style.layout.stacked {
-                let mut stack = col().gap(MESSAGE_BLOCK_GAP_PT);
+                let mut stack = col().gap(look.space(MESSAGE_BLOCK_GAP));
                 if !parts.continued {
                     stack = stack.child(name());
                 }
@@ -237,12 +240,12 @@ fn build(
                 // text stays on the column.
                 let name = if parts.continued {
                     // Only a placeholder: it opens no card.
-                    name_text(&parts.name, &palette).opacity(0.0).a11y_hidden()
+                    name_text(&parts.name, &look).opacity(0.0).a11y_hidden()
                 } else {
                     name()
                 };
                 row()
-                    .gap(MESSAGE_NAME_GAP_PT)
+                    .gap(look.space(MESSAGE_NAME_GAP))
                     .items_start()
                     .child(name)
                     .child(col().grow(1.0).min_w(0.0).child(body))
@@ -259,20 +262,20 @@ fn build(
     let mut message = col()
         .key(message_part_key(id))
         .w_full()
-        .px(MESSAGE_ROW_INSET_PT)
+        .px(look.space(MESSAGE_ROW_INSET))
         .py(spacing.row_padding_pt)
-        .radius(HIGHLIGHT_ROW_RADIUS_PT)
+        .radius(look.radius(HIGHLIGHT_ROW_RADIUS))
         .role("listitem")
         // Keyboard focus: the ring on the outer edge, and the hover tone on
         // a row without a highlight of its own (Christian, 2026-11-22: a
         // highlight stays), neither of which moves anything.
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .children(line)
         .child(row_part);
     message = match parts.highlight {
-        Highlight::Selected => message.fill(palette.surface_selected),
-        Highlight::Mention => message.fill(palette.highlight_mention),
-        Highlight::None => message.focus_fill(palette.surface_hover),
+        Highlight::Selected => message.fill(look.palette.surface_selected),
+        Highlight::Mention => message.fill(look.palette.highlight_mention),
+        Highlight::None => message.focus_fill(look.palette.surface_hover),
     };
     if matches!(parts.change, Some((_, ChangeState::Deleting))) {
         message = message
@@ -282,7 +285,7 @@ fn build(
     }
     let row = col().w_full().pt(above_pt).child(report(message));
     match parts.boundary {
-        Some(boundary) => row.child(boundary_line(boundary, above_pt, &palette)),
+        Some(boundary) => row.child(boundary_line(boundary, above_pt, &look)),
         None => row,
     }
 }
@@ -309,37 +312,33 @@ fn author_press<S: TimelineHost>(
 }
 
 /// The author's name at the head of a group.
-fn name_text(name: &str, palette: &Palette) -> El {
+fn name_text(name: &str, look: &Look) -> El {
     text(name.to_owned())
         .key("name")
-        .font(TYPE_BODY_STRONG)
-        .color(palette.text_primary)
+        .font(look.font(TYPE_BODY_STRONG))
+        .color(look.palette.text_primary)
 }
 
-/// The first letter of `name` on a rounded square, `AVATAR_TOP_PT` below
-/// the top of its lead box (`docs/design.md` §5, Distances are measured to
-/// what is seen). The box is as tall as the avatar alone, so the offset
-/// never makes a row taller than it was.
-pub(super) fn avatar(
-    name: &str,
-    size_pt: f32,
-    palette: &Palette,
-    press: impl FnOnce(El) -> El,
-) -> El {
+/// The first letter of `name` on a rounded square, [`AVATAR_TOP`] below the
+/// top of its lead box (`docs/design.md` §5, Distances are measured to what
+/// is seen). The box holds the offset and the avatar, so a row too short
+/// for them grows rather than let the avatar reach past its background
+/// (Christian, 2026-11-23: at 12 pt Comfortable it reached 4.6 pt past).
+pub(super) fn avatar(name: &str, size_pt: f32, look: &Look, press: impl FnOnce(El) -> El) -> El {
     el().key("lead")
-        .size(size_pt, size_pt)
+        .size(size_pt, size_pt + look.text_multiple(AVATAR_TOP))
         .a11y_hidden()
         .child(press(
             el().key("avatar")
-                .absolute(0.0, AVATAR_TOP_PT)
+                .absolute(0.0, look.text_multiple(AVATAR_TOP))
                 .size(size_pt, size_pt)
-                .radius(RADIUS_AVATAR_PT)
+                .radius(look.radius(RADIUS_AVATAR))
                 .center()
-                .fill(palette.surface_hover)
+                .fill(look.palette.surface_hover)
                 .child(
                     text(initial(name))
-                        .font(TYPE_CAPTION_MEDIUM)
-                        .color(palette.text_secondary),
+                        .font(look.font(TYPE_CAPTION_MEDIUM))
+                        .color(look.palette.text_secondary),
                 ),
         ))
 }

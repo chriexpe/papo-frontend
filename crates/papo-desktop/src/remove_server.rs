@@ -9,7 +9,7 @@ use papo_sdk::ServerId;
 use rune::El;
 
 use crate::confirm::{Question, confirm as ask};
-use crate::design::Palette;
+use crate::design::Look;
 use crate::shell::Shell;
 use crate::strings;
 
@@ -18,7 +18,7 @@ pub(crate) const CONFIRM_KEY: &str = "remove-server";
 
 /// "Remove {server}?" over the dimmed app. Escape, Return and Cancel keep
 /// the server; only Remove removes it.
-pub(crate) fn confirm(server_name: &str, palette: &Palette) -> El {
+pub(crate) fn confirm(server_name: &str, look: &Look) -> El {
     let title = strings::remove_title(server_name);
     let question = Question {
         key: CONFIRM_KEY,
@@ -36,7 +36,7 @@ pub(crate) fn confirm(server_name: &str, palette: &Palette) -> El {
         question,
         Shell::cancel_remove_server,
         Shell::confirm_remove_server,
-        palette,
+        look,
     )
 }
 

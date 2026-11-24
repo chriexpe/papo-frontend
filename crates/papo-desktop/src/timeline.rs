@@ -200,12 +200,19 @@ impl OpenTimeline {
     /// An open timeline holding `items`, with no SDK window behind it.
     #[cfg(test)]
     pub(crate) fn loaded(key: TimelineKey, items: Vector<Arc<TimelineItem>>) -> OpenTimeline {
+        let mut open = OpenTimeline::with_items(key, items);
+        open.generation = Some(Generation::for_test(1));
+        open
+    }
+
+    /// `items`, open, read as far as they go.
+    #[cfg(test)]
+    fn with_items(key: TimelineKey, items: Vector<Arc<TimelineItem>>) -> OpenTimeline {
         let (mut open, _stopped) = OpenTimeline::opening(key, 0, None);
         open.items = items;
         open.echoes.refresh(&open.items, key.account.user());
         open.changes.refresh(&open.items);
         open.phase = Phase::Open;
-        open.generation = Some(Generation::for_test(1));
         open.reading.items_changed(&open.items, true);
         open
     }

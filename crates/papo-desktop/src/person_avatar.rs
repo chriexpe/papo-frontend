@@ -11,7 +11,7 @@
 use papo_sdk_ui::PresenceMark;
 use rune::{Color, El, Icon, el, icon, text};
 
-use crate::design::{AvatarSize, Palette};
+use crate::design::{AvatarSize, Look};
 use crate::icons::{PRESENCE_AWAY, PRESENCE_BUSY, PRESENCE_OFFLINE, PRESENCE_ONLINE};
 use crate::rail::initial;
 
@@ -23,32 +23,32 @@ pub(crate) fn person_avatar(
     size: AvatarSize,
     presence: Option<PresenceMark>,
     surface: Color,
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     let tile = el()
         .size(size.side_pt, size.side_pt)
-        .radius(size.radius_pt)
+        .radius(look.radius(size.radius))
         .center()
-        .fill(palette.surface_hover)
+        .fill(look.palette.surface_hover)
         .child(
             text(initial(name))
-                .font(size.letter)
-                .color(palette.text_secondary),
+                .font(look.font(size.letter))
+                .color(look.palette.text_secondary),
         );
     let avatar = el()
         .size(size.side_pt, size.side_pt)
         .a11y_hidden()
         .child(tile);
     match presence {
-        Some(mark) => avatar.child(badge(mark, size, surface, palette)),
+        Some(mark) => avatar.child(badge(mark, size, surface, look)),
         None => avatar,
     }
 }
 
 /// The badge: `mark` on a disc of `surface`, reaching past the corner.
-fn badge(mark: PresenceMark, size: AvatarSize, surface: Color, palette: &Palette) -> El {
+fn badge(mark: PresenceMark, size: AvatarSize, surface: Color, look: &Look) -> El {
     let offset_pt = size.side_pt - size.ring_pt + size.overhang_pt;
-    let (shape, colour) = shape(mark, palette);
+    let (shape, colour) = shape(mark, look);
     el().key("presence")
         .absolute(offset_pt, offset_pt)
         .size(size.ring_pt, size.ring_pt)
@@ -58,12 +58,12 @@ fn badge(mark: PresenceMark, size: AvatarSize, surface: Color, palette: &Palette
         .child(icon(shape, size.mark_pt).color(colour))
 }
 
-fn shape(mark: PresenceMark, palette: &Palette) -> (&'static Icon, Color) {
+fn shape(mark: PresenceMark, look: &Look) -> (&'static Icon, Color) {
     match mark {
-        PresenceMark::Away => (&PRESENCE_AWAY, palette.presence_away),
-        PresenceMark::Busy => (&PRESENCE_BUSY, palette.presence_busy),
-        PresenceMark::Offline => (&PRESENCE_OFFLINE, palette.presence_offline),
+        PresenceMark::Away => (&PRESENCE_AWAY, look.palette.presence_away),
+        PresenceMark::Busy => (&PRESENCE_BUSY, look.palette.presence_busy),
+        PresenceMark::Offline => (&PRESENCE_OFFLINE, look.palette.presence_offline),
         // Available, and a mark this client does not know yet: connected.
-        _ => (&PRESENCE_ONLINE, palette.presence_online),
+        _ => (&PRESENCE_ONLINE, look.palette.presence_online),
     }
 }

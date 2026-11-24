@@ -10,7 +10,7 @@ use rune::{El, Key, KeyEvent, Tx, el, row, text};
 
 use super::MenuAction;
 use crate::design::{
-    FOCUS_RING_PT, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, SPACE_XS_PT,
+    FOCUS_RING_PT, Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_PILL, SPACE_SM, SPACE_XS,
     TYPE_BODY,
 };
 use crate::shell::Shell;
@@ -46,7 +46,9 @@ impl Strip {
 }
 
 /// Draws the strip, the menu's first item when `first`.
-pub(super) fn view(strip: &Strip, first: bool, palette: &Palette) -> El {
+pub(super) fn view(strip: &Strip, first: bool, look: &Look) -> El {
+    // Concentric with the menu, whose edge is one `space.sm` out.
+    let strip_radius_pt = Look::nested_radius(look.radius(RADIUS_PILL), look.space(SPACE_SM));
     let cells = strip
         .emoji
         .iter()
@@ -57,23 +59,29 @@ pub(super) fn view(strip: &Strip, first: bool, palette: &Palette) -> El {
                 .key(format!("{STRIP_KEY}-{index}"))
                 .size(CELL_PT, CELL_PT)
                 .center()
-                .radius(RADIUS_CONTROL_PT)
+                // Concentric with the strip; the corner's gap is the
+                // smaller of its side padding and the space above the cell.
+                .radius(Look::nested_radius(
+                    strip_radius_pt,
+                    look.space(SPACE_XS)
+                        .min((MENU_ROW_HEIGHT_PT - CELL_PT) / 2.0),
+                ))
                 .a11y_hidden()
-                .hover(palette.surface_hover)
+                .hover(look.on_pill(look.palette.surface_hover))
                 .on_press_tx(move |shell: &mut Shell, tx| {
                     if let Some(action) = action.clone() {
                         shell.menu_picked(action, tx);
                     }
                 })
-                .child(text(emoji.clone()).font(TYPE_BODY));
+                .child(text(emoji.clone()).font(look.font(TYPE_BODY)));
             if *mine {
                 cell = cell
-                    .fill(palette.accent_soft)
-                    .border(PILL_OUTLINE_PT, palette.accent);
+                    .fill(look.palette.accent_soft)
+                    .border(PILL_OUTLINE_PT, look.palette.accent);
             }
             if index == strip.chosen {
                 // Drawn while the strip has the keyboard: on the emoji ← and → are on.
-                cell = cell.focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring);
+                cell = cell.focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring);
             }
             cell
         });
@@ -89,7 +97,7 @@ pub(super) fn view(strip: &Strip, first: bool, palette: &Palette) -> El {
     el().key(STRIP_KEY)
         .w_full()
         .min_h(MENU_ROW_HEIGHT_PT)
-        .radius(RADIUS_CONTROL_PT)
+        .radius(strip_radius_pt)
         .role("menuitem")
         .label(label)
         .focusable(true)
@@ -104,7 +112,7 @@ pub(super) fn view(strip: &Strip, first: bool, palette: &Palette) -> El {
             row()
                 .w_full()
                 .h(MENU_ROW_HEIGHT_PT)
-                .px(SPACE_XS_PT)
+                .px(look.space(SPACE_XS))
                 .justify_between()
                 .center_y()
                 .children(cells),

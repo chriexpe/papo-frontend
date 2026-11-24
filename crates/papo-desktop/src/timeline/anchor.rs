@@ -70,6 +70,11 @@ pub(crate) struct Tracker {
     viewport_top_pt: Option<f32>,
     /// The viewport's height, in points.
     viewport_height_pt: f32,
+    /// How far the header pills reach down over the viewport's top and the
+    /// composer up over its bottom, in points: a row hidden under them is
+    /// not seen, nor read from (`docs/design.md` §5, Glass: the
+    /// conversation scrolls under the pills).
+    insets_pt: [f32; 2],
     /// Whether the viewport shows its bottom. A new viewport opens there.
     at_bottom: bool,
     /// The visible message rows, top to bottom, as last reported.
@@ -89,9 +94,36 @@ impl Tracker {
         }
     }
 
+    /// The viewport is at `top_pt`, `height_pt` tall.
     pub(crate) fn viewport_moved(&mut self, top_pt: f32, height_pt: f32) {
         self.viewport_top_pt = Some(top_pt);
         self.viewport_height_pt = height_pt;
+    }
+
+    /// The pills floating over the viewport now cover `insets_pt` of its
+    /// top and bottom: rows under them no longer count as shown.
+    pub(crate) fn insets_moved(&mut self, insets_pt: [f32; 2]) {
+        self.insets_pt = insets_pt;
+    }
+
+    /// The visible message rows that show between the pills, top to
+    /// bottom: what a read report sends. A row not laid out yet counts as
+    /// shown, as Rune reports it visible.
+    pub(crate) fn seen(&self) -> Vec<Uuid> {
+        let Some(top_pt) = self.viewport_top_pt else {
+            return self.visible.clone();
+        };
+        let [above, below] = self.insets_pt;
+        let (from, to) = (top_pt + above, top_pt + self.viewport_height_pt - below);
+        self.visible
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.edges_pt
+                    .get(id)
+                    .is_none_or(|(top, bottom)| *bottom > from && *top < to)
+            })
+            .collect()
     }
 
     /// Returns whether it changed.
@@ -101,11 +133,6 @@ impl Tracker {
 
     pub(crate) fn at_bottom(&self) -> bool {
         self.at_bottom
-    }
-
-    /// The visible message rows, top to bottom, as last reported.
-    pub(crate) fn visible(&self) -> &[Uuid] {
-        &self.visible
     }
 
     /// Where a message a jump lands on puts its top: a third of the way
@@ -127,17 +154,18 @@ impl Tracker {
 
     /// The anchor the reports give: the newest while the bottom of a window
     /// that `follows_newest` shows, else the first message that shows
-    /// below the viewport's top. A row whose message is above it, only the
-    /// distance below it showing, is not the one being read. `None` before
-    /// the rows have reported.
+    /// below the header pills (its offset from the viewport's top). A row
+    /// whose message is above them, only the distance below it showing, is
+    /// not the one being read. `None` before the rows have reported.
     pub(crate) fn anchor(&self, follows_newest: bool) -> Option<Anchor> {
         if self.at_bottom && follows_newest {
             return Some(Anchor::Newest);
         }
         let viewport_top_pt = self.viewport_top_pt?;
+        let shown_from_pt = viewport_top_pt + self.insets_pt[0];
         self.visible.iter().find_map(|id| {
             let (top_pt, bottom_pt) = self.edges_pt.get(id)?;
-            (*bottom_pt > viewport_top_pt).then_some(Anchor::Message {
+            (*bottom_pt > shown_from_pt).then_some(Anchor::Message {
                 id: *id,
                 offset_pt: top_pt - viewport_top_pt,
             })
@@ -253,5 +281,28 @@ mod tests {
         );
         assert_eq!(Anchor::Newest.to_saved(), None);
         assert_eq!(Anchor::from_saved(None), Anchor::Newest);
+    }
+
+    #[test]
+    fn a_row_under_the_pills_is_not_seen_nor_read_from() {
+        let mut tracker = Tracker::new();
+        tracker.viewport_moved(100.0, 600.0);
+        tracker.insets_moved([56.0, 68.0]);
+        let (under_header, shown, under_composer) =
+            (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        tracker.rows_visible(vec![under_header, shown, under_composer]);
+        tracker.row_moved(under_header, 100.0, 150.0);
+        tracker.row_moved(shown, 150.0, 640.0);
+        tracker.row_moved(under_composer, 640.0, 700.0);
+        tracker.bottom_shown(false);
+        assert_eq!(tracker.seen(), vec![shown]);
+        assert_eq!(
+            tracker.anchor(true),
+            Some(Anchor::Message {
+                id: shown,
+                offset_pt: 50.0
+            }),
+            "the first row below the header pills, by its offset from the viewport's top"
+        );
     }
 }

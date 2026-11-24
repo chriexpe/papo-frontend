@@ -18,9 +18,10 @@ use crate::menu::{CardView, OpenMenu, PersonAction, Placement};
 use crate::notice::Refusal;
 use crate::timeline::TimelineKey;
 
+mod actions;
 mod view;
 
-use view::{BAN_CANCEL_KEY, BAN_KEY, COPY_ID_KEY, MESSAGE_KEY};
+use actions::{BAN_CANCEL_KEY, BAN_KEY, COPY_ID_KEY, MESSAGE_KEY};
 pub(super) use view::{Order, PersonFacts, body, header, sections};
 
 impl Shell {

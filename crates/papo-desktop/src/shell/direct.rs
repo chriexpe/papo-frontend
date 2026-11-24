@@ -18,8 +18,8 @@ use rune::{El, Tx, row, text};
 
 use super::Shell;
 use crate::design::{
-    COMPOSER_HEIGHT_PT, FOCUS_RING_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, RADIUS_PILL_PT,
-    SPACE_LG_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY, TYPE_BODY_STRONG,
+    COMPOSER_HEIGHT, FOCUS_RING_PT, Look, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_MD,
+    SPACE_SM, Surfaces, TYPE_BODY, TYPE_BODY_STRONG,
 };
 use crate::direct_list::DirectRows;
 use crate::notice::Refusal;
@@ -316,7 +316,7 @@ pub(super) fn state_pill(
     access: DirectAccess,
     name: &str,
     picked: &DirectMessageItem,
-    palette: &Palette,
+    look: &Look,
 ) -> El {
     let words = match access {
         DirectAccess::YouBlocked => strings::direct_you_blocked(name),
@@ -327,18 +327,17 @@ pub(super) fn state_pill(
         // above whichever shows.
         .key(crate::composer::COMPOSER_PILL_KEY)
         .w_full()
-        .h(COMPOSER_HEIGHT_PT)
-        .px(SPACE_LG_PT)
-        .gap(SPACE_MD_PT)
+        .h(look.space(COMPOSER_HEIGHT))
+        .px(look.space(SPACE_LG))
+        .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(RADIUS_PILL_PT)
-        .fill(palette.surface_pill)
-        .border(PILL_OUTLINE_PT, palette.line_pill)
+        .radius(look.radius(RADIUS_PILL))
+        .pill_surface(look)
         .role("status")
         .child(
             text(words)
-                .font(TYPE_BODY)
-                .color(palette.text_secondary)
+                .font(look.font(TYPE_BODY))
+                .color(look.palette.text_secondary)
                 .grow(1.0)
                 .min_w(0.0)
                 .max_lines(1),
@@ -352,19 +351,19 @@ pub(super) fn state_pill(
         pill = pill.child(
             row()
                 .key("dm-unblock")
-                .px(SPACE_MD_PT)
-                .py(SPACE_SM_PT)
-                .radius(RADIUS_CONTROL_PT)
-                .hover(palette.surface_hover)
+                .px(look.space(SPACE_MD))
+                .py(look.space(SPACE_SM))
+                .radius(look.radius(RADIUS_CONTROL))
+                .hover(look.on_pill(look.palette.surface_hover))
                 .role("button")
                 .label(strings::card_unblock())
                 .focusable(true)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
                 .on_press(move |shell: &mut Shell| shell.set_blocked(key.account, user, false))
                 .child(
                     text(strings::card_unblock())
-                        .font(TYPE_BODY_STRONG)
-                        .color(palette.link)
+                        .font(look.font(TYPE_BODY_STRONG))
+                        .color(look.palette.link)
                         .a11y_hidden(),
                 ),
         );

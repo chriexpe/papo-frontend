@@ -26,9 +26,9 @@ use super::message_row::message_row;
 use super::row_parts::{Origin, RowMessage};
 use super::{OpenTimeline, Phase, TimelineKey, row_key};
 use crate::design::{
-    DATE_RULE_GAP_PT, DATE_RULE_PT, Density, FOCUS_RING_PT, Lead, MESSAGE_ROW_INSET_PT,
-    MessageLayout, Palette, RADIUS_AVATAR_PT, RADIUS_CONTROL_PT, SKELETON_BAR_PT, SKELETON_WIDTHS,
-    SPACE_SM_PT, TIMELINE_INSET_PT, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM, Theme,
+    DATE_RULE_GAP, DATE_RULE_PT, Density, FOCUS_RING_PT, Lead, Look, MESSAGE_ROW_INSET,
+    MessageLayout, RADIUS_AVATAR, RADIUS_CONTROL, SKELETON_BAR_PT, SKELETON_WIDTHS, SPACE_SM,
+    TIMELINE_INSET, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM,
 };
 use crate::strings;
 
@@ -44,8 +44,9 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn timeline(&self) -> Option<&OpenTimeline>;
     /// Rows `range` are visible. Returns whether the view changed.
     fn rows_visible(&mut self, key: TimelineKey, range: Range<usize>) -> bool;
-    /// The viewport's top is at `top_pt` in window points, and it is
-    /// `height_pt` tall.
+    /// The viewport's top is at `top_pt` in window points and it is
+    /// `height_pt` tall. The pills floating over it report what they cover
+    /// themselves, as they change (`Tracker::insets_moved`).
     fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, height_pt: f32, tx: &mut Tx);
     /// Message `id` is laid out from `edges_pt[0]` to `edges_pt[1]`,
     /// top to bottom, in window points.
@@ -117,8 +118,7 @@ pub(crate) trait TimelineHost: Sized + 'static {
 #[derive(Clone)]
 pub(crate) struct Style {
     pub(crate) layout: MessageLayout,
-    pub(crate) theme: Theme,
-    pub(crate) palette: Palette,
+    pub(crate) look: Look,
     pub(crate) time: LocalTime,
     /// The current civil day, read once per view: "Today" and "Yesterday".
     pub(crate) today: i64,
@@ -129,6 +129,10 @@ pub(crate) struct Style {
     pub(crate) selected: Option<Uuid>,
     /// What reacting reads, the same for every row.
     pub(crate) reacting: super::reacting::Reacting,
+    /// How far the header pills reach over the conversation's top and the
+    /// composer over its bottom, in points: the rows keep that room at
+    /// their ends, and rows under them are not read.
+    pub(crate) insets_pt: [f32; 2],
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and
@@ -138,6 +142,9 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         return el().w_full().grow(1.0);
     };
     let key = open.key;
+    let look = &style.look;
+    let insets_pt = style.insets_pt;
+    let [above_pt, below_pt] = insets_pt;
     match open.phase {
         Phase::Open => {}
         Phase::Opening => {
@@ -147,7 +154,9 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
                 .grow(1.0)
                 .min_h(0.0)
                 .justify_end()
-                .px(TIMELINE_INSET_PT)
+                .px(look.space(TIMELINE_INSET))
+                .pt(above_pt)
+                .pb(below_pt)
                 .busy(true)
                 .label(strings::loading_messages())
                 .child(skeleton(&style));
@@ -166,7 +175,7 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
     let seeking = open
         .seek
         .is_some()
-        .then(|| seeking_pill::<S>(key, &style.palette));
+        .then(|| seeking_pill::<S>(key, &style.look));
     let rows = col()
         .key("rows")
         // Its messages are the list ↑ and ↓ move along (`docs/design.md`
@@ -178,8 +187,12 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         .selection_group(true)
         .selection_copy(move |selection| copy::text_of(&source, selection))
         .w_full()
-        .px(TIMELINE_INSET_PT)
-        .pb(TIMELINE_INSET_PT)
+        .px(look.space(TIMELINE_INSET))
+        // Room under the header pills and over the composer, which float
+        // over the rows: the first and last messages rest clear of them,
+        // the last as far above the composer as before it floated.
+        .pt(above_pt)
+        .pb(below_pt + look.space(TIMELINE_INSET))
         .growth(GrowthSpec::default())
         .virtual_rows(
             open.items.len(),
@@ -205,6 +218,9 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
             stick_bottom: open.follows_newest(),
         })
         .label(strings::timeline_label())
+        // A message brought into view (a focused one, a jump) stops clear
+        // of the pills.
+        .scroll_margin(above_pt.max(below_pt))
         .on_at_bottom_if(move |host: &mut S, at_bottom| host.bottom_shown(key, at_bottom))
         .on_wheel(move |host: &mut S, _wheel, tx| {
             if !host.timeline_wheeled(key) {
@@ -292,30 +308,30 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
 
 /// "Today", centred between two hairlines.
 fn date_row(day: i64, before: Uuid, style: &Style) -> El {
-    let palette = style.palette;
+    let look = style.look;
     let label = day_label(day, style.today);
-    let between_groups_pt = style.layout.density.spacing().between_groups_pt;
+    let between_groups_pt = look.spacing(style.layout.density).between_groups_pt;
     memo(
         format!("d{before}"),
-        (style.theme, style.layout, &label),
+        (style.look, style.layout, &label),
         || {
             let rule = || {
                 el().grow(1.0)
                     .h(DATE_RULE_PT)
-                    .fill(palette.line_subtle)
+                    .fill(look.palette.line_subtle)
                     .a11y_hidden()
             };
             row()
                 .w_full()
                 .pt(between_groups_pt)
                 .center_y()
-                .gap(DATE_RULE_GAP_PT)
+                .gap(look.space(DATE_RULE_GAP))
                 .role("separator")
                 .child(rule())
                 .child(
                     text(label.clone())
-                        .font(TYPE_CAPTION)
-                        .color(palette.text_muted),
+                        .font(look.font(TYPE_CAPTION))
+                        .color(look.palette.text_muted),
                 )
                 .child(rule())
         },
@@ -324,28 +340,28 @@ fn date_row(day: i64, before: Uuid, style: &Style) -> El {
 
 /// "Couldn't load these messages", with Retry.
 fn gap_failed<S: TimelineHost>(key: TimelineKey, cursor_id: &str, style: &Style) -> El {
-    let palette = style.palette;
+    let look = style.look;
     let cursor = cursor_id.to_owned();
     let retry = text(strings::retry())
         .key("retry")
-        .font(TYPE_SMALL_MEDIUM)
-        .color(palette.link)
+        .font(look.font(TYPE_SMALL_MEDIUM))
+        .color(look.palette.link)
         .role("button")
         .focusable(true)
-        .radius(RADIUS_CONTROL_PT)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, palette.focus_ring)
+        .radius(look.radius(RADIUS_CONTROL))
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(move |host: &mut S| host.retry_gap(key, &cursor));
     row()
         .w_full()
-        .pt(style.layout.density.spacing().between_groups_pt)
+        .pt(look.spacing(style.layout.density).between_groups_pt)
         .justify_center()
         .center_y()
-        .gap(SPACE_SM_PT * 2.0)
+        .gap(look.space(SPACE_SM) * 2.0)
         .role("alert")
         .child(
             text(strings::gap_failed())
-                .font(TYPE_SMALL)
-                .color(palette.text_muted),
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_muted),
         )
         .child(retry)
 }
@@ -353,14 +369,14 @@ fn gap_failed<S: TimelineHost>(key: TimelineKey, cursor_id: &str, style: &Style)
 /// Placeholder messages while a page loads: an avatar square and grey
 /// bars, at the current density.
 fn skeleton(style: &Style) -> El {
-    let palette = style.palette;
-    let spacing = style.layout.density.spacing();
+    let look = style.look;
+    let spacing = look.spacing(style.layout.density);
     let (bar_pt, bar_gap_pt) = SKELETON_BAR_PT;
     let bar = |fraction: f32| {
         el().h(bar_pt)
             .w_frac(fraction)
             .radius(bar_pt / 2.0)
-            .fill(palette.surface_hover)
+            .fill(look.palette.surface_hover)
     };
     col()
         .w_full()
@@ -380,7 +396,7 @@ fn skeleton(style: &Style) -> El {
                         .child(
                             row()
                                 .w_full()
-                                .px(MESSAGE_ROW_INSET_PT)
+                                .px(look.space(MESSAGE_ROW_INSET))
                                 .py(spacing.row_padding_pt)
                                 .gap(spacing.lead_gap_pt)
                                 .items_start()
@@ -388,8 +404,8 @@ fn skeleton(style: &Style) -> El {
                                     Lead::Avatar(size_pt) => el()
                                         .key("lead")
                                         .size(size_pt, size_pt)
-                                        .radius(RADIUS_AVATAR_PT)
-                                        .fill(palette.surface_hover),
+                                        .radius(look.radius(RADIUS_AVATAR))
+                                        .fill(look.palette.surface_hover),
                                     Lead::Gutter(width_pt) => el().key("lead").w(width_pt),
                                 })
                                 .child(

@@ -19,7 +19,7 @@ use rune::{El, icon, row, text};
 use super::TimelineKey;
 use super::view::TimelineHost;
 use crate::design::{
-    CHIP_ICON_PT, PILL_OUTLINE_PT, Palette, RADIUS_CONTROL_PT, SPACE_MD_PT, SPACE_SM_PT, TYPE_BODY,
+    CHIP_ICON_PT, Look, PILL_OUTLINE_PT, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TYPE_BODY,
     TYPE_SMALL_MEDIUM,
 };
 use crate::strings;
@@ -52,14 +52,14 @@ pub(super) fn chips<S: TimelineHost>(
     id: Uuid,
     chips: &[Chip],
     add: bool,
-    palette: &Palette,
+    look: &Look,
 ) -> Option<El> {
     if chips.is_empty() {
         return None;
     }
     let mut cells: Vec<El> = chips
         .iter()
-        .filter_map(|chip| chip_cell::<S>(key, id, chip, palette))
+        .filter_map(|chip| chip_cell::<S>(key, id, chip, look))
         .collect();
     if cells.is_empty() {
         return None;
@@ -69,12 +69,12 @@ pub(super) fn chips<S: TimelineHost>(
             row()
                 .key("chip-add")
                 .h(CHIP_HEIGHT_PT)
-                .px(SPACE_MD_PT)
+                .px(look.space(SPACE_MD))
                 .center()
-                .radius(RADIUS_CONTROL_PT)
-                .fill(palette.surface_sidebar)
-                .border(PILL_OUTLINE_PT, palette.line_subtle)
-                .hover(palette.surface_hover)
+                .radius(look.radius(RADIUS_CONTROL))
+                .fill(look.palette.surface_sidebar)
+                .border(PILL_OUTLINE_PT, look.palette.line_subtle)
+                .hover(look.palette.surface_hover)
                 .role("button")
                 .label(strings::action_add_reaction())
                 .help(strings::action_add_reaction())
@@ -82,7 +82,10 @@ pub(super) fn chips<S: TimelineHost>(
                 .on_press_tx(move |host: &mut S, tx| {
                     host.bar_pressed(key, id, super::hover_bar::BarPress::AddReaction, tx);
                 })
-                .child(icon(&crate::icons::SMILE_PLUS, CHIP_ICON_PT).color(palette.text_secondary)),
+                .child(
+                    icon(&crate::icons::SMILE_PLUS, CHIP_ICON_PT)
+                        .color(look.palette.text_secondary),
+                ),
         );
     }
     Some(
@@ -90,18 +93,13 @@ pub(super) fn chips<S: TimelineHost>(
             .key("chips")
             .w_full()
             .wrap()
-            .gap(SPACE_SM_PT)
+            .gap(look.space(SPACE_SM))
             .role("group")
             .children(cells),
     )
 }
 
-fn chip_cell<S: TimelineHost>(
-    key: TimelineKey,
-    id: Uuid,
-    chip: &Chip,
-    palette: &Palette,
-) -> Option<El> {
+fn chip_cell<S: TimelineHost>(key: TimelineKey, id: Uuid, chip: &Chip, look: &Look) -> Option<El> {
     let ReactionEmoji::Unicode(emoji) = &chip.reaction.emoji else {
         return None;
     };
@@ -117,27 +115,35 @@ fn chip_cell<S: TimelineHost>(
         strings::reaction_label(emoji, count)
     };
     let (fill, line, ink) = if mine {
-        (palette.accent_soft, palette.accent, palette.link)
+        (
+            look.palette.accent_soft,
+            look.palette.accent,
+            look.palette.link,
+        )
     } else {
         (
-            palette.surface_sidebar,
-            palette.line_subtle,
-            palette.text_secondary,
+            look.palette.surface_sidebar,
+            look.palette.line_subtle,
+            look.palette.text_secondary,
         )
     };
     let mut cell = row()
         .key(chip_key(id, emoji))
         .h(CHIP_HEIGHT_PT)
-        .px(SPACE_MD_PT)
-        .gap(SPACE_SM_PT)
+        .px(look.space(SPACE_MD))
+        .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(RADIUS_CONTROL_PT)
+        .radius(look.radius(RADIUS_CONTROL))
         .fill(fill)
         .border(PILL_OUTLINE_PT, line)
         .role("button")
         .label(label)
-        .child(text(emoji.clone()).font(TYPE_BODY))
-        .child(text(count.to_string()).font(TYPE_SMALL_MEDIUM).color(ink))
+        .child(text(emoji.clone()).font(look.font(TYPE_BODY)))
+        .child(
+            text(count.to_string())
+                .font(look.font(TYPE_SMALL_MEDIUM))
+                .color(ink),
+        )
         // Resting on a chip reads who reacted, for its hint.
         .on_hover_change(move |host: &mut S, hovered, tx| {
             if hovered {
@@ -159,7 +165,7 @@ fn chip_cell<S: TimelineHost>(
     } else if chip.toggles {
         let emoji = emoji.clone();
         cell = cell
-            .hover(palette.surface_hover)
+            .hover(look.palette.surface_hover)
             .on_press_tx(move |host: &mut S, tx| {
                 host.bar_pressed(
                     key,

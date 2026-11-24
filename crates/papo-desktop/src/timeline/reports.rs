@@ -147,7 +147,7 @@ impl OpenTimeline {
         }
         let generation = self.generation?;
         self.reports
-            .due(self.tracker.visible(), self.version, generation)
+            .due(&self.tracker.seen(), self.version, generation)
     }
 }
 
