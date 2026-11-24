@@ -16,6 +16,8 @@ pub(crate) trait Socket: Send {
 }
 struct AccountSocket {
     gateway: Gateway,
+    /// Where each acknowledged heartbeat's round trip is published.
+    round_trip: Arc<crate::observable::StateCell<Option<crate::RoundTrip>>>,
     resources: crate::reconcile::ResourceConnection,
     typing: tokio::sync::watch::Receiver<Option<Generated<(papo_api::Uuid, tokio::time::Instant)>>>,
     voice: crate::calls::VoiceCommandReceiver,
@@ -39,6 +41,17 @@ impl AccountSocket {
         Ok(())
     }
 
+    /// Publishes the round trip the event read completed, if it completed one, and
+    /// passes the event on unchanged.
+    fn measured(&mut self, event: Option<Event>) -> Option<Event> {
+        publish_round_trip(
+            &self.round_trip,
+            self.generation,
+            self.gateway.take_round_trip(),
+        );
+        event
+    }
+
     async fn send_typing_if_fresh(&mut self) -> Result<(), ClientError> {
         let command = self.typing.borrow_and_update().clone();
         if let Some(command) = command
@@ -54,6 +67,19 @@ impl AccountSocket {
         Ok(())
     }
 }
+/// Publishes `measured`, a round trip the socket just completed, if any.
+fn publish_round_trip(
+    cell: &crate::observable::StateCell<Option<crate::RoundTrip>>,
+    generation: crate::Generation,
+    measured: Option<std::time::Duration>,
+) {
+    if let Some(round_trip) = measured {
+        cell.send_replace(Some(crate::RoundTrip {
+            generation,
+            round_trip,
+        }));
+    }
+}
 impl Socket for AccountSocket {
     fn next(&mut self) -> IoFuture<'_, Option<Event>> {
         Box::pin(async {
@@ -63,7 +89,7 @@ impl Socket for AccountSocket {
                         biased;
                         result = self.gateway.next() => {
                             self.prefer_read = false;
-                            return Ok(result?);
+                            return Ok(self.measured(result?));
                         }
                         item = self.voice.recv(), if !self.voice_closed => {
                             self.send_voice_item(item).await?;
@@ -83,7 +109,7 @@ impl Socket for AccountSocket {
                         }
                         result = self.gateway.next() => {
                             self.prefer_read = false;
-                            return Ok(result?);
+                            return Ok(self.measured(result?));
                         }
                         changed = self.typing.changed() => {
                             if changed.is_err() { return Err(ClientError::Closed); }
@@ -144,6 +170,7 @@ impl Connector for ApiConnector {
             let voice = session.calls.attach_socket(epoch.generation);
             Ok(Box::new(AccountSocket {
                 gateway,
+                round_trip: Arc::clone(&session.round_trip),
                 typing: session.typing_command.subscribe(),
                 voice,
                 voice_closed: false,

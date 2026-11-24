@@ -104,6 +104,15 @@ pub struct ConnectionStatus {
     pub state: ConnectionState,
 }
 
+/// How long the server took to answer a gateway heartbeat, for one connection generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoundTrip {
+    /// Epoch whose socket measured it.
+    pub generation: Generation,
+    /// From sending the heartbeat to reading its acknowledgement.
+    pub round_trip: Duration,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

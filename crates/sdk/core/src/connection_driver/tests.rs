@@ -265,3 +265,19 @@ async fn late_failure_from_an_old_socket_cannot_replace_an_explicit_reconnect() 
     assert!(!explicit.cancel.is_cancelled());
     assert_eq!(attempt, 0);
 }
+
+#[test]
+fn only_a_completed_round_trip_is_published() {
+    let cell = crate::observable::StateCell::new(None);
+    let generation = crate::Generation(7);
+    publish_round_trip(&cell, generation, None);
+    assert_eq!(*cell.borrow(), None, "nothing completed");
+    publish_round_trip(&cell, generation, Some(Duration::from_millis(42)));
+    assert_eq!(
+        *cell.borrow(),
+        Some(crate::RoundTrip {
+            generation,
+            round_trip: Duration::from_millis(42),
+        })
+    );
+}

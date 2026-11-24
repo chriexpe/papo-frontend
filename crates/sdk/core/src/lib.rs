@@ -128,7 +128,9 @@ pub use auth::{AuthFailure, AuthService, AuthState};
 pub use client::{Client, ClientConfig};
 pub use client_error::ClientError;
 pub use client_handle::{ClientHandle, RegistrySnapshot};
-pub use connection::{Backoff, ConnectionState, ConnectionStatus, Jitter, RuntimeJitter};
+pub use connection::{
+    Backoff, ConnectionState, ConnectionStatus, Jitter, RoundTrip, RuntimeJitter,
+};
 pub use generation::{Generated, Generation};
 pub use session::{Session, SessionEventError, SessionEvents};
 mod data_root;
