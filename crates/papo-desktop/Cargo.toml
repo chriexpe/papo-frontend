@@ -63,6 +63,10 @@ rune-fx = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30
 # The texture format of Rune's isolated layers, which the glass compositor
 # names to rune-fx; the version Rune locks.
 wgpu = { version = "30.0.1", default-features = false }
+# "Use the system font": whether the desktop's font is installed, and the
+# family the system resolves `system-ui` to. The version and features Rune's
+# text stack already locks.
+fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
 # Links' hosts, parsed as the SDK checks them (WHATWG URLs), for the
 # open-link confirmation; the version the SDK locks.
 url = "2.5"

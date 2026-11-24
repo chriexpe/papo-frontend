@@ -350,3 +350,31 @@ fn a_press_on_the_empty_field_adds_a_colour_there() {
         "{colours:?}"
     );
 }
+
+#[test]
+fn use_the_system_font_shows_once_the_system_names_one_and_sets_the_text_in_it() {
+    let mut rt = app();
+    open(&mut rt);
+    assert!(
+        rt.find(&RowId::SystemFont.key()).is_none(),
+        "left out while no system font is known"
+    );
+    rt.update(|shell, tx| {
+        assert!(shell.system_font_found("Noto Sans".to_owned(), tx));
+        assert!(
+            !shell.system_font_found("Noto Sans".to_owned(), tx),
+            "the same font again changes nothing"
+        );
+    });
+    rt.frame(FRAME_S);
+    assert!(rt.find(&RowId::SystemFont.key()).is_some());
+    let family = |rt: &Runtime<Shell>| rt.state.look(true).font(crate::design::TYPE_BODY).family;
+    assert_eq!(
+        family(&rt),
+        rune::Family::Sans,
+        "Inter until the switch is on"
+    );
+    click(&mut rt, &RowId::SystemFont.key());
+    assert!(saved(&rt).system_font);
+    assert_eq!(family(&rt), rune::Family::Named("Noto Sans"));
+}

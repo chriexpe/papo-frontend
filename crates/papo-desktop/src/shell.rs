@@ -239,6 +239,7 @@ impl BridgeHost for Shell {
         sdk.watch(|client, updates| live_watch::run(client, updates, Shell::activity_posted));
         sdk.watch(|client, updates| direct_list::run(client, updates, Shell::direct_posted));
         sdk.run(reconnect_hints::run);
+        sdk.watch(crate::system_font::run);
         self.sdk = Some(sdk);
     }
 

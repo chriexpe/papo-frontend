@@ -74,8 +74,6 @@ pub(crate) struct Context<'a> {
     pub(crate) system_dark: bool,
     /// Whether "Use the system font" can work: the desktop names one.
     pub(crate) system_font_known: bool,
-    /// Whether the system reduces transparency: Glass is drawn solid.
-    pub(crate) reduced_transparency: bool,
 }
 
 /// The groups of `page`.
@@ -129,15 +127,10 @@ fn appearance(cx: &Context<'_>) -> Vec<Group> {
             kind: Kind::Switch(appearance.system_font),
         });
     }
-    let glass_sub = if cx.reduced_transparency {
-        strings::settings_glass_off_sub()
-    } else {
-        strings::settings_glass_sub()
-    };
     shape_rows.push(Row {
         id: RowId::Glass,
         title: strings::settings_glass().to_owned(),
-        sub: Some(glass_sub.to_owned()),
+        sub: Some(strings::settings_glass_sub().to_owned()),
         kind: Kind::Slider(Slider {
             value: appearance.glass,
             min: 0.0,

@@ -141,11 +141,6 @@ pub(crate) fn settings_glass_sub() -> &'static str {
     text!("settings.glass_sub")
 }
 
-/// Its summary while the system reduces transparency.
-pub(crate) fn settings_glass_off_sub() -> &'static str {
-    text!("settings.glass_off_sub")
-}
-
 /// The colour field with no colour.
 pub(crate) fn settings_field_empty() -> &'static str {
     text!("settings.field_empty")

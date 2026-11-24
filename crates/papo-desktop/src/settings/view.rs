@@ -35,7 +35,6 @@ pub(crate) struct PanelView<'a> {
     pub(crate) saved: &'a Appearance,
     pub(crate) system_dark: bool,
     pub(crate) system_font_known: bool,
-    pub(crate) reduced_transparency: bool,
     /// The grain's tile for the theme drawn, for Grain's slider.
     pub(crate) grain: Option<&'a rune::Pixels>,
 }
@@ -48,7 +47,6 @@ pub(crate) fn view(panel: &PanelView<'_>, look: &Look) -> El {
         appearance,
         system_dark: panel.system_dark,
         system_font_known: panel.system_font_known,
-        reduced_transparency: panel.reduced_transparency,
     };
     // One margin from the window on three sides, the pill's own inset; the
     // bottom edge one gap above the account pill.

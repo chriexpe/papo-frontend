@@ -26,11 +26,7 @@ const ROOT_KEY: &str = "shell-root";
 /// Draws the shell. Pure: it reads state and the system's light or dark
 /// preference, and changes nothing.
 pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
-    let system = super::appearance::SystemLook {
-        dark: cx.system_dark(),
-        reduced_transparency: false,
-    };
-    let look = shell.look(system);
+    let look = shell.look(cx.system_dark());
     let grain = shell.grain.as_ref().and_then(|tiles| {
         crate::grain::overlay(
             tiles,
@@ -46,18 +42,13 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
         .key(ROOT_KEY)
         .w_full()
         .h_full()
-        .child(body(shell, system, &look, cx))
+        .child(body(shell, &look, cx))
         .children(grain)
 }
 
 /// The shell itself: nothing while starting, why the app cannot work, the
 /// first-run screens, or the app with its overlays.
-fn body(
-    shell: &Shell,
-    system: super::appearance::SystemLook,
-    look: &Look,
-    cx: &mut Cx<Shell>,
-) -> El {
+fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
     let look = *look;
     let theme = look.theme();
     cx.help_look(hint_look(&look, look.theme().is_dark()));
@@ -107,7 +98,6 @@ fn body(
                         saved: shell.appearance.appearance(),
                         system_dark: cx.system_dark(),
                         system_font_known: shell.system_font.is_some(),
-                        reduced_transparency: system.reduced_transparency,
                         grain: shell
                             .grain
                             .as_ref()

@@ -12,7 +12,6 @@ fn context(appearance: &Appearance) -> Context<'_> {
         appearance,
         system_dark: true,
         system_font_known: false,
-        reduced_transparency: false,
     }
 }
 

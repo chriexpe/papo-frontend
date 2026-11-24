@@ -398,7 +398,6 @@
   "settings.system_font_sub": "Instead of Inter",
   "settings.glass": "Glass panels",
   "settings.glass_sub": "Pills and panels blur what's behind them",
-  "settings.glass_off_sub": "Off while the system reduces transparency",
   "settings.field_empty": "Click to add a colour",
   "settings.colour_n": "Colour {{n}}",
   "settings.colour_add": "Add a colour",

@@ -4223,6 +4223,7 @@ dependencies = [
  "chrono",
  "env_logger",
  "eyeball-im",
+ "fontique",
  "futures-util",
  "icu_properties",
  "imbl",

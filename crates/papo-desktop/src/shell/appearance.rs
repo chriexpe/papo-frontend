@@ -19,18 +19,11 @@ pub(crate) enum TextSizeStep {
     Default,
 }
 
-/// What the system asks of the look, read once per frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SystemLook {
-    pub(crate) dark: bool,
-    /// Reduce transparency: every theme draws solid pills.
-    pub(crate) reduced_transparency: bool,
-}
-
 impl Shell {
-    /// The frame's look: the Appearance settings, as `system` allows.
-    pub(crate) fn look(&self, system: SystemLook) -> Look {
-        look_of(&self.shown_appearance(), system, self.system_font)
+    /// The frame's look: the Appearance settings, the theme following the
+    /// system's light or dark when it is set to.
+    pub(crate) fn look(&self, system_dark: bool) -> Look {
+        look_of(&self.shown_appearance(), system_dark, self.system_font)
     }
 
     /// Saves `appearance` and shows it, the message being read kept in
@@ -44,6 +37,23 @@ impl Shell {
         self.appearance.set(appearance)?;
         keep_place(reading, tx);
         Ok(())
+    }
+
+    /// The system's interface font was found (`system_font`): "Use the
+    /// system font" can be offered, and if it is on, the text is set in it,
+    /// the message being read kept in its place.
+    pub(crate) fn system_font_found(&mut self, family: String, tx: &mut Tx) -> bool {
+        if self.system_font == Some(family.as_str()) {
+            return false;
+        }
+        let reading = self.reading_place();
+        // A text style names its family for the program's life; the font is
+        // found once a run, so this is one small string.
+        self.system_font = Some(Box::leak(family.into_boxed_str()));
+        if self.appearance.appearance().system_font {
+            keep_place(reading, tx);
+        }
+        true
     }
 
     /// The shown timeline's anchor before a change that reflows its rows.
@@ -79,14 +89,14 @@ fn keep_place(reading: Option<Anchor>, tx: &mut Tx) {
     }
 }
 
-/// `appearance` as a frame's look under `system`, with the system's
-/// interface font when that setting is on and one was found.
+/// `appearance` as a frame's look, with the system's interface font when
+/// that setting is on and one was found.
 pub(crate) fn look_of(
     appearance: &Appearance,
-    system: SystemLook,
+    system_dark: bool,
     system_font: Option<&'static str>,
 ) -> Look {
-    let theme = appearance.theme_or(system.dark);
+    let theme = appearance.theme_or(system_dark);
     let shape = appearance.shape;
     Look::with(&LookSpec {
         theme,
@@ -98,12 +108,7 @@ pub(crate) fn look_of(
             roundness: shape.roundness,
         },
         glass: Glass {
-            // Reduce transparency makes every theme solid (§5).
-            glassy: if system.reduced_transparency {
-                0.0
-            } else {
-                appearance.glass
-            },
+            glassy: appearance.glass,
             blur_pt: shape.blur_pt,
             shadow_depth: shape.shadow_depth,
         },

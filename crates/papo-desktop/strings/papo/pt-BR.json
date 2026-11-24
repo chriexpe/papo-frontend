@@ -398,7 +398,6 @@
   "settings.system_font_sub": "No lugar da Inter",
   "settings.glass": "Painéis de vidro",
   "settings.glass_sub": "Pílulas e painéis desfocam o que está atrás",
-  "settings.glass_off_sub": "Desligado enquanto o sistema reduz a transparência",
   "settings.field_empty": "Clique para adicionar uma cor",
   "settings.colour_n": "Cor {{n}}",
   "settings.colour_add": "Adicionar cor",

@@ -46,6 +46,7 @@ mod shell;
 mod shortcuts_sheet;
 mod sign_in;
 mod strings;
+mod system_font;
 mod tabs;
 mod timeline;
 mod typing_line;
