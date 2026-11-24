@@ -82,7 +82,11 @@ pub(crate) struct ClientInner {
     pub registry_tx: Mutex<Option<watch::Sender<Arc<RegistrySnapshot>>>>,
     pub registry_rx: watch::Receiver<Arc<RegistrySnapshot>>,
     pub config: ClientConfig,
+    /// Copies and transforms that callers wait for (enqueue, edits, reads of staged files).
     pub outgoing_files: Arc<tokio::sync::Semaphore>,
+    /// Staging copies of caller sources (`stage_attachment`, `begin_staging`): their own slots, so
+    /// a slow source never holds up work done under the queue's serial lock.
+    pub outgoing_staging: Arc<tokio::sync::Semaphore>,
     pub outgoing_collection: Arc<tokio::sync::Semaphore>,
     pub media: crate::media::MediaStore,
     pub push: crate::notifications::push::PushState,
@@ -164,6 +168,7 @@ impl Client {
                 registry_rx: rx,
                 config,
                 outgoing_files: Arc::new(tokio::sync::Semaphore::new(2)),
+                outgoing_staging: Arc::new(tokio::sync::Semaphore::new(2)),
                 outgoing_collection: Arc::new(tokio::sync::Semaphore::new(1)),
                 call_lease: Arc::new(crate::calls::ClientCallLease::default()),
             }),

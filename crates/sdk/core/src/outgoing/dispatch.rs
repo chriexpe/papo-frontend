@@ -1,15 +1,15 @@
 //! One account dispatcher, durable claim/receipt boundaries and conservative ambiguity; never matches content/time.
 
+mod attempt;
+
 use super::OutgoingDispatchPhase;
 use super::{
     Arc, ClientError, MessageTarget, Operation, OperationFailure, OperationState, OutgoingError,
-    OutgoingFault, OutgoingService, OutgoingSnapshot, UploadProgress, Uuid,
-    persistence::Outcome,
-    progress::ProgressReporter,
-    service::ProgressUpdate,
-    stream::{OpenedAttachment, open_attachments},
+    OutgoingFault, OutgoingService, OutgoingSnapshot, UploadProgress, Uuid, persistence::Outcome,
+    service::ProgressUpdate, stream::open_attachments,
 };
 use crate::{ConnectionState, Session};
+use attempt::{Attempt, execute_send};
 use papo_api::RestClient;
 use std::{collections::BTreeSet, sync::atomic::Ordering};
 
@@ -194,7 +194,7 @@ async fn drain(service: &OutgoingService) -> Result<(), OutgoingError> {
             target,
         )
         .await;
-        if result.is_ok() {
+        if matches!(result, Attempt::Answered(Ok(_))) {
             probe(session, operation.id, OutgoingDispatchPhase::Response).await;
         }
         let (state, outcome, failure) = classify(result);
@@ -266,49 +266,6 @@ async fn claim_sending(
         .ok_or(OutgoingError::InvalidState)
 }
 
-async fn execute_send(
-    session: &Session,
-    epoch: &crate::generation::Epoch,
-    rest: &RestClient,
-    operation: &Operation,
-    opened: Vec<OpenedAttachment>,
-    initial_progress: Option<(u32, UploadProgress)>,
-    target: Option<Uuid>,
-) -> Result<Outcome, papo_api::Error> {
-    let timeout = session.client.inner.config.request_timeout;
-    let (reporter, _guard) = match initial_progress {
-        Some((attempt, initial)) => {
-            let (reporter, guard) = ProgressReporter::start(
-                initial.account,
-                initial.operation_id,
-                attempt,
-                initial.total_bytes,
-                session.inner.root.clone(),
-                Arc::clone(&session.inner.outgoing.image),
-            );
-            (Some(reporter), Some(guard))
-        }
-        None => (None, None),
-    };
-    let request = super::request::send(
-        session,
-        &epoch.cancel,
-        rest,
-        operation,
-        opened,
-        reporter,
-        target,
-    );
-    tokio::select! {
-        biased;
-        () = session.inner.root.cancelled() => Err(papo_api::Error::Transport),
-        () = epoch.cancel.cancelled() => Err(papo_api::Error::Transport),
-        result = tokio::time::timeout(timeout, request) => {
-            result.unwrap_or(Err(papo_api::Error::Transport))
-        }
-    }
-}
-
 async fn finish_attempt(
     service: &OutgoingService,
     generation: crate::Generation,
@@ -319,6 +276,8 @@ async fn finish_attempt(
 ) -> Result<(), OutgoingError> {
     let session = &service.session;
     let guard = session.inner.outgoing.serial.lock().await;
+    // A cancel that came after the request ended is too late: this outcome stands.
+    session.inner.outgoing.take_cancel_request(operation.id);
     // Intent belongs to the account, not a socket generation: record a confirmed receipt
     // after reconnect, but never publish to a revoked/replaced account handle.
     let acknowledged = outcome.as_ref().and_then(|value| value.message.clone());
@@ -355,9 +314,24 @@ async fn finish_attempt(
     projection_result
 }
 
-fn classify(
-    result: Result<Outcome, papo_api::Error>,
-) -> (OperationState, Option<Outcome>, Option<OperationFailure>) {
+fn classify(attempt: Attempt) -> (OperationState, Option<Outcome>, Option<OperationFailure>) {
+    let result = match attempt {
+        Attempt::Answered(result) => result,
+        // Cancelled before the last attachment byte: the server never had a whole message.
+        Attempt::Cancelled {
+            body_complete: false,
+        } => {
+            return (
+                OperationState::Failed,
+                None,
+                Some(OperationFailure::Cancelled),
+            );
+        }
+        // Cancelled after it: the message may already exist, exactly as for a lost answer.
+        Attempt::Cancelled {
+            body_complete: true,
+        } => return (OperationState::Unknown, None, None),
+    };
     match result {
         Ok(outcome) => (OperationState::Sent, Some(outcome), None),
         Err(papo_api::Error::NotDispatched) => (OperationState::Queued, None, None),

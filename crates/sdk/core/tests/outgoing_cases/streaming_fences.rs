@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::sync::Notify;
 
-struct PauseProbe {
+pub(super) struct PauseProbe {
     target_id: Uuid,
     target_phase: OutgoingDispatchPhase,
     hit: Mutex<bool>,
@@ -20,7 +20,7 @@ struct PauseProbe {
 }
 
 impl PauseProbe {
-    fn new(target_id: Uuid, target_phase: OutgoingDispatchPhase) -> Arc<Self> {
+    pub(super) fn new(target_id: Uuid, target_phase: OutgoingDispatchPhase) -> Arc<Self> {
         Arc::new(Self {
             target_id,
             target_phase,
@@ -30,7 +30,7 @@ impl PauseProbe {
         })
     }
 
-    async fn wait_reached(&self) {
+    pub(super) async fn wait_reached(&self) {
         let notified = self.reached.notified();
         if *self.hit.lock().unwrap() {
             return;
@@ -38,7 +38,7 @@ impl PauseProbe {
         notified.await;
     }
 
-    fn release(&self) {
+    pub(super) fn release(&self) {
         self.release.notify_waiters();
     }
 }

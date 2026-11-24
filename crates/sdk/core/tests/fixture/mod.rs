@@ -39,6 +39,15 @@ impl Fixture {
         )
     }
 
+    /// A fixture whose client gives up on a request after `timeout`.
+    #[allow(dead_code, reason = "only some suites shorten the request timeout")]
+    pub fn with_request_timeout(server_config: Config, timeout: Duration) -> Result<Self> {
+        let mut fixture = Self::new(server_config)?;
+        fixture.config.request_timeout = timeout;
+        fixture.reopen()?;
+        Ok(fixture)
+    }
+
     pub fn with_backoff(server_config: Config, backoff: Backoff) -> Result<Self> {
         // Restart tests must retain the server while destroying the client runtime.
         // This runtime serves only the fixture; no SDK work is driven by it.

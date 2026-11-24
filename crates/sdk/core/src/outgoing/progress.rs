@@ -34,7 +34,47 @@ pub struct UploadProgress {
     pub total_bytes: u64,
 }
 
+/// One attachment's share of an upload: bytes sent so far of its own size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttachmentProgress {
+    /// Bytes of this attachment the transport has consumed.
+    pub bytes_uploaded: u64,
+    /// This attachment's size in bytes.
+    pub total_bytes: u64,
+}
+
+impl AttachmentProgress {
+    /// True before the transport reaches this attachment (an empty ring).
+    #[must_use]
+    pub const fn is_waiting(&self) -> bool {
+        self.bytes_uploaded == 0
+    }
+}
+
 impl UploadProgress {
+    /// Splits the message's progress over its attachments, in order: the transport streams them
+    /// one after another, so earlier files are complete before a later one starts.
+    ///
+    /// `message` is the operation's own message (its committed sizes). Returns one entry per
+    /// attachment, in the message's order.
+    #[must_use]
+    pub fn per_attachment(&self, message: &super::OutgoingMessage) -> Vec<AttachmentProgress> {
+        let mut remaining = self.bytes_uploaded;
+        message
+            .attachments
+            .iter()
+            .map(|attachment| {
+                let total_bytes = attachment.size_bytes();
+                let bytes_uploaded = remaining.min(total_bytes);
+                remaining -= bytes_uploaded;
+                AttachmentProgress {
+                    bytes_uploaded,
+                    total_bytes,
+                }
+            })
+            .collect()
+    }
+
     pub(super) const fn initial(account: AccountId, operation_id: Uuid, total_bytes: u64) -> Self {
         Self {
             account,
@@ -102,6 +142,9 @@ impl ProgressCoalescer {
 
 pub(super) struct ProgressReporter {
     attempt: u32,
+    /// Every byte consumed, uncoalesced: the dispatcher's idle timeout and the cancel decision
+    /// read it, never the published snapshot.
+    consumed: tokio::sync::watch::Sender<u64>,
     coalescer: Mutex<ProgressCoalescer>,
     active: Arc<AtomicBool>,
     root_cancel: tokio_util::sync::CancellationToken,
@@ -130,6 +173,7 @@ impl ProgressReporter {
         let active = Arc::new(AtomicBool::new(true));
         let reporter = Arc::new(Self {
             attempt,
+            consumed: tokio::sync::watch::Sender::new(0),
             coalescer: Mutex::new(ProgressCoalescer::new(
                 account,
                 operation_id,
@@ -144,9 +188,18 @@ impl ProgressReporter {
         (reporter, ActiveProgressGuard { active })
     }
 
+    /// Observes the attachment bytes the transport has consumed in this attempt.
+    pub(super) fn consumed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.consumed.subscribe()
+    }
+
     pub(super) fn advance(&self, delta: u64) {
         if !self.active.load(Ordering::Acquire) || self.root_cancel.is_cancelled() {
             return;
+        }
+        if delta > 0 {
+            self.consumed
+                .send_modify(|total| *total = total.saturating_add(delta));
         }
         let next = {
             let mut coalescer = self

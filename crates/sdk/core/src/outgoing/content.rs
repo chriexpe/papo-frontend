@@ -1,11 +1,16 @@
 //! Immutable outgoing message inputs, staged attachment references and draft bindings; persistence and dispatch live elsewhere.
 
-use crate::{AccountId, AttachmentEdit, Uuid};
+use crate::{AttachmentEdit, Uuid};
 use papo_api::wire::EmbedInput;
 use serde::{Deserialize, Serialize};
 
-pub(super) const MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
-const MAX_ATTACHMENT_COUNT: usize = 10;
+/// Largest attachment the SDK stages or sends, in bytes (100 MiB). The backend states no limit, so
+/// clients show this one; the backend's own body cap (110 MiB) sits above it.
+pub const MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
+/// Most bytes all attachments of one message may total (100 MiB).
+pub const MAX_MESSAGE_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
+/// Most files one message may carry.
+pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
 
 /// An authoritative remote ID or an earlier operation's eventual message ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,90 +21,8 @@ pub enum MessageTarget {
     Local(Uuid),
 }
 
-/// Account-scoped reference to an immutable, fsynced attachment blob in outgoing staging.
-///
-/// Created by [`crate::OutgoingService::stage_attachment`] or attached when loading a committed
-/// draft or operation. While a freshly staged handle is alive in memory, background orphan
-/// collection will not delete its blob; once dropped without a durable draft or operation
-/// reference (or after process restart), the file remains eligible for collection. Once committed
-/// in a draft or queued operation, its immutable bytes stay pinned until `Sent`, explicit discard,
-/// draft replacement or account removal. Never retains a caller path or handle.
-#[derive(Clone)]
-pub struct StagedAttachment {
-    account: AccountId,
-    digest: [u8; 32],
-    size_bytes: u64,
-    _pin: Option<std::sync::Arc<super::StagedPin>>,
-}
-
-impl std::fmt::Debug for StagedAttachment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StagedAttachment")
-            .field("account", &self.account)
-            .field("digest", &self.digest_hex())
-            .field("size_bytes", &self.size_bytes)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PartialEq for StagedAttachment {
-    fn eq(&self, other: &Self) -> bool {
-        self.account == other.account
-            && self.digest == other.digest
-            && self.size_bytes == other.size_bytes
-    }
-}
-
-impl Eq for StagedAttachment {}
-
-impl StagedAttachment {
-    pub(super) const fn new(account: AccountId, digest: [u8; 32], size_bytes: u64) -> Self {
-        Self {
-            account,
-            digest,
-            size_bytes,
-            _pin: None,
-        }
-    }
-
-    pub(super) fn with_pin(
-        account: AccountId,
-        digest: [u8; 32],
-        size_bytes: u64,
-        pin: std::sync::Arc<super::StagedPin>,
-    ) -> Self {
-        Self {
-            account,
-            digest,
-            size_bytes,
-            _pin: Some(pin),
-        }
-    }
-
-    /// Account whose private staging directory owns this immutable blob.
-    #[must_use]
-    pub const fn account(&self) -> AccountId {
-        self.account
-    }
-
-    /// SHA-256 digest of the staged file contents.
-    #[must_use]
-    pub const fn digest(&self) -> &[u8; 32] {
-        &self.digest
-    }
-
-    /// Lowercase hexadecimal SHA-256 digest naming the blob inside the account's staging directory.
-    #[must_use]
-    pub fn digest_hex(&self) -> String {
-        super::files::digest_hex(&self.digest)
-    }
-
-    /// Exact byte length of the staged file.
-    #[must_use]
-    pub const fn size_bytes(&self) -> u64 {
-        self.size_bytes
-    }
-}
+mod staged;
+pub use staged::StagedAttachment;
 
 /// Payload state of an [`OutgoingAttachment`].
 ///
@@ -115,6 +38,10 @@ pub enum OutgoingAttachmentContent {
     /// Never serialized into SQLite payloads; durable references live in the `files` column.
     #[serde(skip)]
     Staged(StagedAttachment),
+    /// A file still being copied into staging ([`super::OutgoingService::begin_staging`]).
+    /// Only an enqueue takes it (the message waits as Preparing); a draft refuses it.
+    #[serde(skip)]
+    Pending(super::PendingAttachment),
     /// Metadata retained on a confirmed `Sent` receipt after its staged blob was released.
     #[default]
     Released,
@@ -157,6 +84,26 @@ impl OutgoingAttachment {
         }
     }
 
+    /// Creates an attachment from a file still being copied into staging. A message holding one
+    /// is committed at once and waits as Preparing until every file is ready.
+    #[must_use]
+    pub fn from_pending(filename: impl Into<String>, pending: super::PendingAttachment) -> Self {
+        Self {
+            filename: filename.into(),
+            content: OutgoingAttachmentContent::Pending(pending),
+            edit: AttachmentEdit::default(),
+        }
+    }
+
+    /// The copy in progress, when constructed with [`Self::from_pending`].
+    #[must_use]
+    pub const fn pending(&self) -> Option<&super::PendingAttachment> {
+        match &self.content {
+            OutgoingAttachmentContent::Pending(pending) => Some(pending),
+            _ => None,
+        }
+    }
+
     /// The edit applied when the message is enqueued; the default sends the bytes unchanged.
     #[must_use]
     pub const fn edit(&self) -> &AttachmentEdit {
@@ -187,7 +134,9 @@ impl OutgoingAttachment {
     pub fn inline_bytes(&self) -> Option<&[u8]> {
         match &self.content {
             OutgoingAttachmentContent::Bytes(bytes) => Some(bytes.as_slice()),
-            OutgoingAttachmentContent::Staged(_) | OutgoingAttachmentContent::Released => None,
+            OutgoingAttachmentContent::Staged(_)
+            | OutgoingAttachmentContent::Pending(_)
+            | OutgoingAttachmentContent::Released => None,
         }
     }
 
@@ -196,7 +145,9 @@ impl OutgoingAttachment {
     pub const fn staged(&self) -> Option<&StagedAttachment> {
         match &self.content {
             OutgoingAttachmentContent::Staged(staged) => Some(staged),
-            OutgoingAttachmentContent::Bytes(_) | OutgoingAttachmentContent::Released => None,
+            OutgoingAttachmentContent::Bytes(_)
+            | OutgoingAttachmentContent::Pending(_)
+            | OutgoingAttachmentContent::Released => None,
         }
     }
 
@@ -206,13 +157,13 @@ impl OutgoingAttachment {
         matches!(self.content, OutgoingAttachmentContent::Released)
     }
 
-    /// Known byte size of inline or staged payload; zero once released after `Sent`.
+    /// Known byte size of inline or staged payload; zero while pending and once released.
     #[must_use]
     pub const fn size_bytes(&self) -> u64 {
         match &self.content {
             OutgoingAttachmentContent::Bytes(bytes) => bytes.len() as u64,
-            OutgoingAttachmentContent::Staged(staged) => staged.size_bytes,
-            OutgoingAttachmentContent::Released => 0,
+            OutgoingAttachmentContent::Staged(staged) => staged.size_bytes(),
+            OutgoingAttachmentContent::Pending(_) | OutgoingAttachmentContent::Released => 0,
         }
     }
 
@@ -319,7 +270,7 @@ fn validate_text(content: &str) -> Result<(), super::OutgoingError> {
 }
 
 fn validate_attachments(attachments: &[OutgoingAttachment]) -> Result<(), super::OutgoingError> {
-    if attachments.len() > MAX_ATTACHMENT_COUNT {
+    if attachments.len() > MAX_ATTACHMENTS_PER_MESSAGE {
         return Err(super::OutgoingError::InvalidInput);
     }
     let mut total_bytes: u64 = 0;
@@ -334,7 +285,7 @@ fn validate_attachments(attachments: &[OutgoingAttachment]) -> Result<(), super:
         total_bytes = total_bytes
             .checked_add(size)
             .ok_or(super::OutgoingError::InvalidInput)?;
-        if total_bytes > MAX_ATTACHMENT_BYTES {
+        if size > MAX_ATTACHMENT_BYTES || total_bytes > MAX_MESSAGE_ATTACHMENT_BYTES {
             return Err(super::OutgoingError::InvalidInput);
         }
     }

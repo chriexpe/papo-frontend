@@ -26,7 +26,8 @@ const MARK_PROJECTED_SQL: &str = "
 const TRANSITION_STATE_SQL: &str = "
     UPDATE operations
     SET state = ?1, attempts = attempts + ?2, result = ?3, last_error = ?4
-    WHERE local_id = ?5 AND server_id = ?6 AND user_id = ?7 AND state = ?8 AND discarded = 0";
+    WHERE local_id = ?5 AND server_id = ?6 AND user_id = ?7 AND state = ?8 AND discarded = 0
+      AND NOT (?1 = 'Queued' AND coalesce(last_error, x'') IN (?9, ?10))";
 
 const SENT_PAYLOAD_SQL: &str = "
     UPDATE operations
@@ -156,9 +157,12 @@ fn read_operation(
     let outcome: Outcome = opt_decode(row.get(7)?)?.unwrap_or_default();
     let state = OperationState::from_db(&row.get::<_, String>(3)?)?;
     let id = uuid_column(&row.get::<_, Vec<u8>>(0)?)?;
-    let retained = previous
-        .get(&id)
-        .filter(|op| op.state != OperationState::Sent && state != OperationState::Sent);
+    let failure: Option<OperationFailure> = opt_decode(row.get(6)?)?;
+    // An unresolved payload never changes, except when a preparing message gets its files: so a
+    // previous one is reused only while it already held them.
+    let retained = previous.get(&id).filter(|op| {
+        op.state != OperationState::Sent && state != OperationState::Sent && holds_files(op)
+    });
     let mut to_verify = Vec::new();
     let kind = if let Some(existing) = retained {
         Arc::clone(&existing.kind)
@@ -166,6 +170,7 @@ fn read_operation(
         let payload: Vec<u8> = row.get(2)?;
         let mut decoded: OperationKind = decode(&payload)?;
         if state != OperationState::Sent
+            && !super::preparing::stored_without_files(failure)
             && let OperationKind::Message(message) = &mut decoded
         {
             let references: Vec<files::Reference> = opt_decode(row.get(9)?)?.unwrap_or_default();
@@ -182,7 +187,7 @@ fn read_operation(
             state,
             attempts: row.get(4)?,
             depends_on: opt_uuid_column(row.get(5)?)?,
-            failure: opt_decode(row.get(6)?)?,
+            failure,
             message_id: outcome.message_id,
             history_projected: outcome.projected,
             message: outcome.message.map(Arc::new),
@@ -190,6 +195,17 @@ fn read_operation(
         },
         to_verify,
     ))
+}
+
+/// True unless the operation is a message with a file not yet staged.
+pub(super) fn holds_files(operation: &Operation) -> bool {
+    match operation.kind.as_ref() {
+        OperationKind::Message(message) => message
+            .attachments
+            .iter()
+            .all(|attachment| attachment.staged().is_some()),
+        _ => true,
+    }
 }
 
 fn list_operations(
@@ -371,7 +387,10 @@ impl Registry {
                         local.as_bytes(),
                         account.server().as_bytes(),
                         account.user().as_bytes(),
-                        expected.as_str()
+                        expected.as_str(),
+                        // A row stored without its files can never be queued again.
+                        encode(&OperationFailure::AttachmentLost)?,
+                        encode(&OperationFailure::AttachmentRefused)?,
                     ],
                 )?;
                 if changed != 1 {

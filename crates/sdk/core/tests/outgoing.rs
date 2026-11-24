@@ -3,11 +3,15 @@
 #![cfg(feature = "test-support")]
 #[path = "outgoing_cases/anonymize.rs"]
 mod anonymize;
+#[path = "outgoing_cases/cancel.rs"]
+mod cancel;
 #[path = "outgoing_cases/expressions.rs"]
 mod expressions;
 mod fixture;
 #[path = "outgoing_cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "outgoing_cases/preparing.rs"]
+mod preparing;
 #[path = "outgoing_cases/reactions.rs"]
 mod reactions;
 #[path = "outgoing_cases/staging.rs"]

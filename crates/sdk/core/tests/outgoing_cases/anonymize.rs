@@ -273,6 +273,9 @@ fn a_staged_image_can_be_inspected_before_sending() -> Result {
             .stage_attachment(std::io::Cursor::new(photo()))
             .await?;
         let info = queue.inspect_image(&staged).await?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut queue.open_staged(&staged).await?, &mut bytes)?;
+        assert_eq!(bytes, photo());
         assert_eq!((info.width, info.height, info.animated), (24, 16, false));
         let not_image = queue
             .stage_attachment(std::io::Cursor::new(b"%PDF-1.7".to_vec()))

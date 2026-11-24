@@ -30,6 +30,34 @@ failures appear as an observable `OutgoingSnapshot.fault`, without preventing
 canonical live or focused history from opening. Mutations still require a
 successfully initialized durable queue.
 
+`begin_staging(reader)` starts the staging copy in the background and returns a
+`PendingAttachment` at once; `OutgoingAttachment::from_pending` puts it in a
+message before the copy ends. Such a message is committed at once and shown as
+`Preparing`: not dispatched, holding its channel's order like any unresolved
+work. Its row is written as what it becomes if the process ends first (Failed,
+`AttachmentLost`, no file references); when every file is ready one transaction
+writes the references, the edited payload, the byte total and Queued, so the
+rest of the queue only ever sees a row with all of its files or none. A copy
+that fails, or a process that ends first, leaves it Failed and discard-only
+(`AttachmentLost`; `AttachmentRefused` when the file passed a limit, the budget
+or anonymizing refused it). ✕ shows it Failed (`Cancelled`) while the copy keeps
+running, so Retry can send it; Discard stops the copy. A draft refuses a file
+still copying. Copies hold a profile-wide slot and a shared per-account hold
+that account shutdown waits for, and take the per-account file lock only for
+the instant a finished blob is pinned and renamed into place, so collection,
+enqueue and discard never wait behind a long copy.
+
+`cancel_upload(id)` stops a message's attachment upload, never one file. A Queued or
+Preparing message becomes Failed (`Cancelled`) at once. For one in flight the dispatcher stops the request: if
+the last attachment byte had not yet been handed to the transport, the multipart body was
+never whole and it becomes Failed (`Cancelled`); otherwise it may exist and becomes Unknown.
+An attachment upload has no whole-request deadline: it fails only after a request timeout
+with no byte consumed, and once the body is handed over the answer gets five minutes, since
+socket buffers can still hold part of it on a slow link. Progress per attachment comes from
+`UploadProgress::per_attachment`; the limits are `MAX_ATTACHMENTS_PER_MESSAGE`,
+`MAX_ATTACHMENT_BYTES` and `MAX_MESSAGE_ATTACHMENT_BYTES`. `open_staged` reads a staged blob
+for display.
+
 `retry(id, AcceptPossibleDuplicate)` is the explicit user decision needed for
 Unknown. `DefiniteFailure` cannot retry Unknown. Neither gateway messages nor
 reconciliation resolve operations by matching text, filenames, author or time.
@@ -68,7 +96,8 @@ under the backend's two MiB).
 
 Attachments are copied into fsynced, digest-verified account-owned staging files,
 with only metadata and references in SQLite. Caller paths and platform grants
-are never needed after acknowledgement. Their names and bytes remain immutable
+are never needed after acknowledgement, except that a message sent with a file
+still copying (below) needs the caller's reader until that copy ends. Their names and bytes remain immutable
 until Sent or explicit discard. Committed reference changes precede orphan
 collection; account removal deletes its staging directory. Copy/hash/fsync and
 collection run outside the SQLite writer on bounded blocking tasks (two staging

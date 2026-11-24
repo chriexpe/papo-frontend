@@ -41,7 +41,7 @@ impl OutgoingService {
         }
         Ok(())
     }
-    async fn run<
+    pub(super) async fn run<
         T: Send + 'static,
         F: Future<Output = Result<T, OutgoingError>> + Send + 'static,
     >(
@@ -98,6 +98,7 @@ impl OutgoingService {
             .outgoing_list(self.session.clone(), previous.clone())
             .await?;
         self.check()?;
+        queue.present_preparing(&mut operations);
         let old: std::collections::BTreeMap<_, _> =
             previous.operations.iter().map(|op| (op.id, op)).collect();
         for operation in &mut operations {
@@ -107,6 +108,8 @@ impl OutgoingService {
                 && old.failure == operation.failure
                 && old.message_id == operation.message_id
                 && old.history_projected == operation.history_projected
+                // A preparing message gets its files without changing state when ✕ was pressed.
+                && super::persistence::holds_files(old) == super::persistence::holds_files(operation)
             {
                 *operation = Arc::clone(old);
             }
@@ -168,28 +171,6 @@ impl OutgoingService {
                 .inner
                 .registry
                 .stage_reader(&this.session, reader, Uuid::nil())
-                .await
-        })
-        .await
-    }
-    /// Reads a staged file's format, displayed size and whether it is animated, without decoding
-    /// its pixels. A file that fails here (HEIC, TIFF, RAW, a video, a damaged image) is one that
-    /// anonymizing would refuse, so a client can say so when the switch is flipped; the same check
-    /// still runs at enqueue.
-    /// # Errors
-    /// Returns [`OutgoingError::Image`] with the typed reason, or account/storage failures.
-    pub async fn inspect_image(
-        &self,
-        staged: &StagedAttachment,
-    ) -> Result<crate::ImageInfo, OutgoingError> {
-        let staged = staged.clone();
-        self.run(move |this| async move {
-            this.ensure().await?;
-            this.session
-                .client
-                .inner
-                .registry
-                .outgoing_inspect_image(&this.session, &staged)
                 .await
         })
         .await
@@ -345,7 +326,20 @@ impl OutgoingService {
             this.ensure().await?;
             let _guard = this.session.inner.outgoing.serial.lock().await;
             let operation = this.operation(local)?;
-            if operation.failure == Some(super::OperationFailure::Dependency) {
+            // ✕ on a preparing message left its copy running: Retry only shows it Preparing again.
+            if this.session.inner.outgoing.retry_preparing(local) {
+                this.publish().await?;
+                return Ok(());
+            }
+            // A dependency that is gone or a file that is lost cannot come back: discard only.
+            if matches!(
+                operation.failure,
+                Some(
+                    super::OperationFailure::Dependency
+                        | super::OperationFailure::AttachmentLost
+                        | super::OperationFailure::AttachmentRefused
+                )
+            ) {
                 return Err(OutgoingError::InvalidState);
             }
             if operation.state == OperationState::Unknown
@@ -394,6 +388,7 @@ impl OutgoingService {
         self.run(move |this| async move {
             this.ensure().await?;
             let _guard = this.session.inner.outgoing.serial.lock().await;
+            this.session.inner.outgoing.abandon_preparing(local);
             this.session
                 .client
                 .inner
@@ -407,7 +402,7 @@ impl OutgoingService {
         })
         .await
     }
-    fn operation(&self, id: Uuid) -> Result<Arc<Operation>, OutgoingError> {
+    pub(super) fn operation(&self, id: Uuid) -> Result<Arc<Operation>, OutgoingError> {
         self.session
             .inner
             .outgoing
