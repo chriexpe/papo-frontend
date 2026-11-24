@@ -13,6 +13,7 @@ pub(crate) struct UserObservation {
     pub username: Option<String>,
     pub nickname: NullableText,
     pub typing: NullableText,
+    pub status_message: NullableText,
     pub banned: Option<bool>,
     pub created_at: Option<String>,
     pub roles: Option<Vec<Uuid>>,
@@ -53,6 +54,9 @@ impl UserObservation {
         if !self.typing.is_missing() {
             old.typing = self.typing;
         }
+        if !self.status_message.is_missing() {
+            old.status_message = self.status_message;
+        }
         if self.banned.is_some() {
             old.banned = self.banned;
         }
@@ -72,6 +76,10 @@ impl UserObservation {
                 .or_else(|| old.and_then(|user| user.username.clone())),
             nickname: text(self.nickname, old.and_then(|user| user.nickname.as_ref())),
             typing: text(self.typing, old.and_then(|user| user.typing.as_ref())),
+            status_message: text(
+                self.status_message,
+                old.and_then(|user| user.status_message.as_ref()),
+            ),
             banned: self.banned.or_else(|| old.and_then(|user| user.banned)),
             created_at: self
                 .created_at

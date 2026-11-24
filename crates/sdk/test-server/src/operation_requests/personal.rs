@@ -131,7 +131,7 @@ fn profile(
                 return problem(400, "invalid-param", path);
             };
             profile.nickname = nickname.into();
-            profile.status_message = Some(status.into());
+            profile.status_message = status.into();
             profile.description = Some(description.into());
             if let Some(typing) = body.get("typing") {
                 profile.typing = typing

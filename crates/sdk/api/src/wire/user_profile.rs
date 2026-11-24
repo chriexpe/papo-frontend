@@ -28,8 +28,8 @@ pub struct UserProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#status: Option<String>,
     /// Backend `status_message` field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub r#status_message: Option<String>,
+    #[serde(default, skip_serializing_if = "crate::NullableText::is_missing")]
+    pub r#status_message: crate::NullableText,
     /// Backend `typing` field.
     #[serde(default, skip_serializing_if = "crate::NullableText::is_missing")]
     pub r#typing: crate::NullableText,
