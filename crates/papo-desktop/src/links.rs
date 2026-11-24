@@ -3,14 +3,10 @@
 //! link; anything else asks first, in a confirmation with a box that trusts
 //! the host from then on.
 //!
-//! The trusted domains are a device preference, kept by the desktop in its
-//! settings file: the SDK keeps no device preferences. Until the settings
-//! screen exists (D6), "Confirm external links" is on and the list holds
-//! only what the box adds. Opening is Rune's (`Tx::open_url`).
+//! The trusted domains are a device preference (`trusted_domains`), and so
+//! is "Confirm external links" (`general_settings`): off, every web link
+//! opens at once. Opening is Rune's (`Tx::open_url`).
 
-use std::collections::BTreeSet;
-
-use rune::prefs::Prefs;
 use rune::{El, Span, el, icon, rich, row, text};
 use url::Position;
 
@@ -19,12 +15,9 @@ use crate::design::{
     FOCUS_RING_PT, Look, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TASK_BOX, TASK_BOX_OUTLINE_PT,
     TASK_BOX_RADIUS, TASK_CHECK, TYPE_CODE, TYPE_SMALL, WEIGHT_SEMIBOLD,
 };
-use crate::device_settings::{SettingsFile, Stored, Write};
 use crate::shell::Shell;
 use crate::strings;
-
-/// The settings file's key for the trusted domains.
-const TRUSTED_KEY: &str = "trusted_domains";
+use crate::trusted_domains::Trusted;
 
 /// The `mailto:` fields a mail app is given: what to fill in, never an
 /// `attach` or another parameter that reaches the reader's files.
@@ -51,8 +44,14 @@ pub(crate) fn host(url: &str) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
-/// What pressing `url` does, in a server whose host is `server_host`.
-pub(crate) fn decide(url: &str, server_host: Option<&str>, trusted: &Trusted) -> Decision {
+/// What pressing `url` does, in a server whose host is `server_host`;
+/// `confirm` is "Confirm external links".
+pub(crate) fn decide(
+    url: &str,
+    server_host: Option<&str>,
+    trusted: &Trusted,
+    confirm: bool,
+) -> Decision {
     let Ok(parsed) = url::Url::parse(url) else {
         return Decision::Refuse;
     };
@@ -63,7 +62,7 @@ pub(crate) fn decide(url: &str, server_host: Option<&str>, trusted: &Trusted) ->
             let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
                 return Decision::Refuse;
             };
-            if server_host == Some(host.as_str()) || trusted.contains(&host) {
+            if !confirm || server_host == Some(host.as_str()) || trusted.contains(&host) {
                 Decision::Open(url.to_owned())
             } else {
                 Decision::Ask { host }
@@ -94,60 +93,6 @@ fn mail_only(mail: &url::Url) -> String {
     mail.set_query((!kept.is_empty()).then(|| kept.join("&")).as_deref());
     mail.set_fragment(None);
     mail.into()
-}
-
-/// The hosts whose links open without asking: this device's preference,
-/// changed from the link confirmation's box and, with D6b, from General ›
-/// Trusted domains. A change shows at once and is written off the UI
-/// thread; a failed write takes the list back to what the file holds.
-pub(crate) struct Trusted {
-    stored: Stored<BTreeSet<String>>,
-    file: SettingsFile,
-}
-
-impl Default for Trusted {
-    /// None, kept nowhere: before the settings file is read, and in tests.
-    fn default() -> Trusted {
-        Trusted::read(&Prefs::memory())
-    }
-}
-
-impl Trusted {
-    /// The trusted domains in `prefs`, this device's settings file.
-    pub(crate) fn read(prefs: &Prefs) -> Trusted {
-        Trusted {
-            stored: Stored::new(prefs.get(TRUSTED_KEY).unwrap_or_default()),
-            file: SettingsFile::of(prefs),
-        }
-    }
-
-    pub(crate) fn contains(&self, host: &str) -> bool {
-        self.stored.shown().contains(host)
-    }
-
-    /// Trusts `host` from now on; the list to write now, unless a write is
-    /// running (it then follows) or the host was trusted already.
-    pub(crate) fn add(&mut self, host: String) -> Option<BTreeSet<String>> {
-        let mut hosts = self.stored.shown().clone();
-        hosts.insert(host);
-        self.stored.change(hosts)
-    }
-
-    /// The write of `hosts` landed (`ok`) or did not, which takes the list
-    /// back to what the file holds; the list to write next.
-    pub(crate) fn written(
-        &mut self,
-        hosts: BTreeSet<String>,
-        ok: bool,
-    ) -> Option<BTreeSet<String>> {
-        self.stored.written(hosts, ok)
-    }
-
-    /// The write that saves `hosts`.
-    pub(crate) fn write_of(&self, hosts: &BTreeSet<String>) -> Write {
-        self.file
-            .write(vec![(TRUSTED_KEY, serde_json::json!(hosts))])
-    }
 }
 
 /// A link waiting for the reader's answer.
@@ -262,7 +207,8 @@ fn always_box(prompt: &Prompt, look: &Look) -> El {
 
 #[cfg(test)]
 mod tests {
-    use super::{Decision, Trusted, decide};
+    use super::{Decision, decide};
+    use crate::trusted_domains::Trusted;
 
     fn open(url: &str) -> Decision {
         Decision::Open(url.to_owned())
@@ -273,15 +219,15 @@ mod tests {
         let trusted = Trusted::default();
         let server = Some("papo.example.com");
         let invite = "https://papo.example.com/invite";
-        assert_eq!(decide(invite, server, &trusted), open(invite));
+        assert_eq!(decide(invite, server, &trusted, true), open(invite));
         let upper = "https://PAPO.example.com/";
         assert_eq!(
-            decide(upper, server, &trusted),
+            decide(upper, server, &trusted, true),
             open(upper),
             "hosts compare without case"
         );
         let mail = "mailto:lia@example.com?subject=Hi%20there&body=See%20you";
-        assert_eq!(decide(mail, server, &trusted), open(mail));
+        assert_eq!(decide(mail, server, &trusted, true), open(mail));
     }
 
     #[test]
@@ -291,12 +237,18 @@ mod tests {
             decide(
                 "mailto:lia@example.com?attach=/etc/passwd&subject=Hi&%61ttachment=~/.ssh/id_ed25519",
                 None,
-                &trusted
+                &trusted,
+                true
             ),
             open("mailto:lia@example.com?subject=Hi")
         );
         assert_eq!(
-            decide("mailto:lia@example.com?attach=/etc/passwd", None, &trusted),
+            decide(
+                "mailto:lia@example.com?attach=/etc/passwd",
+                None,
+                &trusted,
+                true
+            ),
             open("mailto:lia@example.com")
         );
     }
@@ -309,15 +261,27 @@ mod tests {
         let ask = Decision::Ask {
             host: "lumen.example.org".to_owned(),
         };
-        assert_eq!(decide(guide, server, &trusted), ask);
+        assert_eq!(decide(guide, server, &trusted, true), ask);
         let _ = trusted.add("lumen.example.org".to_owned());
-        assert_eq!(decide(guide, server, &trusted), open(guide));
+        assert_eq!(decide(guide, server, &trusted, true), open(guide));
         assert_eq!(
-            decide("https://docs.lumen.example.org/", server, &trusted),
+            decide("https://docs.lumen.example.org/", server, &trusted, true),
             Decision::Ask {
                 host: "docs.lumen.example.org".to_owned()
             },
             "a subdomain is a host of its own"
+        );
+    }
+
+    #[test]
+    fn with_confirm_external_links_off_every_web_link_opens() {
+        let trusted = Trusted::default();
+        let guide = "https://lumen.example.org/guide";
+        assert_eq!(decide(guide, None, &trusted, false), open(guide));
+        assert_eq!(
+            decide("ftp://lumen.example.org/", None, &trusted, false),
+            Decision::Refuse,
+            "still only web and mail links"
         );
     }
 
@@ -328,7 +292,8 @@ mod tests {
             decide(
                 "https://papo.example.com@evil.example.net/",
                 Some("papo.example.com"),
-                &trusted
+                &trusted,
+                true
             ),
             Decision::Ask {
                 host: "evil.example.net".to_owned()
@@ -340,9 +305,9 @@ mod tests {
     fn other_schemes_never_open() {
         let trusted = Trusted::default();
         assert_eq!(
-            decide("file:///etc/passwd", None, &trusted),
+            decide("file:///etc/passwd", None, &trusted, true),
             Decision::Refuse
         );
-        assert_eq!(decide("not a url", None, &trusted), Decision::Refuse);
+        assert_eq!(decide("not a url", None, &trusted, true), Decision::Refuse);
     }
 }

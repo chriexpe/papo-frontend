@@ -38,6 +38,8 @@ pub(crate) struct Shell {
     /// "Enter to send".
     /// The Conversations settings.
     pub(crate) conversations: crate::conversation_settings::ConversationStore,
+    /// The General settings: the language and Confirm external links.
+    pub(crate) general: crate::general_settings::GeneralStore,
     /// The unsent message whose "Send again?" is open.
     resend: Option<outgoing::Resend>,
     /// The deletion waiting for its confirmation.
@@ -183,6 +185,7 @@ impl Default for Shell {
             draft_writes: composer::DraftWrites::default(),
             local_ids: papo_sdk::Uuid::new_v4,
             conversations: crate::conversation_settings::ConversationStore::default(),
+            general: crate::general_settings::GeneralStore::default(),
             resend: None,
             deleting: None,
             sdk: None,
@@ -266,10 +269,13 @@ impl Shell {
         self.grain = Some(crate::grain::GrainTiles::new(&images));
         self.images = Some(images);
         let prefs = crate::device_settings::SettingsFile::read();
-        self.content.trusted = crate::links::Trusted::read(&prefs);
+        self.content.trusted = crate::trusted_domains::Trusted::read(&prefs);
         self.layout = crate::layout_prefs::LayoutPrefs::read(&prefs);
         self.recent_jumps = crate::recent_jumps::RecentJumps::read(&prefs);
         self.conversations = crate::conversation_settings::ConversationStore::read(&prefs);
+        self.general = crate::general_settings::GeneralStore::read(&prefs);
+        // Before the first frame: the window opens in the chosen language.
+        crate::strings::use_language(self.general.settings().language);
         self.appearance = crate::appearance::AppearanceStore::read(&prefs);
     }
 
@@ -347,6 +353,7 @@ mod settings;
 mod settings_colours;
 mod settings_conversations;
 mod settings_file;
+mod settings_general;
 mod sign_in_flow;
 #[cfg(test)]
 mod tests;

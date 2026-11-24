@@ -7,14 +7,20 @@ use super::{PageId, RowId};
 use crate::appearance::Appearance;
 use crate::conversation_settings::ConversationSettings;
 use crate::design::Density;
+use crate::general_settings::GeneralSettings;
 
 static CONVERSATIONS: std::sync::LazyLock<ConversationSettings> =
     std::sync::LazyLock::new(ConversationSettings::default);
+static GENERAL: std::sync::LazyLock<GeneralSettings> =
+    std::sync::LazyLock::new(GeneralSettings::default);
+static TRUSTED: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
 fn context(appearance: &Appearance) -> Context<'_> {
     Context {
         appearance,
         conversations: &CONVERSATIONS,
+        general: &GENERAL,
+        trusted: &TRUSTED,
         system_dark: true,
         system_font_known: false,
     }

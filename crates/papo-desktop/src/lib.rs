@@ -20,6 +20,7 @@ mod device_settings;
 mod direct_list;
 mod direct_pane;
 mod fonts;
+mod general_settings;
 mod glass;
 mod grain;
 mod icons;
@@ -49,6 +50,7 @@ mod strings;
 mod system_font;
 mod tabs;
 mod timeline;
+mod trusted_domains;
 mod typing_line;
 mod window;
 

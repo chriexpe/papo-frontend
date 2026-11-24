@@ -15,9 +15,10 @@ use rune::{Key, KeyEvent, TextEdit, Tx};
 use super::Shell;
 use crate::appearance::Appearance;
 use crate::design::{Background, Density, Theme};
+use crate::general_settings::Language;
 use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::settings::colour_field::ColourChange;
-use crate::settings::rows::{density_name, theme_name};
+use crate::settings::rows::{density_name, language_name, theme_name};
 use crate::settings::{
     Change, HeldEvent, PageId, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel, Target,
 };
@@ -27,6 +28,7 @@ use crate::settings::{
 pub(crate) enum SettingChoice {
     Theme(Theme),
     Density(Density),
+    Language(Language),
 }
 
 impl Shell {
@@ -138,6 +140,25 @@ impl Shell {
                     .with_radio(appearance.messages.density == density)
                 })
                 .collect(),
+            RowId::Language => {
+                let current = self.general.settings().language;
+                std::iter::once(Language::System)
+                    .chain(crate::strings::languages().map(|(id, _)| Language::Locale(id)))
+                    .map(|language| {
+                        let key = match language {
+                            Language::System => "settings-language-system".to_owned(),
+                            Language::Locale(id) => format!("settings-language-{id}"),
+                        };
+                        MenuItem::plain(
+                            &key,
+                            language_name(language),
+                            MenuAction::Setting(SettingChoice::Language(language)),
+                            false,
+                        )
+                        .with_radio(language == current)
+                    })
+                    .collect()
+            }
             _ => return,
         };
         self.nav.menu = Some(OpenMenu::new(
@@ -153,6 +174,7 @@ impl Shell {
         let change = match choice {
             SettingChoice::Theme(theme) => Change::Theme(theme),
             SettingChoice::Density(density) => Change::Density(density),
+            SettingChoice::Language(language) => Change::Language(language),
         };
         self.settings_change(change, tx);
     }
@@ -162,11 +184,15 @@ impl Shell {
         let Some(panel) = self.settings.as_mut() else {
             return;
         };
-        if let Some(next) =
-            super::settings_conversations::applied(self.conversations.settings(), &change)
-        {
+        let other = super::settings_conversations::applied(self.conversations.settings(), &change)
+            .map(Target::Conversations)
+            .or_else(|| {
+                super::settings_general::applied(self.general.settings(), &change)
+                    .map(Target::General)
+            });
+        if let Some(target) = other {
             panel.held(HeldEvent::Ended);
-            self.settings_save(change.row(), Target::Conversations(next), tx);
+            self.settings_save(change.row(), target, tx);
             return;
         }
         let current = panel
@@ -199,6 +225,12 @@ impl Shell {
                 self.set_appearance(appearance, tx);
             }
             Target::Conversations(settings) => self.set_conversations(settings, Some(row), tx),
+            Target::General(settings) => self.set_general(settings, Some(row), tx),
+            Target::Trusted(hosts) => {
+                if let Some(hosts) = self.content.trusted.replace(hosts) {
+                    self.write_trusted(hosts, Some(row), tx);
+                }
+            }
         }
     }
 
@@ -283,8 +315,9 @@ fn applied(
             value,
             ..
         } => next.shape = current.shape.with(*value_of, *value),
-        // The other rows' changes are their stores' (Conversations').
-        Change::Switch(..) | Change::Slider { .. } | Change::Hue(..) => {}
+        // The other rows' changes are their stores' (Conversations',
+        // General's).
+        Change::Switch(..) | Change::Slider { .. } | Change::Hue(..) | Change::Language(_) => {}
         Change::Colours(colour) => {
             let (background, now) = super::settings_colours::colours_applied(
                 &current.background,

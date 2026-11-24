@@ -5,8 +5,6 @@
 //! Owns only where a write runs; what it writes and what a failure undoes
 //! are its owner's.
 
-use std::collections::BTreeSet;
-
 use rune::Tx;
 
 use super::Shell;
@@ -45,21 +43,6 @@ impl Shell {
             |shell, ok, tx| {
                 if let Some(next) = shell.layout.written(ok) {
                     shell.write_layout(next, tx);
-                }
-            },
-            tx,
-        );
-    }
-
-    /// Writes the trusted domains; a failure takes the list back to what the
-    /// file holds.
-    pub(crate) fn write_trusted(&mut self, hosts: BTreeSet<String>, tx: &mut Tx) {
-        let write = self.content.trusted.write_of(&hosts);
-        self.run_write(
-            write,
-            move |shell, ok, tx| {
-                if let Some(next) = shell.content.trusted.written(hosts, ok) {
-                    shell.write_trusted(next, tx);
                 }
             },
             tx,

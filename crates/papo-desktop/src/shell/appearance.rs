@@ -168,5 +168,6 @@ pub(crate) fn look_of(
         },
         font_family: system_font.filter(|_| appearance.system_font),
         mention_hue_degrees,
+        locale: crate::strings::locale_index(),
     })
 }

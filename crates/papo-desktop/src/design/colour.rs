@@ -38,6 +38,10 @@ const WARNING_CHROMA: f32 = 0.09;
 /// (`docs/design.md` §4); Settings › Conversations › Message highlights
 /// changes it.
 pub(crate) const MENTION_HIGHLIGHT_HUE_DEGREES: f32 = 75.0;
+/// The reply highlight's default OKLCH hue in degrees: teal (§4). The
+/// highlight is drawn once the backend says which replies ping (B-006);
+/// its hue is the user's already.
+pub(crate) const REPLY_HIGHLIGHT_HUE_DEGREES: f32 = 196.0;
 /// Available's OKLCH hue, chroma, and lightness on dark and light themes
 /// (§4, Other colours added for D5).
 pub(super) const PRESENCE_ONLINE: Oklch = Oklch {

@@ -30,6 +30,7 @@ mod search;
 mod settings;
 mod settings_colours;
 mod settings_conversations;
+mod settings_general;
 mod timeline;
 mod typing;
 mod writing;

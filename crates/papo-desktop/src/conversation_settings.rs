@@ -1,7 +1,8 @@
 //! The Conversations settings (`docs/design.md` §8, Conversations): how the
 //! composer takes Enter and starts a reply, what a row shows (its time, its
 //! avatar), how a timeline opens and what it shows of skipped messages, the
-//! channel description on opening, and the mention highlight's hue. Every
+//! channel description on opening, and the mention and reply highlights'
+//! hues (the reply highlight is drawn once B-006 lands). Every
 //! one is this device's: times and avatars could follow the account
 //! (`display.show_timestamps`, `display.show_avatars`) only once the
 //! backend can save one field without the others (B-020).
@@ -15,7 +16,7 @@
 use rune::prefs::Prefs;
 use serde_json::{Value, json};
 
-use crate::design::MENTION_HIGHLIGHT_HUE_DEGREES;
+use crate::design::{MENTION_HIGHLIGHT_HUE_DEGREES, REPLY_HIGHLIGHT_HUE_DEGREES};
 use crate::device_settings::{SettingsFile, Stored, Write};
 
 /// "Enter to send".
@@ -34,6 +35,8 @@ const UNREAD_HOURGLASS_KEY: &str = "unread_hourglass";
 const CHANNEL_DESCRIPTION_KEY: &str = "channel_description";
 /// Message highlights › Mentions, in OKLCH degrees.
 const MENTION_HUE_KEY: &str = "mention_hue";
+/// Message highlights › Replies, in OKLCH degrees.
+const REPLY_HUE_KEY: &str = "reply_hue";
 
 /// Everything the Conversations page holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,12 +64,14 @@ pub(crate) struct ConversationSettings {
     pub(crate) channel_description: bool,
     /// `highlight.mention`'s hue, in OKLCH degrees (0–360).
     pub(crate) mention_hue_degrees: f32,
+    /// `highlight.reply`'s hue, in OKLCH degrees (0–360).
+    pub(crate) reply_hue_degrees: f32,
 }
 
 impl Default for ConversationSettings {
     /// The design's defaults: Enter sends, replies mention, times and
     /// avatars show, a timeline returns where it was left, the hourglass
-    /// and the description show, mentions in amber.
+    /// and the description show, mentions in amber and replies in teal.
     fn default() -> ConversationSettings {
         ConversationSettings {
             enter_sends: true,
@@ -77,6 +82,7 @@ impl Default for ConversationSettings {
             unread_hourglass: true,
             channel_description: true,
             mention_hue_degrees: MENTION_HIGHLIGHT_HUE_DEGREES,
+            reply_hue_degrees: REPLY_HIGHLIGHT_HUE_DEGREES,
         }
     }
 }
@@ -101,10 +107,12 @@ impl ConversationStore {
     pub(crate) fn read(prefs: &Prefs) -> ConversationStore {
         let defaults = ConversationSettings::default();
         let switch = |key: &str, default: bool| prefs.get(key).unwrap_or(default);
-        let hue = prefs
-            .get::<f32>(MENTION_HUE_KEY)
-            .filter(|hue| hue.is_finite())
-            .map_or(defaults.mention_hue_degrees, |hue| hue.rem_euclid(360.0));
+        let hue = |key: &str, default: f32| {
+            prefs
+                .get::<f32>(key)
+                .filter(|hue| hue.is_finite())
+                .map_or(default, |hue| hue.rem_euclid(360.0))
+        };
         let settings = ConversationSettings {
             enter_sends: switch(ENTER_SENDS_KEY, defaults.enter_sends),
             mention_when_replying: switch(MENTION_REPLY_KEY, defaults.mention_when_replying),
@@ -113,7 +121,8 @@ impl ConversationStore {
             open_at_newest: switch(OPEN_AT_NEWEST_KEY, defaults.open_at_newest),
             unread_hourglass: switch(UNREAD_HOURGLASS_KEY, defaults.unread_hourglass),
             channel_description: switch(CHANNEL_DESCRIPTION_KEY, defaults.channel_description),
-            mention_hue_degrees: hue,
+            mention_hue_degrees: hue(MENTION_HUE_KEY, defaults.mention_hue_degrees),
+            reply_hue_degrees: hue(REPLY_HUE_KEY, defaults.reply_hue_degrees),
         };
         ConversationStore {
             stored: Stored::new(settings),
@@ -164,6 +173,7 @@ impl ConversationStore {
             (UNREAD_HOURGLASS_KEY, json!(settings.unread_hourglass)),
             (CHANNEL_DESCRIPTION_KEY, json!(settings.channel_description)),
             (MENTION_HUE_KEY, json!(settings.mention_hue_degrees)),
+            (REPLY_HUE_KEY, json!(settings.reply_hue_degrees)),
         ];
         self.file.write(entries)
     }
@@ -224,6 +234,7 @@ mod tests {
         changed.show_times = false;
         changed.show_avatars = false;
         changed.mention_hue_degrees = 196.0;
+        changed.reply_hue_degrees = 320.0;
         let written = store.change(changed).expect("a write");
         store.write_of(&written).run().unwrap();
         assert_eq!(store.written(written, true), None);

@@ -71,6 +71,10 @@ pub(crate) struct LookSpec {
     pub(crate) font_family: Option<&'static str>,
     /// `highlight.mention`'s hue, in OKLCH degrees.
     pub(crate) mention_hue_degrees: f32,
+    /// The interface's locale (`strings::locale_index`). The look draws no
+    /// words, but every memoised view versions on the look, so its key
+    /// holding the locale redraws them all in a new language.
+    pub(crate) locale: usize,
 }
 
 /// The look of one frame.
@@ -129,6 +133,7 @@ impl LookSpec {
             value.to_bits().hash(&mut hasher);
         }
         self.font_family.hash(&mut hasher);
+        self.locale.hash(&mut hasher);
         hasher.finish()
     }
 }
@@ -145,6 +150,7 @@ impl Look {
             glass: Glass::default(),
             font_family: None,
             mention_hue_degrees: super::colour::MENTION_HIGHLIGHT_HUE_DEGREES,
+            locale: 0,
         })
     }
 
@@ -160,6 +166,7 @@ impl Look {
             glass: Glass::default(),
             font_family: None,
             mention_hue_degrees: super::colour::MENTION_HIGHLIGHT_HUE_DEGREES,
+            locale: 0,
         })
     }
 

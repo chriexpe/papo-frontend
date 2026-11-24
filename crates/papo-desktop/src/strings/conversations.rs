@@ -89,6 +89,11 @@ pub(crate) fn settings_highlight_mentions() -> &'static str {
     text!("settings.highlight_mentions")
 }
 
+/// Message highlights › Replies.
+pub(crate) fn settings_highlight_replies() -> &'static str {
+    text!("settings.highlight_replies")
+}
+
 /// A hue swatch's spoken label: "Hue 75°".
 pub(crate) fn settings_hue_spoken(hue: &str) -> String {
     template!("settings.hue_spoken", "hue" => hue)

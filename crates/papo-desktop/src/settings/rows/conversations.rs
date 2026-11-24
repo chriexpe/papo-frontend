@@ -2,9 +2,8 @@
 //! (`docs/design.md` §8): When writing (Enter to send), In the conversation
 //! (Show times, Show avatars, Open at the newest message, Unread
 //! hourglass, Description when opening a channel, Message highlights), and
-//! the mention highlight's hue swatches. Mention when replying waits for
-//! B-006 and Replies' hue for `highlight.reply` (B-006 too); the Media
-//! rows come with D7.
+//! the mention and reply highlights' hue swatches. Mention when replying
+//! waits for B-006; the Media rows come with D7.
 //!
 //! Owns these pages' rows; the settings are `conversation_settings`'.
 
@@ -15,7 +14,7 @@ use crate::strings;
 
 /// The hues a highlight's swatches offer, in OKLCH degrees: amber (the
 /// mention's default) first, then around the wheel.
-pub(crate) const MENTION_HUES: [f32; 7] = [
+pub(crate) const HIGHLIGHT_HUES: [f32; 7] = [
     MENTION_HIGHLIGHT_HUE_DEGREES,
     25.0,
     52.0,
@@ -98,12 +97,20 @@ pub(super) fn conversations(cx: &Context<'_>) -> Vec<Group> {
 pub(super) fn highlights(cx: &Context<'_>) -> Vec<Group> {
     vec![Group {
         title: None,
-        rows: vec![Row {
-            id: RowId::MentionHue,
-            title: strings::settings_highlight_mentions().to_owned(),
-            sub: None,
-            kind: Kind::Hues(cx.conversations.mention_hue_degrees),
-        }],
+        rows: vec![
+            Row {
+                id: RowId::MentionHue,
+                title: strings::settings_highlight_mentions().to_owned(),
+                sub: None,
+                kind: Kind::Hues(cx.conversations.mention_hue_degrees),
+            },
+            Row {
+                id: RowId::ReplyHue,
+                title: strings::settings_highlight_replies().to_owned(),
+                sub: None,
+                kind: Kind::Hues(cx.conversations.reply_hue_degrees),
+            },
+        ],
     }]
 }
 

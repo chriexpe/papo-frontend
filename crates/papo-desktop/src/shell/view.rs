@@ -90,20 +90,7 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                     app = app.child(notice::view(notice, composer::COMPOSER_PILL_KEY, &look));
                 }
                 // Under the menu: a choice's menu opens over the panel.
-                if let Some(panel) = &shell.settings {
-                    let view = crate::settings::view::PanelView {
-                        panel,
-                        saved: shell.appearance.appearance(),
-                        conversations: shell.conversations.settings(),
-                        system_dark: cx.system_dark(),
-                        system_font_known: shell.system_font.is_some(),
-                        grain: shell
-                            .grain
-                            .as_ref()
-                            .map(|tiles| tiles.pixels(look.theme().is_dark())),
-                    };
-                    app = app.child(crate::settings::view(&view, &look));
-                }
+                app = app.children(settings_panel(shell, &look, cx.system_dark()));
                 if let Some(menu) = &shell.nav.menu {
                     app = app.children(menu::pointer_point(menu));
                     let body = if menu.people {
@@ -171,6 +158,25 @@ fn hint_look(look: &Look, dark: bool) -> HelpLook {
 
 /// How the conversation's rows look, and the message a confirmation
 /// shows.
+/// The settings panel, while it is open.
+fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
+    let panel = shell.settings.as_ref()?;
+    let view = crate::settings::view::PanelView {
+        panel,
+        saved: shell.appearance.appearance(),
+        conversations: shell.conversations.settings(),
+        general: shell.general.settings(),
+        trusted: shell.content.trusted.hosts(),
+        system_dark,
+        system_font_known: shell.system_font.is_some(),
+        grain: shell
+            .grain
+            .as_ref()
+            .map(|tiles| tiles.pixels(look.theme().is_dark())),
+    };
+    Some(crate::settings::view(&view, look))
+}
+
 fn timeline_style(shell: &Shell, look: &Look, insets_pt: [f32; 2]) -> timeline::Style {
     let selected = shell
         .composer

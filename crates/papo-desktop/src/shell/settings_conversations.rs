@@ -81,6 +81,7 @@ pub(super) fn applied(
         Change::Switch(RowId::Hourglass, on) => next.unread_hourglass = on,
         Change::Switch(RowId::ChannelDescription, on) => next.channel_description = on,
         Change::Hue(RowId::MentionHue, hue) => next.mention_hue_degrees = hue.rem_euclid(360.0),
+        Change::Hue(RowId::ReplyHue, hue) => next.reply_hue_degrees = hue.rem_euclid(360.0),
         _ => return None,
     }
     Some(next)

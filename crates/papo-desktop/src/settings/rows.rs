@@ -2,26 +2,31 @@
 //! rows, each a title, an optional summary and its control, built from the
 //! current settings. The pages draw these, and the search reads the same
 //! rows, so a row is described once. Each nav page's rows are its own
-//! module's (`appearance`, `conversations`).
+//! module's (`appearance`, `conversations`, `general`).
 //!
 //! Owns the description's shape and which module describes a page. Drawing
 //! is `controls`'; what a change does is the shell's (`shell/settings.rs`).
+
+use std::collections::BTreeSet;
 
 use crate::appearance::Appearance;
 use crate::appearance::presets::Direction;
 use crate::conversation_settings::ConversationSettings;
 use crate::design::Accent;
+use crate::general_settings::GeneralSettings;
 use crate::strings;
 
 use super::{PageId, RowId};
 
 mod appearance;
 mod conversations;
+mod general;
 
 pub(crate) use appearance::{
     accent_name, appearance_summary, density_name, direction_name, slider_value, theme_name,
 };
-pub(crate) use conversations::{MENTION_HUES, conversations_summary};
+pub(crate) use conversations::{HIGHLIGHT_HUES, conversations_summary};
+pub(crate) use general::{general_summary, language_name};
 
 /// A group of rows: one block of tiles, with an optional title.
 pub(crate) struct Group {
@@ -55,6 +60,12 @@ pub(crate) enum Kind {
     Directions(Option<Direction>),
     /// Hue swatches (Message highlights), the chosen hue in OKLCH degrees.
     Hues(f32),
+    /// A field that adds a trusted domain, with its Add button.
+    DomainField,
+    /// A list item with Remove: what it removes.
+    Remove(String),
+    /// A line of text with no control (an empty list's).
+    Note,
 }
 
 /// A slider's value, range and look.
@@ -84,6 +95,8 @@ pub(crate) enum Track {
 pub(crate) struct Context<'a> {
     pub(crate) appearance: &'a Appearance,
     pub(crate) conversations: &'a ConversationSettings,
+    pub(crate) general: &'a GeneralSettings,
+    pub(crate) trusted: &'a BTreeSet<String>,
     pub(crate) system_dark: bool,
     /// Whether "Use the system font" can work: the desktop names one.
     pub(crate) system_font_known: bool,
@@ -97,6 +110,8 @@ pub(crate) fn page(page: PageId, cx: &Context<'_>) -> Vec<Group> {
         PageId::Shape => appearance::shape(cx),
         PageId::Conversations => conversations::conversations(cx),
         PageId::Highlights => conversations::highlights(cx),
+        PageId::General => general::general(cx),
+        PageId::Trusted => general::trusted(cx),
     }
 }
 
@@ -108,6 +123,8 @@ pub(crate) fn page_title(page: PageId) -> &'static str {
         PageId::Shape => strings::settings_shape(),
         PageId::Conversations => strings::settings_conversations(),
         PageId::Highlights => strings::settings_highlights(),
+        PageId::General => strings::settings_general(),
+        PageId::Trusted => strings::settings_trusted(),
     }
 }
 
@@ -122,7 +139,12 @@ pub(crate) fn searchable(row: &Row) -> Vec<String> {
             words.extend(direction.map(|direction| direction_name(direction).to_owned()));
         }
         Kind::Slider(slider) => words.push(slider_value(row.id, slider.value)),
-        Kind::Switch(_) | Kind::ColourField | Kind::Hues(_) => {}
+        Kind::Switch(_)
+        | Kind::ColourField
+        | Kind::Hues(_)
+        | Kind::DomainField
+        | Kind::Remove(_)
+        | Kind::Note => {}
     }
     words
 }

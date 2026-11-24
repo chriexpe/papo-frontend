@@ -1,14 +1,17 @@
 //! The settings panel (`docs/design.md` §8): grown from the account pill's
 //! ⚙ (or Ctrl+,), a nav of pages with one-line summaries, search across
 //! every row, sub-pages with ←, and rows that save as they change. The App
-//! pages are Appearance and Conversations, each with its sub-pages; the
-//! others come with the slices that make their rows work.
+//! pages are Appearance, Conversations and General, each with its
+//! sub-pages; the others come with the slices that make their rows work.
 //!
 //! Owns the panel's own state: the page shown, the search, a slider or the
-//! colour field's value while it is dragged, the row whose save failed and
-//! the colour field's selection. The settings themselves are their
-//! stores' (`appearance`, `conversation_settings`); what a row's change does
-//! is the shell's (`shell/settings.rs`).
+//! colour field's value while it is dragged, the row whose save failed,
+//! the colour field's selection and the domain being typed. The settings
+//! themselves are their stores' (`appearance`, `conversation_settings`,
+//! `general_settings`, `trusted_domains`); what a row's change does is the
+//! shell's (`shell/settings.rs`).
+
+use std::collections::BTreeSet;
 
 use rune::TextEdit;
 
@@ -16,10 +19,12 @@ use crate::appearance::presets::Direction;
 use crate::appearance::{Appearance, ShapeValue};
 use crate::conversation_settings::ConversationSettings;
 use crate::design::{Accent, BackgroundColour, Density, Theme};
+use crate::general_settings::{GeneralSettings, Language};
 
 pub(crate) mod colour_field;
 mod colour_tools;
 mod controls;
+pub(crate) mod domain_field;
 pub(crate) mod rows;
 mod search;
 mod slider;
@@ -46,28 +51,35 @@ pub(crate) enum PageId {
     Conversations,
     /// Conversations › Message highlights.
     Highlights,
+    General,
+    /// General › Trusted domains.
+    Trusted,
 }
 
 impl PageId {
     /// Every page, nav pages first and in the nav's order: what the search
     /// looks through.
-    pub(crate) const ALL: [PageId; 5] = [
+    pub(crate) const ALL: [PageId; 7] = [
         PageId::Appearance,
         PageId::Conversations,
+        PageId::General,
         PageId::Background,
         PageId::Shape,
         PageId::Highlights,
+        PageId::Trusted,
     ];
 
     /// The pages in the nav, in order.
-    pub(crate) const NAV: [PageId; 2] = [PageId::Appearance, PageId::Conversations];
+    pub(crate) const NAV: [PageId; 3] =
+        [PageId::Appearance, PageId::Conversations, PageId::General];
 
     /// The page a sub-page's ← goes back to.
     pub(crate) fn parent(self) -> Option<PageId> {
         match self {
-            PageId::Appearance | PageId::Conversations => None,
+            PageId::Appearance | PageId::Conversations | PageId::General => None,
             PageId::Background | PageId::Shape => Some(PageId::Appearance),
             PageId::Highlights => Some(PageId::Conversations),
+            PageId::Trusted => Some(PageId::General),
         }
     }
 
@@ -97,6 +109,14 @@ pub(crate) enum RowId {
     ChannelDescription,
     Highlights,
     MentionHue,
+    ReplyHue,
+    Language,
+    ConfirmLinks,
+    Trusted,
+    /// Trusted domains' field that adds one.
+    TrustedAdd,
+    /// The trusted domain at this place in the list.
+    TrustedHost(usize),
     Field,
     Strength,
     Grain,
@@ -130,6 +150,8 @@ pub(crate) enum Change {
     Colours(colour_field::ColourChange),
     /// A hue swatch picked, in OKLCH degrees.
     Hue(RowId, f32),
+    /// Language's menu.
+    Language(Language),
 }
 
 impl Change {
@@ -141,6 +163,7 @@ impl Change {
             Change::Switch(row, _) | Change::Slider { row, .. } | Change::Hue(row, _) => *row,
             Change::Accent(_) => RowId::Accent,
             Change::Direction(_) => RowId::Directions,
+            Change::Language(_) => RowId::Language,
             Change::Colours(_) => RowId::Field,
         }
     }
@@ -223,15 +246,17 @@ impl Held {
 }
 
 /// What a row saves: the settings its store holds after the change.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Target {
     Appearance(Appearance),
     Conversations(ConversationSettings),
+    General(GeneralSettings),
+    Trusted(BTreeSet<String>),
 }
 
 /// A save that failed: the row that shows its danger line, and the
 /// settings it was saving, which Try again saves as they were.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Failed {
     row: RowId,
     target: Target,
@@ -247,6 +272,9 @@ pub(crate) struct SettingsPanel {
     /// change).
     held: Held,
     pub(crate) colour: ColourState,
+    /// Trusted domains' field, and whether what it holds was refused.
+    pub(crate) domain: TextEdit,
+    pub(crate) domain_refused: bool,
 }
 
 impl SettingsPanel {
@@ -257,6 +285,8 @@ impl SettingsPanel {
             failed: None,
             held: Held::Idle,
             colour: ColourState::default(),
+            domain: TextEdit::new(""),
+            domain_refused: false,
         }
     }
 
@@ -278,12 +308,12 @@ impl SettingsPanel {
 
     /// The row whose save failed, which shows the danger line.
     pub(crate) fn failed_row(&self) -> Option<RowId> {
-        self.failed.map(|failed| failed.row)
+        self.failed.as_ref().map(|failed| failed.row)
     }
 
     /// The settings whose save failed, for Try again.
     pub(crate) fn failed_target(&self) -> Option<Target> {
-        self.failed.map(|failed| failed.target)
+        self.failed.as_ref().map(|failed| failed.target.clone())
     }
 
     /// The save of `target` under `row` worked, or did not.

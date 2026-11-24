@@ -10,7 +10,7 @@
 
 use rune::{Color, El, col, el, icon, row, text};
 
-use super::rows::{Group, Kind, MENTION_HUES, Row, direction_name};
+use super::rows::{Group, HIGHLIGHT_HUES, Kind, Row, direction_name};
 use super::{Change, RowId, colour_field};
 use crate::appearance::Appearance;
 use crate::appearance::presets::Direction;
@@ -35,6 +35,9 @@ pub(super) struct Ctx<'a> {
     pub(super) colour: super::ColourState,
     /// The grain's tile for this theme, for Grain's slider.
     pub(super) grain: Option<&'a rune::Pixels>,
+    /// Trusted domains' field, and whether what it held was refused.
+    pub(super) domain: &'a rune::TextEdit,
+    pub(super) domain_refused: bool,
 }
 
 /// A group: its optional title, then its rows as one block of tiles.
@@ -73,10 +76,12 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
     let top = if first { outer } else { inner };
     let bottom = if last { outer } else { inner };
     let failed = cx.failed == Some(setting.id);
+    let refused = matches!(setting.kind, Kind::DomainField) && cx.domain_refused;
     let body = match setting.kind {
         Kind::Slider(slider) => super::slider::view(&setting, slider, cx),
         Kind::ColourField => colour_field::view(cx.appearance, cx.colour, look),
         Kind::Directions(current) => directions(&setting, current, look),
+        Kind::DomainField => super::domain_field::view(cx.domain, look),
         _ => plain_row(setting, look),
     };
     let corners = [top, top, bottom, bottom];
@@ -87,6 +92,15 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
         .corners(corners)
         .fill(look.palette.surface_tile)
         .child(body.corners(corners));
+    if refused {
+        return col().w_full().gap(look.space(SPACE_XS)).child(tile).child(
+            el().px(ROW_INSET_PT).role("alert").child(
+                text(strings::settings_trusted_invalid())
+                    .font(look.font(TYPE_SMALL))
+                    .color(look.palette.danger),
+            ),
+        );
+    }
     if !failed {
         return tile;
     }
@@ -175,7 +189,9 @@ fn plain_row(setting: Row, look: &Look) -> El {
         Kind::Hues(current) => line
             .label(spoken.clone())
             .child(hues(id, &spoken, current, look)),
-        Kind::Slider(_) | Kind::ColourField | Kind::Directions(_) => line,
+        Kind::Remove(host) => line.label(spoken).child(remove_button(id, &host, look)),
+        Kind::Note => line.role("status"),
+        Kind::Slider(_) | Kind::ColourField | Kind::Directions(_) | Kind::DomainField => line,
     }
 }
 
@@ -260,8 +276,34 @@ fn accents(current: Accent, look: &Look) -> El {
         }))
 }
 
+/// A list item's Remove: a small button in the row's end.
+fn remove_button(id: RowId, host: &str, look: &Look) -> El {
+    let host = host.to_owned();
+    el().key(format!("{}-remove", id.key()))
+        .h(look.space(CHIP_HEIGHT))
+        .px(look.space(SPACE_MD))
+        .center()
+        // As Shape and type's chips: concentric with a tile one
+        // `space.md` out.
+        .radius(Look::nested_radius(
+            look.radius(TILE_OUTER_RADIUS),
+            look.space(SPACE_MD),
+        ))
+        .fill(look.palette.surface_hover)
+        .role("button")
+        .label(strings::settings_trusted_remove_spoken(&host))
+        .focusable(true)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+        .on_press_tx(move |shell: &mut Shell, tx| shell.settings_untrust(&host, tx))
+        .child(
+            text(strings::settings_trusted_remove())
+                .font(look.font(TYPE_SMALL_MEDIUM))
+                .color(look.palette.text_primary),
+        )
+}
+
 /// A highlight's hue swatches (Message highlights): one per hue in
-/// `MENTION_HUES`, the chosen one ringed.
+/// `HIGHLIGHT_HUES`, the chosen one ringed.
 fn hues(id: RowId, name: &str, current: f32, look: &Look) -> El {
     let dark = look.theme().is_dark();
     row()
@@ -269,7 +311,7 @@ fn hues(id: RowId, name: &str, current: f32, look: &Look) -> El {
         .role("radiogroup")
         .label(name.to_owned())
         .focus_group()
-        .children(MENTION_HUES.into_iter().map(|hue| {
+        .children(HIGHLIGHT_HUES.into_iter().map(|hue| {
             let lightness = if dark { 0.70 } else { 0.555 };
             let colour = rune::oklch(lightness, 0.15, hue);
             let chosen = (hue - current).abs() < 0.5;
