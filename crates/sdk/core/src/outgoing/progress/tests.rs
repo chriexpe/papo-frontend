@@ -278,3 +278,29 @@ fn close_image_atomically_clears_progress_and_rejects_late_updates() {
     assert!(rx.borrow().upload_progress.is_none());
     assert_eq!(rx.borrow().version, 4);
 }
+
+#[test]
+fn an_upload_splits_over_its_attachments_in_order() {
+    use super::super::{OutgoingAttachment, OutgoingMessage};
+    let message = OutgoingMessage {
+        attachments: vec![
+            OutgoingAttachment::from_bytes("a", vec![0; 100]),
+            OutgoingAttachment::from_bytes("b", vec![0; 50]),
+            OutgoingAttachment::from_bytes("c", vec![0; 10]),
+        ],
+        ..Default::default()
+    };
+    let progress = UploadProgress {
+        account: account(),
+        operation_id: Uuid::nil(),
+        bytes_uploaded: 120,
+        total_bytes: 160,
+    };
+    let split = progress.per_attachment(&message);
+    let shares: Vec<(u64, u64)> = split
+        .iter()
+        .map(|item| (item.bytes_uploaded, item.total_bytes))
+        .collect();
+    assert_eq!(shares, [(100, 100), (20, 50), (0, 10)]);
+    assert!(split[2].is_waiting() && !split[1].is_waiting());
+}

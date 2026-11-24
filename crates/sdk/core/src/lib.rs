@@ -68,9 +68,13 @@ pub use images::{
 };
 pub use outgoing::OutgoingFault;
 pub use outgoing::{
-    Draft, DraftBody, MessageTarget, Operation, OperationFailure, OperationKind, OperationState,
-    OutgoingAttachment, OutgoingAttachmentContent, OutgoingError, OutgoingMessage, OutgoingService,
-    OutgoingSnapshot, RetryDecision, StagedAttachment, UploadProgress,
+    AttachmentProgress, Draft, DraftBody, MessageTarget, Operation, OperationFailure,
+    OperationKind, OperationState, OutgoingAttachment, OutgoingAttachmentContent, OutgoingError,
+    OutgoingMessage, OutgoingService, OutgoingSnapshot, RetryDecision, StagedAttachment,
+    UploadProgress,
+};
+pub use outgoing::{
+    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES,
 };
 pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
 mod catch_up;

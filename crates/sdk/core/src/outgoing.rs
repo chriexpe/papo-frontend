@@ -22,7 +22,10 @@ pub use content::{
     Draft, DraftBody, MessageTarget, OperationKind, OutgoingAttachment, OutgoingAttachmentContent,
     OutgoingMessage, StagedAttachment,
 };
-pub use progress::UploadProgress;
+pub use content::{
+    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES,
+};
+pub use progress::{AttachmentProgress, UploadProgress};
 pub use service::OutgoingService;
 use std::sync::{Arc, atomic::AtomicBool};
 use tokio::sync::{Mutex, Notify};

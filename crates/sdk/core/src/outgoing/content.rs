@@ -4,8 +4,13 @@ use crate::{AccountId, AttachmentEdit, Uuid};
 use papo_api::wire::EmbedInput;
 use serde::{Deserialize, Serialize};
 
-pub(super) const MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
-const MAX_ATTACHMENT_COUNT: usize = 10;
+/// Largest attachment the SDK stages or sends, in bytes (100 MiB). The backend states no limit, so
+/// clients show this one; the backend's own body cap (110 MiB) sits above it.
+pub const MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
+/// Most bytes all attachments of one message may total (100 MiB).
+pub const MAX_MESSAGE_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
+/// Most files one message may carry.
+pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
 
 /// An authoritative remote ID or an earlier operation's eventual message ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,7 +324,7 @@ fn validate_text(content: &str) -> Result<(), super::OutgoingError> {
 }
 
 fn validate_attachments(attachments: &[OutgoingAttachment]) -> Result<(), super::OutgoingError> {
-    if attachments.len() > MAX_ATTACHMENT_COUNT {
+    if attachments.len() > MAX_ATTACHMENTS_PER_MESSAGE {
         return Err(super::OutgoingError::InvalidInput);
     }
     let mut total_bytes: u64 = 0;
@@ -334,7 +339,7 @@ fn validate_attachments(attachments: &[OutgoingAttachment]) -> Result<(), super:
         total_bytes = total_bytes
             .checked_add(size)
             .ok_or(super::OutgoingError::InvalidInput)?;
-        if total_bytes > MAX_ATTACHMENT_BYTES {
+        if size > MAX_ATTACHMENT_BYTES || total_bytes > MAX_MESSAGE_ATTACHMENT_BYTES {
             return Err(super::OutgoingError::InvalidInput);
         }
     }
