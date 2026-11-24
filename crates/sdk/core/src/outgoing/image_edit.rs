@@ -83,7 +83,9 @@ impl Registry {
         original: &StagedAttachment,
         edit: AttachmentEdit,
     ) -> Result<(StagedAttachment, ImageFormat), OutgoingError> {
-        let guard = self.copy_guard(session).await?;
+        let guard = self
+            .copy_guard(session, Some(session.client.inner.outgoing_files.clone()))
+            .await?;
         let token = session.inner.tasks.token();
         if session.is_closed() {
             return Err(ClientError::Closed.into());
@@ -100,7 +102,7 @@ impl Registry {
             let (_guard, _token, _lease) = (guard, token, lease);
             let mut reader = BufReader::new(files::open_for_upload(&root, account, source)?);
             let mut written = None;
-            let (reference, pin) = files::stage_stream(
+            let (reference, (_serial, pin)) = files::stage_stream(
                 &root,
                 account,
                 || session.is_closed(),
@@ -168,7 +170,9 @@ impl Registry {
         + Send
         + 'static,
     ) -> Result<T, OutgoingError> {
-        let guard = self.copy_guard(session).await?;
+        let guard = self
+            .copy_guard(session, Some(session.client.inner.outgoing_files.clone()))
+            .await?;
         let token = session.inner.tasks.token();
         if session.is_closed() {
             return Err(ClientError::Closed.into());

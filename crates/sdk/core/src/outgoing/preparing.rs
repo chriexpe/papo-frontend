@@ -11,17 +11,17 @@
 //! cleaned payload and Queued in one transaction, so every other part of the queue only ever
 //! sees a row with all of its files or none.
 
+mod overlay;
+
 use super::{
-    AccountQueue, Operation, OperationFailure, OperationKind, OperationState,
-    OutgoingAttachmentContent, OutgoingError, OutgoingMessage, OutgoingService, PendingAttachment,
-    StagedAttachment, StagingFailure, Uuid,
+    OperationFailure, OperationKind, OperationState, OutgoingAttachmentContent, OutgoingError,
+    OutgoingMessage, OutgoingService, PendingAttachment, StagedAttachment, StagingFailure, Uuid,
     enqueue::{self, MAX_RETAINED_BYTES},
     files,
     persistence::{encode, visible},
 };
 use crate::{Registry, Session};
 use rusqlite::params;
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 const INSERT_PREPARING_SQL: &str = "
@@ -63,6 +63,7 @@ enum Slot {
 }
 
 /// Files staged and the message rewritten, ready to become Queued.
+#[derive(Clone)]
 struct Resolved {
     payload: Vec<u8>,
     references: Vec<files::Reference>,
@@ -81,68 +82,6 @@ pub(super) fn has_copying(message: &OutgoingMessage) -> bool {
         .attachments
         .iter()
         .any(|attachment| attachment.pending().is_some())
-}
-
-impl AccountQueue {
-    fn preparing_map(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<Uuid, Preparing>> {
-        self.preparing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Shows each preparing message as this process knows it, over the row's crash-time form.
-    pub(super) fn present_preparing(&self, operations: &mut [Arc<Operation>]) {
-        let map = self.preparing_map();
-        if map.is_empty() {
-            return;
-        }
-        for operation in operations.iter_mut() {
-            let Some(entry) = map.get(&operation.id) else {
-                continue;
-            };
-            if operation.state != OperationState::Failed
-                || operation.failure != Some(OperationFailure::AttachmentLost)
-            {
-                continue;
-            }
-            let mut shown = (**operation).clone();
-            if entry.cancelled {
-                shown.failure = Some(OperationFailure::Cancelled);
-            } else {
-                shown.state = OperationState::Preparing;
-                shown.failure = None;
-            }
-            *operation = Arc::new(shown);
-        }
-    }
-
-    /// ✕ on a preparing message: Failed at once, the copy keeps going. True if it was preparing.
-    pub(super) fn cancel_preparing(&self, local: Uuid) -> bool {
-        self.preparing_map()
-            .get_mut(&local)
-            .map(|entry| entry.cancelled = true)
-            .is_some()
-    }
-
-    /// Retry on a preparing message ✕ cancelled: back to Preparing. True if it applied.
-    pub(super) fn retry_preparing(&self, local: Uuid) -> bool {
-        match self.preparing_map().get_mut(&local) {
-            Some(entry) if entry.cancelled => {
-                entry.cancelled = false;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Discard: stop waiting for the copy; the row itself is discarded as any Failed one.
-    pub(super) fn abandon_preparing(&self, local: Uuid) {
-        if let Some(entry) = self.preparing_map().remove(&local) {
-            entry.abort.cancel();
-        }
-    }
 }
 
 impl Registry {
@@ -214,26 +153,34 @@ impl Registry {
             session.inner.outgoing.preparing_map().remove(&local);
             return Err(error);
         }
+        let OperationKind::Message(committed_message) = kind else {
+            return Err(OutgoingError::InvalidInput);
+        };
         let token = session.inner.tasks.token();
         let service = OutgoingService { session };
-        service
-            .session
-            .client
-            .inner
-            .runtime
-            .clone()
-            .spawn(async move {
-                let _token = token;
-                service.resolve_preparing(local, slots, abort).await;
-            });
+        let runtime = service.session.client.inner.runtime.clone();
+        runtime.spawn(async move {
+            let _token = token;
+            service
+                .resolve_preparing(local, committed_message, slots, abort)
+                .await;
+        });
         Ok(())
     }
 }
 
 impl OutgoingService {
-    async fn resolve_preparing(&self, local: Uuid, slots: Vec<Slot>, abort: CancellationToken) {
+    /// `message` is the committed one (files not attached), never read back from the snapshot:
+    /// the copy may end before the enqueue that committed it has published.
+    async fn resolve_preparing(
+        &self,
+        local: Uuid,
+        message: OutgoingMessage,
+        slots: Vec<Slot>,
+        abort: CancellationToken,
+    ) {
         let outcome = match self.gather(slots, &abort).await {
-            Some(Ok(files)) => self.prepare(local, files).await,
+            Some(Ok(files)) => self.prepare(local, message, files).await,
             Some(Err(failure)) => Err(failure),
             // Discarded, or the account closed: the row already says what it is.
             None => return,
@@ -273,14 +220,9 @@ impl OutgoingService {
     async fn prepare(
         &self,
         local: Uuid,
+        mut message: OutgoingMessage,
         files: Vec<StagedAttachment>,
     ) -> Result<Resolved, OperationFailure> {
-        let operation = self
-            .operation(local)
-            .map_err(|_| OperationFailure::AttachmentLost)?;
-        let OperationKind::Message(mut message) = (*operation.kind).clone() else {
-            return Err(OperationFailure::AttachmentLost);
-        };
         if message.attachments.len() != files.len() {
             return Err(OperationFailure::AttachmentLost);
         }
@@ -322,17 +264,42 @@ impl OutgoingService {
     }
 
     /// Records the outcome under the queue's serial lock, then republishes and wakes dispatch.
+    ///
+    /// A write that fails is tried again with the client's backoff while the account is open:
+    /// the files are staged, so giving up would lose a message that only needs its row written.
+    /// The entry stays (shown Preparing) until the write lands, or the message is discarded.
     async fn finish_preparing(&self, local: Uuid, outcome: Result<Resolved, OperationFailure>) {
         let queue = &self.session.inner.outgoing;
-        let _guard = queue.serial.lock().await;
-        let Some(entry) = queue.preparing_map().remove(&local) else {
-            return; // Discarded meanwhile.
-        };
-        let written = self.write_outcome(local, entry.cancelled, outcome).await;
-        // A failed write leaves the row as it was: Failed, files lost. Nothing else to undo.
-        drop(written);
-        let _ = self.publish().await;
-        queue.wake.notify_one();
+        let config = &self.session.client.inner.config;
+        let mut attempt = 0_u32;
+        loop {
+            let guard = queue.serial.lock().await;
+            let Some(cancelled) = queue
+                .preparing_map()
+                .get(&local)
+                .map(|entry| entry.cancelled)
+            else {
+                return; // Discarded meanwhile.
+            };
+            if self
+                .write_outcome(local, cancelled, outcome.clone())
+                .await
+                .is_ok()
+            {
+                queue.preparing_map().remove(&local);
+                let _ = self.publish().await;
+                queue.wake.notify_one();
+                return;
+            }
+            drop(guard);
+            let delay = config.backoff.delay(attempt, config.jitter.as_ref());
+            attempt = attempt.saturating_add(1);
+            tokio::select! {
+                biased;
+                () = self.session.inner.root.cancelled() => return,
+                () = tokio::time::sleep(delay) => {}
+            }
+        }
     }
 
     async fn write_outcome(
@@ -353,12 +320,13 @@ impl OutgoingService {
                     account.server().as_bytes().to_vec(),
                     account.user().as_bytes().to_vec(),
                 );
-                let previous: Option<i64> = rusqlite::OptionalExtension::optional(tx.query_row(
-                    PREPARING_ROW_SQL,
-                    params![local.as_bytes(), keys.0, keys.1, lost],
-                    |row| row.get(0),
-                ))?;
-                let Some(previous_payload) = previous else {
+                let previous_payload_bytes: Option<i64> =
+                    rusqlite::OptionalExtension::optional(tx.query_row(
+                        PREPARING_ROW_SQL,
+                        params![local.as_bytes(), keys.0, keys.1, lost],
+                        |row| row.get(0),
+                    ))?;
+                let Some(previous_payload_bytes) = previous_payload_bytes else {
                     return Ok(()); // Discarded or no longer preparing.
                 };
                 let failed = |failure: OperationFailure| -> Result<(), OutgoingError> {
@@ -372,15 +340,15 @@ impl OutgoingService {
                     Ok(resolved) => resolved,
                     Err(failure) => return failed(failure),
                 };
-                let retained: i64 =
+                let retained_bytes: i64 =
                     tx.query_row(RETAINED_BYTES_SQL, params![keys.0, keys.1], |row| {
                         row.get(0)
                     })?;
-                let added = i64::try_from(resolved.payload.len())
+                let added_bytes = i64::try_from(resolved.payload.len())
                     .map_err(|_| OutgoingError::Budget)?
-                    .saturating_sub(previous_payload)
+                    .saturating_sub(previous_payload_bytes)
                     .saturating_add(resolved.attachment_bytes);
-                if retained.saturating_add(added) > MAX_RETAINED_BYTES {
+                if retained_bytes.saturating_add(added_bytes) > MAX_RETAINED_BYTES {
                     return failed(OperationFailure::AttachmentRefused);
                 }
                 let (state, failure) = if cancelled {

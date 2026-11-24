@@ -337,3 +337,31 @@ fn a_draft_does_not_take_a_file_still_copying() -> Result {
     })??;
     f.finish()
 }
+
+#[test]
+fn a_file_copied_before_send_goes_straight_to_queued() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let (session, channel) = signed_in(&f).await?;
+        let queue = session.outgoing();
+        let gate = Gate::new();
+        gate.open(true);
+        let pending = queue.begin_staging(gate.reader(vec![9; 32 * 1024]))?;
+        // The copy has ended before Send: the resolver must not need the snapshot to have it.
+        pending
+            .staged()
+            .await
+            .map_err(|failure| format!("{failure:?}"))?;
+        queue
+            .enqueue(
+                channel,
+                id(1),
+                with_pending("early.bin", pending),
+                UnixMicros(0),
+            )
+            .await?;
+        state(&session, id(1), OperationState::Sent).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}

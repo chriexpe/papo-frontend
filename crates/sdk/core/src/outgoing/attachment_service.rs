@@ -99,7 +99,8 @@ impl OutgoingService {
                     this.session.inner.outgoing.wake.notify_one();
                     Ok(())
                 }
-                OperationState::Sending if this.session.inner.outgoing.cancel_in_flight(local) => {
+                OperationState::Sending => {
+                    this.session.inner.outgoing.request_cancel(local);
                     Ok(())
                 }
                 _ => Err(OutgoingError::InvalidState),

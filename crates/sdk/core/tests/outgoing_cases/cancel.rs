@@ -1,7 +1,9 @@
 //! Cancelling an attachment upload and the upload idle timeout over loopback.
 
 use super::streaming::{MIB, PatternReader};
+use super::streaming_fences::PauseProbe;
 use super::*;
+use papo_sdk::OutgoingDispatchPhase;
 use papo_sdk::{OperationFailure, StagedAttachment};
 use papo_test_server::UploadThrottle;
 use std::time::Duration;
@@ -203,6 +205,34 @@ fn a_stalled_upload_times_out_into_unknown() -> Result {
         hold.wait_started().await?;
         state(&session, id(1), OperationState::Unknown).await?;
         hold.release();
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn a_cancel_right_after_the_claim_is_kept_for_the_attempt() -> Result {
+    let mut f = Fixture::new(Config::default())?;
+    let probe = PauseProbe::new(id(1), OutgoingDispatchPhase::Claimed);
+    f.set_outgoing_probe(probe.clone())?;
+    f.run(async {
+        let (session, channel) = signed_in(&f).await?;
+        let queue = session.outgoing();
+        let staged = queue.stage_attachment(PatternReader::new(MIB, 7)).await?;
+        queue
+            .enqueue(
+                channel,
+                id(1),
+                with_file("claimed.bin", staged),
+                UnixMicros(0),
+            )
+            .await?;
+        // Sending is published, the request not yet started.
+        probe.wait_reached().await;
+        queue.cancel_upload(id(1)).await?;
+        probe.release();
+        let failed = state(&session, id(1), OperationState::Failed).await?;
+        assert_eq!(failed.failure, Some(OperationFailure::Cancelled));
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()

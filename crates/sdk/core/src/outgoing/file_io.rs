@@ -44,24 +44,27 @@ impl Registry {
         Ok(())
     }
 
-    /// A slot for a copy or a read of staged files: the profile-wide permit, and this account's
-    /// shared `files_active` hold so shutdown waits for it. Never `files_serial`, which a copy
-    /// takes only for an instant to publish its blob.
+    /// A slot for a copy or a read of staged files: a permit from `pool` (none for work that only
+    /// checks metadata), and this account's shared `files_active` hold so shutdown waits for it.
+    /// Never `files_serial`, which a copy takes only for an instant to publish its blob.
     pub(super) async fn copy_guard(
         &self,
         session: &Session,
+        pool: Option<std::sync::Arc<tokio::sync::Semaphore>>,
     ) -> Result<
         (
-            tokio::sync::OwnedSemaphorePermit,
+            Option<tokio::sync::OwnedSemaphorePermit>,
             tokio::sync::OwnedRwLockReadGuard<()>,
         ),
         OutgoingError,
     > {
-        let pool = session.client.inner.outgoing_files.clone();
-        let permit = tokio::select! {
-            biased;
-            () = session.inner.root.cancelled() => return Err(ClientError::Closed.into()),
-            permit = pool.acquire_owned() => permit.map_err(|_| OutgoingError::InvalidState)?,
+        let permit = match pool {
+            Some(pool) => Some(tokio::select! {
+                biased;
+                () = session.inner.root.cancelled() => return Err(ClientError::Closed.into()),
+                permit = pool.acquire_owned() => permit.map_err(|_| OutgoingError::InvalidState)?,
+            }),
+            None => None,
         };
         let active = tokio::select! {
             biased;
@@ -112,7 +115,9 @@ impl Registry {
         reader: R,
         identity: Uuid,
     ) -> Result<StagedAttachment, OutgoingError> {
-        let guard = self.copy_guard(session).await?;
+        let guard = self
+            .copy_guard(session, Some(session.client.inner.outgoing_staging.clone()))
+            .await?;
         let token = session.inner.tasks.token();
         if session.is_closed() {
             return Err(ClientError::Closed.into());
@@ -124,7 +129,7 @@ impl Registry {
         tokio::task::spawn_blocking(move || {
             let (_guard, _token, _lease) = (guard, token, lease);
             let mut notified = false;
-            let (reference, pin) = files::stage_reader_published(
+            let (reference, (_serial, pin)) = files::stage_reader_published(
                 &root,
                 account,
                 reader,
@@ -159,7 +164,13 @@ impl Registry {
         if inputs.is_empty() {
             return Ok((Vec::new(), 0));
         }
-        let guard = self.copy_guard(session).await?;
+        // Checking already-staged files is metadata only and takes no copy slot, so an enqueue
+        // under the queue's serial lock never waits for one unless it copies bytes itself.
+        let copies = inputs
+            .iter()
+            .any(|input| matches!(input, AttachmentInput::Inline(_)));
+        let pool = copies.then(|| session.client.inner.outgoing_files.clone());
+        let guard = self.copy_guard(session, pool).await?;
         let token = session.inner.tasks.token();
         if session.is_closed() {
             return Err(ClientError::Closed.into());
@@ -180,7 +191,7 @@ impl Registry {
                     AttachmentInput::Inline(bytes) => {
                         // Callers hold the queue's serial lock until their commit, which keeps
                         // collection out; the pin covers the instant before that.
-                        let (reference, pin) = files::stage_reader_published(
+                        let (reference, published) = files::stage_reader_published(
                             &root,
                             account,
                             Cursor::new(bytes),
@@ -193,7 +204,7 @@ impl Registry {
                             },
                             |name| publish_pinned(&session, name),
                         )?;
-                        drop(pin);
+                        drop(published);
                         refs.push(reference);
                     }
                     AttachmentInput::Staged(reference) => {
@@ -310,9 +321,23 @@ impl Registry {
 
 /// Pins a finished blob under `files_serial`, so collection cannot run between the pin and the
 /// blob appearing under its name. Runs on a blocking worker.
-pub(super) fn publish_pinned(session: &Session, name: &str) -> std::sync::Arc<super::StagedPin> {
-    let _serial = session.inner.outgoing.files_serial.blocking_lock();
-    session.inner.outgoing.pin_staged(name.to_owned())
+pub(super) fn publish_pinned(
+    session: &Session,
+    name: &str,
+) -> (
+    tokio::sync::OwnedMutexGuard<()>,
+    std::sync::Arc<super::StagedPin>,
+) {
+    // Held until the blob is in place: the duplicate check, removal and rename of two copies of
+    // the same content never interleave, and collection never sees the name unpinned.
+    let serial = session
+        .inner
+        .outgoing
+        .files_serial
+        .clone()
+        .blocking_lock_owned();
+    let pin = session.inner.outgoing.pin_staged(name.to_owned());
+    (serial, pin)
 }
 
 #[cfg(feature = "test-support")]

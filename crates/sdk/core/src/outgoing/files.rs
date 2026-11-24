@@ -1,6 +1,8 @@
 //! Durable account-owned attachment staging, streaming verification and reference-based collection; SQL acknowledgement lives in persistence.
 
+mod sink;
 mod verify;
+use sink::StagingSink;
 pub(super) use verify::{open_for_upload, verify, verify_staged_metadata};
 
 use super::{
@@ -96,69 +98,6 @@ fn harden_account_directories(root: &Path, directory: &Path) -> Result<(), Stora
     Ok(())
 }
 
-/// Why a staging sink stopped accepting bytes; kept apart from `io::Error` so a transform's own
-/// failure cannot hide a cancellation or the size ceiling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SinkStop {
-    Cancelled,
-    TooLarge,
-    Storage(ErrorKind),
-}
-
-/// The staged file being written: hashes every byte, enforces the 100 MiB ceiling and honours
-/// cancellation on each write, so a transform streams into staging without a second copy.
-pub(super) struct StagingSink<C: FnMut() -> bool, N: FnMut()> {
-    file: std::io::BufWriter<File>,
-    hasher: Sha256,
-    total_bytes: u64,
-    cancelled: C,
-    copied_chunk: N,
-    stop: Option<SinkStop>,
-}
-
-impl<C: FnMut() -> bool, N: FnMut()> Write for StagingSink<C, N> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if (self.cancelled)() {
-            return Err(self.fail(SinkStop::Cancelled));
-        }
-        let added = u64::try_from(bytes.len()).map_err(|_| self.fail(SinkStop::TooLarge))?;
-        let total = self
-            .total_bytes
-            .checked_add(added)
-            .filter(|total| *total <= MAX_FILE_BYTES)
-            .ok_or_else(|| self.fail(SinkStop::TooLarge))?;
-        self.file
-            .write_all(bytes)
-            .map_err(|error| self.fail(SinkStop::Storage(error.kind())))?;
-        self.hasher.update(bytes);
-        self.total_bytes = total;
-        (self.copied_chunk)();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<C: FnMut() -> bool, N: FnMut()> StagingSink<C, N> {
-    fn fail(&mut self, stop: SinkStop) -> std::io::Error {
-        self.stop = Some(stop);
-        std::io::Error::other("staging sink stopped")
-    }
-
-    /// The sink's own failure, if it stopped the writer, as the typed outgoing error.
-    fn stop_error(&self) -> Option<OutgoingError> {
-        self.stop.map(|stop| match stop {
-            SinkStop::Cancelled => ClientError::Closed.into(),
-            SinkStop::TooLarge => OutgoingError::InvalidInput,
-            SinkStop::Storage(kind) => {
-                OutgoingError::Storage(StorageError::from(std::io::Error::from(kind)))
-            }
-        })
-    }
-}
-
 /// Streams what `fill` writes into a private temporary file, hashing incrementally and enforcing
 /// the 100 MiB ceiling during writing before syncing and atomically publishing `<sha256>`.
 /// A sink failure (cancellation, ceiling, storage) wins over whatever error `fill` reports.
@@ -238,9 +177,21 @@ pub(super) fn stage_stream<P>(
 }
 
 /// Names this process gives its copies in progress; collection leaves them alone, while
-/// leftovers of an earlier process (another id) are collected.
-fn temp_prefix() -> String {
-    format!(".tmp-{}-", std::process::id())
+/// leftovers of an earlier run are collected. A process id alone is not enough: after a crash
+/// the next run can get the same one, so each run adds its own random token.
+fn temp_prefix() -> &'static str {
+    static PREFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREFIX.get_or_init(|| {
+        let mut token = [0_u8; 8];
+        // Without entropy the time of the first copy still tells runs apart.
+        if getrandom::fill(&mut token).is_err() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos());
+            token.copy_from_slice(&now.to_le_bytes()[..8]);
+        }
+        format!(".tmp-{}-{}-", std::process::id(), u64::from_le_bytes(token))
+    })
 }
 
 #[cfg(test)]
@@ -430,7 +381,7 @@ pub(super) fn collect(
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !names.contains(&name) && !name.starts_with(&in_progress) {
+        if !names.contains(&name) && !name.starts_with(in_progress) {
             fs::remove_file(entry.path())?;
         }
     }

@@ -264,6 +264,9 @@ pub(crate) struct AccountQueue {
     active_uploads: std::sync::Mutex<Vec<std::sync::Weak<stream::ActiveUploadSlot>>>,
     /// The attachment upload in flight and the token that cancels it; set only by the dispatcher.
     in_flight: std::sync::Mutex<Option<(Uuid, tokio_util::sync::CancellationToken)>>,
+    /// A cancel that arrived while the operation showed Sending but no request was in flight
+    /// (just claimed, or just ended); the next attempt start applies it, `finish_attempt` drops it.
+    cancel_requested: std::sync::Mutex<Option<Uuid>>,
     /// Messages committed while a file is still copying, shown as Preparing; see `preparing`.
     preparing: std::sync::Mutex<std::collections::BTreeMap<Uuid, preparing::Preparing>>,
     initialized: AtomicBool,
@@ -286,6 +289,7 @@ impl Default for AccountQueue {
             staged_pins: Arc::new(StagedPins::default()),
             active_uploads: std::sync::Mutex::new(Vec::new()),
             in_flight: std::sync::Mutex::new(None),
+            cancel_requested: std::sync::Mutex::new(None),
             preparing: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             initialized: AtomicBool::new(false),
             running: AtomicBool::new(false),
@@ -295,8 +299,32 @@ impl Default for AccountQueue {
 }
 
 impl AccountQueue {
+    /// Stops the upload of `operation`: at once if in flight, else when its attempt starts.
+    pub(super) fn request_cancel(&self, operation: Uuid) {
+        if !self.cancel_in_flight(operation) {
+            *self
+                .cancel_requested
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(operation);
+        }
+    }
+
+    /// Takes a cancel requested for `operation` before its request was in flight.
+    pub(super) fn take_cancel_request(&self, operation: Uuid) -> bool {
+        let mut requested = self
+            .cancel_requested
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *requested == Some(operation) {
+            *requested = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Signals the upload of `operation` to stop, if it is the one in flight.
-    pub(super) fn cancel_in_flight(&self, operation: Uuid) -> bool {
+    fn cancel_in_flight(&self, operation: Uuid) -> bool {
         let in_flight = self
             .in_flight
             .lock()

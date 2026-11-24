@@ -26,7 +26,8 @@ const MARK_PROJECTED_SQL: &str = "
 const TRANSITION_STATE_SQL: &str = "
     UPDATE operations
     SET state = ?1, attempts = attempts + ?2, result = ?3, last_error = ?4
-    WHERE local_id = ?5 AND server_id = ?6 AND user_id = ?7 AND state = ?8 AND discarded = 0";
+    WHERE local_id = ?5 AND server_id = ?6 AND user_id = ?7 AND state = ?8 AND discarded = 0
+      AND NOT (?1 = 'Queued' AND coalesce(last_error, x'') IN (?9, ?10))";
 
 const SENT_PAYLOAD_SQL: &str = "
     UPDATE operations
@@ -386,7 +387,10 @@ impl Registry {
                         local.as_bytes(),
                         account.server().as_bytes(),
                         account.user().as_bytes(),
-                        expected.as_str()
+                        expected.as_str(),
+                        // A row stored without its files can never be queued again.
+                        encode(&OperationFailure::AttachmentLost)?,
+                        encode(&OperationFailure::AttachmentRefused)?,
                     ],
                 )?;
                 if changed != 1 {
