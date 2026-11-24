@@ -34,9 +34,10 @@ impl Default for Scale {
 /// How floating pills draw (§5, Glass and shadow).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Glass {
-    /// The Glass switch for this theme, unless the system reduces
-    /// transparency, which makes every theme solid.
-    pub(crate) on: bool,
+    /// How glassy, 0–1: 0 solid, then frosted, towards 1 clear liquid
+    /// glass (the window's compositor, `glass`, draws the lens). 0 while
+    /// the system reduces transparency.
+    pub(crate) glassy: f32,
     /// How far glass blurs what is behind it, in points.
     pub(crate) blur_pt: f32,
     /// What the shadows are multiplied by; 0 removes them.
@@ -47,7 +48,7 @@ impl Default for Glass {
     /// Solid at the default depth: what tests and the first frame draw.
     fn default() -> Glass {
         Glass {
-            on: false,
+            glassy: 0.0,
             blur_pt: 16.0,
             shadow_depth: 1.0,
         }
@@ -68,11 +69,35 @@ pub(crate) struct LookSpec {
     pub(crate) font_family: Option<&'static str>,
 }
 
-/// How glass saturates what it blurs (§5: 1.5).
-const GLASS_SATURATE: f32 = 1.5;
-/// The opacity of a glass pill's tint over what it blurs, per theme in
-/// `Theme::ALL`'s order (the mock's values).
-const GLASS_TINT_ALPHA: [f32; 4] = [0.82, 0.74, 0.80, 0.84];
+/// The effect mark of a glass surface, which the window's compositor
+/// draws as a lens (`glass`).
+pub(crate) const GLASS_MARK: u32 = 0x9a55;
+
+/// What a glass surface tells the compositor, in its four effect floats.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GlassData {
+    /// The Glass setting, above 0.
+    pub(crate) glassy: f32,
+    /// Glass blur, in points.
+    pub(crate) blur_pt: f32,
+    /// The surface's own colour, which tints the lens.
+    pub(crate) tint: Color,
+}
+
+impl GlassData {
+    /// Packed for `El::effect_data`: glassiness, blur, and the tint as its
+    /// sRGB `0xRRGGBB` word, carried bit for bit.
+    pub(crate) fn pack(self) -> [f32; 4] {
+        // `Color::hex` is the sRGB `#rrggbbaa`; its colour part is the word.
+        let word = u32::from_str_radix(&self.tint.hex()[1..7], 16).unwrap_or_default();
+        [self.glassy, self.blur_pt, f32::from_bits(word), 0.0]
+    }
+
+    /// The glassiness, the blur and the tint's sRGB word, as packed.
+    pub(crate) fn unpack(data: [f32; 4]) -> (f32, f32, u32) {
+        (data[0], data[1], data[2].to_bits())
+    }
+}
 /// The ink of a light theme's shadows (§5): `rgb(25,30,45)`, in Rune's
 /// linear light.
 const LIGHT_SHADOW_INK: Color = Color {
@@ -156,17 +181,23 @@ impl Look {
     /// A floating surface of `colour`: glass or solid, outline, shadows.
     fn floating_surface(&self, el: El, colour: Color) -> El {
         let palette = &self.palette;
-        let el = el.border(PILL_OUTLINE_PT, palette.line_pill);
-        let el = if self.glass.on {
-            let index = Theme::ALL
-                .iter()
-                .position(|theme| *theme == self.theme)
-                .unwrap_or_default();
-            el.backdrop_blur(self.glass.blur_pt)
-                .backdrop_saturate(GLASS_SATURATE)
-                .fill(colour.alpha(GLASS_TINT_ALPHA[index]))
+        let el = if self.glass.glassy > 0.0 {
+            // The compositor draws the lens here, from a copy of what is
+            // behind, tinted by the surface's colour.
+            let data = GlassData {
+                glassy: self.glass.glassy,
+                blur_pt: self.glass.blur_pt,
+                tint: colour,
+            };
+            // The outline is drawn after the lens (an outline, inset by
+            // its width, where a solid surface has its border), so the
+            // edge is the same at every Glass value.
+            el.effect(GLASS_MARK)
+                .effect_backdrop(true)
+                .effect_data(data.pack())
+                .outline(PILL_OUTLINE_PT, -PILL_OUTLINE_PT, palette.line_pill)
         } else {
-            el.fill(colour)
+            el.fill(colour).border(PILL_OUTLINE_PT, palette.line_pill)
         };
         self.shadows(el)
     }
@@ -281,5 +312,29 @@ impl Surfaces for El {
             Some(stops) => el.linear_gradient(CHROME_GRADIENT_DEGREES, stops),
             None => el,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GlassData;
+
+    #[test]
+    fn a_glass_slot_carries_its_settings_and_its_tint_to_the_byte() {
+        let data = GlassData {
+            glassy: 0.5,
+            blur_pt: 16.0,
+            tint: rune::Color {
+                r: 0.0,
+                g: 0.5,
+                b: 1.0,
+                a: 1.0,
+            },
+        }
+        .pack();
+        let (glassy, blur_pt, word) = GlassData::unpack(data);
+        assert_eq!((glassy, blur_pt), (0.5, 16.0));
+        // Linear 0.5 is sRGB 0xbc.
+        assert_eq!(word, 0x0000_bcff);
     }
 }

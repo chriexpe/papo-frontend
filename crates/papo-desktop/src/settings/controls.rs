@@ -150,13 +150,8 @@ fn plain_row(setting: Row, look: &Look) -> El {
             .role("switch")
             .checked(on)
             .label(spoken)
-            .on_press_tx({
-                let change = if id == RowId::Glass {
-                    Change::Glass(look.theme(), !on)
-                } else {
-                    Change::Switch(id, !on)
-                };
-                move |shell: &mut Shell, tx| shell.settings_change(change.clone(), tx)
+            .on_press_tx(move |shell: &mut Shell, tx| {
+                shell.settings_change(Change::Switch(id, !on), tx);
             })
             .child(switch(on, look)),
         Kind::Choice(value) => pressable(line, look)

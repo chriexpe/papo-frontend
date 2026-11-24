@@ -98,7 +98,12 @@ pub(crate) fn look_of(
             roundness: shape.roundness,
         },
         glass: Glass {
-            on: appearance.glass(theme) && !system.reduced_transparency,
+            // Reduce transparency makes every theme solid (§5).
+            glassy: if system.reduced_transparency {
+                0.0
+            } else {
+                appearance.glass
+            },
             blur_pt: shape.blur_pt,
             shadow_depth: shape.shadow_depth,
         },

@@ -145,7 +145,7 @@ pub(crate) use code_ink::CodeInk;
 pub(crate) use colour::{Palette, Theme};
 pub(crate) use content::*;
 pub(crate) use density::*;
-pub(crate) use look::{Glass, Look, LookSpec, Scale, Surfaces};
+pub(crate) use look::{GLASS_MARK, Glass, GlassData, Look, LookSpec, Scale, Surfaces};
 pub(crate) use reading::*;
 pub(crate) use replies::*;
 pub(crate) use sizes::*;

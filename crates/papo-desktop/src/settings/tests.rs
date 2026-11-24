@@ -64,15 +64,19 @@ fn a_row_that_cannot_work_is_left_out() {
 }
 
 #[test]
-fn the_glass_switch_shows_the_drawn_themes_value() {
+fn glass_is_a_slider_from_solid_to_liquid() {
     let appearance = Appearance::default();
     let glass = page(PageId::Appearance, &context(&appearance))
         .into_iter()
         .flat_map(|group| group.rows)
         .find(|row| row.id == RowId::Glass)
         .map(|row| row.kind);
+    let Some(Kind::Slider(slider)) = glass else {
+        panic!("a slider");
+    };
+    assert_eq!((slider.min, slider.max), (0.0, 1.0));
     assert!(
-        matches!(glass, Some(Kind::Switch(true))),
-        "Graphite starts as glass"
+        (slider.value - 0.5).abs() < f32::EPSILON,
+        "frosted at first"
     );
 }

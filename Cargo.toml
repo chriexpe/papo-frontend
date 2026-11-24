@@ -49,9 +49,9 @@ opt-level = 3
 # fixes Papo needs before upstream lands them, on the `papo` branch of
 # chriexpe/rune; each fix's commit says when it can go.
 [patch.crates-io]
-winit = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b" }
-sctk-adwaita = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b" }
-parley_engine = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b" }
-wgpu-hal = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b" }
-accesskit_windows = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b" }
-accesskit_macos = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b" }
+winit = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b" }
+sctk-adwaita = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b" }
+parley_engine = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b" }
+wgpu-hal = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b" }
+accesskit_windows = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b" }
+accesskit_macos = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b" }

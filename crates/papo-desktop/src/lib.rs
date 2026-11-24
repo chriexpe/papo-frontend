@@ -19,6 +19,7 @@ mod device_settings;
 mod direct_list;
 mod direct_pane;
 mod fonts;
+mod glass;
 mod grain;
 mod icons;
 mod keyring;
@@ -85,7 +86,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = rune::App::new(window::spec())
         .on_close(Shell::window_closing)
         // Read reports wait while the window is off screen.
-        .on_visibility(Shell::window_visibility);
+        .on_visibility(Shell::window_visibility)
+        // Liquid glass on the floating surfaces: Rune's frame, with a lens
+        // at each glass surface (`glass`).
+        .compositor(glass::GlassCompositor::default());
     let post = Arc::new(app.handle());
     lifecycle.attach(Arc::new(app.handle()));
     let bridge = Rc::new(RefCell::new(BridgeSlot::NotStarted));

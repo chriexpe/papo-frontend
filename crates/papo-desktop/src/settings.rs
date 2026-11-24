@@ -92,8 +92,6 @@ pub(crate) enum Change {
     Theme(Theme),
     Density(Density),
     Switch(RowId, bool),
-    /// The Glass switch for the theme drawn.
-    Glass(Theme, bool),
     Accent(Accent),
     Direction(Direction),
     /// A slider at `value`; `done` when the drag ends or a key moved it,
@@ -114,7 +112,6 @@ impl Change {
             Change::Theme(_) => RowId::Theme,
             Change::Density(_) => RowId::Density,
             Change::Switch(row, _) | Change::Slider { row, .. } => *row,
-            Change::Glass(..) => RowId::Glass,
             Change::Accent(_) => RowId::Accent,
             Change::Direction(_) => RowId::Directions,
             Change::Colours(_) => RowId::Field,

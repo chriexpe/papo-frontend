@@ -21,14 +21,14 @@ path = "src/main.rs"
 # the `papo` branch of chriexpe/rune.
 # Rune's default features without `embedded-fonts`: the app registers its own
 # fonts (src/fonts.rs), so Rune's copy of Inter would be dead weight.
-rune = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b", default-features = false, features = [
+rune = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b", default-features = false, features = [
     "accessibility",
     "dbus",
     "metal-backend",
     "ogg-audio",
     "svg",
 ] }
-rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b" }
+rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b" }
 papo-sdk = { path = "../sdk/core" }
 # The rail's per-server badge aggregates (ServerListService::subscribe_badges).
 papo-sdk-ui = { path = "../sdk/ui" }
@@ -56,7 +56,13 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 unicode-segmentation = "1.13"
 icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
 # Code blocks' syntax colours: Rune's highlighter, at Rune's revision.
-rune-highlights = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b" }
+rune-highlights = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b" }
+# Liquid glass on the floating surfaces (`docs/design.md` §5): `Fx::lens` bends
+# what is behind a pill at its rim. Rune's own effect layers, at Rune's pin.
+rune-fx = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b" }
+# The texture format of Rune's isolated layers, which the glass compositor
+# names to rune-fx; the version Rune locks.
+wgpu = { version = "30.0.1", default-features = false }
 # Links' hosts, parsed as the SDK checks them (WHATWG URLs), for the
 # open-link confirmation; the version the SDK locks.
 url = "2.5"
@@ -67,7 +73,7 @@ log = "0.4"
 env_logger = "0.11"
 
 [build-dependencies]
-rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "3ea66abe0bc8cd7fd4ea2a601fab770abfa8191b", features = ["codegen"] }
+rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "3f4242a4183338e3c30bda5fae1dfebb9745405b", features = ["codegen"] }
 
 [dev-dependencies]
 serde_json = "1"

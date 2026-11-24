@@ -313,7 +313,6 @@ fn applied(
         Change::Switch(RowId::Grouped, on) => next.messages.grouped = *on,
         Change::Switch(RowId::Stacked, on) => next.messages.stacked = *on,
         Change::Switch(RowId::SystemFont, on) => next.system_font = *on,
-        Change::Glass(theme, on) => next = next.with_glass(*theme, *on),
         Change::Accent(accent) => next.accent = *accent,
         Change::Direction(direction) => next.shape = direction.shape(),
         Change::Slider {
@@ -324,6 +323,11 @@ fn applied(
             let colours = current.background.colours().to_vec();
             next.background = Background::new(&colours, *value);
         }
+        Change::Slider {
+            row: RowId::Glass,
+            value,
+            ..
+        } => next.glass = value.clamp(0.0, 1.0),
         Change::Slider {
             row: RowId::Grain,
             value,

@@ -18,10 +18,10 @@ fn the_defaults_are_the_designs() {
     assert_eq!(appearance.background, Background::default());
     assert_eq!(appearance.accent, Accent::Blue);
     assert_eq!(appearance.shape, super::Shape::default());
-    assert!(!appearance.glass(Theme::Oled), "OLED's pills start solid");
-    for theme in [Theme::Graphite, Theme::Light, Theme::SoftLight] {
-        assert!(appearance.glass(theme), "{theme:?} starts as glass");
-    }
+    assert!(
+        (appearance.glass - 0.5).abs() < f32::EPSILON,
+        "every theme starts frosted, OLED too"
+    );
 }
 
 #[test]
@@ -32,6 +32,7 @@ fn a_saved_change_is_kept_and_read_back() {
     changed.accent = Accent::Teal;
     changed.grain = 0.3;
     changed.shape = changed.shape.with(ShapeValue::TextSize, 16.0);
+    changed.glass = 0.9;
     store.set(changed).unwrap();
     let again = AppearanceStore::read(store.prefs);
     assert_eq!(*again.appearance(), changed);

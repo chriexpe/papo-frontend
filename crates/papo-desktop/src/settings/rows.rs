@@ -138,7 +138,13 @@ fn appearance(cx: &Context<'_>) -> Vec<Group> {
         id: RowId::Glass,
         title: strings::settings_glass().to_owned(),
         sub: Some(glass_sub.to_owned()),
-        kind: Kind::Switch(appearance.glass(theme)),
+        kind: Kind::Slider(Slider {
+            value: appearance.glass,
+            min: 0.0,
+            max: 1.0,
+            step: 0.05,
+            track: Track::Plain,
+        }),
     });
     vec![
         Group {

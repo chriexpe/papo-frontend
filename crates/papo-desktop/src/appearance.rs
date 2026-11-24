@@ -67,6 +67,9 @@ impl ShapeValue {
     }
 }
 
+/// The Glass setting at first: frosted, half way to liquid.
+pub(crate) const DEFAULT_GLASS: f32 = 0.5;
+
 /// The smallest and largest text size, in points (§5).
 pub(crate) const TEXT_SIZE_MIN_PT: f32 = 12.0;
 pub(crate) const TEXT_SIZE_MAX_PT: f32 = 16.0;
@@ -136,8 +139,11 @@ pub(crate) struct Appearance {
     pub(crate) shape: Shape,
     /// The system's interface font instead of Inter.
     pub(crate) system_font: bool,
-    /// The Glass switch, per theme (§5: OLED starts with it off).
-    glass: [bool; 4],
+    /// How glassy the floating surfaces are, 0–1: 0 solid, then frosted,
+    /// towards 1 clear liquid glass (`docs/design.md` §5; Christian,
+    /// 2026-11-23). One value for every theme: the conversation scrolls
+    /// under the pills, so OLED's glass shows it too.
+    pub(crate) glass: f32,
 }
 
 impl Default for Appearance {
@@ -150,7 +156,7 @@ impl Default for Appearance {
             messages: MessageLayout::default(),
             shape: Shape::default(),
             system_font: false,
-            glass: Theme::ALL.map(|theme| theme != Theme::Oled),
+            glass: DEFAULT_GLASS,
         }
     }
 }
@@ -161,24 +167,6 @@ impl Appearance {
         self.theme
             .unwrap_or_else(|| Theme::following_system(system_dark))
     }
-
-    /// Whether `theme` draws its pills as glass.
-    pub(crate) fn glass(&self, theme: Theme) -> bool {
-        self.glass[theme_index(theme)]
-    }
-
-    /// The same settings with `theme`'s Glass switch `on`.
-    pub(crate) fn with_glass(mut self, theme: Theme, on: bool) -> Appearance {
-        self.glass[theme_index(theme)] = on;
-        self
-    }
-}
-
-fn theme_index(theme: Theme) -> usize {
-    Theme::ALL
-        .iter()
-        .position(|each| *each == theme)
-        .unwrap_or_default()
 }
 
 /// The settings file's keys.
@@ -254,7 +242,9 @@ impl AppearanceStore {
                     .zip(values)
                     .fold(defaults.shape, |shape, (value, to)| shape.with(value, to))
             });
-        let glass = prefs.get::<[bool; 4]>(key::GLASS).unwrap_or(defaults.glass);
+        let glass = prefs
+            .get::<f32>(key::GLASS)
+            .map_or(defaults.glass, |glass| glass.clamp(0.0, 1.0));
         let appearance = Appearance {
             theme: prefs
                 .get::<String>(key::THEME)
@@ -338,7 +328,7 @@ impl AppearanceStore {
         if appearance.system_font != old.system_font {
             write!(key::SYSTEM_FONT, &appearance.system_font);
         }
-        if appearance.glass != old.glass {
+        if appearance.glass.to_bits() != old.glass.to_bits() {
             write!(key::GLASS, &appearance.glass);
         }
         if !saved {
