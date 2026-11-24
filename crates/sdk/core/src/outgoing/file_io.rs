@@ -44,7 +44,7 @@ impl Registry {
         Ok(())
     }
 
-    async fn file_guard(
+    pub(super) async fn file_guard(
         &self,
         session: &Session,
         pool: std::sync::Arc<tokio::sync::Semaphore>,

@@ -32,6 +32,11 @@ thiserror = "2"
 url = "2.5"
 # Separate cookie-free provider/media transport; reuse the locked reqwest version.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# The one image path (anonymizing, crop and turn, fixed-size uploads) reuses the locked decoders
+# and encoders of papo-core's image dependency, with the same four formats and no others.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+# Random attachment names draw from the operating system, like the locked uuid and rand do.
+getrandom = "0.3"
 # Safe cross-platform allocated disk-byte measurement, including sparse SQLite files.
 fs2 = "=0.4.3"
 

@@ -48,6 +48,7 @@ pub use media::{
     EmojiMetadata, EmojiPage, MediaData, MediaError, MediaRange, MediaService, MediaSource,
 };
 mod history;
+mod images;
 pub use history::{
     HistoryBudget, HistoryChunk, HistoryClosedReason, HistoryCoverage, HistoryDiagnostics,
     HistoryError, HistoryGap, HistoryHandle, HistoryPage, HistoryRange, HistorySnapshot,
@@ -61,6 +62,10 @@ mod observable;
 pub mod operations;
 pub use operations::{OperationError, OperationReceipt, Operations, RefreshFault, RefreshStatus};
 mod outgoing;
+pub use images::{
+    AttachmentEdit, CropRect, FixedImage, ImageError, ImageFormat, ImageInfo, NAME_LENGTH,
+    UnsupportedFormat, random_attachment_name,
+};
 pub use outgoing::OutgoingFault;
 pub use outgoing::{
     Draft, DraftBody, MessageTarget, Operation, OperationFailure, OperationKind, OperationState,

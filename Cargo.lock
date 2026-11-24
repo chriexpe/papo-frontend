@@ -4264,6 +4264,8 @@ dependencies = [
  "chrono",
  "fs2",
  "futures-core",
+ "getrandom 0.3.4",
+ "image",
  "imbl",
  "papo-api",
  "papo-test-server",

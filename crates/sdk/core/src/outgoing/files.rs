@@ -96,14 +96,78 @@ fn harden_account_directories(root: &Path, directory: &Path) -> Result<(), Stora
     Ok(())
 }
 
-/// Streams a reader into a private temporary file, hashing incrementally and enforcing the
-/// 100 MiB ceiling during copying before syncing and atomically publishing `<sha256>`.
-pub(super) fn stage_reader<R: Read>(
+/// Why a staging sink stopped accepting bytes; kept apart from `io::Error` so a transform's own
+/// failure cannot hide a cancellation or the size ceiling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SinkStop {
+    Cancelled,
+    TooLarge,
+    Storage(ErrorKind),
+}
+
+/// The staged file being written: hashes every byte, enforces the 100 MiB ceiling and honours
+/// cancellation on each write, so a transform streams into staging without a second copy.
+pub(super) struct StagingSink<C: FnMut() -> bool, N: FnMut()> {
+    file: std::io::BufWriter<File>,
+    hasher: Sha256,
+    total_bytes: u64,
+    cancelled: C,
+    copied_chunk: N,
+    stop: Option<SinkStop>,
+}
+
+impl<C: FnMut() -> bool, N: FnMut()> Write for StagingSink<C, N> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if (self.cancelled)() {
+            return Err(self.fail(SinkStop::Cancelled));
+        }
+        let added = u64::try_from(bytes.len()).map_err(|_| self.fail(SinkStop::TooLarge))?;
+        let total = self
+            .total_bytes
+            .checked_add(added)
+            .filter(|total| *total <= MAX_FILE_BYTES)
+            .ok_or_else(|| self.fail(SinkStop::TooLarge))?;
+        self.file
+            .write_all(bytes)
+            .map_err(|error| self.fail(SinkStop::Storage(error.kind())))?;
+        self.hasher.update(bytes);
+        self.total_bytes = total;
+        (self.copied_chunk)();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<C: FnMut() -> bool, N: FnMut()> StagingSink<C, N> {
+    fn fail(&mut self, stop: SinkStop) -> std::io::Error {
+        self.stop = Some(stop);
+        std::io::Error::other("staging sink stopped")
+    }
+
+    /// The sink's own failure, if it stopped the writer, as the typed outgoing error.
+    fn stop_error(&self) -> Option<OutgoingError> {
+        self.stop.map(|stop| match stop {
+            SinkStop::Cancelled => ClientError::Closed.into(),
+            SinkStop::TooLarge => OutgoingError::InvalidInput,
+            SinkStop::Storage(kind) => {
+                OutgoingError::Storage(StorageError::from(std::io::Error::from(kind)))
+            }
+        })
+    }
+}
+
+/// Streams what `fill` writes into a private temporary file, hashing incrementally and enforcing
+/// the 100 MiB ceiling during writing before syncing and atomically publishing `<sha256>`.
+/// A sink failure (cancellation, ceiling, storage) wins over whatever error `fill` reports.
+pub(super) fn stage_stream(
     root: &Path,
     account: AccountId,
-    mut reader: R,
     mut cancelled: impl FnMut() -> bool,
-    mut copied_chunk: impl FnMut(),
+    copied_chunk: impl FnMut(),
+    fill: impl FnOnce(&mut dyn Write) -> Result<(), OutgoingError>,
 ) -> Result<Reference, OutgoingError> {
     if cancelled() {
         return Err(ClientError::Closed.into());
@@ -112,38 +176,30 @@ pub(super) fn stage_reader<R: Read>(
     let seq = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
     let temp_path = directory.join(format!(".tmp-{}-{seq}", std::process::id()));
     let mut temp_guard = TempFileGuard::new(temp_path.clone());
-    let mut temp_file = crate::private_fs::new_staged_temp_file(&temp_path)?;
+    let temp_file = crate::private_fs::new_staged_temp_file(&temp_path)?;
 
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-    let mut total_bytes: u64 = 0;
-
-    loop {
-        if cancelled() {
-            return Err(ClientError::Closed.into());
-        }
-        let read = loop {
-            match reader.read(&mut buffer) {
-                Ok(count) => break count,
-                Err(error) if error.kind() == ErrorKind::Interrupted => {}
-                Err(error) => return Err(OutgoingError::Source(error.kind())),
-            }
-        };
-        if read == 0 {
-            break;
-        }
-        total_bytes = total_bytes
-            .checked_add(u64::try_from(read).map_err(|_| OutgoingError::InvalidInput)?)
-            .ok_or(OutgoingError::InvalidInput)?;
-        if total_bytes > MAX_FILE_BYTES {
-            return Err(OutgoingError::InvalidInput);
-        }
-        temp_file
-            .write_all(&buffer[..read])
-            .map_err(StorageError::from)?;
-        hasher.update(&buffer[..read]);
-        copied_chunk();
+    let mut sink = StagingSink {
+        file: std::io::BufWriter::with_capacity(COPY_BUFFER_BYTES, temp_file),
+        hasher: Sha256::new(),
+        total_bytes: 0,
+        cancelled: &mut cancelled,
+        copied_chunk,
+        stop: None,
+    };
+    let filled = fill(&mut sink);
+    if let Some(error) = sink.stop_error() {
+        return Err(error);
     }
+    filled?;
+    let StagingSink {
+        file: buffered,
+        hasher,
+        total_bytes,
+        ..
+    } = sink;
+    let temp_file = buffered
+        .into_inner()
+        .map_err(|error| StorageError::from(error.into_error()))?;
 
     let digest: [u8; 32] = hasher.finalize().into();
     let final_path = directory.join(digest_hex(&digest));
@@ -173,6 +229,33 @@ pub(super) fn stage_reader<R: Read>(
     Ok(Reference {
         digest,
         size_bytes: total_bytes,
+    })
+}
+
+/// Streams a reader into staging through [`stage_stream`].
+pub(super) fn stage_reader<R: Read>(
+    root: &Path,
+    account: AccountId,
+    mut reader: R,
+    cancelled: impl FnMut() -> bool,
+    copied_chunk: impl FnMut(),
+) -> Result<Reference, OutgoingError> {
+    stage_stream(root, account, cancelled, copied_chunk, |sink| {
+        let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
+        loop {
+            let read = loop {
+                match reader.read(&mut buffer) {
+                    Ok(count) => break count,
+                    Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                    Err(error) => return Err(OutgoingError::Source(error.kind())),
+                }
+            };
+            if read == 0 {
+                return Ok(());
+            }
+            sink.write_all(&buffer[..read])
+                .map_err(|_| OutgoingError::InvalidState)?;
+        }
     })
 }
 

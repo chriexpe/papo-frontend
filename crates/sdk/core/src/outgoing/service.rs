@@ -172,6 +172,28 @@ impl OutgoingService {
         })
         .await
     }
+    /// Reads a staged file's format, displayed size and whether it is animated, without decoding
+    /// its pixels. A file that fails here (HEIC, TIFF, RAW, a video, a damaged image) is one that
+    /// anonymizing would refuse, so a client can say so when the switch is flipped; the same check
+    /// still runs at enqueue.
+    /// # Errors
+    /// Returns [`OutgoingError::Image`] with the typed reason, or account/storage failures.
+    pub async fn inspect_image(
+        &self,
+        staged: &StagedAttachment,
+    ) -> Result<crate::ImageInfo, OutgoingError> {
+        let staged = staged.clone();
+        self.run(move |this| async move {
+            this.ensure().await?;
+            this.session
+                .client
+                .inner
+                .registry
+                .outgoing_inspect_image(&this.session, &staged)
+                .await
+        })
+        .await
+    }
     /// Observes committed images and independent initialization faults without waiting for storage.
     /// Clone an image and release watch borrows before awaiting or reentering this service.
     /// # Errors

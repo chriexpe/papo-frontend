@@ -110,6 +110,19 @@ impl Registry {
             }
         };
         kind.validate()?;
+        // Edited copies are unreferenced until the commit below; holding their handles keeps
+        // background collection from deleting them in between.
+        let mut held_edits = Vec::new();
+        if let OperationKind::Message(message) = &mut kind {
+            self.outgoing_apply_edits(&session, message, local).await?;
+            message.validate()?;
+            held_edits.extend(
+                message
+                    .attachments
+                    .iter()
+                    .filter_map(|file| file.staged().cloned()),
+            );
+        }
         let inputs = if let OperationKind::Message(message) = &mut kind {
             files::detach_inputs(&mut message.attachments, session.account())?
         } else {
@@ -119,7 +132,8 @@ impl Registry {
             self.prepare_attachments(&session, inputs, local).await?;
         let payload = encode(&kind)?;
         let dependency = kind.dependency();
-        self.writer
+        let committed = self
+            .writer
             .write(move |tx| {
                 let admit = || {
                     visible(tx, &session)?;
@@ -160,6 +174,8 @@ impl Registry {
                     admit()
                 }
             })
-            .await
+            .await;
+        drop(held_edits);
+        committed
     }
 }
