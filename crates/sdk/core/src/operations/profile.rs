@@ -94,7 +94,8 @@ impl Operations {
     /// description together, so the profile is read back first and the fields left unset are
     /// sent as the server holds them; the typing phrase is sent only when it changes, as the
     /// backend keeps it when absent. A saved nickname or status message the read-back does not
-    /// state is never guessed: the change is refused instead.
+    /// state is never guessed: the change is refused instead. Changes of one account run one
+    /// at a time, each merged over what the one before it saved.
     /// Backend length and authorization rules apply; no local optimistic profile is published.
     /// # Errors
     /// Returns the read-back's failure, `InvalidData` when it is incomplete, or the save's
@@ -104,6 +105,8 @@ impl Operations {
         change: ProfileChange,
     ) -> Result<OperationReceipt<GenericResponse>, OperationError> {
         let me = self.session.account().user();
+        // A second change waits for this one to be saved, then reads it back.
+        let _profile = self.session.inner.profile_serial.lock().await;
         let read = self.session.profiles(&[me]).await?;
         if self
             .expected_generation

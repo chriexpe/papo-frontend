@@ -38,6 +38,9 @@ pub(crate) struct SessionInner {
     pub resource_recovery: watch::Sender<Option<Generation>>,
     pub admission: crate::resource_admission::Diagnostics,
     pub operations_serial: tokio::sync::Mutex<()>,
+    /// Held by `change_profile` from its read-back to its save, so two changes of
+    /// one account's profile never merge over the same read-back.
+    pub profile_serial: tokio::sync::Mutex<()>,
     pub history: crate::history::HistoryStore,
     pub reading: crate::reading::Reading,
     pub badges: crate::badges::Badges,
@@ -112,6 +115,7 @@ impl SessionInner {
             resource_recovery: watch::channel(None).0,
             admission: crate::resource_admission::Diagnostics::default(),
             operations_serial: tokio::sync::Mutex::new(()),
+            profile_serial: tokio::sync::Mutex::new(()),
             history: crate::history::HistoryStore::default(),
             reading: crate::reading::Reading::new(generation),
             badges: crate::badges::Badges::new(generation),
