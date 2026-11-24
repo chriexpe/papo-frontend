@@ -14,7 +14,7 @@ use rune::{El, GrowthSpec, KeyEvent, ScrollSpec, col, el, memo, row, text};
 use super::Shell;
 use super::search::{Found, Paging, SEARCH_FIELD_KEY, Search, hit_row_key};
 use crate::design::{
-    FOCUS_RING_PT, Look, RADIUS_CONTROL, SPACE_LG, SPACE_MD, SPACE_SM, TYPE_CAPTION, TYPE_SMALL,
+    FOCUS_RING_PT, Look, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, TYPE_CAPTION, TYPE_SMALL,
 };
 use crate::strings;
 use crate::timeline::standalone::standalone_hit;
@@ -90,7 +90,12 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
             .w_full()
             .h(ESTIMATED_HIT_PT - look.space(SPACE_SM))
             .my(look.space(SPACE_SM) / 2.0)
-            .radius(look.radius(RADIUS_CONTROL))
+            // Concentric with the panel: the list's side padding, one
+            // `space.sm`, is the smaller gap at its corners.
+            .radius(Look::nested_radius(
+                look.radius(RADIUS_PILL),
+                look.space(SPACE_SM),
+            ))
             .fill(look.palette.surface_hover)
             .busy(true)
             .label(strings::search_loading());
@@ -122,7 +127,11 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
             .key(hit_row_key(id))
             .w_full()
             .padding(look.space(SPACE_LG))
-            .radius(look.radius(RADIUS_CONTROL))
+            // Concentric with the panel, whose edge is one `space.sm` out.
+            .radius(Look::nested_radius(
+                look.radius(RADIUS_PILL),
+                look.space(SPACE_SM),
+            ))
             .role("listitem")
             .label(strings::search_jump())
             .focusable(true)

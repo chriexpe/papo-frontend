@@ -13,8 +13,8 @@ use super::jump::{JUMP_FIELD_KEY, target_key};
 use crate::badges::Badge;
 use crate::channel_pane::{avatar, row_badge};
 use crate::design::{
-    AVATAR_ROW, DM_ROW_HEIGHT_PT, Look, MENU_ROW_HEIGHT_PT, PILL_ICON_PT, RADIUS_CONTROL,
-    RADIUS_POPUP, SPACE_MD, SPACE_SM, SPACE_XXL, Surfaces, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL,
+    AVATAR_ROW, DM_ROW_HEIGHT_PT, Look, MENU_ROW_HEIGHT_PT, PILL_ICON_PT, RADIUS_POPUP, SPACE_MD,
+    SPACE_SM, SPACE_XXL, Surfaces, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL,
 };
 use crate::person_avatar::person_avatar;
 use crate::strings;
@@ -88,7 +88,11 @@ pub(super) fn view(shell: &Shell, look: &Look) -> Option<El> {
                 .h(MENU_ROW_HEIGHT_PT)
                 .px(look.space(SPACE_MD))
                 .center_y()
-                .radius(look.radius(RADIUS_CONTROL))
+                // Concentric with the card, whose edge is one `space.sm` out.
+                .radius(Look::nested_radius(
+                    look.radius(RADIUS_POPUP),
+                    look.space(SPACE_SM),
+                ))
                 .fill(look.palette.surface_hover)
                 .child(field),
         )
@@ -159,7 +163,11 @@ fn target_row(shell: &Shell, target: &JumpTarget, chosen: bool, look: &Look) -> 
         .px(look.space(SPACE_SM))
         .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the card, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_POPUP),
+            look.space(SPACE_SM),
+        ))
         .role("option")
         .label(badge.label(&spoken))
         .on_press_tx(move |shell: &mut Shell, tx| shell.jump_picked(&picked, tx))

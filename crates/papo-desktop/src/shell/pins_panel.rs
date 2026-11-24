@@ -15,8 +15,8 @@ use super::pins::{PINS_BUTTON_KEY, PINS_PANEL_KEY, PinsPanel, pin_row_key};
 use super::title::Title;
 use crate::design::{
     FOCUS_RING_PT, HEADER_PILL_HEIGHT, Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT,
-    RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, Surfaces,
-    TYPE_BODY_STRONG, TYPE_SMALL, TYPE_TITLE,
+    RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY_STRONG, TYPE_SMALL,
+    TYPE_TITLE,
 };
 use crate::strings;
 use crate::timeline::pinned::Pin;
@@ -74,6 +74,15 @@ fn actions_pill(open: bool, profile: Option<bool>, look: &Look) -> El {
         .children(profile.map(|shown| super::profile_pane::button(shown, look)))
 }
 
+/// The corner radius of a button on the actions pill or a panel's head
+/// (🔍, 📌, the person button, the search's ✕): concentric with the pill
+/// or panel. The corner's gap is the smaller of the side padding and the
+/// space above the button.
+pub(super) fn header_button_radius(look: &Look) -> f32 {
+    let above_pt = (look.space(HEADER_PILL_HEIGHT) - PILL_BUTTON_PT) / 2.0;
+    Look::nested_radius(look.radius(RADIUS_PILL), look.space(SPACE_SM).min(above_pt))
+}
+
 fn pins_button(open: bool, look: &Look) -> El {
     let tone = if open {
         look.palette.accent
@@ -84,7 +93,7 @@ fn pins_button(open: bool, look: &Look) -> El {
         .key(PINS_BUTTON_KEY)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        .radius(header_button_radius(look))
         .role("button")
         .label(strings::pins_title())
         .help(strings::pins_title())
@@ -215,7 +224,11 @@ pub(super) fn peek_row(
         .py(look.space(SPACE_MD))
         .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the panel, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .fill(look.palette.surface_selected)
         .child(
             text(name)
@@ -334,13 +347,15 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
         unpin,
         open.revealed(id),
     );
+    // Concentric with the panel, whose edge is one `space.sm` out.
+    let row_radius_pt = Look::nested_radius(look.radius(RADIUS_PILL), look.space(SPACE_SM));
     memo(format!("pin-{id}"), version, || {
         let shown = standalone_message::<Shell>(open, id, &pin.message, &pin.content, style);
         let mut line = col()
             .key(pin_row_key(id))
             .w_full()
             .padding(look.space(SPACE_LG))
-            .radius(look.radius(RADIUS_CONTROL))
+            .radius(row_radius_pt)
             .role("listitem")
             .label(strings::pins_jump())
             .focusable(true)
@@ -366,7 +381,8 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
                     .key(format!("unpin-{id}"))
                     .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
                     .center()
-                    .radius(look.radius(RADIUS_CONTROL))
+                    // Concentric with its row, one `space.sm` in.
+                    .radius(Look::nested_radius(row_radius_pt, look.space(SPACE_SM)))
                     .fill(look.palette.surface_pill)
                     .role("button")
                     .label(strings::pins_unpin())

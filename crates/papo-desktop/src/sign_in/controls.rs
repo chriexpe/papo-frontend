@@ -9,9 +9,8 @@ use rune::{El, LiveRegion, LoopSpec, TextEdit, TextStyle, col, el, icon, row, te
 
 use crate::design::{
     BUTTON_DISABLED_OPACITY, FIELD_BUSY_OPACITY, FIELD_BUTTON_HEIGHT_PT, FIELD_HEIGHT_PT,
-    FIELD_OUTLINE_PT, FOCUS_RING_PT, Look, RADIUS_CONTROL, RADIUS_FIELD, SPACE_LG, SPACE_MD,
-    SPACE_SM, SPINNER_PERIOD_S, SPINNER_PT, TYPE_BODY, TYPE_BODY_STRONG, TYPE_SMALL,
-    TYPE_SMALL_MEDIUM,
+    FIELD_OUTLINE_PT, FOCUS_RING_PT, Look, RADIUS_FIELD, SPACE_LG, SPACE_MD, SPACE_SM,
+    SPINNER_PERIOD_S, SPINNER_PT, TYPE_BODY, TYPE_BODY_STRONG, TYPE_SMALL, TYPE_SMALL_MEDIUM,
 };
 use crate::icons::SPINNER;
 use crate::shell::Shell;
@@ -73,7 +72,13 @@ pub(crate) fn password_field(
         .h(FIELD_BUTTON_HEIGHT_PT)
         .px(look.space(SPACE_MD))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the field; the corner's gap is the smaller of
+        // its end padding and the space above the button.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_FIELD),
+            look.space(SPACE_SM)
+                .min((FIELD_HEIGHT_PT - FIELD_BUTTON_HEIGHT_PT) / 2.0),
+        ))
         .role("button")
         .label(spoken)
         .focusable(!field.busy)

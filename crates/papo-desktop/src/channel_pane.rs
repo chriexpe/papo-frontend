@@ -191,12 +191,20 @@ fn pill_button(key: &'static str, glyph: &'static Icon, look: &Look) -> El {
         .key(key)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        .radius(pill_button_radius(look))
         .hover(look.palette.surface_hover)
         .role("button")
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .child(icon(glyph, PILL_ICON_PT).color(look.palette.text_secondary))
+}
+
+/// The corner radius of a button on a pane pill (⇄, ⚙, Direct's New
+/// message and Blocked): concentric with the pill. The corner's gap is the
+/// smaller of the pill's side padding and the space above the button.
+pub(crate) fn pill_button_radius(look: &Look) -> f32 {
+    let above_pt = (look.space(PANE_PILL_HEIGHT) - PILL_BUTTON_PT) / 2.0;
+    Look::nested_radius(look.radius(RADIUS_PILL), look.space(SPACE_LG).min(above_pt))
 }
 
 /// The account pill: the account's avatar, name and handle, then

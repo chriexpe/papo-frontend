@@ -14,8 +14,8 @@ use super::inline::text_key;
 use crate::design::{
     CHIP_ICON_PT, CODE_BLOCK_MAX_LINES, CODE_BLOCK_OUTLINE_PT, CODE_BLOCK_PAD_PT,
     CODE_BLOCK_RADIUS, CODE_LABEL_GAP, COPY_BUTTON_HEIGHT_PT, COPY_BUTTON_INSET_PT,
-    COPY_BUTTON_PAD_PT, COPY_BUTTON_RADIUS, CodeInk, FOCUS_RING_PT, Look, SPACE_XS,
-    TYPE_CAPTION_MEDIUM, TYPE_CODE_BLOCK, TYPE_SMALL,
+    COPY_BUTTON_PAD_PT, CodeInk, FOCUS_RING_PT, Look, SPACE_XS, TYPE_CAPTION_MEDIUM,
+    TYPE_CODE_BLOCK, TYPE_SMALL,
 };
 use crate::icons::CHECK;
 use crate::strings;
@@ -93,7 +93,11 @@ fn copy_button<S: TimelineHost>(run: &Run, draw: &Draw<'_>, copied: bool) -> El 
         .h(COPY_BUTTON_HEIGHT_PT)
         .px(COPY_BUTTON_PAD_PT)
         .center()
-        .radius(look.radius(COPY_BUTTON_RADIUS))
+        // Concentric with the block, whose corner is the inset out.
+        .radius(Look::nested_radius(
+            look.radius(CODE_BLOCK_RADIUS),
+            COPY_BUTTON_INSET_PT,
+        ))
         .fill(look.palette.surface_pill)
         .border(CODE_BLOCK_OUTLINE_PT, look.palette.line_strong)
         .role("button")

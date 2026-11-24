@@ -10,7 +10,8 @@ use rune::{El, Key, KeyEvent, Tx, el, row, text};
 
 use super::MenuAction;
 use crate::design::{
-    FOCUS_RING_PT, Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, SPACE_XS, TYPE_BODY,
+    FOCUS_RING_PT, Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_PILL, SPACE_SM, SPACE_XS,
+    TYPE_BODY,
 };
 use crate::shell::Shell;
 use crate::strings;
@@ -46,6 +47,8 @@ impl Strip {
 
 /// Draws the strip, the menu's first item when `first`.
 pub(super) fn view(strip: &Strip, first: bool, look: &Look) -> El {
+    // Concentric with the menu, whose edge is one `space.sm` out.
+    let strip_radius_pt = Look::nested_radius(look.radius(RADIUS_PILL), look.space(SPACE_SM));
     let cells = strip
         .emoji
         .iter()
@@ -56,7 +59,13 @@ pub(super) fn view(strip: &Strip, first: bool, look: &Look) -> El {
                 .key(format!("{STRIP_KEY}-{index}"))
                 .size(CELL_PT, CELL_PT)
                 .center()
-                .radius(look.radius(RADIUS_CONTROL))
+                // Concentric with the strip; the corner's gap is the
+                // smaller of its side padding and the space above the cell.
+                .radius(Look::nested_radius(
+                    strip_radius_pt,
+                    look.space(SPACE_XS)
+                        .min((MENU_ROW_HEIGHT_PT - CELL_PT) / 2.0),
+                ))
                 .a11y_hidden()
                 .hover(look.palette.surface_hover)
                 .on_press_tx(move |shell: &mut Shell, tx| {
@@ -88,7 +97,7 @@ pub(super) fn view(strip: &Strip, first: bool, look: &Look) -> El {
     el().key(STRIP_KEY)
         .w_full()
         .min_h(MENU_ROW_HEIGHT_PT)
-        .radius(look.radius(RADIUS_CONTROL))
+        .radius(strip_radius_pt)
         .role("menuitem")
         .label(label)
         .focusable(true)

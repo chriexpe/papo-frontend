@@ -9,6 +9,7 @@
 use papo_sdk::AccountId;
 use rune::{El, col, el, icon, row, text};
 
+use crate::channel_pane::pill_button_radius;
 use crate::design::{
     AVATAR_ROW, DM_ROW_HEIGHT_PT, FOCUS_RING_PT, Look, PILL_BUTTON_PT, PILL_ICON_PT,
     RADIUS_CONTROL, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_CAPTION,
@@ -31,7 +32,7 @@ pub(super) fn blocked_button(shown: bool, look: &Look) -> El {
         .key(BLOCKED_BUTTON_KEY)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        .radius(pill_button_radius(look))
         .role("button")
         .label(strings::direct_blocked_button())
         .help(strings::direct_blocked_button())

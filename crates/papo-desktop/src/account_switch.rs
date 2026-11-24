@@ -16,8 +16,8 @@ use rune::{El, col, el, icon, row, text};
 use crate::badges::Badge;
 use crate::channel_pane::{account_pill, avatar, row_badge, switch_button};
 use crate::design::{
-    FOCUS_RING_PT, Look, PANE_EDGE_PT, PANE_PILL_HEIGHT, RADIUS_CONTROL, RADIUS_PILL, ROW_ICON_PT,
-    SPACE_MD, SPACE_SM, Surfaces, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
+    FOCUS_RING_PT, Look, PANE_EDGE_PT, PANE_PILL_HEIGHT, RADIUS_PILL, ROW_ICON_PT, SPACE_MD,
+    SPACE_SM, Surfaces, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
 };
 use crate::icons::{CHECK, PLUS};
 use crate::server_list::{AccountEntry, ServerEntry, ServerList};
@@ -160,7 +160,12 @@ fn choice(key: String, look: &Look) -> El {
         .py(look.space(SPACE_SM))
         .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the grown pill: a section's side padding, one
+        // `space.sm`, is the smaller gap at its corners.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .hover(look.palette.surface_hover)
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)

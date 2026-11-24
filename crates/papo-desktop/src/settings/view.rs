@@ -16,8 +16,8 @@ use super::{PageId, SEARCH_KEY, SETTINGS_KEY, SettingsPanel};
 use crate::appearance::Appearance;
 use crate::design::settings::{
     BODY_PADDING_PT, GROUP_GAP, HEAD_BUTTON_PT, HEAD_MIN_HEIGHT_PT, HEAD_PADDING_PT,
-    NAV_ICON_CIRCLE_PT, NAV_PADDING, NAV_ROW_INSET_PT, NAV_ROW_PADDING, NAV_ROW_RADIUS,
-    NAV_WIDTH_PT, PANEL_MAX_WIDTH_PT, PANEL_RADIUS, SEARCH_HEIGHT, SEARCH_RADIUS,
+    NAV_ICON_CIRCLE_PT, NAV_PADDING, NAV_ROW_INSET_PT, NAV_ROW_PADDING, NAV_WIDTH_PT,
+    PANEL_MAX_WIDTH_PT, PANEL_RADIUS, SEARCH_HEIGHT,
 };
 use crate::design::{
     FIELD_OUTLINE_PT, FOCUS_RING_PT, Look, PANE_EDGE_PT, PANE_PILL_HEIGHT, PILL_ICON_PT,
@@ -107,13 +107,16 @@ fn nav(panel: &SettingsPanel, appearance: &Appearance, system_dark: bool, look: 
 
 /// The search field: the search icon, the field, and ✕ while it holds text.
 fn search_field(panel: &SettingsPanel, look: &Look) -> El {
+    // Concentric with the panel, whose edge is the nav's padding out.
+    let field_radius = Look::nested_radius(look.radius(PANEL_RADIUS), look.space(NAV_PADDING));
+    let clear_side = HEAD_BUTTON_PT - SPACE_XS.0 * 2.0;
     let mut field = row()
         .w_full()
         .h(look.space(SEARCH_HEIGHT))
         .px(look.space(SPACE_MD) + SPACE_XS.0)
         .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(look.radius(SEARCH_RADIUS))
+        .radius(field_radius)
         .fill(look.palette.surface_tile)
         .border(FIELD_OUTLINE_PT, look.palette.line_pill)
         .role("search")
@@ -136,12 +139,13 @@ fn search_field(panel: &SettingsPanel, look: &Look) -> El {
     if !panel.query().is_empty() {
         field = field.child(
             el().key("settings-search-clear")
-                .size(
-                    HEAD_BUTTON_PT - SPACE_XS.0 * 2.0,
-                    HEAD_BUTTON_PT - SPACE_XS.0 * 2.0,
-                )
+                .size(clear_side, clear_side)
                 .center()
-                .radius(look.radius(crate::design::RADIUS_CONTROL))
+                // Concentric with the field, centred in its height.
+                .radius(Look::nested_radius(
+                    field_radius,
+                    (look.space(SEARCH_HEIGHT) - clear_side) / 2.0,
+                ))
                 .role("button")
                 .label(strings::settings_search_clear())
                 .focusable(true)
@@ -172,7 +176,12 @@ fn nav_row(page: PageId, summary: &str, current: bool, look: &Look) -> El {
         .px(NAV_ROW_INSET_PT)
         .gap(look.space(SPACE_MD) + SPACE_SM.0)
         .center_y()
-        .radius(look.radius(NAV_ROW_RADIUS))
+        // As the search field above it: concentric with the panel, whose
+        // edge is the nav's padding out.
+        .radius(Look::nested_radius(
+            look.radius(PANEL_RADIUS),
+            look.space(NAV_PADDING),
+        ))
         .fill(fill)
         .role("link")
         .label(format!("{}, {summary}", page_title(page)))

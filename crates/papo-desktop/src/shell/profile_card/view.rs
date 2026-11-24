@@ -11,8 +11,8 @@ use rune::{El, col, el, icon, row, text};
 
 use super::super::Shell;
 use crate::design::{
-    AVATAR_CARD, FOCUS_RING_PT, Look, MENU_ROW_HEIGHT_PT, RADIUS_CONTROL, ROW_ICON_PT, SPACE_LG,
-    SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
+    AVATAR_CARD, FOCUS_RING_PT, Look, MENU_ROW_HEIGHT_PT, RADIUS_CONTROL, RADIUS_PILL, ROW_ICON_PT,
+    SPACE_LG, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
     TYPE_DISPLAY, TYPE_SMALL,
 };
 use crate::icons::{BAN, BLOCK, DIRECT, ID};
@@ -360,7 +360,12 @@ impl Actions {
                 .key(key.to_owned())
                 .px(look.space(SPACE_MD))
                 .py(look.space(SPACE_SM))
-                .radius(look.radius(RADIUS_CONTROL))
+                // Concentric with the card: below, the question's padding
+                // and the card's, one `space.sm` each, is the smaller gap.
+                .radius(Look::nested_radius(
+                    look.radius(RADIUS_PILL),
+                    look.space(SPACE_SM) * 2.0,
+                ))
                 .fill(fill)
                 .role("button")
                 .label(label.to_owned())

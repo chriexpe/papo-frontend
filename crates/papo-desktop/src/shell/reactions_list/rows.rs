@@ -9,7 +9,8 @@ use rune::{El, Key, KeyEvent, el, icon, row, text};
 use super::super::Shell;
 use crate::design::{
     FOCUS_RING_PT, Look, PILL_AVATAR_PT, PILL_BUTTON_PT, RADIUS_AVATAR, RADIUS_CONTROL,
-    ROW_ICON_PT, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL_MEDIUM, TYPE_TITLE,
+    RADIUS_PILL, ROW_ICON_PT, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL_MEDIUM,
+    TYPE_TITLE,
 };
 use crate::strings;
 
@@ -32,7 +33,11 @@ pub(super) fn header(look: &Look) -> El {
         .key(BACK_KEY)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the menu, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("button")
         .label(strings::reactions_back())
         .focusable(true)
@@ -103,7 +108,11 @@ fn tab(
         .h(PILL_BUTTON_PT)
         .px(look.space(SPACE_MD))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the menu, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .fill(fill)
         .hover(look.palette.surface_hover)
         .role("tab")
@@ -125,7 +134,11 @@ pub(super) fn reactor_row(reactor: &Reactor, name: &str, all: bool, look: &Look)
         .px(look.space(SPACE_MD))
         .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the menu, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("listitem")
         .label(name.to_owned())
         .focusable(true)

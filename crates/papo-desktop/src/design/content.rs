@@ -51,11 +51,10 @@ pub(crate) const CODE_BLOCK_OUTLINE_PT: f32 = 1.0;
 pub(crate) const CODE_LABEL_GAP: Space = Space(4.0);
 /// A code block taller than this many lines scrolls inside.
 pub(crate) const CODE_BLOCK_MAX_LINES: f32 = 20.0;
-/// The code block's Copy button: height, horizontal padding, radius and
-/// its inset from the block's top-right corner, in points.
+/// The code block's Copy button: height, horizontal padding and its inset
+/// from the block's top-right corner, in points.
 pub(crate) const COPY_BUTTON_HEIGHT_PT: f32 = 26.0;
 pub(crate) const COPY_BUTTON_PAD_PT: f32 = 8.0;
-pub(crate) const COPY_BUTTON_RADIUS: Radius = Radius(7.0);
 pub(crate) const COPY_BUTTON_INSET_PT: f32 = 6.0;
 /// How long the Copy button reads ✓ "Copied", in seconds.
 pub(crate) const COPIED_FOR_S: f64 = 1.5;

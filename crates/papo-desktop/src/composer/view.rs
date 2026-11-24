@@ -15,7 +15,7 @@ use super::bars::bar;
 use super::picker::Picker;
 use crate::design::{
     COMPOSER_HEIGHT, COMPOSER_MAX_LINES, FOCUS_RING_PT, Look, PILL_ICON_PT, PILL_OUTLINE_PT,
-    RADIUS_COMPOSER, RADIUS_SEND, SEND_BUTTON, SPACE_LG, SPACE_SM, Surfaces, TYPE_BODY, TYPE_SMALL,
+    RADIUS_COMPOSER, SEND_BUTTON, SPACE_LG, SPACE_SM, Surfaces, TYPE_BODY, TYPE_SMALL,
 };
 use crate::icons::{CHECK, SEND};
 use crate::shell::Shell;
@@ -152,6 +152,13 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         .child(pill)
 }
 
+/// Send's and Save's corner radius: concentric with the pill, whose edge
+/// is the action's inset out (`pill`'s `send_inset_pt`).
+fn action_radius(look: &Look) -> f32 {
+    let inset_pt = (look.space(COMPOSER_HEIGHT) - look.space(SEND_BUTTON)) / 2.0;
+    Look::nested_radius(look.radius(RADIUS_COMPOSER), inset_pt)
+}
+
 /// Save in Send's place while editing: the check on the accent square,
 /// named "Save edit". An emptied edit saves too: it asks to delete instead.
 fn save_button(enabled: bool, look: &Look) -> El {
@@ -159,7 +166,7 @@ fn save_button(enabled: bool, look: &Look) -> El {
         .key(SAVE_KEY)
         .size(look.space(SEND_BUTTON), look.space(SEND_BUTTON))
         .center()
-        .radius(look.radius(RADIUS_SEND))
+        .radius(action_radius(look))
         .fill(look.palette.accent)
         .role("button")
         .label(strings::edit_save())
@@ -182,7 +189,7 @@ fn send_button(enabled: bool, look: &Look) -> El {
         .key("composer-send")
         .size(look.space(SEND_BUTTON), look.space(SEND_BUTTON))
         .center()
-        .radius(look.radius(RADIUS_SEND))
+        .radius(action_radius(look))
         .fill(look.palette.accent)
         .role("button")
         .label(strings::composer_send())

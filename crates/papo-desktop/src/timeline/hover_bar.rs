@@ -17,8 +17,8 @@ use rune::{Anim, El, Icon, el, icon, row, text};
 use super::TimelineKey;
 use super::view::TimelineHost;
 use crate::design::{
-    Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, Radius, SPACE_LG,
-    SPACE_SM, SPACE_XS, Surfaces, TYPE_BODY,
+    Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Radius, SPACE_LG, SPACE_SM, SPACE_XS,
+    Surfaces, TYPE_BODY,
 };
 use crate::strings;
 
@@ -195,7 +195,13 @@ fn button<S: TimelineHost>(
         .key(name)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the bar; the corner's gap is the smaller of its
+        // side padding and the space above the button.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_CARD),
+            look.space(SPACE_XS)
+                .min((BAR_HEIGHT_PT - PILL_BUTTON_PT) / 2.0),
+        ))
         .role("button")
         .hover(look.palette.surface_hover)
         .on_press_tx(move |host: &mut S, tx| host.bar_pressed(key, id, press.clone(), tx))

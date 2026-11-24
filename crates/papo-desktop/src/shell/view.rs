@@ -10,7 +10,7 @@ use super::{Shell, Stage};
 use crate::design::{
     COMPOSER_HEIGHT, FOCUS_RING_PT, HEADER_PILL_HEIGHT, HINT_DELAY_S, HINT_GAP_PT,
     HINT_MAX_WIDTH_PT, HINT_PAD_PT, HINT_RADIUS, Look, PANE_EDGE_PT, PILL_ICON_PT, PILL_OUTLINE_PT,
-    RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_HINT,
+    RADIUS_PILL, SPACE_LG, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_HINT,
 };
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
@@ -304,7 +304,11 @@ fn connected_pill(server: &str, look: &Look) -> El {
             look.space(HEADER_PILL_HEIGHT) - 2.0 * look.space(SPACE_SM),
         )
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the pill, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("button")
         .label(strings::dismiss())
         .focusable(true)

@@ -16,8 +16,8 @@ use super::{Change, ColourState};
 use crate::appearance::Appearance;
 use crate::appearance::presets::{PRESETS, PRESETS_PER_PAGE, Preset, PresetId};
 use crate::design::settings::{
-    COLOUR_DOT_PT, COLOUR_DOT_RING_PT, FIELD_DOT_PT, FIELD_DOT_STEP_PT, FIELD_HEIGHT_PT,
-    FIELD_RADIUS, PRESET_PT, SWATCH_RADIUS, SWATCH_RING_PT, TOOL_PT,
+    COLOUR_DOT_PT, COLOUR_DOT_RING_PT, FIELD_DOT_PT, FIELD_DOT_STEP_PT, FIELD_HEIGHT_PT, PRESET_PT,
+    SWATCH_RADIUS, SWATCH_RING_PT, TILE_OUTER_RADIUS, TOOL_PT,
 };
 use crate::design::{
     BUTTON_DISABLED_OPACITY, BackgroundColour, FIELD_OUTLINE_PT, FOCUS_RING_PT, Look,
@@ -187,7 +187,12 @@ fn field(appearance: &Appearance, state: ColourState, look: &Look) -> El {
         .h(side)
         .center()
         .on_drag(|shell: &mut Shell, drag, tx| shell.settings_field_drag(drag, tx))
-        .radius(look.radius(FIELD_RADIUS))
+        // Concentric with the tile, alone in its group so round at every
+        // corner, one `space.md` out.
+        .radius(Look::nested_radius(
+            look.radius(TILE_OUTER_RADIUS),
+            look.space(SPACE_MD),
+        ))
         .fill(look.palette.surface_code)
         .border(FIELD_OUTLINE_PT, look.palette.line_subtle)
         .child(disc);

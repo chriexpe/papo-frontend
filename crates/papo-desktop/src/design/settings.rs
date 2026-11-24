@@ -16,14 +16,10 @@ pub(crate) const NAV_PADDING: Space = Space(12.0);
 /// A nav row's vertical padding, and its horizontal padding in points.
 pub(crate) const NAV_ROW_PADDING: Space = Space(7.0);
 pub(crate) const NAV_ROW_INSET_PT: f32 = 10.0;
-/// A nav row's corner radius.
-pub(crate) const NAV_ROW_RADIUS: Radius = Radius(12.0);
 /// The circle holding a nav row's icon, in points across.
 pub(crate) const NAV_ICON_CIRCLE_PT: f32 = 36.0;
 /// The search field's height.
 pub(crate) const SEARCH_HEIGHT: Space = Space(40.0);
-/// The search field's corner radius.
-pub(crate) const SEARCH_RADIUS: Radius = Radius(14.0);
 /// A page head's least height, in points, and its padding (top, right,
 /// bottom, left).
 pub(crate) const HEAD_MIN_HEIGHT_PT: f32 = 58.0;
@@ -61,8 +57,6 @@ pub(crate) const SWATCH_RING_PT: f32 = 2.0;
 pub(crate) const CHIP_HEIGHT: Space = Space(34.0);
 /// The colour field's height, in points.
 pub(crate) const FIELD_HEIGHT_PT: f32 = 170.0;
-/// The colour field's corner radius.
-pub(crate) const FIELD_RADIUS: Radius = Radius(12.0);
 /// The field's hue dots: their grid step and size, in points.
 pub(crate) const FIELD_DOT_STEP_PT: f32 = 11.0;
 pub(crate) const FIELD_DOT_PT: f32 = 2.4;

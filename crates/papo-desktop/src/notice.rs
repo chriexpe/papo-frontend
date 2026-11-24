@@ -12,8 +12,8 @@ use std::time::Duration;
 use rune::{Align, El, Side, Tx, icon, row, text};
 
 use crate::design::{
-    FOCUS_RING_PT, Look, PILL_ICON_PT, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM,
-    Surfaces, TYPE_SMALL,
+    FOCUS_RING_PT, Look, PILL_ICON_PT, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, Surfaces,
+    TYPE_SMALL,
 };
 use crate::shell::Shell;
 use crate::strings;
@@ -105,7 +105,11 @@ pub(crate) fn view(notice: &Notice, above: &str, look: &Look) -> El {
             NOTICE_HEIGHT_PT - look.space(SPACE_SM),
         )
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the pill, whose edge is half a `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM) / 2.0,
+        ))
         .role("button")
         .label(strings::dismiss())
         .focusable(true)

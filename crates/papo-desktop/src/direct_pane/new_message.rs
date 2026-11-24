@@ -11,9 +11,10 @@ use std::borrow::Cow;
 use papo_sdk_ui::DirectCandidate;
 use rune::{El, GrowthSpec, KeyEvent, ScrollSpec, col, icon, row, text, text_input};
 
+use crate::channel_pane::pill_button_radius;
 use crate::design::{
     AVATAR_ROW, DM_ROW_HEIGHT_PT, FOCUS_RING_PT, Look, MENU_ROW_HEIGHT_PT, PILL_BUTTON_PT,
-    PILL_ICON_PT, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL,
+    PILL_ICON_PT, RADIUS_PILL, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL,
 };
 use crate::icons::NEW_MESSAGE;
 use crate::person_avatar::person_avatar;
@@ -34,7 +35,7 @@ pub(super) fn new_message_button(open: bool, look: &Look) -> El {
         .key(NEW_MESSAGE_BUTTON_KEY)
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        .radius(pill_button_radius(look))
         .role("button")
         .label(strings::direct_new())
         .help(strings::direct_new())
@@ -71,7 +72,12 @@ pub(crate) fn body(shell: &Shell, look: &Look) -> Option<El> {
         .h(MENU_ROW_HEIGHT_PT)
         .px(look.space(SPACE_SM))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the menu: its padding and the body's, one
+        // `space.sm` each.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM) * 2.0,
+        ))
         .fill(look.palette.surface_hover)
         .child(field);
     let list = if found.is_empty() {
@@ -157,7 +163,12 @@ fn candidate_row(shell: &Shell, index: usize, look: &Look) -> El {
         .px(look.space(SPACE_SM))
         .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the menu: its padding and the body's, one
+        // `space.sm` each.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM) * 2.0,
+        ))
         .role("option")
         .label(label)
         .on_press_tx(move |shell: &mut Shell, tx| shell.person_picked(index, tx))

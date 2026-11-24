@@ -108,8 +108,6 @@ pub(crate) const SPACE_XXL: Space = Space(20.0);
 pub(crate) const COMPOSER_HEIGHT: Space = Space(44.0);
 /// Send's square inside the composer pill (`docs/design.md` §5).
 pub(crate) const SEND_BUTTON: Space = Space(30.0);
-/// Send's corner radius: the mock's 10 px.
-pub(crate) const RADIUS_SEND: Radius = Radius(10.0);
 /// The most lines the composer grows to before it scrolls inside.
 pub(crate) const COMPOSER_MAX_LINES: usize = 8;
 /// The mark that takes the time's place on an unsent message, in points.

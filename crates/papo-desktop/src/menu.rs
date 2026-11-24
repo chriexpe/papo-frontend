@@ -15,8 +15,8 @@ use papo_sdk::{ServerId, Uuid};
 use rune::{Align, Cx, El, Icon, Side, col, el, icon, row, text};
 
 use crate::design::{
-    CONTEXT_MENU_WIDTH_PT, Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_CONTROL, RADIUS_PILL,
-    ROW_ICON_PT, SPACE_LG, SPACE_MD, SPACE_SM, Surfaces, TYPE_BODY, TYPE_CAPTION, TYPE_HINT,
+    CONTEXT_MENU_WIDTH_PT, Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_PILL, ROW_ICON_PT,
+    SPACE_LG, SPACE_MD, SPACE_SM, Surfaces, TYPE_BODY, TYPE_CAPTION, TYPE_HINT,
 };
 use crate::shell::Shell;
 use crate::timeline::TimelineKey;
@@ -429,7 +429,11 @@ pub(crate) fn item_row(item: &MenuItem, first: bool, look: &Look) -> El {
         .px(look.space(SPACE_LG))
         .gap(look.space(SPACE_MD))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the menu, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("menuitem")
         .label(label)
         .focusable(true)

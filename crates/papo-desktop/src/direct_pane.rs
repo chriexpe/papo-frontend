@@ -294,7 +294,13 @@ impl<'a> Shown<'a> {
             .key(format!("close-{}", dm_row_key(self.item)))
             .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
             .center()
-            .radius(look.radius(RADIUS_CONTROL))
+            // Concentric with its row; the corner's gap is the smaller of
+            // the inset from the row's end and the space above.
+            .radius(Look::nested_radius(
+                look.radius(RADIUS_CONTROL),
+                look.space(SPACE_SM)
+                    .min((DM_ROW_HEIGHT_PT - PILL_BUTTON_PT) / 2.0),
+            ))
             .fill(look.palette.surface_hover)
             .role("button")
             .label(strings::direct_close(&self.name))

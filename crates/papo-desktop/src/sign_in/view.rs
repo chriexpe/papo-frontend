@@ -11,8 +11,8 @@ use super::header::{server_header, title};
 
 use crate::design::{
     CROSS_PT, FOCUS_RING_PT, FORM_WIDTH_PT, Look, PILL_OUTLINE_PT, POPUP_CLOSE_INSET_PT,
-    POPUP_CLOSE_PT, POPUP_PADDING_PT, POPUP_SHADOW_PT, POPUP_SIZE_PT, RADIUS_CONTROL, RADIUS_POPUP,
-    SPACE_LG, SPACE_SM, SPACE_XL, SPACE_XXL, TYPE_CAPTION,
+    POPUP_CLOSE_PT, POPUP_PADDING_PT, POPUP_SHADOW_PT, POPUP_SIZE_PT, RADIUS_POPUP, SPACE_LG,
+    SPACE_SM, SPACE_XL, SPACE_XXL, TYPE_CAPTION,
 };
 use crate::icons::X;
 use crate::shell::Shell;
@@ -59,7 +59,11 @@ pub(crate) fn popup(flow: &SignIn, fields: &Fields, look: &Look) -> El {
         )
         .size(POPUP_CLOSE_PT, POPUP_CLOSE_PT)
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the popup, whose corner is the inset out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_POPUP),
+            POPUP_CLOSE_INSET_PT,
+        ))
         .role("button")
         .label(strings::close())
         .focusable(true)

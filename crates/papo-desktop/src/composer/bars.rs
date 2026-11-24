@@ -13,8 +13,8 @@ use rune::{El, Span, el, icon, row, text};
 use super::mode::Mode;
 use crate::design::{
     CHIP_ICON_PT, FOCUS_RING_PT, Look, MENTION_SWITCH_PT, PILL_OUTLINE_PT, RADIUS_COMPOSER,
-    RADIUS_CONTROL, REPLY_BAR_HEIGHT_PT, REPLY_BAR_ICON_PT, SPACE_LG, SPACE_MD, SPACE_SM,
-    TYPE_SMALL, WEIGHT_SEMIBOLD,
+    REPLY_BAR_HEIGHT_PT, REPLY_BAR_ICON_PT, SPACE_LG, SPACE_MD, SPACE_SM, TYPE_SMALL,
+    WEIGHT_SEMIBOLD,
 };
 use crate::icons::{AT, EDIT, REPLY, X};
 use crate::shell::Shell;
@@ -183,7 +183,11 @@ fn close(label: &'static str, pressed: fn(&mut Shell), look: &Look) -> El {
             REPLY_BAR_HEIGHT_PT - look.space(SPACE_SM) * 2.0,
         )
         .center()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the pill, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_COMPOSER),
+            look.space(SPACE_SM),
+        ))
         .role("button")
         .label(label)
         .focusable(true)

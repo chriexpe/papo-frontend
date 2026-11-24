@@ -279,7 +279,12 @@ fn directions(setting: &Row, current: Option<Direction>, look: &Look) -> El {
                     .grow(1.0)
                     .h(look.space(CHIP_HEIGHT))
                     .center()
-                    .radius(look.radius(crate::design::RADIUS_CONTROL))
+                    // Concentric with the tile, alone in its group so
+                    // round at every corner, one `space.md` out.
+                    .radius(Look::nested_radius(
+                        look.radius(TILE_OUTER_RADIUS),
+                        look.space(SPACE_MD),
+                    ))
                     .fill(fill)
                     .border(FIELD_OUTLINE_PT, look.palette.line_subtle)
                     .role("radio")
