@@ -6,8 +6,9 @@
 use rune::Tx;
 
 use super::Shell;
-use crate::appearance::{Appearance, ShapeValue, TEXT_SIZE_DEFAULT_PT, Write, text_size_step};
-use crate::design::{Glass, Look, LookSpec, Scale};
+use crate::appearance::{Appearance, ShapeValue, TEXT_SIZE_DEFAULT_PT, text_size_step};
+use crate::design::{Glass, Look, LookSpec, MessageLayout, Scale};
+use crate::settings::{RowId, Target};
 use crate::timeline::OpenTimeline;
 use crate::timeline::anchor::{Anchor, scroll_to};
 
@@ -23,7 +24,12 @@ impl Shell {
     /// The frame's look: the Appearance settings, the theme following the
     /// system's light or dark when it is set to.
     pub(crate) fn look(&self, system_dark: bool) -> Look {
-        look_of(&self.shown_appearance(), system_dark, self.system_font)
+        look_of(
+            &self.shown_appearance(),
+            self.conversations.settings().mention_hue_degrees,
+            system_dark,
+            self.system_font,
+        )
     }
 
     /// Shows `appearance` and saves it, the message being read kept in its
@@ -31,48 +37,56 @@ impl Shell {
     /// back to what the file holds (`appearance_written`).
     pub(crate) fn set_appearance(&mut self, appearance: Appearance, tx: &mut Tx) {
         let reading = self.reading_place();
-        if let Some(write) = self.appearance.change(appearance) {
-            self.write_appearance(write, tx);
+        if let Some(next) = self.appearance.change(appearance) {
+            self.write_appearance(next, tx);
         }
         keep_place(reading, tx);
     }
 
-    /// Runs `write` on the SDK client's runtime, which the exit fence lets
-    /// finish; before the client opens (and in tests), here.
-    fn write_appearance(&mut self, write: Write, tx: &mut Tx) {
-        let Some(sdk) = &self.sdk else {
-            let ok = write.run().is_ok();
-            self.appearance_written(write.appearance(), ok, tx);
-            return;
-        };
-        let updates = sdk.updates();
-        sdk.finish(move |_client| async move {
-            let appearance = write.appearance();
-            let ok = tokio::task::spawn_blocking(move || write.run().is_ok())
-                .await
-                .unwrap_or(false);
-            updates.send_tx(move |shell, tx| {
-                shell.appearance_written(appearance, ok, tx);
-                true
-            });
-        });
+    /// Writes `appearance`. The settings row that asked for it, if any, is
+    /// taken now: it hears how the write went.
+    fn write_appearance(&mut self, appearance: Appearance, tx: &mut Tx) {
+        let write = self.appearance.write_of(&appearance);
+        let row = self.saving_row;
+        self.run_write(
+            write,
+            move |shell, ok, tx| shell.appearance_written(appearance, row, ok, tx),
+            tx,
+        );
     }
 
-    /// The write of `appearance` landed, or did not: a failure takes the
-    /// settings back, the message being read kept in its place, and shows
-    /// under the settings row that asked for it.
-    pub(crate) fn appearance_written(&mut self, appearance: Appearance, ok: bool, tx: &mut Tx) {
+    /// The write of `appearance`, asked for by `row`, landed, or did not: a
+    /// failure takes the settings back, the message being read kept in its
+    /// place, and shows under the row.
+    pub(crate) fn appearance_written(
+        &mut self,
+        appearance: Appearance,
+        row: Option<RowId>,
+        ok: bool,
+        tx: &mut Tx,
+    ) {
         let reading = (!ok).then(|| self.reading_place()).flatten();
         if !ok {
             log::warn!("an Appearance setting was not saved");
         }
         let next = self.appearance.written(appearance, ok);
-        if let (Some(panel), Some(row)) = (self.settings.as_mut(), self.saving_row) {
-            panel.saved(row, appearance, ok);
+        if let (Some(panel), Some(row)) = (self.settings.as_mut(), row) {
+            panel.saved(row, Target::Appearance(appearance), ok);
         }
         keep_place(reading, tx);
         if let Some(next) = next {
             self.write_appearance(next, tx);
+        }
+    }
+
+    /// How rows are laid out: Appearance's density and grouping, with the
+    /// Conversations page's times and avatars.
+    pub(crate) fn message_layout(&self) -> MessageLayout {
+        let conversations = self.conversations.settings();
+        MessageLayout {
+            times: conversations.show_times,
+            avatars: conversations.show_avatars,
+            ..self.shown_appearance().messages
         }
     }
 
@@ -94,7 +108,7 @@ impl Shell {
     }
 
     /// The shown timeline's anchor before a change that reflows its rows.
-    fn reading_place(&self) -> Option<Anchor> {
+    pub(super) fn reading_place(&self) -> Option<Anchor> {
         self.tabs.shown().map(OpenTimeline::current_anchor)
     }
 
@@ -122,7 +136,7 @@ impl Shell {
 
 /// Text size, spacing or density changed: the message being read keeps its
 /// place on screen, by its anchor (`docs/design.md` §5).
-fn keep_place(reading: Option<Anchor>, tx: &mut Tx) {
+pub(super) fn keep_place(reading: Option<Anchor>, tx: &mut Tx) {
     if let Some(anchor) = reading {
         scroll_to(anchor, tx);
     }
@@ -132,6 +146,7 @@ fn keep_place(reading: Option<Anchor>, tx: &mut Tx) {
 /// that setting is on and one was found.
 pub(crate) fn look_of(
     appearance: &Appearance,
+    mention_hue_degrees: f32,
     system_dark: bool,
     system_font: Option<&'static str>,
 ) -> Look {
@@ -152,5 +167,7 @@ pub(crate) fn look_of(
             shadow_depth: shape.shadow_depth,
         },
         font_family: system_font.filter(|_| appearance.system_font),
+        mention_hue_degrees,
+        locale: crate::strings::locale_index(),
     })
 }

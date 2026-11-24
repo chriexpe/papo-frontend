@@ -15,11 +15,13 @@ use rune::{Key, KeyEvent, TextEdit, Tx};
 use super::Shell;
 use crate::appearance::Appearance;
 use crate::design::{Background, Density, Theme};
+use crate::general_settings::Language;
 use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::settings::colour_field::ColourChange;
-use crate::settings::rows::{density_name, theme_name};
+use crate::settings::rows::{density_name, language_name, theme_name};
 use crate::settings::{
-    Change, HeldEvent, PageId, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel,
+    Change, HeldEvent, PageId, Presence, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel,
+    Target,
 };
 
 /// What a choice's menu sets.
@@ -27,6 +29,8 @@ use crate::settings::{
 pub(crate) enum SettingChoice {
     Theme(Theme),
     Density(Density),
+    Language(Language),
+    Presence(Presence),
 }
 
 impl Shell {
@@ -68,6 +72,11 @@ impl Shell {
         let Some(panel) = self.settings.as_mut() else {
             return false;
         };
+        // An edit closes before the search does.
+        if let Some((row, _)) = panel.editing.take() {
+            tx.focus(row.key(), true);
+            return true;
+        }
         if panel.query().is_empty() {
             // The panel's own dismissal closes it.
             return false;
@@ -103,8 +112,14 @@ impl Shell {
 
     /// A nav row, a sub-page's row or ←: shows `page`.
     pub(crate) fn settings_page(&mut self, page: PageId, _tx: &mut Tx) {
-        if let Some(panel) = self.settings.as_mut() {
-            panel.go(page);
+        let Some(panel) = self.settings.as_mut() else {
+            return;
+        };
+        panel.go(page);
+        match page {
+            PageId::Diagnostics => self.measure_media_cache(),
+            PageId::Profile => self.read_own_profile(),
+            _ => {}
         }
     }
 
@@ -138,6 +153,42 @@ impl Shell {
                     .with_radio(appearance.messages.density == density)
                 })
                 .collect(),
+            RowId::Presence => {
+                let current = crate::settings::rows::account::chosen_presence(
+                    self.account_facts().and_then(|facts| facts.presence),
+                );
+                [Presence::Available, Presence::Away, Presence::Busy]
+                    .into_iter()
+                    .map(|presence| {
+                        MenuItem::plain(
+                            &format!("settings-presence-{presence:?}"),
+                            crate::settings::rows::account::presence_name(presence),
+                            MenuAction::Setting(SettingChoice::Presence(presence)),
+                            false,
+                        )
+                        .with_radio(presence == current)
+                    })
+                    .collect()
+            }
+            RowId::Language => {
+                let current = self.general.settings().language;
+                std::iter::once(Language::System)
+                    .chain(crate::strings::languages().map(|(id, _)| Language::Locale(id)))
+                    .map(|language| {
+                        let key = match language {
+                            Language::System => "settings-language-system".to_owned(),
+                            Language::Locale(id) => format!("settings-language-{id}"),
+                        };
+                        MenuItem::plain(
+                            &key,
+                            language_name(language),
+                            MenuAction::Setting(SettingChoice::Language(language)),
+                            false,
+                        )
+                        .with_radio(language == current)
+                    })
+                    .collect()
+            }
             _ => return,
         };
         self.nav.menu = Some(OpenMenu::new(
@@ -153,15 +204,32 @@ impl Shell {
         let change = match choice {
             SettingChoice::Theme(theme) => Change::Theme(theme),
             SettingChoice::Density(density) => Change::Density(density),
+            SettingChoice::Language(language) => Change::Language(language),
+            SettingChoice::Presence(presence) => Change::Presence(presence),
         };
         self.settings_change(change, tx);
     }
 
     /// A row's change: drawn while a drag runs, else saved.
     pub(crate) fn settings_change(&mut self, change: Change, tx: &mut Tx) {
-        let Some(panel) = self.settings.as_ref() else {
+        if let Change::Presence(presence) = change {
+            self.save_presence(presence);
+            return;
+        }
+        let Some(panel) = self.settings.as_mut() else {
             return;
         };
+        let other = super::settings_conversations::applied(self.conversations.settings(), &change)
+            .map(Target::Conversations)
+            .or_else(|| {
+                super::settings_general::applied(self.general.settings(), &change)
+                    .map(Target::General)
+            });
+        if let Some(target) = other {
+            panel.held(HeldEvent::Ended);
+            self.settings_save(change.row(), target, tx);
+            return;
+        }
         let current = panel
             .draft()
             .copied()
@@ -180,14 +248,30 @@ impl Shell {
             return;
         }
         panel.held(HeldEvent::Ended);
-        self.settings_save(change.row(), next, tx);
+        self.settings_save(change.row(), Target::Appearance(next), tx);
     }
 
     /// Saves `target` for `row`'s change; a failure shows under the row
-    /// when the write comes back (`appearance_written`).
-    fn settings_save(&mut self, row: RowId, target: Appearance, tx: &mut Tx) {
-        self.saving_row = Some(row);
-        self.set_appearance(target, tx);
+    /// when the write comes back.
+    fn settings_save(&mut self, row: RowId, target: Target, tx: &mut Tx) {
+        match target {
+            Target::Appearance(appearance) => {
+                self.saving_row = Some(row);
+                self.set_appearance(appearance, tx);
+            }
+            Target::Conversations(settings) => self.set_conversations(settings, Some(row), tx),
+            Target::General(settings) => self.set_general(settings, Some(row), tx),
+            Target::Trusted(hosts) => {
+                self.latest_rows.trusted = Some(row);
+                if let Some(hosts) = self.content.trusted.replace(hosts) {
+                    self.write_trusted(hosts, Some(row), tx);
+                }
+            }
+            Target::Profile(change) => self.save_profile(row, change),
+            Target::Presence(presence) => self.save_presence(presence),
+            Target::Password => self.settings_password_save(tx),
+            Target::ClearCache => self.clear_media_cache(tx),
+        }
     }
 
     /// Try again under a row whose save failed: the same settings, saved
@@ -271,7 +355,13 @@ fn applied(
             value,
             ..
         } => next.shape = current.shape.with(*value_of, *value),
-        Change::Switch(..) | Change::Slider { .. } => {}
+        // The other rows' changes are their stores' (Conversations',
+        // General's).
+        Change::Switch(..)
+        | Change::Slider { .. }
+        | Change::Hue(..)
+        | Change::Language(_)
+        | Change::Presence(_) => {}
         Change::Colours(colour) => {
             let (background, now) = super::settings_colours::colours_applied(
                 &current.background,

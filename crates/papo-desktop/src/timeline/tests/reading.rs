@@ -86,6 +86,32 @@ fn the_message_being_read_keeps_its_place_when_the_density_changes() {
 }
 
 #[test]
+fn the_message_being_read_keeps_its_place_when_times_or_avatars_change() {
+    let mut rt = runtime(long_history(300), MessageLayout::default());
+    read_up(&mut rt, 1_500.0);
+    let viewport = format!("timeline-{}-{}", Uuid::nil(), Uuid::from_u128(7));
+    for (times, avatars) in [(false, true), (false, false), (true, false), (true, true)] {
+        let Anchor::Message { id, offset_pt } = rt.state.open.current_anchor() else {
+            panic!("reading, not following the newest");
+        };
+        // What the Conversations settings do: change it, keep the place.
+        rt.update(move |host, tx| {
+            let anchor = host.open.current_anchor();
+            host.layout.times = times;
+            host.layout.avatars = avatars;
+            scroll_to(anchor, tx);
+        });
+        until_idle(&mut rt);
+        let now_pt = rect(&rt, &anchor_key(id))[1] - rect(&rt, &viewport)[1];
+        let moved = now_pt - offset_pt;
+        assert!(
+            moved.abs() < HOLD_PT,
+            "times {times}, avatars {avatars} moved it {moved}"
+        );
+    }
+}
+
+#[test]
 fn the_message_being_read_keeps_its_place_when_text_size_or_spacing_changes() {
     let mut rt = runtime(long_history(300), MessageLayout::default());
     read_up(&mut rt, 1_500.0);

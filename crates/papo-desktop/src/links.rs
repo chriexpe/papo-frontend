@@ -3,28 +3,18 @@
 //! link; anything else asks first, in a confirmation with a box that trusts
 //! the host from then on.
 //!
-//! The trusted domains are a device preference, kept by the desktop in its
-//! settings file: the SDK keeps no device preferences. Until the settings
-//! screen exists (D6), "Confirm external links" is on and the list holds
-//! only what the box adds. Opening is Rune's (`Tx::open_url`).
+//! The trusted domains are a device preference (`trusted_domains`), and so
+//! is "Confirm external links" (`general_settings`): off, every web link
+//! opens at once. Opening is Rune's (`Tx::open_url`).
 
-use std::collections::BTreeSet;
-
-use rune::prefs::Prefs;
-use rune::{El, Span, el, icon, rich, row, text};
+use rune::{El, Span, el, rich};
 use url::Position;
 
 use crate::confirm::{Question, confirm as ask};
-use crate::design::{
-    FOCUS_RING_PT, Look, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TASK_BOX, TASK_BOX_OUTLINE_PT,
-    TASK_BOX_RADIUS, TASK_CHECK, TYPE_CODE, TYPE_SMALL, WEIGHT_SEMIBOLD,
-};
+use crate::design::{Look, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TYPE_CODE, WEIGHT_SEMIBOLD};
 use crate::shell::Shell;
 use crate::strings;
-use crate::window::APP_ID;
-
-/// The settings file's key for the trusted domains.
-const TRUSTED_KEY: &str = "trusted_domains";
+use crate::trusted_domains::Trusted;
 
 /// The `mailto:` fields a mail app is given: what to fill in, never an
 /// `attach` or another parameter that reaches the reader's files.
@@ -51,8 +41,14 @@ pub(crate) fn host(url: &str) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
-/// What pressing `url` does, in a server whose host is `server_host`.
-pub(crate) fn decide(url: &str, server_host: Option<&str>, trusted: &Trusted) -> Decision {
+/// What pressing `url` does, in a server whose host is `server_host`;
+/// `confirm` is "Confirm external links".
+pub(crate) fn decide(
+    url: &str,
+    server_host: Option<&str>,
+    trusted: &Trusted,
+    confirm: bool,
+) -> Decision {
     let Ok(parsed) = url::Url::parse(url) else {
         return Decision::Refuse;
     };
@@ -63,7 +59,7 @@ pub(crate) fn decide(url: &str, server_host: Option<&str>, trusted: &Trusted) ->
             let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
                 return Decision::Refuse;
             };
-            if server_host == Some(host.as_str()) || trusted.contains(&host) {
+            if !confirm || server_host == Some(host.as_str()) || trusted.contains(&host) {
                 Decision::Open(url.to_owned())
             } else {
                 Decision::Ask { host }
@@ -94,47 +90,6 @@ fn mail_only(mail: &url::Url) -> String {
     mail.set_query((!kept.is_empty()).then(|| kept.join("&")).as_deref());
     mail.set_fragment(None);
     mail.into()
-}
-
-/// The hosts whose links open without asking: this device's preference.
-pub(crate) struct Trusted {
-    hosts: BTreeSet<String>,
-    prefs: Prefs,
-}
-
-impl Default for Trusted {
-    /// None, kept nowhere: before the settings file is read, and in tests.
-    fn default() -> Trusted {
-        Trusted {
-            hosts: BTreeSet::new(),
-            prefs: Prefs::memory(),
-        }
-    }
-}
-
-impl Trusted {
-    /// The trusted domains in this user's settings file.
-    pub(crate) fn load() -> Trusted {
-        let prefs = Prefs::open(APP_ID);
-        let hosts = prefs.get(TRUSTED_KEY).unwrap_or_default();
-        Trusted { hosts, prefs }
-    }
-
-    pub(crate) fn contains(&self, host: &str) -> bool {
-        self.hosts.contains(host)
-    }
-
-    /// Trusts `host` from now on, and saves the list. A failed save keeps
-    /// it trusted until the app closes.
-    pub(crate) fn add(&mut self, host: String) {
-        if !self.hosts.insert(host) {
-            return;
-        }
-        crate::device_settings::reload(&mut self.prefs);
-        if let Err(error) = self.prefs.set(TRUSTED_KEY, &self.hosts) {
-            log::warn!("the trusted domains were not saved: {error}");
-        }
-    }
 }
 
 /// A link waiting for the reader's answer.
@@ -206,50 +161,19 @@ fn address(prompt: &Prompt, look: &Look) -> El {
 /// "Always open links from {host}", with the task box (§9), here one that
 /// toggles: hover, a focus ring, Space.
 fn always_box(prompt: &Prompt, look: &Look) -> El {
-    let label = strings::link_always(&prompt.host);
-    let square = el()
-        .size(look.text_multiple(TASK_BOX), look.text_multiple(TASK_BOX))
-        .radius(look.radius(TASK_BOX_RADIUS))
-        .center();
-    let square = if prompt.always {
-        square.fill(look.palette.accent).child(
-            icon(&crate::icons::CHECK, look.text_multiple(TASK_CHECK))
-                .color(look.palette.accent_on),
-        )
-    } else {
-        square.border(TASK_BOX_OUTLINE_PT, look.palette.line_strong)
-    };
-    // As wide as the foot row leaves it, so the label wraps beside Cancel
-    // instead of running under it.
-    row()
-        .key("open-link-always")
-        .w_full()
-        .min_w(0.0)
-        .gap(look.space(SPACE_MD))
-        .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
-        .hover(look.palette.surface_hover)
-        .role("checkbox")
-        .checked(prompt.always)
-        .label(label.clone())
-        .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .on_press(Shell::toggle_trust_link)
-        .child(square)
-        .child(
-            text(label)
-                .key("open-link-always-label")
-                .font(look.font(TYPE_SMALL))
-                .color(look.palette.text_secondary)
-                .grow(1.0)
-                .min_w(0.0)
-                .wrap(),
-        )
+    crate::checkbox::checkbox(
+        "open-link-always",
+        strings::link_always(&prompt.host),
+        prompt.always,
+        Shell::toggle_trust_link,
+        look,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Decision, Trusted, decide};
+    use super::{Decision, decide};
+    use crate::trusted_domains::Trusted;
 
     fn open(url: &str) -> Decision {
         Decision::Open(url.to_owned())
@@ -260,15 +184,15 @@ mod tests {
         let trusted = Trusted::default();
         let server = Some("papo.example.com");
         let invite = "https://papo.example.com/invite";
-        assert_eq!(decide(invite, server, &trusted), open(invite));
+        assert_eq!(decide(invite, server, &trusted, true), open(invite));
         let upper = "https://PAPO.example.com/";
         assert_eq!(
-            decide(upper, server, &trusted),
+            decide(upper, server, &trusted, true),
             open(upper),
             "hosts compare without case"
         );
         let mail = "mailto:lia@example.com?subject=Hi%20there&body=See%20you";
-        assert_eq!(decide(mail, server, &trusted), open(mail));
+        assert_eq!(decide(mail, server, &trusted, true), open(mail));
     }
 
     #[test]
@@ -278,12 +202,18 @@ mod tests {
             decide(
                 "mailto:lia@example.com?attach=/etc/passwd&subject=Hi&%61ttachment=~/.ssh/id_ed25519",
                 None,
-                &trusted
+                &trusted,
+                true
             ),
             open("mailto:lia@example.com?subject=Hi")
         );
         assert_eq!(
-            decide("mailto:lia@example.com?attach=/etc/passwd", None, &trusted),
+            decide(
+                "mailto:lia@example.com?attach=/etc/passwd",
+                None,
+                &trusted,
+                true
+            ),
             open("mailto:lia@example.com")
         );
     }
@@ -296,15 +226,27 @@ mod tests {
         let ask = Decision::Ask {
             host: "lumen.example.org".to_owned(),
         };
-        assert_eq!(decide(guide, server, &trusted), ask);
-        trusted.add("lumen.example.org".to_owned());
-        assert_eq!(decide(guide, server, &trusted), open(guide));
+        assert_eq!(decide(guide, server, &trusted, true), ask);
+        let _ = trusted.add("lumen.example.org".to_owned());
+        assert_eq!(decide(guide, server, &trusted, true), open(guide));
         assert_eq!(
-            decide("https://docs.lumen.example.org/", server, &trusted),
+            decide("https://docs.lumen.example.org/", server, &trusted, true),
             Decision::Ask {
                 host: "docs.lumen.example.org".to_owned()
             },
             "a subdomain is a host of its own"
+        );
+    }
+
+    #[test]
+    fn with_confirm_external_links_off_every_web_link_opens() {
+        let trusted = Trusted::default();
+        let guide = "https://lumen.example.org/guide";
+        assert_eq!(decide(guide, None, &trusted, false), open(guide));
+        assert_eq!(
+            decide("ftp://lumen.example.org/", None, &trusted, false),
+            Decision::Refuse,
+            "still only web and mail links"
         );
     }
 
@@ -315,7 +257,8 @@ mod tests {
             decide(
                 "https://papo.example.com@evil.example.net/",
                 Some("papo.example.com"),
-                &trusted
+                &trusted,
+                true
             ),
             Decision::Ask {
                 host: "evil.example.net".to_owned()
@@ -327,9 +270,9 @@ mod tests {
     fn other_schemes_never_open() {
         let trusted = Trusted::default();
         assert_eq!(
-            decide("file:///etc/passwd", None, &trusted),
+            decide("file:///etc/passwd", None, &trusted, true),
             Decision::Refuse
         );
-        assert_eq!(decide("not a url", None, &trusted), Decision::Refuse);
+        assert_eq!(decide("not a url", None, &trusted, true), Decision::Refuse);
     }
 }

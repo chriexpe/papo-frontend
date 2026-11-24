@@ -48,6 +48,27 @@ line_icon!(
     "palette"
 );
 line_icon!(
+    /// The Privacy and security page in the settings nav.
+    SHIELD,
+    "shield"
+);
+line_icon!(
+    /// The Diagnostics page in the settings nav.
+    PULSE,
+    "pulse"
+);
+line_icon!(
+    /// The General page in the settings nav.
+    GLOBE,
+    "globe"
+);
+line_icon!(
+    /// The Conversations page in the settings nav: square, so it never
+    /// reads as Direct messages.
+    CHAT,
+    "chat"
+);
+line_icon!(
     /// Remove the selected background colour.
     MINUS,
     "minus"

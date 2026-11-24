@@ -8,7 +8,7 @@
 //! About first and without the status bubble, and no picture is drawn yet.
 
 use papo_sdk::Uuid;
-use rune::{El, col, icon, row, text};
+use rune::{El, Tx, col, icon, row, text};
 
 use super::Shell;
 use super::profile_card::{Order, PersonFacts, header, sections};
@@ -27,13 +27,15 @@ impl Shell {
     /// Shows or hides the picked conversation's profile pane, asking for
     /// the person's profile when it shows. The keyboard stays where it
     /// was: Ctrl+U from the composer goes on writing.
-    pub(crate) fn toggle_dm_profile(&mut self) {
+    pub(crate) fn toggle_dm_profile(&mut self, tx: &mut Tx) {
         if self.nav.picked_dm().is_none() {
             return;
         }
         self.worked_outside();
         let shown = !self.layout.dm_profile();
-        self.layout.set_dm_profile(shown);
+        if let Some(write) = self.layout.set_dm_profile(shown) {
+            self.write_layout(write, tx);
+        }
         if shown
             && let (Some(key), Some(picked)) = (self.wanted_direct_timeline(), self.nav.picked_dm())
         {
@@ -62,7 +64,7 @@ pub(super) fn button(shown: bool, look: &Look) -> El {
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .hover(look.on_pill(look.palette.surface_hover))
-        .on_press(Shell::toggle_dm_profile)
+        .on_press_tx(Shell::toggle_dm_profile)
         .child(icon(&USER, PILL_ICON_PT).color(tone))
 }
 

@@ -55,7 +55,7 @@ impl Shell {
     /// channel, which opens nothing at the reader's place first.
     pub(super) fn sync_timeline_at(
         &mut self,
-        tx: Option<&mut Tx>,
+        mut tx: Option<&mut Tx>,
         focus: Option<(Timeline, Anchor)>,
     ) {
         self.sync_composer();
@@ -63,10 +63,18 @@ impl Shell {
             return;
         }
         let wanted = self.wanted_timeline();
-        let Some(switch) = self.tabs.show(wanted, self.prefs.open_at_newest) else {
+        let Some(switch) = self
+            .tabs
+            .show(wanted, self.conversations.settings().open_at_newest)
+        else {
             return;
         };
         self.conversation_left();
+        match tx.as_deref_mut() {
+            Some(tx) => self.description_opened(tx),
+            // No clock to time a strip by: the last channel's goes anyway.
+            None => self.description = super::description::Description::default(),
+        }
         if let Some(save) = switch.save {
             self.save_position(save.key, save.position);
         }
@@ -331,6 +339,7 @@ impl Shell {
             self.search_now();
         }
         let flash_ended = self.poll_flash(clock_s);
+        let description_ended = self.poll_description(clock_s);
         let notice_ended = self.poll_notice(clock_s);
         let list_closed = self.poll_reactions();
         let card_closed = self.poll_card();
@@ -339,6 +348,7 @@ impl Shell {
             || copied_ended
             || new_day
             || flash_ended
+            || description_ended
             || notice_ended
             || list_closed
             || card_closed
@@ -365,6 +375,7 @@ impl Shell {
     pub(crate) fn window_closing(&mut self, _tx: &mut Tx) {
         self.save_shown_position();
         self.flush_composer();
+        self.flush_settings();
     }
 
     /// The reader's place moved: it is saved once it has rested for

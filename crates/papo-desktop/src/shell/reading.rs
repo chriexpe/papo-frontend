@@ -210,7 +210,7 @@ impl Shell {
     /// ↓: to the first message that arrived unseen, the newest, or (at the
     /// newest) clears the skipped block.
     pub(crate) fn down_pressed(&mut self, key: TimelineKey, tx: &mut Tx) {
-        let hourglass = self.prefs.unread_hourglass;
+        let hourglass = self.conversations.settings().unread_hourglass;
         let Some(open) = self.shown_timeline_mut(key) else {
             return;
         };

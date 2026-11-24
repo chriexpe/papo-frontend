@@ -43,14 +43,22 @@ fn layouts() -> Vec<MessageLayout> {
     for density in DENSITIES {
         for grouped in [true, false] {
             for stacked in [true, false] {
-                if density != Density::ExtraCompact && !stacked {
-                    continue;
+                for times in [true, false] {
+                    for avatars in [true, false] {
+                        let layout = MessageLayout {
+                            density,
+                            grouped,
+                            stacked,
+                            times,
+                            avatars,
+                        };
+                        // Stack only applies without avatars.
+                        if layout.has_avatars() && !stacked {
+                            continue;
+                        }
+                        layouts.push(layout);
+                    }
                 }
-                layouts.push(MessageLayout {
-                    density,
-                    grouped,
-                    stacked,
-                });
             }
         }
     }
@@ -64,7 +72,7 @@ fn rows_sit_at_the_spacing_of_their_density() {
         .flat_map(|look| layouts().into_iter().map(move |layout| (look, layout)))
     {
         let rt = runtime_with(conversation(), layout, &look);
-        let spacing = look.spacing(layout.density);
+        let spacing = look.row_spacing(layout);
         let continued = if layout.grouped {
             spacing.within_group_pt
         } else {
@@ -101,7 +109,7 @@ fn every_block_starts_on_its_messages_content_column() {
         for n in 1..=4 {
             let content = part(&rt, n, "content");
             assert_near(content[0], column, &what);
-            let inline = layout.density == Density::ExtraCompact && !layout.stacked;
+            let inline = !layout.has_avatars() && !layout.stacked;
             if inline {
                 // The name leads the line; the text keeps one column, a
                 // hidden name's width reserved.
@@ -185,6 +193,10 @@ fn a_loading_row_s_placeholders_line_up_with_the_messages() {
             Arc::new(TimelineItem::Loading(TimelineDirection::Newer)),
         ]);
         let rt = runtime(items, layout);
+        if look_default_lead_is_none(layout) {
+            assert!(!has_part(&rt, 1, "lead"), "{layout:?}: no lead column");
+            continue;
+        }
         let placeholder = rt
             .elements()
             .into_iter()
@@ -201,4 +213,65 @@ fn a_loading_row_s_placeholders_line_up_with_the_messages() {
             &format!("{layout:?}: lead width"),
         );
     }
+}
+
+/// Whether `layout` leaves rows no lead column at the default look.
+fn look_default_lead_is_none(layout: MessageLayout) -> bool {
+    matches!(
+        Look::new(Theme::Graphite).row_spacing(layout).lead,
+        Lead::None
+    )
+}
+
+#[test]
+fn show_times_off_draws_no_time_on_any_row() {
+    for layout in layouts().into_iter().filter(|layout| !layout.times) {
+        let rt = runtime(conversation(), layout);
+        for n in 1..=4 {
+            assert!(!has_part(&rt, n, "time"), "{layout:?}: message {n}");
+        }
+    }
+}
+
+#[test]
+fn show_avatars_off_draws_no_avatar_and_keeps_the_densitys_spacing() {
+    let look = Look::new(Theme::Graphite);
+    for layout in layouts().into_iter().filter(|layout| !layout.avatars) {
+        let rt = runtime(conversation(), layout);
+        for n in 1..=4 {
+            assert!(!has_part(&rt, n, "avatar"), "{layout:?}: message {n}");
+        }
+        let spacing = look.row_spacing(layout);
+        assert_near(
+            spacing.between_groups_pt,
+            look.spacing(layout.density).between_groups_pt,
+            &format!("{layout:?}"),
+        );
+    }
+}
+
+#[test]
+fn without_avatars_the_time_shows_once_a_minute_and_only_with_show_times() {
+    let layout = MessageLayout {
+        density: Density::Normal,
+        avatars: false,
+        ..MessageLayout::default()
+    };
+    let items = Vector::from(vec![
+        message(1, "ana", 0, "A little more like you."),
+        message(2, "ana", 30, "Messages stay together."),
+        message(3, "bia", 90, "oi"),
+    ]);
+    let rt = runtime(items.clone(), layout);
+    assert!(has_part(&rt, 1, "time"));
+    assert!(!has_part(&rt, 2, "time"), "the same minute");
+    assert!(has_part(&rt, 3, "time"), "the next minute");
+    let rt = runtime(
+        items,
+        MessageLayout {
+            times: false,
+            ..layout
+        },
+    );
+    assert!((1..=3).all(|n| !has_part(&rt, n, "time")));
 }

@@ -1,29 +1,50 @@
 //! The settings panel (`docs/design.md` §8): grown from the account pill's
 //! ⚙ (or Ctrl+,), a nav of pages with one-line summaries, search across
-//! every row, sub-pages with ←, and rows that save as they change. D6a's
-//! pages are Appearance and its two sub-pages; the others come with the
-//! slices that make their rows work.
+//! every row, sub-pages with ←, and rows that save as they change. The
+//! account's pages are Profile and Privacy and security; the App pages are
+//! Appearance, Conversations, General (each with its sub-pages) and
+//! Diagnostics. Notifications comes with D9.
 //!
 //! Owns the panel's own state: the page shown, the search, a slider or the
-//! colour field's value while it is dragged, the row whose save failed and
-//! the colour field's selection. The settings themselves are
-//! `appearance`'s; what a row's change does is the shell's
-//! (`shell/settings.rs`).
+//! colour field's value while it is dragged, the row whose save failed,
+//! the colour field's selection, the domain being typed, the media cache's
+//! measured size, the destructive row that is asking, the text row being
+//! edited, the account call in flight and the password form. The settings
+//! themselves are their stores' (`appearance`, `conversation_settings`,
+//! `general_settings`, `trusted_domains`); what a row's change does is the
+//! shell's (`shell/settings.rs`).
+
+use std::collections::BTreeSet;
 
 use rune::TextEdit;
 
 use crate::appearance::presets::Direction;
 use crate::appearance::{Appearance, ShapeValue};
+use crate::conversation_settings::ConversationSettings;
 use crate::design::{Accent, BackgroundColour, Density, Theme};
+use crate::general_settings::{GeneralSettings, Language};
+use papo_sdk::Uuid;
+use papo_sdk::operations::profile::ProfileChange;
 
+mod account_forms;
+mod actions;
+mod chip;
 pub(crate) mod colour_field;
 mod colour_tools;
 mod controls;
+pub(crate) mod domain_field;
+mod held;
+mod nav;
+pub(crate) mod password_form;
 pub(crate) mod rows;
 mod search;
 mod slider;
+mod swatches;
+pub(crate) mod text_row;
 pub(crate) mod view;
 
+pub(crate) use account_forms::{PasswordForm, PasswordProblem, Presence};
+pub(crate) use held::{Held, HeldEvent};
 pub(crate) use view::view;
 
 /// The open panel's element key.
@@ -37,22 +58,69 @@ pub(crate) const SETTINGS_BUTTON_KEY: &str = "account-settings";
 /// A page of the panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PageId {
+    /// The account's profile: the nav's subject tile.
+    Profile,
+    Privacy,
+    /// Privacy and security › Blocked people.
+    Blocked,
+    /// Privacy and security › Change password.
+    Password,
     Appearance,
     /// Appearance › Background colour.
     Background,
     /// Appearance › Shape and type.
     Shape,
+    Conversations,
+    /// Conversations › Message highlights.
+    Highlights,
+    General,
+    /// General › Trusted domains.
+    Trusted,
+    Diagnostics,
 }
 
 impl PageId {
-    /// Every page, nav pages first: what the search looks through.
-    pub(crate) const ALL: [PageId; 3] = [PageId::Appearance, PageId::Background, PageId::Shape];
+    /// Every page, nav pages first and in the nav's order: what the search
+    /// looks through.
+    pub(crate) const ALL: [PageId; 12] = [
+        PageId::Profile,
+        PageId::Privacy,
+        PageId::Appearance,
+        PageId::Conversations,
+        PageId::General,
+        PageId::Diagnostics,
+        PageId::Blocked,
+        PageId::Password,
+        PageId::Background,
+        PageId::Shape,
+        PageId::Highlights,
+        PageId::Trusted,
+    ];
+
+    /// The account's pages, in the nav's order (Profile is its tile).
+    pub(crate) const ACCOUNT: [PageId; 2] = [PageId::Profile, PageId::Privacy];
+
+    /// The App pages in the nav, in order.
+    pub(crate) const NAV: [PageId; 4] = [
+        PageId::Appearance,
+        PageId::Conversations,
+        PageId::General,
+        PageId::Diagnostics,
+    ];
 
     /// The page a sub-page's ← goes back to.
     pub(crate) fn parent(self) -> Option<PageId> {
         match self {
-            PageId::Appearance => None,
+            PageId::Profile
+            | PageId::Privacy
+            | PageId::Appearance
+            | PageId::Conversations
+            | PageId::General
+            | PageId::Diagnostics => None,
             PageId::Background | PageId::Shape => Some(PageId::Appearance),
+            PageId::Highlights => Some(PageId::Conversations),
+            PageId::Trusted => Some(PageId::General),
+            PageId::Blocked | PageId::Password => Some(PageId::Privacy),
         }
     }
 
@@ -60,11 +128,29 @@ impl PageId {
     pub(crate) fn nav(self) -> PageId {
         self.parent().unwrap_or(self)
     }
+
+    /// Whether it is one of the account's pages, which need a signed-in
+    /// account.
+    pub(crate) fn of_account(self) -> bool {
+        PageId::ACCOUNT.contains(&self.nav())
+    }
 }
 
 /// One row, by what it sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum RowId {
+    Nickname,
+    Status,
+    About,
+    Presence,
+    TypingPhrase,
+    Blocked,
+    /// A blocked person, by their user id.
+    BlockedPerson(Uuid),
+    Password,
+    /// Change password's form.
+    PasswordForm,
+    SignOut,
     Theme,
     Background,
     Accent,
@@ -74,6 +160,27 @@ pub(crate) enum RowId {
     Shape,
     SystemFont,
     Glass,
+    EnterSends,
+    ShowTimes,
+    ShowAvatars,
+    OpenAtNewest,
+    Hourglass,
+    ChannelDescription,
+    Highlights,
+    MentionHue,
+    ReplyHue,
+    Language,
+    ConfirmLinks,
+    Trusted,
+    /// Trusted domains' field that adds one.
+    TrustedAdd,
+    /// A trusted domain, by its host's id (`trusted_domains::host_id`).
+    TrustedHost(u64),
+    Connected,
+    Reconnect,
+    Cache,
+    ClearCache,
+    Version,
     Field,
     Strength,
     Grain,
@@ -105,6 +212,12 @@ pub(crate) enum Change {
     },
     /// The colour field's colours, strength aside.
     Colours(colour_field::ColourChange),
+    /// A hue swatch picked, in OKLCH degrees.
+    Hue(RowId, f32),
+    /// Language's menu.
+    Language(Language),
+    /// Presence's menu.
+    Presence(Presence),
 }
 
 impl Change {
@@ -113,9 +226,11 @@ impl Change {
         match self {
             Change::Theme(_) => RowId::Theme,
             Change::Density(_) => RowId::Density,
-            Change::Switch(row, _) | Change::Slider { row, .. } => *row,
+            Change::Switch(row, _) | Change::Slider { row, .. } | Change::Hue(row, _) => *row,
             Change::Accent(_) => RowId::Accent,
             Change::Direction(_) => RowId::Directions,
+            Change::Language(_) => RowId::Language,
+            Change::Presence(_) => RowId::Presence,
             Change::Colours(_) => RowId::Field,
         }
     }
@@ -130,79 +245,42 @@ pub(crate) struct ColourState {
     pub(crate) harmony: usize,
 }
 
-/// A drag in the panel (§8, Saving): what it shows is drawn, not saved,
-/// until it lets go.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) enum Held {
-    /// Nothing held.
-    #[default]
-    Idle,
-    /// A colour on the field pressed, not moved yet: where it sat, which
-    /// its drag moves it from however often the field is drawn meanwhile.
-    Colour { origin: BackgroundColour },
-    /// A slider, the field or a colour dragged: the settings as drawn,
-    /// and a colour's `origin` while it is that colour's own drag.
-    Drawing {
-        draft: Appearance,
-        origin: Option<BackgroundColour>,
-    },
+/// What a row saves: the settings its store holds after the change.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Target {
+    Appearance(Appearance),
+    Conversations(ConversationSettings),
+    General(GeneralSettings),
+    Trusted(BTreeSet<String>),
+    /// A profile field (`papo_sdk`'s `change_profile`).
+    Profile(ProfileChange),
+    Presence(Presence),
+    /// Change password: the form still holds what it sends.
+    Password,
+    /// Clear media cache, run again.
+    ClearCache,
 }
 
-/// What happens to a drag.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum HeldEvent {
-    /// A colour's own drag pressed it where it sits.
-    ColourPressed(BackgroundColour),
-    /// The drag draws these settings.
-    Drew(Appearance),
-    /// It let go (the caller saves what it ends on) or was cancelled.
-    Ended,
-}
-
-impl Held {
-    /// The drag after `event`.
-    pub(crate) fn step(self, event: HeldEvent) -> Held {
-        match (self, event) {
-            (_, HeldEvent::ColourPressed(origin)) => Held::Colour { origin },
-            (Held::Colour { origin }, HeldEvent::Drew(draft)) => Held::Drawing {
-                draft,
-                origin: Some(origin),
-            },
-            (Held::Drawing { origin, .. }, HeldEvent::Drew(draft)) => {
-                Held::Drawing { draft, origin }
-            }
-            (Held::Idle, HeldEvent::Drew(draft)) => Held::Drawing {
-                draft,
-                origin: None,
-            },
-            (_, HeldEvent::Ended) => Held::Idle,
-        }
-    }
-
-    /// The settings the drag draws, while it draws any.
-    pub(crate) fn draft(&self) -> Option<&Appearance> {
-        match self {
-            Held::Drawing { draft, .. } => Some(draft),
-            Held::Idle | Held::Colour { .. } => None,
-        }
-    }
-
-    /// Where the colour being dragged sat at the press.
-    pub(crate) fn origin(&self) -> Option<BackgroundColour> {
-        match *self {
-            Held::Colour { origin } => Some(origin),
-            Held::Drawing { origin, .. } => origin,
-            Held::Idle => None,
-        }
+impl Target {
+    /// Whether it holds its store's whole value (Appearance, Conversations,
+    /// General, the trusted domains) rather than one field or one call.
+    fn is_snapshot(&self) -> bool {
+        matches!(
+            self,
+            Target::Appearance(_)
+                | Target::Conversations(_)
+                | Target::General(_)
+                | Target::Trusted(_)
+        )
     }
 }
 
 /// A save that failed: the row that shows its danger line, and the
 /// settings it was saving, which Try again saves as they were.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Failed {
     row: RowId,
-    target: Appearance,
+    target: Target,
 }
 
 /// The open panel.
@@ -215,6 +293,22 @@ pub(crate) struct SettingsPanel {
     /// change).
     held: Held,
     pub(crate) colour: ColourState,
+    /// Trusted domains' field, and whether what it holds was refused.
+    pub(crate) domain: TextEdit,
+    pub(crate) domain_refused: bool,
+    /// The media cache's size in bytes, once measured.
+    pub(crate) cache_bytes: Option<u64>,
+    /// The cache is being cleared.
+    pub(crate) clearing: bool,
+    /// The destructive row asking its question, if one is.
+    pub(crate) asking: Option<RowId>,
+    /// The text row being edited, and its field.
+    pub(crate) editing: Option<(RowId, TextEdit)>,
+    /// The row whose account call is in flight: its control waits.
+    pub(crate) waiting: Option<RowId>,
+    pub(crate) password: PasswordForm,
+    /// The password was changed while the panel is open.
+    pub(crate) password_changed: bool,
 }
 
 impl SettingsPanel {
@@ -225,6 +319,15 @@ impl SettingsPanel {
             failed: None,
             held: Held::Idle,
             colour: ColourState::default(),
+            domain: TextEdit::new(""),
+            domain_refused: false,
+            cache_bytes: None,
+            clearing: false,
+            asking: None,
+            editing: None,
+            waiting: None,
+            password: PasswordForm::default(),
+            password_changed: false,
         }
     }
 
@@ -236,6 +339,9 @@ impl SettingsPanel {
     pub(crate) fn go(&mut self, page: PageId) {
         self.page = page;
         self.failed = None;
+        self.asking = None;
+        self.editing = None;
+        self.password = PasswordForm::default();
         self.search = TextEdit::new("");
     }
 
@@ -246,18 +352,24 @@ impl SettingsPanel {
 
     /// The row whose save failed, which shows the danger line.
     pub(crate) fn failed_row(&self) -> Option<RowId> {
-        self.failed.map(|failed| failed.row)
+        self.failed.as_ref().map(|failed| failed.row)
     }
 
     /// The settings whose save failed, for Try again.
-    pub(crate) fn failed_target(&self) -> Option<Appearance> {
-        self.failed.map(|failed| failed.target)
+    pub(crate) fn failed_target(&self) -> Option<Target> {
+        self.failed.as_ref().map(|failed| failed.target.clone())
     }
 
     /// The save of `target` under `row` worked, or did not.
-    pub(crate) fn saved(&mut self, row: RowId, target: Appearance, ok: bool) {
+    pub(crate) fn saved(&mut self, row: RowId, target: Target, ok: bool) {
         if ok {
-            if self.failed_row() == Some(row) {
+            // A later save to the same store supersedes the failed one: Try
+            // again would put back a snapshot older than what is saved now.
+            let same_store = self.failed.as_ref().is_some_and(|failed| {
+                failed.target.is_snapshot()
+                    && std::mem::discriminant(&failed.target) == std::mem::discriminant(&target)
+            });
+            if self.failed_row() == Some(row) || same_store {
                 self.failed = None;
             }
         } else {

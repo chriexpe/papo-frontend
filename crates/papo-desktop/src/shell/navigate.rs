@@ -80,7 +80,7 @@ impl Shell {
             || self.select_message_key(key, tx)
             || self.pins_key(key, tx)
             || self.search_shortcut(key, tx)
-            || self.profile_key(key)
+            || self.profile_key(key, tx)
             || self.direct_key(key, tx)
             || self.escape_key(key)
     }
@@ -126,7 +126,7 @@ impl Shell {
 
     /// Ctrl+U in a DM: its profile pane (in a channel, the members pane's
     /// key, which comes with the roles session).
-    fn profile_key(&mut self, key: &KeyEvent) -> bool {
+    fn profile_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
         let mods = key.mods;
         if !key.is_command('u') || mods.shift || mods.alt || self.popup_shown() {
             return false;
@@ -134,7 +134,7 @@ impl Shell {
         if self.nav.picked_dm().is_none() {
             return false;
         }
-        self.toggle_dm_profile();
+        self.toggle_dm_profile(tx);
         true
     }
 

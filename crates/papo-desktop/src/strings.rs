@@ -50,6 +50,77 @@ pub(crate) fn use_system_language() {
     I18N.set_locale(locale);
 }
 
+/// The app's locale whose id is `id`, as the catalog holds the id; none
+/// for one the app does not have.
+pub(crate) fn locale_id(id: &str) -> Option<&'static str> {
+    I18N.find_locale(id)
+        .map(|locale| I18N.locales()[locale].id())
+}
+
+/// Puts `language` into effect for every later lookup; true when the
+/// locale changed.
+pub(crate) fn use_language(language: crate::general_settings::Language) -> bool {
+    let locale = match language {
+        crate::general_settings::Language::System => {
+            I18N.negotiate(system_languages().iter().map(String::as_str))
+        }
+        crate::general_settings::Language::Locale(id) => {
+            I18N.find_locale(id).unwrap_or_else(locale_index)
+        }
+    };
+    set_locale(locale)
+}
+
+/// The locale in effect, as a number: the look's key holds it, so every
+/// memoised view redraws in a new language.
+#[cfg(not(test))]
+pub(crate) fn locale_index() -> usize {
+    I18N.locale()
+}
+
+#[cfg(not(test))]
+fn system_languages() -> Vec<String> {
+    rune_i18n::system_languages()
+}
+
+#[cfg(not(test))]
+fn set_locale(locale: usize) -> bool {
+    I18N.set_locale(locale)
+}
+
+// The catalog's locale is the whole program's, and tests run side by
+// side: a test that switched it would change every other test's words. A
+// test's choice is its thread's, and the words stay the source locale's.
+#[cfg(test)]
+thread_local! {
+    static TEST_LOCALE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+// The system's languages are the machine's, not the test's: in a test
+// "System" is the source locale.
+#[cfg(test)]
+fn system_languages() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(test)]
+pub(crate) fn locale_index() -> usize {
+    TEST_LOCALE.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn set_locale(locale: usize) -> bool {
+    TEST_LOCALE.with(|current| current.replace(locale) != locale)
+}
+
+/// The app's languages, each by its locale id and its name in itself
+/// ("English", "Português (Brasil)").
+pub(crate) fn languages() -> impl Iterator<Item = (&'static str, &'static str)> {
+    I18N.locales()
+        .iter()
+        .map(|locale| (locale.id(), locale.label()))
+}
+
 /// The window title.
 pub(crate) fn window_title() -> &'static str {
     text!("window.title")
@@ -65,9 +136,13 @@ pub(crate) fn startup_open_failed() -> &'static str {
     text!("startup.open_failed")
 }
 
+mod account;
 mod appearance_names;
 mod card;
 mod composer;
+mod conversations;
+mod diagnostics;
+mod general;
 mod links;
 mod messages;
 mod people;
@@ -80,9 +155,13 @@ mod shortcuts;
 mod sign_in;
 mod timeline;
 
+pub(crate) use account::*;
 pub(crate) use appearance_names::*;
 pub(crate) use card::*;
 pub(crate) use composer::*;
+pub(crate) use conversations::*;
+pub(crate) use diagnostics::*;
+pub(crate) use general::*;
 pub(crate) use links::*;
 pub(crate) use messages::*;
 pub(crate) use people::*;

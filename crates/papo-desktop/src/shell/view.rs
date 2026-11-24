@@ -90,22 +90,12 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                     app = app.child(notice::view(notice, composer::COMPOSER_PILL_KEY, &look));
                 }
                 // Under the menu: a choice's menu opens over the panel.
-                if let Some(panel) = &shell.settings {
-                    let view = crate::settings::view::PanelView {
-                        panel,
-                        saved: shell.appearance.appearance(),
-                        system_dark: cx.system_dark(),
-                        system_font_known: shell.system_font.is_some(),
-                        grain: shell
-                            .grain
-                            .as_ref()
-                            .map(|tiles| tiles.pixels(look.theme().is_dark())),
-                    };
-                    app = app.child(crate::settings::view(&view, &look));
-                }
+                app = app.children(settings_panel(shell, &look, cx.system_dark()));
                 if let Some(menu) = &shell.nav.menu {
                     app = app.children(menu::pointer_point(menu));
-                    let body = if menu.people {
+                    let body = if menu.description.is_some() {
+                        super::description::body(shell, &look)
+                    } else if menu.people {
                         direct_pane::new_message::body(shell, &look)
                     } else if menu.card.is_some() {
                         super::profile_card::body(shell, &look)
@@ -114,7 +104,10 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                     };
                     // A list or card whose conversation went away draws
                     // nothing; the next poll closes it.
-                    let bodiless = menu.reactions.is_none() && menu.card.is_none() && !menu.people;
+                    let bodiless = menu.reactions.is_none()
+                        && menu.card.is_none()
+                        && !menu.people
+                        && menu.description.is_none();
                     if body.is_some() || bodiless {
                         app = app.child(menu::view(menu, body, &look, cx));
                     }
@@ -170,17 +163,43 @@ fn hint_look(look: &Look, dark: bool) -> HelpLook {
 
 /// How the conversation's rows look, and the message a confirmation
 /// shows.
+/// The settings panel, while it is open.
+fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
+    let panel = shell.settings.as_ref()?;
+    let diagnostics = shell.diagnostics_facts();
+    let account = shell.account_facts();
+    let preview = account
+        .as_ref()
+        .map(|facts| shell.profile_preview(facts, look));
+    let view = crate::settings::view::PanelView {
+        panel,
+        saved: shell.appearance.appearance(),
+        conversations: shell.conversations.settings(),
+        general: shell.general.settings(),
+        trusted: shell.content.trusted.hosts(),
+        diagnostics: &diagnostics,
+        account: account.as_ref(),
+        system_dark,
+        system_font_known: shell.system_font.is_some(),
+        grain: shell
+            .grain
+            .as_ref()
+            .map(|tiles| tiles.pixels(look.theme().is_dark())),
+    };
+    Some(crate::settings::view(&view, preview, look))
+}
+
 fn timeline_style(shell: &Shell, look: &Look, insets_pt: [f32; 2]) -> timeline::Style {
     let selected = shell
         .composer
         .shown()
         .and_then(|(_, draft)| draft.mode.target());
     timeline::Style {
-        layout: shell.appearance.appearance().messages,
+        layout: shell.message_layout(),
         look: *look,
         time: shell.local_time.clone(),
         today: shell.today,
-        hourglass: shell.prefs.unread_hourglass,
+        hourglass: shell.conversations.settings().unread_hourglass,
         selected,
         reacting: shell.reacting(),
         insets_pt,
@@ -220,7 +239,7 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
     });
     let context = composer::PillContext {
         placeholder: &placeholder,
-        enter_sends: shell.writing.enter_sends,
+        enter_sends: shell.conversations.settings().enter_sends,
         original: original.as_ref(),
         me: shown.map_or(papo_sdk::Uuid::nil(), |(key, _)| key.account.user()),
     };

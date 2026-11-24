@@ -18,9 +18,7 @@ use rune::{Image, ImageCache};
 
 use crate::account_watch::{self, Accounts};
 use crate::composer::Composer;
-use crate::composer::prefs::WritingPrefs;
 use crate::navigation::Navigation;
-use crate::reading_prefs::ReadingPrefs;
 use crate::reconnect_hints;
 use crate::sdk_bridge::{BridgeHost, OpenFailure, RequestSlot, Sdk};
 use crate::server_list;
@@ -38,7 +36,10 @@ pub(crate) struct Shell {
     /// A new message's local identity: random in the app, fixed in tests.
     local_ids: fn() -> papo_sdk::Uuid,
     /// "Enter to send".
-    writing: WritingPrefs,
+    /// The Conversations settings.
+    pub(crate) conversations: crate::conversation_settings::ConversationStore,
+    /// The General settings: the language and Confirm external links.
+    pub(crate) general: crate::general_settings::GeneralStore,
     /// The unsent message whose "Send again?" is open.
     resend: Option<outgoing::Resend>,
     /// The deletion waiting for its confirmation.
@@ -65,6 +66,11 @@ pub(crate) struct Shell {
     icon_bytes: HashMap<ServerId, Arc<[u8]>>,
     /// The newest reorder sent; only its answer counts.
     reorder_requests: RequestSlot,
+    /// Diagnostics' media cache measurements.
+    diagnostics_requests: RequestSlot,
+    /// Diagnostics' Clear media cache, apart from the measurements so a
+    /// measurement never drops its answer.
+    clear_requests: RequestSlot,
     reorder: Reorder,
     /// The open timelines and the places of closed ones.
     tabs: Tabs,
@@ -98,9 +104,6 @@ pub(crate) struct Shell {
     day_ends_s: Option<f64>,
     /// Links waiting to open, trusted domains, the message under the pointer.
     content: content::Content,
-    /// The device's reading settings: open at the newest message, the
-    /// hourglass.
-    prefs: ReadingPrefs,
     /// Whether the window is on screen: read reports wait while it is not.
     window_shown: bool,
     /// The last ⌛ press's number; each takes the next.
@@ -120,6 +123,11 @@ pub(crate) struct Shell {
     dm_peers: std::collections::BTreeSet<(AccountId, papo_sdk::Uuid)>,
     /// What the backend said about conversations that left the list.
     dm_access: std::collections::BTreeMap<papo_sdk_ui::DirectMessageId, direct::Asked>,
+    /// The settings row that asked for each store's latest change: a write
+    /// queued behind another reports to it.
+    latest_rows: settings_file::LatestRows,
+    /// The shown channel's description strip.
+    description: description::Description,
     /// The notice pill, while one shows.
     notice: Option<crate::notice::Notice>,
     /// Pins and unpins on their way.
@@ -186,13 +194,16 @@ impl Default for Shell {
             composer: Composer::default(),
             draft_writes: composer::DraftWrites::default(),
             local_ids: papo_sdk::Uuid::new_v4,
-            writing: WritingPrefs::default(),
+            conversations: crate::conversation_settings::ConversationStore::default(),
+            general: crate::general_settings::GeneralStore::default(),
             resend: None,
             deleting: None,
             sdk: None,
             stage: Stage::Starting,
             fields: Fields::default(),
             sign_in_requests: RequestSlot::default(),
+            diagnostics_requests: RequestSlot::default(),
+            clear_requests: RequestSlot::default(),
             server_card_requests: RequestSlot::default(),
             images: None,
             registry_writes: Arc::default(),
@@ -214,7 +225,6 @@ impl Default for Shell {
             today: LocalTime::system().today(),
             day_ends_s: None,
             content: content::Content::default(),
-            prefs: ReadingPrefs::default(),
             window_shown: true,
             seeks: 0,
             activity: HashMap::new(),
@@ -223,6 +233,8 @@ impl Default for Shell {
             dm_peers: std::collections::BTreeSet::new(),
             layout: crate::layout_prefs::LayoutPrefs::default(),
             dm_access: std::collections::BTreeMap::new(),
+            description: description::Description::default(),
+            latest_rows: settings_file::LatestRows::default(),
             notice: None,
             pinning: reacting::Pinning::default(),
             stretched: None,
@@ -270,12 +282,15 @@ impl Shell {
         let images = ImageCache::new(waker);
         self.grain = Some(crate::grain::GrainTiles::new(&images));
         self.images = Some(images);
-        self.content.load();
-        self.prefs = ReadingPrefs::load();
-        self.layout = crate::layout_prefs::LayoutPrefs::load();
-        self.recent_jumps = crate::recent_jumps::RecentJumps::load();
-        self.writing = WritingPrefs::load();
-        self.appearance = crate::appearance::AppearanceStore::load();
+        let prefs = crate::device_settings::SettingsFile::read();
+        self.content.trusted = crate::trusted_domains::Trusted::read(&prefs);
+        self.layout = crate::layout_prefs::LayoutPrefs::read(&prefs);
+        self.recent_jumps = crate::recent_jumps::RecentJumps::read(&prefs);
+        self.conversations = crate::conversation_settings::ConversationStore::read(&prefs);
+        self.general = crate::general_settings::GeneralStore::read(&prefs);
+        // Before the first frame: the window opens in the chosen language.
+        crate::strings::use_language(self.general.settings().language);
+        self.appearance = crate::appearance::AppearanceStore::read(&prefs);
     }
 
     /// Takes the account watch's summary, and opens the screens it calls for.
@@ -320,6 +335,7 @@ mod composer;
 mod composer_input;
 mod content;
 pub(crate) mod deleting;
+mod description;
 pub(crate) mod direct;
 mod header;
 mod hover_bar;
@@ -349,7 +365,13 @@ mod search_open;
 mod search_panel;
 mod search_run;
 mod settings;
+mod settings_account;
 mod settings_colours;
+mod settings_conversations;
+mod settings_diagnostics;
+mod settings_file;
+mod settings_general;
+mod settings_password;
 mod sign_in_flow;
 #[cfg(test)]
 mod tests;

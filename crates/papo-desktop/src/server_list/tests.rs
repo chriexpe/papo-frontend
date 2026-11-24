@@ -47,6 +47,7 @@ fn entry(id: u128, name: &str) -> ChannelEntry {
     ChannelEntry {
         id: Uuid::from_u128(id).to_string(),
         name: name.to_owned(),
+        topic: None,
         badge: Badge::Nothing,
     }
 }
@@ -98,6 +99,7 @@ fn a_signed_in_server_takes_its_name_owner_icon_and_channels_from_its_resources(
             voice_channels,
             direct_badges: BTreeMap::new(),
             blocked: Vec::new(),
+            own: OwnProfile::default(),
         },
     )]);
     let list = project(&registry, &resources, &ServerBadgesSnapshot::default());

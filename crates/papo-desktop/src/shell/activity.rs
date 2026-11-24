@@ -36,6 +36,8 @@ pub(crate) struct Activity {
     pub(crate) outgoing: Option<Arc<OutgoingSnapshot>>,
     /// Its quick reactions, most used first; empty until posted.
     pub(crate) quick: Arc<[String]>,
+    /// Its connection; none until posted.
+    pub(crate) link: Option<crate::diagnostics::Link>,
     /// Refused reactions already being dropped, so each is said once.
     dropping: HashSet<Uuid>,
 }
@@ -63,6 +65,13 @@ impl Shell {
                         .as_ref()
                         .and_then(|menu| menu.card.as_ref())
                         .is_some_and(|card| card.key.account == account)
+            }
+            Posted::Link(link) => {
+                self.activity.entry(account).or_default().link = Some(link);
+                // Only Diagnostics shows it.
+                self.settings
+                    .as_ref()
+                    .is_some_and(|panel| panel.page() == crate::settings::PageId::Diagnostics)
             }
             Posted::Quick(quick) => {
                 self.activity.entry(account).or_default().quick = quick.into();

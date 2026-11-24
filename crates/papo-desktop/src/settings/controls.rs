@@ -8,19 +8,19 @@
 //! Owns how a row looks and what its input asks for (a `Change`, a page, a
 //! menu); the shell carries them out.
 
-use rune::{Color, El, col, el, icon, row, text};
+use rune::{El, col, el, icon, row, text};
 
 use super::rows::{Group, Kind, Row, direction_name};
 use super::{Change, RowId, colour_field};
 use crate::appearance::Appearance;
 use crate::appearance::presets::Direction;
 use crate::design::settings::{
-    CHIP_HEIGHT, GROUP_TITLE_GAP, KNOB, ROW_INSET_PT, ROW_MIN_HEIGHT, ROW_PADDING, SWATCH_PT,
-    SWATCH_RADIUS, SWATCH_RING_PT, SWITCH_KNOB_PT, SWITCH_PT, TILE_INNER_RADIUS, TILE_OUTER_RADIUS,
+    CHIP_HEIGHT, GROUP_TITLE_GAP, KNOB, ROW_INSET_PT, ROW_MIN_HEIGHT, ROW_PADDING, SWITCH_KNOB_PT,
+    SWITCH_PT, TILE_INNER_RADIUS, TILE_OUTER_RADIUS,
 };
 use crate::design::{
-    Accent, FIELD_OUTLINE_PT, FOCUS_RING_PT, Look, ROW_ICON_PT, SPACE_LG, SPACE_MD, SPACE_SM,
-    SPACE_XS, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM,
+    FIELD_OUTLINE_PT, FOCUS_RING_PT, Look, ROW_ICON_PT, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
+    TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM,
 };
 use crate::icons::{CHEVRON_DOWN, CHEVRON_RIGHT};
 use crate::shell::Shell;
@@ -35,6 +35,14 @@ pub(super) struct Ctx<'a> {
     pub(super) colour: super::ColourState,
     /// The grain's tile for this theme, for Grain's slider.
     pub(super) grain: Option<&'a rune::Pixels>,
+    /// Trusted domains' field, and whether what it held was refused.
+    pub(super) domain: &'a rune::TextEdit,
+    pub(super) domain_refused: bool,
+    /// The text row being edited, and its field.
+    pub(super) editing: Option<(RowId, &'a rune::TextEdit)>,
+    /// The row whose account call is in flight.
+    pub(super) waiting: Option<RowId>,
+    pub(super) password: &'a super::PasswordForm,
 }
 
 /// A group: its optional title, then its rows as one block of tiles.
@@ -72,11 +80,44 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
     );
     let top = if first { outer } else { inner };
     let bottom = if last { outer } else { inner };
+    let setting_id = setting.id;
     let failed = cx.failed == Some(setting.id);
+    let refused = matches!(setting.kind, Kind::DomainField) && cx.domain_refused;
     let body = match setting.kind {
         Kind::Slider(slider) => super::slider::view(&setting, slider, cx),
         Kind::ColourField => colour_field::view(cx.appearance, cx.colour, look),
         Kind::Directions(current) => directions(&setting, current, look),
+        Kind::DomainField => super::domain_field::view(cx.domain, look),
+        Kind::Destructive { .. } => super::actions::destructive(setting, look),
+        Kind::PasswordForm => super::password_form::view(
+            cx.password,
+            setting.sub.clone(),
+            cx.waiting == Some(setting.id),
+            look,
+        ),
+        Kind::Text {
+            value,
+            placeholder,
+            most,
+            editable,
+        } => super::text_row::view(
+            super::text_row::TextRow {
+                id: setting.id,
+                editing: cx
+                    .editing
+                    .filter(|(row, _)| *row == setting.id)
+                    .map(|(_, edit)| edit),
+                waiting: cx.waiting == Some(setting.id),
+                title: setting.title,
+                sub: setting.sub,
+                value,
+                placeholder,
+                most,
+                // One account call at a time: no row edits while one waits.
+                editable: editable && cx.waiting.is_none(),
+            },
+            look,
+        ),
         _ => plain_row(setting, look),
     };
     let corners = [top, top, bottom, bottom];
@@ -87,6 +128,15 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
         .corners(corners)
         .fill(look.palette.surface_tile)
         .child(body.corners(corners));
+    if refused {
+        return col().w_full().gap(look.space(SPACE_XS)).child(tile).child(
+            el().px(ROW_INSET_PT).role("alert").child(
+                text(strings::settings_trusted_invalid())
+                    .font(look.font(TYPE_SMALL))
+                    .color(look.palette.danger),
+            ),
+        );
+    }
     if !failed {
         return tile;
     }
@@ -96,9 +146,13 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
             .gap(look.space(SPACE_MD))
             .role("alert")
             .child(
-                text(strings::settings_save_failed())
-                    .font(look.font(TYPE_SMALL))
-                    .color(look.palette.danger),
+                text(if setting_id == RowId::ClearCache {
+                    strings::settings_clear_cache_failed()
+                } else {
+                    strings::settings_save_failed()
+                })
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.danger),
             )
             .child(
                 text(strings::settings_save_retry())
@@ -171,14 +225,42 @@ fn plain_row(setting: Row, look: &Look) -> El {
             .on_press_tx(move |shell: &mut Shell, tx| shell.settings_page(page, tx))
             .child(value_text(&value, look))
             .child(icon(&CHEVRON_RIGHT, ROW_ICON_PT).color(look.palette.text_muted)),
-        Kind::Accents(current) => line.label(spoken).child(accents(current, look)),
-        Kind::Slider(_) | Kind::ColourField | Kind::Directions(_) => line,
+        Kind::Accents(current) => line
+            .label(spoken)
+            .child(super::swatches::accents(current, look)),
+        Kind::Hues(current) => line
+            .label(spoken.clone())
+            .child(super::swatches::hues(id, &spoken, current, look)),
+        Kind::Remove(host) => line
+            .label(spoken)
+            .child(super::actions::remove_button(id, &host, look)),
+        Kind::Unblock(name) => match id {
+            RowId::BlockedPerson(user) => line
+                .label(spoken)
+                .child(super::actions::unblock_button(id, user, &name, look)),
+            _ => line,
+        },
+        Kind::Note | Kind::Info => line.role("status").label(spoken),
+        Kind::Value(value) => line
+            .label(format!("{spoken}, {value}"))
+            .child(value_text(&value, look)),
+        Kind::Action => pressable(line, look)
+            .role("button")
+            .label(spoken)
+            .on_press_tx(move |shell: &mut Shell, tx| shell.settings_action(id, tx)),
+        Kind::Slider(_)
+        | Kind::ColourField
+        | Kind::Directions(_)
+        | Kind::DomainField
+        | Kind::Destructive { .. }
+        | Kind::PasswordForm
+        | Kind::Text { .. } => line,
     }
 }
 
 /// A row that is one control: it takes the keyboard and the pointer, and
 /// lights under them.
-fn pressable(line: El, look: &Look) -> El {
+pub(super) fn pressable(line: El, look: &Look) -> El {
     line.focusable(true)
         .focus_highlight(look.palette.surface_hover)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
@@ -219,42 +301,6 @@ fn switch(on: bool, look: &Look) -> El {
             .radius(SWITCH_KNOB_PT / 2.0)
             .fill(KNOB),
         )
-}
-
-/// The accent swatches: one per accent, the chosen one ringed.
-fn accents(current: Accent, look: &Look) -> El {
-    let dark = look.theme().is_dark();
-    row()
-        .gap(look.space(SPACE_MD))
-        .role("radiogroup")
-        .label(strings::settings_accent())
-        .focus_group()
-        .children(Accent::ALL.into_iter().map(|accent| {
-            let lightness = if dark { 0.70 } else { 0.555 };
-            let colour = rune::oklch(lightness, 0.18, accent.hue_degrees());
-            let chosen = accent == current;
-            el().key(format!("settings-accent-{accent:?}"))
-                .size(SWATCH_PT, SWATCH_PT)
-                .radius(look.radius(SWATCH_RADIUS))
-                .fill(colour)
-                .border(
-                    SWATCH_RING_PT,
-                    if chosen {
-                        look.palette.text_primary
-                    } else {
-                        Color::TRANSPARENT
-                    },
-                )
-                .role("radio")
-                .checked(chosen)
-                .label(super::rows::accent_name(accent))
-                .focusable(true)
-                .focus_selected(chosen)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-                .on_press_tx(move |shell: &mut Shell, tx| {
-                    shell.settings_change(Change::Accent(accent), tx);
-                })
-        }))
 }
 
 /// Shape and type's starting points as three chips, the one the values

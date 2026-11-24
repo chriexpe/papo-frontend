@@ -257,6 +257,8 @@ pub(crate) struct OpenMenu {
     pub(crate) card: Option<CardView>,
     /// It is the New message picker (`Shell::dm_picker` holds its state).
     pub(crate) people: bool,
+    /// It is a channel's description panel, with this topic.
+    pub(crate) description: Option<String>,
 }
 
 /// The element key of the open menu.
@@ -290,6 +292,7 @@ impl OpenMenu {
             reactions: None,
             card: None,
             people: false,
+            description: None,
         }
     }
 
@@ -338,6 +341,8 @@ pub(crate) fn view(menu: &OpenMenu, body: Option<El>, look: &Look, cx: &Cx<Shell
         .map(|(index, entry)| line(entry, Some(index) == first, look));
     let (width, role) = match (&body, &menu.card) {
         (Some(_), Some(_)) => (PROFILE_CARD_WIDTH_PT, "dialog"),
+        // A channel's description is as wide as it was opened.
+        (Some(_), None) if menu.description.is_some() => (width, "dialog"),
         (Some(_), None) => (REACTIONS_WIDTH_PT, "dialog"),
         (None, _) => (width, "menu"),
     };

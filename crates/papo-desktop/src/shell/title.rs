@@ -81,16 +81,33 @@ impl Shell {
 
 /// The title pill: # and the channel's name, or the person's avatar, name
 /// and server.
-pub(super) fn pill(title: &Title<'_>, look: &Look) -> El {
-    let pill = row()
-        .key("title-pill")
+/// The title pill's element key.
+pub(crate) const TITLE_PILL_KEY: &str = "title-pill";
+
+/// The title pill; `strip` is a channel's description beside its name
+/// while it shows, and `described` whether the channel has one (a press
+/// then opens it, `Shell::open_description`).
+pub(super) fn pill(title: &Title<'_>, strip: Option<El>, described: bool, look: &Look) -> El {
+    let mut pill = row()
+        .key(TITLE_PILL_KEY)
+        // Its description shrinks to what the header leaves it.
+        .shrink()
         .h(look.space(HEADER_PILL_HEIGHT))
         .px(look.space(SPACE_LG))
         .gap(look.space(SPACE_SM))
         .center_y()
         .radius(look.radius(RADIUS_PILL))
         .pill_surface(look)
-        .role("heading");
+        .role("heading")
+        // Hover shows the description's strip again.
+        .on_hover_change(|shell: &mut Shell, on, _tx| shell.title_hovered(on));
+    if described {
+        pill = pill
+            .role("button")
+            .help(strings::channel_description_open())
+            .focusable(true)
+            .on_press_tx(|shell: &mut Shell, tx| shell.open_description(tx));
+    }
     match title {
         Title::Channel(channel) => pill
             .label((*channel).to_owned())
@@ -99,7 +116,8 @@ pub(super) fn pill(title: &Title<'_>, look: &Look) -> El {
                 text((*channel).to_owned())
                     .font(look.font(TYPE_BODY_STRONG))
                     .color(look.palette.text_primary),
-            ),
+            )
+            .children(strip),
         Title::Direct {
             name,
             server,

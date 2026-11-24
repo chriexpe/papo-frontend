@@ -137,3 +137,40 @@ fn no_send_state_moves_a_row_at_any_density() {
         assert_eq!(rect(&rt, &row), pending, "{density:?}: sent");
     }
 }
+
+#[test]
+fn without_a_time_column_the_mark_sits_at_the_end_of_a_continued_row() {
+    for stacked in [true, false] {
+        let layout = MessageLayout {
+            density: Density::ExtraCompact,
+            stacked,
+            times: false,
+            ..MessageLayout::default()
+        };
+        let mut rt = runtime(after_mine(OperationState::Failed), layout);
+        let row = format!(
+            "{}/{}",
+            echo_key(Uuid::from_u128(100)),
+            crate::timeline::rows::message_part_key(Uuid::from_u128(100))
+        );
+        let message = rect(&rt, &row);
+        let mark = rect(&rt, &mark_key(Uuid::from_u128(100)));
+        let what = format!("stacked {stacked}");
+        assert!(
+            mark[0] + mark[2] > message[0] + message[2] * 0.8,
+            "{what}: at the row's end: {mark:?} in {message:?}"
+        );
+        assert!(
+            mark[1] < message[1] + message[3] / 2.0,
+            "{what}: on its first line"
+        );
+        // Still the button that opens Retry and Discard, and nothing moves
+        // when the send goes through.
+        rt.accessibility_action(&mark_key(Uuid::from_u128(100)), Action::Click, None);
+        rt.frame(FRAME_S);
+        assert_eq!(rt.state.controls, ["send-state"], "{what}");
+        let failed = rect(&rt, &row);
+        becomes(&mut rt, OperationState::Sent, 2);
+        assert_eq!(rect(&rt, &row), failed, "{what}: sent");
+    }
+}

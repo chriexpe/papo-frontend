@@ -85,6 +85,17 @@ pub(super) fn reply_line<S: TimelineHost>(
                     .child(icon(&REPLY_LINE, REPLY_LINE_ICON_PT).color(look.palette.line_strong)),
             )
             .child(content),
+        // No time column: the reply line's mark leads the line.
+        Lead::None => row()
+            .key("reply-line")
+            .w_full()
+            .gap(look.space(SPACE_SM))
+            .center_y()
+            .child(
+                el().a11y_hidden()
+                    .child(icon(&REPLY_LINE, REPLY_LINE_ICON_PT).color(look.palette.line_strong)),
+            )
+            .child(content),
     }
 }
 

@@ -193,7 +193,9 @@ impl Shell {
         }) else {
             return;
         };
-        self.recent_jumps.jumped(&target);
+        if let Some(write) = self.recent_jumps.jumped(&target) {
+            self.write_recent_jumps(write, tx);
+        }
         let server = target.account.server();
         match target.kind {
             JumpKind::Channel { channel } => {

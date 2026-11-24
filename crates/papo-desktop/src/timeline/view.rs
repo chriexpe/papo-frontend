@@ -310,7 +310,7 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
 fn date_row(day: i64, before: Uuid, style: &Style) -> El {
     let look = style.look;
     let label = day_label(day, style.today);
-    let between_groups_pt = look.spacing(style.layout.density).between_groups_pt;
+    let between_groups_pt = look.row_spacing(style.layout).between_groups_pt;
     memo(
         format!("d{before}"),
         (style.look, style.layout, &label),
@@ -353,7 +353,7 @@ fn gap_failed<S: TimelineHost>(key: TimelineKey, cursor_id: &str, style: &Style)
         .on_press(move |host: &mut S| host.retry_gap(key, &cursor));
     row()
         .w_full()
-        .pt(look.spacing(style.layout.density).between_groups_pt)
+        .pt(look.row_spacing(style.layout).between_groups_pt)
         .justify_center()
         .center_y()
         .gap(look.space(SPACE_SM) * 2.0)
@@ -370,7 +370,7 @@ fn gap_failed<S: TimelineHost>(key: TimelineKey, cursor_id: &str, style: &Style)
 /// bars, at the current density.
 fn skeleton(style: &Style) -> El {
     let look = style.look;
-    let spacing = look.spacing(style.layout.density);
+    let spacing = look.row_spacing(style.layout);
     let (bar_pt, bar_gap_pt) = SKELETON_BAR_PT;
     let bar = |fraction: f32| {
         el().h(bar_pt)
@@ -400,13 +400,15 @@ fn skeleton(style: &Style) -> El {
                                 .py(spacing.row_padding_pt)
                                 .gap(spacing.lead_gap_pt)
                                 .items_start()
-                                .child(match spacing.lead {
-                                    Lead::Avatar(size_pt) => el()
-                                        .key("lead")
-                                        .size(size_pt, size_pt)
-                                        .radius(look.radius(RADIUS_AVATAR))
-                                        .fill(look.palette.surface_hover),
-                                    Lead::Gutter(width_pt) => el().key("lead").w(width_pt),
+                                .children(match spacing.lead {
+                                    Lead::Avatar(size_pt) => Some(
+                                        el().key("lead")
+                                            .size(size_pt, size_pt)
+                                            .radius(look.radius(RADIUS_AVATAR))
+                                            .fill(look.palette.surface_hover),
+                                    ),
+                                    Lead::Gutter(width_pt) => Some(el().key("lead").w(width_pt)),
+                                    Lead::None => None,
                                 })
                                 .child(
                                     col()

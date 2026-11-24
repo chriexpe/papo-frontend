@@ -12,11 +12,12 @@ use rune::{KeyEvent, Tx};
 
 use super::Shell;
 use crate::design::COPIED_FOR_S;
-use crate::links::{self, Decision, Prompt, Trusted};
+use crate::links::{self, Decision, Prompt};
 use crate::menu::Placement;
 use crate::timeline::content::Press;
 use crate::timeline::content::copy::message_of;
 use crate::timeline::{TimelineKey, rows};
+use crate::trusted_domains::Trusted;
 
 /// What the shell keeps for message content.
 #[derive(Default)]
@@ -27,13 +28,6 @@ pub(crate) struct Content {
     /// The message under the pointer, in its timeline: Ctrl+A selects it
     /// when no text is selected.
     hovered: Option<(TimelineKey, Uuid)>,
-}
-
-impl Content {
-    /// Reads this device's trusted domains.
-    pub(crate) fn load(&mut self) {
-        self.trusted = Trusted::load();
-    }
 }
 
 impl Shell {
@@ -82,7 +76,8 @@ impl Shell {
             .servers()
             .get(key.account.server())
             .and_then(|server| server.host.as_deref());
-        match links::decide(&url, server_host, &self.content.trusted) {
+        let confirm = self.general.settings().confirm_links;
+        match links::decide(&url, server_host, &self.content.trusted, confirm) {
             Decision::Open(address) => open(&address, tx),
             Decision::Ask { host } => {
                 self.content.link = Some(Prompt {
@@ -107,7 +102,12 @@ impl Shell {
             return;
         };
         if prompt.always {
-            self.content.trusted.add(prompt.host);
+            self.latest_rows.trusted = None;
+        }
+        if prompt.always
+            && let Some(hosts) = self.content.trusted.add(prompt.host)
+        {
+            self.write_trusted(hosts, None, tx);
         }
         open(&prompt.url, tx);
     }

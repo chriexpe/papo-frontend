@@ -8,7 +8,7 @@
 
 use rune::prefs::Prefs;
 
-use crate::window::APP_ID;
+use crate::device_settings::{Remembered, SettingsFile, Write};
 
 /// "Show the profile pane in a direct conversation".
 const DM_PROFILE_KEY: &str = "dm_profile_pane";
@@ -16,27 +16,23 @@ const DM_PROFILE_KEY: &str = "dm_profile_pane";
 /// The remembered layout, and where it is saved.
 pub(crate) struct LayoutPrefs {
     dm_profile: bool,
-    prefs: Prefs,
+    remembered: Remembered,
 }
 
 impl Default for LayoutPrefs {
     /// Hidden, kept nowhere: before the settings file is read, and in tests.
     fn default() -> LayoutPrefs {
-        LayoutPrefs::read(Prefs::memory())
+        LayoutPrefs::read(&Prefs::memory())
     }
 }
 
 impl LayoutPrefs {
-    /// The layout in this user's settings file; a missing or unreadable
-    /// value is hidden.
-    pub(crate) fn load() -> LayoutPrefs {
-        LayoutPrefs::read(Prefs::open(APP_ID))
-    }
-
-    fn read(prefs: Prefs) -> LayoutPrefs {
+    /// The layout in `prefs`, this device's settings file; a missing or
+    /// unreadable value is hidden.
+    pub(crate) fn read(prefs: &Prefs) -> LayoutPrefs {
         LayoutPrefs {
             dm_profile: prefs.get(DM_PROFILE_KEY).unwrap_or(false),
-            prefs,
+            remembered: Remembered::new(DM_PROFILE_KEY, SettingsFile::of(prefs)),
         }
     }
 
@@ -44,14 +40,21 @@ impl LayoutPrefs {
         self.dm_profile
     }
 
-    /// Shows or hides the profile pane, and saves the choice. A failed save
-    /// keeps it for this run.
-    pub(crate) fn set_dm_profile(&mut self, shown: bool) {
+    /// Shows or hides the profile pane; the write that saves the choice, unless
+    /// one is running (it then follows). A failed save keeps it for this run.
+    pub(crate) fn set_dm_profile(&mut self, shown: bool) -> Option<Write> {
         self.dm_profile = shown;
-        crate::device_settings::reload(&mut self.prefs);
-        if let Err(error) = self.prefs.set(DM_PROFILE_KEY, &shown) {
-            log::warn!("the profile pane's choice was not saved: {error}");
-        }
+        self.remembered.remember(serde_json::Value::Bool(shown))
+    }
+
+    /// The write waiting behind the running one, if any.
+    pub(crate) fn pending_write(&self) -> Option<Write> {
+        self.remembered.pending()
+    }
+
+    /// The running write landed, or did not; the one to run next.
+    pub(crate) fn written(&mut self, ok: bool) -> Option<Write> {
+        self.remembered.written(ok)
     }
 }
 
@@ -63,11 +66,14 @@ mod tests {
 
     #[test]
     fn the_profile_pane_is_hidden_until_shown_and_then_remembered() {
-        let mut layout = LayoutPrefs::read(Prefs::memory());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        let mut layout = LayoutPrefs::read(&Prefs::at(&path));
         assert!(!layout.dm_profile());
-        layout.set_dm_profile(true);
-        assert_eq!(layout.prefs.get::<bool>(DM_PROFILE_KEY), Some(true));
-        let again = LayoutPrefs::read(layout.prefs);
+        layout.set_dm_profile(true).expect("a write").run().unwrap();
+        assert_eq!(layout.written(true), None);
+        assert_eq!(Prefs::at(&path).get::<bool>(DM_PROFILE_KEY), Some(true));
+        let again = LayoutPrefs::read(&Prefs::at(&path));
         assert!(again.dm_profile(), "read back next launch");
     }
 }

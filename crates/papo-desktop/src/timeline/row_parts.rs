@@ -23,7 +23,6 @@ use super::reading::Boundary;
 use super::replies::original_text;
 use super::reply_line::ReplyLine;
 use super::view::Style;
-use crate::design::Density;
 use crate::strings;
 
 /// A row's background (§4, Highlights: one per row, the strongest reason).
@@ -49,7 +48,7 @@ pub(super) struct Parts<'a> {
     pub(super) mentions: Vec<Option<String>>,
     /// It continues the group above: no header, the within-group distance.
     pub(super) continued: bool,
-    /// Extra compact shows the time once per minute.
+    /// Without avatars, the time column shows the time once per minute.
     pub(super) show_time: bool,
     pub(super) highlight: Highlight,
     /// When it was edited, as the wire says it.
@@ -116,7 +115,7 @@ pub(super) fn parts<'a>(
     let continued = layout.grouped && !splits && continues(previous, message);
     let at_us = created_us(message);
     let show_time = match previous {
-        Some(previous) if layout.density == Density::ExtraCompact => {
+        Some(previous) if !layout.has_avatars() => {
             let minute = |at_us: Option<i64>| at_us.map(|at_us| style.time.minute_of(at_us));
             minute(created_us(previous)) != minute(at_us)
         }

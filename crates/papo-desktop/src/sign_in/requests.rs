@@ -291,7 +291,7 @@ fn unclassified(error: &ClientError) -> Failure {
 }
 
 /// The wall clock, for the SDK's saved-at times.
-fn now() -> UnixMicros {
+pub(crate) fn now() -> UnixMicros {
     let since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
