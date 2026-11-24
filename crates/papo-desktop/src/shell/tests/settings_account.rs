@@ -203,3 +203,19 @@ fn profile_and_diagnostics_at_rest_ask_for_no_frames() {
     page(&mut rt, PageId::Diagnostics);
     assert!(rests(&mut rt), "Diagnostics rests");
 }
+
+#[test]
+fn change_password_stays_signed_in_unless_unticked_and_says_the_rest_sign_out() {
+    let mut rt = signed_in(true);
+    page(&mut rt, PageId::Password);
+    let stay = |rt: &Runtime<Shell>| rt.state.settings().map(|panel| panel.password.stay);
+    assert_eq!(stay(&rt), Some(true), "on at first");
+    let shown = tree(&rt);
+    assert!(shown.contains("Stay signed in on this device"), "{shown}");
+    assert!(
+        shown.contains("Your other sessions will be signed out."),
+        "{shown}"
+    );
+    click(&mut rt, "settings-password-stay");
+    assert_eq!(stay(&rt), Some(false));
+}

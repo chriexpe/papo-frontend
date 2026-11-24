@@ -493,7 +493,7 @@
   "settings.new_password": "New password",
   "settings.repeat_password": "Repeat password",
   "settings.password_mismatch": "The passwords don't match.",
-  "settings.password_note": "Only for @{{handle}} on {{server}}. Your other sessions stay open.",
+  "settings.password_note": "Only for @{{handle}} on {{server}}. Your other sessions will be signed out.",
   "settings.password_changed": "Password changed.",
   "settings.sign_out": "Sign out",
   "settings.sign_out_sub": "Ends @{{handle}}'s session on {{server}}",
@@ -549,5 +549,6 @@
   "channel.description_open": "Channel description",
   "size.kb": "{{value}} KB",
   "size.mb": "{{value}} MB",
-  "size.gb": "{{value}} GB"
+  "size.gb": "{{value}} GB",
+  "settings.stay_signed_in": "Stay signed in on this device"
 }

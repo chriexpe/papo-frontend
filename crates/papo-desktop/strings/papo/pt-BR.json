@@ -493,7 +493,7 @@
   "settings.new_password": "Senha nova",
   "settings.repeat_password": "Repetir senha",
   "settings.password_mismatch": "As senhas não são iguais.",
-  "settings.password_note": "Vale só para @{{handle}} em {{server}}. As outras sessões continuam abertas.",
+  "settings.password_note": "Vale só para @{{handle}} em {{server}}. As outras sessões serão encerradas.",
   "settings.password_changed": "Senha alterada.",
   "settings.sign_out": "Sair da conta",
   "settings.sign_out_sub": "Encerra a sessão de @{{handle}} em {{server}}",
@@ -549,5 +549,6 @@
   "channel.description_open": "Descrição do canal",
   "size.kb": "{{value}} KB",
   "size.mb": "{{value}} MB",
-  "size.gb": "{{value}} GB"
+  "size.gb": "{{value}} GB",
+  "settings.stay_signed_in": "Continuar conectado neste aparelho"
 }

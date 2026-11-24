@@ -47,6 +47,13 @@ pub(super) fn view(form: &PasswordForm, note: Option<String>, waiting: bool, loo
                 "note"
             },
         ));
+    body = body.child(crate::checkbox::checkbox(
+        "settings-password-stay",
+        strings::settings_stay_signed_in().to_owned(),
+        form.stay,
+        Shell::settings_password_stay,
+        look,
+    ));
     if let Some(note) = note {
         body = body.child(
             text(note)

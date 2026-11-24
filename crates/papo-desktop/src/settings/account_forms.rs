@@ -22,6 +22,9 @@ pub(crate) struct PasswordForm {
     pub(crate) repeat: TextEdit,
     /// The fields show their characters.
     pub(crate) shown: bool,
+    /// This device signs in again with the new password (on at first):
+    /// the backend signs every session out.
+    pub(crate) stay: bool,
     /// What the last Save found wrong, if anything.
     pub(crate) problem: Option<PasswordProblem>,
 }
@@ -41,6 +44,7 @@ impl Default for PasswordForm {
             new: TextEdit::new(""),
             repeat: TextEdit::new(""),
             shown: false,
+            stay: true,
             problem: None,
         }
     }

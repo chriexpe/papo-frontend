@@ -10,7 +10,7 @@
 //! Owns these transitions; the profile and the calls are the SDK's.
 
 use papo_sdk::operations::profile::{ProfileChange, UpdateStatusRequest};
-use papo_sdk::{AccountId, ChangePasswordRequest};
+use papo_sdk::{AccountId, ChangePasswordRequest, LoginRequest};
 use rune::{El, TextEdit, Tx, col};
 
 use super::Shell;
@@ -288,6 +288,13 @@ impl Shell {
         }
     }
 
+    /// Change password's "Stay signed in on this device".
+    pub(crate) fn settings_password_stay(&mut self) {
+        if let Some(panel) = self.settings.as_mut() {
+            panel.password.stay = !panel.password.stay;
+        }
+    }
+
     /// Change password's Show or Hide.
     pub(crate) fn settings_password_reveal(&mut self) {
         if let Some(panel) = self.settings.as_mut() {
@@ -300,6 +307,9 @@ impl Shell {
     /// reset; then the account prepares its own reset and sets it.
     pub(crate) fn settings_password_save(&mut self, tx: &mut Tx) {
         let account = self.subject_account();
+        let username = self
+            .settings_subject()
+            .map(|(_, account)| account.username.clone());
         let sdk = self.sdk.clone();
         let Some(panel) = self.settings.as_mut() else {
             return;
@@ -308,6 +318,9 @@ impl Shell {
             return;
         }
         let password = panel.password.new.text.clone();
+        // Signing in again needs the username; without it this device signs
+        // out with the rest.
+        let stay = panel.password.stay.then_some(username).flatten();
         let problem = if !password_rules_met(&password) {
             Some(PasswordProblem::Weak)
         } else if password != panel.password.repeat.text {
@@ -326,7 +339,7 @@ impl Shell {
         panel.waiting = Some(RowId::PasswordForm);
         let updates = sdk.updates();
         sdk.run(move |client| async move {
-            let changed = change_password(&client, account, password).await;
+            let changed = change_password(&client, account, password, stay).await;
             if let Err(error) = &changed {
                 log::warn!("the password was not changed: {error}");
             }
@@ -372,11 +385,14 @@ impl Shell {
 }
 
 /// The account prepares its own reset (the backend flags it), then sets
-/// `password`.
+/// `password`. The backend then signs every session of the account out,
+/// this one too; with `stay` (its username) this device signs in again with
+/// the new password, which replaces its session in place.
 async fn change_password(
     client: &papo_sdk::ClientHandle,
     account: AccountId,
     password: String,
+    stay: Option<String>,
 ) -> Result<(), String> {
     let session = client.session(account).map_err(|error| error.to_string())?;
     session
@@ -386,8 +402,29 @@ async fn change_password(
         .map_err(|error| error.to_string())?;
     session
         .auth()
-        .change_password(ChangePasswordRequest { password })
+        .change_password(ChangePasswordRequest {
+            password: password.clone(),
+        })
         .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    let Some(username) = stay else {
+        return Ok(());
+    };
+    // The password changed whatever happens next: a sign-in that fails
+    // leaves this device to ask for it, as an ended session does.
+    let signed_in = client
+        .auth(account.server())
+        .map_err(|error| error.to_string());
+    match signed_in {
+        Ok(auth) => {
+            if let Err(error) = auth
+                .login(LoginRequest { username, password }, crate::sign_in::now())
+                .await
+            {
+                log::warn!("this device did not sign in again after the password change: {error}");
+            }
+        }
+        Err(error) => log::warn!("this device did not sign in again: {error}"),
+    }
+    Ok(())
 }

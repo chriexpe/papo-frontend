@@ -124,6 +124,11 @@ pub(crate) fn settings_password_changed() -> &'static str {
     text!("settings.password_changed")
 }
 
+/// Change password's checkbox.
+pub(crate) fn settings_stay_signed_in() -> &'static str {
+    text!("settings.stay_signed_in")
+}
+
 /// "Sign out".
 pub(crate) fn settings_sign_out() -> &'static str {
     text!("settings.sign_out")

@@ -12,6 +12,7 @@ mod account_watch;
 mod appearance;
 mod badges;
 mod channel_pane;
+mod checkbox;
 mod composer;
 mod confirm;
 mod conversation_settings;

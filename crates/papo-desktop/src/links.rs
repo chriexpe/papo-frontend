@@ -7,14 +7,11 @@
 //! is "Confirm external links" (`general_settings`): off, every web link
 //! opens at once. Opening is Rune's (`Tx::open_url`).
 
-use rune::{El, Span, el, icon, rich, row, text};
+use rune::{El, Span, el, rich};
 use url::Position;
 
 use crate::confirm::{Question, confirm as ask};
-use crate::design::{
-    FOCUS_RING_PT, Look, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TASK_BOX, TASK_BOX_OUTLINE_PT,
-    TASK_BOX_RADIUS, TASK_CHECK, TYPE_CODE, TYPE_SMALL, WEIGHT_SEMIBOLD,
-};
+use crate::design::{Look, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TYPE_CODE, WEIGHT_SEMIBOLD};
 use crate::shell::Shell;
 use crate::strings;
 use crate::trusted_domains::Trusted;
@@ -164,45 +161,13 @@ fn address(prompt: &Prompt, look: &Look) -> El {
 /// "Always open links from {host}", with the task box (§9), here one that
 /// toggles: hover, a focus ring, Space.
 fn always_box(prompt: &Prompt, look: &Look) -> El {
-    let label = strings::link_always(&prompt.host);
-    let square = el()
-        .size(look.text_multiple(TASK_BOX), look.text_multiple(TASK_BOX))
-        .radius(look.radius(TASK_BOX_RADIUS))
-        .center();
-    let square = if prompt.always {
-        square.fill(look.palette.accent).child(
-            icon(&crate::icons::CHECK, look.text_multiple(TASK_CHECK))
-                .color(look.palette.accent_on),
-        )
-    } else {
-        square.border(TASK_BOX_OUTLINE_PT, look.palette.line_strong)
-    };
-    // As wide as the foot row leaves it, so the label wraps beside Cancel
-    // instead of running under it.
-    row()
-        .key("open-link-always")
-        .w_full()
-        .min_w(0.0)
-        .gap(look.space(SPACE_MD))
-        .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
-        .hover(look.palette.surface_hover)
-        .role("checkbox")
-        .checked(prompt.always)
-        .label(label.clone())
-        .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .on_press(Shell::toggle_trust_link)
-        .child(square)
-        .child(
-            text(label)
-                .key("open-link-always-label")
-                .font(look.font(TYPE_SMALL))
-                .color(look.palette.text_secondary)
-                .grow(1.0)
-                .min_w(0.0)
-                .wrap(),
-        )
+    crate::checkbox::checkbox(
+        "open-link-always",
+        strings::link_always(&prompt.host),
+        prompt.always,
+        Shell::toggle_trust_link,
+        look,
+    )
 }
 
 #[cfg(test)]
