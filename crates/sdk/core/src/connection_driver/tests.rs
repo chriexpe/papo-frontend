@@ -267,17 +267,12 @@ async fn late_failure_from_an_old_socket_cannot_replace_an_explicit_reconnect() 
 }
 
 #[test]
-fn only_a_heartbeat_acknowledgement_publishes_the_round_trip() {
+fn only_a_completed_round_trip_is_published() {
     let cell = crate::observable::StateCell::new(None);
     let generation = crate::Generation(7);
-    let ack = Event::decode(br#"{"type":"heartbeat_ack"}"#).unwrap();
-    let other = Event::decode(br#"{"type":"not_a_heartbeat_ack"}"#).unwrap();
-    let measured = Some(Duration::from_millis(42));
-    publish_round_trip(&cell, generation, Some(&other), measured);
-    assert_eq!(*cell.borrow(), None, "another event measures nothing");
-    publish_round_trip(&cell, generation, Some(&ack), None);
-    assert_eq!(*cell.borrow(), None, "an ack nothing was waiting for");
-    publish_round_trip(&cell, generation, Some(&ack), measured);
+    publish_round_trip(&cell, generation, None);
+    assert_eq!(*cell.borrow(), None, "nothing completed");
+    publish_round_trip(&cell, generation, Some(Duration::from_millis(42)));
     assert_eq!(
         *cell.borrow(),
         Some(crate::RoundTrip {

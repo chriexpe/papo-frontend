@@ -176,7 +176,7 @@ pub struct Gateway<S = MaybeTlsStream<TcpStream>> {
     heartbeat: tokio::time::Interval,
     /// When the scheduled heartbeat still waiting for its acknowledgement was sent.
     awaiting_ack: Option<tokio::time::Instant>,
-    /// The latest scheduled heartbeat's round trip on this socket.
+    /// The round trip the last acknowledgement completed, until taken.
     round_trip: Option<Duration>,
     ended: bool,
 }
@@ -294,13 +294,12 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Gateway<S> {
         Ok(event)
     }
 
-    /// How long the server took to acknowledge the latest scheduled heartbeat: the
-    /// socket's round trip, measured every 25 seconds. None until the first
-    /// acknowledgement. An acknowledgement of a heartbeat sent through `send` while
-    /// none is scheduled measures nothing.
-    #[must_use]
-    pub fn round_trip(&self) -> Option<Duration> {
-        self.round_trip
+    /// How long the server took to acknowledge the scheduled heartbeat that the last
+    /// event read completed: the socket's round trip, measured every 25 seconds. Each
+    /// measurement is taken once; none otherwise, including for an acknowledgement of a
+    /// heartbeat sent through `send` while none was scheduled.
+    pub fn take_round_trip(&mut self) -> Option<Duration> {
+        self.round_trip.take()
     }
 
     /// Closes this socket explicitly, without changing REST credentials.

@@ -41,14 +41,13 @@ impl AccountSocket {
         Ok(())
     }
 
-    /// Publishes the round trip a heartbeat acknowledgement completes, and passes
-    /// the event on unchanged.
-    fn measured(&self, event: Option<Event>) -> Option<Event> {
+    /// Publishes the round trip the event read completed, if it completed one, and
+    /// passes the event on unchanged.
+    fn measured(&mut self, event: Option<Event>) -> Option<Event> {
         publish_round_trip(
             &self.round_trip,
             self.generation,
-            event.as_ref(),
-            self.gateway.round_trip(),
+            self.gateway.take_round_trip(),
         );
         event
     }
@@ -68,17 +67,13 @@ impl AccountSocket {
         Ok(())
     }
 }
-/// Publishes `measured`, the socket's latest round trip, when `event` is the
-/// heartbeat acknowledgement that completed it.
+/// Publishes `measured`, a round trip the socket just completed, if any.
 fn publish_round_trip(
     cell: &crate::observable::StateCell<Option<crate::RoundTrip>>,
     generation: crate::Generation,
-    event: Option<&Event>,
     measured: Option<std::time::Duration>,
 ) {
-    if let Some(Event::Known(papo_api::gateway::KnownEvent::HeartbeatAck(_))) = event
-        && let Some(round_trip) = measured
-    {
+    if let Some(round_trip) = measured {
         cell.send_replace(Some(crate::RoundTrip {
             generation,
             round_trip,
