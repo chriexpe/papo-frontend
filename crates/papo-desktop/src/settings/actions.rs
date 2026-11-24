@@ -110,13 +110,13 @@ pub(super) fn remove_button(id: RowId, host: &str, look: &Look) -> El {
 }
 
 /// A blocked person's Unblock, at once (§8: undone the same way).
-pub(super) fn unblock_button(id: RowId, index: usize, name: &str, look: &Look) -> El {
+pub(super) fn unblock_button(id: RowId, user: papo_sdk::Uuid, name: &str, look: &Look) -> El {
     chip(
         format!("{}-unblock", id.key()),
         strings::card_unblock(),
         &strings::direct_unblock(name),
         Tone::Plain,
-        move |shell: &mut Shell, tx| shell.settings_unblock(index, tx),
+        move |shell: &mut Shell, tx| shell.settings_unblock(user, tx),
         look,
     )
 }

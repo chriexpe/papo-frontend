@@ -116,18 +116,10 @@ impl Shell {
     /// A trusted domain's Remove: it applies at once (§8: undone the same
     /// way, so nothing asks).
     pub(crate) fn settings_untrust(&mut self, host: &str, tx: &mut Tx) {
-        let index = self
-            .content
-            .trusted
-            .hosts()
-            .iter()
-            .position(|known| known == host);
-        let Some(index) = index else {
-            return;
-        };
-        self.latest_rows.trusted = Some(RowId::TrustedHost(index));
+        let row = RowId::TrustedHost(crate::trusted_domains::host_id(host));
+        self.latest_rows.trusted = Some(row);
         if let Some(hosts) = self.content.trusted.remove(host) {
-            self.write_trusted(hosts, Some(RowId::TrustedHost(index)), tx);
+            self.write_trusted(hosts, Some(row), tx);
         }
     }
 

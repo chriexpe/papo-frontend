@@ -375,6 +375,7 @@ impl Shell {
     pub(crate) fn window_closing(&mut self, _tx: &mut Tx) {
         self.save_shown_position();
         self.flush_composer();
+        self.flush_settings();
     }
 
     /// The reader's place moved: it is saved once it has rested for

@@ -76,6 +76,20 @@ impl<T: Clone + PartialEq> Stored<T> {
         &self.shown
     }
 
+    /// What the file holds, as far as this setting knows.
+    pub(crate) fn saved(&self) -> &T {
+        &self.saved
+    }
+
+    /// The change waiting behind the running write, if one waits: the
+    /// window closing writes it, as its callback will not run.
+    pub(crate) fn pending(&self) -> Option<&T> {
+        match &self.saving {
+            Saving::Writing { next } => next.as_ref(),
+            Saving::Idle => None,
+        }
+    }
+
     /// Shows `value` at once; the value to write now, unless a write is
     /// running (it then follows that one) or nothing changed.
     pub(crate) fn change(&mut self, value: T) -> Option<T> {
@@ -127,6 +141,17 @@ impl Remembered {
     /// running (it then follows that one).
     pub(crate) fn remember(&mut self, value: serde_json::Value) -> Option<super::Write> {
         self.step(SavingEvent::Changed(value))
+    }
+
+    /// The write waiting behind the running one, if one waits: the window
+    /// closing runs it.
+    pub(crate) fn pending(&self) -> Option<super::Write> {
+        match &self.saving {
+            Saving::Writing { next: Some(value) } => {
+                Some(self.file.write(vec![(self.key, value.clone())]))
+            }
+            Saving::Writing { next: None } | Saving::Idle => None,
+        }
     }
 
     /// The running write landed, or did not (logged); the write to run

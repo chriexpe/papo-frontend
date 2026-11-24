@@ -47,6 +47,11 @@ impl LayoutPrefs {
         self.remembered.remember(serde_json::Value::Bool(shown))
     }
 
+    /// The write waiting behind the running one, if any.
+    pub(crate) fn pending_write(&self) -> Option<Write> {
+        self.remembered.pending()
+    }
+
     /// The running write landed, or did not; the one to run next.
     pub(crate) fn written(&mut self, ok: bool) -> Option<Write> {
         self.remembered.written(ok)

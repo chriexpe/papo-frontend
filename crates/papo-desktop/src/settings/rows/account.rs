@@ -167,14 +167,13 @@ pub(super) fn blocked(facts: &AccountFacts) -> Vec<Group> {
     let people: Vec<Row> = facts
         .blocked
         .iter()
-        .enumerate()
-        .map(|(index, person)| {
+        .map(|person| {
             let name = person
                 .name
                 .clone()
                 .unwrap_or_else(|| strings::someone().to_owned());
             Row {
-                id: RowId::BlockedPerson(index),
+                id: RowId::BlockedPerson(person.id),
                 title: name.clone(),
                 sub: None,
                 kind: Kind::Unblock(name),
@@ -183,7 +182,7 @@ pub(super) fn blocked(facts: &AccountFacts) -> Vec<Group> {
         .collect();
     let list = if people.is_empty() {
         vec![Row {
-            id: RowId::BlockedPerson(0),
+            id: RowId::BlockedPerson(papo_sdk::Uuid::nil()),
             title: strings::direct_blocked_empty().to_owned(),
             sub: None,
             kind: Kind::Note,

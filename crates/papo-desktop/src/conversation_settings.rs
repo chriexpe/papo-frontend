@@ -162,21 +162,38 @@ impl ConversationStore {
         self.stored = Stored::new(settings);
     }
 
-    /// The write that saves `settings`, every key.
+    /// The write of the change waiting behind the running one, if any.
+    pub(crate) fn pending_write(&self) -> Option<Write> {
+        self.stored
+            .pending()
+            .map(|settings| self.write_of(settings))
+    }
+
+    /// The write that saves `settings`: the keys that differ from what the
+    /// file holds (`rune::prefs` rewrites the file once per key).
     pub(crate) fn write_of(&self, settings: &ConversationSettings) -> Write {
-        let entries: Vec<(&'static str, Value)> = vec![
-            (ENTER_SENDS_KEY, json!(settings.enter_sends)),
-            (MENTION_REPLY_KEY, json!(settings.mention_when_replying)),
-            (SHOW_TIMES_KEY, json!(settings.show_times)),
-            (SHOW_AVATARS_KEY, json!(settings.show_avatars)),
-            (OPEN_AT_NEWEST_KEY, json!(settings.open_at_newest)),
-            (UNREAD_HOURGLASS_KEY, json!(settings.unread_hourglass)),
-            (CHANNEL_DESCRIPTION_KEY, json!(settings.channel_description)),
-            (MENTION_HUE_KEY, json!(settings.mention_hue_degrees)),
-            (REPLY_HUE_KEY, json!(settings.reply_hue_degrees)),
-        ];
+        let saved = entries(self.stored.saved());
+        let entries = entries(settings)
+            .into_iter()
+            .filter(|entry| !saved.contains(entry))
+            .collect();
         self.file.write(entries)
     }
+}
+
+/// Every key of `settings`, with its value.
+fn entries(settings: &ConversationSettings) -> Vec<(&'static str, Value)> {
+    vec![
+        (ENTER_SENDS_KEY, json!(settings.enter_sends)),
+        (MENTION_REPLY_KEY, json!(settings.mention_when_replying)),
+        (SHOW_TIMES_KEY, json!(settings.show_times)),
+        (SHOW_AVATARS_KEY, json!(settings.show_avatars)),
+        (OPEN_AT_NEWEST_KEY, json!(settings.open_at_newest)),
+        (UNREAD_HOURGLASS_KEY, json!(settings.unread_hourglass)),
+        (CHANNEL_DESCRIPTION_KEY, json!(settings.channel_description)),
+        (MENTION_HUE_KEY, json!(settings.mention_hue_degrees)),
+        (REPLY_HUE_KEY, json!(settings.reply_hue_degrees)),
+    ]
 }
 
 #[cfg(test)]

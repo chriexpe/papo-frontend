@@ -97,7 +97,13 @@ fn a_typed_domain_is_trusted_and_its_remove_takes_it_off() {
     assert!(rt.state.content.trusted.contains("docs.example.org"));
     let panel = rt.state.settings().expect("open");
     assert!(panel.domain.text.is_empty(), "the field clears");
-    click(&mut rt, &format!("{}-remove", RowId::TrustedHost(0).key()));
+    click(
+        &mut rt,
+        &format!(
+            "{}-remove",
+            RowId::TrustedHost(crate::trusted_domains::host_id("docs.example.org")).key()
+        ),
+    );
     assert!(!rt.state.content.trusted.contains("docs.example.org"));
 }
 

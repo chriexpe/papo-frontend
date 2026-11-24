@@ -68,6 +68,9 @@ pub(crate) struct Shell {
     reorder_requests: RequestSlot,
     /// Diagnostics' media cache measurements.
     diagnostics_requests: RequestSlot,
+    /// Diagnostics' Clear media cache, apart from the measurements so a
+    /// measurement never drops its answer.
+    clear_requests: RequestSlot,
     reorder: Reorder,
     /// The open timelines and the places of closed ones.
     tabs: Tabs,
@@ -200,6 +203,7 @@ impl Default for Shell {
             fields: Fields::default(),
             sign_in_requests: RequestSlot::default(),
             diagnostics_requests: RequestSlot::default(),
+            clear_requests: RequestSlot::default(),
             server_card_requests: RequestSlot::default(),
             images: None,
             registry_writes: Arc::default(),
@@ -367,6 +371,7 @@ mod settings_conversations;
 mod settings_diagnostics;
 mod settings_file;
 mod settings_general;
+mod settings_password;
 mod sign_in_flow;
 #[cfg(test)]
 mod tests;

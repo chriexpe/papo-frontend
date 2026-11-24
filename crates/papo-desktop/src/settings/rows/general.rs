@@ -10,6 +10,7 @@ use super::{Context, Group, Kind, Row};
 use crate::general_settings::Language;
 use crate::settings::{PageId, RowId};
 use crate::strings;
+use crate::trusted_domains::host_id;
 
 pub(super) fn general(cx: &Context<'_>) -> Vec<Group> {
     let settings = cx.general;
@@ -47,9 +48,8 @@ pub(super) fn trusted(cx: &Context<'_>) -> Vec<Group> {
     let hosts: Vec<Row> = cx
         .trusted
         .iter()
-        .enumerate()
-        .map(|(index, host)| Row {
-            id: RowId::TrustedHost(index),
+        .map(|host| Row {
+            id: RowId::TrustedHost(host_id(host)),
             title: host.clone(),
             sub: None,
             kind: Kind::Remove(host.clone()),

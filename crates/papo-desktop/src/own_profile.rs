@@ -7,7 +7,7 @@
 //! page edits a text row only once the profile has been read back
 //! (`known`); the SDK merges each change over what the server holds
 //! (`change_profile`). Owns only the reading; the rows are `settings`',
-//! saving the shell's (`shell/settings_profile`).
+//! saving the shell's (`shell/settings_account`).
 
 use papo_sdk::{ResourceSnapshot, Uuid};
 use papo_sdk_ui::{person, requested_profile};

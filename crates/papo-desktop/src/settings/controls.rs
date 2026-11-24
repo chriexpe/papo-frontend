@@ -112,7 +112,8 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
                 value,
                 placeholder,
                 most,
-                editable,
+                // One account call at a time: no row edits while one waits.
+                editable: editable && cx.waiting.is_none(),
             },
             look,
         ),
@@ -229,9 +230,9 @@ fn plain_row(setting: Row, look: &Look) -> El {
             .label(spoken)
             .child(super::actions::remove_button(id, &host, look)),
         Kind::Unblock(name) => match id {
-            RowId::BlockedPerson(index) => line
+            RowId::BlockedPerson(user) => line
                 .label(spoken)
-                .child(super::actions::unblock_button(id, index, &name, look)),
+                .child(super::actions::unblock_button(id, user, &name, look)),
             _ => line,
         },
         Kind::Note | Kind::Info => line.role("status").label(spoken),

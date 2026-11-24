@@ -147,8 +147,11 @@ fn the_blocked_list_names_each_person_with_unblock() {
     let shown = tree(&rt);
     assert!(shown.contains("Rafa"), "{shown}");
     assert!(
-        rt.find(&format!("{}-unblock", RowId::BlockedPerson(0).key()))
-            .is_some()
+        rt.find(&format!(
+            "{}-unblock",
+            RowId::BlockedPerson(Uuid::from_u128(9)).key()
+        ))
+        .is_some()
     );
 }
 

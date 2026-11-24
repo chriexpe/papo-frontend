@@ -23,6 +23,7 @@ use crate::appearance::{Appearance, ShapeValue};
 use crate::conversation_settings::ConversationSettings;
 use crate::design::{Accent, BackgroundColour, Density, Theme};
 use crate::general_settings::{GeneralSettings, Language};
+use papo_sdk::Uuid;
 use papo_sdk::operations::profile::ProfileChange;
 
 mod account_forms;
@@ -144,8 +145,8 @@ pub(crate) enum RowId {
     Presence,
     TypingPhrase,
     Blocked,
-    /// The blocked person at this place in the list.
-    BlockedPerson(usize),
+    /// A blocked person, by their user id.
+    BlockedPerson(Uuid),
     Password,
     /// Change password's form.
     PasswordForm,
@@ -173,8 +174,8 @@ pub(crate) enum RowId {
     Trusted,
     /// Trusted domains' field that adds one.
     TrustedAdd,
-    /// The trusted domain at this place in the list.
-    TrustedHost(usize),
+    /// A trusted domain, by its host's id (`trusted_domains::host_id`).
+    TrustedHost(u64),
     Connected,
     Reconnect,
     Cache,
@@ -256,6 +257,20 @@ pub(crate) enum Target {
     Presence(Presence),
     /// Change password: the form still holds what it sends.
     Password,
+}
+
+impl Target {
+    /// Whether it holds its store's whole value (Appearance, Conversations,
+    /// General, the trusted domains) rather than one field or one call.
+    fn is_snapshot(&self) -> bool {
+        matches!(
+            self,
+            Target::Appearance(_)
+                | Target::Conversations(_)
+                | Target::General(_)
+                | Target::Trusted(_)
+        )
+    }
 }
 
 /// A save that failed: the row that shows its danger line, and the
@@ -346,7 +361,13 @@ impl SettingsPanel {
     /// The save of `target` under `row` worked, or did not.
     pub(crate) fn saved(&mut self, row: RowId, target: Target, ok: bool) {
         if ok {
-            if self.failed_row() == Some(row) {
+            // A later save to the same store supersedes the failed one: Try
+            // again would put back a snapshot older than what is saved now.
+            let same_store = self.failed.as_ref().is_some_and(|failed| {
+                failed.target.is_snapshot()
+                    && std::mem::discriminant(&failed.target) == std::mem::discriminant(&target)
+            });
+            if self.failed_row() == Some(row) || same_store {
                 self.failed = None;
             }
         } else {

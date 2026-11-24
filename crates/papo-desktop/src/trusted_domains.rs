@@ -83,11 +83,24 @@ impl Trusted {
         self.stored.written(hosts, ok)
     }
 
+    /// The write of the change waiting behind the running one, if any.
+    pub(crate) fn pending_write(&self) -> Option<Write> {
+        self.stored.pending().map(|hosts| self.write_of(hosts))
+    }
+
     /// The write that saves `hosts`.
     pub(crate) fn write_of(&self, hosts: &BTreeSet<String>) -> Write {
         self.file
             .write(vec![(TRUSTED_KEY, serde_json::json!(hosts))])
     }
+}
+
+/// A host's id, the same in every run (FNV-1a of its name): its row's key,
+/// which must not follow the list's order.
+pub(crate) fn host_id(host: &str) -> u64 {
+    host.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// The host a typed domain names ("example.org", "Example.org.", or a

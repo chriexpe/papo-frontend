@@ -149,6 +149,11 @@ impl RecentJumps {
         self.remembered.remember(serde_json::json!(fields))
     }
 
+    /// The write waiting behind the running one, if any.
+    pub(crate) fn pending_write(&self) -> Option<Write> {
+        self.remembered.pending()
+    }
+
     /// The running write landed, or did not; the one to run next.
     pub(crate) fn written(&mut self, ok: bool) -> Option<Write> {
         self.remembered.written(ok)

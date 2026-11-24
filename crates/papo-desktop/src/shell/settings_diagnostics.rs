@@ -107,10 +107,10 @@ impl Shell {
         panel.asking = None;
         panel.clearing = true;
         tx.focus(RowId::ClearCache.key(), true);
-        let ticket = self.diagnostics_requests.issue();
+        let ticket = self.clear_requests.issue();
         sdk.request(
             ticket,
-            |shell: &Shell| &shell.diagnostics_requests,
+            |shell: &Shell| &shell.clear_requests,
             crate::diagnostics::clear_media,
             |shell: &mut Shell, (_cleared, bytes)| {
                 let Some(panel) = shell.settings.as_mut() else {

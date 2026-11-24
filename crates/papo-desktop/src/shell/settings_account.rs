@@ -1,27 +1,26 @@
 //! The shell's side of the account's pages (`docs/design.md` §8): a text
 //! row edited and saved through the SDK's `change_profile` (one field,
 //! merged over what the server holds), Presence through `update_status`,
-//! Unblock, Change password (the account prepares its own reset, then sets
-//! the new password), and Sign out (`logout`, then `remove_account`).
+//! Unblock, and Sign out (`logout`, then `remove_account`). One account call
+//! runs at a time.
 //!
 //! The SDK never retries and publishes no optimistic profile: a row shows
 //! the confirmed value, its control waits while the call is in flight, and
 //! a failure keeps the old value with one `danger` line and Try again.
-//! Owns these transitions; the profile and the calls are the SDK's.
+//! Owns these transitions; Change password's are `settings_password`'s, the
+//! profile and the calls the SDK's.
 
+use papo_sdk::AccountId;
 use papo_sdk::operations::profile::{ProfileChange, UpdateStatusRequest};
-use papo_sdk::{AccountId, ChangePasswordRequest, LoginRequest};
 use rune::{El, TextEdit, Tx, col};
 
 use super::Shell;
 use super::profile_card::{Order, PersonFacts, header, sections};
 use crate::design::settings::TILE_OUTER_RADIUS;
 use crate::design::{Look, SPACE_LG};
-use crate::settings::password_form::NEW_PASSWORD_KEY;
 use crate::settings::rows::account::AccountFacts;
 use crate::settings::text_row::field_key;
-use crate::settings::{PageId, PasswordProblem, Presence, RowId, Target};
-use crate::sign_in::password_rules_met;
+use crate::settings::{Presence, RowId, Target};
 use crate::strings;
 
 impl Shell {
@@ -75,7 +74,7 @@ impl Shell {
     }
 
     /// The panel's account, once one is signed in.
-    fn subject_account(&self) -> Option<AccountId> {
+    pub(super) fn subject_account(&self) -> Option<AccountId> {
         self.settings_subject().map(|(_, account)| account.id)
     }
 
@@ -108,7 +107,11 @@ impl Shell {
             RowId::TypingPhrase => own.typing,
             _ => return,
         };
-        if let Some(panel) = self.settings.as_mut() {
+        if let Some(panel) = self
+            .settings
+            .as_mut()
+            .filter(|panel| panel.waiting.is_none())
+        {
             panel.editing = Some((row, TextEdit::new(value.unwrap_or_default())));
             tx.focus(field_key(row), true);
         }
@@ -160,6 +163,21 @@ impl Shell {
         if text.chars().count() > most {
             return;
         }
+        let own = self
+            .account_facts()
+            .map(|facts| facts.own)
+            .unwrap_or_default();
+        let saved = match row {
+            RowId::Nickname => own.nickname,
+            RowId::Status => own.status,
+            RowId::About => own.about,
+            _ => own.typing,
+        };
+        if saved.unwrap_or_default() == text {
+            // Nothing changed: nothing to send.
+            self.settings_text_cancel(tx);
+            return;
+        }
         let mut change = ProfileChange::default();
         match row {
             RowId::Nickname => change.nickname = Some(text),
@@ -184,13 +202,9 @@ impl Shell {
             row,
             Target::Profile(change.clone()),
             move |client| async move {
-                let session = client.session(account).map_err(|error| error.to_string())?;
-                session
-                    .operations()
-                    .change_profile(change)
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
+                let session = client.session(account)?;
+                session.operations().change_profile(change).await?;
+                Ok(())
             },
         );
     }
@@ -209,13 +223,12 @@ impl Shell {
             RowId::Presence,
             Target::Presence(presence),
             move |client| async move {
-                let session = client.session(account).map_err(|error| error.to_string())?;
+                let session = client.session(account)?;
                 session
                     .operations()
                     .update_status(UpdateStatusRequest { status })
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
+                    .await?;
+                Ok(())
             },
         );
     }
@@ -228,11 +241,15 @@ impl Shell {
         target: Target,
         work: impl FnOnce(papo_sdk::ClientHandle) -> Work + Send + 'static,
     ) where
-        Work: Future<Output = Result<(), String>> + Send + 'static,
+        Work: Future<Output = Result<(), AccountCallError>> + Send + 'static,
     {
         let (Some(sdk), Some(panel)) = (self.sdk.clone(), self.settings.as_mut()) else {
             return;
         };
+        // One account call at a time: the next waits for this one's answer.
+        if panel.waiting.is_some() {
+            return;
+        }
         panel.waiting = Some(row);
         let updates = sdk.updates();
         sdk.run(move |client| async move {
@@ -252,116 +269,15 @@ impl Shell {
     }
 
     /// A blocked person's Unblock: at once.
-    pub(crate) fn settings_unblock(&mut self, index: usize, _tx: &mut Tx) {
+    pub(crate) fn settings_unblock(&mut self, user: papo_sdk::Uuid, _tx: &mut Tx) {
         let Some((server, account)) = self.settings_subject() else {
             return;
         };
-        let Some(person) = server.blocked.get(index) else {
+        if !server.blocked.iter().any(|person| person.id == user) {
             return;
-        };
-        let (account, user) = (account.id, person.id);
+        }
+        let account = account.id;
         self.set_blocked(account, user, false);
-    }
-
-    /// Change password's fields, for their editors.
-    pub(crate) fn settings_new_password_mut(&mut self) -> &mut TextEdit {
-        self.password_field(true)
-    }
-
-    pub(crate) fn settings_repeat_password_mut(&mut self) -> &mut TextEdit {
-        self.password_field(false)
-    }
-
-    fn password_field(&mut self, new: bool) -> &mut TextEdit {
-        let Shell {
-            settings,
-            search_spare,
-            ..
-        } = self;
-        match settings.as_mut() {
-            Some(panel) if new => &mut panel.password.new,
-            Some(panel) => &mut panel.password.repeat,
-            None => {
-                *search_spare = TextEdit::new("");
-                search_spare
-            }
-        }
-    }
-
-    /// Change password's "Stay signed in on this device".
-    pub(crate) fn settings_password_stay(&mut self) {
-        if let Some(panel) = self.settings.as_mut() {
-            panel.password.stay = !panel.password.stay;
-        }
-    }
-
-    /// Change password's Show or Hide.
-    pub(crate) fn settings_password_reveal(&mut self) {
-        if let Some(panel) = self.settings.as_mut() {
-            panel.password.shown = !panel.password.shown;
-        }
-    }
-
-    /// Change password's Save: §7's rules and the repeat are checked first,
-    /// so a password the backend would refuse never flags the account for a
-    /// reset; then the account prepares its own reset and sets it.
-    pub(crate) fn settings_password_save(&mut self, tx: &mut Tx) {
-        let account = self.subject_account();
-        let username = self
-            .settings_subject()
-            .map(|(_, account)| account.username.clone());
-        let sdk = self.sdk.clone();
-        let Some(panel) = self.settings.as_mut() else {
-            return;
-        };
-        if panel.waiting.is_some() {
-            return;
-        }
-        let password = panel.password.new.text.clone();
-        // Signing in again needs the username; without it this device signs
-        // out with the rest.
-        let stay = panel.password.stay.then_some(username).flatten();
-        let problem = if !password_rules_met(&password) {
-            Some(PasswordProblem::Weak)
-        } else if password != panel.password.repeat.text {
-            Some(PasswordProblem::Mismatch)
-        } else {
-            None
-        };
-        panel.password.problem = problem;
-        if problem.is_some() {
-            tx.focus(NEW_PASSWORD_KEY, true);
-            return;
-        }
-        let (Some(account), Some(sdk)) = (account, sdk) else {
-            return;
-        };
-        panel.waiting = Some(RowId::PasswordForm);
-        let updates = sdk.updates();
-        sdk.run(move |client| async move {
-            let changed = change_password(&client, account, password, stay).await;
-            if let Err(error) = &changed {
-                log::warn!("the password was not changed: {error}");
-            }
-            updates.send_tx(move |shell, tx| {
-                shell.password_answered(changed.is_ok(), tx);
-                true
-            });
-        });
-    }
-
-    fn password_answered(&mut self, changed: bool, tx: &mut Tx) {
-        let Some(panel) = self.settings.as_mut() else {
-            return;
-        };
-        panel.waiting = None;
-        if changed {
-            panel.password_changed = true;
-            panel.go(PageId::Privacy);
-            tx.focus(RowId::Password.key(), true);
-        } else {
-            panel.saved(RowId::PasswordForm, Target::Password, false);
-        }
     }
 
     /// Sign out, confirmed in its row: the account's session ends and the
@@ -371,7 +287,8 @@ impl Shell {
             return;
         };
         self.close_settings();
-        sdk.run(move |client| async move {
+        // Through the exit fence: quitting right after still signs out.
+        sdk.finish(move |client| async move {
             if let Ok(session) = client.session(account)
                 && let Err(error) = session.auth().logout().await
             {
@@ -384,47 +301,32 @@ impl Shell {
     }
 }
 
-/// The account prepares its own reset (the backend flags it), then sets
-/// `password`. The backend then signs every session of the account out,
-/// this one too; with `stay` (its username) this device signs in again with
-/// the new password, which replaces its session in place.
-async fn change_password(
-    client: &papo_sdk::ClientHandle,
-    account: AccountId,
-    password: String,
-    stay: Option<String>,
-) -> Result<(), String> {
-    let session = client.session(account).map_err(|error| error.to_string())?;
-    session
-        .operations()
-        .prepare_password_reset(account.user())
-        .await
-        .map_err(|error| error.to_string())?;
-    session
-        .auth()
-        .change_password(ChangePasswordRequest {
-            password: password.clone(),
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let Some(username) = stay else {
-        return Ok(());
-    };
-    // The password changed whatever happens next: a sign-in that fails
-    // leaves this device to ask for it, as an ended session does.
-    let signed_in = client
-        .auth(account.server())
-        .map_err(|error| error.to_string());
-    match signed_in {
-        Ok(auth) => {
-            if let Err(error) = auth
-                .login(LoginRequest { username, password }, crate::sign_in::now())
-                .await
-            {
-                log::warn!("this device did not sign in again after the password change: {error}");
-            }
-        }
-        Err(error) => log::warn!("this device did not sign in again: {error}"),
+/// Why an account call did not land.
+#[derive(Debug)]
+pub(crate) enum AccountCallError {
+    /// The account's session could not be reached or refused.
+    Session(papo_sdk::ClientError),
+    /// The SDK refused the operation or its outcome is unknown.
+    Operation(papo_sdk::operations::OperationError),
+}
+
+impl From<papo_sdk::ClientError> for AccountCallError {
+    fn from(error: papo_sdk::ClientError) -> AccountCallError {
+        AccountCallError::Session(error)
     }
-    Ok(())
+}
+
+impl From<papo_sdk::operations::OperationError> for AccountCallError {
+    fn from(error: papo_sdk::operations::OperationError) -> AccountCallError {
+        AccountCallError::Operation(error)
+    }
+}
+
+impl std::fmt::Display for AccountCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AccountCallError::Session(error) => error.fmt(f),
+            AccountCallError::Operation(error) => error.fmt(f),
+        }
+    }
 }

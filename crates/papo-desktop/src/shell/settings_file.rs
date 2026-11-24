@@ -45,6 +45,31 @@ impl Shell {
         });
     }
 
+    /// The window closes: each change still waiting behind a running write
+    /// is written now, as its write's callback will not run. Writes are
+    /// numbered (`device_settings`), so one that lands after the running
+    /// write is still the one the file keeps.
+    pub(crate) fn flush_settings(&mut self) {
+        let waiting = [
+            self.appearance.pending_write(),
+            self.conversations.pending_write(),
+            self.general.pending_write(),
+            self.content.trusted.pending_write(),
+            self.layout.pending_write(),
+            self.recent_jumps.pending_write(),
+        ];
+        for write in waiting.into_iter().flatten() {
+            match &self.sdk {
+                Some(sdk) => sdk.finish(move |_client| async move {
+                    let _ = tokio::task::spawn_blocking(move || write.run()).await;
+                }),
+                None => {
+                    let _ = write.run();
+                }
+            }
+        }
+    }
+
     /// Writes the remembered layout, and whatever change waited for it.
     pub(crate) fn write_layout(&mut self, write: Write, tx: &mut Tx) {
         self.run_write(

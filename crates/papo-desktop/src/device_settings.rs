@@ -7,16 +7,21 @@
 //! `rune::prefs` rewrites the whole file on each `set`, from the copy it
 //! read. Two writes that overlap would each put back the other's keys as
 //! they were, so every write goes through [`Write::run`]: it takes one lock
-//! for the whole program, reads the file afresh and sets its keys. The lock
-//! holds file I/O on purpose: it guards nothing but the file, and it is only
-//! ever taken off the UI thread (the shell runs writes as SDK `finish` jobs,
-//! `Shell::run_write`), so a slow disk delays other writes, never a frame.
+//! for the whole program, reads the file afresh and sets its keys. Each
+//! write is numbered when it is made, and a key takes a write only if it is
+//! newer than the last that key took, so writes that run out of order (at
+//! exit, say) never put an older value back. The lock holds file I/O on
+//! purpose: it guards nothing but the file. The shell runs writes as SDK
+//! `finish` jobs off the UI thread (`Shell::run_write`); only before the
+//! SDK client opens, or if it cannot, does a write run on the UI thread.
 //!
 //! Owns the file's path, the lock and the one-write-at-a-time queue each
 //! owner keeps (`saving`); what each key holds is its owner's.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use rune::prefs::Prefs;
 use serde_json::Value;
@@ -27,8 +32,13 @@ mod saving;
 
 pub(crate) use saving::{Remembered, Stored};
 
-/// Taken by every write, for its whole read and write of the file.
-static FILE_LOCK: Mutex<()> = Mutex::new(());
+/// Taken by every write, for its whole read and write of the file; it holds
+/// the number of the last write each key of each file took.
+static FILE_LOCK: LazyLock<Mutex<HashMap<(PathBuf, &'static str), u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The next write's number: writes are numbered as they are made.
+static NEXT_WRITE: AtomicU64 = AtomicU64::new(1);
 
 /// A write to the settings file that did not land; the setting keeps its
 /// earlier value.
@@ -62,6 +72,7 @@ impl SettingsFile {
         Write {
             path: self.path.clone(),
             entries,
+            number: NEXT_WRITE.fetch_add(1, Ordering::Relaxed),
         }
     }
 }
@@ -71,6 +82,8 @@ impl SettingsFile {
 pub(crate) struct Write {
     path: Option<PathBuf>,
     entries: Vec<(&'static str, Value)>,
+    /// When it was made, among all writes.
+    number: u64,
 }
 
 impl Write {
@@ -83,9 +96,15 @@ impl Write {
         };
         // A write that panicked held the lock over a file it either wrote
         // whole or not at all (`rune::prefs` replaces the file atomically).
-        let _file = FILE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut taken = FILE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let mut prefs = Prefs::at(path.clone());
         for (key, value) in &self.entries {
+            let slot = (path.clone(), *key);
+            if taken.get(&slot).is_some_and(|last| *last > self.number) {
+                // A newer write already set this key.
+                continue;
+            }
+            taken.insert(slot, self.number);
             prefs.set(key, value).map_err(|error| {
                 log::warn!("the setting {key} was not saved: {error}");
                 NotSaved
@@ -137,6 +156,21 @@ mod tests {
         for (n, key) in KEYS.into_iter().enumerate() {
             assert_eq!(on_disk.get::<usize>(key), Some(n), "{key}");
         }
+    }
+
+    #[test]
+    fn an_older_write_that_runs_last_never_puts_its_value_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        let file = SettingsFile::of(&Prefs::at(&path));
+        let older = file.write(vec![("theme", json!("light"))]);
+        let newer = file.write(vec![("theme", json!("oled"))]);
+        newer.run().unwrap();
+        older.run().unwrap();
+        assert_eq!(
+            Prefs::at(&path).get::<String>("theme").as_deref(),
+            Some("oled")
+        );
     }
 
     #[test]

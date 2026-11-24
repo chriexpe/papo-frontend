@@ -211,6 +211,13 @@ impl AppearanceStore {
         self.stored.written(appearance, ok)
     }
 
+    /// The write of the change waiting behind the running one, if any.
+    pub(crate) fn pending_write(&self) -> Option<Write> {
+        self.stored
+            .pending()
+            .map(|appearance| self.write_of(appearance))
+    }
+
     /// The write that saves `appearance`.
     pub(crate) fn write_of(&self, appearance: &Appearance) -> Write {
         self.file.write(vec![stored::entry(appearance)])

@@ -9,7 +9,7 @@
 //! a language into effect is `strings`'.
 
 use rune::prefs::Prefs;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::device_settings::{SettingsFile, Stored, Write};
 use crate::strings;
@@ -106,17 +106,35 @@ impl GeneralStore {
         self.stored.written(settings, ok)
     }
 
-    /// The write that saves `settings`, both keys.
-    pub(crate) fn write_of(&self, settings: &GeneralSettings) -> Write {
-        let language = match settings.language {
-            Language::System => SYSTEM_LANGUAGE,
-            Language::Locale(id) => id,
-        };
-        self.file.write(vec![
-            (LANGUAGE_KEY, json!(language)),
-            (CONFIRM_LINKS_KEY, json!(settings.confirm_links)),
-        ])
+    /// The write of the change waiting behind the running one, if any.
+    pub(crate) fn pending_write(&self) -> Option<Write> {
+        self.stored
+            .pending()
+            .map(|settings| self.write_of(settings))
     }
+
+    /// The write that saves `settings`: the keys that differ from what the
+    /// file holds.
+    pub(crate) fn write_of(&self, settings: &GeneralSettings) -> Write {
+        let saved = entries(self.stored.saved());
+        let entries = entries(settings)
+            .into_iter()
+            .filter(|entry| !saved.contains(entry))
+            .collect();
+        self.file.write(entries)
+    }
+}
+
+/// Both keys of `settings`, with their values.
+fn entries(settings: &GeneralSettings) -> Vec<(&'static str, Value)> {
+    let language = match settings.language {
+        Language::System => SYSTEM_LANGUAGE,
+        Language::Locale(id) => id,
+    };
+    vec![
+        (LANGUAGE_KEY, json!(language)),
+        (CONFIRM_LINKS_KEY, json!(settings.confirm_links)),
+    ]
 }
 
 #[cfg(test)]
