@@ -31,6 +31,9 @@ pub enum OperationError {
     /// Backend response lacks required identity or pagination evidence.
     #[error("invalid operation response")]
     InvalidData,
+    /// A picture could not be prepared for upload; nothing was sent.
+    #[error(transparent)]
+    Image(#[from] crate::ImageError),
     /// Requested resource is absent from the authoritative response.
     #[error("operation resource not found")]
     NotFound,

@@ -11,7 +11,10 @@ pub use papo_api::wire::{
 };
 
 use super::{OperationError, OperationReceipt, Operations, Refresh};
-use crate::AccountId;
+use crate::{
+    AccountId, CropRect, FixedImage, OutgoingError, StagedAttachment, images::FixedUpload,
+};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
 /// Fields of this account's profile to change; a field left `None` keeps its saved value.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -138,8 +141,9 @@ impl Operations {
         .await
     }
 
-    /// Uploads an already-encoded avatar. Backend format and two-MiB limits apply.
-    /// Cropping, decoding and previewing remain client responsibilities.
+    /// Uploads an already-encoded avatar. Backend format, 512-pixel and two-MiB limits apply, and
+    /// the bytes go as given. Prefer [`Self::update_avatar_from_image`], which crops, scales and
+    /// encodes through the SDK's one image path; this stays for a client that encodes itself.
     /// # Errors
     /// Returns typed rejection, stale generation, or uncertain upload; never retries.
     pub async fn update_avatar(
@@ -152,6 +156,73 @@ impl Operations {
             Refresh::Profile(user),
         )
         .await
+    }
+
+    /// Turns, crops, scales (512 × 512, covering) and uploads a staged picture as the avatar.
+    ///
+    /// The picture is re-encoded from pixels, so nothing of the original file but its colour
+    /// profile is sent: JPEG when opaque, PNG with transparency, under the backend's two MiB.
+    /// `quarter_turns` are clockwise; `crop` is in the picture after orientation and turns.
+    /// There is no removal: the backend has none for avatars.
+    /// # Errors
+    /// Returns [`OperationError::Image`] when the picture cannot be prepared (nothing is sent),
+    /// otherwise as [`Self::update_avatar`].
+    pub async fn update_avatar_from_image(
+        &self,
+        source: &StagedAttachment,
+        quarter_turns: u8,
+        crop: Option<CropRect>,
+    ) -> Result<OperationReceipt<GenericResponse>, OperationError> {
+        let upload = self
+            .fixed_image(source, FixedImage::Avatar, quarter_turns, crop)
+            .await?;
+        self.update_avatar(UpdateAvatarRequest {
+            avatar: BASE64.encode(&upload.bytes),
+            avatar_format: upload.format.label().to_owned(),
+        })
+        .await
+    }
+
+    /// Turns, crops, scales (1500 × 500, covering) and uploads a staged picture as the banner.
+    /// Re-encoding and limits are those of [`Self::update_avatar_from_image`]; the backend caps
+    /// either side at 2048 pixels and states no ratio, so 3 : 1 is the client's choice.
+    /// # Errors
+    /// As [`Self::update_avatar_from_image`].
+    pub async fn update_banner_from_image(
+        &self,
+        source: &StagedAttachment,
+        quarter_turns: u8,
+        crop: Option<CropRect>,
+    ) -> Result<OperationReceipt<GenericResponse>, OperationError> {
+        let upload = self
+            .fixed_image(source, FixedImage::Banner, quarter_turns, crop)
+            .await?;
+        self.update_banner(UpdateBannerRequest {
+            banner: BASE64.encode(&upload.bytes),
+            banner_format: upload.format.label().to_owned(),
+        })
+        .await
+    }
+
+    async fn fixed_image(
+        &self,
+        source: &StagedAttachment,
+        target: FixedImage,
+        quarter_turns: u8,
+        crop: Option<CropRect>,
+    ) -> Result<FixedUpload, OperationError> {
+        self.session
+            .client
+            .inner
+            .registry
+            .outgoing_fixed_image(&self.session, source, target, quarter_turns, crop)
+            .await
+            .map_err(|error| match error {
+                OutgoingError::Image(error) => OperationError::Image(error),
+                OutgoingError::Session(error) => OperationError::Session(error),
+                OutgoingError::NotFound => OperationError::NotFound,
+                _ => OperationError::InvalidInput,
+            })
     }
 
     /// Uploads an encoded banner, or removes it using the backend's empty banner fields.

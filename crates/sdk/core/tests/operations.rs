@@ -12,6 +12,8 @@ use serde_json::json;
 mod lifecycle;
 #[path = "operation_cases/personal.rs"]
 mod personal;
+#[path = "operation_cases/profile_image.rs"]
+mod profile_image;
 #[path = "operation_cases/roles.rs"]
 mod roles;
 

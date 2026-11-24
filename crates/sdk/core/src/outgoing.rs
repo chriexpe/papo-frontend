@@ -6,6 +6,7 @@ mod drafts;
 mod enqueue;
 mod file_io;
 pub(crate) mod files;
+mod image_edit;
 mod persistence;
 mod progress;
 mod projection;
@@ -174,6 +175,9 @@ pub enum OutgoingError {
     /// Durable state did not decode to its expected schema.
     #[error("invalid outgoing durable state")]
     InvalidData,
+    /// An attachment's anonymizing, crop or turn could not be applied; nothing was sent.
+    #[error(transparent)]
+    Image(#[from] crate::ImageError),
     /// Durable storage could not acknowledge success.
     #[error(transparent)]
     Storage(#[from] StorageError),

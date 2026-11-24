@@ -49,6 +49,23 @@ Sent clears only its captured revision in the receipt transaction; a newer
 edited draft survives. Native text controls and editing offsets belong to
 clients; the SDK never substitutes an identity by display name.
 
+Each attachment may carry an `AttachmentEdit` (anonymize, clockwise quarter turns, crop),
+saved with the draft while the staged original stays unchanged, so an edit can be changed
+until Send. It is applied when the message is enqueued: the original is streamed through the
+SDK's image path into a second staged blob (same bounded slots, digest and fsync), the
+operation commits that blob's size and digest, and the original is released with the draft.
+With no edit the bytes pass through untouched. Anonymizing keeps only what shows the picture
+(pixels with orientation applied, colour profile, animation frames), renames the file to 15
+random letters and digits with its extension, and refuses anything that is not a JPEG, PNG,
+GIF or WebP it can rewrite (HEIC, TIFF, RAW, video, documents) with a typed `ImageError`
+before anything is queued. JPEG, PNG, GIF and WebP are rewritten at the container level
+(keep-list, no recompression, animations intact); orientation that is not upright, a turn or
+a crop re-encodes from pixels under a 64-megapixel limit, and animations are refused there.
+`OutgoingService::inspect_image` reports a staged file's format, displayed size and animation,
+or why it cannot be anonymized. Profile photo and banner use the same pixel route
+(`update_avatar_from_image`, `update_banner_from_image`: 512 × 512 and 1500 × 500, JPEG or PNG
+under the backend's two MiB).
+
 Attachments are copied into fsynced, digest-verified account-owned staging files,
 with only metadata and references in SQLite. Caller paths and platform grants
 are never needed after acknowledgement. Their names and bytes remain immutable

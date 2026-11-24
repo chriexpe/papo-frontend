@@ -1,6 +1,6 @@
 //! Immutable outgoing message inputs, staged attachment references and draft bindings; persistence and dispatch live elsewhere.
 
-use crate::{AccountId, Uuid};
+use crate::{AccountId, AttachmentEdit, Uuid};
 use papo_api::wire::EmbedInput;
 use serde::{Deserialize, Serialize};
 
@@ -128,6 +128,9 @@ pub struct OutgoingAttachment {
     pub filename: String,
     #[serde(default)]
     content: OutgoingAttachmentContent,
+    /// What the sender chose to do to the file at send time; the staged bytes stay the original.
+    #[serde(default, skip_serializing_if = "AttachmentEdit::is_identity")]
+    edit: AttachmentEdit,
 }
 
 impl OutgoingAttachment {
@@ -140,6 +143,7 @@ impl OutgoingAttachment {
         Self {
             filename: filename.into(),
             content: OutgoingAttachmentContent::Bytes(bytes),
+            edit: AttachmentEdit::default(),
         }
     }
 
@@ -149,7 +153,26 @@ impl OutgoingAttachment {
         Self {
             filename: filename.into(),
             content: OutgoingAttachmentContent::Staged(staged),
+            edit: AttachmentEdit::default(),
         }
+    }
+
+    /// The edit applied when the message is enqueued; the default sends the bytes unchanged.
+    #[must_use]
+    pub const fn edit(&self) -> &AttachmentEdit {
+        &self.edit
+    }
+
+    /// Records the edit for this attachment. It travels with the draft and takes effect at
+    /// enqueue; until then the staged original is untouched and the edit can change or be undone.
+    #[must_use]
+    pub const fn with_edit(mut self, edit: AttachmentEdit) -> Self {
+        self.edit = edit;
+        self
+    }
+
+    pub(super) fn take_edit(&mut self) -> AttachmentEdit {
+        std::mem::take(&mut self.edit)
     }
 
     /// Payload state (inline caller bytes, staged blob reference, or released after `Sent`).
