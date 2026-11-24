@@ -177,10 +177,9 @@ fn field(appearance: &Appearance, state: ColourState, look: &Look) -> El {
         );
     }
     // The whole field takes the pointer, the disc centred in it: a press
-    // anywhere grabs the nearest colour or adds one, and past the disc's
-    // edge a colour is at full vividness on that side. The colours
-    // themselves take only the keyboard, so a press on one starts the
-    // field's drag.
+    // on empty space grabs the nearest colour or adds one, and past the
+    // disc's edge a colour is at full vividness on that side. A press on
+    // a colour is that colour's own drag (and its arrow keys).
     let mut frame = el()
         .key("settings-colour-field")
         .w_full()
@@ -215,10 +214,17 @@ pub(crate) fn moved_by(
     travel: (f32, f32),
     phase: Phase,
 ) -> ColourChange {
-    let (x, y) = place(colour);
+    // Not moved (a press and a release on the dot): the colour as it was,
+    // not as it comes back from its place on the field.
+    let moved = if travel == (0.0, 0.0) {
+        colour
+    } else {
+        let (x, y) = place(colour);
+        colour_at(x + travel.0, y + travel.1)
+    };
     ColourChange::Move {
         index,
-        colour: colour_at(x + travel.0, y + travel.1),
+        colour: moved,
         done: phase == Phase::Up,
     }
 }

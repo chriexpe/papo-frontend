@@ -98,7 +98,7 @@ impl Preset {
                     .iter()
                     .zip(background.colours())
                     .all(|(a, b)| {
-                        (a.hue_degrees - b.hue_degrees).abs() < 0.5
+                        hue_distance(a.hue_degrees, b.hue_degrees) < 0.5
                             && (a.vividness - b.vividness).abs() < 0.005
                     })
         })
@@ -170,5 +170,24 @@ impl Direction {
         Direction::ALL
             .into_iter()
             .find(|direction| direction.shape().same_as(shape))
+    }
+}
+
+/// How far apart two hues are around the circle, in degrees (0–180): 0°
+/// and 359.9° are a tenth of a degree apart.
+fn hue_distance(a: f32, b: f32) -> f32 {
+    let apart = (a - b).rem_euclid(360.0);
+    apart.min(360.0 - apart)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hue_distance;
+
+    #[test]
+    fn hues_are_compared_around_the_circle() {
+        assert!(hue_distance(0.0, 359.9) < 0.11);
+        assert!((hue_distance(10.0, 350.0) - 20.0).abs() < 1e-4);
+        assert!((hue_distance(90.0, 270.0) - 180.0).abs() < 1e-4);
     }
 }

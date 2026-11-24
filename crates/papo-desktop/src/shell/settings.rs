@@ -226,10 +226,7 @@ impl Shell {
                 if let Some(panel) = self.settings.as_mut() {
                     panel.colour.selected = index;
                 }
-                match change {
-                    ColourChange::Add(colour) => ColourChange::Add(colour),
-                    moved => moved,
-                }
+                change
             }
             Phase::Move => colour_field::dragged(panel.colour.selected, at, centre, false),
             Phase::Up => colour_field::dragged(panel.colour.selected, at, centre, true),

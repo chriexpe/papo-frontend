@@ -91,14 +91,18 @@ pub(crate) fn overlay(
         let tile = tiles.pixels(dark);
         el().pin(Some(0.0), Some(0.0), None, None)
             .w(width_pt)
-            .opacity(strength)
             .inert()
             .a11y_hidden()
             .child(
                 row()
                     .w_full()
                     .flex_wrap()
-                    .children((0..across * down).map(|_| el().size(tile_pt, tile_pt).pixels(tile))),
+                    .children((0..across * down).map(|_| {
+                        // The strength on each tile, not on the whole: Rune folds a
+                        // single image's opacity into its draw, where a group's
+                        // would composite the window-sized overlay as a layer.
+                        el().size(tile_pt, tile_pt).pixels(tile).opacity(strength)
+                    })),
             )
     }))
 }

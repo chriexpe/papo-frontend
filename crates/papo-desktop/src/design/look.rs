@@ -37,8 +37,7 @@ impl Default for Scale {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Glass {
     /// How glassy, 0–1: 0 solid, then frosted, towards 1 clear liquid
-    /// glass (the window's compositor, `glass`, draws the lens). 0 while
-    /// the system reduces transparency.
+    /// glass (the window's compositor, `glass`, draws the lens).
     pub(crate) glassy: f32,
     /// How far glass blurs what is behind it, in points.
     pub(crate) blur_pt: f32,
