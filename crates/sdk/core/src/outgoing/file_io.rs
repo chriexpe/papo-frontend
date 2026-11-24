@@ -183,6 +183,40 @@ impl Registry {
         .map_err(|_| OutgoingError::InvalidData)?
     }
 
+    /// Opens a staged blob read-only for a client to draw it; no staging slot is taken, so a
+    /// tile's picture never waits behind a large copy.
+    pub(super) async fn open_staged_file(
+        &self,
+        session: &Session,
+        staged: &StagedAttachment,
+    ) -> Result<std::fs::File, OutgoingError> {
+        if staged.account() != session.account() {
+            return Err(OutgoingError::NotFound);
+        }
+        let token = session.inner.tasks.token();
+        if session.is_closed() {
+            return Err(ClientError::Closed.into());
+        }
+        let root = data_root(self)?;
+        let account = session.account();
+        let reference = Reference {
+            digest: *staged.digest(),
+            size_bytes: staged.size_bytes(),
+        };
+        let lease = self.lease.clone();
+        tokio::task::spawn_blocking(move || {
+            let (_token, _lease) = (token, lease);
+            files::open_for_upload(&root, account, reference).map_err(|error| match error {
+                crate::StorageError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+                    OutgoingError::NotFound
+                }
+                other => other.into(),
+            })
+        })
+        .await
+        .map_err(|_| OutgoingError::InvalidData)?
+    }
+
     /// Streams SHA-256 verification of staged files outside any SQLite read transaction,
     /// tracked on `session.inner.tasks` so account removal drains open file handles first.
     pub(super) async fn verify_staged_files(

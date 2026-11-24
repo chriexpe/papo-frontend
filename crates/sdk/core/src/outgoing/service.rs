@@ -172,6 +172,30 @@ impl OutgoingService {
         })
         .await
     }
+    /// Opens a staged attachment read-only, so a client can draw it (a tray tile after a relaunch,
+    /// the editor, an unsent message's media). Decoding for display is the client's.
+    ///
+    /// The handle reads the immutable staged bytes; drop it once read, since a held handle can
+    /// keep account removal from deleting the file on some platforms.
+    /// # Errors
+    /// Returns [`OutgoingError::NotFound`] for a blob of another account or one already
+    /// collected, or storage failures.
+    pub async fn open_staged(
+        &self,
+        staged: &StagedAttachment,
+    ) -> Result<std::fs::File, OutgoingError> {
+        let staged = staged.clone();
+        self.run(move |this| async move {
+            this.ensure().await?;
+            this.session
+                .client
+                .inner
+                .registry
+                .open_staged_file(&this.session, &staged)
+                .await
+        })
+        .await
+    }
     /// Reads a staged file's format, displayed size and whether it is animated, without decoding
     /// its pixels. A file that fails here (HEIC, TIFF, RAW, a video, a damaged image) is one that
     /// anonymizing would refuse, so a client can say so when the switch is flipped; the same check
