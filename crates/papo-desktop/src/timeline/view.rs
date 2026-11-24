@@ -28,7 +28,7 @@ use super::{OpenTimeline, Phase, TimelineKey, row_key};
 use crate::design::{
     DATE_RULE_GAP, DATE_RULE_PT, Density, FOCUS_RING_PT, Lead, Look, MESSAGE_ROW_INSET,
     MessageLayout, RADIUS_AVATAR, RADIUS_CONTROL, SKELETON_BAR_PT, SKELETON_WIDTHS, SPACE_SM,
-    TIMELINE_INSET, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM, Theme,
+    TIMELINE_INSET, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM,
 };
 use crate::strings;
 
@@ -44,17 +44,10 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn timeline(&self) -> Option<&OpenTimeline>;
     /// Rows `range` are visible. Returns whether the view changed.
     fn rows_visible(&mut self, key: TimelineKey, range: Range<usize>) -> bool;
-    /// The viewport's top is at `top_pt` in window points, it is
-    /// `height_pt` tall, and the pills floating over it cover `insets_pt`
-    /// of its top and bottom.
-    fn viewport_moved(
-        &mut self,
-        key: TimelineKey,
-        top_pt: f32,
-        height_pt: f32,
-        insets_pt: [f32; 2],
-        tx: &mut Tx,
-    );
+    /// The viewport's top is at `top_pt` in window points and it is
+    /// `height_pt` tall. The pills floating over it report what they cover
+    /// themselves, as they change (`Tracker::insets_moved`).
+    fn viewport_moved(&mut self, key: TimelineKey, top_pt: f32, height_pt: f32, tx: &mut Tx);
     /// Message `id` is laid out from `edges_pt[0]` to `edges_pt[1]`,
     /// top to bottom, in window points.
     fn row_moved(&mut self, key: TimelineKey, id: Uuid, edges_pt: [f32; 2], tx: &mut Tx);
@@ -125,7 +118,6 @@ pub(crate) trait TimelineHost: Sized + 'static {
 #[derive(Clone)]
 pub(crate) struct Style {
     pub(crate) layout: MessageLayout,
-    pub(crate) theme: Theme,
     pub(crate) look: Look,
     pub(crate) time: LocalTime,
     /// The current civil day, read once per view: "Today" and "Yesterday".
@@ -237,7 +229,7 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
             false
         })
         .on_layout_tx(move |host: &mut S, rect, tx| {
-            host.viewport_moved(key, rect[1], rect[3], insets_pt, tx);
+            host.viewport_moved(key, rect[1], rect[3], tx);
             tx.live_only();
         })
         .child(rows);
@@ -321,7 +313,7 @@ fn date_row(day: i64, before: Uuid, style: &Style) -> El {
     let between_groups_pt = look.spacing(style.layout.density).between_groups_pt;
     memo(
         format!("d{before}"),
-        (style.theme, style.layout, &label),
+        (style.look, style.layout, &label),
         || {
             let rule = || {
                 el().grow(1.0)

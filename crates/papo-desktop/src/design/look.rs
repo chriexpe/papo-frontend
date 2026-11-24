@@ -2,6 +2,8 @@
 //! the Appearance settings (`Scale`). One value per frame, built by the
 //! shell and handed down; no view reads a setting itself.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use rune::{Color, El, Family, TextStyle};
 
 use super::density::GUTTER;
@@ -125,6 +127,54 @@ pub(crate) struct Look {
     scale: Scale,
     glass: Glass,
     font_family: Option<&'static str>,
+    /// Everything the look is made from, as one number (`LookSpec::key`).
+    key: u64,
+}
+
+/// A look hashes as what it is made from, so a memoised view that puts it
+/// in its version rebuilds whenever a setting it is drawn with changes.
+impl Hash for Look {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+    }
+}
+
+impl LookSpec {
+    /// Every setting the look is made from, as one number; floats by their
+    /// bits.
+    fn key(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.theme.hash(&mut hasher);
+        self.accent.hash(&mut hasher);
+        for colour in self.background.colours() {
+            colour.hue_degrees.to_bits().hash(&mut hasher);
+            colour.vividness.to_bits().hash(&mut hasher);
+        }
+        self.background.colours().len().hash(&mut hasher);
+        let Scale {
+            text_pt,
+            spacing,
+            roundness,
+        } = self.scale;
+        let Glass {
+            glassy,
+            blur_pt,
+            shadow_depth,
+        } = self.glass;
+        for value in [
+            self.background.strength,
+            text_pt,
+            spacing,
+            roundness,
+            glassy,
+            blur_pt,
+            shadow_depth,
+        ] {
+            value.to_bits().hash(&mut hasher);
+        }
+        self.font_family.hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 impl Look {
@@ -145,10 +195,14 @@ impl Look {
     /// draw at the smallest and largest text size and spacing.
     #[cfg(test)]
     pub(crate) fn scaled(theme: Theme, scale: Scale) -> Look {
-        Look {
+        Look::with(&LookSpec {
+            theme,
+            accent: Accent::default(),
+            background: Background::default(),
             scale,
-            ..Look::new(theme)
-        }
+            glass: Glass::default(),
+            font_family: None,
+        })
     }
 
     pub(crate) fn with(spec: &LookSpec) -> Look {
@@ -158,6 +212,7 @@ impl Look {
             scale: spec.scale,
             glass: spec.glass,
             font_family: spec.font_family,
+            key: spec.key(),
         }
     }
 

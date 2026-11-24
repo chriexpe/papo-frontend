@@ -28,6 +28,15 @@ enum Seeked {
     Ended,
 }
 
+/// What floats over the conversation's rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Floating {
+    /// The header pills, over the top.
+    Header,
+    /// The composer and the typing line, over the bottom.
+    Foot,
+}
+
 impl Shell {
     /// The window went off screen (minimised, hidden, covered whole) or came
     /// back (`App::on_visibility`).
@@ -36,6 +45,25 @@ impl Shell {
         self.window_shown = shown;
         if !shown {
             self.flush_composer();
+        }
+        self.report_reading();
+    }
+
+    /// The header or the foot floating over the conversation is now
+    /// `height_pt` tall: the rows under it no longer show, so the next read
+    /// report leaves them out, or takes them in.
+    pub(crate) fn floating_moved(&mut self, edge: Floating, height_pt: f32) {
+        let index = match edge {
+            Floating::Header => 0,
+            Floating::Foot => 1,
+        };
+        if (self.floating_insets_pt[index] - height_pt).abs() < 0.5 {
+            return;
+        }
+        self.floating_insets_pt[index] = height_pt;
+        let insets = self.floating_insets_pt;
+        if let Some(open) = self.tabs.shown_mut() {
+            open.tracker.insets_moved(insets);
         }
         self.report_reading();
     }

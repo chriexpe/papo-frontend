@@ -248,6 +248,34 @@ fn a_slider_drag_is_drawn_and_saved_only_when_it_lets_go() {
 }
 
 #[test]
+fn a_slider_drag_cancelled_by_escape_puts_the_value_back_and_saves_nothing() {
+    let mut rt = app();
+    open(&mut rt);
+    click(&mut rt, &RowId::Shape.key());
+    let slider = RowId::Slider(ShapeValue::Roundness).key();
+    let [x, y, w, h] = rect(&rt, &slider);
+    let before = saved(&rt).shape.roundness;
+    rt.pointer_down(x + 14.0, y + h / 2.0);
+    rt.frame(FRAME_S);
+    rt.pointer_move(x + w - 14.0, y + h / 2.0);
+    rt.frame(FRAME_S);
+    assert!(rt.state.shown_appearance().shape.roundness > 1.5);
+    key(&mut rt, Key::Escape, Mods::default());
+    assert!(
+        (saved(&rt).shape.roundness - before).abs() < f32::EPSILON,
+        "nothing saved"
+    );
+    assert!(
+        (rt.state.shown_appearance().shape.roundness - before).abs() < f32::EPSILON,
+        "drawn as it was"
+    );
+    assert!(
+        rt.find(SETTINGS_KEY).is_some(),
+        "the Escape went to the drag"
+    );
+}
+
+#[test]
 fn a_sliders_arrow_keys_step_and_save() {
     let mut rt = app();
     open(&mut rt);
@@ -377,4 +405,35 @@ fn use_the_system_font_shows_once_the_system_names_one_and_sets_the_text_in_it()
     click(&mut rt, &RowId::SystemFont.key());
     assert!(saved(&rt).system_font);
     assert_eq!(family(&rt), rune::Family::Named("Noto Sans"));
+}
+
+#[test]
+fn try_again_after_a_failed_add_saves_the_added_colour() {
+    let mut rt = app();
+    // A settings file under a regular file can never be written.
+    let directory = tempfile::tempdir().unwrap();
+    let blocker = directory.path().join("file");
+    std::fs::write(&blocker, b"").unwrap();
+    let failing = blocker.join("prefs.json");
+    rt.update(move |shell, _tx| {
+        shell.appearance = AppearanceStore::from_prefs(Prefs::at(failing));
+    });
+    open(&mut rt);
+    click(&mut rt, &RowId::Background.key());
+    let [fx, fy, fw, fh] = rect(&rt, "settings-colour-field");
+    let (px, py) = (fx + fw / 2.0 + 50.0, fy + fh / 2.0);
+    rt.pointer_down(px, py);
+    rt.frame(FRAME_S);
+    rt.pointer_up(px, py);
+    rt.frame(FRAME_S);
+    assert_eq!(saved(&rt).background.colours().len(), 1, "not saved");
+    assert!(rt.find("settings-retry").is_some());
+    // The disk works again: Try again saves the colour that was added.
+    let working = directory.path().join("prefs.json");
+    rt.update(move |shell, _tx| {
+        shell.appearance = AppearanceStore::from_prefs(Prefs::at(working));
+    });
+    click(&mut rt, "settings-retry");
+    assert_eq!(saved(&rt).background.colours().len(), 2, "the added colour");
+    assert!(rt.find("settings-retry").is_none(), "the danger line goes");
 }

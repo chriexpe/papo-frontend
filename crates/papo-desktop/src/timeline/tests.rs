@@ -69,17 +69,8 @@ impl TimelineHost for Host {
         false
     }
 
-    fn viewport_moved(
-        &mut self,
-        _key: TimelineKey,
-        top_pt: f32,
-        height_pt: f32,
-        insets_pt: [f32; 2],
-        _tx: &mut Tx,
-    ) {
-        self.open
-            .tracker
-            .viewport_moved(top_pt, height_pt, insets_pt);
+    fn viewport_moved(&mut self, _key: TimelineKey, top_pt: f32, height_pt: f32, _tx: &mut Tx) {
+        self.open.tracker.viewport_moved(top_pt, height_pt);
     }
 
     fn row_moved(&mut self, _key: TimelineKey, id: Uuid, [top, bottom]: [f32; 2], _tx: &mut Tx) {
@@ -202,7 +193,6 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
     let time = LocalTime::fixed(UtcOffset::from_seconds_east(0).unwrap(), noon_us);
     let style = Style {
         layout: host.layout,
-        theme: Theme::Graphite,
         look: host.look,
         today: time.today(),
         time,

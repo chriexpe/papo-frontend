@@ -322,7 +322,7 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
     // Everything the drawn message reads: its payload and parse, the
     // names it shows, the day its time is read against, the density.
     let version = (
-        style.theme,
+        style.look,
         style.layout,
         style.today,
         Arc::as_ptr(&pin.message) as usize,

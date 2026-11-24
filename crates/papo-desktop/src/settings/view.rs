@@ -216,7 +216,7 @@ fn main(
     let cx = Ctx {
         look,
         appearance: context.appearance,
-        failed: panel.failed().map(super::Change::row),
+        failed: panel.failed_row(),
         colour: panel.colour,
         grain,
     };

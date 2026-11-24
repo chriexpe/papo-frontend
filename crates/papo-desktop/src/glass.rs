@@ -12,7 +12,7 @@
 //! Owns the compositor and the mapping from the Glass setting to the lens;
 //! which surfaces are glass is `design::Look`'s.
 
-use rune::compose::{Compositor, Frame};
+use rune::compose::{Compositor, DeviceKey, Frame};
 use rune::render::{EffectPhase, EffectSite, KIND_EFFECT};
 use rune_fx::{Fx, FxFrame, FxLayer, FxOptions, FxRenderer, FxSlot, LensParams, Rgb, Shape};
 
@@ -69,10 +69,20 @@ fn lens(data: [f32; 4], shape: Shape) -> FxLayer {
 /// The window's compositor: Rune's frame, with a lens at each glass slot.
 #[derive(Default)]
 pub(crate) struct GlassCompositor {
-    fx: Option<FxRenderer>,
+    /// The lens renderer, for the device and target format it was made
+    /// on: a new device (a GPU reset, the window on another GPU) or format
+    /// gets a new one.
+    fx: Option<(DeviceKey, wgpu::TextureFormat, FxRenderer)>,
 }
 
 impl Compositor<Shell> for GlassCompositor {
+    /// The lens is drawn from the frame's instances and what lies behind
+    /// them, nothing else: a frame that builds the same instances draws the
+    /// same glass, so Rune may skip it at rest as it would its own frame.
+    fn draws_own(&self) -> bool {
+        false
+    }
+
     fn render(&mut self, frame: &mut Frame<'_, Shell>) {
         let (device, queue, size) = (frame.device, frame.queue, frame.size);
         let marks = &frame.rt.marks;
@@ -104,9 +114,23 @@ impl Compositor<Shell> for GlassCompositor {
                     .clip(instance.clip, instance.fade),
             );
         }
-        let fx = self.fx.get_or_insert_with(|| {
-            FxRenderer::new(device, frame.format, FxOptions { dither: true })
-        });
+        if layers.is_empty() {
+            // No glass on screen (Glass at 0): Rune's own frame.
+            frame.draw_ui();
+            return;
+        }
+        let device_key = frame.device_key();
+        let current = self
+            .fx
+            .as_ref()
+            .is_some_and(|(key, format, _)| *key == device_key && *format == frame.format);
+        if !current {
+            let renderer = FxRenderer::new(device, frame.format, FxOptions { dither: true });
+            self.fx = Some((device_key, frame.format, renderer));
+        }
+        let Some((_, _, fx)) = self.fx.as_mut() else {
+            return;
+        };
         fx.set_srgb_blend(frame.srgb_blend());
         fx.add_format(device, wgpu::TextureFormat::Rgba16Float);
         let fx_frame = FxFrame {

@@ -14,12 +14,11 @@
 
 use rune::prefs::Prefs;
 
-use crate::design::{
-    Accent, Background, BackgroundColour, Density, MessageLayout, TYPE_BODY_PT, Theme,
-};
+use crate::design::{Accent, Background, MessageLayout, TYPE_BODY_PT, Theme};
 use crate::window::APP_ID;
 
 pub(crate) mod presets;
+mod stored;
 
 /// Shape and type's five values (§5).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,20 +168,6 @@ impl Appearance {
     }
 }
 
-/// The settings file's keys.
-mod key {
-    pub(super) const THEME: &str = "appearance.theme";
-    pub(super) const BACKGROUND: &str = "appearance.background";
-    pub(super) const STRENGTH: &str = "appearance.strength";
-    pub(super) const GRAIN: &str = "appearance.grain";
-    pub(super) const ACCENT: &str = "appearance.accent";
-    pub(super) const SHAPE: &str = "appearance.shape";
-    pub(super) const SYSTEM_FONT: &str = "appearance.system_font";
-    pub(super) const GLASS: &str = "appearance.glass";
-    /// Message spacing, Group and Stack: `[density, grouped, stacked]`.
-    pub(super) const MESSAGES: &str = "appearance.messages";
-}
-
 /// A write to the settings file that did not land; the setting keeps its
 /// earlier value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,61 +202,10 @@ impl AppearanceStore {
     }
 
     fn read(prefs: Prefs) -> AppearanceStore {
-        let defaults = Appearance::default();
-        let background =
-            prefs
-                .get::<Vec<(f32, f32)>>(key::BACKGROUND)
-                .map_or(defaults.background, |colours| {
-                    let colours: Vec<BackgroundColour> = colours
-                        .into_iter()
-                        .map(|(hue_degrees, vividness)| BackgroundColour {
-                            hue_degrees,
-                            vividness,
-                        })
-                        .collect();
-                    let strength = prefs
-                        .get(key::STRENGTH)
-                        .unwrap_or(defaults.background.strength);
-                    Background::new(&colours, strength)
-                });
-        let shape = prefs
-            .get::<[f32; 5]>(key::SHAPE)
-            .map_or(defaults.shape, |values| {
-                ShapeValue::ALL
-                    .into_iter()
-                    .zip(values)
-                    .fold(defaults.shape, |shape, (value, to)| shape.with(value, to))
-            });
-        let glass = prefs
-            .get::<f32>(key::GLASS)
-            .map_or(defaults.glass, |glass| glass.clamp(0.0, 1.0));
-        let appearance = Appearance {
-            theme: prefs
-                .get::<String>(key::THEME)
-                .and_then(|name| theme_named(&name)),
-            background,
-            grain: prefs
-                .get::<f32>(key::GRAIN)
-                .map_or(defaults.grain, |grain| grain.clamp(0.0, 1.0)),
-            accent: prefs
-                .get::<String>(key::ACCENT)
-                .and_then(|name| accent_named(&name))
-                .unwrap_or(defaults.accent),
-            messages: prefs
-                .get::<(String, bool, bool)>(key::MESSAGES)
-                .and_then(|(density, grouped, stacked)| {
-                    Some(MessageLayout {
-                        density: density_named(&density)?,
-                        grouped,
-                        stacked,
-                    })
-                })
-                .unwrap_or(defaults.messages),
-            shape,
-            system_font: prefs.get(key::SYSTEM_FONT).unwrap_or(defaults.system_font),
-            glass,
-        };
-        AppearanceStore { appearance, prefs }
+        AppearanceStore {
+            appearance: stored::read(&prefs),
+            prefs,
+        }
     }
 
     pub(crate) fn appearance(&self) -> &Appearance {
@@ -279,112 +213,18 @@ impl AppearanceStore {
     }
 
     /// Saves `appearance` and keeps it; a failed write keeps the earlier
-    /// settings. Writes only what changed.
+    /// settings, in memory and in the file.
     pub(crate) fn set(&mut self, appearance: Appearance) -> Result<(), NotSaved> {
-        let old = self.appearance;
+        if appearance == self.appearance {
+            return Ok(());
+        }
+        // Another window or an earlier failed write may have left the
+        // store's copy of the file out of date.
         crate::device_settings::reload(&mut self.prefs);
-        let mut saved = true;
-        // Each key is its own write; after a failed one nothing more is
-        // tried, and the change is not kept.
-        macro_rules! write {
-            ($key:expr, $value:expr) => {
-                if saved {
-                    saved = self.prefs.set($key, $value).is_ok();
-                }
-            };
-        }
-        if let Some(theme) = appearance.theme.filter(|_| appearance.theme != old.theme) {
-            write!(key::THEME, theme_name(theme));
-        }
-        if appearance.background != old.background {
-            let colours: Vec<(f32, f32)> = appearance
-                .background
-                .colours()
-                .iter()
-                .map(|colour| (colour.hue_degrees, colour.vividness))
-                .collect();
-            write!(key::BACKGROUND, &colours);
-            write!(key::STRENGTH, &appearance.background.strength);
-        }
-        if appearance.grain.to_bits() != old.grain.to_bits() {
-            write!(key::GRAIN, &appearance.grain);
-        }
-        if appearance.accent != old.accent {
-            write!(key::ACCENT, accent_name(appearance.accent));
-        }
-        if appearance.messages != old.messages {
-            let messages = appearance.messages;
-            let value = (
-                density_name(messages.density),
-                messages.grouped,
-                messages.stacked,
-            );
-            write!(key::MESSAGES, &value);
-        }
-        if appearance.shape != old.shape {
-            let values = ShapeValue::ALL.map(|value| appearance.shape.get(value));
-            write!(key::SHAPE, &values);
-        }
-        if appearance.system_font != old.system_font {
-            write!(key::SYSTEM_FONT, &appearance.system_font);
-        }
-        if appearance.glass.to_bits() != old.glass.to_bits() {
-            write!(key::GLASS, &appearance.glass);
-        }
-        if !saved {
-            log::warn!("an Appearance setting was not saved");
-            return Err(NotSaved);
-        }
+        stored::write(&mut self.prefs, &appearance)?;
         self.appearance = appearance;
         Ok(())
     }
-}
-
-fn theme_name(theme: Theme) -> &'static str {
-    match theme {
-        Theme::Oled => "oled",
-        Theme::Graphite => "graphite",
-        Theme::Light => "light",
-        Theme::SoftLight => "soft_light",
-    }
-}
-
-fn theme_named(name: &str) -> Option<Theme> {
-    Theme::ALL
-        .into_iter()
-        .find(|theme| theme_name(*theme) == name)
-}
-
-fn accent_name(accent: Accent) -> &'static str {
-    match accent {
-        Accent::Blue => "blue",
-        Accent::Indigo => "indigo",
-        Accent::Teal => "teal",
-        Accent::Green => "green",
-        Accent::Pink => "pink",
-        Accent::Orange => "orange",
-    }
-}
-
-fn accent_named(name: &str) -> Option<Accent> {
-    Accent::ALL
-        .into_iter()
-        .find(|accent| accent_name(*accent) == name)
-}
-
-fn density_name(density: Density) -> &'static str {
-    match density {
-        Density::Compact => "compact",
-        Density::Normal => "normal",
-        Density::Comfortable => "comfortable",
-        Density::ExtraCompact => "extra_compact",
-    }
-}
-
-fn density_named(name: &str) -> Option<Density> {
-    Density::ALL
-        .into_iter()
-        .find(|density| density_name(*density) == name)
 }
 
 /// The text size one step from `text_pt` (`up` larger), held to its range,

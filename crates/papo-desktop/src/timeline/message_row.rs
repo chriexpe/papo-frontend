@@ -62,7 +62,8 @@ pub(super) fn message_row<S: TimelineHost>(
     let copied = open.copied(id);
     // The key too: two accounts on one server can show the same message,
     // and the row's handlers name their timeline.
-    let version = (key, style.theme, layout, &parts, revealed, copied);
+    // The look too: a row is drawn at every Appearance setting.
+    let version = (key, style.look, layout, &parts, revealed, copied);
     let row_key = if history {
         message_key(id)
     } else {

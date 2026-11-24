@@ -2,7 +2,9 @@
 
 use rune::prefs::Prefs;
 
-use super::{AppearanceStore, ShapeValue, key, text_size_step};
+use serde_json::json;
+
+use super::{AppearanceStore, ShapeValue, stored, text_size_step};
 use crate::design::{Accent, Background, Theme};
 
 #[test]
@@ -41,16 +43,53 @@ fn a_saved_change_is_kept_and_read_back() {
 #[test]
 fn a_wrong_value_in_the_file_takes_its_default() {
     let mut prefs = Prefs::memory();
-    prefs.set(key::THEME, "sepia").unwrap();
-    prefs.set(key::ACCENT, &3).unwrap();
     prefs
-        .set(key::SHAPE, &[99.0, -1.0, 1.0, 16.0, 1.0])
+        .set(
+            stored::KEY,
+            &json!({
+                "theme": "sepia",
+                "accent": 3,
+                "shape": [99.0, -1.0, 1.0, 16.0, 1.0],
+                "grain": "coarse",
+                "messages": ["roomy", true, false],
+            }),
+        )
         .unwrap();
     let store = AppearanceStore::read(prefs);
-    assert_eq!(store.appearance().theme, None);
-    assert_eq!(store.appearance().accent, Accent::Blue);
-    assert_eq!(store.appearance().shape.text_pt, 16.0, "held to its range");
-    assert_eq!(store.appearance().shape.roundness, 0.0);
+    let appearance = store.appearance();
+    assert_eq!(appearance.theme, None);
+    assert_eq!(appearance.accent, Accent::Blue);
+    assert_eq!(appearance.shape.text_pt, 16.0, "held to its range");
+    assert_eq!(appearance.shape.roundness, 0.0);
+    assert_eq!(appearance.grain, 0.0);
+    assert_eq!(appearance.messages, super::MessageLayout::default());
+}
+
+#[test]
+fn a_number_too_large_for_the_settings_takes_its_default() {
+    let mut prefs = Prefs::memory();
+    prefs
+        .set(
+            stored::KEY,
+            &json!({
+                "background": [[1e39, 0.5]],
+                "strength": 0.4,
+                "glass": 1e39,
+            }),
+        )
+        .unwrap();
+    let store = AppearanceStore::read(prefs);
+    let appearance = store.appearance();
+    assert!(
+        appearance
+            .background
+            .colours()
+            .iter()
+            .all(|colour| colour.hue_degrees.is_finite()),
+        "{:?}",
+        appearance.background
+    );
+    assert!((appearance.glass - 0.5).abs() < f32::EPSILON);
 }
 
 #[test]

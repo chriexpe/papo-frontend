@@ -179,27 +179,36 @@ impl Shell {
             return;
         }
         panel.take_draft();
-        let saved = self.set_appearance(next, tx).is_ok();
+        self.settings_save(change.row(), next, tx);
+    }
+
+    /// Saves `target` for `row`'s change; a failure shows under the row.
+    fn settings_save(&mut self, row: RowId, target: Appearance, tx: &mut Tx) {
+        let saved = self.set_appearance(target, tx).is_ok();
         if let Some(panel) = self.settings.as_mut() {
-            panel.saved(change, saved);
+            panel.saved(row, target, saved);
         }
     }
 
-    /// Try again under a row whose save failed.
+    /// Try again under a row whose save failed: the same settings, saved
+    /// again (not the change applied again, which would act on what is
+    /// saved now: a colour added again, a harmony stepped again).
     pub(crate) fn settings_retry(&mut self, tx: &mut Tx) {
-        let failed = self
-            .settings
-            .as_ref()
-            .and_then(SettingsPanel::failed)
-            .cloned();
-        if let Some(change) = failed {
-            self.settings_change(change, tx);
+        let Some(panel) = self.settings.as_ref() else {
+            return;
+        };
+        if let (Some(row), Some(target)) = (panel.failed_row(), panel.failed_target()) {
+            self.settings_save(row, target, tx);
         }
     }
 
     /// The pointer on the colour field, the disc in its middle: a press
     /// grabs or adds a colour, a move drags it, letting go saves it.
     pub(crate) fn settings_field_drag(&mut self, drag: &mut Drag, tx: &mut Tx) {
+        if drag.phase == Phase::Up && drag.cancelled() {
+            self.settings_drag_cancelled();
+            return;
+        }
         let centre = (drag.w / 2.0, drag.h / 2.0);
         let Some(panel) = self.settings.as_ref() else {
             return;
@@ -261,12 +270,25 @@ impl Shell {
             panel.colour.drag_origin = Some(now);
             return;
         }
+        if drag.phase == Phase::Up && drag.cancelled() {
+            self.settings_drag_cancelled();
+            return;
+        }
         let origin = panel.colour.drag_origin.unwrap_or(now);
         if drag.phase == Phase::Up {
             panel.colour.drag_origin = None;
         }
         let change = colour_field::moved_by(index, origin, (drag.dx, drag.dy), drag.phase);
         self.settings_change(Change::Colours(change), tx);
+    }
+
+    /// A drag ended without letting go (Escape, the window losing focus,
+    /// the pointer taken away): what it drew goes, and nothing is saved.
+    pub(crate) fn settings_drag_cancelled(&mut self) {
+        if let Some(panel) = self.settings.as_mut() {
+            panel.take_draft();
+            panel.colour.drag_origin = None;
+        }
     }
 
     /// ‹ or › beside the presets.

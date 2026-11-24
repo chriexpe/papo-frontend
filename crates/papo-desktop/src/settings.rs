@@ -87,7 +87,7 @@ impl RowId {
 }
 
 /// What a row asks for; the shell applies it (`shell/settings.rs`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Change {
     Theme(Theme),
     Density(Density),
@@ -131,13 +131,20 @@ pub(crate) struct ColourState {
     pub(crate) drag_origin: Option<crate::design::BackgroundColour>,
 }
 
+/// A save that failed: the row that shows its danger line, and the
+/// settings it was saving, which Try again saves as they were.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Failed {
+    row: RowId,
+    target: Appearance,
+}
+
 /// The open panel.
 pub(crate) struct SettingsPanel {
     page: PageId,
     pub(crate) search: TextEdit,
-    /// The change whose save failed: its row shows the danger line, and
-    /// Try again applies it again.
-    failed: Option<Change>,
+    /// The save that failed, if the last one under its row did.
+    failed: Option<Failed>,
     /// The settings while a slider or a colour is dragged: drawn, not
     /// saved, until the drag ends (§8: one write per change).
     draft: Option<Appearance>,
@@ -171,22 +178,24 @@ impl SettingsPanel {
         self.search.text.trim()
     }
 
-    pub(crate) fn failed(&self) -> Option<&Change> {
-        self.failed.as_ref()
+    /// The row whose save failed, which shows the danger line.
+    pub(crate) fn failed_row(&self) -> Option<RowId> {
+        self.failed.map(|failed| failed.row)
     }
 
-    /// `change` was saved, or was not.
-    pub(crate) fn saved(&mut self, change: Change, ok: bool) {
+    /// The settings whose save failed, for Try again.
+    pub(crate) fn failed_target(&self) -> Option<Appearance> {
+        self.failed.map(|failed| failed.target)
+    }
+
+    /// The save of `target` under `row` worked, or did not.
+    pub(crate) fn saved(&mut self, row: RowId, target: Appearance, ok: bool) {
         if ok {
-            if self
-                .failed
-                .as_ref()
-                .is_some_and(|failed| failed.row() == change.row())
-            {
+            if self.failed_row() == Some(row) {
                 self.failed = None;
             }
         } else {
-            self.failed = Some(change);
+            self.failed = Some(Failed { row, target });
         }
     }
 

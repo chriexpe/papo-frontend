@@ -113,12 +113,19 @@ fn the_message_being_read_keeps_its_place_when_text_size_or_spacing_changes() {
             );
             scroll_to(anchor, tx);
         });
+        let before_pt = rect(&rt, &anchor_key(id))[3];
         until_idle(&mut rt);
         let now_pt = rect(&rt, &anchor_key(id))[1] - rect(&rt, &viewport)[1];
         let moved = now_pt - offset_pt;
         assert!(
             moved.abs() < HOLD_PT,
             "{text_pt} pt ×{spacing} moved it {moved}"
+        );
+        // The row was drawn again at the new size, not kept from before.
+        let after_pt = rect(&rt, &anchor_key(id))[3];
+        assert!(
+            (after_pt - before_pt).abs() > 0.5,
+            "{text_pt} pt ×{spacing} left the row {before_pt} tall"
         );
     }
 }

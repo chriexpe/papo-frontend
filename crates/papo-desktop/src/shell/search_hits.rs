@@ -105,7 +105,7 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
     let first = index == 0;
     let id = item.id();
     let version = (
-        style.theme,
+        style.look,
         style.layout,
         style.today,
         Arc::as_ptr(&item.content) as usize,

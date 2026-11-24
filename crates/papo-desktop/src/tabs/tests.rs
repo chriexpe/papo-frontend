@@ -148,7 +148,7 @@ fn switching_away_saves_the_place_once_and_switching_back_returns_to_it() {
     let reading = tabs.shown_mut().expect("shown");
     *reading = OpenTimeline::loaded(key(1), imbl::Vector::new());
     reading.tracker.bottom_shown(false);
-    reading.tracker.viewport_moved(100.0, 400.0, [0.0, 0.0]);
+    reading.tracker.viewport_moved(100.0, 400.0);
     reading.tracker.rows_visible(vec![message]);
     reading.tracker.row_moved(message, 95.0, 140.0);
 

@@ -341,6 +341,10 @@ fn slider_row(setting: &Row, slider: Slider, cx: &Ctx<'_>) -> El {
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_drag(move |shell: &mut Shell, drag, tx| {
+            if drag.phase == rune::Phase::Up && drag.cancelled() {
+                shell.settings_drag_cancelled();
+                return;
+            }
             let travel = (drag.w - SLIDER_THUMB_PT).max(1.0);
             let at = ((drag.x - SLIDER_THUMB_PT / 2.0) / travel).clamp(0.0, 1.0);
             let value = slider.min + at * span;

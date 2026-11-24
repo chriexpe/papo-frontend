@@ -11,7 +11,6 @@ use crate::design::{
     COMPOSER_HEIGHT, FOCUS_RING_PT, HEADER_PILL_HEIGHT, HINT_DELAY_S, HINT_GAP_PT,
     HINT_MAX_WIDTH_PT, HINT_PAD_PT, HINT_RADIUS, Look, PANE_EDGE_PT, PILL_ICON_PT, PILL_OUTLINE_PT,
     RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_SM, SPACE_XL, Surfaces, TYPE_BODY, TYPE_HINT,
-    Theme,
 };
 use crate::sdk_bridge::OpenFailure;
 use crate::sign_in::{self, Host};
@@ -50,7 +49,6 @@ pub(crate) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> El {
 /// first-run screens, or the app with its overlays.
 fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
     let look = *look;
-    let theme = look.theme();
     cx.help_look(hint_look(&look, look.theme().is_dark()));
     let surface = col().w_full().h_full().fill(look.palette.surface_content);
     match &shell.stage {
@@ -76,7 +74,7 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                 .padding(look.space(SPACE_LG))
                 .child(sign_in::screen(flow, &shell.fields, &look)),
             _ => {
-                let mut app = app(shell, theme, &look, cx);
+                let mut app = app(shell, &look, cx);
                 if let Some(server) = connected {
                     app = app.child(connected_pill(server, &look));
                 }
@@ -140,7 +138,7 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                 if let Some(resend) = resend_confirm(shell, &look) {
                     app = app.child(resend);
                 }
-                let style = timeline_style(shell, theme, &look, [0.0, 0.0]);
+                let style = timeline_style(shell, &look, [0.0, 0.0]);
                 if let Some(delete) = super::deleting::delete_confirm(shell, &style) {
                     app = app.child(delete);
                 }
@@ -172,19 +170,13 @@ fn hint_look(look: &Look, dark: bool) -> HelpLook {
 
 /// How the conversation's rows look, and the message a confirmation
 /// shows.
-fn timeline_style(
-    shell: &Shell,
-    theme: Theme,
-    look: &Look,
-    insets_pt: [f32; 2],
-) -> timeline::Style {
+fn timeline_style(shell: &Shell, look: &Look, insets_pt: [f32; 2]) -> timeline::Style {
     let selected = shell
         .composer
         .shown()
         .and_then(|(_, draft)| draft.mode.target());
     timeline::Style {
         layout: shell.appearance.appearance().messages,
-        theme,
         look: *look,
         time: shell.local_time.clone(),
         today: shell.today,
@@ -217,7 +209,7 @@ fn floating_insets(cx: &Cx<Shell>, look: &Look) -> [f32; 2] {
 
 /// The rail, the channel pane and the conversation with the composer pill
 /// at its foot.
-fn app(shell: &Shell, theme: Theme, look: &Look, cx: &Cx<Shell>) -> El {
+fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
     let title = shell.title();
     let placeholder = title.placeholder();
     let shown = shell.composer.shown();
@@ -239,7 +231,7 @@ fn app(shell: &Shell, theme: Theme, look: &Look, cx: &Cx<Shell>) -> El {
         }
         _ => composer::pill(&shell.composer, &context, look),
     };
-    let style = timeline_style(shell, theme, look, floating_insets(cx, look));
+    let style = timeline_style(shell, look, floating_insets(cx, look));
     let header = super::pins_panel::header(shell, &title, look);
     let panel = super::pins_panel::panel(shell, &style, cx)
         .or_else(|| super::search_panel::panel(shell, &title, &style, cx));
@@ -248,10 +240,22 @@ fn app(shell: &Shell, theme: Theme, look: &Look, cx: &Cx<Shell>) -> El {
     let foot = col()
         .key(FOOT_KEY)
         .pin(Some(0.0), None, Some(0.0), Some(0.0))
+        // A taller composer, a reply bar or the typing line covers more rows.
+        .on_layout_tx(|shell: &mut Shell, rect, tx| {
+            shell.floating_moved(super::reading::Floating::Foot, rect[3]);
+            tx.live_only();
+        })
         .padding(look.space(SPACE_LG))
         .child(composer)
         .children(typing_line(shell, look));
-    let header = header.map(|header| header.pin(Some(0.0), Some(0.0), Some(0.0), None));
+    let header = header.map(|header| {
+        header
+            .pin(Some(0.0), Some(0.0), Some(0.0), None)
+            .on_layout_tx(|shell: &mut Shell, rect, tx| {
+                shell.floating_moved(super::reading::Floating::Header, rect[3]);
+                tx.live_only();
+            })
+    });
     let conversation = col()
         .key("conversation")
         // A landmark, so F6 reaches it (`docs/design.md` §12).

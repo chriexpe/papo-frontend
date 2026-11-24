@@ -94,11 +94,15 @@ impl Tracker {
         }
     }
 
-    /// The viewport is at `top_pt`, `height_pt` tall, its top and bottom
-    /// `insets_pt` under the pills floating over it.
-    pub(crate) fn viewport_moved(&mut self, top_pt: f32, height_pt: f32, insets_pt: [f32; 2]) {
+    /// The viewport is at `top_pt`, `height_pt` tall.
+    pub(crate) fn viewport_moved(&mut self, top_pt: f32, height_pt: f32) {
         self.viewport_top_pt = Some(top_pt);
         self.viewport_height_pt = height_pt;
+    }
+
+    /// The pills floating over the viewport now cover `insets_pt` of its
+    /// top and bottom: rows under them no longer count as shown.
+    pub(crate) fn insets_moved(&mut self, insets_pt: [f32; 2]) {
         self.insets_pt = insets_pt;
     }
 
@@ -194,7 +198,7 @@ mod tests {
         let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let mut tracker = Tracker::new();
         tracker.bottom_shown(false);
-        tracker.viewport_moved(100.0, 400.0, [0.0, 0.0]);
+        tracker.viewport_moved(100.0, 400.0);
         tracker.rows_visible(vec![a, b]);
         assert_eq!(tracker.anchor(true), None);
         tracker.row_moved(b, 130.0, 130.0 + 20.0);
@@ -219,7 +223,7 @@ mod tests {
     fn the_bottom_of_a_window_that_does_not_follow_is_a_message() {
         let a = Uuid::from_u128(1);
         let mut tracker = Tracker::new();
-        tracker.viewport_moved(0.0, 400.0, [0.0, 0.0]);
+        tracker.viewport_moved(0.0, 400.0);
         tracker.rows_visible(vec![a]);
         tracker.row_moved(a, 10.0, 30.0);
         assert_eq!(tracker.anchor(true), Some(Anchor::Newest));
@@ -237,7 +241,7 @@ mod tests {
         let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let mut tracker = Tracker::new();
         tracker.bottom_shown(false);
-        tracker.viewport_moved(0.0, 400.0, [0.0, 0.0]);
+        tracker.viewport_moved(0.0, 400.0);
         tracker.rows_visible(vec![a, b]);
         tracker.row_moved(a, -10.0, -10.0 + 20.0);
         tracker.row_moved(b, 40.0, 40.0 + 20.0);
@@ -282,7 +286,8 @@ mod tests {
     #[test]
     fn a_row_under_the_pills_is_not_seen_nor_read_from() {
         let mut tracker = Tracker::new();
-        tracker.viewport_moved(100.0, 600.0, [56.0, 68.0]);
+        tracker.viewport_moved(100.0, 600.0);
+        tracker.insets_moved([56.0, 68.0]);
         let (under_header, shown, under_composer) =
             (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
         tracker.rows_visible(vec![under_header, shown, under_composer]);
