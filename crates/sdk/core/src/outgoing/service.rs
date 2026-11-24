@@ -410,6 +410,55 @@ impl OutgoingService {
         })
         .await
     }
+    /// Cancels a message's attachment upload (the whole message, never one file).
+    ///
+    /// A queued message becomes Failed at once. One being sent is stopped: if its last attachment
+    /// byte had not yet left, the server never had the whole message and it becomes Failed
+    /// ([`super::OperationFailure::Cancelled`]); otherwise it may already exist and becomes
+    /// Unknown, as for a lost answer. Either way Retry and Discard decide what follows. The
+    /// dispatcher records the outcome; this call returns once the stop is requested.
+    /// # Errors
+    /// Returns [`OutgoingError::InvalidState`] for a message without attachments or one that is
+    /// not queued or sending, [`OutgoingError::NotFound`] for an unknown identity.
+    pub async fn cancel_upload(&self, local: Uuid) -> Result<(), OutgoingError> {
+        self.run(move |this| async move {
+            this.ensure().await?;
+            let _guard = this.session.inner.outgoing.serial.lock().await;
+            let operation = this.operation(local)?;
+            let has_files = matches!(
+                operation.kind.as_ref(),
+                super::OperationKind::Message(message) if !message.attachments.is_empty()
+            );
+            if !has_files {
+                return Err(OutgoingError::InvalidState);
+            }
+            match operation.state {
+                OperationState::Queued => {
+                    this.session
+                        .client
+                        .inner
+                        .registry
+                        .outgoing_transition(
+                            this.session.clone(),
+                            local,
+                            OperationState::Queued,
+                            OperationState::Failed,
+                            None,
+                            Some(super::OperationFailure::Cancelled),
+                        )
+                        .await?;
+                    this.publish().await?;
+                    this.session.inner.outgoing.wake.notify_one();
+                    Ok(())
+                }
+                OperationState::Sending if this.session.inner.outgoing.cancel_in_flight(local) => {
+                    Ok(())
+                }
+                _ => Err(OutgoingError::InvalidState),
+            }
+        })
+        .await
+    }
     /// Discards an unresolved intent or dismisses a confirmed receipt; cannot cancel an in-flight send.
     /// Dependents fail explicitly rather than being retargeted or sent without their predecessor.
     /// # Errors

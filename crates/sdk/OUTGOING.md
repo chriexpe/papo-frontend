@@ -30,6 +30,17 @@ failures appear as an observable `OutgoingSnapshot.fault`, without preventing
 canonical live or focused history from opening. Mutations still require a
 successfully initialized durable queue.
 
+`cancel_upload(id)` stops a message's attachment upload, never one file. A Queued message
+becomes Failed (`Cancelled`) at once. For one in flight the dispatcher stops the request: if
+the last attachment byte had not yet been handed to the transport, the multipart body was
+never whole and it becomes Failed (`Cancelled`); otherwise it may exist and becomes Unknown.
+An attachment upload has no whole-request deadline: it fails only after a request timeout
+with no byte consumed, and once the body is handed over the answer gets five minutes, since
+socket buffers can still hold part of it on a slow link. Progress per attachment comes from
+`UploadProgress::per_attachment`; the limits are `MAX_ATTACHMENTS_PER_MESSAGE`,
+`MAX_ATTACHMENT_BYTES` and `MAX_MESSAGE_ATTACHMENT_BYTES`. `open_staged` reads a staged blob
+for display.
+
 `retry(id, AcceptPossibleDuplicate)` is the explicit user decision needed for
 Unknown. `DefiniteFailure` cannot retry Unknown. Neither gateway messages nor
 reconciliation resolve operations by matching text, filenames, author or time.

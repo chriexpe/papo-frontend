@@ -38,7 +38,8 @@ fn unresolved_channel_head_blocks_followers_but_not_another_channel() {
 
 #[test]
 fn classify_returns_queued_only_for_proven_not_dispatched_and_unknown_for_ambiguous_failures() {
-    let (state, outcome, failure) = classify(Err(papo_api::Error::NotDispatched));
+    let (state, outcome, failure) =
+        classify(Attempt::Answered(Err(papo_api::Error::NotDispatched)));
     assert_eq!(state, OperationState::Queued);
     assert!(outcome.is_none());
     assert!(failure.is_none());
@@ -50,13 +51,15 @@ fn classify_returns_queued_only_for_proven_not_dispatched_and_unknown_for_ambigu
         papo_api::Error::Http { status: 500 },
         papo_api::Error::Http { status: 503 },
     ] {
-        let (state, outcome, failure) = classify(Err(ambiguous));
+        let (state, outcome, failure) = classify(Attempt::Answered(Err(ambiguous)));
         assert_eq!(state, OperationState::Unknown);
         assert!(outcome.is_none());
         assert!(failure.is_none());
     }
 
-    let (state, outcome, failure) = classify(Err(papo_api::Error::Http { status: 403 }));
+    let (state, outcome, failure) = classify(Attempt::Answered(Err(papo_api::Error::Http {
+        status: 403,
+    })));
     assert_eq!(state, OperationState::Failed);
     assert!(outcome.is_none());
     assert_eq!(failure, Some(OperationFailure::Rejected(403)));
@@ -104,4 +107,18 @@ fn an_unresolved_reaction_does_not_hold_its_channel() {
         make(2, reaction(), OperationState::Queued),
     ];
     assert!(next(&snapshot).is_none());
+}
+
+#[test]
+fn a_cancel_before_the_last_byte_fails_and_after_it_stays_unknown() {
+    let (state, _, failure) = classify(Attempt::Cancelled {
+        body_complete: false,
+    });
+    assert_eq!(state, OperationState::Failed);
+    assert_eq!(failure, Some(OperationFailure::Cancelled));
+    let (state, _, failure) = classify(Attempt::Cancelled {
+        body_complete: true,
+    });
+    assert_eq!(state, OperationState::Unknown);
+    assert_eq!(failure, None);
 }

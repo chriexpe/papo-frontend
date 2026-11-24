@@ -82,6 +82,8 @@ pub enum OperationFailure {
     Rejected(u16),
     /// The predecessor was discarded or is not a same-channel creation.
     Dependency,
+    /// The sender cancelled the upload before the whole message reached the server.
+    Cancelled,
 }
 
 /// Caller decision for retry. Unknown requires acknowledging possible duplicate delivery.
@@ -239,6 +241,8 @@ pub(crate) struct AccountQueue {
     pub(crate) files_serial: Arc<Mutex<()>>,
     staged_pins: Arc<StagedPins>,
     active_uploads: std::sync::Mutex<Vec<std::sync::Weak<stream::ActiveUploadSlot>>>,
+    /// The attachment upload in flight and the token that cancels it; set only by the dispatcher.
+    in_flight: std::sync::Mutex<Option<(Uuid, tokio_util::sync::CancellationToken)>>,
     initialized: AtomicBool,
     running: AtomicBool,
     wake: Notify,
@@ -257,6 +261,7 @@ impl Default for AccountQueue {
             files_serial: Arc::new(Mutex::new(())),
             staged_pins: Arc::new(StagedPins::default()),
             active_uploads: std::sync::Mutex::new(Vec::new()),
+            in_flight: std::sync::Mutex::new(None),
             initialized: AtomicBool::new(false),
             running: AtomicBool::new(false),
             wake: Notify::new(),
@@ -265,6 +270,21 @@ impl Default for AccountQueue {
 }
 
 impl AccountQueue {
+    /// Signals the upload of `operation` to stop, if it is the one in flight.
+    pub(super) fn cancel_in_flight(&self, operation: Uuid) -> bool {
+        let in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match in_flight.as_ref() {
+            Some((id, token)) if *id == operation => {
+                token.cancel();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Atomically clears ephemeral upload progress and closes the outgoing observable.
     pub(crate) fn close_image(&self) {
         self.image.close_with(|current| {

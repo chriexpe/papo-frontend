@@ -142,6 +142,9 @@ impl ProgressCoalescer {
 
 pub(super) struct ProgressReporter {
     attempt: u32,
+    /// Every byte consumed, uncoalesced: the dispatcher's idle timeout and the cancel decision
+    /// read it, never the published snapshot.
+    consumed: tokio::sync::watch::Sender<u64>,
     coalescer: Mutex<ProgressCoalescer>,
     active: Arc<AtomicBool>,
     root_cancel: tokio_util::sync::CancellationToken,
@@ -170,6 +173,7 @@ impl ProgressReporter {
         let active = Arc::new(AtomicBool::new(true));
         let reporter = Arc::new(Self {
             attempt,
+            consumed: tokio::sync::watch::Sender::new(0),
             coalescer: Mutex::new(ProgressCoalescer::new(
                 account,
                 operation_id,
@@ -184,9 +188,18 @@ impl ProgressReporter {
         (reporter, ActiveProgressGuard { active })
     }
 
+    /// Observes the attachment bytes the transport has consumed in this attempt.
+    pub(super) fn consumed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.consumed.subscribe()
+    }
+
     pub(super) fn advance(&self, delta: u64) {
         if !self.active.load(Ordering::Acquire) || self.root_cancel.is_cancelled() {
             return;
+        }
+        if delta > 0 {
+            self.consumed
+                .send_modify(|total| *total = total.saturating_add(delta));
         }
         let next = {
             let mut coalescer = self
