@@ -41,7 +41,7 @@ impl OutgoingService {
         }
         Ok(())
     }
-    async fn run<
+    pub(super) async fn run<
         T: Send + 'static,
         F: Future<Output = Result<T, OutgoingError>> + Send + 'static,
     >(
@@ -98,6 +98,7 @@ impl OutgoingService {
             .outgoing_list(self.session.clone(), previous.clone())
             .await?;
         self.check()?;
+        queue.present_preparing(&mut operations);
         let old: std::collections::BTreeMap<_, _> =
             previous.operations.iter().map(|op| (op.id, op)).collect();
         for operation in &mut operations {
@@ -107,6 +108,8 @@ impl OutgoingService {
                 && old.failure == operation.failure
                 && old.message_id == operation.message_id
                 && old.history_projected == operation.history_projected
+                // A preparing message gets its files without changing state when ✕ was pressed.
+                && super::persistence::holds_files(old) == super::persistence::holds_files(operation)
             {
                 *operation = Arc::clone(old);
             }
@@ -168,52 +171,6 @@ impl OutgoingService {
                 .inner
                 .registry
                 .stage_reader(&this.session, reader, Uuid::nil())
-                .await
-        })
-        .await
-    }
-    /// Opens a staged attachment read-only, so a client can draw it (a tray tile after a relaunch,
-    /// the editor, an unsent message's media). Decoding for display is the client's.
-    ///
-    /// The handle reads the immutable staged bytes; drop it once read, since a held handle can
-    /// keep account removal from deleting the file on some platforms.
-    /// # Errors
-    /// Returns [`OutgoingError::NotFound`] for a blob of another account or one already
-    /// collected, or storage failures.
-    pub async fn open_staged(
-        &self,
-        staged: &StagedAttachment,
-    ) -> Result<std::fs::File, OutgoingError> {
-        let staged = staged.clone();
-        self.run(move |this| async move {
-            this.ensure().await?;
-            this.session
-                .client
-                .inner
-                .registry
-                .open_staged_file(&this.session, &staged)
-                .await
-        })
-        .await
-    }
-    /// Reads a staged file's format, displayed size and whether it is animated, without decoding
-    /// its pixels. A file that fails here (HEIC, TIFF, RAW, a video, a damaged image) is one that
-    /// anonymizing would refuse, so a client can say so when the switch is flipped; the same check
-    /// still runs at enqueue.
-    /// # Errors
-    /// Returns [`OutgoingError::Image`] with the typed reason, or account/storage failures.
-    pub async fn inspect_image(
-        &self,
-        staged: &StagedAttachment,
-    ) -> Result<crate::ImageInfo, OutgoingError> {
-        let staged = staged.clone();
-        self.run(move |this| async move {
-            this.ensure().await?;
-            this.session
-                .client
-                .inner
-                .registry
-                .outgoing_inspect_image(&this.session, &staged)
                 .await
         })
         .await
@@ -369,7 +326,20 @@ impl OutgoingService {
             this.ensure().await?;
             let _guard = this.session.inner.outgoing.serial.lock().await;
             let operation = this.operation(local)?;
-            if operation.failure == Some(super::OperationFailure::Dependency) {
+            // ✕ on a preparing message left its copy running: Retry only shows it Preparing again.
+            if this.session.inner.outgoing.retry_preparing(local) {
+                this.publish().await?;
+                return Ok(());
+            }
+            // A dependency that is gone or a file that is lost cannot come back: discard only.
+            if matches!(
+                operation.failure,
+                Some(
+                    super::OperationFailure::Dependency
+                        | super::OperationFailure::AttachmentLost
+                        | super::OperationFailure::AttachmentRefused
+                )
+            ) {
                 return Err(OutgoingError::InvalidState);
             }
             if operation.state == OperationState::Unknown
@@ -410,55 +380,6 @@ impl OutgoingService {
         })
         .await
     }
-    /// Cancels a message's attachment upload (the whole message, never one file).
-    ///
-    /// A queued message becomes Failed at once. One being sent is stopped: if its last attachment
-    /// byte had not yet left, the server never had the whole message and it becomes Failed
-    /// ([`super::OperationFailure::Cancelled`]); otherwise it may already exist and becomes
-    /// Unknown, as for a lost answer. Either way Retry and Discard decide what follows. The
-    /// dispatcher records the outcome; this call returns once the stop is requested.
-    /// # Errors
-    /// Returns [`OutgoingError::InvalidState`] for a message without attachments or one that is
-    /// not queued or sending, [`OutgoingError::NotFound`] for an unknown identity.
-    pub async fn cancel_upload(&self, local: Uuid) -> Result<(), OutgoingError> {
-        self.run(move |this| async move {
-            this.ensure().await?;
-            let _guard = this.session.inner.outgoing.serial.lock().await;
-            let operation = this.operation(local)?;
-            let has_files = matches!(
-                operation.kind.as_ref(),
-                super::OperationKind::Message(message) if !message.attachments.is_empty()
-            );
-            if !has_files {
-                return Err(OutgoingError::InvalidState);
-            }
-            match operation.state {
-                OperationState::Queued => {
-                    this.session
-                        .client
-                        .inner
-                        .registry
-                        .outgoing_transition(
-                            this.session.clone(),
-                            local,
-                            OperationState::Queued,
-                            OperationState::Failed,
-                            None,
-                            Some(super::OperationFailure::Cancelled),
-                        )
-                        .await?;
-                    this.publish().await?;
-                    this.session.inner.outgoing.wake.notify_one();
-                    Ok(())
-                }
-                OperationState::Sending if this.session.inner.outgoing.cancel_in_flight(local) => {
-                    Ok(())
-                }
-                _ => Err(OutgoingError::InvalidState),
-            }
-        })
-        .await
-    }
     /// Discards an unresolved intent or dismisses a confirmed receipt; cannot cancel an in-flight send.
     /// Dependents fail explicitly rather than being retargeted or sent without their predecessor.
     /// # Errors
@@ -467,6 +388,7 @@ impl OutgoingService {
         self.run(move |this| async move {
             this.ensure().await?;
             let _guard = this.session.inner.outgoing.serial.lock().await;
+            this.session.inner.outgoing.abandon_preparing(local);
             this.session
                 .client
                 .inner
@@ -480,7 +402,7 @@ impl OutgoingService {
         })
         .await
     }
-    fn operation(&self, id: Uuid) -> Result<Arc<Operation>, OutgoingError> {
+    pub(super) fn operation(&self, id: Uuid) -> Result<Arc<Operation>, OutgoingError> {
         self.session
             .inner
             .outgoing

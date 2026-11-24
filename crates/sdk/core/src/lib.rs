@@ -70,8 +70,8 @@ pub use outgoing::OutgoingFault;
 pub use outgoing::{
     AttachmentProgress, Draft, DraftBody, MessageTarget, Operation, OperationFailure,
     OperationKind, OperationState, OutgoingAttachment, OutgoingAttachmentContent, OutgoingError,
-    OutgoingMessage, OutgoingService, OutgoingSnapshot, RetryDecision, StagedAttachment,
-    UploadProgress,
+    OutgoingMessage, OutgoingService, OutgoingSnapshot, PendingAttachment, RetryDecision,
+    StagedAttachment, StagingFailure, UploadProgress,
 };
 pub use outgoing::{
     MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES,

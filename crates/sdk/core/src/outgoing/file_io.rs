@@ -44,6 +44,37 @@ impl Registry {
         Ok(())
     }
 
+    /// A slot for a copy or a read of staged files: the profile-wide permit, and this account's
+    /// shared `files_active` hold so shutdown waits for it. Never `files_serial`, which a copy
+    /// takes only for an instant to publish its blob.
+    pub(super) async fn copy_guard(
+        &self,
+        session: &Session,
+    ) -> Result<
+        (
+            tokio::sync::OwnedSemaphorePermit,
+            tokio::sync::OwnedRwLockReadGuard<()>,
+        ),
+        OutgoingError,
+    > {
+        let pool = session.client.inner.outgoing_files.clone();
+        let permit = tokio::select! {
+            biased;
+            () = session.inner.root.cancelled() => return Err(ClientError::Closed.into()),
+            permit = pool.acquire_owned() => permit.map_err(|_| OutgoingError::InvalidState)?,
+        };
+        let active = tokio::select! {
+            biased;
+            () = session.inner.root.cancelled() => return Err(ClientError::Closed.into()),
+            active = session.inner.outgoing.files_active.clone().read_owned() => active,
+        };
+        if session.is_closed() {
+            return Err(ClientError::Closed.into());
+        }
+        Ok((permit, active))
+    }
+
+    /// Exclusive slot for collection: the collection permit and `files_serial`.
     pub(super) async fn file_guard(
         &self,
         session: &Session,
@@ -81,9 +112,7 @@ impl Registry {
         reader: R,
         identity: Uuid,
     ) -> Result<StagedAttachment, OutgoingError> {
-        let guard = self
-            .file_guard(session, session.client.inner.outgoing_files.clone())
-            .await?;
+        let guard = self.copy_guard(session).await?;
         let token = session.inner.tasks.token();
         if session.is_closed() {
             return Err(ClientError::Closed.into());
@@ -95,7 +124,7 @@ impl Registry {
         tokio::task::spawn_blocking(move || {
             let (_guard, _token, _lease) = (guard, token, lease);
             let mut notified = false;
-            let reference = files::stage_reader(
+            let (reference, pin) = files::stage_reader_published(
                 &root,
                 account,
                 reader,
@@ -106,13 +135,8 @@ impl Registry {
                         notify_staging_probe(&session, identity);
                     }
                 },
+                |name| publish_pinned(&session, name),
             )?;
-            // Pin before releasing files_serial so background collection cannot unlink the blob
-            // while the caller still holds the returned StagedAttachment.
-            let pin = session
-                .inner
-                .outgoing
-                .pin_staged(files::digest_hex(&reference.digest));
             Ok(StagedAttachment::with_pin(
                 account,
                 reference.digest,
@@ -135,9 +159,7 @@ impl Registry {
         if inputs.is_empty() {
             return Ok((Vec::new(), 0));
         }
-        let guard = self
-            .file_guard(session, session.client.inner.outgoing_files.clone())
-            .await?;
+        let guard = self.copy_guard(session).await?;
         let token = session.inner.tasks.token();
         if session.is_closed() {
             return Err(ClientError::Closed.into());
@@ -156,7 +178,9 @@ impl Registry {
             for input in inputs {
                 match input {
                     AttachmentInput::Inline(bytes) => {
-                        let reference = files::stage_reader(
+                        // Callers hold the queue's serial lock until their commit, which keeps
+                        // collection out; the pin covers the instant before that.
+                        let (reference, pin) = files::stage_reader_published(
                             &root,
                             account,
                             Cursor::new(bytes),
@@ -167,7 +191,9 @@ impl Registry {
                                     notify_staging_probe(&session, identity);
                                 }
                             },
+                            |name| publish_pinned(&session, name),
                         )?;
+                        drop(pin);
                         refs.push(reference);
                     }
                     AttachmentInput::Staged(reference) => {
@@ -280,6 +306,13 @@ impl Registry {
         .await
         .map_err(|_| OutgoingError::InvalidData)?
     }
+}
+
+/// Pins a finished blob under `files_serial`, so collection cannot run between the pin and the
+/// blob appearing under its name. Runs on a blocking worker.
+pub(super) fn publish_pinned(session: &Session, name: &str) -> std::sync::Arc<super::StagedPin> {
+    let _serial = session.inner.outgoing.files_serial.blocking_lock();
+    session.inner.outgoing.pin_staged(name.to_owned())
 }
 
 #[cfg(feature = "test-support")]

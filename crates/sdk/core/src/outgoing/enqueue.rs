@@ -6,7 +6,7 @@ use crate::{Registry, Session};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 const MAX_RETAINED_OPERATIONS: i64 = 256;
-const MAX_RETAINED_BYTES: i64 = 256 * 1024 * 1024;
+pub(super) const MAX_RETAINED_BYTES: i64 = 256 * 1024 * 1024;
 
 const ADMISSION_USAGE_SQL: &str = "
     SELECT count(*), coalesce(sum(length(payload) + attachment_bytes), 0)
@@ -28,7 +28,10 @@ const INSERT_OPERATION_SQL: &str = "
     )
     VALUES (?1, ?2, ?3, ?4, 'sdk-v1', ?5, ?6, 'Queued', ?7, ?8, ?9, ?10)";
 
-fn ensure_unique_local_id(tx: &Transaction<'_>, local: Uuid) -> Result<(), OutgoingError> {
+pub(super) fn ensure_unique_local_id(
+    tx: &Transaction<'_>,
+    local: Uuid,
+) -> Result<(), OutgoingError> {
     let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM operations WHERE local_id = ?1)",
         [local.as_bytes()],
@@ -40,7 +43,7 @@ fn ensure_unique_local_id(tx: &Transaction<'_>, local: Uuid) -> Result<(), Outgo
     Ok(())
 }
 
-fn check_admission_budget(
+pub(super) fn check_admission_budget(
     tx: &Transaction<'_>,
     account: AccountId,
     payload_len: usize,
@@ -61,7 +64,7 @@ fn check_admission_budget(
     Ok(())
 }
 
-fn verify_dependency(
+pub(super) fn verify_dependency(
     tx: &Transaction<'_>,
     account: AccountId,
     channel: Uuid,
@@ -110,6 +113,16 @@ impl Registry {
             }
         };
         kind.validate()?;
+        if let OperationKind::Message(message) = &kind
+            && super::preparing::has_copying(message)
+        {
+            if draft_revision.is_some() || expected_generation.is_some() {
+                return Err(OutgoingError::InvalidInput);
+            }
+            return self
+                .outgoing_enqueue_preparing(session, channel, local, kind, created_at_us)
+                .await;
+        }
         // Edited copies are unreferenced until the commit below; holding their handles keeps
         // background collection from deleting them in between.
         let mut held_edits = Vec::new();

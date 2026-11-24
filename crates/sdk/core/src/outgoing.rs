@@ -1,5 +1,6 @@
 //! Durable account-owned operations and drafts; transport is API work, timeline projection belongs to UI.
 
+mod attachment_service;
 mod content;
 pub(crate) mod dispatch;
 mod drafts;
@@ -7,7 +8,9 @@ mod enqueue;
 mod file_io;
 pub(crate) mod files;
 mod image_edit;
+mod pending;
 mod persistence;
+mod preparing;
 mod progress;
 mod projection;
 mod receipt;
@@ -25,6 +28,7 @@ pub use content::{
 pub use content::{
     MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES,
 };
+pub use pending::{PendingAttachment, StagingFailure};
 pub use progress::{AttachmentProgress, UploadProgress};
 pub use service::OutgoingService;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -34,6 +38,11 @@ use tokio::sync::{Mutex, Notify};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum OperationState {
+    /// Committed while one of its files is still being copied into staging; becomes Queued when
+    /// every file is ready. Never stored as such: the row holds what it becomes if the process
+    /// ends first (Failed, [`OperationFailure::AttachmentLost`]), and this state is shown while
+    /// the copy runs. Not dispatched; holds its channel's order like any unresolved work.
+    Preparing,
     /// Durable intent, with no dispatch yet claimed.
     Queued,
     /// FULL committed before a single attempt; interruption is ambiguous.
@@ -49,6 +58,8 @@ pub enum OperationState {
 impl OperationState {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
+            // Never written: the schema refuses it, so a mistake fails instead of persisting.
+            Self::Preparing => "Preparing",
             Self::Queued => "Queued",
             Self::Sending => "Sending",
             Self::Sent => "Sent",
@@ -84,6 +95,12 @@ pub enum OperationFailure {
     Dependency,
     /// The sender cancelled the upload before the whole message reached the server.
     Cancelled,
+    /// A file still being copied was lost (the copy failed, or the process ended first). The
+    /// message cannot be retried; discard it and attach the file again.
+    AttachmentLost,
+    /// A file could not be prepared as asked once its copy ended: anonymizing refused it, or it
+    /// passed a size limit or the account's queue budget. Discard only.
+    AttachmentRefused,
 }
 
 /// Caller decision for retry. Unknown requires acknowledging possible duplicate delivery.
@@ -239,10 +256,16 @@ pub(crate) struct AccountQueue {
     pub image: Arc<crate::observable::StateCell<Arc<OutgoingSnapshot>>>,
     serial: Mutex<()>,
     pub(crate) files_serial: Arc<Mutex<()>>,
+    /// Held shared by every staging copy and exclusively by account shutdown, which so waits for
+    /// copies to stop before the staging directory goes. Copies take `files_serial` only to
+    /// publish a finished blob, so collection, enqueue and discard never wait for a long copy.
+    pub(crate) files_active: Arc<tokio::sync::RwLock<()>>,
     staged_pins: Arc<StagedPins>,
     active_uploads: std::sync::Mutex<Vec<std::sync::Weak<stream::ActiveUploadSlot>>>,
     /// The attachment upload in flight and the token that cancels it; set only by the dispatcher.
     in_flight: std::sync::Mutex<Option<(Uuid, tokio_util::sync::CancellationToken)>>,
+    /// Messages committed while a file is still copying, shown as Preparing; see `preparing`.
+    preparing: std::sync::Mutex<std::collections::BTreeMap<Uuid, preparing::Preparing>>,
     initialized: AtomicBool,
     running: AtomicBool,
     wake: Notify,
@@ -259,9 +282,11 @@ impl Default for AccountQueue {
             })),
             serial: Mutex::new(()),
             files_serial: Arc::new(Mutex::new(())),
+            files_active: Arc::new(tokio::sync::RwLock::new(())),
             staged_pins: Arc::new(StagedPins::default()),
             active_uploads: std::sync::Mutex::new(Vec::new()),
             in_flight: std::sync::Mutex::new(None),
+            preparing: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             initialized: AtomicBool::new(false),
             running: AtomicBool::new(false),
             wake: Notify::new(),

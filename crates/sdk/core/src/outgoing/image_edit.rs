@@ -70,7 +70,9 @@ impl Registry {
                 self.stage_reader(session, Cursor::new(bytes), identity)
                     .await
             }
-            OutgoingAttachmentContent::Released => Err(OutgoingError::InvalidInput),
+            OutgoingAttachmentContent::Pending(_) | OutgoingAttachmentContent::Released => {
+                Err(OutgoingError::InvalidInput)
+            }
         }
     }
 
@@ -81,9 +83,7 @@ impl Registry {
         original: &StagedAttachment,
         edit: AttachmentEdit,
     ) -> Result<(StagedAttachment, ImageFormat), OutgoingError> {
-        let guard = self
-            .file_guard(session, session.client.inner.outgoing_files.clone())
-            .await?;
+        let guard = self.copy_guard(session).await?;
         let token = session.inner.tasks.token();
         if session.is_closed() {
             return Err(ClientError::Closed.into());
@@ -100,7 +100,7 @@ impl Registry {
             let (_guard, _token, _lease) = (guard, token, lease);
             let mut reader = BufReader::new(files::open_for_upload(&root, account, source)?);
             let mut written = None;
-            let reference = files::stage_stream(
+            let (reference, pin) = files::stage_stream(
                 &root,
                 account,
                 || session.is_closed(),
@@ -109,12 +109,9 @@ impl Registry {
                     written = Some(images::apply(&mut reader, sink, &edit)?);
                     Ok(())
                 },
+                |name| super::file_io::publish_pinned(&session, name),
             )?;
             let format = written.ok_or(OutgoingError::InvalidState)?;
-            let pin = session
-                .inner
-                .outgoing
-                .pin_staged(files::digest_hex(&reference.digest));
             Ok((
                 StagedAttachment::with_pin(account, reference.digest, reference.size_bytes, pin),
                 format,
@@ -171,9 +168,7 @@ impl Registry {
         + Send
         + 'static,
     ) -> Result<T, OutgoingError> {
-        let guard = self
-            .file_guard(session, session.client.inner.outgoing_files.clone())
-            .await?;
+        let guard = self.copy_guard(session).await?;
         let token = session.inner.tasks.token();
         if session.is_closed() {
             return Err(ClientError::Closed.into());

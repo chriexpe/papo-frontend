@@ -120,6 +120,10 @@ pub enum OutgoingAttachmentContent {
     /// Never serialized into SQLite payloads; durable references live in the `files` column.
     #[serde(skip)]
     Staged(StagedAttachment),
+    /// A file still being copied into staging ([`super::OutgoingService::begin_staging`]).
+    /// Only an enqueue takes it (the message waits as Preparing); a draft refuses it.
+    #[serde(skip)]
+    Pending(super::PendingAttachment),
     /// Metadata retained on a confirmed `Sent` receipt after its staged blob was released.
     #[default]
     Released,
@@ -162,6 +166,26 @@ impl OutgoingAttachment {
         }
     }
 
+    /// Creates an attachment from a file still being copied into staging. A message holding one
+    /// is committed at once and waits as Preparing until every file is ready.
+    #[must_use]
+    pub fn from_pending(filename: impl Into<String>, pending: super::PendingAttachment) -> Self {
+        Self {
+            filename: filename.into(),
+            content: OutgoingAttachmentContent::Pending(pending),
+            edit: AttachmentEdit::default(),
+        }
+    }
+
+    /// The copy in progress, when constructed with [`Self::from_pending`].
+    #[must_use]
+    pub const fn pending(&self) -> Option<&super::PendingAttachment> {
+        match &self.content {
+            OutgoingAttachmentContent::Pending(pending) => Some(pending),
+            _ => None,
+        }
+    }
+
     /// The edit applied when the message is enqueued; the default sends the bytes unchanged.
     #[must_use]
     pub const fn edit(&self) -> &AttachmentEdit {
@@ -192,7 +216,9 @@ impl OutgoingAttachment {
     pub fn inline_bytes(&self) -> Option<&[u8]> {
         match &self.content {
             OutgoingAttachmentContent::Bytes(bytes) => Some(bytes.as_slice()),
-            OutgoingAttachmentContent::Staged(_) | OutgoingAttachmentContent::Released => None,
+            OutgoingAttachmentContent::Staged(_)
+            | OutgoingAttachmentContent::Pending(_)
+            | OutgoingAttachmentContent::Released => None,
         }
     }
 
@@ -201,7 +227,9 @@ impl OutgoingAttachment {
     pub const fn staged(&self) -> Option<&StagedAttachment> {
         match &self.content {
             OutgoingAttachmentContent::Staged(staged) => Some(staged),
-            OutgoingAttachmentContent::Bytes(_) | OutgoingAttachmentContent::Released => None,
+            OutgoingAttachmentContent::Bytes(_)
+            | OutgoingAttachmentContent::Pending(_)
+            | OutgoingAttachmentContent::Released => None,
         }
     }
 
@@ -211,13 +239,13 @@ impl OutgoingAttachment {
         matches!(self.content, OutgoingAttachmentContent::Released)
     }
 
-    /// Known byte size of inline or staged payload; zero once released after `Sent`.
+    /// Known byte size of inline or staged payload; zero while pending and once released.
     #[must_use]
     pub const fn size_bytes(&self) -> u64 {
         match &self.content {
             OutgoingAttachmentContent::Bytes(bytes) => bytes.len() as u64,
             OutgoingAttachmentContent::Staged(staged) => staged.size_bytes,
-            OutgoingAttachmentContent::Released => 0,
+            OutgoingAttachmentContent::Pending(_) | OutgoingAttachmentContent::Released => 0,
         }
     }
 

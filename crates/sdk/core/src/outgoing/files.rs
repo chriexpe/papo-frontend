@@ -162,19 +162,24 @@ impl<C: FnMut() -> bool, N: FnMut()> StagingSink<C, N> {
 /// Streams what `fill` writes into a private temporary file, hashing incrementally and enforcing
 /// the 100 MiB ceiling during writing before syncing and atomically publishing `<sha256>`.
 /// A sink failure (cancellation, ceiling, storage) wins over whatever error `fill` reports.
-pub(super) fn stage_stream(
+///
+/// `publish` runs once the digest is known and before the blob appears under its name; what it
+/// returns (a lock against collection, a pin) is held until the blob is in place and then handed
+/// back, so collection can never see the new name unprotected.
+pub(super) fn stage_stream<P>(
     root: &Path,
     account: AccountId,
     mut cancelled: impl FnMut() -> bool,
     copied_chunk: impl FnMut(),
     fill: impl FnOnce(&mut dyn Write) -> Result<(), OutgoingError>,
-) -> Result<Reference, OutgoingError> {
+    publish: impl FnOnce(&str) -> P,
+) -> Result<(Reference, P), OutgoingError> {
     if cancelled() {
         return Err(ClientError::Closed.into());
     }
     let directory = ensure_account_directories(root, account)?;
     let seq = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-    let temp_path = directory.join(format!(".tmp-{}-{seq}", std::process::id()));
+    let temp_path = directory.join(format!("{}{seq}", temp_prefix()));
     let mut temp_guard = TempFileGuard::new(temp_path.clone());
     let temp_file = crate::private_fs::new_staged_temp_file(&temp_path)?;
 
@@ -202,7 +207,14 @@ pub(super) fn stage_stream(
         .map_err(|error| StorageError::from(error.into_error()))?;
 
     let digest: [u8; 32] = hasher.finalize().into();
-    let final_path = directory.join(digest_hex(&digest));
+    let name = digest_hex(&digest);
+    let final_path = directory.join(&name);
+    temp_file.sync_all().map_err(StorageError::from)?;
+    let published = publish(&name);
+    let reference = Reference {
+        digest,
+        size_bytes: total_bytes,
+    };
 
     if existing_matches(&final_path, digest, total_bytes)? {
         drop(temp_file);
@@ -210,13 +222,9 @@ pub(super) fn stage_stream(
         drop(temp_guard);
         #[cfg(unix)]
         sync_directories(root, &directory)?;
-        return Ok(Reference {
-            digest,
-            size_bytes: total_bytes,
-        });
+        return Ok((reference, published));
     }
 
-    temp_file.sync_all().map_err(StorageError::from)?;
     drop(temp_file);
     #[cfg(windows)]
     if fs::symlink_metadata(&final_path).is_ok() {
@@ -226,37 +234,61 @@ pub(super) fn stage_stream(
     temp_guard.disarm();
     #[cfg(unix)]
     sync_directories(root, &directory)?;
-    Ok(Reference {
-        digest,
-        size_bytes: total_bytes,
-    })
+    Ok((reference, published))
 }
 
-/// Streams a reader into staging through [`stage_stream`].
+/// Names this process gives its copies in progress; collection leaves them alone, while
+/// leftovers of an earlier process (another id) are collected.
+fn temp_prefix() -> String {
+    format!(".tmp-{}-", std::process::id())
+}
+
+#[cfg(test)]
+/// Streams a reader into staging through [`stage_stream`], with nothing to hold while publishing.
 pub(super) fn stage_reader<R: Read>(
+    root: &Path,
+    account: AccountId,
+    reader: R,
+    cancelled: impl FnMut() -> bool,
+    copied_chunk: impl FnMut(),
+) -> Result<Reference, OutgoingError> {
+    stage_reader_published(root, account, reader, cancelled, copied_chunk, |_| ())
+        .map(|(reference, ())| reference)
+}
+
+/// Streams a reader into staging through [`stage_stream`], holding what `publish` returns.
+pub(super) fn stage_reader_published<R: Read, P>(
     root: &Path,
     account: AccountId,
     mut reader: R,
     cancelled: impl FnMut() -> bool,
     copied_chunk: impl FnMut(),
-) -> Result<Reference, OutgoingError> {
-    stage_stream(root, account, cancelled, copied_chunk, |sink| {
-        let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-        loop {
-            let read = loop {
-                match reader.read(&mut buffer) {
-                    Ok(count) => break count,
-                    Err(error) if error.kind() == ErrorKind::Interrupted => {}
-                    Err(error) => return Err(OutgoingError::Source(error.kind())),
+    publish: impl FnOnce(&str) -> P,
+) -> Result<(Reference, P), OutgoingError> {
+    stage_stream(
+        root,
+        account,
+        cancelled,
+        copied_chunk,
+        |sink| {
+            let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
+            loop {
+                let read = loop {
+                    match reader.read(&mut buffer) {
+                        Ok(count) => break count,
+                        Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                        Err(error) => return Err(OutgoingError::Source(error.kind())),
+                    }
+                };
+                if read == 0 {
+                    return Ok(());
                 }
-            };
-            if read == 0 {
-                return Ok(());
+                sink.write_all(&buffer[..read])
+                    .map_err(|_| OutgoingError::InvalidState)?;
             }
-            sink.write_all(&buffer[..read])
-                .map_err(|_| OutgoingError::InvalidState)?;
-        }
-    })
+        },
+        publish,
+    )
 }
 
 fn existing_matches(path: &Path, digest: [u8; 32], size_bytes: u64) -> Result<bool, StorageError> {
@@ -323,7 +355,9 @@ pub(super) fn detach_inputs(
                     size_bytes: staged.size_bytes(),
                 }));
             }
-            OutgoingAttachmentContent::Released => return Err(OutgoingError::InvalidInput),
+            OutgoingAttachmentContent::Pending(_) | OutgoingAttachmentContent::Released => {
+                return Err(OutgoingError::InvalidInput);
+            }
         }
     }
     Ok(inputs)
@@ -392,9 +426,11 @@ pub(super) fn collect(
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
+    let in_progress = temp_prefix();
     for entry in entries {
         let entry = entry?;
-        if !names.contains(&entry.file_name().to_string_lossy().into_owned()) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !names.contains(&name) && !name.starts_with(&in_progress) {
             fs::remove_file(entry.path())?;
         }
     }

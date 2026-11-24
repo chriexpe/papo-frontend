@@ -135,6 +135,7 @@ impl SessionInner {
             .stop_and_drain(crate::CallEndReason::Shutdown)
             .await;
         self.root.cancel();
+        drop(self.outgoing.files_active.write().await);
         drop(self.outgoing.files_serial.lock().await);
         self.history.close_all().await;
         self.reading.close();
