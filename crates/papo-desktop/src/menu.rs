@@ -341,6 +341,8 @@ pub(crate) fn view(menu: &OpenMenu, body: Option<El>, look: &Look, cx: &Cx<Shell
         .map(|(index, entry)| line(entry, Some(index) == first, look));
     let (width, role) = match (&body, &menu.card) {
         (Some(_), Some(_)) => (PROFILE_CARD_WIDTH_PT, "dialog"),
+        // A channel's description is as wide as it was opened.
+        (Some(_), None) if menu.description.is_some() => (width, "dialog"),
         (Some(_), None) => (REACTIONS_WIDTH_PT, "dialog"),
         (None, _) => (width, "menu"),
     };

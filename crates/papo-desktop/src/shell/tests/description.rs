@@ -100,29 +100,47 @@ fn a_channel_without_a_topic_shows_and_opens_nothing() {
     assert!(rt.state.nav.menu.is_none());
 }
 
+fn rect_of(rt: &Runtime<Shell>, key: &str) -> [f32; 4] {
+    rt.elements()
+        .into_iter()
+        .find(|element| element.key.as_deref() == Some(key))
+        .unwrap_or_else(|| panic!("no {key}"))
+        .rect
+}
+
 #[test]
-fn a_long_topic_scrolls_inside_a_strip_of_its_widest() {
+fn a_long_topic_scrolls_in_a_strip_that_stops_before_the_actions_pill() {
     let long = "A channel for everything that happens around the place, ".repeat(3);
     let mut rt = on_general(Some(&long));
     opened(&mut rt);
     for _ in 0..3 {
         rt.frame(FRAME_S);
     }
+    let strip = rect_of(&rt, STRIP_KEY);
+    let actions = rect_of(&rt, "actions-pill");
+    assert!(
+        strip[0] + strip[2] < actions[0],
+        "the pill stops before the actions pill: {strip:?} {actions:?}"
+    );
     let measured = rt.state.description_width();
     assert!(
-        measured.is_some_and(|width_pt| width_pt > 320.0),
-        "the topic measures on one line: {measured:?}"
+        measured.is_some_and(|width_pt| width_pt > strip[2]),
+        "the topic is longer than the strip, so it scrolls: {measured:?} {strip:?}"
     );
-    let strip = rt
-        .elements()
-        .into_iter()
-        .find(|element| element.key.as_deref() == Some("title-description"))
-        .expect("the strip");
+}
+
+#[test]
+fn a_topic_with_line_breaks_shows_on_one_line() {
+    let mut rt = on_general(Some("SUBJECT TO CHANGE.\n\nSecond paragraph"));
+    opened(&mut rt);
+    rt.frame(FRAME_S);
+    let strip = rect_of(&rt, STRIP_KEY);
+    let pill = rect_of(&rt, TITLE_PILL_KEY);
     assert!(
-        strip.rect[2] < 340.0,
-        "held to its widest: {:?}",
-        strip.rect
+        strip[3] <= pill[3],
+        "inside the pill's height: {strip:?} {pill:?}"
     );
+    assert!(tree(&rt).contains("SUBJECT TO CHANGE. Second paragraph"));
 }
 
 #[test]
@@ -137,4 +155,47 @@ fn once_the_strip_has_gone_the_window_rests() {
         (0..120).any(|_| !rt.frame(FRAME_S)),
         "the scrolling stops with the strip"
     );
+}
+
+#[test]
+fn the_panel_fits_the_topic_up_to_a_quarter_of_the_window_and_wraps_past_it() {
+    let long = "A channel for everything that happens around the place, ".repeat(4);
+    let mut rt = on_general(Some(&long));
+    opened(&mut rt);
+    rt.frame(FRAME_S);
+    click(&mut rt, TITLE_PILL_KEY);
+    rt.frame(FRAME_S);
+    let header = rect_of(&rt, "conversation-header");
+    let window_pt = header[0] + header[2];
+    let width_pt = rt
+        .state
+        .nav
+        .menu
+        .as_ref()
+        .map(|menu| menu.width_pt)
+        .unwrap();
+    assert!(
+        width_pt <= (window_pt / 4.0).max(280.0) + 0.5,
+        "{width_pt} in a {window_pt} window"
+    );
+    let menu = rect_of(&rt, crate::menu::MENU_KEY);
+    assert!(
+        (menu[2] - width_pt).abs() < 1.0,
+        "as wide as opened: {menu:?}"
+    );
+    assert!(menu[3] > 60.0, "on several lines: {menu:?}");
+
+    // A short topic gets a panel as narrow as the panel allows.
+    let mut rt = on_general(Some("Daily chat"));
+    opened(&mut rt);
+    rt.frame(FRAME_S);
+    click(&mut rt, TITLE_PILL_KEY);
+    let width_pt = rt
+        .state
+        .nav
+        .menu
+        .as_ref()
+        .map(|menu| menu.width_pt)
+        .unwrap();
+    assert!((width_pt - 280.0).abs() < 0.5, "{width_pt}");
 }

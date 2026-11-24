@@ -90,6 +90,8 @@ pub(crate) const TITLE_PILL_KEY: &str = "title-pill";
 pub(super) fn pill(title: &Title<'_>, strip: Option<El>, described: bool, look: &Look) -> El {
     let mut pill = row()
         .key(TITLE_PILL_KEY)
+        // Its description shrinks to what the header leaves it.
+        .shrink()
         .h(look.space(HEADER_PILL_HEIGHT))
         .px(look.space(SPACE_LG))
         .gap(look.space(SPACE_SM))

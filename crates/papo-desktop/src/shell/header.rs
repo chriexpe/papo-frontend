@@ -37,6 +37,10 @@ pub(super) fn header(shell: &Shell, title: &Title<'_>, look: &Look) -> Option<El
             .w_full()
             .px(look.space(SPACE_LG))
             .pt(look.space(SPACE_LG))
+            // A title pill stretched by its description stops one gap before
+            // the actions pill.
+            .gap(look.space(SPACE_LG))
+            .on_layout(|shell: &mut Shell, rect: [f32; 4]| shell.header_measured(rect))
             .center_y()
             .justify_between()
             .child(title_pill)

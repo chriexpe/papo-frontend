@@ -1,7 +1,8 @@
 //! A channel's description (`docs/design.md` §8, Conversations rows):
 //! when a channel with a topic opens, its title pill stretches to the
 //! right and the topic scrolls beside the name, past a hairline, for six
-//! seconds (with "Description when opening a channel" on); while the
+//! seconds (with "Description when opening a channel" on), on one line,
+//! scrolling when it is longer than the header leaves it; while the
 //! pointer is on the pill the strip shows whatever the setting. A press on
 //! the pill opens the whole topic, wrapped, in a panel grown from it, which
 //! an outside press or Escape closes, as the menus do.
@@ -15,19 +16,23 @@ use std::time::Duration;
 use rune::{Easing, El, LoopSpec, Tx, col, el, row, text};
 
 use super::Shell;
-use crate::design::{Look, PANE_EDGE_PT, SPACE_LG, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_SMALL};
+use crate::design::{Look, PANE_EDGE_PT, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_SMALL};
 use crate::menu::{OpenMenu, Placement};
 
 /// How long the strip shows when a channel opens.
 const STRIP_S: f64 = 6.0;
-/// The strip's widest, in points; a longer topic scrolls inside it.
-const STRIP_MOST_PT: f32 = 320.0;
 /// How fast a long topic scrolls, in points a second.
 const SCROLL_PT_PER_S: f32 = 36.0;
 /// The soft fade at the strip's ends, in points.
 const STRIP_FADE_PT: f32 = 12.0;
-/// The panel's width, in points.
-const PANEL_WIDTH_PT: f32 = 360.0;
+/// The panel's narrowest, in points; its widest is a quarter of the
+/// window.
+const PANEL_LEAST_PT: f32 = 280.0;
+/// The panel's padding either side of the topic, in points.
+const PANEL_PADDING_PT: f32 = 16.0;
+/// The menu's own padding around the panel's body, both sides, at the
+/// largest spacing (`space.sm` at ×1.25), so a topic that fits never wraps.
+const MENU_PADDING_PT: f32 = 20.0;
 /// Between the topic and its repeat while it scrolls.
 const REPEAT_GAP: &str = "    ·    ";
 
@@ -41,6 +46,10 @@ pub(crate) struct Description {
     hovered: bool,
     /// The topic's width on one line, once laid out.
     topic_pt: Option<f32>,
+    /// The strip's width, as the header leaves it.
+    strip_pt: Option<f32>,
+    /// The window's width, from the header's right edge.
+    window_pt: Option<f32>,
 }
 
 impl Shell {
@@ -60,7 +69,11 @@ impl Shell {
     /// A conversation opened: with the setting on and a topic, the strip
     /// shows for six seconds.
     pub(super) fn description_opened(&mut self, tx: &mut Tx) {
-        self.description = Description::default();
+        // The window's width holds across channels; the topic's does not.
+        self.description = Description {
+            window_pt: self.description.window_pt,
+            ..Description::default()
+        };
         if !self.conversations.settings().channel_description || self.shown_topic().is_none() {
             return;
         }
@@ -107,60 +120,91 @@ impl Shell {
     }
 
     /// A press on the title pill: the whole topic in a panel under it, or
-    /// nothing for a channel without one.
+    /// nothing for a channel without one. The panel is as wide as the topic
+    /// on one line, between its narrowest and a quarter of the window;
+    /// past that the topic wraps.
     pub(crate) fn open_description(&mut self, tx: &mut Tx) {
         let Some(topic) = self.shown_topic().map(str::to_owned) else {
             return;
         };
+        let most_pt = self
+            .description
+            .window_pt
+            .map_or(PANEL_LEAST_PT, |window_pt| {
+                (window_pt / 4.0).max(PANEL_LEAST_PT)
+            });
+        let width_pt = self.description.topic_pt.map_or(most_pt, |topic_pt| {
+            (topic_pt + PANEL_PADDING_PT * 2.0 + MENU_PADDING_PT).clamp(PANEL_LEAST_PT, most_pt)
+        });
         let mut menu = OpenMenu::with_entries(
             Placement::Below(super::title::TITLE_PILL_KEY.to_owned()),
             super::title::TITLE_PILL_KEY.to_owned(),
             Vec::new(),
-            PANEL_WIDTH_PT,
+            width_pt,
         );
         menu.description = Some(topic);
         self.nav.menu = Some(menu);
         tx.focus(crate::menu::MENU_KEY, true);
     }
 
-    /// The topic beside the name: as wide as the topic up to the strip's
-    /// widest, scrolling when it is longer.
+    /// The header was laid out at `rect`: its right edge is the window's.
+    pub(crate) fn header_measured(&mut self, rect: [f32; 4]) {
+        let window_pt = rect[0] + rect[2];
+        if self.description.window_pt != Some(window_pt) {
+            self.description.window_pt = Some(window_pt);
+        }
+    }
+
+    /// The strip's window was laid out this wide.
+    pub(crate) fn strip_measured(&mut self, width_pt: f32) {
+        if self.description.strip_pt != Some(width_pt) {
+            self.description.strip_pt = Some(width_pt);
+        }
+    }
+
+    /// The topic beside the name, on one line: as wide as the topic, or as
+    /// the header leaves it before the actions pill; a topic longer than
+    /// that scrolls.
     pub(super) fn strip(&self, topic: &str, look: &Look) -> El {
         let font = look.font(TYPE_SMALL);
-        let measured = text(topic.to_owned())
+        let topic = one_line(topic);
+        let measured = text(topic.clone())
             .font(font)
             .color(look.palette.text_secondary)
-            .single_line()
+            .max_lines(1)
             .on_layout(|shell: &mut Shell, rect: [f32; 4]| shell.topic_measured(rect[2]));
-        let long = self
-            .description
-            .topic_pt
-            .is_some_and(|width_pt| width_pt > STRIP_MOST_PT);
+        let long = match (self.description.topic_pt, self.description.strip_pt) {
+            (Some(topic_pt), Some(strip_pt)) => topic_pt > strip_pt + 1.0,
+            _ => false,
+        };
         let mut line = row().child(measured);
-        if let (true, Some(width_pt)) = (long, self.description.topic_pt) {
+        if let (true, Some(topic_pt)) = (long, self.description.topic_pt) {
             // The topic and its repeat, sliding by half their width: the
             // repeat lands where the topic began, so the loop is seamless.
-            let period_s = f64::from((width_pt * 2.0) / SCROLL_PT_PER_S);
+            let period_s = f64::from(topic_pt / SCROLL_PT_PER_S);
             line = line
                 .child(
                     text(format!("{REPEAT_GAP}{topic}{REPEAT_GAP}"))
                         .font(font)
                         .color(look.palette.text_secondary)
-                        .single_line()
+                        .max_lines(1)
                         .a11y_hidden(),
                 )
                 .looping(LoopSpec::slide(period_s, [0.0, 0.0], [-0.5, 0.0]).easing(Easing::LINEAR));
         }
-        let width_pt = self
-            .description
-            .topic_pt
-            .map_or(STRIP_MOST_PT, |width_pt| width_pt.min(STRIP_MOST_PT));
-        let mut window = el().w(width_pt).child(line);
+        // As wide as the topic, shrinking to what the header leaves it.
+        let mut window = el()
+            .shrink()
+            .on_layout(|shell: &mut Shell, rect: [f32; 4]| shell.strip_measured(rect[2]))
+            .child(line);
         if long {
             window = window.clip_fade(STRIP_FADE_PT, 0.0, STRIP_FADE_PT, 0.0);
+        } else {
+            window = window.clip_fade(0.0, 0.0, 0.0, 0.0);
         }
         row()
             .key("title-description")
+            .shrink()
             .gap(look.space(SPACE_MD))
             .center_y()
             .child(
@@ -173,13 +217,18 @@ impl Shell {
     }
 }
 
+/// `topic` on one line: its line breaks and runs of spaces as one space.
+fn one_line(topic: &str) -> String {
+    topic.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The open description panel's body: the whole topic, wrapped.
 pub(super) fn body(shell: &Shell, look: &Look) -> Option<El> {
     let topic = shell.nav.menu.as_ref()?.description.as_ref()?;
     Some(
         col()
             .w_full()
-            .px(look.space(SPACE_LG))
+            .px(PANEL_PADDING_PT)
             .py(look.space(SPACE_MD))
             .gap(look.space(SPACE_SM))
             .role("note")
@@ -187,7 +236,8 @@ pub(super) fn body(shell: &Shell, look: &Look) -> Option<El> {
             .child(
                 text(topic.clone())
                     .font(look.font(TYPE_BODY))
-                    .color(look.palette.text_primary),
+                    .color(look.palette.text_primary)
+                    .wrap(),
             ),
     )
 }
