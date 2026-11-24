@@ -24,6 +24,8 @@ pub(crate) struct SessionInner {
     pub tasks: TaskTracker,
     pub auth: Arc<crate::observable::StateCell<AuthState>>,
     pub connection: Arc<crate::observable::StateCell<ConnectionStatus>>,
+    /// The gateway's latest heartbeat round trip; none before the first.
+    pub round_trip: Arc<crate::observable::StateCell<Option<crate::RoundTrip>>>,
     pub events: broadcast::Sender<Generated<Event>>,
     pub resources: Arc<crate::observable::StateCell<Arc<crate::ResourceSnapshot>>>,
     pub activity: Arc<crate::observable::StateCell<crate::ActivitySnapshot>>,
@@ -97,6 +99,7 @@ impl SessionInner {
                 generation,
                 state: ConnectionState::Offline,
             }),
+            round_trip: crate::observable::StateCell::new(None),
             events: broadcast::channel(64).0,
             resources: crate::observable::StateCell::new(Arc::new(crate::ResourceSnapshot::empty(
                 generation,
@@ -144,6 +147,8 @@ impl SessionInner {
             .send_replace(crate::NotificationStatus::Closed);
         self.auth.close();
         self.connection.close();
+        self.round_trip.send_replace(None);
+        self.round_trip.close();
         crate::activity::clear(self, self.epochs.current().generation);
         self.activity.close();
         self.resources.close();
@@ -262,6 +267,14 @@ impl Session {
     #[must_use]
     pub fn subscribe_connection(&self) -> watch::Receiver<ConnectionStatus> {
         self.inner.connection.subscribe()
+    }
+    /// Subscribes to the gateway's latest heartbeat round trip, stamped with the
+    /// generation whose socket measured it: a client shows it only while that
+    /// generation is `Online`. Measured every 25 seconds; none before the first
+    /// acknowledgement of this session.
+    #[must_use]
+    pub fn subscribe_round_trip(&self) -> watch::Receiver<Option<crate::RoundTrip>> {
+        self.inner.round_trip.subscribe()
     }
     /// Subscribes to bounded live traffic. Old queued generations are discarded at delivery.
     #[must_use]

@@ -174,7 +174,10 @@ impl Event {
 pub struct Gateway<S = MaybeTlsStream<TcpStream>> {
     socket: WebSocketStream<S>,
     heartbeat: tokio::time::Interval,
-    awaiting_ack: bool,
+    /// When the scheduled heartbeat still waiting for its acknowledgement was sent.
+    awaiting_ack: Option<tokio::time::Instant>,
+    /// The latest scheduled heartbeat's round trip on this socket.
+    round_trip: Option<Duration>,
     ended: bool,
 }
 
@@ -224,7 +227,8 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Gateway<S> {
         Self {
             socket,
             heartbeat,
-            awaiting_ack: false,
+            awaiting_ack: None,
+            round_trip: None,
             ended: false,
         }
     }
@@ -257,9 +261,9 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Gateway<S> {
         loop {
             tokio::select! {
                 _ = self.heartbeat.tick() => {
-                    if self.awaiting_ack { self.ended = true; return Err(Error::HeartbeatTimeout); }
+                    if self.awaiting_ack.is_some() { self.ended = true; return Err(Error::HeartbeatTimeout); }
                     self.socket.send(Message::text(r#"{"type":"heartbeat"}"#)).await.map_err(|_| Error::Transport)?;
-                    self.awaiting_ack = true;
+                    self.awaiting_ack = Some(tokio::time::Instant::now());
                 }
                 frame = self.socket.next() => {
                     match frame {
@@ -282,10 +286,21 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> Gateway<S> {
 
     fn decode(&mut self, bytes: &[u8]) -> Result<Event, Error> {
         let event = Event::decode(bytes)?;
-        if matches!(event, Event::Known(KnownEvent::HeartbeatAck(_))) {
-            self.awaiting_ack = false;
+        if matches!(event, Event::Known(KnownEvent::HeartbeatAck(_)))
+            && let Some(sent) = self.awaiting_ack.take()
+        {
+            self.round_trip = Some(sent.elapsed());
         }
         Ok(event)
+    }
+
+    /// How long the server took to acknowledge the latest scheduled heartbeat: the
+    /// socket's round trip, measured every 25 seconds. None until the first
+    /// acknowledgement. An acknowledgement of a heartbeat sent through `send` while
+    /// none is scheduled measures nothing.
+    #[must_use]
+    pub fn round_trip(&self) -> Option<Duration> {
+        self.round_trip
     }
 
     /// Closes this socket explicitly, without changing REST credentials.

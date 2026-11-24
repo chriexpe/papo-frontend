@@ -107,3 +107,32 @@ async fn cancelling_a_pending_read_does_not_reset_heartbeat_deadline_or_ack_stat
         std::task::Poll::Ready(Err(Error::HeartbeatTimeout))
     ));
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_acknowledged_heartbeat_measures_the_round_trip() {
+    let (mut gateway, mut peer) = pair().await;
+    assert_eq!(gateway.round_trip(), None);
+    let mut next = Box::pin(gateway.next());
+    tokio::time::advance(Duration::from_secs(25)).await;
+    assert!(poll!(next.as_mut()).is_pending());
+    assert!(matches!(
+        peer.next().await.unwrap().unwrap(),
+        Message::Text(_)
+    ));
+    tokio::time::advance(Duration::from_millis(42)).await;
+    peer.send(Message::text(r#"{"type":"heartbeat_ack"}"#))
+        .await
+        .unwrap();
+    assert_eq!(next.await.unwrap().unwrap().kind(), "heartbeat_ack");
+    assert_eq!(gateway.round_trip(), Some(Duration::from_millis(42)));
+    // An acknowledgement nothing scheduled waits for keeps the last measurement.
+    peer.send(Message::text(r#"{"type":"heartbeat_ack"}"#))
+        .await
+        .unwrap();
+    tokio::time::advance(Duration::from_millis(500)).await;
+    assert_eq!(
+        gateway.next().await.unwrap().unwrap().kind(),
+        "heartbeat_ack"
+    );
+    assert_eq!(gateway.round_trip(), Some(Duration::from_millis(42)));
+}
