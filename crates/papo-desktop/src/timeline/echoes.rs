@@ -53,6 +53,13 @@ pub(crate) struct Echo {
 #[derive(Default)]
 pub(crate) struct Echoes(HashMap<Uuid, Echo>);
 
+impl Echo {
+    /// The SDK's operation image it was built from.
+    pub(crate) fn operation(&self) -> &Arc<Operation> {
+        &self.operation
+    }
+}
+
 impl Echoes {
     /// The echo with local identity `id`.
     pub(crate) fn get(&self, id: Uuid) -> Option<&Echo> {

@@ -55,6 +55,9 @@ pub(crate) struct Tile {
     pub(crate) source: TileSource,
     /// The picture decoded at tile size, once its bytes were read.
     pub(crate) thumbnail: Option<Image>,
+    /// The picture's size as shown (orientation applied), in pixels, once
+    /// the SDK inspected the staged file.
+    pub(crate) size_px: Option<(u32, u32)>,
 }
 
 impl PartialEq for Tile {
@@ -72,6 +75,7 @@ impl PartialEq for Tile {
             && self.kind == other.kind
             && same_source
             && self.thumbnail.as_ref().map(Image::id) == other.thumbnail.as_ref().map(Image::id)
+            && self.size_px == other.size_px
     }
 }
 

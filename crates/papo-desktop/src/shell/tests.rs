@@ -26,6 +26,7 @@ mod new_message;
 mod outgoing;
 mod pins;
 mod profile_card;
+mod quit_ask;
 mod replying;
 mod search;
 mod settings;

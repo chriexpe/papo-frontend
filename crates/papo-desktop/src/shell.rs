@@ -55,7 +55,10 @@ pub(crate) struct Shell {
     /// The renewing server's name and icon.
     server_card_requests: RequestSlot,
     /// Decodes server icons off the UI thread; set when the window starts.
-    images: Option<ImageCache>,
+    images: Option<Arc<ImageCache>>,
+    /// The window's scale, device pixels per point, as last laid out:
+    /// pictures decoded off the UI thread are decoded for it.
+    scale: f32,
     /// Held by each change to the server list the flow makes, and by each
     /// probe, so a probe sees the removals sent before it.
     registry_writes: Arc<tokio::sync::Mutex<()>>,
@@ -140,6 +143,12 @@ pub(crate) struct Shell {
     copy_watches: copies::CopyWatches,
     /// The shown tray's keyboard and drag state.
     pub(crate) tray_ui: crate::composer::tray_ui::TrayUi,
+    /// How your unsent messages' attachments are drawn, and what was read
+    /// from staging for them.
+    unsent: crate::unsent_media::UnsentMedia,
+    unsent_reads: unsent::UnsentReads,
+    /// A quit or close waiting for "Quit while uploading?".
+    pub(crate) leaving: Option<crate::quit_ask::Leaving>,
     /// Pins and unpins on their way.
     pinning: reacting::Pinning,
     /// The hover bar stretched into its strip, while one is.
@@ -216,6 +225,7 @@ impl Default for Shell {
             clear_requests: RequestSlot::default(),
             server_card_requests: RequestSlot::default(),
             images: None,
+            scale: 1.0,
             registry_writes: Arc::default(),
             nav: Navigation::default(),
             icons: HashMap::new(),
@@ -250,6 +260,9 @@ impl Default for Shell {
             conversation_rect: [0.0; 4],
             copy_watches: copies::CopyWatches::default(),
             tray_ui: crate::composer::tray_ui::TrayUi::default(),
+            unsent: crate::unsent_media::UnsentMedia::default(),
+            unsent_reads: unsent::UnsentReads::default(),
+            leaving: None,
             pinning: reacting::Pinning::default(),
             stretched: None,
             openings: 0,
@@ -295,7 +308,7 @@ impl Shell {
     pub(crate) fn setup(&mut self, waker: rune::Waker) {
         let images = ImageCache::new(waker);
         self.grain = Some(crate::grain::GrainTiles::new(&images));
-        self.images = Some(images);
+        self.images = Some(Arc::new(images));
         let prefs = crate::device_settings::SettingsFile::read();
         self.content.trusted = crate::trusted_domains::Trusted::read(&prefs);
         self.layout = crate::layout_prefs::LayoutPrefs::read(&prefs);
@@ -397,6 +410,7 @@ mod timeline;
 mod timeline_host;
 mod title;
 mod tray;
+mod unsent;
 mod view;
 
 pub(crate) use new_message::{

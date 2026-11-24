@@ -155,6 +155,7 @@ mod settings;
 mod shortcuts;
 mod sign_in;
 mod timeline;
+mod uploading;
 
 pub(crate) use account::*;
 pub(crate) use appearance_names::*;
@@ -175,6 +176,7 @@ pub(crate) use settings::*;
 pub(crate) use shortcuts::*;
 pub(crate) use sign_in::*;
 pub(crate) use timeline::*;
+pub(crate) use uploading::*;
 
 #[cfg(test)]
 mod tests {

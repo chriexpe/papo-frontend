@@ -15,14 +15,16 @@ use rune::{Key, KeyEvent, Mods, Tx};
 
 use super::Shell;
 use super::appearance::TextSizeStep;
+use crate::quit_ask::Leaving;
 
-/// Ctrl+W, Ctrl+Q, F11: the window's own keys, from anywhere.
-fn window_key(key: &KeyEvent, tx: &mut Tx) -> bool {
+/// Ctrl+W, Ctrl+Q, F11: the window's own keys, from anywhere. Closing
+/// and quitting ask first while an upload runs (`quit_ask`).
+fn window_key(shell: &mut Shell, key: &KeyEvent, tx: &mut Tx) -> bool {
     let mods = key.mods;
     if key.is_command('w') && primary_only(mods) {
-        tx.close_window();
+        shell.leave_or_ask(Leaving::Close, tx);
     } else if key.is_command('q') && primary_only(mods) {
-        tx.quit();
+        shell.leave_or_ask(Leaving::Quit, tx);
     } else if key.key == Key::Function(11) && mods == Mods::default() {
         tx.toggle_full_screen();
     } else {
@@ -67,7 +69,7 @@ impl Shell {
     /// One of this module's keys, if it is one. Returns whether it was
     /// taken.
     pub(super) fn app_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
-        if window_key(key, tx) {
+        if window_key(self, key, tx) {
             return true;
         }
         // The sheet and Ctrl+K draw over the running app only, and never

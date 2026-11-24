@@ -22,6 +22,7 @@ fn tile(shell: &mut Shell, name: &str, kind: TileKind) -> Tile {
         kind,
         source: TileSource::Fixture,
         thumbnail: None,
+        size_px: None,
     }
 }
 

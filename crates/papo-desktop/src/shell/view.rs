@@ -112,45 +112,56 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                         app = app.child(menu::view(menu, body, &look, cx));
                     }
                 }
-                let removing = shell
-                    .nav
-                    .removing
-                    .and_then(|id| shell.nav.servers().get(id));
-                if let Some(server) = removing {
-                    app = app.child(remove_server::confirm(&server.name, &look));
-                }
-                if let Some(jump) = super::jump_view::view(shell, &look) {
-                    app = app.child(jump);
-                }
-                if shell.shortcuts_open {
-                    app = app.child(crate::shortcuts_sheet::view(&look));
-                }
-                if let Some(prompt) = &shell.content.link {
-                    app = app.child(links::confirm(prompt, &look));
-                }
-                if let Some(resend) = resend_confirm(shell, &look) {
-                    app = app.child(resend);
-                }
-                let style = timeline_style(shell, &look, [0.0, 0.0]);
-                if let Some(delete) = super::deleting::delete_confirm(shell, &style) {
-                    app = app.child(delete);
-                }
-                if let Some(flow) = flow {
-                    app = app.child(sign_in::popup(flow, &shell.fields, &look));
-                }
-                if let Some(target) = shell.drop_target() {
-                    app = app
-                        .child(crate::drop_card::dim())
-                        .child(crate::drop_card::card(
-                            &target,
-                            shell.conversation_rect,
-                            &look,
-                        ));
-                }
-                app
+                with_dialogs(app, shell, flow.as_deref(), &look)
             }
         },
     }
+}
+
+/// `app` with what may stand over it: the confirmations, the jump field,
+/// the shortcuts sheet, the sign-in popup, "Quit while uploading?" and the
+/// drop card.
+fn with_dialogs(mut app: El, shell: &Shell, flow: Option<&sign_in::SignIn>, look: &Look) -> El {
+    let look = *look;
+    let removing = shell
+        .nav
+        .removing
+        .and_then(|id| shell.nav.servers().get(id));
+    if let Some(server) = removing {
+        app = app.child(remove_server::confirm(&server.name, &look));
+    }
+    if let Some(jump) = super::jump_view::view(shell, &look) {
+        app = app.child(jump);
+    }
+    if shell.shortcuts_open {
+        app = app.child(crate::shortcuts_sheet::view(&look));
+    }
+    if let Some(prompt) = &shell.content.link {
+        app = app.child(links::confirm(prompt, &look));
+    }
+    if let Some(resend) = resend_confirm(shell, &look) {
+        app = app.child(resend);
+    }
+    let style = timeline_style(shell, &look, [0.0, 0.0]);
+    if let Some(delete) = super::deleting::delete_confirm(shell, &style) {
+        app = app.child(delete);
+    }
+    if let Some(flow) = flow {
+        app = app.child(sign_in::popup(flow, &shell.fields, &look));
+    }
+    if shell.leaving.is_some() {
+        app = app.child(crate::quit_ask::view(&look));
+    }
+    if let Some(target) = shell.drop_target() {
+        app = app
+            .child(crate::drop_card::dim())
+            .child(crate::drop_card::card(
+                &target,
+                shell.conversation_rect,
+                &look,
+            ));
+    }
+    app
 }
 
 /// Every hint's pill (`docs/design.md` §9, Links): a link's full address,
@@ -212,6 +223,19 @@ fn timeline_style(shell: &Shell, look: &Look, insets_pt: [f32; 2]) -> timeline::
         selected,
         reacting: shell.reacting(),
         insets_pt,
+        unsent: shell.unsent.clone(),
+        media_max_height_pt: media_max_height(shell.conversation_rect[3]),
+    }
+}
+
+/// The tallest a media box may be (§14.4): the Max height, or 0.55 × the
+/// conversation's height when that is less.
+fn media_max_height(conversation_pt: f32) -> f32 {
+    let share = conversation_pt * crate::design::MEDIA_MAX_HEIGHT_SHARE;
+    if share > 0.0 {
+        crate::design::MEDIA_MAX_PT.1.min(share)
+    } else {
+        crate::design::MEDIA_MAX_PT.1
     }
 }
 
@@ -272,6 +296,7 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
         // A taller composer, a reply bar or the typing line covers more rows.
         .on_layout_tx(|shell: &mut Shell, rect, tx| {
             shell.floating_moved(super::reading::Floating::Foot, rect[3]);
+            shell.scale = tx.scale();
             tx.live_only();
         })
         .padding(look.space(SPACE_LG))

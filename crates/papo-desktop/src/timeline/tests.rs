@@ -56,6 +56,8 @@ struct Host {
     hourglass: bool,
     /// ⌛, ↓ and Cancel presses, in order.
     controls: Vec<&'static str>,
+    /// Your unsent messages' attachments.
+    unsent: crate::unsent_media::UnsentMedia,
 }
 
 impl TimelineHost for Host {
@@ -118,6 +120,10 @@ impl TimelineHost for Host {
 
     fn seek_cancelled(&mut self, _key: TimelineKey) {
         self.controls.push("cancel");
+    }
+
+    fn upload_cancelled(&mut self, _key: TimelineKey, _local: Uuid) {
+        self.controls.push("upload-cancel");
     }
 
     fn send_state_pressed(&mut self, _key: TimelineKey, _local: Uuid, _state: SendState) {
@@ -200,6 +206,8 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
         selected: None,
         reacting: Reacting::unknown(),
         insets_pt: [0.0, 0.0],
+        unsent: host.unsent.clone(),
+        media_max_height_pt: crate::design::MEDIA_MAX_PT.1,
     };
     col().w_full().h_full().child(view(host, style))
 }
@@ -256,6 +264,7 @@ fn runtime_with(
         presses: Vec::new(),
         hourglass: true,
         controls: Vec::new(),
+        unsent: crate::unsent_media::UnsentMedia::default(),
     };
     let env = Env {
         system_dark: true,
@@ -344,3 +353,4 @@ mod hover_bar;
 mod reactions;
 mod reading;
 mod spacing;
+mod unsent;
