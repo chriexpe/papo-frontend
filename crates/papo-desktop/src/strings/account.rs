@@ -44,11 +44,6 @@ pub(crate) fn settings_about() -> &'static str {
     text!("settings.about")
 }
 
-/// Profile's Presence group.
-pub(crate) fn settings_group_presence() -> &'static str {
-    text!("settings.group_presence")
-}
-
 /// "Presence".
 pub(crate) fn settings_presence() -> &'static str {
     text!("settings.presence")

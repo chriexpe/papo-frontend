@@ -97,8 +97,9 @@ pub(super) fn profile(facts: &AccountFacts) -> Vec<Group> {
                 ),
             ],
         },
+        // No group title: it would repeat its first row's (§8).
         Group {
-            title: Some(strings::settings_group_presence().to_owned()),
+            title: None,
             rows: vec![
                 Row {
                     id: RowId::Presence,
