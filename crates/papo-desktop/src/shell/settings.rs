@@ -183,12 +183,11 @@ impl Shell {
         self.settings_save(change.row(), next, tx);
     }
 
-    /// Saves `target` for `row`'s change; a failure shows under the row.
+    /// Saves `target` for `row`'s change; a failure shows under the row
+    /// when the write comes back (`appearance_written`).
     fn settings_save(&mut self, row: RowId, target: Appearance, tx: &mut Tx) {
-        let saved = self.set_appearance(target, tx).is_ok();
-        if let Some(panel) = self.settings.as_mut() {
-            panel.saved(row, target, saved);
-        }
+        self.saving_row = Some(row);
+        self.set_appearance(target, tx);
     }
 
     /// Try again under a row whose save failed: the same settings, saved

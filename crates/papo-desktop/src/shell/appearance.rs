@@ -6,7 +6,7 @@
 use rune::Tx;
 
 use super::Shell;
-use crate::appearance::{Appearance, NotSaved, ShapeValue, TEXT_SIZE_DEFAULT_PT, text_size_step};
+use crate::appearance::{Appearance, ShapeValue, TEXT_SIZE_DEFAULT_PT, Write, text_size_step};
 use crate::design::{Glass, Look, LookSpec, Scale};
 use crate::timeline::OpenTimeline;
 use crate::timeline::anchor::{Anchor, scroll_to};
@@ -26,17 +26,54 @@ impl Shell {
         look_of(&self.shown_appearance(), system_dark, self.system_font)
     }
 
-    /// Saves `appearance` and shows it, the message being read kept in
-    /// its place; a failed write keeps the earlier settings.
-    pub(crate) fn set_appearance(
-        &mut self,
-        appearance: Appearance,
-        tx: &mut Tx,
-    ) -> Result<(), NotSaved> {
+    /// Shows `appearance` and saves it, the message being read kept in its
+    /// place. The write runs off the UI thread; if it fails, the settings go
+    /// back to what the file holds (`appearance_written`).
+    pub(crate) fn set_appearance(&mut self, appearance: Appearance, tx: &mut Tx) {
         let reading = self.reading_place();
-        self.appearance.set(appearance)?;
+        if let Some(write) = self.appearance.change(appearance) {
+            self.write_appearance(write, tx);
+        }
         keep_place(reading, tx);
-        Ok(())
+    }
+
+    /// Runs `write` on the SDK client's runtime, which the exit fence lets
+    /// finish; before the client opens (and in tests), here.
+    fn write_appearance(&mut self, write: Write, tx: &mut Tx) {
+        let Some(sdk) = &self.sdk else {
+            let ok = write.run().is_ok();
+            self.appearance_written(write.appearance(), ok, tx);
+            return;
+        };
+        let updates = sdk.updates();
+        sdk.finish(move |_client| async move {
+            let appearance = write.appearance();
+            let ok = tokio::task::spawn_blocking(move || write.run().is_ok())
+                .await
+                .unwrap_or(false);
+            updates.send_tx(move |shell, tx| {
+                shell.appearance_written(appearance, ok, tx);
+                true
+            });
+        });
+    }
+
+    /// The write of `appearance` landed, or did not: a failure takes the
+    /// settings back, the message being read kept in its place, and shows
+    /// under the settings row that asked for it.
+    pub(crate) fn appearance_written(&mut self, appearance: Appearance, ok: bool, tx: &mut Tx) {
+        let reading = (!ok).then(|| self.reading_place()).flatten();
+        if !ok {
+            log::warn!("an Appearance setting was not saved");
+        }
+        let next = self.appearance.written(appearance, ok);
+        if let (Some(panel), Some(row)) = (self.settings.as_mut(), self.saving_row) {
+            panel.saved(row, appearance, ok);
+        }
+        keep_place(reading, tx);
+        if let Some(next) = next {
+            self.write_appearance(next, tx);
+        }
     }
 
     /// The system's interface font was found (`system_font`): "Use the
@@ -76,8 +113,10 @@ impl Shell {
         }
         let mut changed = appearance;
         changed.shape = appearance.shape.with(ShapeValue::TextSize, next);
-        // Nothing to show a failed write under: the size stays as it was.
-        self.set_appearance(changed, tx).is_ok()
+        // No settings row asks: a failed write goes back quietly.
+        self.saving_row = None;
+        self.set_appearance(changed, tx);
+        true
     }
 }
 

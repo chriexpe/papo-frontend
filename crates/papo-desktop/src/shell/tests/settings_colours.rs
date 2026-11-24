@@ -75,7 +75,7 @@ fn try_again_after_a_failed_add_saves_the_added_colour() {
     std::fs::write(&blocker, b"").unwrap();
     let failing = blocker.join("prefs.json");
     rt.update(move |shell, _tx| {
-        shell.appearance = AppearanceStore::from_prefs(Prefs::at(failing));
+        shell.appearance = AppearanceStore::from_prefs(&Prefs::at(failing));
     });
     open(&mut rt);
     click(&mut rt, &RowId::Background.key());
@@ -90,7 +90,7 @@ fn try_again_after_a_failed_add_saves_the_added_colour() {
     // The disk works again: Try again saves the colour that was added.
     let working = directory.path().join("prefs.json");
     rt.update(move |shell, _tx| {
-        shell.appearance = AppearanceStore::from_prefs(Prefs::at(working));
+        shell.appearance = AppearanceStore::from_prefs(&Prefs::at(working));
     });
     click(&mut rt, "settings-retry");
     assert_eq!(saved(&rt).background.colours().len(), 2, "the added colour");

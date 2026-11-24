@@ -81,6 +81,9 @@ pub(crate) struct Shell {
     /// reach into it, top and bottom, as last laid out: what the shown
     /// timeline's rows count as hidden.
     floating_insets_pt: [f32; 2],
+    /// The settings row whose change the Appearance writes carry, for its
+    /// danger line if one fails; none for a change no row made (Ctrl+=).
+    saving_row: Option<crate::settings::RowId>,
     /// The time zone and clock message times are read in.
     local_time: LocalTime,
     /// When the shown timeline's place is next saved, on the window's
@@ -204,6 +207,7 @@ impl Default for Shell {
             grain: None,
             system_font: None,
             floating_insets_pt: [0.0, 0.0],
+            saving_row: None,
             local_time: LocalTime::system(),
             save_due_s: None,
             save_wake_s: None,

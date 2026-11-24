@@ -297,7 +297,7 @@ fn a_failed_save_keeps_the_old_value_and_shows_one_danger_line_with_try_again() 
     let blocker = directory.path().join("file");
     std::fs::write(&blocker, b"").unwrap();
     rt.update(move |shell, _tx| {
-        shell.appearance = AppearanceStore::from_prefs(Prefs::at(blocker.join("prefs.json")));
+        shell.appearance = AppearanceStore::from_prefs(&Prefs::at(blocker.join("prefs.json")));
     });
     open(&mut rt);
     click(&mut rt, &RowId::Grouped.key());
