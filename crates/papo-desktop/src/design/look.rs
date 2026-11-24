@@ -266,6 +266,15 @@ impl Look {
         radius.0 * self.scale.roundness
     }
 
+    /// The radius, in points, of a rounded surface whose edges sit `gap_pt`
+    /// inside a surface of radius `outer_pt` (§5, Nested corners):
+    /// concentric with it, so the two curves stay parallel; square once the
+    /// gap reaches the outer radius. `outer_pt` is the outer surface's drawn
+    /// radius (`Look::radius` of its token, or half its height for a capsule).
+    pub(crate) fn nested_radius(outer_pt: f32, gap_pt: f32) -> f32 {
+        (outer_pt - gap_pt).max(0.0)
+    }
+
     /// `length` in points at the Text size setting.
     pub(crate) fn text_multiple(&self, length: TextMultiple) -> f32 {
         length.0 * self.scale.text_pt
@@ -322,6 +331,12 @@ impl Surfaces for El {
 #[cfg(test)]
 mod tests {
     use super::GlassData;
+
+    #[test]
+    fn a_nested_corner_is_concentric_and_never_below_square() {
+        assert!((super::Look::nested_radius(14.0, 4.0) - 10.0).abs() < f32::EPSILON);
+        assert!(super::Look::nested_radius(8.0, 12.0).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn a_glass_slot_carries_its_settings_and_its_tint_to_the_byte() {

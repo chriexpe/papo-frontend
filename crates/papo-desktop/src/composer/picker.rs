@@ -11,8 +11,7 @@ use rune::{Align, Cx, El, ScrollSpec, Side, col, row, text};
 
 use crate::channel_pane::avatar;
 use crate::design::{
-    Look, MENU_ROW_HEIGHT_PT, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_SM, Surfaces, TYPE_BODY,
-    TYPE_SMALL,
+    Look, MENU_ROW_HEIGHT_PT, RADIUS_PILL, SPACE_LG, SPACE_SM, Surfaces, TYPE_BODY, TYPE_SMALL,
 };
 use crate::shell::Shell;
 use crate::strings;
@@ -131,7 +130,11 @@ fn row_for(candidate: &MentionSuggestion, selected: bool, look: &Look) -> El {
         .px(look.space(SPACE_SM))
         .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the picker, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("option")
         .label(label)
         .on_press_tx(move |shell: &mut Shell, tx| shell.mention_picked(target, tx))

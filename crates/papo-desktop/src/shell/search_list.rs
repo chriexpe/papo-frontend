@@ -13,7 +13,7 @@ use super::Shell;
 use super::search_field::{FieldList, has_text, keyword_text};
 use crate::channel_pane::avatar;
 use crate::design::{
-    Look, MENU_ROW_HEIGHT_PT, PILL_ICON_PT, RADIUS_CONTROL, SPACE_SM, TYPE_BODY, TYPE_CAPTION,
+    Look, MENU_ROW_HEIGHT_PT, PILL_ICON_PT, RADIUS_PILL, SPACE_SM, TYPE_BODY, TYPE_CAPTION,
     TYPE_SMALL,
 };
 use crate::strings;
@@ -93,7 +93,11 @@ fn option_row(index: usize, label: String, chosen: bool, look: &Look) -> El {
         .px(look.space(SPACE_SM))
         .gap(look.space(SPACE_SM))
         .center_y()
-        .radius(look.radius(RADIUS_CONTROL))
+        // Concentric with the panel, whose edge is one `space.sm` out.
+        .radius(Look::nested_radius(
+            look.radius(RADIUS_PILL),
+            look.space(SPACE_SM),
+        ))
         .role("option")
         .label(label)
         .focus_selected(chosen);
