@@ -160,7 +160,7 @@ fn search_field(panel: &SettingsPanel, look: &Look) -> El {
 /// A page in the nav: its icon in a circle, its name and one-line summary.
 fn nav_row(page: PageId, summary: &str, current: bool, look: &Look) -> El {
     let fill = if current {
-        look.palette.surface_selected
+        look.on_panel(look.palette.surface_selected)
     } else {
         rune::Color::TRANSPARENT
     };
@@ -186,7 +186,7 @@ fn nav_row(page: PageId, summary: &str, current: bool, look: &Look) -> El {
         .role("link")
         .label(format!("{}, {summary}", page_title(page)))
         .focusable(true)
-        .focus_highlight(look.palette.surface_hover)
+        .focus_highlight(look.on_panel(look.palette.surface_hover))
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press_tx(move |shell: &mut Shell, tx| shell.settings_page(page, tx))
         .child(

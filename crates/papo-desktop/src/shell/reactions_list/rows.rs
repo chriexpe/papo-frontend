@@ -42,7 +42,7 @@ pub(super) fn header(look: &Look) -> El {
         .label(strings::reactions_back())
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press_tx(|shell: &mut Shell, tx| shell.reactions_back(tx))
         .child(icon(&crate::icons::ARROW_LEFT, ROW_ICON_PT).color(look.palette.text_secondary));
     row()
@@ -114,7 +114,7 @@ fn tab(
             look.space(SPACE_SM),
         ))
         .fill(fill)
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .role("tab")
         .label(spoken.unwrap_or_else(|| words.clone()))
         .focusable(true)
@@ -142,7 +142,7 @@ pub(super) fn reactor_row(reactor: &Reactor, name: &str, all: bool, look: &Look)
         .role("listitem")
         .label(name.to_owned())
         .focusable(true)
-        .focus_highlight(look.palette.surface_hover)
+        .focus_highlight(look.on_pill(look.palette.surface_hover))
         .on_press_tx(move |shell: &mut Shell, tx| shell.reactor_pressed(user, tx))
         .on_key(move |shell: &mut Shell, event: &KeyEvent, tx| {
             if event.key != Key::Enter {

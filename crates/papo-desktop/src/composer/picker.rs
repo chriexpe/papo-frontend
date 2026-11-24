@@ -155,7 +155,7 @@ fn row_for(candidate: &MentionSuggestion, selected: bool, look: &Look) -> El {
         .pr(look.space(SPACE_LG));
     // `surface.hover` is too close to the pill's own surface to show.
     if selected {
-        line = line.fill(look.palette.surface_selected);
+        line = line.fill(look.on_pill(look.palette.surface_selected));
     }
     line
 }

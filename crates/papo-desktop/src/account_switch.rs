@@ -166,7 +166,7 @@ fn choice(key: String, look: &Look) -> El {
             look.radius(RADIUS_PILL),
             look.space(SPACE_SM),
         ))
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
 }

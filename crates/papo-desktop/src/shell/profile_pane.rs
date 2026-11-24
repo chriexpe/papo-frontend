@@ -61,7 +61,7 @@ pub(super) fn button(shown: bool, look: &Look) -> El {
         .expanded(shown)
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press(Shell::toggle_dm_profile)
         .child(icon(&USER, PILL_ICON_PT).color(tone))
 }

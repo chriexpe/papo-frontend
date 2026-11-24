@@ -48,7 +48,7 @@ pub(super) fn search_button(open: bool, look: &Look) -> El {
         .expanded(open)
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press_tx(|shell: &mut Shell, tx| shell.search_pressed(false, tx))
         .child(icon(&crate::icons::SEARCH, PILL_ICON_PT).color(tone))
 }
@@ -194,7 +194,7 @@ fn head(
             .label(strings::search_clear())
             .focusable(true)
             .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-            .hover(look.palette.surface_hover)
+            .hover(look.on_pill(look.palette.surface_hover))
             .on_press_tx(|shell: &mut Shell, tx| shell.clear_search(tx))
             .child(icon(&crate::icons::X, PILL_ICON_PT).color(look.palette.text_secondary))
     });
@@ -300,7 +300,7 @@ fn scope_button(scope: Scope, look: &Look) -> El {
         .expanded(false)
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press_tx(|shell: &mut Shell, tx| shell.open_scope_menu(tx))
         .child(
             text(label)
@@ -325,7 +325,7 @@ fn nothing_found(shell: &Shell, search: &Search, look: &Look) -> El {
             .h(PILL_BUTTON_PT)
             .center()
             .radius(look.radius(RADIUS_CONTROL))
-            .fill(look.palette.surface_hover)
+            .fill(look.on_pill(look.palette.surface_hover))
             .role("button")
             .label(strings::search_clear_filters())
             .focusable(true)

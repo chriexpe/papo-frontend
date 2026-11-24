@@ -39,7 +39,7 @@ pub(super) fn blocked_button(shown: bool, look: &Look) -> El {
         .expanded(shown)
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press(Shell::toggle_direct_blocked)
         .child(icon(&BLOCK, PILL_ICON_PT).color(tone))
 }
@@ -125,7 +125,7 @@ fn blocked_row(account: AccountId, server: &str, person: &BlockedPerson, look: &
                 .px(look.space(SPACE_MD))
                 .py(look.space(SPACE_SM))
                 .radius(look.radius(RADIUS_CONTROL))
-                .hover(look.palette.surface_hover)
+                .hover(look.on_pill(look.palette.surface_hover))
                 .role("button")
                 .label(strings::direct_unblock(&name))
                 .focusable(true)

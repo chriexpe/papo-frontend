@@ -67,7 +67,7 @@ pub(super) fn view(strip: &Strip, first: bool, look: &Look) -> El {
                         .min((MENU_ROW_HEIGHT_PT - CELL_PT) / 2.0),
                 ))
                 .a11y_hidden()
-                .hover(look.palette.surface_hover)
+                .hover(look.on_pill(look.palette.surface_hover))
                 .on_press_tx(move |shell: &mut Shell, tx| {
                     if let Some(action) = action.clone() {
                         shell.menu_picked(action, tx);

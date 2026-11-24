@@ -220,6 +220,27 @@ impl Look {
         self.theme
     }
 
+    /// The highlight `target` (`surface.hover`, `surface.selected`) for a
+    /// row or button on a pill, a menu or a header panel: on glass a tint
+    /// that lands on `target` over the pill's colour, so what is behind
+    /// shows through it (`tint`); solid, `target` itself.
+    pub(crate) fn on_pill(&self, target: Color) -> Color {
+        self.on_floating(self.palette.surface_pill, target)
+    }
+
+    /// As [`Look::on_pill`], on the settings panel.
+    pub(crate) fn on_panel(&self, target: Color) -> Color {
+        self.on_floating(self.palette.surface_panel, target)
+    }
+
+    fn on_floating(&self, base: Color, target: Color) -> Color {
+        if self.glass.glassy > 0.0 {
+            super::tint::tint_over(base, target)
+        } else {
+            target
+        }
+    }
+
     /// A floating pill's surface on `el` (§5): glass (the pill colour,
     /// translucent, over a blur of what is behind it) or solid, its
     /// outline, and the lift and contact shadows at the depth setting.

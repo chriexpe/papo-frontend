@@ -134,6 +134,7 @@ pub(crate) mod settings;
 mod sizes;
 #[cfg(test)]
 mod tests;
+mod tint;
 
 pub(crate) use background::{
     Accent, Background, BackgroundColour, CHROME_GRADIENT_DEGREES, ChromeFill,

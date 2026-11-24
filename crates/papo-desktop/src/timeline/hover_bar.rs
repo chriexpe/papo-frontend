@@ -203,7 +203,7 @@ fn button<S: TimelineHost>(
                 .min((BAR_HEIGHT_PT - PILL_BUTTON_PT) / 2.0),
         ))
         .role("button")
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press_tx(move |host: &mut S, tx| host.bar_pressed(key, id, press.clone(), tx))
 }
 

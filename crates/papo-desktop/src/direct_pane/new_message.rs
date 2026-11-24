@@ -42,7 +42,7 @@ pub(super) fn new_message_button(open: bool, look: &Look) -> El {
         .expanded(open)
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press_tx(Shell::new_message_pressed)
         .child(icon(&NEW_MESSAGE, PILL_ICON_PT).color(tone))
 }
@@ -211,7 +211,7 @@ fn candidate_row(shell: &Shell, index: usize, look: &Look) -> El {
         );
     // `surface.hover` is too close to the pill's own surface to show.
     if chosen {
-        line.fill(look.palette.surface_selected)
+        line.fill(look.on_pill(look.palette.surface_selected))
     } else {
         line
     }

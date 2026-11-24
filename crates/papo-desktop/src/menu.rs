@@ -439,7 +439,7 @@ pub(crate) fn item_row(item: &MenuItem, first: bool, look: &Look) -> El {
         .focusable(true)
         .focus_selected(first)
         // One highlight for the pointer and the keyboard, as a menu has.
-        .focus_highlight(look.palette.surface_hover)
+        .focus_highlight(look.on_pill(look.palette.surface_hover))
         .on_press_tx(move |shell: &mut Shell, tx| shell.menu_picked(action.clone(), tx));
     if let Some(current) = item.radio {
         // The tick's column is kept on every value, so the names line up.

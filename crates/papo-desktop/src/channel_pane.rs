@@ -150,7 +150,7 @@ pub(crate) fn switch_button(
         .expanded(open)
         .on_press_tx(toggle);
     if open {
-        button = button.fill(look.palette.surface_selected);
+        button = button.fill(look.on_pill(look.palette.surface_selected));
     } else if let Some(marker) = corner_marker(badge, look) {
         button = button.child(marker);
     }
@@ -192,7 +192,7 @@ fn pill_button(key: &'static str, glyph: &'static Icon, look: &Look) -> El {
         .size(PILL_BUTTON_PT, PILL_BUTTON_PT)
         .center()
         .radius(pill_button_radius(look))
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .role("button")
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)

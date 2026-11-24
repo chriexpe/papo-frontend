@@ -103,7 +103,7 @@ fn option_row(index: usize, label: String, chosen: bool, look: &Look) -> El {
         .focus_selected(chosen);
     // `surface.hover` is too close to the pill's own surface to show.
     if chosen {
-        line.fill(look.palette.surface_selected)
+        line.fill(look.on_pill(look.palette.surface_selected))
     } else {
         line
     }

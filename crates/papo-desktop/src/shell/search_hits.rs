@@ -153,9 +153,9 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
             )
             .child(shown);
         line = if marked {
-            line.fill(look.palette.surface_selected)
+            line.fill(look.on_pill(look.palette.surface_selected))
         } else {
-            line.hover(look.palette.surface_hover)
+            line.hover(look.on_pill(look.palette.surface_hover))
         };
         col()
             .w_full()

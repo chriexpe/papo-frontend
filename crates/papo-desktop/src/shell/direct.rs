@@ -354,7 +354,7 @@ pub(super) fn state_pill(
                 .px(look.space(SPACE_MD))
                 .py(look.space(SPACE_SM))
                 .radius(look.radius(RADIUS_CONTROL))
-                .hover(look.palette.surface_hover)
+                .hover(look.on_pill(look.palette.surface_hover))
                 .role("button")
                 .label(strings::card_unblock())
                 .focusable(true)

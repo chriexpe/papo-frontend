@@ -101,7 +101,7 @@ fn pins_button(open: bool, look: &Look) -> El {
         .expanded(open)
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .hover(look.palette.surface_hover)
+        .hover(look.on_pill(look.palette.surface_hover))
         .on_press_tx(|shell: &mut Shell, tx| shell.pins_pressed(false, tx))
         .child(icon(&crate::icons::PIN, PILL_ICON_PT).color(tone))
 }
@@ -229,7 +229,7 @@ pub(super) fn peek_row(
             look.radius(RADIUS_PILL),
             look.space(SPACE_SM),
         ))
-        .fill(look.palette.surface_selected)
+        .fill(look.on_pill(look.palette.surface_selected))
         .child(
             text(name)
                 .font(look.font(TYPE_BODY_STRONG))
@@ -371,9 +371,9 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
             })
             .child(shown);
         line = if marked {
-            line.fill(look.palette.surface_selected)
+            line.fill(look.on_pill(look.palette.surface_selected))
         } else {
-            line.hover(look.palette.surface_hover)
+            line.hover(look.on_pill(look.palette.surface_hover))
         };
         if unpin {
             line = line.child(
