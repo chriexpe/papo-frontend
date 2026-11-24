@@ -136,6 +136,7 @@ fn voice_resources(
             nickname: None,
             banned: None,
             typing: None,
+            status_message: None,
             created_at: None,
             roles: Some(vec![role]),
         },

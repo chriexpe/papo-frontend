@@ -126,7 +126,7 @@ def generate(spec):
             optional = field not in node.get('required', []) or schema.get('nullable', False)
             lines += [f'    /// Backend `{field}` field.' + (' Timestamp strings are preserved verbatim.' if schema.get('format') == 'date-time' else '')]
             # A nullable profile field can be absent in a sparse response or explicitly cleared.
-            if name in ('UserSummary', 'UserProfile') and field in ('nickname', 'typing'):
+            if name in ('UserSummary', 'UserProfile') and field in ('nickname', 'typing', 'status_message'):
                 typ = 'crate::NullableText'
                 lines += ['    #[serde(default, skip_serializing_if = "crate::NullableText::is_missing")]']
             elif optional:

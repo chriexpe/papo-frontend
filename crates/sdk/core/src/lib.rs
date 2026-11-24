@@ -98,8 +98,8 @@ pub use resource_admission::{AdmissionDiagnostics, AdmissionFault, DroppedRow, R
 mod resources;
 pub use account_cache::{AccountCache, AccountCaches, CacheError, CacheResource};
 pub use papo_api::wire::{
-    Channel, DirectConversation, ExternalAuthor, LoginRequest, LoginServerRequest, RegisterRequest,
-    Role, RoleSummary, SearchResult, UserProfile, UserSummary,
+    ChangePasswordRequest, Channel, DirectConversation, ExternalAuthor, LoginRequest,
+    LoginServerRequest, RegisterRequest, Role, RoleSummary, SearchResult, UserProfile, UserSummary,
 };
 pub use read_points::ServerReadPoint;
 pub use resources::{

@@ -202,6 +202,9 @@ pub struct UserRecord {
     pub banned: Option<bool>,
     /// Backend `typing` field.
     pub typing: Option<String>,
+    /// Backend `status_message` field: the profile's saved status line, which
+    /// live presence may override for this connection.
+    pub status_message: Option<String>,
     /// Backend `created_at` field.
     pub created_at: Option<String>,
     /// The signed-in account's assignments come from roster or targeted member evidence.

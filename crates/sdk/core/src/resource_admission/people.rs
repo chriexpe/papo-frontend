@@ -174,6 +174,7 @@ impl Admission<'_> {
             banned: user.banned,
             created_at: user.created_at,
             typing: user.typing,
+            status_message: user.status_message,
             roles: user
                 .roles
                 .map(|roles| self.assignments(group, roles, strict))

@@ -41,6 +41,9 @@ pub struct ProfileItem {
     pub description: Option<String>,
     /// Backend custom typing phrase, distinct from active channel typing.
     pub typing_phrase: Option<String>,
+    /// The profile's saved status message, as the last profile read returned it; live
+    /// presence may show another for this connection.
+    pub status_message: Option<String>,
     /// When the person's account was created (backend RFC 3339 `created_at`), for "Member
     /// since"; clients format it.
     pub member_since: Option<String>,
@@ -136,6 +139,10 @@ fn profile(snapshot: &ResourceSnapshot, id: Uuid) -> ProfileItem {
             .get(id)
             .and_then(|profile| profile.description.clone()),
         typing_phrase: snapshot.users.get(id).and_then(|user| user.typing.clone()),
+        status_message: snapshot
+            .users
+            .get(id)
+            .and_then(|user| user.status_message.clone()),
         member_since: snapshot
             .users
             .get(id)

@@ -6,7 +6,7 @@ use papo_api::wire::{
 };
 use papo_sdk::{
     ClientError,
-    operations::{OperationError, RefreshStatus},
+    operations::{OperationError, RefreshStatus, profile::ProfileChange},
 };
 
 use super::{Fixture, Result, setup};
@@ -55,6 +55,77 @@ fn acknowledged_profile_refresh_retains_metadata_without_inline_avatar_bytes() -
         let resources = first.subscribe_resources().borrow().clone();
         let profile = resources.profiles.get(user).ok_or("missing profile")?;
         assert_eq!(profile.avatar_format.as_deref(), Some("png"));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn a_change_of_one_profile_field_keeps_the_others_the_server_holds() -> Result {
+    let f = Fixture::new(papo_test_server::Config::default())?;
+    f.run(async {
+        let (first, _, _) = setup(&f).await?;
+        let user = first.account().user();
+        first
+            .operations()
+            .update_profile(UpdateUserRequest {
+                nickname: "Lia".into(),
+                status: "on call".into(),
+                description: "about me".into(),
+                typing: Some("is writing…".into()),
+            })
+            .await?;
+        let receipt = first
+            .operations()
+            .change_profile(ProfileChange {
+                nickname: Some("Lia M.".into()),
+                ..ProfileChange::default()
+            })
+            .await?;
+        assert_eq!(receipt.refresh, RefreshStatus::Updated);
+        let resources = first.subscribe_resources().borrow().clone();
+        let own = resources.users.get(user).ok_or("missing user")?;
+        assert_eq!(own.nickname.as_deref(), Some("Lia M."));
+        assert_eq!(own.status_message.as_deref(), Some("on call"), "kept");
+        assert_eq!(own.typing.as_deref(), Some("is writing…"), "kept");
+        let profile = resources.profiles.get(user).ok_or("missing profile")?;
+        assert_eq!(profile.description.as_deref(), Some("about me"), "kept");
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn two_profile_changes_at_once_both_land() -> Result {
+    let f = Fixture::new(papo_test_server::Config::default())?;
+    f.run(async {
+        let (first, _, _) = setup(&f).await?;
+        let user = first.account().user();
+        first
+            .operations()
+            .update_profile(UpdateUserRequest {
+                nickname: "Lia".into(),
+                status: "on call".into(),
+                ..Default::default()
+            })
+            .await?;
+        let operations = first.operations();
+        let (nickname, status) = tokio::join!(
+            operations.change_profile(ProfileChange {
+                nickname: Some("Lia M.".into()),
+                ..ProfileChange::default()
+            }),
+            operations.change_profile(ProfileChange {
+                status_message: Some("away for lunch".into()),
+                ..ProfileChange::default()
+            }),
+        );
+        nickname?;
+        status?;
+        let resources = first.subscribe_resources().borrow().clone();
+        let own = resources.users.get(user).ok_or("missing user")?;
+        assert_eq!(own.nickname.as_deref(), Some("Lia M."));
+        assert_eq!(own.status_message.as_deref(), Some("away for lunch"));
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()

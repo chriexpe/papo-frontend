@@ -30,6 +30,7 @@ impl Admission<'_> {
             username: raw.username,
             nickname: raw.nickname,
             typing: raw.typing,
+            status_message: raw.status_message,
             created_at: raw.created_at,
             roles: raw.roles,
             ..Default::default()

@@ -163,7 +163,7 @@ fn member(user: Uuid, role: Uuid) -> UserSummary {
             ..Default::default()
         }]),
         status: Some("online".into()),
-        status_message: Some("live".into()),
+        status_message: "live".into(),
         typing: "live".into(),
         status_updated_at: Some("live".into()),
         ..Default::default()
