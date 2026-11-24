@@ -162,6 +162,10 @@ fn hint_look(look: &Look, dark: bool) -> HelpLook {
 fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
     let panel = shell.settings.as_ref()?;
     let diagnostics = shell.diagnostics_facts();
+    let account = shell.account_facts();
+    let preview = account
+        .as_ref()
+        .map(|facts| shell.profile_preview(facts, look));
     let view = crate::settings::view::PanelView {
         panel,
         saved: shell.appearance.appearance(),
@@ -169,6 +173,7 @@ fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
         general: shell.general.settings(),
         trusted: shell.content.trusted.hosts(),
         diagnostics: &diagnostics,
+        account: account.as_ref(),
         system_dark,
         system_font_known: shell.system_font.is_some(),
         grain: shell
@@ -176,7 +181,7 @@ fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
             .as_ref()
             .map(|tiles| tiles.pixels(look.theme().is_dark())),
     };
-    Some(crate::settings::view(&view, look))
+    Some(crate::settings::view(&view, preview, look))
 }
 
 fn timeline_style(shell: &Shell, look: &Look, insets_pt: [f32; 2]) -> timeline::Style {

@@ -353,6 +353,7 @@ mod search_open;
 mod search_panel;
 mod search_run;
 mod settings;
+mod settings_account;
 mod settings_colours;
 mod settings_conversations;
 mod settings_diagnostics;

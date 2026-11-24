@@ -79,7 +79,7 @@ pub(super) fn conversations(cx: &Context<'_>) -> Vec<Group> {
     ]);
     vec![
         Group {
-            title: Some(strings::settings_group_writing()),
+            title: Some(strings::settings_group_writing().to_owned()),
             rows: vec![switch(
                 RowId::EnterSends,
                 strings::settings_enter_sends(),
@@ -88,7 +88,7 @@ pub(super) fn conversations(cx: &Context<'_>) -> Vec<Group> {
             )],
         },
         Group {
-            title: Some(strings::settings_group_conversation()),
+            title: Some(strings::settings_group_conversation().to_owned()),
             rows,
         },
     ]

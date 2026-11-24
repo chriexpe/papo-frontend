@@ -94,6 +94,7 @@ impl Shell {
                 );
             }
             RowId::ClearCache => self.clear_media_cache(tx),
+            RowId::SignOut => self.sign_out_subject(),
             _ => {}
         }
     }

@@ -24,6 +24,7 @@ fn context(appearance: &Appearance) -> Context<'_> {
         general: &GENERAL,
         trusted: &TRUSTED,
         diagnostics: &DIAGNOSTICS,
+        account: None,
         system_dark: true,
         system_font_known: false,
     }

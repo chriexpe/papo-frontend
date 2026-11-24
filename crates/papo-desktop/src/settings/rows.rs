@@ -2,7 +2,8 @@
 //! rows, each a title, an optional summary and its control, built from the
 //! current settings. The pages draw these, and the search reads the same
 //! rows, so a row is described once. Each nav page's rows are its own
-//! module's (`appearance`, `conversations`, `general`, `diagnostics`).
+//! module's (`account`, `appearance`, `conversations`, `general`,
+//! `diagnostics`).
 //!
 //! Owns the description's shape and which module describes a page. Drawing
 //! is `controls`'; what a change does is the shell's (`shell/settings.rs`).
@@ -16,9 +17,11 @@ use crate::design::Accent;
 use crate::diagnostics::Link;
 use crate::general_settings::GeneralSettings;
 use crate::strings;
+use account::AccountFacts;
 
 use super::{PageId, RowId};
 
+pub(crate) mod account;
 mod appearance;
 mod conversations;
 mod diagnostics;
@@ -32,7 +35,7 @@ pub(crate) use general::{general_summary, language_name};
 
 /// A group of rows: one block of tiles, with an optional title.
 pub(crate) struct Group {
-    pub(crate) title: Option<&'static str>,
+    pub(crate) title: Option<String>,
     pub(crate) rows: Vec<Row>,
 }
 
@@ -68,6 +71,19 @@ pub(crate) enum Kind {
     Remove(String),
     /// A line of text with no control (an empty list's).
     Note,
+    /// Text, edited in place (§8: Cancel and Save, a count, Enter and
+    /// Escape): its saved value, what shows without one, its longest, and
+    /// whether it can be edited yet (the profile has been read back).
+    Text {
+        value: Option<String>,
+        placeholder: String,
+        most: usize,
+        editable: bool,
+    },
+    /// A blocked person, with Unblock: their name.
+    Unblock(String),
+    /// Change password's form.
+    PasswordForm,
     /// Facts with no control: the title and summary say it all.
     Info,
     /// A value shown at the row's end, with no control.
@@ -114,6 +130,8 @@ pub(crate) struct Context<'a> {
     pub(crate) general: &'a GeneralSettings,
     pub(crate) trusted: &'a BTreeSet<String>,
     pub(crate) diagnostics: &'a DiagnosticsFacts,
+    /// The panel's account; none when no account is signed in.
+    pub(crate) account: Option<&'a AccountFacts>,
     pub(crate) system_dark: bool,
     /// Whether "Use the system font" can work: the desktop names one.
     pub(crate) system_font_known: bool,
@@ -135,6 +153,9 @@ pub(crate) struct DiagnosticsFacts {
 /// The groups of `page`.
 pub(crate) fn page(page: PageId, cx: &Context<'_>) -> Vec<Group> {
     match page {
+        PageId::Profile | PageId::Privacy | PageId::Blocked | PageId::Password => {
+            account::of(page, cx)
+        }
         PageId::Appearance => appearance::appearance(cx),
         PageId::Background => appearance::background(cx),
         PageId::Shape => appearance::shape(cx),
@@ -149,6 +170,10 @@ pub(crate) fn page(page: PageId, cx: &Context<'_>) -> Vec<Group> {
 /// A page's title.
 pub(crate) fn page_title(page: PageId) -> &'static str {
     match page {
+        PageId::Profile => strings::settings_profile(),
+        PageId::Privacy => strings::settings_privacy(),
+        PageId::Blocked => strings::settings_blocked(),
+        PageId::Password => strings::settings_password(),
         PageId::Appearance => strings::settings_appearance(),
         PageId::Background => strings::settings_background(),
         PageId::Shape => strings::settings_shape(),
@@ -168,6 +193,7 @@ pub(crate) fn searchable(row: &Row) -> Vec<String> {
         Kind::Choice(value) | Kind::SubPage(_, value) | Kind::Value(value) => {
             words.push(value.clone());
         }
+        Kind::Text { value, .. } => words.extend(value.clone()),
         Kind::Accents(accent) => words.push(accent_name(*accent).to_owned()),
         Kind::Directions(direction) => {
             words.extend(direction.map(|direction| direction_name(direction).to_owned()));
@@ -179,6 +205,8 @@ pub(crate) fn searchable(row: &Row) -> Vec<String> {
         | Kind::DomainField
         | Kind::Remove(_)
         | Kind::Note
+        | Kind::Unblock(_)
+        | Kind::PasswordForm
         | Kind::Info
         | Kind::Action
         | Kind::Destructive { .. } => {}

@@ -48,6 +48,11 @@ line_icon!(
     "palette"
 );
 line_icon!(
+    /// The Privacy and security page in the settings nav.
+    SHIELD,
+    "shield"
+);
+line_icon!(
     /// The Diagnostics page in the settings nav.
     PULSE,
     "pulse"

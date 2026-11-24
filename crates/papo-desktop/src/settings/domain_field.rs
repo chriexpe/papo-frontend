@@ -6,12 +6,11 @@
 //! Owns the field's look and input; adding is the shell's
 //! (`Shell::settings_trust_typed`).
 
-use rune::{El, Key, KeyEvent, TextEdit, el, row, text, text_input};
+use rune::{El, Key, KeyEvent, TextEdit, row, text_input};
 
-use crate::design::settings::{
-    CHIP_HEIGHT, ROW_INSET_PT, ROW_MIN_HEIGHT, ROW_PADDING, TILE_OUTER_RADIUS,
-};
-use crate::design::{FOCUS_RING_PT, Look, SPACE_LG, SPACE_MD, TYPE_BODY, TYPE_SMALL_MEDIUM};
+use super::chip::{Tone, chip};
+use crate::design::settings::{ROW_INSET_PT, ROW_MIN_HEIGHT, ROW_PADDING};
+use crate::design::{Look, SPACE_LG, TYPE_BODY};
 use crate::settings::RowId;
 use crate::shell::Shell;
 use crate::strings;
@@ -21,28 +20,14 @@ pub(crate) const DOMAIN_FIELD_KEY: &str = "settings-trusted-field";
 
 /// The field and its Add, on the row's tile.
 pub(super) fn view(domain: &TextEdit, look: &Look) -> El {
-    let add = el()
-        .key(format!("{}-add", RowId::TrustedAdd.key()))
-        .h(look.space(CHIP_HEIGHT))
-        .px(look.space(SPACE_MD))
-        .center()
-        // As Shape and type's chips: concentric with a tile one `space.md`
-        // out.
-        .radius(Look::nested_radius(
-            look.radius(TILE_OUTER_RADIUS),
-            look.space(SPACE_MD),
-        ))
-        .fill(look.palette.accent)
-        .role("button")
-        .label(strings::settings_trusted_add())
-        .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .on_press_tx(|shell: &mut Shell, tx| shell.settings_trust_typed(tx))
-        .child(
-            text(strings::settings_trusted_add())
-                .font(look.font(TYPE_SMALL_MEDIUM))
-                .color(look.palette.accent_on),
-        );
+    let add = chip(
+        format!("{}-add", RowId::TrustedAdd.key()),
+        strings::settings_trusted_add(),
+        strings::settings_trusted_add(),
+        Tone::Accent,
+        |shell: &mut Shell, tx| shell.settings_trust_typed(tx),
+        look,
+    );
     row()
         .key(RowId::TrustedAdd.key())
         .w_full()

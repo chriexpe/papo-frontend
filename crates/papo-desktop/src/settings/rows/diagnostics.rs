@@ -49,12 +49,12 @@ pub(super) fn diagnostics(cx: &Context<'_>) -> Vec<Group> {
     let mut groups = Vec::new();
     if !connection.is_empty() {
         groups.push(Group {
-            title: Some(strings::settings_group_connection()),
+            title: Some(strings::settings_group_connection().to_owned()),
             rows: connection,
         });
     }
     groups.push(Group {
-        title: Some(strings::settings_group_cache()),
+        title: Some(strings::settings_group_cache().to_owned()),
         rows: vec![
             Row {
                 id: RowId::Cache,
@@ -78,7 +78,7 @@ pub(super) fn diagnostics(cx: &Context<'_>) -> Vec<Group> {
         ],
     });
     groups.push(Group {
-        title: Some(strings::settings_group_about()),
+        title: Some(strings::settings_group_about().to_owned()),
         rows: vec![Row {
             id: RowId::Version,
             title: strings::settings_version().to_owned(),

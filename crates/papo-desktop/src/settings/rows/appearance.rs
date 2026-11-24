@@ -97,11 +97,11 @@ pub(super) fn appearance(cx: &Context<'_>) -> Vec<Group> {
             ],
         },
         Group {
-            title: Some(strings::settings_group_messages()),
+            title: Some(strings::settings_group_messages().to_owned()),
             rows: message_rows,
         },
         Group {
-            title: Some(strings::settings_group_shape()),
+            title: Some(strings::settings_group_shape().to_owned()),
             rows: shape_rows,
         },
     ]

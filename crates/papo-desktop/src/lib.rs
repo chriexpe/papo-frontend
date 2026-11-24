@@ -33,6 +33,7 @@ mod live_watch;
 mod menu;
 mod navigation;
 mod notice;
+mod own_profile;
 mod person_avatar;
 #[cfg(test)]
 mod private_bus;

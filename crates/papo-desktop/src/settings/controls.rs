@@ -8,19 +8,19 @@
 //! Owns how a row looks and what its input asks for (a `Change`, a page, a
 //! menu); the shell carries them out.
 
-use rune::{Color, El, col, el, icon, row, text};
+use rune::{El, col, el, icon, row, text};
 
-use super::rows::{Group, HIGHLIGHT_HUES, Kind, Row, direction_name};
+use super::rows::{Group, Kind, Row, direction_name};
 use super::{Change, RowId, colour_field};
 use crate::appearance::Appearance;
 use crate::appearance::presets::Direction;
 use crate::design::settings::{
-    CHIP_HEIGHT, GROUP_TITLE_GAP, KNOB, ROW_INSET_PT, ROW_MIN_HEIGHT, ROW_PADDING, SWATCH_PT,
-    SWATCH_RADIUS, SWATCH_RING_PT, SWITCH_KNOB_PT, SWITCH_PT, TILE_INNER_RADIUS, TILE_OUTER_RADIUS,
+    CHIP_HEIGHT, GROUP_TITLE_GAP, KNOB, ROW_INSET_PT, ROW_MIN_HEIGHT, ROW_PADDING, SWITCH_KNOB_PT,
+    SWITCH_PT, TILE_INNER_RADIUS, TILE_OUTER_RADIUS,
 };
 use crate::design::{
-    Accent, FIELD_OUTLINE_PT, FOCUS_RING_PT, Look, ROW_ICON_PT, SPACE_LG, SPACE_MD, SPACE_SM,
-    SPACE_XS, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM,
+    FIELD_OUTLINE_PT, FOCUS_RING_PT, Look, ROW_ICON_PT, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
+    TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM,
 };
 use crate::icons::{CHEVRON_DOWN, CHEVRON_RIGHT};
 use crate::shell::Shell;
@@ -38,6 +38,11 @@ pub(super) struct Ctx<'a> {
     /// Trusted domains' field, and whether what it held was refused.
     pub(super) domain: &'a rune::TextEdit,
     pub(super) domain_refused: bool,
+    /// The text row being edited, and its field.
+    pub(super) editing: Option<(RowId, &'a rune::TextEdit)>,
+    /// The row whose account call is in flight.
+    pub(super) waiting: Option<RowId>,
+    pub(super) password: &'a super::PasswordForm,
 }
 
 /// A group: its optional title, then its rows as one block of tiles.
@@ -83,6 +88,34 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
         Kind::Directions(current) => directions(&setting, current, look),
         Kind::DomainField => super::domain_field::view(cx.domain, look),
         Kind::Destructive { .. } => super::actions::destructive(setting, look),
+        Kind::PasswordForm => super::password_form::view(
+            cx.password,
+            setting.sub.clone(),
+            cx.waiting == Some(setting.id),
+            look,
+        ),
+        Kind::Text {
+            value,
+            placeholder,
+            most,
+            editable,
+        } => super::text_row::view(
+            super::text_row::TextRow {
+                id: setting.id,
+                editing: cx
+                    .editing
+                    .filter(|(row, _)| *row == setting.id)
+                    .map(|(_, edit)| edit),
+                waiting: cx.waiting == Some(setting.id),
+                title: setting.title,
+                sub: setting.sub,
+                value,
+                placeholder,
+                most,
+                editable,
+            },
+            look,
+        ),
         _ => plain_row(setting, look),
     };
     let corners = [top, top, bottom, bottom];
@@ -186,13 +219,21 @@ fn plain_row(setting: Row, look: &Look) -> El {
             .on_press_tx(move |shell: &mut Shell, tx| shell.settings_page(page, tx))
             .child(value_text(&value, look))
             .child(icon(&CHEVRON_RIGHT, ROW_ICON_PT).color(look.palette.text_muted)),
-        Kind::Accents(current) => line.label(spoken).child(accents(current, look)),
+        Kind::Accents(current) => line
+            .label(spoken)
+            .child(super::swatches::accents(current, look)),
         Kind::Hues(current) => line
             .label(spoken.clone())
-            .child(hues(id, &spoken, current, look)),
+            .child(super::swatches::hues(id, &spoken, current, look)),
         Kind::Remove(host) => line
             .label(spoken)
             .child(super::actions::remove_button(id, &host, look)),
+        Kind::Unblock(name) => match id {
+            RowId::BlockedPerson(index) => line
+                .label(spoken)
+                .child(super::actions::unblock_button(id, index, &name, look)),
+            _ => line,
+        },
         Kind::Note | Kind::Info => line.role("status").label(spoken),
         Kind::Value(value) => line
             .label(format!("{spoken}, {value}"))
@@ -205,7 +246,9 @@ fn plain_row(setting: Row, look: &Look) -> El {
         | Kind::ColourField
         | Kind::Directions(_)
         | Kind::DomainField
-        | Kind::Destructive { .. } => line,
+        | Kind::Destructive { .. }
+        | Kind::PasswordForm
+        | Kind::Text { .. } => line,
     }
 }
 
@@ -252,80 +295,6 @@ fn switch(on: bool, look: &Look) -> El {
             .radius(SWITCH_KNOB_PT / 2.0)
             .fill(KNOB),
         )
-}
-
-/// The accent swatches: one per accent, the chosen one ringed.
-fn accents(current: Accent, look: &Look) -> El {
-    let dark = look.theme().is_dark();
-    row()
-        .gap(look.space(SPACE_MD))
-        .role("radiogroup")
-        .label(strings::settings_accent())
-        .focus_group()
-        .children(Accent::ALL.into_iter().map(|accent| {
-            let lightness = if dark { 0.70 } else { 0.555 };
-            let colour = rune::oklch(lightness, 0.18, accent.hue_degrees());
-            let chosen = accent == current;
-            el().key(format!("settings-accent-{accent:?}"))
-                .size(SWATCH_PT, SWATCH_PT)
-                .radius(look.radius(SWATCH_RADIUS))
-                .fill(colour)
-                .border(
-                    SWATCH_RING_PT,
-                    if chosen {
-                        look.palette.text_primary
-                    } else {
-                        Color::TRANSPARENT
-                    },
-                )
-                .role("radio")
-                .checked(chosen)
-                .label(super::rows::accent_name(accent))
-                .focusable(true)
-                .focus_selected(chosen)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-                .on_press_tx(move |shell: &mut Shell, tx| {
-                    shell.settings_change(Change::Accent(accent), tx);
-                })
-        }))
-}
-
-/// A highlight's hue swatches (Message highlights): one per hue in
-/// `HIGHLIGHT_HUES`, the chosen one ringed.
-fn hues(id: RowId, name: &str, current: f32, look: &Look) -> El {
-    let dark = look.theme().is_dark();
-    row()
-        .gap(look.space(SPACE_MD))
-        .role("radiogroup")
-        .label(name.to_owned())
-        .focus_group()
-        .children(HIGHLIGHT_HUES.into_iter().map(|hue| {
-            let lightness = if dark { 0.70 } else { 0.555 };
-            let colour = rune::oklch(lightness, 0.15, hue);
-            let chosen = (hue - current).abs() < 0.5;
-            let degrees = strings::decimal(hue, 0);
-            el().key(format!("{}-{degrees}", id.key()))
-                .size(SWATCH_PT, SWATCH_PT)
-                .radius(look.radius(SWATCH_RADIUS))
-                .fill(colour)
-                .border(
-                    SWATCH_RING_PT,
-                    if chosen {
-                        look.palette.text_primary
-                    } else {
-                        Color::TRANSPARENT
-                    },
-                )
-                .role("radio")
-                .checked(chosen)
-                .label(strings::settings_hue_spoken(&degrees))
-                .focusable(true)
-                .focus_selected(chosen)
-                .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-                .on_press_tx(move |shell: &mut Shell, tx| {
-                    shell.settings_change(Change::Hue(id, hue), tx);
-                })
-        }))
 }
 
 /// Shape and type's starting points as three chips, the one the values

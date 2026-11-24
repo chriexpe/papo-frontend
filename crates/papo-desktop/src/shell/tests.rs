@@ -28,6 +28,7 @@ mod profile_card;
 mod replying;
 mod search;
 mod settings;
+mod settings_account;
 mod settings_colours;
 mod settings_conversations;
 mod settings_diagnostics;

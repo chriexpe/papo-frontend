@@ -20,7 +20,8 @@ use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::settings::colour_field::ColourChange;
 use crate::settings::rows::{density_name, language_name, theme_name};
 use crate::settings::{
-    Change, HeldEvent, PageId, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel, Target,
+    Change, HeldEvent, PageId, Presence, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel,
+    Target,
 };
 
 /// What a choice's menu sets.
@@ -29,6 +30,7 @@ pub(crate) enum SettingChoice {
     Theme(Theme),
     Density(Density),
     Language(Language),
+    Presence(Presence),
 }
 
 impl Shell {
@@ -70,6 +72,11 @@ impl Shell {
         let Some(panel) = self.settings.as_mut() else {
             return false;
         };
+        // An edit closes before the search does.
+        if let Some((row, _)) = panel.editing.take() {
+            tx.focus(row.key(), true);
+            return true;
+        }
         if panel.query().is_empty() {
             // The panel's own dismissal closes it.
             return false;
@@ -109,8 +116,10 @@ impl Shell {
             return;
         };
         panel.go(page);
-        if page == PageId::Diagnostics {
-            self.measure_media_cache();
+        match page {
+            PageId::Diagnostics => self.measure_media_cache(),
+            PageId::Profile => self.read_own_profile(),
+            _ => {}
         }
     }
 
@@ -144,6 +153,23 @@ impl Shell {
                     .with_radio(appearance.messages.density == density)
                 })
                 .collect(),
+            RowId::Presence => {
+                let current = crate::settings::rows::account::chosen_presence(
+                    self.account_facts().and_then(|facts| facts.presence),
+                );
+                [Presence::Available, Presence::Away, Presence::Busy]
+                    .into_iter()
+                    .map(|presence| {
+                        MenuItem::plain(
+                            &format!("settings-presence-{presence:?}"),
+                            crate::settings::rows::account::presence_name(presence),
+                            MenuAction::Setting(SettingChoice::Presence(presence)),
+                            false,
+                        )
+                        .with_radio(presence == current)
+                    })
+                    .collect()
+            }
             RowId::Language => {
                 let current = self.general.settings().language;
                 std::iter::once(Language::System)
@@ -179,12 +205,17 @@ impl Shell {
             SettingChoice::Theme(theme) => Change::Theme(theme),
             SettingChoice::Density(density) => Change::Density(density),
             SettingChoice::Language(language) => Change::Language(language),
+            SettingChoice::Presence(presence) => Change::Presence(presence),
         };
         self.settings_change(change, tx);
     }
 
     /// A row's change: drawn while a drag runs, else saved.
     pub(crate) fn settings_change(&mut self, change: Change, tx: &mut Tx) {
+        if let Change::Presence(presence) = change {
+            self.save_presence(presence);
+            return;
+        }
         let Some(panel) = self.settings.as_mut() else {
             return;
         };
@@ -235,6 +266,9 @@ impl Shell {
                     self.write_trusted(hosts, Some(row), tx);
                 }
             }
+            Target::Profile(change) => self.save_profile(row, change),
+            Target::Presence(presence) => self.save_presence(presence),
+            Target::Password => self.settings_password_save(tx),
         }
     }
 
@@ -321,7 +355,11 @@ fn applied(
         } => next.shape = current.shape.with(*value_of, *value),
         // The other rows' changes are their stores' (Conversations',
         // General's).
-        Change::Switch(..) | Change::Slider { .. } | Change::Hue(..) | Change::Language(_) => {}
+        Change::Switch(..)
+        | Change::Slider { .. }
+        | Change::Hue(..)
+        | Change::Language(_)
+        | Change::Presence(_) => {}
         Change::Colours(colour) => {
             let (background, now) = super::settings_colours::colours_applied(
                 &current.background,

@@ -21,6 +21,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::badges::Badge;
+use crate::own_profile::OwnProfile;
 use crate::sdk_bridge::Updates;
 use crate::sign_in::shown_address;
 
@@ -88,6 +89,8 @@ pub(crate) struct ServerEntry {
     /// The people the shown account blocks: their conversations are not in
     /// Direct's list, so its Blocked list shows them.
     pub(crate) blocked: Vec<BlockedPerson>,
+    /// The shown account's own profile, once its resources are read.
+    pub(crate) own: Option<OwnProfile>,
     /// The server's badge: its shown account's unread and mentions in the
     /// server's channels (its DMs are Direct's).
     pub(crate) badge: Badge,
@@ -144,6 +147,8 @@ pub(crate) struct ServerResources {
     pub(crate) direct_badges: BTreeMap<Uuid, Badge>,
     /// The people the account blocks, in the backend's order.
     pub(crate) blocked: Vec<BlockedPerson>,
+    /// The account's own profile.
+    pub(crate) own: OwnProfile,
 }
 
 /// Builds the rail from the registry and the resources of each server's
@@ -190,6 +195,7 @@ pub(crate) fn project(
                     .map(|found| found.direct_badges.clone())
                     .unwrap_or_default(),
                 blocked: found.map(|found| found.blocked.clone()).unwrap_or_default(),
+                own: found.map(|found| found.own.clone()),
                 // The shown account's server channels, so the tile always
                 // agrees with the rows below it, active account or not; its
                 // DMs count on Direct instead.
@@ -419,7 +425,9 @@ fn read_resources(
         let current = (badges.version != 0 && badges.generation == session.generation())
             .then_some(badges.as_ref());
         let icon = icons.for_account(account.id, &session);
-        found.insert(account.id, resources(&snapshot, current, icon));
+        let mut read = resources(&snapshot, current, icon);
+        read.own = OwnProfile::of(&snapshot, account.id.user());
+        found.insert(account.id, read);
     }
     found
 }
@@ -483,6 +491,7 @@ fn resources(
                 }
             })
             .collect(),
+        own: OwnProfile::default(),
     }
 }
 

@@ -124,6 +124,7 @@ pub(crate) fn startup_open_failed() -> &'static str {
     text!("startup.open_failed")
 }
 
+mod account;
 mod appearance_names;
 mod card;
 mod composer;
@@ -142,6 +143,7 @@ mod shortcuts;
 mod sign_in;
 mod timeline;
 
+pub(crate) use account::*;
 pub(crate) use appearance_names::*;
 pub(crate) use card::*;
 pub(crate) use composer::*;

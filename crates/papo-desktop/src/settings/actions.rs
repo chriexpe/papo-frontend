@@ -10,14 +10,11 @@
 use rune::{El, col, el, row, text};
 
 use super::RowId;
+use super::chip::{Tone, chip};
 use super::controls::pressable;
 use super::rows::{Kind, Row};
-use crate::design::settings::{
-    CHIP_HEIGHT, ROW_INSET_PT, ROW_MIN_HEIGHT, ROW_PADDING, TILE_OUTER_RADIUS,
-};
-use crate::design::{
-    FOCUS_RING_PT, Look, SPACE_LG, SPACE_MD, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_SMALL_MEDIUM,
-};
+use crate::design::settings::{ROW_INSET_PT, ROW_MIN_HEIGHT, ROW_PADDING};
+use crate::design::{Look, SPACE_LG, TYPE_BODY_MEDIUM, TYPE_CAPTION};
 use crate::shell::Shell;
 use crate::strings;
 
@@ -59,17 +56,19 @@ pub(super) fn destructive(setting: Row, look: &Look) -> El {
                     .font(look.font(TYPE_BODY_MEDIUM))
                     .color(look.palette.text_primary),
             )
-            .child(button(
-                &format!("{}-cancel", id.key()),
+            .child(chip(
+                format!("{}-cancel", id.key()),
                 strings::button_cancel(),
-                false,
+                strings::button_cancel(),
+                Tone::Plain,
                 move |shell: &mut Shell, _tx| shell.settings_cancel_ask(),
                 look,
             ))
-            .child(button(
-                &format!("{}-confirm", id.key()),
+            .child(chip(
+                format!("{}-confirm", id.key()),
                 &confirm,
-                true,
+                &confirm,
+                Tone::Danger,
                 move |shell: &mut Shell, tx| shell.settings_action(id, tx),
                 look,
             ));
@@ -97,64 +96,27 @@ pub(super) fn destructive(setting: Row, look: &Look) -> El {
         .child(words)
 }
 
-/// Cancel, or the confirmation in red.
-fn button(
-    key: &str,
-    label: &str,
-    danger: bool,
-    press: impl Fn(&mut Shell, &mut rune::Tx) + 'static,
-    look: &Look,
-) -> El {
-    let (fill, ink) = if danger {
-        (look.palette.danger, look.palette.danger_on)
-    } else {
-        (look.palette.surface_hover, look.palette.text_primary)
-    };
-    el().key(key.to_owned())
-        .h(look.space(CHIP_HEIGHT))
-        .px(look.space(SPACE_MD))
-        .center()
-        // As Shape and type's chips: concentric with a tile one `space.md`
-        // out.
-        .radius(Look::nested_radius(
-            look.radius(TILE_OUTER_RADIUS),
-            look.space(SPACE_MD),
-        ))
-        .fill(fill)
-        .role("button")
-        .label(label.to_owned())
-        .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .on_press_tx(press)
-        .child(
-            text(label.to_owned())
-                .font(look.font(TYPE_SMALL_MEDIUM))
-                .color(ink),
-        )
-}
-
-/// A list item's Remove: a small button in the row's end.
+/// A trusted domain's Remove.
 pub(super) fn remove_button(id: RowId, host: &str, look: &Look) -> El {
     let host = host.to_owned();
-    el().key(format!("{}-remove", id.key()))
-        .h(look.space(CHIP_HEIGHT))
-        .px(look.space(SPACE_MD))
-        .center()
-        // As Shape and type's chips: concentric with a tile one
-        // `space.md` out.
-        .radius(Look::nested_radius(
-            look.radius(TILE_OUTER_RADIUS),
-            look.space(SPACE_MD),
-        ))
-        .fill(look.palette.surface_hover)
-        .role("button")
-        .label(strings::settings_trusted_remove_spoken(&host))
-        .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .on_press_tx(move |shell: &mut Shell, tx| shell.settings_untrust(&host, tx))
-        .child(
-            text(strings::settings_trusted_remove())
-                .font(look.font(TYPE_SMALL_MEDIUM))
-                .color(look.palette.text_primary),
-        )
+    chip(
+        format!("{}-remove", id.key()),
+        strings::settings_trusted_remove(),
+        &strings::settings_trusted_remove_spoken(&host),
+        Tone::Plain,
+        move |shell: &mut Shell, tx| shell.settings_untrust(&host, tx),
+        look,
+    )
+}
+
+/// A blocked person's Unblock, at once (§8: undone the same way).
+pub(super) fn unblock_button(id: RowId, index: usize, name: &str, look: &Look) -> El {
+    chip(
+        format!("{}-unblock", id.key()),
+        strings::card_unblock(),
+        &strings::direct_unblock(name),
+        Tone::Plain,
+        move |shell: &mut Shell, tx| shell.settings_unblock(index, tx),
+        look,
+    )
 }

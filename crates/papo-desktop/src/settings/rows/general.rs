@@ -24,7 +24,7 @@ pub(super) fn general(cx: &Context<'_>) -> Vec<Group> {
             }],
         },
         Group {
-            title: Some(strings::settings_group_links()),
+            title: Some(strings::settings_group_links().to_owned()),
             rows: vec![
                 Row {
                     id: RowId::ConfirmLinks,
