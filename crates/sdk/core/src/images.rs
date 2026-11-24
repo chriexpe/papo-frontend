@@ -11,8 +11,10 @@
 //!   again, keeping the colour profile. It runs only when pixels must change, and for fixed-size
 //!   uploads.
 //!
-//! Anonymizing fails closed: anything that is not positively a JPEG, PNG, GIF or WebP the path can
-//! rewrite is a typed refusal.
+//! Anonymizing fails closed: with `Anonymize::Required`, anything that is not positively a JPEG,
+//! PNG, GIF or WebP the path can rewrite is a typed refusal. `Anonymize::WhereSupported` refuses
+//! every image the sniff recognises but cannot clean, and lets through only files it does not
+//! recognise as images at all.
 
 mod container;
 mod edit;
@@ -21,7 +23,7 @@ mod name;
 mod pixels;
 mod sniff;
 
-pub use edit::{AttachmentEdit, CropRect, FixedImage, ImageFormat, ImageInfo};
+pub use edit::{Anonymize, AttachmentEdit, CropRect, FixedImage, ImageFormat, ImageInfo};
 pub use error::{ImageError, UnsupportedFormat};
 pub use name::{NAME_LENGTH, random_attachment_name};
 
@@ -55,6 +57,18 @@ fn container_of<R: Read + Seek>(src: &mut R) -> Result<Container, ImageError> {
         .map_err(|error| ImageError::Source(error.kind()))?;
     rewind(src)?;
     sniff(&head)
+}
+
+/// Whether the image path cleans this kind of file, from its first bytes only: `Ok(true)` for a
+/// JPEG, PNG, GIF or WebP, `Ok(false)` for a file that is not an image at all, and the typed
+/// refusal of a recognised image it cannot clean (HEIC, TIFF, RAW). A damaged image still reads
+/// as cleanable here and is refused by the cleaner itself.
+pub(crate) fn cleans_kind<R: Read + Seek>(src: &mut R) -> Result<bool, ImageError> {
+    match container_of(src) {
+        Ok(_) => Ok(true),
+        Err(ImageError::NotAnImage) => Ok(false),
+        Err(refusal) => Err(refusal),
+    }
 }
 
 fn rewind<S: Seek>(src: &mut S) -> Result<(), ImageError> {

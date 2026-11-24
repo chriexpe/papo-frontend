@@ -9,7 +9,7 @@ use super::{
     persistence::data_root,
 };
 use crate::{
-    AttachmentEdit, CropRect, FixedImage, ImageFormat, ImageInfo, Registry, Session,
+    Anonymize, AttachmentEdit, CropRect, FixedImage, ImageFormat, ImageInfo, Registry, Session,
     images::{self, FixedUpload},
     random_attachment_name,
 };
@@ -33,16 +33,23 @@ impl Registry {
             if message.attachments[index].edit().is_identity() {
                 continue;
             }
-            let edit = message.attachments[index].take_edit();
+            let mut edit = message.attachments[index].take_edit();
             // A random name alone leaves the bytes exactly as they are.
             let mut written = None;
             if edit.rewrites_bytes() {
                 let original = self
                     .staged_original(session, &mut message.attachments[index], identity)
                     .await?;
-                let (edited, format) = self.transform_staged(session, &original, edit).await?;
-                message.attachments[index].set_staged(edited);
-                written = Some(format);
+                edit.anonymize = self
+                    .settle_anonymize(session, &original, edit.anonymize)
+                    .await?;
+                if edit.rewrites_bytes() {
+                    let (edited, format) = self.transform_staged(session, &original, edit).await?;
+                    message.attachments[index].set_staged(edited);
+                    written = Some(format);
+                } else {
+                    message.attachments[index].set_staged(original);
+                }
             }
             let previous = message.attachments[index].filename.clone();
             let renamed = renamed(&previous, edit, written, &message.attachments, index)?;
@@ -50,6 +57,33 @@ impl Registry {
             message.attachments[index].filename = renamed;
         }
         Ok(())
+    }
+
+    /// What [`Anonymize::WhereSupported`] means for this file: [`Anonymize::Required`] when the
+    /// image path cleans its kind, [`Anonymize::Off`] when it is no image at all (a video, audio
+    /// file or document goes unchanged), and the typed refusal of an image it cannot clean.
+    /// Any other choice is kept as it is.
+    async fn settle_anonymize(
+        &self,
+        session: &Session,
+        original: &StagedAttachment,
+        anonymize: Anonymize,
+    ) -> Result<Anonymize, OutgoingError> {
+        if anonymize != Anonymize::WhereSupported {
+            return Ok(anonymize);
+        }
+        let source = Reference {
+            digest: *original.digest(),
+            size_bytes: original.size_bytes(),
+        };
+        let cleans = self
+            .read_staged(session, source, images::cleans_kind)
+            .await?;
+        Ok(if cleans {
+            Anonymize::Required
+        } else {
+            Anonymize::Off
+        })
     }
 
     /// The attachment's bytes as a staged blob, staging inline bytes first.
@@ -211,7 +245,7 @@ fn renamed(
         ),
         None => name,
     };
-    if !(edit.anonymize || edit.random_name) {
+    if !(edit.anonymize.is_on() || edit.random_name) {
         return Ok(fit(previous.to_owned()));
     }
     let taken = |name: &str| {

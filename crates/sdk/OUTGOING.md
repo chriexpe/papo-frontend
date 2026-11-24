@@ -86,8 +86,14 @@ With no edit the bytes pass through untouched. Anonymizing keeps only what shows
 (pixels with orientation applied, colour profile, animation frames), renames the file to 15
 random letters and digits with its extension, and refuses anything that is not a JPEG, PNG,
 GIF or WebP it can rewrite (HEIC, TIFF, RAW, video, documents) with a typed `ImageError`
-before anything is queued. JPEG, PNG, GIF and WebP are rewritten at the container level
-(keep-list, no recompression, animations intact); orientation that is not upright, a turn or
+before anything is queued. That is `Anonymize::Required`. `Anonymize::WhereSupported`, what
+a client's "anonymize new attachments" default sets, decides at enqueue from the staged file's
+magic bytes: a kind the image path cleans is cleaned and renamed, an image it recognises but
+cannot clean is refused the same way, and a file it does not recognise as an image (video,
+audio, documents) goes unchanged under its own name, until their cleaning exists. So a file
+still copying needs no inspection before Send. Drafts that stored the earlier boolean read as
+`Off` or `Required`. JPEG, PNG, GIF and WebP are rewritten at the container level (keep-list,
+no recompression, animations intact); orientation that is not upright, a turn or
 a crop re-encodes from pixels under a 64-megapixel limit, and animations are refused there.
 `OutgoingService::inspect_image` reports a staged file's format, displayed size and animation,
 or why it cannot be anonymized. Profile photo and banner use the same pixel route

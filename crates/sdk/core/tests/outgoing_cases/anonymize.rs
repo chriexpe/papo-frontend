@@ -3,7 +3,7 @@
 
 use super::*;
 use image::{ExtendedColorType, ImageEncoder};
-use papo_sdk::{AttachmentEdit, CropRect, ImageError, UnsupportedFormat};
+use papo_sdk::{Anonymize, AttachmentEdit, CropRect, ImageError, UnsupportedFormat};
 use sha2::{Digest, Sha256};
 
 const SECRET: &[u8] = b"GPS-SECRET-48.8584N-2.2945E";
@@ -41,7 +41,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 
 fn anonymous() -> AttachmentEdit {
     AttachmentEdit {
-        anonymize: true,
+        anonymize: Anonymize::Required,
         ..AttachmentEdit::default()
     }
 }
@@ -219,7 +219,7 @@ fn a_draft_keeps_the_original_and_its_edit_until_the_message_is_sent() -> Result
         let queue = session.outgoing();
         let original = photo();
         let edit = AttachmentEdit {
-            anonymize: true,
+            anonymize: Anonymize::Required,
             random_name: false,
             quarter_turns: 1,
             crop: Some(CropRect {
@@ -284,6 +284,139 @@ fn a_staged_image_can_be_inspected_before_sending() -> Result {
             queue.inspect_image(&not_image).await,
             Err(OutgoingError::Image(ImageError::NotAnImage))
         ));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+fn where_supported() -> AttachmentEdit {
+    AttachmentEdit {
+        anonymize: Anonymize::WhereSupported,
+        ..AttachmentEdit::default()
+    }
+}
+
+#[test]
+fn anonymizing_where_supported_cleans_a_photo_and_renames_it() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let (session, channel) = signed_in(&f).await?;
+        session
+            .outgoing()
+            .enqueue(
+                channel,
+                id(1),
+                message_with(
+                    OutgoingAttachment::from_bytes("IMG_2041.JPG", photo())
+                        .with_edit(where_supported()),
+                ),
+                UnixMicros(0),
+            )
+            .await?;
+        state(&session, id(1), OperationState::Sent).await?;
+        let upload = f.server().take_received_upload().await.ok_or("no upload")?;
+        assert_ne!(upload.files[0].filename, "IMG_2041.JPG");
+        let body = f.server().take_message_body().await.ok_or("no body")?;
+        assert!(!contains(&body, SECRET) && !contains(&body, b"Exif"));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn anonymizing_where_supported_sends_a_document_unchanged_under_its_name() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let (session, channel) = signed_in(&f).await?;
+        let original = b"%PDF-1.7 the minutes".to_vec();
+        session
+            .outgoing()
+            .enqueue(
+                channel,
+                id(1),
+                message_with(
+                    OutgoingAttachment::from_bytes("minutes.pdf", original.clone())
+                        .with_edit(where_supported()),
+                ),
+                UnixMicros(0),
+            )
+            .await?;
+        state(&session, id(1), OperationState::Sent).await?;
+        let upload = f.server().take_received_upload().await.ok_or("no upload")?;
+        assert_eq!(upload.files[0].filename, "minutes.pdf");
+        assert_eq!(
+            upload.files[0].sha256,
+            <[u8; 32]>::from(Sha256::digest(&original))
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn anonymizing_where_supported_still_refuses_an_image_it_cannot_clean() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let (session, channel) = signed_in(&f).await?;
+        let queue = session.outgoing();
+        let heic = [b"\0\0\0\x18ftypheic".as_slice(), &[0; 64]].concat();
+        let refused = queue
+            .enqueue(
+                channel,
+                id(1),
+                message_with(
+                    OutgoingAttachment::from_bytes("IMG_1.HEIC", heic).with_edit(where_supported()),
+                ),
+                UnixMicros(0),
+            )
+            .await;
+        assert!(matches!(
+            refused,
+            Err(OutgoingError::Image(ImageError::Unsupported(
+                UnsupportedFormat::Heic
+            )))
+        ));
+        assert!(queue.subscribe().await?.borrow().operations.is_empty());
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn anonymizing_where_supported_still_gives_a_document_its_random_name() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let (session, channel) = signed_in(&f).await?;
+        let original = b"%PDF-1.7 the minutes".to_vec();
+        let edit = AttachmentEdit {
+            random_name: true,
+            ..where_supported()
+        };
+        session
+            .outgoing()
+            .enqueue(
+                channel,
+                id(1),
+                message_with(
+                    OutgoingAttachment::from_bytes("minutes.pdf", original.clone()).with_edit(edit),
+                ),
+                UnixMicros(0),
+            )
+            .await?;
+        state(&session, id(1), OperationState::Sent).await?;
+        let upload = f.server().take_received_upload().await.ok_or("no upload")?;
+        assert_ne!(upload.files[0].filename, "minutes.pdf");
+        assert_eq!(
+            upload.files[0]
+                .filename
+                .rsplit_once('.')
+                .map(|(_, extension)| extension),
+            Some("pdf")
+        );
+        assert_eq!(
+            upload.files[0].sha256,
+            <[u8; 32]>::from(Sha256::digest(&original))
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()
