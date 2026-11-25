@@ -74,15 +74,10 @@ fn without_text_the_first_attachment_names_the_kind() {
                 name: "notes.pdf".into(),
             },
         ),
-        // Drawn as cards, so named as files: a picture no client decodes, and audio.
+        ("audio/ogg", Snippet::Audio),
+        // Drawn as a card, so named as a file: a picture no client decodes.
         (
             "image/heic",
-            Snippet::File {
-                name: "notes.pdf".into(),
-            },
-        ),
-        (
-            "audio/ogg",
             Snippet::File {
                 name: "notes.pdf".into(),
             },

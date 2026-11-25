@@ -158,6 +158,7 @@
   "reply.image": "Image",
   "reply.video": "Video",
   "reply.gif": "GIF",
+  "reply.audio": "Audio",
   "reply.file": "File · {{name}}",
   "reply.deleted": "Original message deleted",
   "reply.earlier": "Reply to an earlier message",

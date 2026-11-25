@@ -20,7 +20,9 @@ pub enum Snippet {
     Image,
     /// The first attachment is a video.
     Video,
-    /// The first attachment is another file (audio included, until clients play it).
+    /// The first attachment is audio (`AttachmentKind::Audio`).
+    Audio,
+    /// The first attachment is another file.
     File {
         /// Its original file name, as uploaded.
         name: String,
@@ -68,12 +70,13 @@ pub fn snippet(message: &Message, content: &MessageContent) -> Snippet {
         return Snippet::Text(line.finish());
     }
     if let Some(attachment) = message.attachments.as_deref().and_then(<[_]>::first) {
-        // The word follows what the message draws: audio is a file until clients play it.
+        // The word follows what the message draws.
         return match AttachmentKind::of(attachment) {
             AttachmentKind::Gif => Snippet::Gif,
             AttachmentKind::Image => Snippet::Image,
             AttachmentKind::Video => Snippet::Video,
-            AttachmentKind::Audio | AttachmentKind::File => Snippet::File {
+            AttachmentKind::Audio => Snippet::Audio,
+            AttachmentKind::File => Snippet::File {
                 name: attachment.original_file_name.clone().unwrap_or_default(),
             },
         };
