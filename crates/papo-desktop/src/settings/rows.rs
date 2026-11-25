@@ -30,7 +30,9 @@ mod general;
 pub(crate) use appearance::{
     accent_name, appearance_summary, density_name, direction_name, slider_value, theme_name,
 };
-pub(crate) use conversations::{HIGHLIGHT_HUES, conversations_summary, size_name};
+pub(crate) use conversations::{
+    HIGHLIGHT_HUES, conversations_summary, keep_playing_name, size_name,
+};
 pub(crate) use general::{general_summary, language_name};
 
 /// A group of rows: one block of tiles, with an optional title.

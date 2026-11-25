@@ -64,7 +64,12 @@ impl Shell {
             if self.unsent.contains(operation.id) {
                 self.sharpen(account, operation.id, &staged);
             } else {
-                self.restore_unsent(account, operation.id, staged);
+                let names = message
+                    .attachments
+                    .iter()
+                    .map(|attachment| attachment.filename.clone())
+                    .collect();
+                self.restore_unsent(account, operation.id, staged, names);
             }
         }
         let queued: HashSet<Uuid> = self
@@ -198,6 +203,7 @@ impl Shell {
         account: AccountId,
         local: Uuid,
         staged: Vec<Option<StagedAttachment>>,
+        names: Vec<String>,
     ) {
         if !self.unsent_reads.restoring.insert(local) {
             return;
@@ -211,12 +217,13 @@ impl Shell {
         sdk.run(move |client| async move {
             let session = client.session(account).ok();
             let mut files = Vec::new();
-            for staged in &staged {
+            for (staged, name) in staged.iter().zip(&names) {
                 let file = match (&session, staged) {
                     (Some(session), Some(staged)) => {
                         restored_file(
                             session,
                             staged,
+                            name,
                             std::sync::Arc::clone(&engine),
                             video_box_px,
                         )
@@ -271,20 +278,21 @@ impl Shell {
 async fn restored_file(
     session: &papo_sdk::Session,
     staged: &StagedAttachment,
+    name: &str,
     engine: std::sync::Arc<dyn crate::playback::Engine>,
     video_box_px: [u32; 2],
 ) -> UnsentFile {
     let head = read_staged(session, staged, HEAD_BYTES as u64)
         .await
         .unwrap_or_default();
-    let kind = attaching::kind_of(&head, staged.size_bytes());
+    let kind = attaching::kind_of(&head, staged.size_bytes(), name);
     // A video's first frame, length and size, read before its row is first drawn.
     let video = if kind == TileKind::Video {
         super::videos::read_local_video(session, staged, engine, video_box_px).await
     } else {
         None
     };
-    let media_size = if kind == TileKind::File {
+    let media_size = if !kind.is_boxed() {
         MediaSize::Unknown
     } else if kind == TileKind::Video {
         video

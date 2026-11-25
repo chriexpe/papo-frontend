@@ -13,6 +13,7 @@ use crate::sign_in::{AlreadyAdded, Discovery, Event, Probe, SavedAccounts};
 
 mod accounts;
 mod app_keys;
+mod audio;
 mod channel_keys;
 mod composer;
 mod description;

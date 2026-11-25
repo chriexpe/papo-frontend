@@ -4,6 +4,7 @@
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -18,6 +19,7 @@ fn encoders_installed() -> bool {
             "vp8enc",
             "vorbisenc",
             "webmmux",
+            "oggmux",
             "videotestsrc",
             "audiotestsrc",
         ]
@@ -59,6 +61,77 @@ fn webm(size_px: [i32; 2], seconds: i32, sound: bool) -> Arc<[u8]> {
     assert!(matches!(message.view(), gst::MessageView::Eos(_)));
     pipeline.set_state(gst::State::Null).unwrap();
     Arc::from(std::fs::read(path).unwrap())
+}
+
+/// An Ogg Vorbis of `seconds`: a tone for its first half, silence for its second.
+fn ogg(seconds: i32) -> Arc<[u8]> {
+    papo_call::init_gstreamer().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tone.ogg");
+    let half = seconds * 44_100 / 1_024 / 2;
+    let description = format!(
+        "concat name=c ! audioconvert ! vorbisenc ! oggmux ! filesink location={} \
+         audiotestsrc num-buffers={half} wave=sine ! audio/x-raw,rate=44100,channels=2 ! c. \
+         audiotestsrc num-buffers={half} wave=silence ! audio/x-raw,rate=44100,channels=2 ! c.",
+        path.display()
+    );
+    let pipeline = gst::parse::launch(&description).unwrap();
+    pipeline.set_state(gst::State::Playing).unwrap();
+    let bus = pipeline.bus().unwrap();
+    let message = bus
+        .timed_pop_filtered(
+            gst::ClockTime::from_seconds(30),
+            &[gst::MessageType::Eos, gst::MessageType::Error],
+        )
+        .unwrap();
+    assert!(matches!(message.view(), gst::MessageView::Eos(_)));
+    pipeline.set_state(gst::State::Null).unwrap();
+    Arc::from(std::fs::read(path).unwrap())
+}
+
+#[test]
+fn reading_audio_gives_its_length_and_finished_waveform() {
+    if !encoders_installed() {
+        return;
+    }
+    let stop = AtomicBool::new(false);
+    let read = engine()
+        .read_audio(ogg(4), Some(60_000), &|_| {}, &stop)
+        .unwrap();
+    let duration_ms = read.duration_ms.unwrap();
+    assert!((3_800..=4_200).contains(&duration_ms), "{duration_ms} ms");
+    let waveform = read.waveform.unwrap();
+    assert!(waveform.is_complete());
+    let bars = waveform.bars(8);
+    // The tone, then silence.
+    assert!(bars[1].unwrap() > 0.9, "{bars:?}");
+    assert!(bars[6].unwrap() < 0.05, "{bars:?}");
+}
+
+#[test]
+fn audio_longer_than_allowed_gives_its_length_only() {
+    if !encoders_installed() {
+        return;
+    }
+    let stop = AtomicBool::new(false);
+    let read = engine()
+        .read_audio(ogg(4), Some(1_000), &|_| {}, &stop)
+        .unwrap();
+    assert!(
+        read.duration_ms
+            .is_some_and(|duration_ms| duration_ms > 1_000)
+    );
+    assert_eq!(read.waveform, None);
+}
+
+#[test]
+fn media_without_sound_has_no_waveform() {
+    if !encoders_installed() {
+        return;
+    }
+    let stop = AtomicBool::new(false);
+    let read = engine().read_audio(webm([64, 48], 1, false), None, &|_| {}, &stop);
+    assert_eq!(read.err(), Some(PlaybackFailure::Unsupported));
 }
 
 #[test]
@@ -159,7 +232,7 @@ fn the_packaging_gate_plays_or_refuses_its_media() {
                 volume: 0.0,
                 looping: false,
             },
-            Arc::clone(&count) as Arc<dyn FrameSink>,
+            Some(Arc::clone(&count) as Arc<dyn FrameSink>),
             Arc::new(|| {}),
         );
         std::thread::sleep(std::time::Duration::from_secs(3));

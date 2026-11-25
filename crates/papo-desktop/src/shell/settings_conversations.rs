@@ -91,6 +91,7 @@ pub(super) fn applied(
         Change::MediaSize(SizedMedia::Videos, size) => next.video_size = size,
         Change::Switch(RowId::AnimateGifs, on) => next.animate_gifs = Some(on),
         Change::Switch(RowId::AutoplayVideos, on) => next.autoplay_videos = Some(on),
+        Change::KeepPlaying(choice) => next.keep_playing = choice,
         Change::Slider {
             row:
                 row @ (RowId::MediaMaxWidth

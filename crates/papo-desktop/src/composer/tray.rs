@@ -26,6 +26,8 @@ pub(crate) enum TileKind {
     Gif,
     /// A video: its first frame with its length in a badge, once read.
     Video,
+    /// Audio: a file tile in the tray (§14.2), the audio player's capsule once in a message.
+    Audio,
     /// Anything else: the extension block, the name and the size.
     File,
 }
@@ -34,7 +36,7 @@ impl TileKind {
     /// Whether it draws as a picture in the media box (a still, a GIF, a video's first frame)
     /// rather than a file card.
     pub(crate) fn is_boxed(&self) -> bool {
-        *self != TileKind::File
+        matches!(self, TileKind::Image | TileKind::Gif | TileKind::Video)
     }
 }
 

@@ -1,6 +1,7 @@
 //! A received message's attachments (`docs/design.md` §14.4–§14.6): its pictures (JPEG, PNG,
-//! WebP and GIF) and videos in the media box, one alone or an album in their order, and every
-//! other file as a card, one per line (audio too, until its player). A video is `video`'s.
+//! WebP and GIF) and videos in the media box, one alone or an album in their order, audio as a
+//! player, and every other file as a card, one per line. A video is `video`'s, an audio
+//! `audio`'s.
 //!
 //! The box is reserved from what the attachment says of its size (the SDK's rules), or, for one
 //! this device sent, from the size it read from the file, so the row is the height its unsent
@@ -20,11 +21,13 @@ use papo_sdk_ui::{
 };
 use rune::{El, Key, NativeSurface, Tx, col, el, text};
 
+use super::audio::{AudioPress, audio_card};
 use super::video::{self, VideoCell, VideoPress};
 use super::{
     Layer, album, failed, file_card_view::file_card_of, gif_badge, inner_edge, more_mark, painted,
     single_box,
 };
+use crate::audio_store::AudioView;
 use crate::design::{FOCUS_RING_PT, Look, MEDIA_BLOCK_GAP, TYPE_CAPTION_MEDIUM};
 use crate::media_store::{MediaKey, MediaView};
 use crate::saving::SaveView;
@@ -96,6 +99,8 @@ pub(crate) trait MediaHost: Sized + 'static {
     /// The pointer or the keyboard came to (or left) video `key`'s sound: its volume slider
     /// shows.
     fn video_volume_open(&mut self, key: MediaKey, on: bool, tx: &mut Tx);
+    /// A press on audio `key`'s player (at `at`).
+    fn audio_press(&mut self, at: MediaAt, key: MediaKey, press: AudioPress, tx: &mut Tx);
 }
 
 /// What every received attachment in one view draws with.
@@ -131,6 +136,10 @@ pub(crate) struct MediaStyle {
     pub(crate) video_volume_open: Option<MediaKey>,
     /// The volume videos play at, 0 to 1 (remembered on the device).
     pub(crate) video_volume: f32,
+    /// Audio: what is read and what plays.
+    pub(crate) audio: AudioView,
+    /// The waveform the pointer is over, and where along it (0 to 1).
+    pub(crate) audio_hover: Option<(MediaKey, f32)>,
 }
 
 /// The id a picture shares with the viewer's while it shows it, so the viewer grows out of the
@@ -186,6 +195,8 @@ impl MediaStyle {
             video_attention: None,
             video_volume_open: None,
             video_volume: 1.0,
+            audio: AudioView::default(),
+            audio_hover: None,
         }
     }
 
@@ -291,12 +302,13 @@ pub(crate) fn attachments<S: MediaHost>(
         }
     }
     for index in cards {
-        block = block.child(file_card_of::<S>(
-            picture_at(index),
-            &attachments[index],
-            style,
-            look,
-        ));
+        let attachment = &attachments[index];
+        let audio = (AttachmentKind::of(attachment) == AttachmentKind::Audio)
+            .then(|| audio_card::<S>(picture_at(index), attachment, style, look))
+            .flatten();
+        block = block.child(
+            audio.unwrap_or_else(|| file_card_of::<S>(picture_at(index), attachment, style, look)),
+        );
     }
     Some(block.key(format!("{}-block", media_element_key(at))))
 }

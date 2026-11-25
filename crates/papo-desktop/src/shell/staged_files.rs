@@ -176,7 +176,7 @@ pub(super) async fn restored_files(
             continue;
         };
         restored.push(Restored {
-            kind: attaching::kind_of(&head, staged.size_bytes()),
+            kind: attaching::kind_of(&head, staged.size_bytes(), &attachment.filename),
             edit: *attachment.edit(),
             name: attachment.filename,
             staged,

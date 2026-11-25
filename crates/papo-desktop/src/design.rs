@@ -122,6 +122,7 @@ pub(crate) const RADIUS_PILL: Radius = Radius(14.0);
 pub(crate) const HEADER_PILL_HEIGHT: Space = Space(36.0);
 
 mod attachments;
+mod audio;
 mod background;
 mod code_ink;
 mod colour;
@@ -142,6 +143,7 @@ mod tint;
 mod video;
 
 pub(crate) use attachments::*;
+pub(crate) use audio::*;
 pub(crate) use background::{
     Accent, Background, BackgroundColour, CHROME_GRADIENT_DEGREES, ChromeFill,
     MAX_BACKGROUND_COLOURS,

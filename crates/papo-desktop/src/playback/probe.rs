@@ -52,8 +52,8 @@ pub(super) fn probe(bytes: Arc<[u8]>, poster_px: [u32; 2]) -> Result<Probe, Play
     probe
 }
 
-/// Pauses the pipeline and waits until it holds its first frame, or fails.
-fn preroll(graph: &pipeline::Graph) -> Result<(), PlaybackFailure> {
+/// Pauses the pipeline and waits until it holds its first frame (or sound), or fails.
+pub(super) fn preroll(graph: &pipeline::Graph) -> Result<(), PlaybackFailure> {
     let bus = graph.pipeline.bus().ok_or(PlaybackFailure::Unavailable)?;
     if graph.pipeline.set_state(gst::State::Paused).is_err() {
         return Err(bus_failure(&bus).unwrap_or(PlaybackFailure::Broken));
@@ -92,7 +92,7 @@ impl super::FrameSink for NoSink {
 }
 
 /// The failure an error already on `bus` states, if any.
-fn bus_failure(bus: &gst::Bus) -> Option<PlaybackFailure> {
+pub(super) fn bus_failure(bus: &gst::Bus) -> Option<PlaybackFailure> {
     bus.pop_filtered(&[gst::MessageType::Error])
         .and_then(|message| match message.view() {
             gst::MessageView::Error(error) => Some(failure_of(error)),

@@ -141,12 +141,25 @@ fn a_hidden_window_plays_nothing_and_sound_stays_paused() {
     let mut store = read(&[want(1), want(2)], clip(5_000));
     show(&mut store, &[(1, 1.0), (2, 1.0)]);
     store.set_sound(key(1), true);
-    store.set_window_shown(false);
+    store.set_window_shown(false, false);
     assert!(store.desired().is_empty());
-    store.set_window_shown(true);
+    store.set_window_shown(true, false);
     let desired = store.desired();
     assert!(!desired[&key(1)].playing, "played with sound: stays paused");
     assert!(desired[&key(2)].playing, "the autoplay plays again");
+}
+
+#[test]
+fn kept_playing_when_hidden_only_sound_goes_on() {
+    let mut store = read(&[want(1), want(2)], clip(5_000));
+    show(&mut store, &[(1, 1.0), (2, 1.0)]);
+    store.set_sound(key(1), true);
+    store.set_window_shown(false, true);
+    let desired = store.desired();
+    assert_eq!(desired.len(), 1, "the muted autoplay stops");
+    assert!(desired[&key(1)].playing && !desired[&key(1)].muted);
+    store.set_window_shown(true, true);
+    assert!(store.desired()[&key(2)].playing);
 }
 
 #[test]

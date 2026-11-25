@@ -139,6 +139,7 @@ pub(crate) fn startup_open_failed() -> &'static str {
 mod account;
 mod appearance_names;
 mod attaching;
+mod audio;
 mod card;
 mod composer;
 mod conversations;
@@ -163,6 +164,7 @@ mod video;
 pub(crate) use account::*;
 pub(crate) use appearance_names::*;
 pub(crate) use attaching::*;
+pub(crate) use audio::*;
 pub(crate) use card::*;
 pub(crate) use composer::*;
 pub(crate) use conversations::*;

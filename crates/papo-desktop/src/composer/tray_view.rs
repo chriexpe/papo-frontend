@@ -383,7 +383,7 @@ fn spoken(tile: &Tile) -> String {
         TileKind::Image => strings::tray_tile_image(&tile.name, &size),
         TileKind::Gif => strings::tray_tile_gif(&tile.name, &size),
         TileKind::Video => strings::tray_tile_video(&tile.name, &size),
-        TileKind::File => strings::tray_tile_file(&tile.name, &size),
+        TileKind::Audio | TileKind::File => strings::tray_tile_file(&tile.name, &size),
     };
     for (on, mark) in [
         (tile.anonymized(), strings::tray_anonymous()),

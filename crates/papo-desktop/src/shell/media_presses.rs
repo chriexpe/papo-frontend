@@ -1,26 +1,20 @@
-//! What presses on received media do (`docs/design.md` §14.4, §14.6, §14.7): open the viewer, the
-//! media menu (Open, Save image or file with its folder, Save as…, Copy image; Copy link is
-//! left out, B-024), Retry, and saving: into Save media to, or where the save dialog says, a
+//! What presses on received media do (`docs/design.md` §14.4, §14.6, §14.7): open the viewer,
+//! the media menu's actions (the menu itself is `media_menu`'s), Retry, and saving: into Save media to, or where the save dialog says, a
 //! file card showing its progress and a save from the menu ending with the saved pill. Open on
 //! a file saves it into the app's cache first, then hands it to the system; that copy is not
 //! the card's save, which it neither shows nor stops.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use papo_sdk::{Attachment, SaveTarget};
 use papo_sdk_ui::AttachmentKind;
 use rune::{FileDialogOptions, Tx};
 
 use super::Shell;
-use crate::icons;
 use crate::media_store::MediaKey;
-use crate::menu::{Entry, MenuAction, MenuItem, OpenMenu, Placement};
-use crate::message_media::received::{MediaAt, MediaPress, attachment_id, media_element_key};
+use crate::message_media::received::{MediaAt, MediaPress, attachment_id};
 use crate::saving::{SAVED_PILL_FOR_S, SaveView};
 use crate::strings;
-
-/// The media menu's width, in points.
-const MEDIA_MENU_WIDTH_PT: f32 = 248.0;
 
 /// What the media menu does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +27,8 @@ pub(crate) enum MediaAction {
     SaveAs,
     /// Copy the picture as PNG.
     CopyImage,
+    /// Read an audio that couldn't be read again.
+    Retry,
 }
 
 /// Where a save goes, and what happens once it is done.
@@ -149,83 +145,8 @@ impl Shell {
                 );
             }
             MediaAction::CopyImage => self.copy_image(at, &attachment),
+            MediaAction::Retry => self.retry_audio(at, &attachment),
         }
-    }
-
-    /// The media menu for attachment `at`, beside `point` (the pointer, or the media's corner
-    /// for the menu key).
-    fn open_media_menu(&mut self, at: MediaAt, attachment: &Attachment, point: Option<[f32; 2]>) {
-        let kind = AttachmentKind::of(attachment);
-        let picture = kind.is_picture();
-        let action = |action| MenuAction::Media { at, action };
-        let folder = self
-            .general
-            .settings()
-            .media_folder()
-            .as_deref()
-            .and_then(Path::file_name)
-            .map(|name| name.to_string_lossy().into_owned());
-        let (open_icon, save_label) = if picture {
-            (&icons::IMAGE, strings::menu_save_image())
-        } else if kind == AttachmentKind::Video {
-            (&icons::VIDEO, strings::menu_save_video())
-        } else {
-            (&icons::EXTERNAL, strings::menu_save_file())
-        };
-        let mut entries = vec![
-            Entry::Item(
-                MenuItem::plain(
-                    "menu-media-open",
-                    strings::menu_media_open(),
-                    action(MediaAction::Open),
-                    false,
-                )
-                .with_icon(open_icon)
-                .with_shortcut("O"),
-            ),
-            Entry::Item(
-                MenuItem::plain(
-                    "menu-media-save",
-                    save_label,
-                    action(MediaAction::Save),
-                    false,
-                )
-                .with_icon(&icons::DOWNLOAD)
-                .with_sub(folder),
-            ),
-            Entry::Item(
-                MenuItem::plain(
-                    "menu-media-save-as",
-                    strings::menu_save_as(),
-                    action(MediaAction::SaveAs),
-                    false,
-                )
-                .with_icon(&icons::FOLDER),
-            ),
-        ];
-        if picture {
-            entries.push(Entry::Divider);
-            entries.push(Entry::Item(
-                MenuItem::plain(
-                    "menu-media-copy-image",
-                    strings::menu_copy_image(),
-                    action(MediaAction::CopyImage),
-                    false,
-                )
-                .with_icon(&icons::COPY),
-            ));
-        }
-        let placement = match point {
-            Some(point) => Placement::AtPointer(point),
-            None => Placement::BelowEnd(media_element_key(at)),
-        };
-        self.nav.close_accounts();
-        self.nav.menu = Some(OpenMenu::with_entries(
-            placement,
-            media_element_key(at),
-            entries,
-            MEDIA_MENU_WIDTH_PT,
-        ));
     }
 
     /// Saves attachment `at` to `to`, following it until it ends.

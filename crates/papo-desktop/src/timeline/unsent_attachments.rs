@@ -19,12 +19,14 @@ use rune::{Color, El, col, el, icon, row};
 use super::TimelineKey;
 use super::unsent_pictures::{album, single};
 use super::view::TimelineHost;
+use crate::audio_store::AudioShown;
+use crate::composer::tray::TileKind;
 use crate::design::{
     FILE_CARD_BUTTON_PT, FOCUS_RING_PT, Look, MEDIA_BLOCK_GAP, RADIUS_CONTROL,
     UPLOAD_CANCEL_ICON_PT,
 };
 use crate::icons::X;
-use crate::message_media::{self, FileCard};
+use crate::message_media::{self, FileCard, audio};
 use crate::strings;
 use crate::unsent_media::UnsentFile;
 
@@ -98,7 +100,12 @@ pub(super) fn attachments<S: TimelineHost>(unsent: &Unsent<'_>, look: &Look) -> 
         many => block = block.child(album::<S>(many, cancel, unsent.bounds, look)),
     }
     for item in files {
-        block = block.child(file_card::<S>(item, cancel, look));
+        let card = if item.file.kind == TileKind::Audio {
+            audio_capsule::<S>(item, cancel, look)
+        } else {
+            file_card::<S>(item, cancel, look)
+        };
+        block = block.child(card);
     }
     Some(block.key("unsent-attachments"))
 }
@@ -183,22 +190,7 @@ fn file_card<S: TimelineHost>(
     cancel: Option<(TimelineKey, Uuid)>,
     look: &Look,
 ) -> El {
-    let (size_line, share) = match item.upload {
-        Upload::Sending {
-            share,
-            sent_bytes,
-            total_bytes,
-        } => (
-            Some(strings::upload_size_progress(sent_bytes, total_bytes)),
-            Some(share),
-        ),
-        Upload::Waiting => (
-            item.size_bytes
-                .map(|total| strings::upload_size_progress(0, total)),
-            Some(0.0),
-        ),
-        Upload::Done => (item.size_bytes.map(strings::size), None),
-    };
+    let (size_line, share) = upload_line(item);
     let label = match item.size_bytes {
         Some(total) => strings::media_file(item.name, &strings::size(total)),
         None => item.name.to_owned(),
@@ -226,6 +218,57 @@ fn file_card<S: TimelineHost>(
         bar = Some((share, progress_label(item)));
     }
     message_media::file_card(card, ends, bar, look)
+}
+
+/// An unsent audio: the player's capsule, as its sent message draws it, so the row keeps its
+/// height (§14.3, a file or audio card): the upload's size in the time's place, the accent bar
+/// along its foot, and ✕ in the play disc's place while it uploads.
+fn audio_capsule<S: TimelineHost>(
+    item: &Item<'_>,
+    cancel: Option<(TimelineKey, Uuid)>,
+    look: &Look,
+) -> El {
+    let (size_line, share) = upload_line(item);
+    let uploading = share.zip(cancel);
+    let disc = match uploading {
+        Some((_, (key, local))) => audio::disc(
+            cancel_button::<S>(key, local, item.index, look.palette.surface_content, look),
+            look,
+        ),
+        None => audio::play_disc(false, look).a11y_hidden(),
+    };
+    let time = audio::time_slot(&size_line.unwrap_or_default(), None, look);
+    let bar = uploading.map(|(share, _)| (share, progress_label(item)));
+    audio::capsule(
+        disc,
+        item.name,
+        audio::waveform(&AudioShown::unread(), look),
+        time,
+        bar,
+        look,
+    )
+    .label(strings::media_audio(item.name))
+}
+
+/// An unsent file's size line and its upload's share: "12.4 of 100 MB" while it waits or
+/// sends, its size once sent.
+fn upload_line(item: &Item<'_>) -> (Option<String>, Option<f32>) {
+    match item.upload {
+        Upload::Sending {
+            share,
+            sent_bytes,
+            total_bytes,
+        } => (
+            Some(strings::upload_size_progress(sent_bytes, total_bytes)),
+            Some(share),
+        ),
+        Upload::Waiting => (
+            item.size_bytes
+                .map(|total| strings::upload_size_progress(0, total)),
+            Some(0.0),
+        ),
+        Upload::Done => (item.size_bytes.map(strings::size), None),
+    }
 }
 
 /// A ring's or bar's spoken name: "Uploading praia.jpg, 34 %". Readable,

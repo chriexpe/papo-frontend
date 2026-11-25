@@ -3,7 +3,8 @@
 //! avatar), how a timeline opens and what it shows of skipped messages, the
 //! channel description on opening, the mention and reply highlights'
 //! hues (the reply highlight is drawn once B-006 lands), and the Media group
-//! (Image size, Video size, Animate GIFs and stickers, Autoplay videos). Every
+//! (Image size, Video size, Animate GIFs and stickers, Autoplay videos, Keep
+//! playing when hidden). Every
 //! one is this device's: times and avatars could follow the account
 //! (`display.show_timestamps`, `display.show_avatars`) only once the
 //! backend can save one field without the others (B-020).
@@ -20,6 +21,7 @@ use serde_json::{Value, json};
 
 use crate::design::{MENTION_HIGHLIGHT_HUE_DEGREES, REPLY_HIGHLIGHT_HUE_DEGREES};
 use crate::device_settings::{SettingsFile, Stored, Write};
+use crate::keep_playing::KeepPlaying;
 
 /// "Enter to send".
 const ENTER_SENDS_KEY: &str = "enter_sends";
@@ -48,6 +50,8 @@ const ANIMATE_GIFS_KEY: &str = "animate_gifs";
 const VIDEO_SIZE_KEY: &str = "video_size";
 /// Media › Autoplay videos; absent until changed, when it follows the system's reduced motion.
 const AUTOPLAY_VIDEOS_KEY: &str = "autoplay_videos";
+/// Media › Keep playing when hidden: "nothing", "audio", "video" or "both".
+const KEEP_PLAYING_KEY: &str = "keep_playing_hidden";
 
 /// Everything the Conversations page holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -87,6 +91,8 @@ pub(crate) struct ConversationSettings {
     /// Clips of a minute or less play muted while they show (§14.5). Unset until changed: it
     /// then starts off when the system asks for reduced motion.
     pub(crate) autoplay_videos: Option<bool>,
+    /// Which sound a person started goes on while the window is off screen.
+    pub(crate) keep_playing: KeepPlaying,
 }
 
 impl ConversationSettings {
@@ -121,6 +127,7 @@ impl Default for ConversationSettings {
             animate_gifs: None,
             video_size: MediaSizeSetting::Medium,
             autoplay_videos: None,
+            keep_playing: KeepPlaying::default(),
         }
     }
 }
@@ -171,6 +178,10 @@ impl ConversationStore {
                 .and_then(|value| size_of(&value))
                 .unwrap_or(defaults.video_size),
             autoplay_videos: prefs.get(AUTOPLAY_VIDEOS_KEY),
+            keep_playing: prefs
+                .get::<String>(KEEP_PLAYING_KEY)
+                .and_then(|saved| KeepPlaying::of_saved(&saved))
+                .unwrap_or(defaults.keep_playing),
         };
         ConversationStore {
             stored: Stored::new(settings),
@@ -245,6 +256,7 @@ fn entries(settings: &ConversationSettings) -> Vec<(&'static str, Value)> {
         (ANIMATE_GIFS_KEY, json!(settings.animate_gifs)),
         (VIDEO_SIZE_KEY, size_value(settings.video_size)),
         (AUTOPLAY_VIDEOS_KEY, json!(settings.autoplay_videos)),
+        (KEEP_PLAYING_KEY, json!(settings.keep_playing.saved())),
     ]
 }
 

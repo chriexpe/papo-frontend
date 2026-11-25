@@ -10,6 +10,8 @@
 
 use papo_sdk::{MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES};
 
+use papo_sdk_ui::AttachmentKind;
+
 use crate::composer::tray::TileKind;
 
 /// The most bytes a picture may have for its tile to be decoded; a larger
@@ -113,13 +115,16 @@ pub(crate) fn plan(offered: &[Offered], held: usize, held_bytes: u64) -> Plan {
 /// How many leading bytes [`kind_of`] reads: enough for an MP4's brand after a 64-bit box size.
 pub(crate) const HEAD_BYTES: usize = 24;
 
-/// The tile a file makes, from its first bytes and size: a picture Rune
-/// decodes (JPEG, PNG, WebP, GIF) small enough to decode, a video the
-/// server will call one (`is_video`), else a file.
+/// The tile a file named `name` makes, from its first bytes and size: a video or an audio as
+/// its sent message will be one (the label the server will give it, `server_label`, read with
+/// its name as the SDK reads a received attachment's), a picture Rune decodes (JPEG, PNG, WebP,
+/// GIF) small enough to decode, else a file.
 /// Only for drawing: what the SDK may clean is the SDK's to say.
-pub(crate) fn kind_of(head: &[u8], size_bytes: u64) -> TileKind {
-    if is_video(head) {
-        return TileKind::Video;
+pub(crate) fn kind_of(head: &[u8], size_bytes: u64, name: &str) -> TileKind {
+    match AttachmentKind::from_file(server_label(head), Some(name), Some(size_bytes)) {
+        AttachmentKind::Video => return TileKind::Video,
+        AttachmentKind::Audio => return TileKind::Audio,
+        _ => {}
     }
     if size_bytes > THUMBNAIL_SOURCE_MAX_BYTES {
         return TileKind::File;
@@ -137,34 +142,61 @@ pub(crate) fn kind_of(head: &[u8], size_bytes: u64) -> TileKind {
     }
 }
 
-/// ISO media brands the server takes for audio (M4A and kin) or a picture (AVIF, HEIC).
-const NOT_VIDEO_BRANDS: [&[u8; 4]; 14] = [
-    b"M4A ", b"M4B ", b"M4P ", b"F4A ", b"avif", b"avis", b"heic", b"heix", b"hevc", b"hevx",
-    b"heim", b"heis", b"mif1", b"msf1",
+/// ISO media brands the server takes for audio (M4A and kin).
+const AUDIO_BRANDS: [&[u8; 4]; 4] = [b"M4A ", b"M4B ", b"M4P ", b"F4A "];
+
+/// ISO media brands the server takes for a picture (AVIF, HEIC).
+const PICTURE_BRANDS: [&[u8; 4]; 10] = [
+    b"avif", b"avis", b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1",
 ];
 
-/// Whether a file starting with `head` is a video as the server sniffs one, so its unsent row
-/// takes the shape its sent row will: an ISO media file (MP4, MOV, 3GP) whose brand is not an
-/// audio or picture one, a Matroska or `WebM` file, or an AVI.
-fn is_video(head: &[u8]) -> bool {
+/// The media type the server will give a file starting with `head`, as far as playing it here
+/// goes (its `DetectMimeType`): an ISO media file (MP4, MOV, 3GP) is video unless its brand is
+/// an audio or picture one, Matroska and `WebM` are video, an AVI is video; an Ogg is
+/// `application/ogg`, an MP3 or a WAV audio; the rest is unlabelled here.
+fn server_label(head: &[u8]) -> &'static str {
     if head.get(4..8) == Some(b"ftyp") {
         let Some(size) = head
             .get(..4)
             .and_then(|size| <[u8; 4]>::try_from(size).ok())
         else {
-            return false;
+            return UNLABELLED;
         };
         // A box size of 1 means a 64-bit size follows, and the brand after it.
         let brand_at = if u32::from_be_bytes(size) == 1 { 16 } else { 8 };
         let Some(brand) = head.get(brand_at..brand_at + 4) else {
-            return false;
+            return UNLABELLED;
         };
-        return !NOT_VIDEO_BRANDS.iter().any(|not| brand == not.as_slice());
+        if AUDIO_BRANDS.iter().any(|audio| brand == audio.as_slice()) {
+            return "audio/mp4";
+        }
+        if PICTURE_BRANDS
+            .iter()
+            .any(|picture| brand == picture.as_slice())
+        {
+            return UNLABELLED;
+        }
+        return "video/mp4";
     }
-    let matroska = head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]);
-    let avi = head.starts_with(b"RIFF") && head.get(8..12) == Some(b"AVI ");
-    matroska || avi
+    let riff = |form: &[u8; 4]| head.starts_with(b"RIFF") && head.get(8..12) == Some(form);
+    let mpeg_frame = head.len() >= 2 && head[0] == 0xFF && head[1] & 0xE0 == 0xE0;
+    if head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        "video/webm"
+    } else if riff(b"AVI ") {
+        "video/x-msvideo"
+    } else if head.starts_with(b"OggS") {
+        "application/ogg"
+    } else if head.starts_with(b"ID3") || mpeg_frame {
+        "audio/mpeg"
+    } else if riff(b"WAVE") {
+        "audio/wave"
+    } else {
+        UNLABELLED
+    }
 }
+
+/// What the server labels a file it doesn't recognise.
+const UNLABELLED: &str = "application/octet-stream";
 
 /// The name for a pasted picture: `base` ("image.png") for the first,
 /// "image (2).png" and on for the next ones in the same message, skipping
@@ -199,148 +231,4 @@ pub(crate) fn extension_label(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    //! The rules of §14.1 against the SDK's limits.
-    use super::*;
-
-    const MIB: u64 = 1024 * 1024;
-
-    fn file(name: &str, size_bytes: u64) -> Offered {
-        Offered::File {
-            name: name.to_owned(),
-            size_bytes,
-        }
-    }
-
-    #[test]
-    fn files_within_the_limits_are_all_taken() {
-        let plan = plan(&[file("a.jpg", MIB), file("b.pdf", 2 * MIB)], 0, 0);
-        assert_eq!(plan.taken, [0, 1]);
-        assert_eq!(plan.refused, None);
-    }
-
-    #[test]
-    fn one_file_over_the_limit_is_named_and_the_others_still_go() {
-        let plan = plan(
-            &[
-                file("big.mkv", MAX_ATTACHMENT_BYTES + 1),
-                file("a.jpg", MIB),
-            ],
-            0,
-            0,
-        );
-        assert_eq!(plan.taken, [1]);
-        assert_eq!(
-            plan.refused,
-            Some(Refused::TooLarge {
-                name: "big.mkv".to_owned()
-            })
-        );
-    }
-
-    #[test]
-    fn several_files_over_the_limit_are_counted() {
-        let over = MAX_ATTACHMENT_BYTES + 1;
-        let plan = plan(&[file("a", over), file("b", over)], 0, 0);
-        assert_eq!(plan.taken, [0_usize; 0]);
-        assert_eq!(plan.refused, Some(Refused::ManyTooLarge { count: 2 }));
-    }
-
-    #[test]
-    fn a_full_tray_takes_up_to_ten_and_says_so() {
-        let offered: Vec<Offered> = (0..4).map(|n| file(&n.to_string(), 1)).collect();
-        let plan = plan(&offered, MAX_ATTACHMENTS_PER_MESSAGE - 2, 0);
-        assert_eq!(plan.taken, [0, 1]);
-        assert_eq!(plan.refused, Some(Refused::TooMany));
-    }
-
-    #[test]
-    fn files_too_large_together_are_refused_once_the_total_would_pass() {
-        let half = MAX_MESSAGE_ATTACHMENT_BYTES / 2;
-        let plan = plan(&[file("a", half), file("b", half + 1)], 0, 0);
-        assert_eq!(plan.taken, [0]);
-        assert_eq!(plan.refused, Some(Refused::TooMuchTogether));
-    }
-
-    #[test]
-    fn folders_and_unreadable_files_are_refused_and_the_rest_taken() {
-        let plan = plan(
-            &[
-                Offered::Folder,
-                file("a.jpg", 1),
-                Offered::Unreadable {
-                    name: "gone.txt".to_owned(),
-                },
-            ],
-            0,
-            0,
-        );
-        assert_eq!(plan.taken, [1]);
-        assert_eq!(plan.refused, Some(Refused::Folder));
-        let plan = super::plan(
-            &[Offered::Unreadable {
-                name: "gone.txt".to_owned(),
-            }],
-            0,
-            0,
-        );
-        assert_eq!(
-            plan.refused,
-            Some(Refused::Unreadable {
-                name: "gone.txt".to_owned()
-            })
-        );
-    }
-
-    #[test]
-    fn pictures_are_told_from_files_by_their_first_bytes() {
-        assert_eq!(kind_of(b"\xFF\xD8\xFF\xE0", 10), TileKind::Image);
-        assert_eq!(kind_of(b"\x89PNG\r\n\x1a\n", 10), TileKind::Image);
-        assert_eq!(kind_of(b"RIFF\0\0\0\0WEBP", 10), TileKind::Image);
-        assert_eq!(kind_of(b"GIF89a", 10), TileKind::Gif);
-        assert_eq!(kind_of(b"%PDF-1.7", 10), TileKind::File);
-        assert_eq!(
-            kind_of(b"\0\0\0\x20ftypisom\0\0\x02\0", 10),
-            TileKind::Video
-        );
-        assert_eq!(kind_of(b"\0\0\0\x14ftypqt  \0\0\0\0", 10), TileKind::Video);
-        assert_eq!(kind_of(b"\0\0\0\x20ftypM4A \0\0\0\0", 10), TileKind::File);
-        assert_eq!(
-            kind_of(&[0x1A, 0x45, 0xDF, 0xA3, 0x9F], 10),
-            TileKind::Video
-        );
-        assert_eq!(kind_of(b"RIFF\0\0\0\0AVI LIST", 10), TileKind::Video);
-        // A video is a video at any size: its first frame is read, not the whole decoded.
-        assert_eq!(
-            kind_of(b"\0\0\0\x20ftypisom\0\0\x02\0", 90 << 20),
-            TileKind::Video
-        );
-        assert_eq!(kind_of(b"\0\0\0\x18ftypheic", 10), TileKind::File);
-    }
-
-    #[test]
-    fn a_picture_too_large_to_decode_is_a_file_tile() {
-        assert_eq!(
-            kind_of(b"\xFF\xD8\xFF\xE0", THUMBNAIL_SOURCE_MAX_BYTES + 1),
-            TileKind::File
-        );
-    }
-
-    #[test]
-    fn pasted_pictures_are_numbered_from_two() {
-        let held = ["image.png".to_owned(), "image (2).png".to_owned()];
-        let taken = |name: &str| held.iter().any(|held| held == name);
-        assert_eq!(pasted_name("image.png", |_| false), "image.png");
-        assert_eq!(pasted_name("image.png", taken), "image (3).png");
-        assert_eq!(pasted_name("imagem.png", taken), "imagem.png");
-    }
-
-    #[test]
-    fn the_extension_block_shows_up_to_four_letters() {
-        assert_eq!(extension_label("relatório.pdf"), "PDF");
-        assert_eq!(extension_label("capture.webm.part"), "PART");
-        assert_eq!(extension_label("notes.markdown"), "MARK");
-        assert_eq!(extension_label("README"), "");
-        assert_eq!(extension_label(".bashrc"), "");
-    }
-}
+mod tests;

@@ -278,6 +278,18 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
         marked,
         unpin,
         open.revealed(id),
+        // Its media as drawn: an audio read or playing, a picture loaded.
+        crate::timeline::received_signature(
+            crate::message_media::received::MediaAt {
+                surface: crate::message_media::received::MediaSurface::Pins,
+                account: key.account,
+                channel: key.channel,
+                message: id,
+                index: 0,
+            },
+            pin.message.attachments.as_deref().unwrap_or_default(),
+            &style.media,
+        ),
     );
     // Concentric with the panel, whose edge is one `space.sm` out.
     let row_radius_pt = Look::nested_radius(look.radius(RADIUS_PILL), look.space(SPACE_SM));
