@@ -203,6 +203,10 @@ pub(crate) struct Shell {
     opening: std::collections::HashSet<crate::media_store::MediaKey>,
     /// Videos in messages: what is read, what plays (`docs/design.md` §14.5).
     videos: videos::Videos,
+    /// Audio in messages: what is read, what plays (`docs/design.md` §14.5).
+    audio: audio::Audio,
+    /// The one read of a video or an audio at a time.
+    media_reads: media_reads::MediaReads,
     /// The viewer, while open.
     viewer: Option<crate::viewer::Viewer>,
     /// The viewer's video, while it shows one.
@@ -319,6 +323,8 @@ impl Default for Shell {
             opening: std::collections::HashSet::new(),
             revealed: Arc::default(),
             videos: videos::Videos::default(),
+            audio: audio::Audio::default(),
+            media_reads: media_reads::MediaReads::default(),
             viewer: None,
             viewer_video: None,
             serial_viewer: 0,
@@ -409,6 +415,9 @@ mod activity;
 mod app_keys;
 pub(crate) mod appearance;
 mod attaching;
+mod audio;
+mod audio_presses;
+mod audio_reads;
 mod composer;
 mod composer_input;
 mod content;
@@ -423,7 +432,9 @@ mod hover_bar;
 mod jump;
 mod jump_view;
 mod media_copy;
+mod media_menu;
 mod media_presses;
+mod media_reads;
 mod message_keys;
 mod message_menu;
 mod message_open;

@@ -162,7 +162,10 @@ fn header(editor: &Editor, title: &str, look: &Look) -> El {
 fn preview(shown: &Shown<'_>, look: &Look) -> El {
     // A video shows its file card too: its Anonymize and preview come with the SDK's video
     // cleaning.
-    if matches!(shown.kind, TileKind::File | TileKind::Video) {
+    if matches!(
+        shown.kind,
+        TileKind::File | TileKind::Video | TileKind::Audio
+    ) {
         let card = row()
             .w_full()
             .px(look.space(SPACE_MD) + 2.0)
@@ -331,7 +334,10 @@ fn note(shown: &Shown<'_>) -> String {
     let editor = shown.editor;
     // A video shows its file card too: its Anonymize and preview come with the SDK's video
     // cleaning.
-    if matches!(shown.kind, TileKind::File | TileKind::Video) {
+    if matches!(
+        shown.kind,
+        TileKind::File | TileKind::Video | TileKind::Audio
+    ) {
         // What goes: its kind and size; a file is never re-encoded.
         let size = shown.size_bytes.map(strings::size).unwrap_or_default();
         return strings::editor_note_file(&extension_label(shown.name), &size);

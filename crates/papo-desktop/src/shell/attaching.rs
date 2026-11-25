@@ -204,7 +204,7 @@ impl Shell {
                 .and_then(|session| session.outgoing().begin_staging(Cursor::new(png.clone())));
             match staged {
                 Ok(pending) => {
-                    let kind = attaching::kind_of(&png, size_bytes);
+                    let kind = attaching::kind_of(&png, size_bytes, "image.png");
                     let started = Started {
                         // Named when the tile joins (`copies_started`).
                         name: String::new(),
@@ -255,7 +255,7 @@ fn open_one(path: &Path) -> (Offered, Option<Opened>) {
     {
         return unreadable();
     }
-    let kind = attaching::kind_of(&head, size_bytes);
+    let kind = attaching::kind_of(&head, size_bytes, &name);
     let opened = Opened {
         name: name.clone(),
         size_bytes,

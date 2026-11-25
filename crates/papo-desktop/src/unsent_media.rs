@@ -100,7 +100,7 @@ impl UnsentFile {
 
     /// Whether it is drawn as a picture rather than a file card.
     pub(crate) fn is_media(&self) -> bool {
-        self.kind != TileKind::File
+        self.kind.is_boxed()
     }
 }
 

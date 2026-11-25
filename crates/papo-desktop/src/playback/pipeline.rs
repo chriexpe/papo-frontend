@@ -3,8 +3,9 @@
 //! costliest path; `docs/papo-desktop.md` §7, D7c "Frames"); a stream nothing here decodes makes
 //! the media unsupported. Video is converted to NV12 (never RGB: Rune converts in its shader) and
 //! scaled to the frame size before an appsink holding one buffer, dropping late ones; sound goes
-//! through a volume to the system's audio sink. Running the pipeline is `gst_engine`'s and
-//! `probe`'s.
+//! through a volume to the system's audio sink. A pipeline reading a waveform decodes the sound
+//! alone, to 32-bit float samples as fast as it can. Running the pipeline is `gst_engine`'s,
+//! `probe`'s and `peaks`'.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -32,6 +33,8 @@ pub(super) enum Mode {
     Play,
     /// Reads the first frame and the length: no sound decoded, frames as soon as decoded.
     Probe,
+    /// Reads the sound's waveform: no video decoded, samples as soon as decoded.
+    Peaks,
 }
 
 /// The volume a player asked for, and its element once the sound's stream appears.
@@ -72,6 +75,8 @@ pub(super) struct Graph {
     pub(super) video_px: Arc<Mutex<Option<[u32; 2]>>>,
     /// The video's frames on their way to the sink, once its stream appeared.
     pub(super) relay: Arc<Mutex<Option<Arc<FrameRelay>>>>,
+    /// The sound's decoded samples (waveform: the first sound stream's).
+    pub(super) samples: Arc<Mutex<Option<gst_app::AppSink>>>,
 }
 
 /// NV12 frames at most `frame_px`, or at the stream's size.
@@ -88,7 +93,8 @@ pub(super) fn frame_caps(frame_px: Option<[u32; 2]>) -> gst::Caps {
 }
 
 /// Builds the pipeline for `bytes`, its frames fitted into `box_px` (device pixels; `None`: the
-/// stream's own size). Its streams' branches are added as `parsebin` finds them.
+/// stream's own size) and sent to `sink`; a player without a sink plays sound only. Its
+/// streams' branches are added as `decodebin` finds them.
 ///
 /// # Errors
 /// An element GStreamer lacks (its base plugins missing).
@@ -142,6 +148,7 @@ pub(super) fn build(
         has_audio: Arc::default(),
         video_px: Arc::default(),
         relay: Arc::default(),
+        samples: Arc::default(),
     };
     let branches = Branches {
         pipeline: pipeline.downgrade(),
@@ -154,6 +161,7 @@ pub(super) fn build(
         has_audio: Arc::clone(&graph.has_audio),
         video_px: Arc::clone(&graph.video_px),
         relay: Arc::clone(&graph.relay),
+        samples: Arc::clone(&graph.samples),
     };
     decode.connect_pad_added(move |_, pad| branches.add(pad));
     Ok(graph)
@@ -171,6 +179,7 @@ struct Branches {
     has_audio: Arc<Mutex<bool>>,
     video_px: Arc<Mutex<Option<[u32; 2]>>>,
     relay: Arc<Mutex<Option<Arc<FrameRelay>>>>,
+    samples: Arc<Mutex<Option<gst_app::AppSink>>>,
 }
 
 impl Branches {
@@ -184,7 +193,13 @@ impl Branches {
         let Some(kind) = caps.structure(0).map(|s| s.name().to_string()) else {
             return;
         };
-        let built = if kind.starts_with("video/") {
+        // A probe reads the first frame; a player draws frames only when it has somewhere to.
+        let shows_video = match self.mode {
+            Mode::Probe => true,
+            Mode::Play => self.sink.is_some(),
+            Mode::Peaks => false,
+        };
+        let built = if kind.starts_with("video/") && shows_video {
             self.video(&caps)
         } else if kind.starts_with("audio/") {
             *self
@@ -254,10 +269,12 @@ impl Branches {
     }
 
     fn audio(&self) -> Result<Vec<gst::Element>, PlaybackFailure> {
-        if self.mode == Mode::Probe {
+        match self.mode {
             // Its own queue: a sink waiting for its first buffer must not hold the decoder
             // back from the video's.
-            return discard();
+            Mode::Probe => return discard(),
+            Mode::Peaks => return super::peaks::samples_branch(&self.samples),
+            Mode::Play => {}
         }
         let mut chain = vec![make("queue")?, make("audioconvert")?];
         chain.push(make("audioresample")?);
@@ -274,7 +291,7 @@ impl Branches {
 }
 
 /// A branch that takes a stream and drops it, behind its own queue.
-fn discard() -> Result<Vec<gst::Element>, PlaybackFailure> {
+pub(super) fn discard() -> Result<Vec<gst::Element>, PlaybackFailure> {
     Ok(vec![make("queue")?, make("fakesink")?])
 }
 
@@ -317,7 +334,7 @@ pub(super) fn displayed_px(caps: &gst::Caps) -> Option<[u32; 2]> {
 }
 
 /// A new element of `factory`.
-fn make(factory: &str) -> Result<gst::Element, PlaybackFailure> {
+pub(super) fn make(factory: &str) -> Result<gst::Element, PlaybackFailure> {
     gst::ElementFactory::make(factory).build().map_err(|_| {
         log::warn!("GStreamer element unavailable: {factory}");
         PlaybackFailure::Unavailable

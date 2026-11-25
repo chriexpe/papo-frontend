@@ -20,10 +20,6 @@ use crate::video_store::{Desired, ProbeJob, VideoStore, VideoView, VideoWant};
 use crate::video_surface::{SurfaceSink, byte_frame};
 use crate::video_volume::VideoVolume;
 
-/// The longest a video's read (its fetch, up to 100 MiB, and its probe) may take before it
-/// fails with Retry and the next video is read.
-const READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
-
 /// Surfaces kept for videos no view wants (their first or last frame), most recent first.
 const WARM_SURFACES: usize = 8;
 
@@ -189,20 +185,19 @@ impl Shell {
         }
         let jobs = self.videos.store.want(wants);
         self.videos.prune_surfaces(&wanted);
-        self.run_video_probes(jobs);
+        self.queue_video_probes(jobs);
         self.reconcile_videos();
     }
 
-    /// Starts `jobs`: each fetches its video through the SDK's cache and probes it off the UI
-    /// thread, then lands in the store.
-    fn run_video_probes(&mut self, jobs: Vec<ProbeJob>) {
+    /// Starts `job` (the read slot is its, `media_reads`): it fetches its video through the
+    /// SDK's cache and probes it off the UI thread, then lands in the store. Returns whether it
+    /// started.
+    pub(super) fn start_video_probe(&mut self, job: ProbeJob) -> bool {
         let Some(sdk) = self.sdk.clone() else {
-            for job in jobs {
-                self.videos.store.probe_dropped(job.key);
-            }
-            return;
+            self.videos.store.probe_dropped(job.key);
+            return false;
         };
-        for job in jobs {
+        {
             let engine = Arc::clone(&self.videos.engine);
             let updates = sdk.updates();
             sdk.run(move |client| async move {
@@ -225,8 +220,8 @@ impl Shell {
                         }
                     }
                 };
-                // One read at a time: a stalled one must not hold every other video back.
-                let outcome = tokio::time::timeout(READ_DEADLINE, read)
+                // One read at a time: a stalled one must not hold every other back.
+                let outcome = tokio::time::timeout(super::media_reads::READ_DEADLINE, read)
                     .await
                     .unwrap_or(Err(crate::playback::PlaybackFailure::Broken));
                 updates.send(move |shell| {
@@ -235,6 +230,7 @@ impl Shell {
                 });
             });
         }
+        true
     }
 
     /// Video `key`'s probe ended.
@@ -253,7 +249,9 @@ impl Shell {
             probe.info
         });
         let jobs = self.videos.store.probed(key, outcome);
-        self.run_video_probes(jobs);
+        // Queued first, so the next video goes before any audio.
+        self.queue_video_probes(jobs);
+        self.media_read_done();
         self.reconcile_videos();
     }
 
@@ -342,7 +340,7 @@ impl Shell {
                         volume,
                         looping: want.looping,
                     },
-                    Arc::new(SurfaceSink::new(surface)),
+                    Some(Arc::new(SurfaceSink::new(surface))),
                     changed,
                 )
             });
@@ -462,10 +460,14 @@ impl Shell {
             }
             VideoPress::Retry => {
                 let jobs = self.videos.store.retry(key);
-                self.run_video_probes(jobs);
+                self.queue_video_probes(jobs);
             }
         }
         self.reconcile_videos();
+        // One sound at a time: a video's sound pauses audio.
+        if self.videos.store.has_sound() {
+            self.pause_audio();
+        }
     }
 
     /// Moves video `key` to `position_ms`: the live player now (exactly once `exact`), else

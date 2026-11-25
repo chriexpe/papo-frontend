@@ -94,6 +94,22 @@ impl crate::message_media::received::MediaHost for Host {
     ) {
     }
 
+    fn audio_press(
+        &mut self,
+        _at: crate::message_media::received::MediaAt,
+        _key: crate::media_store::MediaKey,
+        press: crate::message_media::audio::AudioPress,
+        _tx: &mut Tx,
+    ) {
+        use crate::message_media::audio::AudioPress;
+        self.controls.push(match press {
+            AudioPress::Play => "audio-play",
+            AudioPress::Pause => "audio-pause",
+            AudioPress::Seek(_) | AudioPress::SeekBy(_) => "audio-seek",
+            AudioPress::Hover(_) => "audio-hover",
+        });
+    }
+
     fn video_press(
         &mut self,
         _at: crate::message_media::received::MediaAt,
@@ -425,6 +441,7 @@ fn assert_near(actual: f32, expected: f32, what: &str) {
     );
 }
 
+mod audio;
 mod changes;
 mod content;
 mod controls;

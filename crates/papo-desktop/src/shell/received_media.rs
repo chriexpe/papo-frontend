@@ -85,6 +85,8 @@ impl Shell {
             video_attention: self.videos.attention,
             video_volume_open: self.videos.volume_open,
             video_volume: self.videos.volume.get(),
+            audio: self.audio.store.view(),
+            audio_hover: self.audio.hover,
         }
     }
 
@@ -98,6 +100,7 @@ impl Shell {
         let scale = self.scale;
         let mut wants = Vec::new();
         let mut videos = Vec::new();
+        let mut audio = Vec::new();
         if let Some(open) = self.tabs.shown() {
             let visible = visible_span(open);
             let from = visible.start.saturating_sub(NEAR_ROWS);
@@ -105,6 +108,7 @@ impl Shell {
             for item in open.items.iter().skip(from).take(to.saturating_sub(from)) {
                 if let TimelineItem::Message { message, .. } = item.as_ref() {
                     let attachments = message.attachments.as_deref().unwrap_or_default();
+                    audio.extend(super::audio::audio_wanted(open.key.account, attachments));
                     wants.extend(pictures_wanted(
                         open.key.account,
                         attachments,
@@ -135,6 +139,7 @@ impl Shell {
             if pins_open && let Some(pins) = open.pins.list() {
                 for pin in pins {
                     let attachments = pin.message.attachments.as_deref().unwrap_or_default();
+                    audio.extend(super::audio::audio_wanted(open.key.account, attachments));
                     wants.extend(pictures_wanted(
                         open.key.account,
                         attachments,
@@ -160,6 +165,7 @@ impl Shell {
             }
         }
         self.want_videos(videos);
+        self.want_audio(audio);
         let wanted: HashSet<MediaKey> = wants.iter().map(|want| want.key).collect();
         self.gif_places.rects.retain(|key, _| wanted.contains(key));
         let jobs = self.media.want(wants);
@@ -457,6 +463,20 @@ impl crate::message_media::received::MediaHost for Shell {
             // The bar's seek bar moves by quarter seconds, the rest by seconds.
             self.videos.next_clock_s = None;
         }
+    }
+
+    fn audio_press(
+        &mut self,
+        at: crate::message_media::received::MediaAt,
+        key: MediaKey,
+        press: crate::message_media::audio::AudioPress,
+        tx: &mut Tx,
+    ) {
+        // The pointer passing over a waveform is no work: an opened pin or result stays open.
+        if !matches!(press, crate::message_media::audio::AudioPress::Hover(_)) {
+            self.worked_outside();
+        }
+        self.press_audio(at, key, press, tx);
     }
 
     fn video_volume_open(&mut self, key: MediaKey, on: bool, tx: &mut Tx) {

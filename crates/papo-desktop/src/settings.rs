@@ -193,6 +193,8 @@ pub(crate) enum RowId {
     AnimateGifs,
     /// Media › Autoplay videos.
     AutoplayVideos,
+    /// Media › Keep playing when hidden.
+    KeepPlaying,
     /// Files › Save media to.
     SaveMediaTo,
     Language,
@@ -271,6 +273,8 @@ pub(crate) enum Change {
     Language(Language),
     /// Presence's menu.
     Presence(Presence),
+    /// Keep playing when hidden's menu.
+    KeepPlaying(crate::keep_playing::KeepPlaying),
 }
 
 impl Change {
@@ -285,6 +289,7 @@ impl Change {
             Change::Language(_) => RowId::Language,
             Change::MediaSize(media, _) => media.row(),
             Change::Presence(_) => RowId::Presence,
+            Change::KeepPlaying(_) => RowId::KeepPlaying,
             Change::Colours(_) => RowId::Field,
         }
     }

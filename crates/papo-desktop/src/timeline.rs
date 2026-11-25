@@ -63,6 +63,7 @@ pub(crate) use self::reacting::Reacting;
 use self::reading::Reading;
 pub(crate) use self::reading::Seek;
 use self::reports::Reports;
+pub(crate) use self::row_media::received_signature;
 pub(crate) use self::rows::row_key;
 pub(crate) use self::view::{Style, TimelineHost, view, viewport_key};
 pub(crate) use self::watch::Opened;

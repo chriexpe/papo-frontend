@@ -30,7 +30,7 @@ pub(super) fn with_media(body: El, media: Option<El>, look: &Look) -> El {
 
 /// What one received attachment draws from, for its row's memo.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct AttachmentState {
+pub(crate) struct AttachmentState {
     /// Its pictures' version in the store.
     drawn: u64,
     animates: bool,
@@ -42,12 +42,30 @@ pub(super) struct AttachmentState {
     /// A video: what it shows (its reading, playing, sound, time), whether its controls show,
     /// its volume slider, and whether it has a surface to draw.
     video: Option<(crate::video_store::VideoShown, bool, bool, bool)>,
+    /// An audio, as drawn (`AudioDrawn`).
+    audio: Option<AudioDrawn>,
+}
+
+/// What an audio's player shows, for its row's memo: what it draws changes only when one of
+/// these does (its time moves by seconds, its bars by bars), not with every reading of its
+/// player's clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AudioDrawn {
+    reading: crate::audio_store::Reading,
+    /// Its waveform's version in the store.
+    bars_version: u64,
+    /// The whole second it shows.
+    shown_s: Option<u64>,
+    played_bars: usize,
+    playing: bool,
+    /// The hairline's place over the waveform, in whole points.
+    hover_pt: Option<u32>,
 }
 
 /// What a received message's attachments draw from, for the row's memo: each attachment's
 /// state, the bounds' sides (pictures', then videos'), the system's reduced motion its GIFs
 /// and videos report, and the videos' volume.
-pub(super) type ReceivedSignature = (Vec<AttachmentState>, [u32; 4], bool, u32);
+pub(crate) type ReceivedSignature = (Vec<AttachmentState>, [u32; 4], bool, u32);
 
 /// Where a message from history draws its media, and what they draw from; none for an echo.
 pub(super) fn received_of(
@@ -95,8 +113,8 @@ pub(super) fn media_of<S: TimelineHost>(
     received::attachments::<S>(*at, attachments, &style.media, look)
 }
 
-/// What a received message's attachments draw from, for the row's memo.
-pub(super) fn received_signature(
+/// What a received message's attachments draw from, for the row's memo (a pin's too).
+pub(crate) fn received_signature(
     at: MediaAt,
     attachments: &[papo_sdk::Attachment],
     media: &MediaStyle,
@@ -125,6 +143,30 @@ pub(super) fn received_signature(
                         media.video_volume_open == Some(key),
                         media.video_surfaces.contains_key(&key),
                     ))
+                }),
+                audio: key.and_then(|key| {
+                    let shown = media.audio.get(key)?;
+                    let hover_pt = media
+                        .audio_hover
+                        .filter(|(hovered, _)| *hovered == key)
+                        .map(|(_, share)| {
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                clippy::cast_sign_loss,
+                                reason = "a place over a 254 pt waveform"
+                            )]
+                            let points =
+                                (share * crate::message_media::audio::waveform_pt()).round() as u32;
+                            points
+                        });
+                    Some(AudioDrawn {
+                        reading: shown.reading,
+                        bars_version: shown.bars_version,
+                        shown_s: shown.shown_ms().map(|ms| ms / 1000),
+                        played_bars: shown.played_bars(papo_sdk_ui::AUDIO_FILE_BARS),
+                        playing: shown.playing,
+                        hover_pt,
+                    })
                 }),
             }
         })

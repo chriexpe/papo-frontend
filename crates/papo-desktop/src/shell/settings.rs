@@ -34,6 +34,8 @@ pub(crate) enum SettingChoice {
     Presence(Presence),
     /// Image size's or Video size's value.
     MediaSize(SizedMedia, papo_sdk_ui::MediaSizeSetting),
+    /// Keep playing when hidden's value.
+    KeepPlaying(crate::keep_playing::KeepPlaying),
     /// A picture row's Change.
     ChangePicture(Use),
     /// The banner row's Remove.
@@ -203,6 +205,21 @@ impl Shell {
             RowId::VideoSize => {
                 size_items(SizedMedia::Videos, self.conversations.settings().video_size)
             }
+            RowId::KeepPlaying => {
+                let current = self.conversations.settings().keep_playing;
+                crate::keep_playing::KeepPlaying::ALL
+                    .into_iter()
+                    .map(|choice| {
+                        MenuItem::plain(
+                            &format!("settings-keep-playing-{}", choice.saved()),
+                            crate::settings::rows::keep_playing_name(choice),
+                            MenuAction::Setting(SettingChoice::KeepPlaying(choice)),
+                            false,
+                        )
+                        .with_radio(choice == current)
+                    })
+                    .collect()
+            }
             _ => return,
         };
         self.nav.menu = Some(OpenMenu::new(
@@ -223,6 +240,7 @@ impl Shell {
             SettingChoice::Language(language) => Change::Language(language),
             SettingChoice::Presence(presence) => Change::Presence(presence),
             SettingChoice::MediaSize(media, size) => Change::MediaSize(media, size),
+            SettingChoice::KeepPlaying(choice) => Change::KeepPlaying(choice),
         };
         self.settings_change(change, tx);
     }
@@ -252,8 +270,8 @@ impl Shell {
                 // Every box takes the new size: pictures are decoded for it.
                 self.want_media();
             }
-            // Autoplay videos applies at once.
-            self.reconcile_videos();
+            // Autoplay videos and Keep playing when hidden apply at once.
+            self.media_window_rules();
             return;
         }
         let current = panel
@@ -391,6 +409,7 @@ fn applied(
         | Change::Hue(..)
         | Change::Language(_)
         | Change::MediaSize(..)
+        | Change::KeepPlaying(_)
         | Change::Presence(_) => {}
         Change::Colours(colour) => {
             let (background, now) = super::settings_colours::colours_applied(

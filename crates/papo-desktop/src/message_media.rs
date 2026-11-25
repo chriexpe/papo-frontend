@@ -21,6 +21,7 @@ use crate::design::{
 use crate::icons::{EYE_OFF, IMAGE_OFF};
 use crate::strings;
 
+pub(crate) mod audio;
 mod file_card_view;
 pub(crate) mod received;
 pub(crate) mod video;

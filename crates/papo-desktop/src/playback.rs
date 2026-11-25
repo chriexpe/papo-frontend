@@ -9,12 +9,15 @@
 //! its own, so the UI thread never waits on the registry, a decoder or the audio device.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 pub(crate) use papo_call::PackedNv12;
+use papo_sdk_ui::Waveform;
 
 mod frames;
 mod gst_engine;
 mod memory;
+mod peaks;
 mod pipeline;
 mod probe;
 mod source;
@@ -48,6 +51,16 @@ pub(crate) struct Probe {
     pub(crate) info: MediaInfo,
     /// The first frame, scaled to fit the size asked for.
     pub(crate) poster: Option<PackedNv12>,
+}
+
+/// What reading audio found: its length, and its waveform when it was decoded.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AudioRead {
+    /// How long it plays: as the container says, or as decoded.
+    pub(crate) duration_ms: Option<u64>,
+    /// Its waveform, finished; none when it is longer than the read was allowed to decode, or
+    /// the read was stopped.
+    pub(crate) waveform: Option<Waveform>,
 }
 
 /// How exact a seek is.
@@ -140,14 +153,30 @@ pub(crate) trait Engine: Send + Sync + 'static {
     /// The media can't play here, and why.
     fn probe(&self, bytes: Arc<[u8]>, poster_px: [u32; 2]) -> Result<Probe, PlaybackFailure>;
 
-    /// Starts a player of `bytes` as `setup` says, its frames to `sink`.
+    /// Starts a player of `bytes` as `setup` says, its frames to `sink`; without one it plays
+    /// the sound only.
     fn open(
         &self,
         bytes: Arc<[u8]>,
         setup: PlayerSetup,
-        sink: Arc<dyn FrameSink>,
+        sink: Option<Arc<dyn FrameSink>>,
         changed: Changed,
     ) -> Box<dyn Player>;
+
+    /// Reads audio `bytes` (blocking: call it off the UI thread): its length, then, unless it
+    /// is longer than `ahead_max_ms`, its waveform, decoded as fast as it goes. `progress` gets
+    /// the waveform so far now and then (at most four times a second). Setting `stop` ends the
+    /// read early: it then answers what it has, the waveform left out.
+    ///
+    /// # Errors
+    /// The media has no sound, or can't be read here, and why.
+    fn read_audio(
+        &self,
+        bytes: Arc<[u8]>,
+        ahead_max_ms: Option<u64>,
+        progress: &(dyn Fn(Waveform) + Send + Sync),
+        stop: &AtomicBool,
+    ) -> Result<AudioRead, PlaybackFailure>;
 }
 
 /// The app's engine: GStreamer, started on first use.

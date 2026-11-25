@@ -93,8 +93,7 @@ impl Shell {
             _ => None,
         };
         self.videos.store.set_in_viewer(Some(key), None);
-        self.videos.store.mute_all();
-        self.reconcile_videos();
+        self.quiet_for_viewer();
         self.serial_viewer += 1;
         let serial = self.serial_viewer;
         let surface = NativeSurface::new();
@@ -167,7 +166,7 @@ impl Shell {
                         volume,
                         looping: true,
                     },
-                    Arc::new(SurfaceSink::new(surface)),
+                    Some(Arc::new(SurfaceSink::new(surface))),
                     changed,
                 )
             });
@@ -202,6 +201,14 @@ impl Shell {
             video.status = player.status();
         }
         true
+    }
+
+    /// The viewer's video plays with sound: one sound at a time, so videos in the
+    /// conversation go quiet and audio pauses.
+    fn quiet_for_viewer(&mut self) {
+        self.videos.store.mute_all();
+        self.reconcile_videos();
+        self.pause_audio();
     }
 
     /// A press on the viewer's video controls (or its keys).
@@ -265,6 +272,14 @@ impl Shell {
                 }
             }
             VideoPress::Viewer | VideoPress::Retry => {}
+        }
+        // Playing with sound now: one sound at a time.
+        let sounds = self
+            .viewer_video
+            .as_ref()
+            .is_some_and(|video| !video.muted && video.status.state == PlayerState::Playing);
+        if sounds {
+            self.pause_audio();
         }
     }
 
@@ -330,16 +345,17 @@ impl Shell {
         (video.status, video.bar_shown()) != before
     }
 
-    /// The window went off screen or came back: video in the conversation follows the store's
-    /// rule, and the viewer's pauses while hidden (it stays paused when the window returns).
+    /// The window went off screen or came back: video and audio follow Keep playing when
+    /// hidden, and the viewer's video pauses while hidden unless it includes video (it stays
+    /// paused when the window returns).
     pub(super) fn video_window_shown(&mut self, shown: bool, tx: &mut Tx) {
-        self.videos.store.set_window_shown(shown);
-        self.reconcile_videos();
+        self.media_window_rules();
+        let keeps_video = self.conversations.settings().keep_playing.video();
         let playing = self
             .viewer_video
             .as_ref()
             .is_some_and(|video| video.status.state == PlayerState::Playing);
-        if !shown && playing {
+        if !shown && playing && !keeps_video {
             self.viewer_video_press(VideoPress::Pause, tx);
         }
     }

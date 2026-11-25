@@ -348,7 +348,9 @@ impl Shell {
         let notice_ended = self.poll_notice(clock_s);
         let pill_ended = self.poll_saved_pill(clock_s);
         let ring_shown = self.poll_viewer_ring(clock_s);
-        let video_clock = self.poll_videos(clock_s, tx) | self.poll_viewer_video(clock_s, tx);
+        let video_clock = self.poll_videos(clock_s, tx)
+            | self.poll_viewer_video(clock_s, tx)
+            | self.poll_audio(clock_s, tx);
         let list_closed = self.poll_reactions();
         let card_closed = self.poll_card();
         let searched = self.poll_search(clock_s);

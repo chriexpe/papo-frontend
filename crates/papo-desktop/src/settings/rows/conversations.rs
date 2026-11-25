@@ -13,6 +13,7 @@ use papo_sdk_ui::{CUSTOM_HEIGHT_PT, CUSTOM_STEP_PT, CUSTOM_WIDTH_PT, MediaSizeSe
 
 use super::{Context, Group, Kind, Row, Slider, Track};
 use crate::design::{Density, MENTION_HIGHLIGHT_HUE_DEGREES};
+use crate::keep_playing::KeepPlaying;
 use crate::settings::{PageId, RowId, SizedMedia};
 use crate::strings;
 
@@ -103,7 +104,7 @@ pub(super) fn conversations(cx: &Context<'_>) -> Vec<Group> {
 }
 
 /// The Media group (§14.9): Image size and Video size, each with its sliders under Custom,
-/// Animate GIFs and stickers, Autoplay videos.
+/// Animate GIFs and stickers, Autoplay videos, Keep playing when hidden.
 fn media(cx: &Context<'_>) -> Vec<Row> {
     let mut rows = size_rows(
         SizedMedia::Images,
@@ -127,7 +128,23 @@ fn media(cx: &Context<'_>) -> Vec<Row> {
         Some(strings::settings_autoplay_sub()),
         cx.conversations.autoplays_videos(cx.reduced_motion),
     ));
+    rows.push(Row {
+        id: RowId::KeepPlaying,
+        title: strings::settings_keep_playing().to_owned(),
+        sub: Some(strings::settings_keep_playing_sub().to_owned()),
+        kind: Kind::Choice(keep_playing_name(cx.conversations.keep_playing).to_owned()),
+    });
     rows
+}
+
+/// A Keep playing when hidden choice's name.
+pub(crate) fn keep_playing_name(choice: KeepPlaying) -> &'static str {
+    match choice {
+        KeepPlaying::Nothing => strings::settings_keep_nothing(),
+        KeepPlaying::Audio => strings::settings_keep_audio(),
+        KeepPlaying::Video => strings::settings_keep_video(),
+        KeepPlaying::Both => strings::settings_keep_both(),
+    }
 }
 
 /// A size row (`media`'s), and under Custom its Max width and Max height sliders.

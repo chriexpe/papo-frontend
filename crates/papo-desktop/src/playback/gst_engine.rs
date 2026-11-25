@@ -30,7 +30,7 @@ impl Engine for GstEngine {
         &self,
         bytes: Arc<[u8]>,
         setup: PlayerSetup,
-        sink: Arc<dyn FrameSink>,
+        sink: Option<Arc<dyn FrameSink>>,
         changed: Changed,
     ) -> Box<dyn Player> {
         let (commands, inbox) = mpsc::channel();
@@ -57,6 +57,16 @@ impl Engine for GstEngine {
             player.fail(PlaybackFailure::Unavailable);
         }
         Box::new(player)
+    }
+
+    fn read_audio(
+        &self,
+        bytes: Arc<[u8]>,
+        ahead_max_ms: Option<u64>,
+        progress: &(dyn Fn(papo_sdk_ui::Waveform) + Send + Sync),
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Result<super::AudioRead, PlaybackFailure> {
+        super::peaks::read_audio(bytes, ahead_max_ms, progress, stop)
     }
 }
 
@@ -228,9 +238,9 @@ struct Steering {
 }
 
 impl Worker {
-    fn run(self, bytes: Arc<[u8]>, sink: Arc<dyn FrameSink>) {
-        let built = init()
-            .and_then(|()| pipeline::build(bytes, Mode::Play, self.setup.frame_px, Some(sink)));
+    fn run(self, bytes: Arc<[u8]>, sink: Option<Arc<dyn FrameSink>>) {
+        let built =
+            init().and_then(|()| pipeline::build(bytes, Mode::Play, self.setup.frame_px, sink));
         let graph = match built {
             Ok(graph) => graph,
             Err(failure) => {

@@ -141,8 +141,12 @@ pub(crate) struct VideoStore {
     /// The viewer shows this one: it pauses inline meanwhile (§14.8).
     in_viewer: Option<MediaKey>,
     /// The window is off screen (minimised, hidden, covered whole): nothing plays or stays
-    /// live (§5's suspended state for the whole conversation).
+    /// live (§5's suspended state for the whole conversation), but what plays with sound when
+    /// `sound_while_hidden`.
     window_hidden: bool,
+    /// Keep playing when hidden includes video: a video playing with sound keeps playing while
+    /// the window is off screen.
+    sound_while_hidden: bool,
     tick: u64,
 }
 
@@ -152,11 +156,13 @@ impl VideoStore {
         self.autoplay = autoplay;
     }
 
-    /// The window went off screen (`false`) or came back. Leaving it is leaving the view: what
-    /// played with sound pauses and stays paused (§14.5); autoplays wait to show again.
-    pub(crate) fn set_window_shown(&mut self, shown: bool) {
+    /// The window went off screen (`false`) or came back. Autoplays wait to show again. What
+    /// plays with sound keeps playing when `keeps_sound` (Keep playing when hidden includes
+    /// video); else leaving the window is leaving the view: it pauses and stays paused (§14.5).
+    pub(crate) fn set_window_shown(&mut self, shown: bool, keeps_sound: bool) {
         self.window_hidden = !shown;
-        if !shown {
+        self.sound_while_hidden = keeps_sound;
+        if !shown && !keeps_sound {
             for entry in self.entries.values_mut() {
                 leave_view(&mut entry.intent);
             }
@@ -387,13 +393,15 @@ impl VideoStore {
     /// what the person paused while it still shows (suspended: it resumes at once). The rest
     /// are released; their last frame stays drawn.
     pub(crate) fn desired(&self) -> HashMap<MediaKey, Desired> {
-        if self.window_hidden {
+        if self.window_hidden && !self.sound_while_hidden {
             return HashMap::new();
         }
         let mut live: Vec<(&MediaKey, &Entry, bool)> = self
             .entries
             .iter()
             .filter(|(key, _)| Some(**key) != self.in_viewer)
+            // Off screen, only what plays with sound goes on.
+            .filter(|(_, entry)| !self.window_hidden || self.sounds(entry))
             .filter_map(|(key, entry)| {
                 let playing = self.plays(entry);
                 // Paused but kept while it shows: what you paused, and an autoplay under the
@@ -440,6 +448,18 @@ impl VideoStore {
             return entry.autoplays(self.autoplay);
         }
         entry.intent.playing && (!entry.intent.muted || entry.shown > 0.0)
+    }
+
+    /// Whether `entry` plays with sound now.
+    fn sounds(&self, entry: &Entry) -> bool {
+        entry.intent.by_person && !entry.intent.muted && self.plays(entry)
+    }
+
+    /// Whether a video plays with sound now.
+    pub(crate) fn has_sound(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|(key, entry)| Some(*key) != self.in_viewer && self.sounds(entry))
     }
 
     /// What views read.
