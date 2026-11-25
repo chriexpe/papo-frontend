@@ -209,6 +209,7 @@ impl Shell {
             || self.jump.is_some()
             || self.leaving.is_some()
             || self.editor.is_some()
+            || self.viewer.is_some()
     }
 }
 

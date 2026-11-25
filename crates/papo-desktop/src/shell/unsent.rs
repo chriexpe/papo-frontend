@@ -18,9 +18,10 @@ use super::Shell;
 use super::staged_files::{decoded, read_staged};
 use crate::attaching::{self, HEAD_BYTES, THUMBNAIL_SOURCE_MAX_BYTES};
 use crate::composer::tray::{Tile, TileKind};
-use crate::design::{ALBUM_CELLS, MEDIA_MAX_PT};
 use crate::timeline::TimelineKey;
-use crate::unsent_media::{UnsentFile, aspect};
+use crate::unsent_media::UnsentFile;
+use papo_sdk_ui::ALBUM_CELLS;
+use papo_sdk_ui::MediaSize;
 
 /// What has been asked of staging, so each picture is read once.
 #[derive(Default)]
@@ -46,6 +47,7 @@ impl Shell {
     /// messages no queue holds any more are forgotten. A sent message stays
     /// drawn while its echo shows, so its row keeps its height (§9).
     pub(super) fn unsent_follow(&mut self, account: AccountId, outgoing: &OutgoingSnapshot) {
+        self.keep_own_sizes(outgoing);
         for operation in &outgoing.operations {
             let OperationKind::Message(message) = operation.kind.as_ref() else {
                 continue;
@@ -121,6 +123,9 @@ impl Shell {
             return;
         };
         let scale = self.scale;
+        // Decoded to fit the largest box it can take; it never draws larger.
+        let bounds = self.media_bounds(&self.look(false));
+        let size_pt = bounds.max_width_pt.max(bounds.max_height_pt);
         let updates = sdk.updates();
         sdk.run(move |client| async move {
             let Ok(session) = client.session(account) else {
@@ -130,7 +135,7 @@ impl Shell {
             else {
                 return;
             };
-            let image = decoded(images.load_scaled(bytes, MEDIA_MAX_PT.0, scale)).await;
+            let image = decoded(images.load_scaled(bytes, size_pt, scale)).await;
             updates.send(move |shell| {
                 // Sent and gone meanwhile: nothing draws it.
                 if !shell.unsent.contains(local) {
@@ -218,21 +223,22 @@ async fn restored_file(session: &papo_sdk::Session, staged: &StagedAttachment) -
         .await
         .unwrap_or_default();
     let kind = attaching::kind_of(&head, staged.size_bytes());
-    let size_px = if kind == TileKind::File {
-        None
+    let media_size = if kind == TileKind::File {
+        MediaSize::Unknown
     } else {
         session
             .outgoing()
             .inspect_image(staged)
             .await
             .ok()
-            .map(|info| (info.width, info.height))
+            .map_or(MediaSize::Unknown, |info| {
+                MediaSize::exact(info.width, info.height)
+            })
     };
     UnsentFile {
         kind,
         size_bytes: Some(staged.size_bytes()),
-        size_px,
-        aspect: size_px.and_then(|(width, height)| aspect(width, height)),
+        media_size,
         image: None,
         sharp: None,
     }

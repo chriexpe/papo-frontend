@@ -100,6 +100,14 @@ impl Tracker {
         self.viewport_height_pt = height_pt;
     }
 
+    /// Where the rows show, top and bottom in window points: the viewport between the pills
+    /// floating over it; none before the viewport was laid out.
+    pub(crate) fn shown_span_pt(&self) -> Option<(f32, f32)> {
+        let top_pt = self.viewport_top_pt?;
+        let [above, below] = self.insets_pt;
+        Some((top_pt + above, top_pt + self.viewport_height_pt - below))
+    }
+
     /// The pills floating over the viewport now cover `insets_pt` of its
     /// top and bottom: rows under them no longer count as shown.
     pub(crate) fn insets_moved(&mut self, insets_pt: [f32; 2]) {
@@ -124,6 +132,12 @@ impl Tracker {
                     .is_none_or(|(top, bottom)| *bottom > from && *top < to)
             })
             .collect()
+    }
+
+    /// The message rows visible at the last report, top to bottom, by ID (indices move when a
+    /// page arrives above; IDs do not).
+    pub(crate) fn visible_ids(&self) -> &[Uuid] {
+        &self.visible
     }
 
     /// Returns whether it changed.

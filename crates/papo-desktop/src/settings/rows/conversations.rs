@@ -2,12 +2,16 @@
 //! (`docs/design.md` §8): When writing (Enter to send), In the conversation
 //! (Show times, Show avatars, Open at the newest message, Unread
 //! hourglass, Description when opening a channel, Message highlights), and
-//! the mention and reply highlights' hue swatches. Mention when replying
-//! waits for B-006; the Media rows come with D7.
+//! the mention and reply highlights' hue swatches, and Media (Image size,
+//! Custom's Max width and Max height, Animate GIFs and stickers, §14.9).
+//! Mention when replying waits for B-006; Video size and Autoplay videos
+//! come with playback (D7c).
 //!
 //! Owns these pages' rows; the settings are `conversation_settings`'.
 
-use super::{Context, Group, Kind, Row};
+use papo_sdk_ui::{CUSTOM_HEIGHT_PT, CUSTOM_STEP_PT, CUSTOM_WIDTH_PT, MediaSizeSetting};
+
+use super::{Context, Group, Kind, Row, Slider, Track};
 use crate::design::{Density, MENTION_HIGHLIGHT_HUE_DEGREES};
 use crate::settings::{PageId, RowId};
 use crate::strings;
@@ -91,7 +95,66 @@ pub(super) fn conversations(cx: &Context<'_>) -> Vec<Group> {
             title: Some(strings::settings_group_conversation().to_owned()),
             rows,
         },
+        Group {
+            title: Some(strings::settings_media().to_owned()),
+            rows: media(cx),
+        },
     ]
+}
+
+/// The Media group (§14.9): Image size, its sliders under Custom, Animate GIFs and stickers.
+fn media(cx: &Context<'_>) -> Vec<Row> {
+    let size = cx.conversations.image_size;
+    let mut rows = vec![Row {
+        id: RowId::ImageSize,
+        title: strings::settings_image_size().to_owned(),
+        sub: None,
+        kind: Kind::Choice(size_name(size).to_owned()),
+    }];
+    if let MediaSizeSetting::Custom { .. } = size {
+        let (width, height) = size.max_size_pt();
+        let slider = |id, title: &str, value: u16, range: &std::ops::RangeInclusive<u16>| Row {
+            id,
+            title: title.to_owned(),
+            sub: None,
+            kind: Kind::Slider(Slider {
+                value: f32::from(value),
+                min: f32::from(*range.start()),
+                max: f32::from(*range.end()),
+                step: f32::from(CUSTOM_STEP_PT),
+                track: Track::Plain,
+            }),
+        };
+        rows.push(slider(
+            RowId::MediaMaxWidth,
+            strings::settings_max_width(),
+            width,
+            &CUSTOM_WIDTH_PT,
+        ));
+        rows.push(slider(
+            RowId::MediaMaxHeight,
+            strings::settings_max_height(),
+            height,
+            &CUSTOM_HEIGHT_PT,
+        ));
+    }
+    rows.push(switch(
+        RowId::AnimateGifs,
+        strings::settings_animate_gifs(),
+        None,
+        cx.conversations.animates_gifs(cx.reduced_motion),
+    ));
+    rows
+}
+
+/// A size setting's name: Small, Medium, Large or Custom.
+pub(crate) fn size_name(size: MediaSizeSetting) -> &'static str {
+    match size {
+        MediaSizeSetting::Small => strings::settings_size_small(),
+        MediaSizeSetting::Medium => strings::settings_size_medium(),
+        MediaSizeSetting::Large => strings::settings_size_large(),
+        MediaSizeSetting::Custom { .. } => strings::settings_size_custom(),
+    }
 }
 
 pub(super) fn highlights(cx: &Context<'_>) -> Vec<Group> {

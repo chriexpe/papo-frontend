@@ -90,7 +90,12 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                     app = app.child(notice::view(notice, composer::COMPOSER_PILL_KEY, &look));
                 }
                 // Under the menu: a choice's menu opens over the panel.
-                app = app.children(settings_panel(shell, &look, cx.system_dark()));
+                app = app.children(settings_panel(
+                    shell,
+                    &look,
+                    cx.system_dark(),
+                    cx.system_reduced_motion(),
+                ));
                 if let Some(menu) = &shell.nav.menu {
                     app = app.children(menu::pointer_point(menu));
                     let body = if menu.description.is_some() {
@@ -112,7 +117,16 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                         app = app.child(menu::view(menu, body, &look, cx));
                     }
                 }
-                with_dialogs(app, shell, flow.as_deref(), &look)
+                if let Some(viewer) = super::viewer_view::view(shell, cx) {
+                    app = app.child(viewer);
+                }
+                with_dialogs(
+                    app,
+                    shell,
+                    flow.as_deref(),
+                    &look,
+                    cx.system_reduced_motion(),
+                )
             }
         },
     }
@@ -121,7 +135,13 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
 /// `app` with what may stand over it: the confirmations, the jump field,
 /// the shortcuts sheet, the sign-in popup, "Quit while uploading?" and the
 /// drop card.
-fn with_dialogs(mut app: El, shell: &Shell, flow: Option<&sign_in::SignIn>, look: &Look) -> El {
+fn with_dialogs(
+    mut app: El,
+    shell: &Shell,
+    flow: Option<&sign_in::SignIn>,
+    look: &Look,
+    reduced_motion: bool,
+) -> El {
     let look = *look;
     let removing = shell
         .nav
@@ -142,7 +162,7 @@ fn with_dialogs(mut app: El, shell: &Shell, flow: Option<&sign_in::SignIn>, look
     if let Some(resend) = resend_confirm(shell, &look) {
         app = app.child(resend);
     }
-    let style = timeline_style(shell, &look, [0.0, 0.0]);
+    let style = timeline_style(shell, &look, [0.0, 0.0], reduced_motion);
     if let Some(delete) = super::deleting::delete_confirm(shell, &style) {
         app = app.child(delete);
     }
@@ -195,7 +215,12 @@ fn hint_look(look: &Look, dark: bool) -> HelpLook {
 /// How the conversation's rows look, and the message a confirmation
 /// shows.
 /// The settings panel, while it is open.
-fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
+fn settings_panel(
+    shell: &Shell,
+    look: &Look,
+    system_dark: bool,
+    reduced_motion: bool,
+) -> Option<El> {
     let panel = shell.settings.as_ref()?;
     let diagnostics = shell.diagnostics_facts();
     let account = shell.account_facts();
@@ -212,6 +237,7 @@ fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
         account: account.as_ref(),
         system_dark,
         system_font_known: shell.system_font.is_some(),
+        reduced_motion,
         grain: shell
             .grain
             .as_ref()
@@ -223,7 +249,12 @@ fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
     Some(crate::settings::view(&view, preview, look))
 }
 
-fn timeline_style(shell: &Shell, look: &Look, insets_pt: [f32; 2]) -> timeline::Style {
+fn timeline_style(
+    shell: &Shell,
+    look: &Look,
+    insets_pt: [f32; 2],
+    reduced_motion: bool,
+) -> timeline::Style {
     let selected = shell
         .composer
         .shown()
@@ -238,18 +269,13 @@ fn timeline_style(shell: &Shell, look: &Look, insets_pt: [f32; 2]) -> timeline::
         reacting: shell.reacting(),
         insets_pt,
         unsent: shell.unsent.clone(),
-        media_max_height_pt: media_max_height(shell.conversation_rect[3]),
-    }
-}
-
-/// The tallest a media box may be (§14.4): the Max height, or 0.55 × the
-/// conversation's height when that is less.
-fn media_max_height(conversation_pt: f32) -> f32 {
-    let share = conversation_pt * crate::design::MEDIA_MAX_HEIGHT_SHARE;
-    if share > 0.0 {
-        crate::design::MEDIA_MAX_PT.1.min(share)
-    } else {
-        crate::design::MEDIA_MAX_PT.1
+        media: shell.media_style(look, reduced_motion),
+        // While the viewer is open, the pill shows over it instead.
+        saved_pill: shell
+            .saves
+            .pill()
+            .filter(|_| shell.viewer.is_none())
+            .map(|pill| pill.name.clone()),
     }
 }
 
@@ -298,7 +324,12 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
         }
         _ => composer::pill(&shell.composer, &context, look),
     };
-    let style = timeline_style(shell, look, floating_insets(cx, look));
+    let style = timeline_style(
+        shell,
+        look,
+        floating_insets(cx, look),
+        cx.system_reduced_motion(),
+    );
     let header = super::header::header(shell, &title, look);
     let panel = super::pins_panel::panel(shell, &style, cx)
         .or_else(|| super::search_panel::panel(shell, &title, &style, cx));

@@ -33,10 +33,10 @@ use super::local_time::LocalTime;
 use super::no_avatar::without_avatars;
 use super::reactions;
 use super::reply_line::reply_line;
+use super::row_media::{media_of, received_of, signature, unsent_of, with_media};
 use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
 use super::rows::{author_key, avatar_key, echo_key, message_key, message_part_key};
 use super::send_mark::send_mark;
-use super::unsent_attachments::{self, Unsent};
 use super::view::{Style, TimelineHost};
 use super::{OpenTimeline, TimelineKey};
 use crate::design::{
@@ -46,7 +46,6 @@ use crate::design::{
 };
 use crate::rail::initial;
 use crate::strings;
-use papo_sdk::OperationState;
 
 /// A message's row. A message from history reports where its top is, for
 /// the anchor. `previous` is the message drawn above it, if any.
@@ -63,6 +62,7 @@ pub(super) fn message_row<S: TimelineHost>(
     let key = open.key;
     let unsent = unsent_of(open, row_message, style);
     let unsent_version = unsent.as_ref().map(signature);
+    let received = received_of(open, row_message, history, style);
     let revealed = open.revealed(id);
     let copied = open.copied(id);
     // The key too: two accounts on one server can show the same message,
@@ -76,6 +76,7 @@ pub(super) fn message_row<S: TimelineHost>(
         revealed,
         copied,
         unsent_version,
+        received.as_ref().map(|(_, signature)| signature.clone()),
     );
     let row_key = if history {
         message_key(id)
@@ -91,15 +92,7 @@ pub(super) fn message_row<S: TimelineHost>(
                 jumbo: layout.density != Density::ExtraCompact,
             },
         );
-        let mut look = style.look;
-        let quiet = matches!(
-            parts.change,
-            Some((_, ChangeState::Saving | ChangeState::EditFailed))
-        );
-        if parts.sending == Some(SendState::Pending) || quiet {
-            // A message or edit still on its way reads quieter.
-            look.palette.text_primary = look.palette.text_secondary;
-        }
+        let look = row_look(&parts, style);
         let draw = Draw {
             look: &look,
             key,
@@ -110,19 +103,18 @@ pub(super) fn message_row<S: TimelineHost>(
             }),
             standalone: false,
         };
-        let mut body = with_unsent::<S>(content::body::<S>(&doc, &draw), unsent.as_ref(), &look);
-        if let Some(chips) = reactions::chips::<S>(key, id, &parts.chips, parts.add_chip, &look) {
-            body = col()
-                .gap(look.space(MESSAGE_BLOCK_GAP))
-                .child(body)
-                .child(chips);
-        }
-        if let Some((local, ChangeState::DeleteFailed)) = parts.change {
-            body = col()
-                .gap(look.space(MESSAGE_BLOCK_GAP))
-                .child(body)
-                .child(delete_failed_line::<S>(key, local, &style.look));
-        }
+        let body = with_media(
+            content::body::<S>(&doc, &draw),
+            media_of::<S>(
+                unsent.as_ref(),
+                received.as_ref(),
+                row_message,
+                style,
+                &look,
+            ),
+            &look,
+        );
+        let body = with_after::<S>(body, key, id, &parts, &look, &style.look);
         let mark = mark::<S>(key, id, &parts, &style.look);
         let line = parts.reply.as_ref().map(|line| {
             let spacing = look.row_spacing(layout);
@@ -169,6 +161,44 @@ pub(super) fn message_row<S: TimelineHost>(
     })
 }
 
+/// `body` with what follows it: the reaction chips, and a failed deletion's line (drawn in
+/// `full`, the row's look before it read quieter).
+fn with_after<S: TimelineHost>(
+    mut body: El,
+    key: TimelineKey,
+    id: Uuid,
+    parts: &Parts<'_>,
+    look: &Look,
+    full: &Look,
+) -> El {
+    if let Some(chips) = reactions::chips::<S>(key, id, &parts.chips, parts.add_chip, look) {
+        body = col()
+            .gap(look.space(MESSAGE_BLOCK_GAP))
+            .child(body)
+            .child(chips);
+    }
+    if let Some((local, ChangeState::DeleteFailed)) = parts.change {
+        body = col()
+            .gap(look.space(MESSAGE_BLOCK_GAP))
+            .child(body)
+            .child(delete_failed_line::<S>(key, local, full));
+    }
+    body
+}
+
+/// The row's look: a message or edit still on its way reads quieter.
+fn row_look(parts: &Parts<'_>, style: &Style) -> Look {
+    let mut look = style.look;
+    let quiet = matches!(
+        parts.change,
+        Some((_, ChangeState::Saving | ChangeState::EditFailed))
+    );
+    if parts.sending == Some(SendState::Pending) || quiet {
+        look.palette.text_primary = look.palette.text_secondary;
+    }
+    look
+}
+
 /// What stands where the time would: your unsent message's send mark, or
 /// your change in flight's mark.
 fn mark<S: TimelineHost>(key: TimelineKey, id: Uuid, parts: &Parts<'_>, look: &Look) -> Option<El> {
@@ -177,79 +207,6 @@ fn mark<S: TimelineHost>(key: TimelineKey, id: Uuid, parts: &Parts<'_>, look: &L
         (None, Some((local, state))) => change_mark::<S>(key, local, state, look),
         (None, None) => None,
     }
-}
-
-/// `body` with an unsent message's attachments under it, when it has any.
-fn with_unsent<S: TimelineHost>(body: El, unsent: Option<&Unsent<'_>>, look: &Look) -> El {
-    match unsent.and_then(|unsent| unsent_attachments::attachments::<S>(unsent, look)) {
-        Some(attachments) => col()
-            .gap(look.space(MESSAGE_BLOCK_GAP))
-            .child(body)
-            .child(attachments),
-        None => body,
-    }
-}
-
-/// What draws an unsent message's attachments: its operation, progress
-/// and local pictures. None for a message from history or one without
-/// attachments. A sent one keeps them while its echo shows.
-fn unsent_of<'a>(
-    open: &'a OpenTimeline,
-    row_message: &RowMessage<'_>,
-    style: &'a Style,
-) -> Option<Unsent<'a>> {
-    let Origin::Echo(_) = row_message.origin else {
-        return None;
-    };
-    let echo = open.echoes.get(row_message.id)?;
-    let operation = echo.operation();
-    let entry = style.unsent.get(operation.id)?;
-    Some(Unsent {
-        key: open.key,
-        local: operation.id,
-        operation,
-        version: entry.version,
-        files: &entry.files,
-        progress: style.reacting.outgoing.progress_for(operation.id),
-        max_height_pt: style.media_max_height_pt,
-    })
-}
-
-/// What changes an unsent message's attachments draw: its state, how much
-/// has left, the pictures' version and which have decoded, and the media
-/// box's height, for the row's memo.
-fn signature(unsent: &Unsent<'_>) -> (u8, u64, u64, Vec<(bool, bool)>, u32) {
-    let state = match unsent.operation.state {
-        OperationState::Preparing => 0,
-        OperationState::Queued => 1,
-        OperationState::Sending => 2,
-        OperationState::Failed => 3,
-        OperationState::Unknown => 4,
-        _ => 5,
-    };
-    let sent = unsent
-        .progress
-        .map_or(0, |progress| progress.bytes_uploaded);
-    let pictures = pictures_drawn(unsent.files);
-    (
-        state,
-        sent,
-        unsent.version,
-        pictures,
-        unsent.max_height_pt.to_bits(),
-    )
-}
-
-/// For each file, whether a picture shows and whether it is the sharp
-/// one: a decode landing changes what the row draws.
-pub(super) fn pictures_drawn(files: &[crate::unsent_media::UnsentFile]) -> Vec<(bool, bool)> {
-    files
-        .iter()
-        .map(|file| {
-            let ready = file.shown().is_some_and(rune::Image::is_ready);
-            (ready, file.sharp_ready())
-        })
-        .collect()
 }
 
 /// The "(edited)" marker's hint: when, or nothing to add when the time

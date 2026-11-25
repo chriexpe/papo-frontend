@@ -146,3 +146,43 @@ pub(super) fn seeking_pill<S: TimelineHost>(key: TimelineKey, look: &Look) -> El
         .gap(look.space(SPACE_SM))
         .child(pill)
 }
+
+/// The pill a save ends with (§14.7), in the seek pill's shape at the foot of the timeline (or
+/// of the viewer, while it is open): "Saved praia.jpg" and Show in folder, clear of the
+/// composer floating `below_pt` over the rows.
+pub(crate) fn saved_pill<S: TimelineHost>(name: &str, below_pt: f32, look: &Look) -> El {
+    let show = text(strings::saved_show())
+        .key("saved-show")
+        .font(look.font(TYPE_SMALL_MEDIUM))
+        .color(look.palette.link)
+        .role("button")
+        .focusable(true)
+        .radius(look.radius(RADIUS_CONTROL))
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+        .on_press_tx(|host: &mut S, tx| host.saved_pill_shown(tx));
+    let pill = row()
+        .key("saved-pill")
+        .h(look.space(HEADER_PILL_HEIGHT))
+        .px(look.space(SPACE_LG))
+        .gap(look.space(SPACE_LG))
+        .center_y()
+        .radius(look.radius(RADIUS_PILL))
+        .pill_surface(look)
+        .role("status")
+        .live_region(rune::LiveRegion::Polite)
+        .child(
+            text(strings::saved_pill(name))
+                .font(look.font(TYPE_SMALL))
+                .color(look.palette.text_primary),
+        )
+        .child(show);
+    row()
+        .pin(
+            Some(0.0),
+            None,
+            Some(0.0),
+            Some(below_pt + look.space(JUMP_INSET)),
+        )
+        .justify_center()
+        .child(pill)
+}

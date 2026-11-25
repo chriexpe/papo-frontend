@@ -1,14 +1,16 @@
 //! The General settings (`docs/design.md` §8, General): the interface's
 //! language (the system's, or one of the app's own), whether a link to a
 //! host that is not trusted asks first, and whether new attachments start
-//! anonymized (shown under Privacy and security, §14.10). All are this
-//! device's. The trusted
-//! domains are `links`' own list; Save media to comes with D7.
+//! anonymized (shown under Privacy and security, §14.10), and where Save
+//! puts media (§14.6). All are this device's. The trusted domains are
+//! `links`' own list.
 //!
 //! Owns the values, their defaults and their keys in this device's
 //! settings file. A change shows at once and is written off the UI thread;
 //! a failed write takes the settings back to what the file holds. Putting
 //! a language into effect is `strings`'.
+
+use std::path::PathBuf;
 
 use rune::prefs::Prefs;
 use serde_json::{Value, json};
@@ -24,6 +26,8 @@ const SYSTEM_LANGUAGE: &str = "system";
 const CONFIRM_LINKS_KEY: &str = "confirm_links";
 /// "Anonymize new attachments".
 const ANONYMIZE_NEW_KEY: &str = "anonymize_new_attachments";
+/// "Save media to": an absolute folder, or absent for the system's Downloads.
+const SAVE_MEDIA_TO_KEY: &str = "save_media_to";
 
 /// Which language the interface speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -35,7 +39,7 @@ pub(crate) enum Language {
 }
 
 /// Everything the General page holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct GeneralSettings {
     pub(crate) language: Language,
     /// A link to a host that is neither the server's nor trusted asks
@@ -44,6 +48,17 @@ pub(crate) struct GeneralSettings {
     /// A new attachment starts with Anonymize on where the SDK can clean
     /// it; off, it starts off.
     pub(crate) anonymize_new: bool,
+    /// The folder Save puts media in; none for the system's Downloads.
+    pub(crate) save_media_to: Option<PathBuf>,
+}
+
+impl GeneralSettings {
+    /// The folder Save puts media in now: the chosen one, else the system's Downloads.
+    pub(crate) fn media_folder(&self) -> Option<PathBuf> {
+        self.save_media_to
+            .clone()
+            .or_else(crate::save_folder::downloads_folder)
+    }
 }
 
 impl Default for GeneralSettings {
@@ -54,6 +69,7 @@ impl Default for GeneralSettings {
             language: Language::System,
             confirm_links: true,
             anonymize_new: false,
+            save_media_to: None,
         }
     }
 }
@@ -90,6 +106,10 @@ impl GeneralStore {
             anonymize_new: prefs
                 .get(ANONYMIZE_NEW_KEY)
                 .unwrap_or(defaults.anonymize_new),
+            save_media_to: prefs
+                .get::<String>(SAVE_MEDIA_TO_KEY)
+                .map(PathBuf::from)
+                .filter(|folder| folder.is_absolute()),
         };
         GeneralStore {
             stored: Stored::new(settings),
@@ -147,6 +167,15 @@ fn entries(settings: &GeneralSettings) -> Vec<(&'static str, Value)> {
         (LANGUAGE_KEY, json!(language)),
         (CONFIRM_LINKS_KEY, json!(settings.confirm_links)),
         (ANONYMIZE_NEW_KEY, json!(settings.anonymize_new)),
+        (
+            SAVE_MEDIA_TO_KEY,
+            json!(
+                settings
+                    .save_media_to
+                    .as_ref()
+                    .map(|folder| folder.to_string_lossy())
+            ),
+        ),
     ]
 }
 
@@ -189,11 +218,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("prefs.json");
         let mut store = GeneralStore::read(&Prefs::at(&path));
-        let mut changed = *store.settings();
+        let mut changed = store.settings().clone();
         changed.language = Language::Locale("en-US");
+        changed.save_media_to = Some("/data/papo".into());
         changed.confirm_links = false;
         changed.anonymize_new = true;
-        let written = store.change(changed).expect("a write");
+        let written = store.change(changed.clone()).expect("a write");
         store.write_of(&written).run().unwrap();
         assert_eq!(store.written(written, true), None);
         assert_eq!(Prefs::at(&path).get::<bool>(CONFIRM_LINKS_KEY), Some(false));

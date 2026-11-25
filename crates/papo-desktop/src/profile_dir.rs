@@ -1,6 +1,7 @@
-//! Where the SDK keeps this user's profile on disk.
+//! Where the SDK keeps this user's profile on disk, and where files opened through the system
+//! wait (a file card's Open).
 //!
-//! Owns only the choice of directory. The SDK creates it with private
+//! Owns only the choice of directories. The SDK creates it with private
 //! permissions, lays out its files and locks it against a second owner.
 
 use std::ffi::OsString;
@@ -14,6 +15,20 @@ use crate::window::APP_ID;
 /// `None` when neither variable names an absolute directory.
 pub(crate) fn profile_dir() -> Option<PathBuf> {
     profile_dir_from(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+}
+
+/// Where a file opened through the system is saved first, so its app can read it:
+/// `$XDG_CACHE_HOME/io.github.chriexpe.Papo/opened`, or `~/.cache/…` when that is unset.
+pub(crate) fn opened_files_dir() -> Option<PathBuf> {
+    let absolute = |value: OsString| Some(PathBuf::from(value)).filter(|path| path.is_absolute());
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .and_then(absolute)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .and_then(absolute)
+                .map(|home| home.join(".cache"))
+        })?;
+    Some(cache.join(APP_ID).join("opened"))
 }
 
 /// [`profile_dir`] for the given environment values. The XDG specification

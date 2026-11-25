@@ -177,6 +177,16 @@ pub(crate) enum RowId {
     Highlights,
     MentionHue,
     ReplyHue,
+    /// Media › Image size.
+    ImageSize,
+    /// Media › a Custom size's Max width.
+    MediaMaxWidth,
+    /// Media › a Custom size's Max height.
+    MediaMaxHeight,
+    /// Media › Animate GIFs and stickers.
+    AnimateGifs,
+    /// Files › Save media to.
+    SaveMediaTo,
     Language,
     ConfirmLinks,
     Trusted,
@@ -222,6 +232,8 @@ pub(crate) enum Change {
     Colours(colour_field::ColourChange),
     /// A hue swatch picked, in OKLCH degrees.
     Hue(RowId, f32),
+    /// Image size's menu.
+    ImageSize(papo_sdk_ui::MediaSizeSetting),
     /// Language's menu.
     Language(Language),
     /// Presence's menu.
@@ -238,6 +250,7 @@ impl Change {
             Change::Accent(_) => RowId::Accent,
             Change::Direction(_) => RowId::Directions,
             Change::Language(_) => RowId::Language,
+            Change::ImageSize(_) => RowId::ImageSize,
             Change::Presence(_) => RowId::Presence,
             Change::Colours(_) => RowId::Field,
         }

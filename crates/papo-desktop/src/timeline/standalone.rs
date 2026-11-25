@@ -12,10 +12,12 @@ use super::OpenTimeline;
 use super::content::{self, Context, Doc, Draw};
 use super::local_time::day_label;
 use super::message_row::{author_name, avatar, created_us};
+use super::row_media::with_media;
 use super::view::{Style, TimelineHost};
 use crate::design::{
     Density, Lead, MESSAGE_BLOCK_GAP, MESSAGE_HEADER_GAP, TYPE_BODY_STRONG, TYPE_CAPTION,
 };
+use crate::message_media::received::{self, MediaAt};
 use crate::strings;
 
 /// Message `id` of `open` on its own; none when the conversation does not
@@ -105,6 +107,15 @@ fn draw<S: TimelineHost>(
             jumbo: style.layout.density != Density::ExtraCompact,
         },
     );
+    let at = MediaAt {
+        surface: style.media.surface,
+        account: open.key.account,
+        channel: open.key.channel,
+        message: id,
+        index: 0,
+    };
+    let attachments = message.attachments.as_deref().unwrap_or_default();
+    let media = received::attachments::<S>(at, attachments, &style.media, &look);
     let draw = Draw {
         look: &look,
         key: open.key,
@@ -148,6 +159,6 @@ fn draw<S: TimelineHost>(
                                 .color(look.palette.text_muted),
                         ),
                 )
-                .child(content::body::<S>(&doc, &draw)),
+                .child(with_media(content::body::<S>(&doc, &draw), media, &look)),
         )
 }

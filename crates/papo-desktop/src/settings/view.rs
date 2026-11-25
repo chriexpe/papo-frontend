@@ -44,6 +44,7 @@ pub(crate) struct PanelView<'a> {
     pub(crate) account: Option<&'a AccountFacts>,
     pub(crate) system_dark: bool,
     pub(crate) system_font_known: bool,
+    pub(crate) reduced_motion: bool,
     /// The grain's tile for the theme drawn, for Grain's slider.
     pub(crate) grain: Option<&'a rune::Pixels>,
     /// The panel's account's own photo and banner, once fetched.
@@ -64,6 +65,7 @@ pub(crate) fn view(panel: &PanelView<'_>, preview: Option<El>, look: &Look) -> E
         account: panel.account,
         system_dark: panel.system_dark,
         system_font_known: panel.system_font_known,
+        reduced_motion: panel.reduced_motion,
         pictures: panel.pictures,
     };
     // One margin from the window on three sides, the pill's own inset; the

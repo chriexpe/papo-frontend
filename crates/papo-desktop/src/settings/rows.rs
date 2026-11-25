@@ -30,7 +30,7 @@ mod general;
 pub(crate) use appearance::{
     accent_name, appearance_summary, density_name, direction_name, slider_value, theme_name,
 };
-pub(crate) use conversations::{HIGHLIGHT_HUES, conversations_summary};
+pub(crate) use conversations::{HIGHLIGHT_HUES, conversations_summary, size_name};
 pub(crate) use general::{general_summary, language_name};
 
 /// A group of rows: one block of tiles, with an optional title.
@@ -90,6 +90,8 @@ pub(crate) enum Kind {
     Value(String),
     /// Runs at once.
     Action,
+    /// A folder, shown under the title, with Change at the row's end (Save media to).
+    Folder,
     /// A profile picture (Photo, Banner): its picture at the row's end and a
     /// menu with Change, and Remove for a banner that is set.
     Picture(crate::image_editor::state::Use),
@@ -138,6 +140,8 @@ pub(crate) struct Context<'a> {
     pub(crate) system_dark: bool,
     /// Whether "Use the system font" can work: the desktop names one.
     pub(crate) system_font_known: bool,
+    /// Whether the system asks for reduced motion (Animate GIFs' default).
+    pub(crate) reduced_motion: bool,
     /// The panel's account's own photo and banner, once fetched.
     pub(crate) pictures: Option<&'a crate::shell::Pictures>,
 }
@@ -214,6 +218,7 @@ pub(crate) fn searchable(row: &Row) -> Vec<String> {
         | Kind::PasswordForm
         | Kind::Info
         | Kind::Action
+        | Kind::Folder
         | Kind::Picture(_)
         | Kind::Destructive { .. } => {}
     }

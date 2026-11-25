@@ -56,6 +56,7 @@ pub(super) fn groups() -> Vec<Group> {
         panels(),
         composer(),
         message(),
+        viewer(),
         menus(),
         window(),
     ]
@@ -189,7 +190,25 @@ fn message() -> Group {
                 &[&["Ctrl", "C"], &["Ctrl", "A"]],
             ),
             row_of(strings::shortcuts_delete(), &[], &[&["Delete"]]),
+            row_of(strings::shortcuts_open_media(), &[&["O"]], &[]),
             row_of(strings::shortcuts_back_to_composer(), &[&["Esc"]], &[]),
+        ],
+    }
+}
+
+fn viewer() -> Group {
+    Group {
+        title: strings::shortcuts_viewer(),
+        rows: vec![
+            row_of(strings::viewer_prev(), &[], &[&["←"]]),
+            row_of(strings::viewer_next(), &[], &[&["→"]]),
+            row_of(strings::viewer_zoom_in(), &[&["+"]], &[&["Ctrl", "="]]),
+            row_of(strings::viewer_zoom_out(), &[&["−"]], &[&["Ctrl", "-"]]),
+            row_of(strings::viewer_zoom_fit(), &[&["0"]], &[&["Ctrl", "0"]]),
+            row_of(strings::viewer_fullscreen(), &[&["F"]], &[&["F11"]]),
+            row_of(strings::viewer_copy(), &[], &[&["Ctrl", "C"]]),
+            row_of(strings::viewer_save(), &[], &[&["Ctrl", "S"]]),
+            row_of(strings::viewer_close(), &[], &[&["Esc"]]),
         ],
     }
 }

@@ -30,6 +30,19 @@ impl Shell {
         // Ctrl+K's places belong to the accounts shown when it opened.
         if shown(self.nav.servers()) != shown(&list) {
             self.jump_accounts_changed();
+            // A removed account's saves stop and its cards forget them.
+            let accounts = shown(&list);
+            self.saves
+                .keep_accounts(|account| accounts.contains(&account));
+            self.opening.retain(|key| accounts.contains(&key.account));
+            if self
+                .revealed
+                .iter()
+                .any(|key| !accounts.contains(&key.account))
+            {
+                std::sync::Arc::make_mut(&mut self.revealed)
+                    .retain(|key| accounts.contains(&key.account));
+            }
         }
         if let Some(images) = &self.images {
             self.icons
@@ -354,6 +367,7 @@ impl Shell {
             MenuAction::Message { key, id, action } => self.message_action(key, id, action, tx),
             MenuAction::OpenLink { key, url } => self.link_pressed(key, url, tx),
             MenuAction::CopyLink(url) => tx.copy(url),
+            MenuAction::Media { at, action } => self.media_action(at, action, tx),
             MenuAction::React { key, id, emoji } => {
                 self.toggle_reaction(key, id, &emoji);
             }
