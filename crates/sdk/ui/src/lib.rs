@@ -1,6 +1,14 @@
 //! Observable Papo UI services belong here; transport and durable state belong to `papo-sdk`.
 //! Platform widgets, navigation and translated text belong to client applications.
 
+mod attachment_kind;
+pub use attachment_kind::{AttachmentKind, MAX_PICTURE_BYTES};
+mod media_box;
+pub use media_box::{
+    ALBUM_CELLS, ALBUM_GAP_PT, AlbumCell, AlbumLayout, CUSTOM_HEIGHT_PT, CUSTOM_STEP_PT,
+    CUSTOM_WIDTH_PT, DIALOG_HEIGHT_SHARE, HOST_HEIGHT_SHARE, MediaBounds, MediaBox, MediaFit,
+    MediaSize, MediaSizeSetting, media_box,
+};
 mod message_actions;
 pub mod message_content;
 pub use message_actions::{
