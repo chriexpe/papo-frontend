@@ -35,6 +35,14 @@ impl Shell {
             self.saves
                 .keep_accounts(|account| accounts.contains(&account));
             self.opening.retain(|key| accounts.contains(&key.account));
+            if self
+                .revealed
+                .iter()
+                .any(|key| !accounts.contains(&key.account))
+            {
+                std::sync::Arc::make_mut(&mut self.revealed)
+                    .retain(|key| accounts.contains(&key.account));
+            }
         }
         if let Some(images) = &self.images {
             self.icons

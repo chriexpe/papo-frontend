@@ -87,3 +87,12 @@ pub(crate) const VIEWER_ARROW_PT: f32 = 40.0;
 pub(crate) const VIEWER_RING_PT: f32 = 20.0;
 /// The author's avatar in the viewer's pill (§14.8), in points.
 pub(crate) const VIEWER_AVATAR_PT: f32 = 20.0;
+/// The viewer growing from the media's place in the row and shrinking back into it (§14.8),
+/// in seconds.
+pub(crate) const VIEWER_GROW_S: f32 = 0.18;
+/// How much hidden media are blurred (a spoiler, §14.10: sensitive media until revealed), in
+/// points of standard deviation.
+pub(crate) const HIDDEN_BLUR_PT: f32 = 20.0;
+/// The round mark at hidden media's centre, and the `eye-off` icon in it, in points.
+pub(crate) const HIDDEN_MARK_PT: f32 = 40.0;
+pub(crate) const HIDDEN_ICON_PT: f32 = 20.0;

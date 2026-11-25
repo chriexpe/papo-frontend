@@ -3,7 +3,8 @@
 //! Escape gives the keyboard back to the picture last shown; the menu key on a picture opens the media menu
 //! (Open, Save image, Save as…, Copy image; no Copy link, B-024), and its Open opens the viewer;
 //! while the viewer is open the app's keys do nothing underneath it, and Jump to message closes
-//! it on the message.
+//! it on the message; a sensitive picture opened in the viewer stays hidden until Space reveals
+//! it, in the conversation too; and the viewer's picture grows out of its box in the row.
 
 use std::sync::Arc;
 
@@ -176,4 +177,140 @@ fn jump_to_message_closes_the_viewer_on_the_message() {
     settle(&mut rt);
     assert!(rt.state.viewer.is_none());
     assert_eq!(focused(&rt), Some(format!("message-{}", message_id(3))));
+}
+
+#[test]
+fn space_in_the_viewer_reveals_a_sensitive_picture() {
+    let mut rt = with_album();
+    rt.update(|shell, _tx| {
+        let open = shell.tabs.shown_mut().unwrap();
+        let Some(TimelineItem::Message { message, .. }) =
+            open.items.get(2).map(|item| (**item).clone())
+        else {
+            panic!("the album");
+        };
+        let mut message = (*message).clone();
+        if let Some(attachments) = message.attachments.as_mut() {
+            attachments[0].moderation_status = Some("sensitive".to_owned());
+        }
+        let id = message_id(3);
+        open.items.set(
+            2,
+            Arc::new(TimelineItem::Message {
+                id,
+                message: Arc::new(message),
+                content: Arc::new(MessageContent::parse("fotos")),
+                reply: None,
+                pending: None,
+            }),
+        );
+    });
+    settle(&mut rt);
+    rt.update(|_shell, tx| tx.focus(message_key(message_id(3)), true));
+    settle(&mut rt);
+    press(&mut rt, Key::Text("o".to_owned()));
+    settle(&mut rt);
+    assert!(rt.state.viewer_hidden(), "opened on purpose, still hidden");
+    press(&mut rt, Key::Text(" ".to_owned()));
+    settle(&mut rt);
+    assert!(!rt.state.viewer_hidden());
+    assert_eq!(
+        rt.state.revealed.len(),
+        1,
+        "revealed in the conversation too"
+    );
+}
+
+/// Pictures for the album's two attachments, as if their thumbnails had landed.
+fn with_album_pictures() -> Runtime<Shell> {
+    let mut rt = with_album();
+    rt.update(|shell, _tx| {
+        let images = rune::ImageCache::new(Arc::new(|| {}));
+        let account = shell.tabs.shown().unwrap().key.account;
+        for n in [1u128, 2] {
+            let key = crate::media_store::MediaKey {
+                account,
+                attachment: papo_sdk::Uuid::from_u128(0x9000 + n),
+            };
+            let want = crate::media_store::Want {
+                key,
+                thumbnail_px: Some((1024, 768)),
+                box_pt: 448.0,
+                box_px: 448.0,
+                gif: false,
+            };
+            let image = images.rgba(64, 48, vec![200; 64 * 48 * 4]);
+            let _ = image.wait();
+            for job in shell.media.want([want]) {
+                shell.media.landed(job, Some(image.clone()), 0);
+            }
+        }
+    });
+    settle(&mut rt);
+    rt
+}
+
+#[test]
+fn the_viewer_grows_out_of_the_pictures_box() {
+    let mut rt = with_album_pictures();
+    let cell = format!("media-{}-0", message_id(3));
+    let boxed = rt.presented(&cell).expect("the picture's box").0;
+    rt.update(|_shell, tx| tx.focus(message_key(message_id(3)), true));
+    settle(&mut rt);
+    press(&mut rt, Key::Text("o".to_owned()));
+    let handovers = rt.matched_handovers();
+    let [handover] = handovers.as_slice() else {
+        panic!("one picture handed over: {handovers:?}");
+    };
+    assert!(
+        handover.from.ends_with(&format!("{cell}/#0")),
+        "{}",
+        handover.from
+    );
+    assert!(handover.to.ends_with("viewer-stage/#0"), "{}", handover.to);
+    assert!(
+        (handover.from_rect[2] - boxed[2]).abs() < 1.0,
+        "it leaves from the box"
+    );
+    // It grows frame by frame toward its place in the room.
+    let mut widths = Vec::new();
+    for _ in 0..4 {
+        rt.frame(FRAME_S);
+        let picture = rt
+            .elements()
+            .into_iter()
+            .find(|element| element.path.ends_with("viewer-stage/#0"))
+            .expect("the viewer's picture");
+        widths.push(picture.rect[2]);
+    }
+    assert!(
+        widths.windows(2).all(|pair| pair[1] >= pair[0]),
+        "{widths:?}"
+    );
+    assert!(widths[0] > boxed[2] && widths[3] > widths[0], "{widths:?}");
+}
+
+#[test]
+fn closing_shrinks_the_picture_back_into_its_box() {
+    let mut rt = with_album_pictures();
+    let cell = format!("media-{}-0", message_id(3));
+    rt.update(|_shell, tx| tx.focus(message_key(message_id(3)), true));
+    settle(&mut rt);
+    press(&mut rt, Key::Text("o".to_owned()));
+    settle(&mut rt);
+    press(&mut rt, Key::Escape);
+    let handovers = rt.matched_handovers();
+    let [handover] = handovers.as_slice() else {
+        panic!("one picture handed back: {handovers:?}");
+    };
+    assert!(
+        handover.from.ends_with("viewer-stage/#0"),
+        "{}",
+        handover.from
+    );
+    assert!(
+        handover.to.ends_with(&format!("{cell}/#0")),
+        "{}",
+        handover.to
+    );
 }

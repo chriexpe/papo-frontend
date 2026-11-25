@@ -15,7 +15,7 @@ use super::view::TimelineHost;
 use crate::composer::tray::TileKind;
 use crate::design::{Look, UPLOAD_RING_PT, UPLOAD_RING_TRACK_ALPHA, UPLOAD_SCRIM_ALPHA};
 use crate::message_media::{
-    album as album_frame, gif_badge, inner_edge, more_mark, painted, single_box,
+    Layer, album as album_frame, gif_badge, inner_edge, more_mark, painted, single_box,
 };
 use crate::progress_ring::ring;
 
@@ -60,7 +60,7 @@ pub(super) fn album<S: TimelineHost>(
 
 /// `cell` showing `item`'s picture, with the "GIF" badge on a GIF.
 fn picture(cell: El, item: &Item<'_>, fit: MediaFit, look: &Look) -> El {
-    let cell = painted(cell, item.file.shown(), fit, look);
+    let cell = painted(cell, item.file.shown(), fit, Layer::default(), look);
     if item.file.kind == TileKind::Gif {
         cell.child(gif_badge(look))
     } else {

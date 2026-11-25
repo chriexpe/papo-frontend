@@ -8,16 +8,19 @@
 //!
 //! Pure: the state is `Viewer`'s, the handlers the shell's.
 
-use rune::{Align, Color, El, Icon, Image, SurfaceFit, col, el, icon, row, text};
+use rune::{
+    Align, Color, Curve, Easing, El, Icon, Image, SurfaceFit, Transition, col, el, icon, row, text,
+};
 
 use super::{CLEAR_SIDE_PT, CLEAR_TOP_PT, Viewer};
 use crate::design::{
-    FOCUS_RING_PT, Look, PILL_ICON_PT, RADIUS_AVATAR, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM,
-    Surfaces, TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_SMALL, TYPE_SMALL_MEDIUM, VIEWER_ARROW_PT,
-    VIEWER_AVATAR_PT, VIEWER_BACKDROP_ALPHA, VIEWER_BUTTON_PT, VIEWER_RING_PT,
+    FOCUS_RING_PT, HIDDEN_BLUR_PT, Look, PILL_ICON_PT, RADIUS_AVATAR, RADIUS_PILL, SPACE_LG,
+    SPACE_MD, SPACE_SM, Surfaces, TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_SMALL, TYPE_SMALL_MEDIUM,
+    VIEWER_ARROW_PT, VIEWER_AVATAR_PT, VIEWER_BACKDROP_ALPHA, VIEWER_BUTTON_PT, VIEWER_GROW_S,
+    VIEWER_RING_PT,
 };
 use crate::icons::{CHEVRON_LEFT, CHEVRON_RIGHT, COPY, DOWNLOAD, JUMP, X, ZOOM_IN, ZOOM_OUT};
-use crate::message_media::failed;
+use crate::message_media::{failed, grows_with_viewer, hidden_mark};
 use crate::progress_ring::ring;
 use crate::shell::Shell;
 use crate::strings;
@@ -38,6 +41,11 @@ pub(crate) struct Shown<'a> {
     pub(crate) ring: bool,
     /// The saved pill's file name, once a save ended.
     pub(crate) saved_pill: Option<&'a str>,
+    /// The item is sensitive and not revealed: blurred under the `eye-off` mark until pressed.
+    pub(crate) hidden: bool,
+    /// The id the item shares with its box in the conversation (only the one the viewer opened
+    /// on), so the viewer grows out of the box and shrinks back into it.
+    pub(crate) matched: Option<String>,
 }
 
 /// The viewer over the window; `look` is already the always-dark one.
@@ -46,10 +54,21 @@ pub(crate) fn view(shown: &Shown<'_>, look: &Look) -> El {
     let item = viewer.item();
     let name = item.map_or("", |item| item.name.as_str());
     let label = strings::viewer_label(name, viewer.current + 1, viewer.items.len());
+    // The window keeps its full opacity, so the picture growing out of its box is seen whole
+    // the whole way; the black behind it fades in and out over the same 180 ms.
+    let backdrop = el()
+        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .fill(Color::BLACK.alpha(VIEWER_BACKDROP_ALPHA))
+        .transition_motion(
+            Curve::tween(VIEWER_GROW_S, Easing::EASE_OUT),
+            Curve::tween(VIEWER_GROW_S, Easing::EASE_OUT),
+        )
+        .a11y_hidden();
     let mut root = el()
         .key(VIEWER_KEY)
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .fill(Color::BLACK.alpha(VIEWER_BACKDROP_ALPHA))
+        .transition(Transition::identity())
+        .child(backdrop)
         .role("dialog")
         .label(label)
         .focusable(true)
@@ -101,12 +120,26 @@ fn stage(shown: &Shown<'_>, look: &Look) -> El {
     let [width, height] = placed.size;
     let x = room_w / 2.0 + placed.offset[0] - width / 2.0;
     let y = room_h / 2.0 + placed.offset[1] - height / 2.0;
-    let mut picture = el().absolute(x, y).size(width, height).a11y_hidden();
+    let mut pixels = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0));
     if let Some(image) = shown
         .picture
         .filter(|image| image.is_ready() && image.error().is_none())
     {
-        picture = picture.pixels_fit(image.pixels(), SurfaceFit::Fill);
+        pixels = pixels.pixels_fit(image.pixels(), SurfaceFit::Fill);
+    }
+    // The picture clips its own blur, so a hidden one keeps its edges.
+    let mut picture = el()
+        .absolute(x, y)
+        .size(width, height)
+        .clip_rounded(0.0)
+        .a11y_hidden();
+    if shown.hidden {
+        pixels = pixels.blur(HIDDEN_BLUR_PT);
+        picture = picture.on_press(Shell::viewer_reveal);
+    }
+    picture = picture.child(pixels);
+    if let Some(id) = shown.matched.clone() {
+        picture = grows_with_viewer(picture, id);
     }
     let mut stage = el()
         .key("viewer-stage")
@@ -124,6 +157,9 @@ fn stage(shown: &Shown<'_>, look: &Look) -> El {
         .on_drag(|shell: &mut Shell, drag, _tx| shell.viewer_drag(drag))
         .on_background_press_tx(|shell: &mut Shell, tx| shell.close_viewer(tx))
         .child(picture);
+    if shown.hidden {
+        stage = stage.child(hidden_mark());
+    }
     // Nothing to draw and the whole picture failed: say so, with Retry. With the
     // conversation's copy drawn, that copy stays.
     let drawn = shown

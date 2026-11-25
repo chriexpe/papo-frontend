@@ -1,6 +1,7 @@
 //! A received message's media (`docs/design.md` §14.4, §14.6): the box reserved before
-//! anything loads, albums, file cards and their presses, a sent message keeping its unsent
-//! row's height, and the reader's place through every Image size.
+//! anything loads, albums, file cards and their presses, a sensitive picture hidden until
+//! revealed, a sent message keeping its unsent row's height, and the reader's place through
+//! every Image size.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -262,4 +263,44 @@ fn the_message_being_read_keeps_its_place_when_image_size_changes() {
         let moved = now_pt - offset_pt;
         assert!(moved.abs() < HOLD_PT, "{size:?} moved it {moved}");
     }
+}
+
+#[test]
+fn a_sensitive_picture_is_a_spoiler_until_revealed_in_the_same_box() {
+    let mut wire = picture(1, "image/jpeg", Some((1024, 664)));
+    wire["moderation_status"] = json!("sensitive");
+    let item = received(1, 0, "", json!([wire]));
+    let mut rt = runtime(std::iter::once(item).collect(), MessageLayout::default());
+    until_idle(&mut rt);
+    let key = format!("media-{}-0", Uuid::from_u128(1));
+    let hidden_box = rect(&rt, &key);
+    assert!(
+        tree(&rt).contains("Hidden spoiler. Press to reveal."),
+        "spoken as a spoiler"
+    );
+    rt.accessibility_action(&key, Action::Click, None);
+    until_idle(&mut rt);
+    assert_eq!(
+        rt.state.controls,
+        ["reveal"],
+        "a press reveals, it doesn't open"
+    );
+
+    rt.update(|host, _tx| {
+        let revealed = crate::media_store::MediaKey {
+            account: host.open.key.account,
+            attachment: attachment_id(1),
+        };
+        host.media.revealed = Arc::new(std::iter::once(revealed).collect());
+    });
+    until_idle(&mut rt);
+    assert!(tree(&rt).contains("Image, 1.jpg"), "shown once revealed");
+    assert_eq!(rect(&rt, &key), hidden_box, "the same box");
+    rt.accessibility_action(&key, Action::Click, None);
+    until_idle(&mut rt);
+    assert_eq!(
+        rt.state.controls,
+        ["reveal", "media"],
+        "now a press opens it"
+    );
 }

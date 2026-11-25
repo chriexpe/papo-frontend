@@ -75,6 +75,7 @@ impl Shell {
             MediaPress::CancelSave => {
                 self.saves.cancel(key);
             }
+            MediaPress::Reveal => self.reveal(key),
             MediaPress::OpenSaved | MediaPress::ShowSaved => {
                 let views = self.saves.views();
                 if let Some(SaveView::Saved(path)) = views.get(&key) {

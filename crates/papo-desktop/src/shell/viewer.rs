@@ -14,12 +14,12 @@ use super::Shell;
 use super::media_presses::MediaAction;
 use super::staged_files::decoded;
 use crate::media_store::MediaKey;
-use crate::message_media::received::{MediaAt, MediaSurface, attachment_id, split};
+use crate::message_media::received::{MediaAt, MediaSurface, attachment_id, is_hidden, split};
 use crate::strings;
 use crate::timeline::local_time::day_label;
 use crate::timeline::{author_name, created_us};
 use crate::viewer::view::VIEWER_KEY;
-use crate::viewer::{Viewer, ViewerItem};
+use crate::viewer::{CLEAR_SIDE_PT, CLEAR_TOP_PT, Viewer, ViewerItem};
 
 /// How long the full picture may take before its ring shows, in seconds.
 const RING_AFTER_S: f64 = 0.5;
@@ -84,6 +84,12 @@ impl Shell {
             )
         });
         self.nav.menu = None;
+        // The picture grows out of its box over the whole window, the pills' clear band
+        // included (§14.8).
+        tx.unclipped_flights();
+        // The picture's place is known in the commit that opens the viewer, before the room
+        // reports its layout, so the growth aims at where the picture comes to rest.
+        self.viewer_room = self.expected_viewer_room();
         self.viewer = Some(Viewer::new(at, items, author, when));
         self.load_viewer_picture(tx);
         tx.focus(VIEWER_KEY, true);
@@ -172,6 +178,18 @@ impl Shell {
         });
     }
 
+    /// The room the viewer's stage will have: the window (the conversation reaches its bottom
+    /// right corner) less the pills' clear band at the top and the margins at the sides and
+    /// below.
+    fn expected_viewer_room(&self) -> [f32; 2] {
+        let [x, y, width, height] = self.conversation_rect;
+        let window = [x + width, y + height];
+        [
+            (window[0] - 2.0 * CLEAR_SIDE_PT).max(0.0),
+            (window[1] - CLEAR_TOP_PT - CLEAR_SIDE_PT).max(0.0),
+        ]
+    }
+
     /// The viewer's room was laid out at `rect`.
     pub(crate) fn viewer_room(&mut self, rect: [f32; 4]) {
         self.viewer_room = [rect[2], rect[3]];
@@ -224,7 +242,7 @@ impl Shell {
     }
 
     /// The shown item's attachment, as the menu names it.
-    fn viewer_at(&self) -> Option<MediaAt> {
+    pub(super) fn viewer_at(&self) -> Option<MediaAt> {
         let viewer = self.viewer.as_ref()?;
         let item = viewer.item()?;
         Some(MediaAt {
@@ -273,7 +291,30 @@ impl Shell {
         if viewer.full_screen {
             tx.toggle_full_screen();
         }
+        // It shrinks back into its box, crossing the pills' band.
+        tx.unclipped_flights();
         tx.focus(viewer.return_focus(), true);
+    }
+
+    /// Whether the item showing is sensitive and not revealed yet.
+    pub(super) fn viewer_hidden(&self) -> bool {
+        let Some(at) = self.viewer_at() else {
+            return false;
+        };
+        self.attachment_at(at)
+            .is_some_and(|attachment| is_hidden(at.account, &attachment, &self.revealed))
+    }
+
+    /// A press (or Enter, Space) on a hidden item: it shows, here and in the conversation.
+    pub(crate) fn viewer_reveal(&mut self) {
+        let key = self
+            .viewer
+            .as_ref()
+            .and_then(Viewer::item)
+            .map(|item| item.key);
+        if let Some(key) = key {
+            self.reveal(key);
+        }
     }
 
     /// A failed whole picture's Retry.

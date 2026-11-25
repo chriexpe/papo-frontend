@@ -8,16 +8,17 @@
 //! does is the host's.
 
 use papo_sdk_ui::{AlbumLayout, MediaBox, MediaFit};
-use rune::{Color, El, Image, SurfaceFit, col, el, icon, row, text};
+use rune::{Color, Curve, Easing, El, Image, SurfaceFit, col, el, icon, row, text};
 
 use crate::attaching::extension_label;
 use crate::design::{
     ALBUM_MORE_ALPHA, EXTENSION_BLOCK_PT, EXTENSION_BLOCK_RADIUS, FILE_CARD_BAR_PT,
-    FILE_CARD_MAX_PT, FILE_CARD_PAD_PT, Look, MEDIA_BADGE_ALPHA, MEDIA_BADGE_PAD_PT,
-    MEDIA_BADGE_RADIUS, MEDIA_FAILED_ICON_PT, PILL_OUTLINE_PT, RADIUS_CARD, SPACE_MD, SPACE_SM,
-    TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_EXTENSION, TYPE_MEDIA_BADGE, TYPE_TITLE,
+    FILE_CARD_MAX_PT, FILE_CARD_PAD_PT, HIDDEN_BLUR_PT, HIDDEN_ICON_PT, HIDDEN_MARK_PT, Look,
+    MEDIA_BADGE_ALPHA, MEDIA_BADGE_PAD_PT, MEDIA_BADGE_RADIUS, MEDIA_FAILED_ICON_PT,
+    PILL_OUTLINE_PT, RADIUS_CARD, SPACE_MD, SPACE_SM, TYPE_BODY_MEDIUM, TYPE_CAPTION,
+    TYPE_EXTENSION, TYPE_MEDIA_BADGE, TYPE_TITLE, VIEWER_GROW_S,
 };
-use crate::icons::IMAGE_OFF;
+use crate::icons::{EYE_OFF, IMAGE_OFF};
 use crate::strings;
 
 mod file_card_view;
@@ -88,20 +89,77 @@ pub(crate) fn album(
         .child(inner_edge(look))
 }
 
-/// `cell` painted with `image` (when decoded) as `fit` says: `surface.hover` while it loads,
-/// `surface.code` behind a letterboxed one.
-pub(crate) fn painted(cell: El, image: Option<&Image>, fit: MediaFit, look: &Look) -> El {
+/// How a picture sits in its box beyond its pixels.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Layer {
+    /// Sensitive and not revealed yet: blurred, with the `eye-off` mark over it (a spoiler).
+    pub(crate) hidden: bool,
+    /// The viewer shows it now: the box stays, the picture is the viewer's.
+    pub(crate) in_viewer: bool,
+    /// The id the viewer's picture shares with it, so the viewer grows out of this box and
+    /// shrinks back into it.
+    pub(crate) matched: Option<String>,
+}
+
+/// `cell` painted with `image` (when decoded) as `fit` says, on a layer of its own: `surface.hover`
+/// while it loads, `surface.code` behind a letterboxed one.
+pub(crate) fn painted(
+    cell: El,
+    image: Option<&Image>,
+    fit: MediaFit,
+    layer: Layer,
+    look: &Look,
+) -> El {
     let (behind, surface_fit) = match fit {
         MediaFit::Fill => (look.palette.surface_hover, SurfaceFit::Fill),
         MediaFit::Letterbox => (look.palette.surface_code, SurfaceFit::Fit),
     };
-    let cell = cell.fill(behind);
-    match image {
-        Some(image) if image.is_ready() && image.error().is_none() => {
-            cell.pixels_fit(image.pixels(), surface_fit)
+    let mut cell = cell.fill(behind);
+    let image = image.filter(|image| image.is_ready() && image.error().is_none());
+    if let Some(image) = image.filter(|_| !layer.in_viewer) {
+        let mut picture = el()
+            .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+            .pixels_fit(image.pixels(), surface_fit)
+            .a11y_hidden();
+        if let Some(id) = layer.matched {
+            picture = grows_with_viewer(picture, id);
         }
-        _ => cell,
+        if layer.hidden {
+            // The blur reaches past the picture: its own clip keeps it in the box.
+            picture = el()
+                .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .clip_rounded(0.0)
+                .child(picture.blur(HIDDEN_BLUR_PT));
+        }
+        cell = cell.child(picture);
     }
+    if layer.hidden {
+        cell = cell.child(hidden_mark());
+    }
+    cell
+}
+
+/// `picture` shared with the viewer as `id`: opening grows the viewer's out of it, closing
+/// shrinks it back (§14.8, 180 ms; Rune leaves both still under reduced motion).
+pub(crate) fn grows_with_viewer(picture: El, id: String) -> El {
+    picture
+        .matched(id)
+        .matched_motion(Curve::tween(VIEWER_GROW_S, Easing::EASE_OUT))
+}
+
+/// The `eye-off` mark at hidden media's centre, white on the badges' 60 % black.
+pub(crate) fn hidden_mark() -> El {
+    col()
+        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .center()
+        .a11y_hidden()
+        .child(
+            el().size(HIDDEN_MARK_PT, HIDDEN_MARK_PT)
+                .radius(HIDDEN_MARK_PT / 2.0)
+                .center()
+                .fill(Color::BLACK.alpha(MEDIA_BADGE_ALPHA))
+                .child(icon(&EYE_OFF, HIDDEN_ICON_PT).color(Color::WHITE)),
+        )
 }
 
 /// The "GIF" badge at a GIF's top left, in the badge style (white mono on 60 % black).

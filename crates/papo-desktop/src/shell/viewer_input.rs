@@ -11,6 +11,14 @@ impl Shell {
     pub(crate) fn viewer_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
         let natural = self.viewer_natural();
         let room = self.viewer_room;
+        // Enter or Space on a hidden item reveals it, as a press does.
+        let reveals = self.viewer_hidden()
+            && key.mods == Mods::default()
+            && (key.key == Key::Enter || key.key == Key::Text(" ".to_owned()));
+        if reveals {
+            self.viewer_reveal();
+            return true;
+        }
         let Some(viewer) = self.viewer.as_mut() else {
             return false;
         };

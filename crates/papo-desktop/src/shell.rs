@@ -197,6 +197,8 @@ pub(crate) struct Shell {
     saves: crate::saving::Saves,
     /// When the saved pill goes, on the window's clock.
     saved_pill_until_s: Option<f64>,
+    /// Sensitive pictures the reader revealed this run (a spoiler stays revealed once pressed).
+    revealed: Arc<std::collections::HashSet<crate::media_store::MediaKey>>,
     /// Files being fetched for Open, apart from the cards' saves.
     opening: std::collections::HashSet<crate::media_store::MediaKey>,
     /// The viewer, while open.
@@ -309,6 +311,7 @@ impl Default for Shell {
             saves: crate::saving::Saves::default(),
             saved_pill_until_s: None,
             opening: std::collections::HashSet::new(),
+            revealed: Arc::default(),
             viewer: None,
             viewer_room: [0.0, 0.0],
         }

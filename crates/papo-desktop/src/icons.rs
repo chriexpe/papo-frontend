@@ -306,6 +306,11 @@ line_icon!(
     "image-off"
 );
 line_icon!(
+    /// A hidden spoiler's mark: sensitive media until revealed (§14.10's spoiler tile).
+    EYE_OFF,
+    "eye-off"
+);
+line_icon!(
     /// Save: a file card's button, the media menu's Save, the viewer's Save (§14.6–§14.8).
     DOWNLOAD,
     "download"

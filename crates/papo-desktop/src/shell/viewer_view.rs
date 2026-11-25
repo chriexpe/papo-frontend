@@ -1,11 +1,13 @@
 //! What the viewer draws, gathered from the shell (`docs/design.md` §14.8): its always-dark look
 //! (Graphite's on Light and Soft light, OLED's on OLED), the picture (the whole one once
-//! decoded, else the timeline's copy), its size, its room, and the ring.
+//! decoded, else the timeline's copy), its size, its room, the ring, whether it is hidden
+//! (sensitive, not revealed), and the id it shares with the box it grew out of.
 
 use rune::{Cx, El};
 
 use super::Shell;
 use crate::design::Theme;
+use crate::message_media::received::viewer_match_id;
 use crate::viewer::view::{Shown, view as viewer};
 
 /// The viewer, while open.
@@ -41,6 +43,8 @@ pub(super) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> Option<El> {
         room: shell.viewer_room,
         ring: open.ring && !open.full.as_ref().is_some_and(rune::Image::is_ready),
         saved_pill: shell.saves.pill().map(|pill| pill.name.as_str()),
+        hidden: shell.viewer_hidden(),
+        matched: (item.index == open.at.index).then(|| viewer_match_id(open.at)),
     };
     Some(viewer(&shown, &look))
 }

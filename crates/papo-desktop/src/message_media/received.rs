@@ -7,17 +7,21 @@
 //! row was. A picture shows `surface.hover` while it loads, then the server's thumbnail, then
 //! the original when the thumbnail is smaller than the box; a GIF animates while
 //! `media_store` says so. A press opens the viewer, a secondary press or the menu key the media
-//! menu; a file card saves.
+//! menu; a file card saves. A picture the server marked sensitive is a spoiler: blurred under
+//! the `eye-off` mark until a press reveals it, and still while hidden. Each picture shares an
+//! id with the viewer's, so the viewer grows out of it and shrinks back into it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use papo_sdk::{AccountId, Attachment, Uuid};
-use papo_sdk_ui::{AlbumLayout, AttachmentKind, MediaBounds, MediaFit, MediaSize, media_box};
+use papo_sdk_ui::{
+    AlbumLayout, AttachmentKind, MediaBounds, MediaFit, MediaSize, Moderation, media_box,
+};
 use rune::{El, Key, Tx, col, el, text};
 
 use super::{
-    album, failed, file_card_view::file_card_of, gif_badge, inner_edge, more_mark, painted,
+    Layer, album, failed, file_card_view::file_card_of, gif_badge, inner_edge, more_mark, painted,
     single_box,
 };
 use crate::design::{FOCUS_RING_PT, Look, MEDIA_BLOCK_GAP, TYPE_CAPTION_MEDIUM};
@@ -42,6 +46,8 @@ pub(crate) enum MediaPress {
     OpenSaved,
     /// A saved file's Show in folder.
     ShowSaved,
+    /// A hidden (sensitive) picture: show it.
+    Reveal,
 }
 
 /// Where a message's media is drawn: the same message can show in more than one place at once.
@@ -96,6 +102,34 @@ pub(crate) struct MediaStyle {
     pub(crate) interactive: bool,
     /// Where these media are drawn.
     pub(crate) surface: MediaSurface,
+    /// Sensitive pictures the reader revealed; the others stay hidden.
+    pub(crate) revealed: Arc<HashSet<MediaKey>>,
+    /// The picture the viewer opened on, while it is open: its box stays, the picture is the
+    /// viewer's.
+    pub(crate) viewing: Option<MediaAt>,
+}
+
+/// The id a picture shares with the viewer's while it shows it, so the viewer grows out of the
+/// picture's box and shrinks back into it.
+pub(crate) fn viewer_match_id(at: MediaAt) -> String {
+    format!("grow-{}", media_element_key(at))
+}
+
+/// Whether `attachment` (of account `account`) is hidden now: sensitive and not revealed.
+pub(crate) fn is_hidden(
+    account: AccountId,
+    attachment: &Attachment,
+    revealed: &HashSet<MediaKey>,
+) -> bool {
+    if !Moderation::of(attachment).hides() {
+        return false;
+    }
+    attachment_id(attachment).is_none_or(|attachment| {
+        !revealed.contains(&MediaKey {
+            account,
+            attachment,
+        })
+    })
 }
 
 /// The key of attachment `at`'s element (a picture or a file card), unique across surfaces:
@@ -120,6 +154,8 @@ impl MediaStyle {
             reduced_motion: false,
             interactive: true,
             surface: MediaSurface::Timeline,
+            revealed: Arc::default(),
+            viewing: None,
         }
     }
 
@@ -231,15 +267,30 @@ fn picture<S: MediaHost>(
         attachment: id,
     });
     let drawn = key.and_then(|key| style.view.get(key));
-    let animate = key.is_some_and(|key| style.view.animates(key));
+    let hidden = is_hidden(at.account, attachment, &style.revealed);
+    // A hidden GIF stays still.
+    let animate = !hidden && key.is_some_and(|key| style.view.animates(key));
     let image = drawn.and_then(|drawn| drawn.picture(animate));
     let name = attachment.original_file_name.as_deref().unwrap_or_default();
-    let label = if gif {
+    let label = if hidden {
+        strings::spoiler_hidden().to_owned()
+    } else if gif {
         strings::media_gif().to_owned()
     } else {
         strings::media_image(name)
     };
-    let mut cell = painted(base, image, fit, look)
+    let layer = Layer {
+        hidden,
+        in_viewer: style.viewing == Some(at),
+        matched: style.interactive.then(|| viewer_match_id(at)),
+    };
+    // A press on a hidden picture reveals it; the viewer and the menu still open it on purpose.
+    let press = if hidden {
+        MediaPress::Reveal
+    } else {
+        MediaPress::Open
+    };
+    let mut cell = painted(base, image, fit, layer, look)
         .key(media_element_key(at))
         .role("img")
         .label(label);
@@ -248,11 +299,11 @@ fn picture<S: MediaHost>(
             .role("button")
             .focusable(true)
             .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-            .on_press_tx(move |host: &mut S, tx| host.media_press(at, MediaPress::Open, tx))
+            .on_press_tx(move |host: &mut S, tx| host.media_press(at, press, tx))
             .on_secondary_press(move |host: &mut S, press, tx| {
                 host.media_press(at, MediaPress::Menu(Some([press.x, press.y])), tx);
             })
-            .on_key(move |host: &mut S, event, tx| media_key(host, at, event, tx));
+            .on_key(move |host: &mut S, event, tx| media_key(host, at, press, event, tx));
     }
     if style.interactive && drawn.is_some_and(|drawn| drawn.failed) {
         let retry = text(strings::media_retry())
@@ -266,7 +317,7 @@ fn picture<S: MediaHost>(
     if gif {
         cell = cell.child(gif_badge(look));
         // Only the conversation's GIFs animate by their place in it.
-        let timeline = style.interactive && at.surface == MediaSurface::Timeline;
+        let timeline = style.interactive && at.surface == MediaSurface::Timeline && !hidden;
         if let Some(key) = key.filter(|_| timeline) {
             let reduced = style.reduced_motion;
             cell = cell
@@ -287,11 +338,12 @@ fn picture<S: MediaHost>(
     cell
 }
 
-/// Keys on focused media: Enter or Space opens the viewer. (The menu key and ⇧F10 reach the
-/// secondary press.)
+/// Keys on focused media: Enter or Space does what a press does (`press`: open the viewer, or
+/// reveal a hidden picture). (The menu key and ⇧F10 reach the secondary press.)
 pub(crate) fn media_key<S: MediaHost>(
     host: &mut S,
     at: MediaAt,
+    press: MediaPress,
     event: &rune::KeyEvent,
     tx: &mut Tx,
 ) -> bool {
@@ -305,7 +357,7 @@ pub(crate) fn media_key<S: MediaHost>(
         _ => false,
     };
     if opens {
-        host.media_press(at, MediaPress::Open, tx);
+        host.media_press(at, press, tx);
     }
     opens
 }

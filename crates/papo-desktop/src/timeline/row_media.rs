@@ -28,9 +28,22 @@ pub(super) fn with_media(body: El, media: Option<El>, look: &Look) -> El {
     }
 }
 
-/// What a received message's attachments draw from, for the row's memo: each picture's load,
-/// animation and save, the bounds' sides, and the system's reduced motion its GIFs report.
-pub(super) type ReceivedSignature = (Vec<(u64, bool, Option<SaveView>)>, u32, u32, bool);
+/// What one received attachment draws from, for its row's memo.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct AttachmentState {
+    /// Its pictures' version in the store.
+    drawn: u64,
+    animates: bool,
+    save: Option<SaveView>,
+    /// Sensitive and not revealed.
+    hidden: bool,
+    /// The viewer opened on it and shows it in its place.
+    in_viewer: bool,
+}
+
+/// What a received message's attachments draw from, for the row's memo: each attachment's
+/// state, the bounds' sides, and the system's reduced motion its GIFs report.
+pub(super) type ReceivedSignature = (Vec<AttachmentState>, u32, u32, bool);
 
 /// Where a message from history draws its media, and what they draw from; none for an echo.
 pub(super) fn received_of(
@@ -54,10 +67,7 @@ pub(super) fn received_of(
         .attachments
         .as_deref()
         .unwrap_or_default();
-    Some((
-        at,
-        received_signature(open.key.account, attachments, &style.media),
-    ))
+    Some((at, received_signature(at, attachments, &style.media)))
 }
 
 /// A message's media: an unsent one's from the local files, a received one's from the
@@ -83,23 +93,27 @@ pub(super) fn media_of<S: TimelineHost>(
 
 /// What a received message's attachments draw from, for the row's memo.
 pub(super) fn received_signature(
-    account: papo_sdk::AccountId,
+    at: MediaAt,
     attachments: &[papo_sdk::Attachment],
     media: &MediaStyle,
 ) -> ReceivedSignature {
     let states = attachments
         .iter()
-        .map(|attachment| {
+        .enumerate()
+        .map(|(index, attachment)| {
             let key = attachment_id(attachment).map(|attachment| MediaKey {
-                account,
+                account: at.account,
                 attachment,
             });
-            let drawn = key
-                .and_then(|key| media.view.get(key))
-                .map_or(0, |drawn| drawn.version);
-            let animates = key.is_some_and(|key| media.view.animates(key));
-            let save = key.and_then(|key| media.saves.get(&key).cloned());
-            (drawn, animates, save)
+            AttachmentState {
+                drawn: key
+                    .and_then(|key| media.view.get(key))
+                    .map_or(0, |drawn| drawn.version),
+                animates: key.is_some_and(|key| media.view.animates(key)),
+                save: key.and_then(|key| media.saves.get(&key).cloned()),
+                hidden: received::is_hidden(at.account, attachment, &media.revealed),
+                in_viewer: media.viewing == Some(MediaAt { index, ..at }),
+            }
         })
         .collect();
     (

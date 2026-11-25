@@ -66,10 +66,14 @@ impl crate::message_media::received::MediaHost for Host {
     fn media_press(
         &mut self,
         _at: crate::message_media::received::MediaAt,
-        _press: crate::message_media::received::MediaPress,
+        press: crate::message_media::received::MediaPress,
         _tx: &mut Tx,
     ) {
-        self.controls.push("media");
+        let name = match press {
+            crate::message_media::received::MediaPress::Reveal => "reveal",
+            _ => "media",
+        };
+        self.controls.push(name);
     }
 
     fn media_moved(

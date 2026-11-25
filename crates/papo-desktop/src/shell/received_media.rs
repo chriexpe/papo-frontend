@@ -18,7 +18,7 @@ use super::staged_files::decoded;
 use crate::design::{Lead, Look, MESSAGE_ROW_INSET, TIMELINE_INSET};
 use crate::gif_frames::gif_frames;
 use crate::media_store::{Fetch, Job, MediaKey, Want};
-use crate::message_media::received::{MediaStyle, attachment_id, split};
+use crate::message_media::received::{MediaStyle, attachment_id, is_hidden, split};
 
 /// Rows beyond the visible ones, on each side, whose media load ahead of being seen.
 const NEAR_ROWS: usize = 6;
@@ -66,6 +66,8 @@ impl Shell {
             reduced_motion,
             interactive: true,
             surface: crate::message_media::received::MediaSurface::Timeline,
+            revealed: Arc::clone(&self.revealed),
+            viewing: self.viewer.as_ref().map(|viewer| viewer.at),
         }
     }
 
@@ -88,6 +90,7 @@ impl Shell {
                         open.key.account,
                         attachments,
                         &self.own_sizes,
+                        &self.revealed,
                         bounds,
                         scale,
                     ));
@@ -105,6 +108,7 @@ impl Shell {
                         open.key.account,
                         attachments,
                         &self.own_sizes,
+                        &self.revealed,
                         bounds,
                         scale,
                     ));
@@ -164,6 +168,14 @@ impl Shell {
                     true
                 });
             });
+        }
+    }
+
+    /// A hidden (sensitive) picture is revealed: it shows, and stays shown this run. Its
+    /// picture is asked for at its full size now.
+    pub(super) fn reveal(&mut self, key: MediaKey) {
+        if Arc::make_mut(&mut self.revealed).insert(key) {
+            self.want_media();
         }
     }
 
@@ -292,6 +304,7 @@ fn pictures_wanted(
     account: AccountId,
     attachments: &[Attachment],
     own_sizes: &HashMap<Uuid, MediaSize>,
+    revealed: &HashSet<MediaKey>,
     bounds: MediaBounds,
     scale: f32,
 ) -> Vec<Want> {
@@ -320,6 +333,14 @@ fn pictures_wanted(
                     pixels(attachment.thumbnail_width).zip(pixels(attachment.thumbnail_height))
                 })
                 .filter(|(width, height)| *width > 0 && *height > 0);
+            // A hidden picture draws blurred: its thumbnail is enough until it is revealed.
+            let hidden = is_hidden(account, attachment, revealed);
+            let thumbnail_long_px = thumbnail_px.map(|(width, height)| width.max(height));
+            #[expect(clippy::cast_precision_loss, reason = "a thumbnail's side, up to 1024")]
+            let wanted_px = match thumbnail_long_px {
+                Some(long_px) if hidden => (box_pt * scale).min(long_px as f32),
+                _ => box_pt * scale,
+            };
             Some(Want {
                 key: MediaKey {
                     account,
@@ -327,7 +348,7 @@ fn pictures_wanted(
                 },
                 thumbnail_px,
                 box_pt,
-                box_px: box_pt * scale,
+                box_px: wanted_px,
                 gif: AttachmentKind::of(attachment) == AttachmentKind::Gif,
             })
         })
