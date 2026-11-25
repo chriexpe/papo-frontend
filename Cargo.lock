@@ -4189,7 +4189,6 @@ version = "0.0.0"
 dependencies = [
  "gstreamer",
  "gstreamer-app",
- "gstreamer-video",
  "log",
  "papo-api",
  "papo-call",

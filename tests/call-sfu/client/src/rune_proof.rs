@@ -1,8 +1,10 @@
 //! Presents the backend fixture's decoded RTP in Rune; signaling stays in Endpoint.
 
 use super::{Endpoint, Result, backend_room, drive};
-use gstreamer_video::{VideoColorMatrix, VideoColorRange, VideoColorimetry, VideoTransferFunction};
-use papo_call::{CpuVideoDestination, CpuVideoFrame, CpuVideoFrameLease, VideoRotation};
+use papo_call::{
+    ColourMatrix, ColourRange, ColourTransfer, CpuVideoDestination, CpuVideoFrame,
+    CpuVideoFrameLease, VideoColour, VideoRotation,
+};
 use papo_sdk::VideoKind;
 use rune::native_surface::{ByteFrame, ColorInfo, Format, Matrix, Transfer};
 use rune::{App, AppSpec, Cx, El, NativeSurface, SurfaceFit, Tx, col, el, text};
@@ -278,15 +280,14 @@ fn view(state: &State, cx: &mut Cx<State>) -> El {
 }
 
 pub(super) fn pack(frame: &CpuVideoFrame) -> Option<ByteFrame> {
-    let transfer = match frame.colorimetry.transfer() {
-        // GStreamer defines the BT.601 and BT.709 transfer curves as equivalent.
-        VideoTransferFunction::Bt601 | VideoTransferFunction::Bt709 => Transfer::Bt709,
-        VideoTransferFunction::Srgb => Transfer::Srgb,
-        _ => return None,
+    let transfer = match frame.colour.transfer {
+        ColourTransfer::Bt709 => Transfer::Bt709,
+        ColourTransfer::Srgb => Transfer::Srgb,
+        ColourTransfer::Other => return None,
     };
     if frame.width_px.is_multiple_of(2)
         && frame.height_px.is_multiple_of(2)
-        && let Some((format, color)) = nv12_color(&frame.colorimetry, transfer)
+        && let Some((format, color)) = nv12_color(frame.colour, transfer)
         && let Ok(nv12) = frame.pack_nv12()
     {
         return Some(ByteFrame {
@@ -310,16 +311,16 @@ pub(super) fn pack(frame: &CpuVideoFrame) -> Option<ByteFrame> {
     })
 }
 
-fn nv12_color(color: &VideoColorimetry, transfer: Transfer) -> Option<(Format, ColorInfo)> {
-    let matrix = match color.matrix() {
-        VideoColorMatrix::Bt601 => Matrix::Bt601,
-        VideoColorMatrix::Bt709 => Matrix::Bt709,
-        _ => return None,
+fn nv12_color(colour: VideoColour, transfer: Transfer) -> Option<(Format, ColorInfo)> {
+    let matrix = match colour.matrix {
+        ColourMatrix::Bt601 => Matrix::Bt601,
+        ColourMatrix::Bt709 => Matrix::Bt709,
+        ColourMatrix::Bt2020 | ColourMatrix::Unknown => return None,
     };
-    let format = match color.range() {
-        VideoColorRange::Range0_255 => Format::Nv12Full,
-        VideoColorRange::Range16_235 => Format::Nv12Video,
-        _ => return None,
+    let format = match colour.range {
+        ColourRange::Full => Format::Nv12Full,
+        ColourRange::Limited => Format::Nv12Video,
+        ColourRange::Unknown => return None,
     };
     Some((format, ColorInfo { matrix, transfer }))
 }
@@ -327,7 +328,6 @@ fn nv12_color(color: &VideoColorimetry, transfer: Transfer) -> Option<(Format, C
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gstreamer_video::VideoColorPrimaries;
 
     fn frame(width_px: u32) -> CpuVideoFrame {
         CpuVideoFrame {
@@ -335,12 +335,11 @@ mod tests {
             height_px: 2,
             offsets: [1, 8],
             strides: [3, 2],
-            colorimetry: VideoColorimetry::new(
-                VideoColorRange::Range16_235,
-                VideoColorMatrix::Bt601,
-                VideoTransferFunction::Bt709,
-                VideoColorPrimaries::Bt709,
-            ),
+            colour: VideoColour {
+                matrix: ColourMatrix::Bt601,
+                range: ColourRange::Limited,
+                transfer: ColourTransfer::Bt709,
+            },
             pts_ns: None,
             bytes: vec![0, 16, 16, 0, 16, 16, 0, 0, 128, 128],
         }

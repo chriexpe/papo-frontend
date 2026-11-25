@@ -1,9 +1,8 @@
 //! Isolates CPU pixel packing; it does not decode, submit or present media.
 
-use gstreamer_video::{
-    VideoColorMatrix, VideoColorPrimaries, VideoColorRange, VideoColorimetry, VideoTransferFunction,
+use papo_call::{
+    ColourMatrix, ColourRange, ColourTransfer, CpuVideoFrame, VideoColour, VideoRotation,
 };
-use papo_call::{CpuVideoFrame, VideoRotation};
 use std::{error::Error, hint::black_box, time::Instant};
 
 const WARM_BATCHES: usize = 20;
@@ -29,12 +28,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let stride = usize::try_from(width_px)? + 32;
     let y_len = stride * usize::try_from(height_px)?;
-    let colorimetry = VideoColorimetry::new(
-        VideoColorRange::Range16_235,
-        VideoColorMatrix::Bt709,
-        VideoTransferFunction::Bt709,
-        VideoColorPrimaries::Bt709,
-    );
+    let colour = VideoColour {
+        matrix: ColourMatrix::Bt709,
+        range: ColourRange::Limited,
+        transfer: ColourTransfer::Bt709,
+    };
     let frames: Vec<_> = (0..tiles)
         .map(|tile| {
             let mut bytes = vec![128; y_len + y_len / 2];
@@ -44,7 +42,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 height_px,
                 offsets: [0, y_len],
                 strides: [i32::try_from(stride)?; 2],
-                colorimetry,
+                colour,
                 pts_ns: None,
                 bytes,
             })
