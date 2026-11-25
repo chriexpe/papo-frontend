@@ -20,6 +20,27 @@ pub fn random_attachment_name(original: &str) -> Result<String, ImageError> {
     Ok(name_from_entropy(&entropy, original))
 }
 
+/// Whether `name` has the shape [`random_attachment_name`] gives: 15 lowercase letters and digits,
+/// then an optional plain extension. It says nothing of where the name came from.
+pub(crate) fn is_random_name(name: &str) -> bool {
+    let (stem, extension) = match name.split_once('.') {
+        Some((stem, extension)) => (stem, Some(extension)),
+        None => (name, None),
+    };
+    let stem_fits = stem.len() == NAME_LENGTH
+        && stem
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    let extension_fits = extension.is_none_or(|extension| {
+        !extension.is_empty()
+            && extension.len() <= MAX_EXTENSION
+            && extension
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    });
+    stem_fits && extension_fits
+}
+
 /// Builds the name from caller-supplied bytes, so tests need no randomness. Each byte picks one
 /// character; the bias of `byte % 36` is irrelevant for a non-secret name.
 pub(crate) fn name_from_entropy(entropy: &[u8; NAME_LENGTH], original: &str) -> String {
@@ -99,6 +120,23 @@ mod tests {
     fn the_system_source_gives_the_same_shape() {
         let name = random_attachment_name("a.webp").unwrap();
         assert_eq!(name.len(), NAME_LENGTH + ".webp".len());
+        assert!(is_random_name(&name));
+    }
+
+    #[test]
+    fn only_the_random_shape_reads_as_a_random_name() {
+        assert!(is_random_name("k3f9q2mzx81bd0a.jpg"));
+        assert!(is_random_name("k3f9q2mzx81bd0a"));
+        for name in [
+            "IMG_2041.jpg",
+            "K3F9Q2MZX81BD0A.jpg",
+            "k3f9q2mzx81bd0.jpg",
+            "k3f9q2mzx81bd0a.jpg.exe ",
+            "k3f9q2mzx81bd0a.",
+            "holiday-with-ana.png",
+        ] {
+            assert!(!is_random_name(name), "{name}");
+        }
     }
 
     #[test]

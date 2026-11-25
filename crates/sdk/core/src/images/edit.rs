@@ -29,6 +29,13 @@ pub struct AttachmentEdit {
     /// are not touched; anonymizing implies it.
     #[serde(default)]
     pub random_name: bool,
+    /// The attachment's file name is already a random name the caller drew with
+    /// [`random_attachment_name`](crate::random_attachment_name) and showed, so what the sender
+    /// saw is what goes: Random name and anonymizing keep it rather than draw another. A name
+    /// without that shape (15 lowercase letters and digits, then the extension) is not trusted
+    /// and a new one is drawn, as without this flag. Alone it changes nothing.
+    #[serde(default)]
+    pub random_name_chosen: bool,
     /// Clockwise quarter turns (0 to 3) applied after the image's own orientation.
     pub quarter_turns: u8,
     /// The part kept, in the picture as it looks after orientation and `quarter_turns`.

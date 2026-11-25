@@ -27,7 +27,7 @@ pub use edit::{Anonymize, AttachmentEdit, CropRect, FixedImage, ImageFormat, Ima
 pub use error::{ImageError, UnsupportedFormat};
 pub use name::{NAME_LENGTH, random_attachment_name};
 
-pub(crate) use name::with_extension;
+pub(crate) use name::{is_random_name, with_extension};
 
 use image::metadata::Orientation;
 use sniff::{Container, SNIFF_BYTES, sniff};

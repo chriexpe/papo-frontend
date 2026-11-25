@@ -229,7 +229,8 @@ impl Registry {
 }
 
 /// The name the edited file goes out under: random when asked (or anonymizing), with the
-/// extension of the format actually written when the bytes were re-encoded.
+/// extension of the format actually written when the bytes were re-encoded. A random name the
+/// caller chose and showed (`random_name_chosen`, and the random shape) is kept.
 fn renamed(
     previous: &str,
     edit: AttachmentEdit,
@@ -254,6 +255,9 @@ fn renamed(
             .enumerate()
             .any(|(other, attachment)| other != index && attachment.filename == name)
     };
+    if edit.random_name_chosen && images::is_random_name(previous) && !taken(previous) {
+        return Ok(fit(previous.to_owned()));
+    }
     for _ in 0..NAME_ATTEMPTS {
         let candidate = fit(random_attachment_name(previous)?);
         if !taken(&candidate) {
