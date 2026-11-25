@@ -159,9 +159,16 @@ impl Composer {
         }
     }
 
-    /// Tile `id` of `key`'s tray has its picture, decoding at tile size.
-    /// Returns whether a tile took it.
-    pub(crate) fn tile_thumbnail(&mut self, key: TimelineKey, id: TileId, image: Image) -> bool {
+    /// Tile `id` of `key`'s tray has its picture (decoding at tile size)
+    /// and its size in pixels, when they are known. Returns whether a tile
+    /// took them.
+    pub(crate) fn tile_picture(
+        &mut self,
+        key: TimelineKey,
+        id: TileId,
+        thumbnail: Option<Image>,
+        size_px: Option<(u32, u32)>,
+    ) -> bool {
         let Some(tile) = self
             .drafts
             .get_mut(&key)
@@ -169,7 +176,12 @@ impl Composer {
         else {
             return false;
         };
-        tile.thumbnail = Some(image);
+        if thumbnail.is_some() {
+            tile.thumbnail = thumbnail;
+        }
+        if size_px.is_some() {
+            tile.size_px = size_px;
+        }
         true
     }
 

@@ -207,6 +207,7 @@ impl Shell {
             || self.deleting.is_some()
             || self.shortcuts_open
             || self.jump.is_some()
+            || self.leaving.is_some()
     }
 }
 

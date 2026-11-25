@@ -11,7 +11,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use papo_sdk::Uuid;
+use papo_sdk::{OperationKind, Uuid};
 use papo_sdk_ui::TimelineItem;
 use rune::{El, GrowthSpec, KeyEvent, ScrollSpec, Tx, col, el, memo, row, text};
 
@@ -79,6 +79,9 @@ pub(crate) trait TimelineHost: Sized + 'static {
     fn down_pressed(&mut self, key: TimelineKey, tx: &mut Tx);
     /// Cancel on ⌛'s pill was pressed.
     fn seek_cancelled(&mut self, key: TimelineKey);
+    /// ✕ on an attachment of your unsent message `local`: its upload is
+    /// cancelled (the whole message, never one file).
+    fn upload_cancelled(&mut self, key: TimelineKey, local: Uuid);
     /// The mark of your unsent message `local`, in state `state`, was
     /// pressed: its menu opens.
     fn send_state_pressed(&mut self, key: TimelineKey, local: Uuid, state: SendState);
@@ -133,6 +136,10 @@ pub(crate) struct Style {
     /// composer over its bottom, in points: the rows keep that room at
     /// their ends, and rows under them are not read.
     pub(crate) insets_pt: [f32; 2],
+    /// The local pictures of your unsent messages' attachments.
+    pub(crate) unsent: crate::unsent_media::UnsentMedia,
+    /// The tallest a media box may be, in points (§14.4).
+    pub(crate) media_max_height_pt: f32,
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and
@@ -278,6 +285,9 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
             message_row::<S>(open, &row, previous, style)
         }
         TimelineItem::LocalEcho { id, reply, .. } => match open.echoes.get(*id) {
+            // Read back after a relaunch: drawn once its attachments are
+            // known, so the row never grows (§9).
+            Some(echo) if awaits_attachments(echo, style) => el().w_full(),
             Some(echo) => {
                 let row = RowMessage {
                     id: *id,
@@ -307,6 +317,20 @@ fn item_row<S: TimelineHost>(open: &OpenTimeline, index: usize, style: &Style) -
 }
 
 /// "Today", centred between two hairlines.
+/// Whether `echo` has attachments this run has not read yet: its row
+/// waits for them while unsent (a read back can still come). Once sent,
+/// it draws without them.
+fn awaits_attachments(echo: &super::echoes::Echo, style: &Style) -> bool {
+    if echo.state.is_none() {
+        return false;
+    }
+    let operation = echo.operation();
+    let OperationKind::Message(message) = operation.kind.as_ref() else {
+        return false;
+    };
+    !message.attachments.is_empty() && !style.unsent.contains(operation.id)
+}
+
 fn date_row(day: i64, before: Uuid, style: &Style) -> El {
     let look = style.look;
     let label = day_label(day, style.today);

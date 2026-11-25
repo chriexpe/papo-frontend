@@ -41,6 +41,8 @@ mod person_avatar;
 #[cfg(test)]
 mod private_bus;
 mod profile_dir;
+mod progress_ring;
+mod quit_ask;
 mod rail;
 mod recent_jumps;
 mod reconnect_hints;
@@ -57,6 +59,7 @@ mod tabs;
 mod timeline;
 mod trusted_domains;
 mod typing_line;
+mod unsent_media;
 mod window;
 
 use std::cell::RefCell;
@@ -93,6 +96,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let keyring = Arc::new(Keyring::start(SecretService::default)?);
     let app = rune::App::new(window::spec())
         .on_close(Shell::window_closing)
+        // Closing while an upload runs asks first (`quit_ask`).
+        .on_close_request(Shell::close_requested)
         // Read reports wait while the window is off screen.
         .on_visibility(Shell::window_visibility)
         // Liquid glass on the floating surfaces: Rune's frame, with a lens

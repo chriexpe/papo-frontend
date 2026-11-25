@@ -136,6 +136,11 @@ impl TimelineHost for Shell {
         self.seek_cancelled(key);
     }
 
+    fn upload_cancelled(&mut self, key: TimelineKey, local: Uuid) {
+        self.worked_outside();
+        self.cancel_upload(key, local);
+    }
+
     fn send_state_pressed(&mut self, key: TimelineKey, local: Uuid, state: SendState) {
         self.worked_outside();
         self.open_send_menu(key, local, state);

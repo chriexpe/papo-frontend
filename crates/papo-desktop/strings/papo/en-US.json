@@ -572,5 +572,14 @@
   "attach.folder": "Folders can't be attached.",
   "attach.unreadable": "Couldn't read {{name}}.",
   "media.gif": "GIF",
-  "shortcut.attach": "Ctrl+O"
+  "shortcut.attach": "Ctrl+O",
+  "upload.progress": "Uploading {{name}}, {{percent}} %",
+  "upload.size_progress": "{{done}} of {{total}}",
+  "upload.cancel": "Cancel upload",
+  "media.album": "Album, {{n}} items",
+  "media.more": "+{{n}}",
+  "media.file": "File, {{name}}, {{size}}",
+  "quit.uploading_title": "Quit while uploading?",
+  "quit.uploading_body": "What is still uploading stops, and may need to be sent again.",
+  "quit.uploading_confirm": "Quit"
 }

@@ -13,6 +13,7 @@ use rune::Tx;
 use tokio::sync::oneshot;
 
 use super::Shell;
+use super::staged_files::Picture;
 use crate::attaching::{self, Offered, Refused};
 use crate::composer::attached::Closed;
 use crate::composer::tray::{Tile, TileId, TileKind, TileSource};
@@ -110,6 +111,7 @@ impl Shell {
                 kind: file.kind,
                 source: TileSource::Copying(file.pending),
                 thumbnail: None,
+                size_px: None,
             });
         }
         let copying: Vec<(TileId, PendingAttachment)> = tiles
@@ -123,7 +125,7 @@ impl Shell {
                     self.watch_copy(key, id, pending);
                 }
                 for (id, png) in pictures {
-                    self.thumbnail_read(key, id, png, tx);
+                    self.decode_pasted(key, id, png);
                 }
             }
             // An edit began while the files were read: nothing is taken.
@@ -191,13 +193,19 @@ impl Shell {
             return false;
         };
         let name = tile.name.clone();
-        let picture = tile.kind != TileKind::File && tile.thumbnail.is_none();
+        let picture = tile.kind != TileKind::File;
+        let thumbnail = tile.thumbnail.is_none();
         match ended {
             Ok(staged) => {
                 let effects = self.composer.tile_staged(key, id, staged.clone());
                 self.run_composer(effects, Some(tx));
                 if picture {
-                    self.read_thumbnails(key, vec![(id, staged)]);
+                    let picture = Picture {
+                        id,
+                        staged,
+                        thumbnail,
+                    };
+                    self.read_pictures(key, vec![picture]);
                 }
             }
             Err(failure) => {

@@ -572,5 +572,14 @@
   "attach.folder": "Não dá para anexar pastas.",
   "attach.unreadable": "Não deu para ler {{name}}.",
   "media.gif": "GIF",
-  "shortcut.attach": "Ctrl+O"
+  "shortcut.attach": "Ctrl+O",
+  "upload.progress": "Enviando {{name}}, {{percent}} %",
+  "upload.size_progress": "{{done}} de {{total}}",
+  "upload.cancel": "Cancelar envio",
+  "media.album": "Álbum, {{n}} itens",
+  "media.more": "+{{n}}",
+  "media.file": "Arquivo, {{name}}, {{size}}",
+  "quit.uploading_title": "Sair durante o envio?",
+  "quit.uploading_body": "O que ainda está sendo enviado para, e talvez precise ser enviado de novo.",
+  "quit.uploading_confirm": "Sair"
 }

@@ -7,7 +7,6 @@
 use std::io::Read;
 
 use papo_sdk::{OutgoingAttachment, Session, StagedAttachment};
-use rune::Tx;
 
 use super::Shell;
 use crate::attaching::{self, HEAD_BYTES, THUMBNAIL_SOURCE_MAX_BYTES};
@@ -35,50 +34,68 @@ impl Shell {
             kind: file.kind,
             source: TileSource::Staged(file.staged),
             thumbnail: None,
+            size_px: None,
         }
     }
 
-    /// Reads the staged bytes of `pictures` in `key`'s tray and decodes
-    /// each at tile size.
-    pub(super) fn read_thumbnails(
-        &mut self,
-        key: TimelineKey,
-        pictures: Vec<(TileId, StagedAttachment)>,
-    ) {
-        let Some(sdk) = self.sdk.clone() else {
+    /// Reads `pictures` in `key`'s tray back from staging: each one's size
+    /// from the SDK's inspection, and, where `thumbnail` says, its picture
+    /// decoded at tile size. All of it off the UI thread.
+    pub(super) fn read_pictures(&mut self, key: TimelineKey, pictures: Vec<Picture>) {
+        let (Some(sdk), Some(images)) = (self.sdk.clone(), self.images.clone()) else {
             return;
         };
-        for (id, staged) in pictures {
+        let scale = self.scale;
+        for picture in pictures {
             let updates = sdk.updates();
+            let images = std::sync::Arc::clone(&images);
             sdk.run(move |client| async move {
                 let Ok(session) = client.session(key.account) else {
                     return;
                 };
-                match read_staged(&session, &staged, THUMBNAIL_SOURCE_MAX_BYTES).await {
-                    Some(bytes) => {
-                        updates.send_tx(move |shell, tx| shell.thumbnail_read(key, id, bytes, tx));
-                    }
-                    None => log::debug!("a tile's picture was not read"),
-                }
+                let size_px = session
+                    .outgoing()
+                    .inspect_image(&picture.staged)
+                    .await
+                    .ok()
+                    .map(|info| (info.width, info.height));
+                let thumbnail = if picture.thumbnail {
+                    read_staged(&session, &picture.staged, THUMBNAIL_SOURCE_MAX_BYTES)
+                        .await
+                        .map(|bytes| images.load_scaled(bytes, TILE_DECODE_PT, scale))
+                } else {
+                    None
+                };
+                updates.send(move |shell| {
+                    shell
+                        .composer
+                        .tile_picture(key, picture.id, thumbnail, size_px)
+                });
             });
         }
     }
 
-    /// A tile's picture bytes are in: Rune decodes them at tile size off the
-    /// UI thread, and the tile draws them once ready.
-    pub(super) fn thumbnail_read(
-        &mut self,
-        key: TimelineKey,
-        id: TileId,
-        bytes: Vec<u8>,
-        tx: &mut Tx,
-    ) -> bool {
-        let Some(images) = &self.images else {
-            return false;
+    /// A pasted picture's bytes, already in memory: decoded at tile size
+    /// off the UI thread.
+    pub(super) fn decode_pasted(&mut self, key: TimelineKey, id: TileId, png: Vec<u8>) {
+        let (Some(sdk), Some(images)) = (self.sdk.clone(), self.images.clone()) else {
+            return;
         };
-        let image = images.load_scaled(bytes, TILE_DECODE_PT, tx.scale());
-        self.composer.tile_thumbnail(key, id, image)
+        let scale = self.scale;
+        let updates = sdk.updates();
+        sdk.run(move |_client| async move {
+            let thumbnail = images.load_scaled(png, TILE_DECODE_PT, scale);
+            updates.send(move |shell| shell.composer.tile_picture(key, id, Some(thumbnail), None));
+        });
     }
+}
+
+/// A picture tile to read back from staging.
+pub(super) struct Picture {
+    pub(super) id: TileId,
+    pub(super) staged: StagedAttachment,
+    /// Its thumbnail is still to decode.
+    pub(super) thumbnail: bool,
 }
 
 /// Reads a stored draft's files back for their tiles: each staged file's
@@ -106,17 +123,27 @@ pub(super) async fn restored_files(
 }
 
 /// The tiles among `tiles` that draw a picture, with their staged files.
-pub(super) fn pictures(tiles: &[Tile]) -> Vec<(TileId, StagedAttachment)> {
+pub(super) fn pictures(tiles: &[Tile]) -> Vec<Picture> {
     tiles
         .iter()
         .filter(|tile| tile.kind != TileKind::File)
-        .filter_map(|tile| tile.staged().map(|staged| (tile.id, staged.clone())))
+        .filter_map(|tile| {
+            tile.staged().map(|staged| Picture {
+                id: tile.id,
+                staged: staged.clone(),
+                thumbnail: tile.thumbnail.is_none(),
+            })
+        })
         .collect()
 }
 
 /// Up to `limit` bytes of a staged file, read on a blocking worker; none
 /// when it cannot be opened or read.
-async fn read_staged(session: &Session, staged: &StagedAttachment, limit: u64) -> Option<Vec<u8>> {
+pub(super) async fn read_staged(
+    session: &Session,
+    staged: &StagedAttachment,
+    limit: u64,
+) -> Option<Vec<u8>> {
     let file = session.outgoing().open_staged(staged).await.ok()?;
     tokio::task::spawn_blocking(move || {
         let mut bytes = Vec::new();

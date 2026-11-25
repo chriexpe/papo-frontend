@@ -109,17 +109,57 @@ pub(crate) fn integer(value: i64) -> String {
 /// 1024 bytes (Christian, 2026-11-24), so the SDK's 100 MiB limit reads
 /// "100 MB".
 pub(crate) fn size(bytes: u64) -> String {
+    let unit = Unit::of(bytes);
+    let value = I18N.decimal(unit.value(bytes), 1);
+    unit.write(&value)
+}
+
+/// `done` of `total` in `total`'s unit: the number for `done` alone, and
+/// `total` with its unit ("12.4", "100 MB").
+pub(crate) fn size_pair(done: u64, total: u64) -> (String, String) {
+    let unit = Unit::of(total);
+    let done = I18N.decimal(unit.value(done), 1);
+    (done, size(total))
+}
+
+/// KB, MB or GB, whichever a size reads best in.
+#[derive(Clone, Copy)]
+enum Unit {
+    Kb,
+    Mb,
+    Gb,
+}
+
+impl Unit {
     const KB: f64 = 1024.0;
-    #[expect(clippy::cast_precision_loss, reason = "a size shown to one decimal")]
-    let bytes = bytes as f64;
-    if bytes < KB * KB {
-        let value = I18N.decimal(bytes / KB, 1);
-        template!("size.kb", "value" => value)
-    } else if bytes < KB * KB * KB {
-        let value = I18N.decimal(bytes / (KB * KB), 1);
-        template!("size.mb", "value" => value)
-    } else {
-        let value = I18N.decimal(bytes / (KB * KB * KB), 1);
-        template!("size.gb", "value" => value)
+
+    fn of(bytes: u64) -> Unit {
+        #[expect(clippy::cast_precision_loss, reason = "a size shown to one decimal")]
+        let bytes = bytes as f64;
+        if bytes < Self::KB * Self::KB {
+            Unit::Kb
+        } else if bytes < Self::KB * Self::KB * Self::KB {
+            Unit::Mb
+        } else {
+            Unit::Gb
+        }
+    }
+
+    fn value(self, bytes: u64) -> f64 {
+        #[expect(clippy::cast_precision_loss, reason = "a size shown to one decimal")]
+        let bytes = bytes as f64;
+        match self {
+            Unit::Kb => bytes / Self::KB,
+            Unit::Mb => bytes / (Self::KB * Self::KB),
+            Unit::Gb => bytes / (Self::KB * Self::KB * Self::KB),
+        }
+    }
+
+    fn write(self, value: &str) -> String {
+        match self {
+            Unit::Kb => template!("size.kb", "value" => value),
+            Unit::Mb => template!("size.mb", "value" => value),
+            Unit::Gb => template!("size.gb", "value" => value),
+        }
     }
 }

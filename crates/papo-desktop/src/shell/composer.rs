@@ -38,7 +38,13 @@ impl Shell {
     pub(crate) fn composer_send(&mut self, tx: &mut Tx) {
         let local = (self.local_ids)();
         match self.composer.send(local) {
-            Sent::Queued(effect) => self.run_composer(vec![effect], Some(tx)),
+            Sent::Queued(effect) => {
+                if let Effect::Send { tiles, local, .. } = &effect {
+                    // Drawn at their final size from now on (§14.3).
+                    self.unsent_sent(*local, tiles);
+                }
+                self.run_composer(vec![effect], Some(tx));
+            }
             Sent::Edited { edit, save } => {
                 let effects = std::iter::once(edit).chain(save).collect();
                 self.run_composer(effects, Some(tx));
@@ -244,7 +250,7 @@ fn load_draft(sdk: &Sdk<Shell>, key: TimelineKey, mention: bool) {
                     // Files attached while it loaded are saved with it now.
                     let effects = shell.composer.save_unsaved(key);
                     shell.run_composer(effects, None);
-                    shell.read_thumbnails(key, pictures);
+                    shell.read_pictures(key, pictures);
                     shell.resolve_replies();
                     loaded
                 });
