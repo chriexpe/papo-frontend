@@ -318,11 +318,17 @@ fn build(
             .busy(true)
             .label(strings::delete_deleting());
     }
-    let row = col().w_full().pt(above_pt).child(report(message));
-    match parts.boundary {
-        Some(boundary) => row.child(boundary_line(boundary, above_pt, &look)),
-        None => row,
-    }
+    // The boundary goes first: out of flow over the gap above, it is drawn under the message,
+    // so the hover bar, which hangs into that gap, stays on top of it.
+    col()
+        .w_full()
+        .pt(above_pt)
+        .children(
+            parts
+                .boundary
+                .map(|boundary| boundary_line(boundary, above_pt, &look)),
+        )
+        .child(report(message))
 }
 
 /// What makes a person's name or avatar open their card beside it, keyed

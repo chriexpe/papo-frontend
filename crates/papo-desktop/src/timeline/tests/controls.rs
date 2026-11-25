@@ -7,12 +7,13 @@ use std::sync::Arc;
 use imbl::Vector;
 use papo_sdk::{Generation, MessageKey, Uuid};
 use papo_sdk_ui::{TimelineArrivals, TimelineCatchUp, TimelineItem, TimelineReadingState};
-use rune::Runtime;
 use rune::accesskit::Action;
+use rune::{Pick, Runtime};
 
 use super::{FRAME_S, Host, message, part, rect, runtime, until_idle};
 use crate::design::MessageLayout;
 use crate::timeline::Seek;
+use crate::timeline::rows::message_key;
 
 /// `count` messages, each by another author than the one before, so no
 /// row continues a group.
@@ -72,6 +73,33 @@ fn tops(rt: &Runtime<Host>, ids: std::ops::RangeInclusive<u128>) -> Vec<f32> {
 
 fn shows(rt: &Runtime<Host>, key: &str) -> bool {
     rt.find(key).is_some()
+}
+
+#[test]
+fn the_hover_bar_draws_over_the_divider() {
+    let rt = runtime(marked(turns(12), 6), MessageLayout::default());
+    let row = format!("/{}/", message_key(Uuid::from_u128(6)));
+    let elements = rt.elements();
+    let rect_of = |ends: &str| {
+        elements
+            .iter()
+            .find(|element| element.path.contains(&row) && element.path.ends_with(ends))
+            .map_or_else(|| panic!("no {ends} on message 6"), |element| element.rect)
+    };
+    let bar = rect_of("/bar");
+    let boundary = rect_of("/boundary");
+    // The bar hangs into the gap the divider is drawn over.
+    let top = bar[1].max(boundary[1]);
+    let bottom = (bar[1] + bar[3]).min(boundary[1] + boundary[3]);
+    assert!(
+        top < bottom,
+        "they cross: bar {bar:?}, divider {boundary:?}"
+    );
+    let x = bar[0] + bar[2] / 2.0;
+    let picked = rt
+        .element_at_with(x, f32::midpoint(top, bottom), Pick::new().transparent(true))
+        .unwrap();
+    assert!(picked.path().contains("/bar"), "on top: {}", picked.path());
 }
 
 #[test]
