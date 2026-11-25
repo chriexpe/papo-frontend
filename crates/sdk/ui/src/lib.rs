@@ -5,6 +5,11 @@ mod attachment_kind;
 pub use attachment_kind::{AttachmentKind, MAX_PICTURE_BYTES};
 mod moderation;
 pub use moderation::Moderation;
+mod waveform;
+pub use waveform::{
+    AUDIO_FILE_BARS, DEFAULT_CACHE_ENTRIES, MAX_AHEAD_DURATION_MS, WINDOWS, Waveform,
+    WaveformBuilder, WaveformCache, WaveformKey,
+};
 mod media_box;
 pub use media_box::{
     ALBUM_CELLS, ALBUM_GAP_PT, AlbumCell, AlbumLayout, CUSTOM_HEIGHT_PT, CUSTOM_STEP_PT,
