@@ -8,7 +8,8 @@ use rune::{Cx, El};
 use super::Shell;
 use crate::design::Theme;
 use crate::message_media::received::viewer_match_id;
-use crate::viewer::view::{Shown, view as viewer};
+use crate::viewer::video::VideoShown;
+use crate::viewer::view::{Shown, ViewerVideoShown, view as viewer};
 
 /// The viewer, while open.
 pub(super) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> Option<El> {
@@ -45,6 +46,21 @@ pub(super) fn view(shell: &Shell, cx: &mut Cx<Shell>) -> Option<El> {
         saved_pill: shell.saves.pill().map(|pill| pill.name.as_str()),
         hidden: shell.viewer_hidden(),
         matched: (item.index == open.at.index).then(|| viewer_match_id(open.at)),
+        video: shell
+            .viewer_video
+            .as_ref()
+            .filter(|video| item.video && video.key == item.key)
+            .map(|video| ViewerVideoShown {
+                surface: &video.surface,
+                failure: video.failure(),
+                controls: VideoShown {
+                    status: video.status,
+                    muted: video.muted,
+                    volume: shell.videos.volume.get(),
+                    volume_open: video.volume_open,
+                    bar: video.bar_shown(),
+                },
+            }),
     };
     Some(viewer(&shown, &look))
 }

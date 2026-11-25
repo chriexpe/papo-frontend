@@ -1,6 +1,6 @@
-//! A received message's attachments (`docs/design.md` §14.4, §14.6): its pictures (JPEG, PNG,
-//! WebP and GIF) in the media box, one alone or an album in their order, and every other file
-//! as a card, one per line. Videos and audio are cards until they play (D7c).
+//! A received message's attachments (`docs/design.md` §14.4–§14.6): its pictures (JPEG, PNG,
+//! WebP and GIF) and videos in the media box, one alone or an album in their order, and every
+//! other file as a card, one per line (audio too, until its player). A video is `video`'s.
 //!
 //! The box is reserved from what the attachment says of its size (the SDK's rules), or, for one
 //! this device sent, from the size it read from the file, so the row is the height its unsent
@@ -18,8 +18,9 @@ use papo_sdk::{AccountId, Attachment, Uuid};
 use papo_sdk_ui::{
     AlbumLayout, AttachmentKind, MediaBounds, MediaFit, MediaSize, Moderation, media_box,
 };
-use rune::{El, Key, Tx, col, el, text};
+use rune::{El, Key, NativeSurface, Tx, col, el, text};
 
+use super::video::{self, VideoCell, VideoPress};
 use super::{
     Layer, album, failed, file_card_view::file_card_of, gif_badge, inner_edge, more_mark, painted,
     single_box,
@@ -28,6 +29,7 @@ use crate::design::{FOCUS_RING_PT, Look, MEDIA_BLOCK_GAP, TYPE_CAPTION_MEDIUM};
 use crate::media_store::{MediaKey, MediaView};
 use crate::saving::SaveView;
 use crate::strings;
+use crate::video_store::VideoView;
 
 /// What a press on received media asks for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,6 +86,16 @@ pub(crate) trait MediaHost: Sized + 'static {
     fn media_hovered(&mut self, key: MediaKey, on: bool, reduced_motion: bool, tx: &mut Tx);
     /// The saved pill's Show in folder.
     fn saved_pill_shown(&mut self, tx: &mut Tx);
+    /// A press on video `key`'s controls (at `at`).
+    fn video_press(&mut self, at: MediaAt, key: MediaKey, press: VideoPress, tx: &mut Tx);
+    /// Video `key`'s box is at `rect` (window points), for whether it shows (§14.5);
+    /// `reduced_motion` is the system's, which Autoplay videos follows unless set.
+    fn video_moved(&mut self, key: MediaKey, rect: [f32; 4], reduced_motion: bool, tx: &mut Tx);
+    /// The pointer or the keyboard came to (or left) video `key`: its control bar shows.
+    fn video_attention(&mut self, key: MediaKey, on: bool, tx: &mut Tx);
+    /// The pointer or the keyboard came to (or left) video `key`'s sound: its volume slider
+    /// shows.
+    fn video_volume_open(&mut self, key: MediaKey, on: bool, tx: &mut Tx);
 }
 
 /// What every received attachment in one view draws with.
@@ -107,6 +119,18 @@ pub(crate) struct MediaStyle {
     /// The picture the viewer opened on, while it is open: its box stays, the picture is the
     /// viewer's.
     pub(crate) viewing: Option<MediaAt>,
+    /// The largest box a video takes (Video size, §14.9).
+    pub(crate) video_bounds: MediaBounds,
+    /// Videos: what plays and where each is.
+    pub(crate) videos: VideoView,
+    /// Each read video's frames.
+    pub(crate) video_surfaces: Arc<HashMap<MediaKey, NativeSurface>>,
+    /// The video the pointer or keyboard is on: its control bar shows.
+    pub(crate) video_attention: Option<MediaKey>,
+    /// The video whose volume slider shows.
+    pub(crate) video_volume_open: Option<MediaKey>,
+    /// The volume videos play at, 0 to 1 (remembered on the device).
+    pub(crate) video_volume: f32,
 }
 
 /// The id a picture shares with the viewer's while it shows it, so the viewer grows out of the
@@ -156,6 +180,12 @@ impl MediaStyle {
             surface: MediaSurface::Timeline,
             revealed: Arc::default(),
             viewing: None,
+            video_bounds: bounds,
+            videos: VideoView::default(),
+            video_surfaces: Arc::default(),
+            video_attention: None,
+            video_volume_open: None,
+            video_volume: 1.0,
         }
     }
 
@@ -176,9 +206,16 @@ pub(crate) fn attachment_id(attachment: &Attachment) -> Option<Uuid> {
         .and_then(|id| Uuid::parse_str(id).ok())
 }
 
-/// The attachments of a message, split into pictures and cards, each with its place.
+/// Whether `attachment` draws in the media box: a picture or a video.
+pub(crate) fn is_boxed(attachment: &Attachment) -> bool {
+    let kind = AttachmentKind::of(attachment);
+    kind.is_picture() || kind == AttachmentKind::Video
+}
+
+/// The attachments of a message, split into boxed media (pictures and videos) and cards, each
+/// with its place.
 pub(crate) fn split(attachments: &[Attachment]) -> (Vec<usize>, Vec<usize>) {
-    (0..attachments.len()).partition(|index| AttachmentKind::of(&attachments[*index]).is_picture())
+    (0..attachments.len()).partition(|index| is_boxed(&attachments[*index]))
 }
 
 /// The block of message `message`'s attachments at `at` (its account and channel); none when
@@ -199,17 +236,26 @@ pub(crate) fn attachments<S: MediaHost>(
         [] => {}
         [one] => {
             let attachment = &attachments[*one];
-            let boxed = media_box(style.size_of(attachment), style.bounds);
-            let base = single_box(boxed, look);
-            let cell = picture::<S>(
-                base,
-                picture_at(*one),
-                attachment,
-                boxed.fit,
-                0,
-                style,
-                look,
-            );
+            let cell = if let Some(video) = video_cell(picture_at(*one), attachment, None, style) {
+                let boxed = media_box(style.size_of(attachment), style.video_bounds);
+                let video = VideoCell {
+                    fit: boxed.fit,
+                    ..video
+                };
+                video::single::<S>(single_box(boxed, look), &video, style, look)
+            } else {
+                let boxed = media_box(style.size_of(attachment), style.bounds);
+                let base = single_box(boxed, look);
+                picture::<S>(
+                    base,
+                    picture_at(*one),
+                    attachment,
+                    boxed.fit,
+                    0,
+                    style,
+                    look,
+                )
+            };
             block = block.child(cell.child(inner_edge(look)));
         }
         many => {
@@ -223,6 +269,12 @@ pub(crate) fn attachments<S: MediaHost>(
                     .map(|(place, index)| {
                         let more = if place == last { layout.more() } else { 0 };
                         let attachment = &attachments[*index];
+                        // "+N" covers the last cell, a video's mark included.
+                        let video = video_cell(picture_at(*index), attachment, None, style)
+                            .filter(|_| more == 0);
+                        if let Some(video) = video {
+                            return video::album_cell::<S>(el(), &video, style, look);
+                        }
                         picture::<S>(
                             el(),
                             picture_at(*index),
@@ -247,6 +299,28 @@ pub(crate) fn attachments<S: MediaHost>(
         ));
     }
     Some(block.key(format!("{}-block", media_element_key(at))))
+}
+
+/// Attachment `at` as a video cell, when it is a video with an ID.
+fn video_cell(
+    at: MediaAt,
+    attachment: &Attachment,
+    fit: Option<MediaFit>,
+    style: &MediaStyle,
+) -> Option<VideoCell> {
+    if AttachmentKind::of(attachment) != AttachmentKind::Video {
+        return None;
+    }
+    let key = MediaKey {
+        account: at.account,
+        attachment: attachment_id(attachment)?,
+    };
+    Some(VideoCell {
+        at,
+        key,
+        fit: fit.unwrap_or(MediaFit::Fill),
+        hidden: is_hidden(at.account, attachment, &style.revealed),
+    })
 }
 
 /// One picture: what has loaded (or the failure with Retry), the GIF badge, "+N" when `more`

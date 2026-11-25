@@ -2,7 +2,8 @@
 //! yours, P pins or unpins, 1 2 3 react with your top three, + stretches
 //! the hover bar into the strip, Enter opens the menu (Shift+F10 and the
 //! menu key reach it as a secondary click), Ctrl+C copies its text, Delete
-//! asks to delete, Escape goes back to the composer. Any other key with a
+//! asks to delete, Escape goes back to the composer; on a message with a video, Space or K
+//! plays or pauses it, M turns its sound on or off, F opens it in the viewer in full screen. Any other key with a
 //! modifier passes on to the window. Also Ctrl+↑ from
 //! an empty composer into the conversation, and a reply line's jump to its
 //! original, which then wears `highlight.selected` for 1.5 s.
@@ -61,6 +62,7 @@ impl Shell {
             Key::Text(letter) if letter.eq_ignore_ascii_case("o") => {
                 self.open_message_media(key, id, tx)
             }
+            Key::Text(typed) if self.message_video_key(key, id, typed, tx) => true,
             Key::Text(digit) if matches!(digit.as_str(), "1" | "2" | "3") => {
                 let index = usize::from(digit.as_bytes()[0] - b'1');
                 self.quick_react(key, id, index)

@@ -201,8 +201,14 @@ pub(crate) struct Shell {
     revealed: Arc<std::collections::HashSet<crate::media_store::MediaKey>>,
     /// Files being fetched for Open, apart from the cards' saves.
     opening: std::collections::HashSet<crate::media_store::MediaKey>,
+    /// Videos in messages: what is read, what plays (`docs/design.md` §14.5).
+    videos: videos::Videos,
     /// The viewer, while open.
     viewer: Option<crate::viewer::Viewer>,
+    /// The viewer's video, while it shows one.
+    viewer_video: Option<viewer_video::ViewerVideo>,
+    /// Numbers the viewer's players, so a late one is let go.
+    serial_viewer: u64,
     /// The viewer's room, as last laid out, in points.
     viewer_room: [f32; 2],
 }
@@ -312,7 +318,10 @@ impl Default for Shell {
             saved_pill_until_s: None,
             opening: std::collections::HashSet::new(),
             revealed: Arc::default(),
+            videos: videos::Videos::default(),
             viewer: None,
+            viewer_video: None,
+            serial_viewer: 0,
             viewer_room: [0.0, 0.0],
         }
     }
@@ -344,6 +353,7 @@ impl Shell {
     /// decoder and reads this device's trusted domains and reading
     /// settings.
     pub(crate) fn setup(&mut self, waker: rune::Waker) {
+        self.videos.set_waker(Arc::clone(&waker));
         let images = ImageCache::new(waker);
         self.grain = Some(crate::grain::GrainTiles::new(&images));
         self.images = Some(Arc::new(images));
@@ -356,6 +366,7 @@ impl Shell {
         // Before the first frame: the window opens in the chosen language.
         crate::strings::use_language(self.general.settings().language);
         self.appearance = crate::appearance::AppearanceStore::read(&prefs);
+        self.videos.volume = crate::video_volume::VideoVolume::read(&prefs);
     }
 
     /// Takes the account watch's summary, and opens the screens it calls for.
@@ -456,9 +467,11 @@ mod timeline_host;
 mod title;
 mod tray;
 mod unsent;
+mod videos;
 mod view;
 mod viewer;
 mod viewer_input;
+mod viewer_video;
 mod viewer_view;
 
 pub(crate) use new_message::{

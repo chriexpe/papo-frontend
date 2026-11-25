@@ -22,7 +22,7 @@ use crate::settings::colour_field::ColourChange;
 use crate::settings::rows::{density_name, language_name, theme_name};
 use crate::settings::{
     Change, HeldEvent, PageId, Presence, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel,
-    Target,
+    SizedMedia, Target,
 };
 
 /// What a choice's menu sets.
@@ -32,8 +32,8 @@ pub(crate) enum SettingChoice {
     Density(Density),
     Language(Language),
     Presence(Presence),
-    /// Image size's value.
-    ImageSize(papo_sdk_ui::MediaSizeSetting),
+    /// Image size's or Video size's value.
+    MediaSize(SizedMedia, papo_sdk_ui::MediaSizeSetting),
     /// A picture row's Change.
     ChangePicture(Use),
     /// The banner row's Remove.
@@ -197,7 +197,12 @@ impl Shell {
                     .collect()
             }
             RowId::Photo | RowId::Banner => self.picture_menu(row),
-            RowId::ImageSize => image_size_items(self.conversations.settings().image_size),
+            RowId::ImageSize => {
+                size_items(SizedMedia::Images, self.conversations.settings().image_size)
+            }
+            RowId::VideoSize => {
+                size_items(SizedMedia::Videos, self.conversations.settings().video_size)
+            }
             _ => return,
         };
         self.nav.menu = Some(OpenMenu::new(
@@ -217,7 +222,7 @@ impl Shell {
             SettingChoice::Density(density) => Change::Density(density),
             SettingChoice::Language(language) => Change::Language(language),
             SettingChoice::Presence(presence) => Change::Presence(presence),
-            SettingChoice::ImageSize(size) => Change::ImageSize(size),
+            SettingChoice::MediaSize(media, size) => Change::MediaSize(media, size),
         };
         self.settings_change(change, tx);
     }
@@ -239,13 +244,16 @@ impl Shell {
             });
         if let Some(target) = other {
             panel.held(HeldEvent::Ended);
+            let current = self.conversations.settings();
             let resizes = matches!(&target, Target::Conversations(next)
-                if next.image_size != self.conversations.settings().image_size);
+                if next.image_size != current.image_size || next.video_size != current.video_size);
             self.settings_save(change.row(), target, tx);
             if resizes {
                 // Every box takes the new size: pictures are decoded for it.
                 self.want_media();
             }
+            // Autoplay videos applies at once.
+            self.reconcile_videos();
             return;
         }
         let current = panel
@@ -382,7 +390,7 @@ fn applied(
         | Change::Slider { .. }
         | Change::Hue(..)
         | Change::Language(_)
-        | Change::ImageSize(_)
+        | Change::MediaSize(..)
         | Change::Presence(_) => {}
         Change::Colours(colour) => {
             let (background, now) = super::settings_colours::colours_applied(
@@ -398,8 +406,9 @@ fn applied(
     (next, selected)
 }
 
-/// Image size's menu: each preset with its box, then Custom (starting at the current box).
-fn image_size_items(current: papo_sdk_ui::MediaSizeSetting) -> Vec<MenuItem> {
+/// A size row's menu (Image size's or Video size's): each preset with its box, then Custom
+/// (starting at the current box).
+fn size_items(media: SizedMedia, current: papo_sdk_ui::MediaSizeSetting) -> Vec<MenuItem> {
     use papo_sdk_ui::MediaSizeSetting;
     let (width, height) = current.max_size_pt();
     [
@@ -419,11 +428,15 @@ fn image_size_items(current: papo_sdk_ui::MediaSizeSetting) -> Vec<MenuItem> {
         });
         MenuItem::plain(
             &format!(
-                "settings-image-size-{}",
+                "settings-{}-size-{}",
+                match media {
+                    SizedMedia::Images => "image",
+                    SizedMedia::Videos => "video",
+                },
                 crate::settings::rows::size_name(size)
             ),
             crate::settings::rows::size_name(size),
-            MenuAction::Setting(SettingChoice::ImageSize(picked)),
+            MenuAction::Setting(SettingChoice::MediaSize(media, picked)),
             false,
         )
         .with_sub(dims)

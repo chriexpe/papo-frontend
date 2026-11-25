@@ -115,7 +115,7 @@ struct Shown {
 /// One tile: a picture or a file, ✕ at its corner.
 fn tile_view(tile: &Tile, shown: Shown, look: &Look) -> El {
     let id = tile.id;
-    let picture = tile.kind != TileKind::File
+    let picture = tile.kind.is_boxed()
         && tile
             .thumbnail
             .as_ref()
@@ -181,6 +181,27 @@ fn media_tile(tile: &Tile, look: &Look) -> El {
         }
         (Some(image), _) => face = face.pixels_fit(image.pixels(), SurfaceFit::Fill),
         (None, _) => {}
+    }
+    if let Some(video) = &tile.video {
+        // Its first frame, cropped to fill; its length in the badge.
+        face = face
+            .child(
+                el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                    .native_surface(&video.surface, SurfaceFit::Fill)
+                    .a11y_hidden(),
+            )
+            .child(
+                el().pin(
+                    Some(TILE_BADGE_INSET_PT),
+                    None,
+                    None,
+                    Some(TILE_BADGE_INSET_PT),
+                )
+                .child(media_badge(
+                    &video.duration_ms.map(strings::clock).unwrap_or_default(),
+                    look,
+                )),
+            );
     }
     if tile.kind == TileKind::Gif {
         face = face.child(
@@ -361,6 +382,7 @@ fn spoken(tile: &Tile) -> String {
     let mut spoken = match tile.kind {
         TileKind::Image => strings::tray_tile_image(&tile.name, &size),
         TileKind::Gif => strings::tray_tile_gif(&tile.name, &size),
+        TileKind::Video => strings::tray_tile_video(&tile.name, &size),
         TileKind::File => strings::tray_tile_file(&tile.name, &size),
     };
     for (on, mark) in [

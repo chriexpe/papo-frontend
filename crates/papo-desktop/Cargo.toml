@@ -77,6 +77,13 @@ url = "2.5"
 # rejects a reused one); the version the SDK locks, with its random IDs.
 uuid = { version = "1.26.1", features = ["v4"] }
 log = "0.4"
+# Video and audio in messages (`docs/design.md` §14.5): the one GStreamer initialisation,
+# decoded frames' colour and their NV12 packing, shared with calls (D11).
+papo-call = { path = "../papo-call" }
+# The playback pipelines themselves (`playback`), at the versions papo-call locks.
+gstreamer = "0.24"
+gstreamer-app = { version = "0.24", features = ["v1_20"] }
+gstreamer-video = { version = "0.24", features = ["v1_20"] }
 # Copy image puts a picture on the clipboard as PNG (`docs/design.md` §14.7): the locked
 # decoder Rune and the SDK already use, for the off-thread decode and encode.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

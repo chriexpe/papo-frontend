@@ -6,8 +6,7 @@ use gstreamer as gst;
 use papo_sdk::{MediaFatalError, MediaStartError};
 
 pub(crate) fn initialize() -> Result<(), MediaStartError> {
-    gst::init().map_err(|_| MediaStartError::DeviceUnavailable)?;
-    crate::platform::initialize_platform();
+    crate::init_gstreamer().map_err(|_| MediaStartError::DeviceUnavailable)?;
     for plugin in [
         "webrtcbin",
         "nicesrc",

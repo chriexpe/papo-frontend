@@ -39,11 +39,15 @@ pub(super) struct AttachmentState {
     hidden: bool,
     /// The viewer opened on it and shows it in its place.
     in_viewer: bool,
+    /// A video: what it shows (its reading, playing, sound, time), whether its controls show,
+    /// its volume slider, and whether it has a surface to draw.
+    video: Option<(crate::video_store::VideoShown, bool, bool, bool)>,
 }
 
 /// What a received message's attachments draw from, for the row's memo: each attachment's
-/// state, the bounds' sides, and the system's reduced motion its GIFs report.
-pub(super) type ReceivedSignature = (Vec<AttachmentState>, u32, u32, bool);
+/// state, the bounds' sides (pictures', then videos'), the system's reduced motion its GIFs
+/// and videos report, and the videos' volume.
+pub(super) type ReceivedSignature = (Vec<AttachmentState>, [u32; 4], bool, u32);
 
 /// Where a message from history draws its media, and what they draw from; none for an echo.
 pub(super) fn received_of(
@@ -113,14 +117,28 @@ pub(super) fn received_signature(
                 save: key.and_then(|key| media.saves.get(&key).cloned()),
                 hidden: received::is_hidden(at.account, attachment, &media.revealed),
                 in_viewer: media.viewing == Some(MediaAt { index, ..at }),
+                video: key.and_then(|key| {
+                    let shown = *media.videos.get(key)?;
+                    Some((
+                        shown,
+                        media.video_attention == Some(key),
+                        media.video_volume_open == Some(key),
+                        media.video_surfaces.contains_key(&key),
+                    ))
+                }),
             }
         })
         .collect();
     (
         states,
-        media.bounds.max_width_pt.to_bits(),
-        media.bounds.max_height_pt.to_bits(),
+        [
+            media.bounds.max_width_pt.to_bits(),
+            media.bounds.max_height_pt.to_bits(),
+            media.video_bounds.max_width_pt.to_bits(),
+            media.video_bounds.max_height_pt.to_bits(),
+        ],
         media.reduced_motion,
+        media.video_volume.to_bits(),
     )
 }
 
@@ -181,7 +199,7 @@ pub(super) fn pictures_drawn(files: &[crate::unsent_media::UnsentFile]) -> Vec<(
     files
         .iter()
         .map(|file| {
-            let ready = file.shown().is_some_and(rune::Image::is_ready);
+            let ready = file.shown().is_some_and(rune::Image::is_ready) || file.video.is_some();
             (ready, file.sharp_ready())
         })
         .collect()

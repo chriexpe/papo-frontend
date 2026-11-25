@@ -139,6 +139,7 @@ mod surfaces;
 mod tests;
 mod theme;
 mod tint;
+mod video;
 
 pub(crate) use attachments::*;
 pub(crate) use background::{
@@ -156,3 +157,4 @@ pub(crate) use replies::*;
 pub(crate) use sizes::*;
 pub(crate) use surfaces::{GLASS_MARK, GlassData, Surfaces};
 pub(crate) use theme::Theme;
+pub(crate) use video::*;

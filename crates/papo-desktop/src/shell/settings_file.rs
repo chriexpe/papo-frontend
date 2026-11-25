@@ -57,6 +57,7 @@ impl Shell {
             self.content.trusted.pending_write(),
             self.layout.pending_write(),
             self.recent_jumps.pending_write(),
+            self.videos.volume.pending_write(),
         ];
         for write in waiting.into_iter().flatten() {
             match &self.sdk {
@@ -77,6 +78,19 @@ impl Shell {
             |shell, ok, tx| {
                 if let Some(next) = shell.layout.written(ok) {
                     shell.write_layout(next, tx);
+                }
+            },
+            tx,
+        );
+    }
+
+    /// Writes the videos' volume, and whatever change waited for it.
+    pub(crate) fn write_video_volume(&mut self, write: Write, tx: &mut Tx) {
+        self.run_write(
+            write,
+            |shell, ok, tx| {
+                if let Some(next) = shell.videos.volume.written(ok) {
+                    shell.write_video_volume(next, tx);
                 }
             },
             tx,

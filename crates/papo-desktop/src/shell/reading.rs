@@ -41,11 +41,12 @@ impl Shell {
     /// The window went off screen (minimised, hidden, covered whole) or came
     /// back (`App::on_visibility`).
     /// Drafts not saved yet are saved as it goes.
-    pub(crate) fn window_visibility(&mut self, shown: bool, _tx: &mut Tx) {
+    pub(crate) fn window_visibility(&mut self, shown: bool, tx: &mut Tx) {
         self.window_shown = shown;
         if !shown {
             self.flush_composer();
         }
+        self.video_window_shown(shown, tx);
         self.report_reading();
     }
 

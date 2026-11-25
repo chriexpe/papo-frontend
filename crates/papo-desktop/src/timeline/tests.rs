@@ -94,6 +94,41 @@ impl crate::message_media::received::MediaHost for Host {
     ) {
     }
 
+    fn video_press(
+        &mut self,
+        _at: crate::message_media::received::MediaAt,
+        _key: crate::media_store::MediaKey,
+        press: crate::message_media::video::VideoPress,
+        _tx: &mut Tx,
+    ) {
+        use crate::message_media::video::VideoPress;
+        self.controls.push(match press {
+            VideoPress::Play => "video-play",
+            VideoPress::Pause => "video-pause",
+            VideoPress::Sound(true) => "video-sound-on",
+            VideoPress::Sound(false) => "video-sound-off",
+            VideoPress::Seek { .. } | VideoPress::SeekBy(_) => "video-seek",
+            VideoPress::Volume(_) => "video-volume",
+            VideoPress::Viewer => "video-viewer",
+            VideoPress::Retry => "video-retry",
+        });
+    }
+
+    fn video_moved(
+        &mut self,
+        _key: crate::media_store::MediaKey,
+        _rect: [f32; 4],
+        _reduced_motion: bool,
+        _tx: &mut Tx,
+    ) {
+    }
+
+    fn video_attention(&mut self, key: crate::media_store::MediaKey, on: bool, _tx: &mut Tx) {
+        self.media.video_attention = on.then_some(key);
+    }
+
+    fn video_volume_open(&mut self, _key: crate::media_store::MediaKey, _on: bool, _tx: &mut Tx) {}
+
     fn saved_pill_shown(&mut self, _tx: &mut Tx) {
         self.controls.push("saved-show");
     }
@@ -400,3 +435,4 @@ mod reading;
 mod received;
 mod spacing;
 mod unsent;
+mod video;

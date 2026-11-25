@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "AGPL-3.0-or-later"
 publish = false
-description = "UI-independent GStreamer WebRTC call engine for Papo clients"
+description = "UI-independent GStreamer media for Papo clients: the WebRTC call engine and what message playback shares with it"
 
 [features]
 benchmark-telemetry = []
@@ -14,7 +14,7 @@ benchmark-telemetry = []
 papo-sdk = { path = "../sdk/core" }
 gstreamer = "0.24"
 gstreamer-app = { version = "0.24", features = ["v1_20"] }
-gstreamer-video = "0.24"
+gstreamer-video = { version = "0.24", features = ["v1_20"] }
 gstreamer-webrtc = { version = "0.24", features = ["v1_20"] }
 gstreamer-sdp = "0.24"
 gstreamer-rtp = { version = "0.24", features = ["v1_20"] }

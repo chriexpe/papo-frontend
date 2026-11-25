@@ -88,6 +88,11 @@ pub(crate) fn tray_tile_gif(name: &str, size: &str) -> String {
     template!("tray.tile_gif", "name" => name, "size" => size)
 }
 
+/// A video tile, spoken: "Video, onda.mp4, 4.1 MB".
+pub(crate) fn tray_tile_video(name: &str, size: &str) -> String {
+    template!("tray.tile_video", "name" => name, "size" => size)
+}
+
 /// A file tile, spoken.
 pub(crate) fn tray_tile_file(name: &str, size: &str) -> String {
     template!("tray.tile_file", "name" => name, "size" => size)

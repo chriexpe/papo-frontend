@@ -198,6 +198,7 @@ fn a_tray_change_during_an_edit_saves_the_field_set_aside_not_the_edit() {
         kind: TileKind::File,
         source: TileSource::Fixture,
         thumbnail: None,
+        video: None,
         inspection: crate::composer::tray::Inspection::Pending,
         edit: papo_sdk::AttachmentEdit::default(),
         typed_name: None,

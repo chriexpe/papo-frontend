@@ -7,7 +7,7 @@
 
 use papo_sdk::Uuid;
 use papo_sdk_ui::{AlbumLayout, MediaBounds, MediaFit, media_box};
-use rune::{Color, El, el};
+use rune::{Color, El, SurfaceFit, el};
 
 use super::TimelineKey;
 use super::unsent_attachments::{Item, Upload, cancel_button, progress_label};
@@ -15,9 +15,11 @@ use super::view::TimelineHost;
 use crate::composer::tray::TileKind;
 use crate::design::{Look, UPLOAD_RING_PT, UPLOAD_RING_TRACK_ALPHA, UPLOAD_SCRIM_ALPHA};
 use crate::message_media::{
-    Layer, album as album_frame, gif_badge, inner_edge, more_mark, painted, single_box,
+    Layer, album as album_frame, gif_badge, inner_edge, length_badge, more_mark, painted,
+    single_box,
 };
 use crate::progress_ring::ring;
+use crate::strings;
 
 /// One picture in the media box, the SDK's box for what its size is known as.
 pub(super) fn single<S: TimelineHost>(
@@ -58,13 +60,28 @@ pub(super) fn album<S: TimelineHost>(
     album_frame(layout, layout.album_box(bounds), cells, items.len(), look)
 }
 
-/// `cell` showing `item`'s picture, with the "GIF" badge on a GIF.
+/// `cell` showing `item`'s picture, with the "GIF" badge on a GIF; a video's first frame with
+/// its length.
 fn picture(cell: El, item: &Item<'_>, fit: MediaFit, look: &Look) -> El {
     let cell = painted(cell, item.file.shown(), fit, Layer::default(), look);
-    if item.file.kind == TileKind::Gif {
-        cell.child(gif_badge(look))
-    } else {
-        cell
+    match (&item.file.kind, &item.file.video) {
+        (TileKind::Gif, _) => cell.child(gif_badge(look)),
+        (TileKind::Video, Some(video)) => {
+            let surface_fit = match fit {
+                MediaFit::Fill => SurfaceFit::Fill,
+                MediaFit::Letterbox => SurfaceFit::Fit,
+            };
+            cell.child(
+                el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                    .native_surface(&video.surface, surface_fit)
+                    .a11y_hidden(),
+            )
+            .child(length_badge(
+                video.duration_ms.map(strings::clock).unwrap_or_default(),
+                look,
+            ))
+        }
+        _ => cell,
     }
 }
 

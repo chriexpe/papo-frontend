@@ -157,6 +157,7 @@ fn unsent_file(kind: TileKind) -> UnsentFile {
         media_size: MediaSize::exact(1600, 1200),
         image: None,
         sharp: None,
+        video: None,
     }
 }
 

@@ -1,7 +1,6 @@
 //! Checked NV12 rows and packed CPU rotations. Rendering and GPU lifetime belong to the host.
 
-use crate::CpuVideoFrame;
-use gstreamer_video::{VideoColorMatrix, VideoColorRange, VideoColorimetry};
+use crate::{ColourMatrix, ColourRange, CpuVideoFrame, VideoColour};
 use std::{error::Error, fmt};
 
 /// Clockwise rotation from source orientation to presentation orientation.
@@ -22,8 +21,8 @@ pub enum VideoRotation {
 pub struct PackedNv12 {
     /// Width and height in pixels. The chroma plane uses ceil(width/2) by ceil(height/2) pairs.
     pub size_px: [u32; 2],
-    /// Source color matrix, range, transfer and primaries.
-    pub colorimetry: VideoColorimetry,
+    /// Source matrix, range and transfer.
+    pub colour: VideoColour,
     /// Packed planes: Y, then interleaved CbCr.
     pub planes: [Vec<u8>; 2],
 }
@@ -106,13 +105,58 @@ impl<'a> Plane<'a> {
     }
 }
 
+/// NV12 planes borrowed where a decoder wrote them (a mapped buffer): packed without copying
+/// them into a [`CpuVideoFrame`] first.
+pub struct Nv12Planes<'a> {
+    /// Width and height in pixels.
+    pub size_px: [u32; 2],
+    /// The Y plane, then the interleaved CbCr plane, each from its first row.
+    pub planes: [&'a [u8]; 2],
+    /// Row strides for the Y and CbCr planes, in bytes.
+    pub strides: [i32; 2],
+    /// Matrix, range and transfer from the stream's caps.
+    pub colour: VideoColour,
+}
+
+impl Nv12Planes<'_> {
+    /// Packs the two planes without converting color or assuming even dimensions.
+    ///
+    /// # Errors
+    /// [`VideoPixelsError::InvalidLayout`] for empty sizes, short strides or planes;
+    /// [`VideoPixelsError::OutputTooLarge`] when the packed planes can't be allocated.
+    pub fn pack(&self) -> Result<PackedNv12, VideoPixelsError> {
+        let [y, uv] = checked_planes(self.size_px, self.planes, self.strides)?;
+        Ok(PackedNv12 {
+            size_px: self.size_px,
+            colour: self.colour,
+            planes: [y.packed()?, uv.packed()?],
+        })
+    }
+}
+
+/// The Y and CbCr planes of an NV12 picture of `size_px`, checked against their strides.
+fn checked_planes<'a>(
+    [width, height]: [u32; 2],
+    [y, uv]: [&'a [u8]; 2],
+    strides: [i32; 2],
+) -> Result<[Plane<'a>; 2], VideoPixelsError> {
+    let width = width as usize;
+    let height = height as usize;
+    if width == 0 || height == 0 {
+        return Err(VideoPixelsError::InvalidLayout);
+    }
+    let uv_width = width
+        .div_ceil(2)
+        .checked_mul(2)
+        .ok_or(VideoPixelsError::InvalidLayout)?;
+    Ok([
+        Plane::new(y, strides[0], width, height)?,
+        Plane::new(uv, strides[1], uv_width, height.div_ceil(2))?,
+    ])
+}
+
 impl CpuVideoFrame {
     fn checked_planes(&self) -> Result<[Plane<'_>; 2], VideoPixelsError> {
-        let width = self.width_px as usize;
-        let height = self.height_px as usize;
-        if width == 0 || height == 0 {
-            return Err(VideoPixelsError::InvalidLayout);
-        }
         let [y_start, uv_start] = self.offsets;
         let y = self
             .bytes
@@ -122,31 +166,34 @@ impl CpuVideoFrame {
             .bytes
             .get(uv_start..)
             .ok_or(VideoPixelsError::InvalidLayout)?;
-        let uv_width = width
-            .div_ceil(2)
-            .checked_mul(2)
-            .ok_or(VideoPixelsError::InvalidLayout)?;
-        Ok([
-            Plane::new(y, self.strides[0], width, height)?,
-            Plane::new(uv, self.strides[1], uv_width, height.div_ceil(2))?,
-        ])
+        checked_planes([self.width_px, self.height_px], [y, uv], self.strides)
     }
 
     /// Packs the two planes without converting color or assuming even dimensions.
     pub fn pack_nv12(&self) -> Result<PackedNv12, VideoPixelsError> {
-        let [y, uv] = self.checked_planes()?;
-        Ok(PackedNv12 {
+        let [y_start, uv_start] = self.offsets;
+        let planes = [
+            self.bytes
+                .get(y_start..uv_start)
+                .ok_or(VideoPixelsError::InvalidLayout)?,
+            self.bytes
+                .get(uv_start..)
+                .ok_or(VideoPixelsError::InvalidLayout)?,
+        ];
+        Nv12Planes {
             size_px: [self.width_px, self.height_px],
-            colorimetry: self.colorimetry,
-            planes: [y.packed()?, uv.packed()?],
-        })
+            planes,
+            strides: self.strides,
+            colour: self.colour,
+        }
+        .pack()
     }
 
     /// Converts the admitted YCbCr matrix and range into opaque BGRA, and rotates clockwise.
     /// Chroma is sampled once per 2x2 luma block. Transfer remains in source encoding.
     pub fn pack_bgra(&self, rotation: VideoRotation) -> Result<PackedBgra, VideoPixelsError> {
         let [y, uv] = self.checked_planes()?;
-        let matrix = Conversion::new(self.colorimetry)?;
+        let matrix = Conversion::new(self.colour)?;
         let [width, height] = [y.row_bytes, y.rows];
         let [output_width, output_height] = match rotation {
             VideoRotation::Upright | VideoRotation::Down => [width, height],
@@ -201,17 +248,17 @@ struct Conversion {
 }
 
 impl Conversion {
-    fn new(colorimetry: VideoColorimetry) -> Result<Self, VideoPixelsError> {
-        let (kr, kb) = match colorimetry.matrix() {
-            VideoColorMatrix::Bt601 => (0.299, 0.114),
-            VideoColorMatrix::Bt709 => (0.2126, 0.0722),
-            VideoColorMatrix::Bt2020 => (0.2627, 0.0593),
-            _ => return Err(VideoPixelsError::UnsupportedColorimetry),
+    fn new(colour: VideoColour) -> Result<Self, VideoPixelsError> {
+        let (kr, kb) = match colour.matrix {
+            ColourMatrix::Bt601 => (0.299, 0.114),
+            ColourMatrix::Bt709 => (0.2126, 0.0722),
+            ColourMatrix::Bt2020 => (0.2627, 0.0593),
+            ColourMatrix::Unknown => return Err(VideoPixelsError::UnsupportedColorimetry),
         };
-        let (y_offset, y_scale, chroma_scale) = match colorimetry.range() {
-            VideoColorRange::Range0_255 => (0.0, 1.0, 1.0),
-            VideoColorRange::Range16_235 => (16.0, 255.0 / 219.0, 255.0 / 224.0),
-            _ => return Err(VideoPixelsError::UnsupportedColorimetry),
+        let (y_offset, y_scale, chroma_scale) = match colour.range {
+            ColourRange::Full => (0.0, 1.0, 1.0),
+            ColourRange::Limited => (16.0, 255.0 / 219.0, 255.0 / 224.0),
+            ColourRange::Unknown => return Err(VideoPixelsError::UnsupportedColorimetry),
         };
         let kg = 1.0 - kr - kb;
         Ok(Self {
@@ -241,20 +288,19 @@ impl Conversion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gstreamer_video::{VideoColorPrimaries, VideoTransferFunction};
+    use crate::ColourTransfer;
 
-    fn test_frame(range: VideoColorRange) -> CpuVideoFrame {
+    fn test_frame(range: ColourRange) -> CpuVideoFrame {
         CpuVideoFrame {
             width_px: 3,
             height_px: 3,
             offsets: [1, 18],
             strides: [5, 6],
-            colorimetry: VideoColorimetry::new(
+            colour: VideoColour {
+                matrix: ColourMatrix::Bt601,
                 range,
-                VideoColorMatrix::Bt601,
-                VideoTransferFunction::Bt709,
-                VideoColorPrimaries::Bt709,
-            ),
+                transfer: ColourTransfer::Bt709,
+            },
             pts_ns: None,
             bytes: vec![
                 255, 16, 21, 26, 255, 255, 31, 36, 41, 255, 255, 46, 51, 56, 255, 255, 255, 255,
@@ -264,8 +310,33 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_planes_pack_as_the_owned_frame_does() {
+        let frame = test_frame(ColourRange::Full);
+        let [y_start, uv_start] = frame.offsets;
+        let borrowed = Nv12Planes {
+            size_px: [frame.width_px, frame.height_px],
+            planes: [&frame.bytes[y_start..uv_start], &frame.bytes[uv_start..]],
+            strides: frame.strides,
+            colour: frame.colour,
+        }
+        .pack()
+        .unwrap();
+        assert_eq!(borrowed.planes, frame.pack_nv12().unwrap().planes);
+        let short = Nv12Planes {
+            planes: [&frame.bytes[y_start..y_start + 4], &frame.bytes[uv_start..]],
+            ..Nv12Planes {
+                size_px: [frame.width_px, frame.height_px],
+                planes: [&[], &[]],
+                strides: frame.strides,
+                colour: frame.colour,
+            }
+        };
+        assert!(matches!(short.pack(), Err(VideoPixelsError::InvalidLayout)));
+    }
+
+    #[test]
     fn odd_planes_strip_padding_and_rotate_every_corner() {
-        let frame = test_frame(VideoColorRange::Range0_255);
+        let frame = test_frame(ColourRange::Full);
         assert_eq!(
             frame.pack_nv12().unwrap().planes,
             [vec![16, 21, 26, 31, 36, 41, 46, 51, 56], vec![128; 8]]
@@ -286,7 +357,7 @@ mod tests {
 
     #[test]
     fn quarter_turn_swaps_rectangular_dimensions_without_sampling_padding() {
-        let mut frame = test_frame(VideoColorRange::Range0_255);
+        let mut frame = test_frame(ColourRange::Full);
         frame.height_px = 2;
         let packed = frame.pack_bgra(VideoRotation::Right).unwrap();
         assert_eq!(packed.size_px, [2, 3]);
@@ -302,7 +373,7 @@ mod tests {
 
     #[test]
     fn limited_color_and_range_use_the_declared_matrix() {
-        let mut frame = test_frame(VideoColorRange::Range16_235);
+        let mut frame = test_frame(ColourRange::Limited);
         frame.bytes[1..4].copy_from_slice(&[16, 235, 81]);
         frame.bytes[20..22].copy_from_slice(&[90, 240]);
         let bytes = frame.pack_bgra(VideoRotation::Upright).unwrap().bytes;
@@ -312,7 +383,7 @@ mod tests {
 
     #[test]
     fn malformed_stride_and_short_last_chroma_row_are_rejected() {
-        let mut frame = test_frame(VideoColorRange::Range0_255);
+        let mut frame = test_frame(ColourRange::Full);
         frame.strides[1] = 3;
         assert!(matches!(
             frame.pack_nv12(),

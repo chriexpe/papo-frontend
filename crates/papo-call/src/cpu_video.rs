@@ -1,5 +1,6 @@
 //! Bounded CPU frame delivery and route/format validity; decoding remains in receive_video.
 
+use crate::VideoColour;
 use gstreamer as gst;
 use gstreamer_video as video;
 use papo_sdk::{VideoDestination, VideoDestinationId, VideoSlotBinding, VideoTarget};
@@ -19,8 +20,9 @@ pub struct CpuVideoFrame {
     pub offsets: [usize; 2],
     /// Row strides for the Y and UV planes.
     pub strides: [i32; 2],
-    /// GStreamer colorimetry, including range. The CPU path preserves source orientation.
-    pub colorimetry: video::VideoColorimetry,
+    /// Matrix, range and transfer from the stream's caps. The CPU path preserves source
+    /// orientation.
+    pub colour: VideoColour,
     /// Presentation timestamp in nanoseconds from GStreamer, if present.
     pub pts_ns: Option<u64>,
     /// Frame bytes including any per-plane padding.
@@ -31,7 +33,7 @@ pub struct CpuVideoFrame {
 struct Format {
     width_px: u32,
     height_px: u32,
-    colorimetry: video::VideoColorimetry,
+    colour: VideoColour,
     plane_bytes: [usize; 2],
     strides: [i32; 2],
 }
@@ -148,7 +150,7 @@ impl CpuVideoDestination {
         let format = Format {
             width_px: info.width(),
             height_px: info.height(),
-            colorimetry: info.colorimetry(),
+            colour: VideoColour::of(&info.colorimetry()),
             plane_bytes: [y.len(), uv.len()],
             strides: [y_stride, uv_stride],
         };
@@ -187,7 +189,7 @@ impl CpuVideoDestination {
             height_px: info.height(),
             offsets: [0, y.len()],
             strides: [y_stride, uv_stride],
-            colorimetry: info.colorimetry(),
+            colour: VideoColour::of(&info.colorimetry()),
             pts_ns: buffer.pts().map(gst::ClockTime::nseconds),
             bytes,
         };

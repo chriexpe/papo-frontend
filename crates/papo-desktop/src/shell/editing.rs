@@ -84,7 +84,8 @@ impl Shell {
             opened_with: tile.edit,
             opening,
         });
-        if let (Some(staged), true) = (staged, tile.kind != TileKind::File) {
+        if let (Some(staged), true) = (staged, matches!(tile.kind, TileKind::Image | TileKind::Gif))
+        {
             self.read_for_editor(key.account, staged, opening);
         }
     }

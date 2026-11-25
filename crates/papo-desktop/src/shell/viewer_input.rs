@@ -19,6 +19,12 @@ impl Shell {
             self.viewer_reveal();
             return true;
         }
+        if key.mods == Mods::default()
+            && let Key::Text(typed) = &key.key
+            && self.viewer_video_key(typed, tx)
+        {
+            return true;
+        }
         let Some(viewer) = self.viewer.as_mut() else {
             return false;
         };
@@ -69,6 +75,7 @@ impl Shell {
         let moved = self.viewer.as_mut().is_some_and(|viewer| viewer.step(by));
         if moved {
             self.load_viewer_picture(tx);
+            self.follow_viewer_video(tx);
         }
         moved
     }

@@ -1,10 +1,14 @@
-//! GStreamer implementation of the SDK media port. The SDK owns signalling and participant state.
+//! Papo's GStreamer media: the implementation of the SDK's call media port, and the pieces a
+//! client's message playback shares with it (the one GStreamer initialisation, decoded frames,
+//! their colour and packing). The SDK owns signalling and participant state; a client owns its
+//! playback pipelines and drawing.
 
 mod audio;
 mod camera;
 mod cpu_video;
 mod diagnostics;
 mod engine;
+mod gstreamer_init;
 mod ice;
 mod mic;
 mod negotiation;
@@ -15,13 +19,16 @@ mod receive_video;
 mod slots;
 #[cfg(feature = "benchmark-telemetry")]
 pub mod telemetry;
+mod video_colour;
 mod video_pixels;
 mod video_route;
 
 pub use cpu_video::{CpuVideoDestination, CpuVideoFrame, CpuVideoFrameLease};
+pub use gstreamer_init::{GstreamerUnavailable, init_gstreamer};
 pub use platform::MediaDevices;
 pub use slots::ReceiveSlots;
-pub use video_pixels::{PackedBgra, PackedNv12, VideoPixelsError, VideoRotation};
+pub use video_colour::{ColourMatrix, ColourRange, ColourTransfer, VideoColour};
+pub use video_pixels::{Nv12Planes, PackedBgra, PackedNv12, VideoPixelsError, VideoRotation};
 
 use engine::{Engine, QUEUE_CAPACITY};
 use papo_sdk::{
