@@ -6,9 +6,10 @@
 //!
 //! The one `unsafe` in the playback module. Safety: `malloc_trim` is glibc's, thread-safe (it
 //! locks each arena while it trims), takes a plain integer and touches no memory of ours; it
-//! only ever returns free pages. It runs at most every few seconds: it locks each arena in
-//! turn, which a burst of players let go while scrolling shouldn't repeat. On other platforms
-//! this does nothing.
+//! only ever returns free pages. It runs on a thread of its own, at most every few seconds: it
+//! locks each arena in turn, which a burst of players let go while scrolling shouldn't repeat.
+//! A burst's requests are served by one trim after the wait, so the last pipeline let go is
+//! always trimmed. On other platforms this does nothing.
 
 #![cfg_attr(
     all(target_os = "linux", target_env = "gnu"),
@@ -18,8 +19,9 @@
     )
 )]
 
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
 
 /// The least time between two trims.
 const TRIM_EVERY: Duration = Duration::from_secs(5);
@@ -31,19 +33,30 @@ unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
 
-/// Returns the memory a let-go pipeline freed to the system.
+/// Returns the memory a let-go pipeline freed to the system, soon: the trimming thread does it,
+/// at most every [`TRIM_EVERY`]. Without that thread (it couldn't start) nothing is trimmed.
 pub(super) fn return_freed_memory() {
-    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
-    {
-        let mut last = LAST
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now = Instant::now();
-        if last.is_some_and(|last| now.duration_since(last) < TRIM_EVERY) {
-            return;
-        }
-        *last = Some(now);
+    static REQUESTS: OnceLock<Sender<()>> = OnceLock::new();
+    let requests = REQUESTS.get_or_init(|| {
+        let (requests, received) = mpsc::channel();
+        let _ = std::thread::Builder::new()
+            .name("papo-trim".to_owned())
+            .spawn(move || trim_on_request(&received));
+        requests
+    });
+    let _ = requests.send(());
+}
+
+/// The trimming thread: one trim for every request made since the last, then a wait.
+fn trim_on_request(requests: &Receiver<()>) {
+    while requests.recv().is_ok() {
+        while requests.try_recv().is_ok() {}
+        trim();
+        std::thread::sleep(TRIM_EVERY);
     }
+}
+
+fn trim() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: malloc_trim is thread-safe, reads no pointer of ours and only releases free
     // pages (see the module header).
