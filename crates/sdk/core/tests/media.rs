@@ -1,9 +1,12 @@
-//! Public account media isolation, conditional recovery and provider credential separation over loopback.
+//! Public account media isolation, conditional recovery, provider credential separation and
+//! saving attachments over loopback.
 
 #![cfg(feature = "test-support")]
 mod fixture;
 #[path = "media_cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "media_cases/save.rs"]
+mod save;
 use fixture::{Fixture, Result, login, register};
 use papo_sdk::{MediaError, MediaSource, Session, UnixMicros, Uuid};
 use papo_test_server::{Config, EncodedMedia};

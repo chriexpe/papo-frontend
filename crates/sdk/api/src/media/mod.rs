@@ -70,6 +70,37 @@ pub struct MediaResponse {
     pub headers: header::HeaderMap,
 }
 
+/// An attachment's original as it arrives, for a caller that writes it out piece by piece instead
+/// of holding it whole.
+pub struct MediaBody {
+    response: reqwest::Response,
+    limit_bytes: u64,
+    received_bytes: u64,
+}
+
+impl MediaBody {
+    /// The body's length, when the server announced it.
+    #[must_use]
+    pub fn length_bytes(&self) -> Option<u64> {
+        self.response.content_length()
+    }
+
+    /// The next piece of the body, or `None` at its end.
+    ///
+    /// # Errors
+    /// Returns a transport failure, or [`MediaError::TooLarge`] once the body passes its limit.
+    pub async fn next_chunk(&mut self) -> Result<Option<bytes::Bytes>, MediaError> {
+        let chunk = self.response.chunk().await.map_err(|_| Error::Transport)?;
+        if let Some(chunk) = &chunk {
+            self.received_bytes = self.received_bytes.saturating_add(chunk.len() as u64);
+            if self.received_bytes > self.limit_bytes {
+                return Err(MediaError::TooLarge);
+            }
+        }
+        Ok(chunk)
+    }
+}
+
 impl RestClient {
     /// Fetches a content-addressed avatar, banner, icon or other backend media blob.
     ///
@@ -106,6 +137,35 @@ impl RestClient {
             false,
         )
         .await
+    }
+
+    /// Opens an attachment's whole original for reading piece by piece, after backend channel
+    /// authorization. A body announced or growing past `limit_bytes` is refused.
+    ///
+    /// # Errors
+    /// Returns transport failure, backend rejection, a partial answer, or [`MediaError::TooLarge`].
+    pub async fn attachment_body(
+        &self,
+        id: Uuid,
+        limit_bytes: u64,
+    ) -> Result<MediaBody, MediaError> {
+        let request = self.route_request(&routes::GET_ATTACHMENTS_FILE_ID, &[id.to_string()])?;
+        let response = self.response(request).await?;
+        // No range was asked for: anything but the whole object is not the original.
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(Error::Decode.into());
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > limit_bytes)
+        {
+            return Err(MediaError::TooLarge);
+        }
+        Ok(MediaBody {
+            response,
+            limit_bytes,
+            received_bytes: 0,
+        })
     }
 
     /// Fetches an attachment thumbnail. The pinned backend ignores range requests here.

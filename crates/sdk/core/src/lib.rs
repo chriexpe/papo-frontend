@@ -45,7 +45,8 @@ pub use expressions::{
 pub use expressions::{ExpressionFault, ExpressionUpdate};
 mod media;
 pub use media::{
-    EmojiMetadata, EmojiPage, MediaData, MediaError, MediaRange, MediaService, MediaSource,
+    EmojiMetadata, EmojiPage, MediaData, MediaError, MediaRange, MediaSave, MediaService,
+    MediaSource, SaveFailure, SaveProgress, SaveState, SaveTarget,
 };
 mod history;
 mod images;

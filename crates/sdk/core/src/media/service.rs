@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// Account-scoped encoded media service. No API accepts a local digest as proof of access.
 #[derive(Clone)]
 pub struct MediaService {
-    session: Session,
+    pub(super) session: Session,
 }
 
 impl Session {
