@@ -17,7 +17,7 @@ use rune::Tx;
 
 use super::Shell;
 use super::draft_writes::{DraftWrites, Stored, queue_message, save_draft, save_effect};
-use super::staged_files::{pictures, restored_files};
+use super::staged_files::{restored_files, staged_reads};
 use crate::composer::tray::Tile;
 use crate::composer::{Effect, Sent};
 use crate::sdk_bridge::{Sdk, Updates};
@@ -243,14 +243,14 @@ fn load_draft(sdk: &Sdk<Shell>, key: TimelineKey, mention: bool) {
                         .into_iter()
                         .map(|file| shell.restored_tile(file))
                         .collect();
-                    let pictures = pictures(&tiles);
+                    let reads = staged_reads(&tiles);
                     let loaded = shell
                         .composer
                         .loaded(key, decoded, reply_to, mention, tiles);
                     // Files attached while it loaded are saved with it now.
                     let effects = shell.composer.save_unsaved(key);
                     shell.run_composer(effects, None);
-                    shell.read_pictures(key, pictures);
+                    shell.read_staged_tiles(key, reads);
                     shell.resolve_replies();
                     loaded
                 });

@@ -49,30 +49,18 @@ pub(crate) fn confirm(
     look: &Look,
 ) -> El {
     let (drop, blur) = POPUP_SHADOW_PT;
-    let cancel_button = button(question.cancel_key, question.cancel, look)
-        .border(FIELD_OUTLINE_PT, look.palette.line_strong)
+    let cancel_button = plain_button(question.cancel_key, question.cancel, look)
         .on_press(cancel)
         // Return cancels: the action is never the default.
         .default_button()
-        .autofocus()
-        .child(
-            text(question.cancel)
-                .font(look.font(TYPE_BODY_STRONG))
-                .color(look.palette.text_primary),
-        );
-    let (fill, ink) = if question.danger {
-        (look.palette.danger, look.palette.danger_on)
-    } else {
-        (look.palette.accent, look.palette.accent_on)
-    };
-    let confirm_button = button(question.confirm_key, question.confirm, look)
-        .fill(fill)
-        .on_press_tx(confirm)
-        .child(
-            text(question.confirm)
-                .font(look.font(TYPE_BODY_STRONG))
-                .color(ink),
-        );
+        .autofocus();
+    let confirm_button = action_button(
+        question.confirm_key,
+        question.confirm,
+        question.danger,
+        look,
+    )
+    .on_press_tx(confirm);
     let frame = col()
         .key(question.key)
         .w(CONFIRM_WIDTH_PT)
@@ -128,6 +116,35 @@ pub(crate) fn note(words: &str, look: &Look) -> El {
         .font(look.font(TYPE_SMALL))
         .color(look.palette.text_muted)
         .wrap()
+}
+
+/// A dialog's plain button (Cancel): outlined, in the text colour.
+pub(crate) fn plain_button(key: &'static str, label: &'static str, look: &Look) -> El {
+    button(key, label, look)
+        .border(FIELD_OUTLINE_PT, look.palette.line_strong)
+        .child(
+            text(label)
+                .font(look.font(TYPE_BODY_STRONG))
+                .color(look.palette.text_primary),
+        )
+}
+
+/// A dialog's action: filled in the accent, or in the danger colour when
+/// it destroys something.
+pub(crate) fn action_button(
+    key: &'static str,
+    label: &'static str,
+    danger: bool,
+    look: &Look,
+) -> El {
+    let (fill, ink) = if danger {
+        (look.palette.danger, look.palette.danger_on)
+    } else {
+        (look.palette.accent, look.palette.accent_on)
+    };
+    button(key, label, look)
+        .fill(fill)
+        .child(text(label).font(look.font(TYPE_BODY_STRONG)).color(ink))
 }
 
 fn button(key: &'static str, label: &'static str, look: &Look) -> El {

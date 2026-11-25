@@ -32,10 +32,12 @@ mod chip;
 pub(crate) mod colour_field;
 mod colour_tools;
 mod controls;
+pub(crate) use controls::switch;
 pub(crate) mod domain_field;
 mod held;
 mod nav;
 pub(crate) mod password_form;
+mod picture_row;
 pub(crate) mod rows;
 mod search;
 mod slider;
@@ -139,6 +141,12 @@ impl PageId {
 /// One row, by what it sets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum RowId {
+    /// The profile photo.
+    Photo,
+    /// The profile banner.
+    Banner,
+    /// "Anonymize new attachments".
+    AnonymizeNew,
     Nickname,
     Status,
     About,
@@ -259,6 +267,22 @@ pub(crate) enum Target {
     Password,
     /// Clear media cache, run again.
     ClearCache,
+    /// A profile photo or banner, as the editor saved it.
+    ProfilePicture(ProfilePicture),
+    /// The banner removed.
+    RemoveBanner,
+    /// A pick that couldn't be used: Try again opens the chooser again.
+    PickPicture(crate::image_editor::state::Use),
+}
+
+/// A profile photo or banner as the editor saved it: the staged picture
+/// and the cut the SDK makes of it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProfilePicture {
+    pub(crate) account: papo_sdk::AccountId,
+    pub(crate) use_: crate::image_editor::state::Use,
+    pub(crate) staged: papo_sdk::StagedAttachment,
+    pub(crate) edit: papo_sdk::AttachmentEdit,
 }
 
 impl Target {

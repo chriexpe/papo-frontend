@@ -3,10 +3,10 @@
 //! change that the stored draft must hold saves it at once; nothing here
 //! talks to the SDK.
 
-use papo_sdk::StagedAttachment;
+use papo_sdk::{AttachmentEdit, StagedAttachment};
 use rune::Image;
 
-use super::tray::{Tile, TileId};
+use super::tray::{Inspection, Tile, TileId};
 use super::{Composer, DraftState, Effect, TimelineKey};
 
 /// Why files cannot be attached to the shown draft now.
@@ -159,30 +159,65 @@ impl Composer {
         }
     }
 
-    /// Tile `id` of `key`'s tray has its picture (decoding at tile size)
-    /// and its size in pixels, when they are known. Returns whether a tile
-    /// took them.
-    pub(crate) fn tile_picture(
+    /// Tile `id` of `key`'s tray has its picture, decoding at tile size.
+    /// Returns whether a tile took it.
+    pub(crate) fn tile_thumbnail(
         &mut self,
         key: TimelineKey,
         id: TileId,
-        thumbnail: Option<Image>,
-        size_px: Option<(u32, u32)>,
+        thumbnail: Image,
     ) -> bool {
-        let Some(tile) = self
-            .drafts
-            .get_mut(&key)
-            .and_then(|draft| draft.tray.get_mut(id))
-        else {
+        let Some(tile) = self.tile_mut(key, id) else {
             return false;
         };
-        if thumbnail.is_some() {
-            tile.thumbnail = thumbnail;
-        }
-        if size_px.is_some() {
-            tile.size_px = size_px;
-        }
+        tile.thumbnail = Some(thumbnail);
         true
+    }
+
+    /// The SDK inspected tile `id` of `key`'s tray. Returns the tile, when
+    /// it is still there.
+    pub(crate) fn tile_inspected(
+        &mut self,
+        key: TimelineKey,
+        id: TileId,
+        inspection: Inspection,
+    ) -> Option<&Tile> {
+        let tile = self.tile_mut(key, id)?;
+        tile.inspection = inspection;
+        Some(tile)
+    }
+
+    /// The editor saved tile `id` of `key`'s tray: its name and its edit.
+    /// The draft is saved.
+    pub(crate) fn tile_edited(
+        &mut self,
+        key: TimelineKey,
+        id: TileId,
+        name: String,
+        edit: AttachmentEdit,
+    ) -> Vec<Effect> {
+        let Some(tile) = self.tile_mut(key, id) else {
+            return Vec::new();
+        };
+        if tile.name == name && tile.edit == edit {
+            return Vec::new();
+        }
+        tile.name = name;
+        tile.edit = edit;
+        self.tray_changed(key)
+    }
+
+    /// The name tile `id` of `key`'s tray had before a random one, this run.
+    pub(crate) fn tile_typed_name(&mut self, key: TimelineKey, id: TileId, typed: Option<String>) {
+        if let Some(tile) = self.tile_mut(key, id) {
+            tile.typed_name = typed;
+        }
+    }
+
+    fn tile_mut(&mut self, key: TimelineKey, id: TileId) -> Option<&mut Tile> {
+        self.drafts
+            .get_mut(&key)
+            .and_then(|draft| draft.tray.get_mut(id))
     }
 
     /// `key`'s tray changed what the stored draft holds: it is saved now,

@@ -40,20 +40,23 @@ pub(crate) struct UnsentFile {
 impl UnsentFile {
     /// A tray tile as its message draws it until the staged file is read.
     pub(crate) fn from_tile(tile: &Tile) -> UnsentFile {
+        // A crop or a turn changes the picture sent: its shape is the
+        // edit's, and the tile's thumbnail, of the original, is not shown.
+        let reshaped = tile.edit.changes_pixels();
         let thumbnail_shape = tile
             .thumbnail
             .as_ref()
+            .filter(|_| !reshaped)
             .and_then(Image::size)
             .and_then(|[width, height]| aspect(width, height));
-        let inspected_shape = tile
-            .size_px
-            .and_then(|(width, height)| aspect(width, height));
+        let size_px = tile.sent_size_px();
+        let inspected_shape = size_px.and_then(|(width, height)| aspect(width, height));
         UnsentFile {
             kind: tile.kind.clone(),
             size_bytes: tile.size_bytes,
-            size_px: tile.size_px,
+            size_px,
             aspect: inspected_shape.or(thumbnail_shape),
-            image: tile.thumbnail.clone(),
+            image: tile.thumbnail.clone().filter(|_| !reshaped),
             sharp: None,
         }
     }

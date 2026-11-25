@@ -28,6 +28,7 @@ mod general_settings;
 mod glass;
 mod grain;
 mod icons;
+mod image_editor;
 mod keyring;
 mod layout_prefs;
 mod lifecycle;

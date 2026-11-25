@@ -8,14 +8,15 @@
 
 use std::collections::HashMap;
 
-use papo_sdk::{PendingAttachment, StagedAttachment, StagingFailure};
+use papo_sdk::{Anonymize, AttachmentEdit, PendingAttachment, StagedAttachment, StagingFailure};
 use rune::Tx;
 use tokio::sync::oneshot;
 
 use super::Shell;
-use super::staged_files::Picture;
+use super::staged_files::StagedRead;
 use crate::attaching::{self, Offered, Refused};
 use crate::composer::attached::Closed;
+use crate::composer::tray::Inspection;
 use crate::composer::tray::{Tile, TileId, TileKind, TileSource};
 use crate::notice::Refusal;
 use crate::sdk_bridge::Updates;
@@ -111,7 +112,9 @@ impl Shell {
                 kind: file.kind,
                 source: TileSource::Copying(file.pending),
                 thumbnail: None,
-                size_px: None,
+                inspection: Inspection::Pending,
+                edit: self.new_attachment_edit(),
+                typed_name: None,
             });
         }
         let copying: Vec<(TileId, PendingAttachment)> = tiles
@@ -193,20 +196,12 @@ impl Shell {
             return false;
         };
         let name = tile.name.clone();
-        let picture = tile.kind != TileKind::File;
-        let thumbnail = tile.thumbnail.is_none();
         match ended {
             Ok(staged) => {
-                let effects = self.composer.tile_staged(key, id, staged.clone());
+                let effects = self.composer.tile_staged(key, id, staged);
                 self.run_composer(effects, Some(tx));
-                if picture {
-                    let picture = Picture {
-                        id,
-                        staged,
-                        thumbnail,
-                    };
-                    self.read_pictures(key, vec![picture]);
-                }
+                let read = self.composer.tile(key, id).and_then(StagedRead::of);
+                self.read_staged_tiles(key, read.into_iter().collect());
             }
             Err(failure) => {
                 self.take_tile_out(key, id, tx);
@@ -222,6 +217,20 @@ impl Shell {
         true
     }
 
+    /// The edit a new attachment starts with: Anonymize where the SDK can
+    /// clean the file, when "Anonymize new attachments" is on.
+    pub(in crate::shell) fn new_attachment_edit(&self) -> AttachmentEdit {
+        let anonymize = if self.general.settings().anonymize_new {
+            Anonymize::WhereSupported
+        } else {
+            Anonymize::Off
+        };
+        AttachmentEdit {
+            anonymize,
+            ..AttachmentEdit::default()
+        }
+    }
+
     /// ✕ on a tile, Delete or Backspace, or the menu's Remove: the tile goes
     /// at once (§14.2: nothing asks, attaching again is the undo). Returns
     /// the tile now in its place, for the keyboard focus.
@@ -233,8 +242,14 @@ impl Shell {
     /// Takes tile `id` out of `key`'s tray: its copy stops, the draft is
     /// saved, and the keyboard, if it was on it, moves to the tile now in
     /// its place.
-    fn take_tile_out(&mut self, key: TimelineKey, id: TileId, tx: &mut Tx) -> Option<TileId> {
+    pub(super) fn take_tile_out(
+        &mut self,
+        key: TimelineKey,
+        id: TileId,
+        tx: &mut Tx,
+    ) -> Option<TileId> {
         self.copy_watches.end(id);
+        self.tile_left(id);
         let (next, effects) = self.composer.detach(key, id);
         self.run_composer(effects, Some(tx));
         if self.tray_ui.current == Some(id) {

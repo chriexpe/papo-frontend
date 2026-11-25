@@ -9,7 +9,7 @@
 //! between loses it. Owns the tiles and their order; the view is
 //! `tray_view`'s, adding and staging the shell's (`shell/attaching.rs`).
 
-use papo_sdk::{OutgoingAttachment, PendingAttachment, StagedAttachment};
+use papo_sdk::{AttachmentEdit, OutgoingAttachment, PendingAttachment, StagedAttachment};
 use rune::Image;
 
 /// A tile's identity for this run: element keys, focus, and matching a
@@ -27,6 +27,25 @@ pub(crate) enum TileKind {
     /// Anything else, videos included until they can be decoded (D7c): the
     /// extension block, the name and the size.
     File,
+}
+
+/// What the SDK's inspection (`inspect_image`) said of a tile's file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Inspection {
+    /// Not yet: the file still copies, or the inspection runs.
+    Pending,
+    /// A picture the SDK can clean, its size as shown (orientation
+    /// applied) in pixels; an animation can't be cropped or turned.
+    Cleanable {
+        width: u32,
+        height: u32,
+        animated: bool,
+    },
+    /// Not an image: it goes as it is, and Anonymize is not offered.
+    NotAnImage,
+    /// An image the SDK cannot clean (HEIC, TIFF, RAW) or a damaged one:
+    /// refused while Anonymize is on.
+    Uncleanable,
 }
 
 /// Where a tile's bytes stand.
@@ -55,9 +74,14 @@ pub(crate) struct Tile {
     pub(crate) source: TileSource,
     /// The picture decoded at tile size, once its bytes were read.
     pub(crate) thumbnail: Option<Image>,
-    /// The picture's size as shown (orientation applied), in pixels, once
-    /// the SDK inspected the staged file.
-    pub(crate) size_px: Option<(u32, u32)>,
+    /// What the SDK said of the staged file.
+    pub(crate) inspection: Inspection,
+    /// The crop, turns, Random name and Anonymize it is sent with; applied
+    /// by the SDK at Send, the staged file untouched until then.
+    pub(crate) edit: AttachmentEdit,
+    /// The name it had before a random one replaced it, this run: Random
+    /// name off brings it back.
+    pub(crate) typed_name: Option<String>,
 }
 
 impl PartialEq for Tile {
@@ -75,7 +99,9 @@ impl PartialEq for Tile {
             && self.kind == other.kind
             && same_source
             && self.thumbnail.as_ref().map(Image::id) == other.thumbnail.as_ref().map(Image::id)
-            && self.size_px == other.size_px
+            && self.inspection == other.inspection
+            && self.edit == other.edit
+            && self.typed_name == other.typed_name
     }
 }
 
@@ -92,6 +118,50 @@ impl std::fmt::Debug for Tile {
 }
 
 impl Tile {
+    /// The picture's size as shown, in pixels, once inspected.
+    pub(crate) fn size_px(&self) -> Option<(u32, u32)> {
+        match self.inspection {
+            Inspection::Cleanable { width, height, .. } => Some((width, height)),
+            Inspection::Pending | Inspection::NotAnImage | Inspection::Uncleanable => None,
+        }
+    }
+
+    /// The picture as it will be sent, in pixels: cropped and turned.
+    pub(crate) fn sent_size_px(&self) -> Option<(u32, u32)> {
+        let (width, height) = self.size_px()?;
+        if let Some(crop) = self.edit.crop {
+            return Some((crop.width, crop.height));
+        }
+        if self.edit.quarter_turns % 2 == 1 {
+            Some((height, width))
+        } else {
+            Some((width, height))
+        }
+    }
+
+    /// Whether the SDK cleans this file: a picture it can rewrite.
+    pub(crate) fn cleanable(&self) -> bool {
+        matches!(self.inspection, Inspection::Cleanable { .. })
+    }
+
+    /// Whether it goes anonymized: Anonymize on, and a file the SDK cleans
+    /// (with the device default, other files go as they are).
+    pub(crate) fn anonymized(&self) -> bool {
+        self.edit.anonymize.is_on() && self.cleanable()
+    }
+
+    /// Whether it goes under a random name: chosen (any file), or
+    /// anonymized.
+    pub(crate) fn renamed(&self) -> bool {
+        self.anonymized() || self.edit.random_name
+    }
+
+    /// Whether the SDK would refuse it at Send: Anonymize on, and an image
+    /// it cannot clean.
+    pub(crate) fn refused_anonymized(&self) -> bool {
+        self.edit.anonymize.is_on() && self.inspection == Inspection::Uncleanable
+    }
+
     /// Its copy still running, if it is.
     pub(crate) fn copying(&self) -> Option<&PendingAttachment> {
         match &self.source {
@@ -123,9 +193,11 @@ impl Tile {
         match &self.source {
             TileSource::Copying(pending) => {
                 OutgoingAttachment::from_pending(self.name.clone(), pending.clone())
+                    .with_edit(self.edit)
             }
             TileSource::Staged(staged) => {
                 OutgoingAttachment::from_staged(self.name.clone(), staged.clone())
+                    .with_edit(self.edit)
             }
             #[cfg(test)]
             TileSource::Fixture => OutgoingAttachment::from_bytes(self.name.clone(), Vec::new()),
@@ -136,10 +208,10 @@ impl Tile {
     pub(crate) fn stored(&self) -> Option<OutgoingAttachment> {
         match &self.source {
             TileSource::Copying(_) => None,
-            TileSource::Staged(staged) => Some(OutgoingAttachment::from_staged(
-                self.name.clone(),
-                staged.clone(),
-            )),
+            TileSource::Staged(staged) => Some(
+                OutgoingAttachment::from_staged(self.name.clone(), staged.clone())
+                    .with_edit(self.edit),
+            ),
             #[cfg(test)]
             TileSource::Fixture => Some(OutgoingAttachment::from_bytes(
                 self.name.clone(),

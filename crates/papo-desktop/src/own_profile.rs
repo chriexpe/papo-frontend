@@ -26,6 +26,8 @@ pub(crate) struct OwnProfile {
     pub(crate) since: Option<String>,
     /// The profile has been read back, so its text rows can be edited.
     pub(crate) known: bool,
+    /// A banner is set: it can be removed.
+    pub(crate) has_banner: bool,
 }
 
 impl OwnProfile {
@@ -43,6 +45,11 @@ impl OwnProfile {
                 .filter_map(|role| role.name.clone())
                 .collect(),
             known: profile.is_some(),
+            has_banner: snapshot
+                .profiles
+                .get(me)
+                .and_then(|profile| profile.banner_media.as_deref())
+                .is_some_and(|media| !media.is_empty()),
             status: text(
                 profile
                     .as_ref()

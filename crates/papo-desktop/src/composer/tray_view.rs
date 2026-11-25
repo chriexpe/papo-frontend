@@ -19,11 +19,12 @@ use crate::design::{
     FILE_TILE_INSET_PT, FILE_TILE_WIDTH_PT, FOCUS_RING_PT, Look, MEDIA_BADGE_ALPHA,
     MEDIA_BADGE_PAD_PT, MEDIA_BADGE_RADIUS, PILL_OUTLINE_PT, PREPARING_RING_PT,
     PREPARING_SCRIM_ALPHA, RADIUS_CONTROL, SPACE_MD, SPACE_XS, SPINNER_PERIOD_S,
-    TILE_BADGE_INSET_PT, TILE_EXIT_S, TILE_EXIT_SCALE, TILE_PT, TILE_REMOVE_FADE_S,
+    TILE_BADGE_INSET_PT, TILE_EXIT_S, TILE_EXIT_SCALE, TILE_MARK_PT, TILE_PT, TILE_REMOVE_FADE_S,
     TILE_REMOVE_ICON_PT, TILE_REMOVE_INSET_PT, TILE_REMOVE_PT, TYPE_CAPTION, TYPE_EXTENSION,
     TYPE_MEDIA_BADGE, TYPE_SMALL_MEDIUM,
 };
-use crate::icons::{SPINNER, X};
+use crate::icons::{ANONYMOUS, RENAMED, SPINNER, X};
+use crate::image_editor::cut::cut_picture;
 use crate::shell::Shell;
 use crate::strings;
 
@@ -150,6 +151,7 @@ fn tile_view(tile: &Tile, shown: Shown, look: &Look) -> El {
         .on_secondary_press(move |shell: &mut Shell, press, tx| {
             shell.tray_menu(Some(id), Some(press), tx);
         })
+        .children(marks(tile, look))
         .child(remove_button(tile, shown.current, look));
     if shown.current {
         // Inside the tile, over the picture: the tile's rounded clip would
@@ -171,8 +173,14 @@ fn tile_view(tile: &Tile, shown: Shown, look: &Look) -> El {
 /// decodes, a "GIF" badge, and a ring over a scrim while it copies.
 fn media_tile(tile: &Tile, look: &Look) -> El {
     let mut face = el().size(TILE_PT, TILE_PT).fill(look.palette.surface_hover);
-    if let Some(image) = &tile.thumbnail {
-        face = face.pixels_fit(image.pixels(), SurfaceFit::Fill);
+    let reshaped = tile.edit.changes_pixels();
+    match (&tile.thumbnail, tile.size_px()) {
+        // Cropped or turned: the tile shows what will be sent.
+        (Some(image), Some(size_px)) if reshaped => {
+            face = face.child(cut_picture(image, size_px, &tile.edit, TILE_PT));
+        }
+        (Some(image), _) => face = face.pixels_fit(image.pixels(), SurfaceFit::Fill),
+        (None, _) => {}
     }
     if tile.kind == TileKind::Gif {
         face = face.child(
@@ -280,6 +288,40 @@ fn remove_button(tile: &Tile, current: bool, look: &Look) -> El {
     }
 }
 
+/// The marks of what a tile's file will go as, always shown at its top
+/// left: anonymized, and a random name, side by side.
+fn marks(tile: &Tile, look: &Look) -> Option<El> {
+    let (anonymized, renamed) = (tile.anonymized(), tile.renamed());
+    if !anonymized && !renamed {
+        return None;
+    }
+    let (side, ink) = TILE_MARK_PT;
+    let mark = |shape: &'static rune::Icon| {
+        el().size(side, side)
+            .center()
+            .radius(side / 2.0)
+            .fill(look.palette.surface_pill)
+            .border(PILL_OUTLINE_PT, look.palette.line_pill)
+            .child(icon(shape, ink).color(look.palette.text_secondary))
+    };
+    let mut line = row()
+        .pin(
+            Some(TILE_REMOVE_INSET_PT),
+            Some(TILE_REMOVE_INSET_PT),
+            None,
+            None,
+        )
+        .gap(TILE_REMOVE_INSET_PT / 2.0)
+        .a11y_hidden();
+    if anonymized {
+        line = line.child(mark(&ANONYMOUS));
+    }
+    if renamed {
+        line = line.child(mark(&RENAMED));
+    }
+    Some(line)
+}
+
 /// A media badge ("GIF"): white mono on black at 60 %, as the timeline's.
 fn media_badge(words: &str, look: &Look) -> El {
     text(words)
@@ -316,9 +358,19 @@ fn spoken(tile: &Tile) -> String {
         return strings::tray_preparing(&tile.name);
     }
     let size = tile.size_bytes.map(strings::size).unwrap_or_default();
-    match tile.kind {
+    let mut spoken = match tile.kind {
         TileKind::Image => strings::tray_tile_image(&tile.name, &size),
         TileKind::Gif => strings::tray_tile_gif(&tile.name, &size),
         TileKind::File => strings::tray_tile_file(&tile.name, &size),
+    };
+    for (on, mark) in [
+        (tile.anonymized(), strings::tray_anonymous()),
+        (tile.renamed(), strings::tray_renamed()),
+    ] {
+        if on {
+            spoken.push_str(", ");
+            spoken.push_str(mark);
+        }
     }
+    spoken
 }

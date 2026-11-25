@@ -54,8 +54,8 @@ impl Shell {
         true
     }
 
-    /// A key on the tray. Enter and Space open the editor once it exists
-    /// (with the editor's slice); Tab leaves as it always does.
+    /// A key on the tray. Enter and Space open the editor on the current
+    /// tile; Tab leaves as it always does.
     pub(crate) fn tray_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
         let ids = self.tray_ids();
         // A tile removed by the pointer leaves no current one: the keys
@@ -100,6 +100,14 @@ impl Shell {
                 tx.focus(COMPOSER_KEY, true);
                 true
             }
+            Key::Enter if bare => {
+                self.edit_tile(current);
+                true
+            }
+            Key::Text(ref text) if bare && text == " " => {
+                self.edit_tile(current);
+                true
+            }
             _ => false,
         }
     }
@@ -119,6 +127,8 @@ impl Shell {
                 }
             }
             Phase::Up if drag.cancelled() => self.tray_ui.cancel_drag(),
+            // A press that never moved is a click: it opens the editor.
+            Phase::Up if !self.tray_ui.is_dragging() => self.edit_tile(id),
             Phase::Up => {
                 let dropped = self.tray_ui.dropped(&ids);
                 if let (Some((id, to)), Some((key, _))) = (dropped, self.composer.shown()) {
@@ -154,6 +164,13 @@ impl Shell {
             COMPOSER_KEY
         };
         let items = vec![
+            MenuItem::plain(
+                "menu-tray-edit",
+                strings::tray_edit(),
+                MenuAction::EditTile(tile),
+                false,
+            )
+            .with_icon(&icons::CROP),
             MenuItem::plain(
                 "menu-tray-remove",
                 strings::tray_remove_menu(),

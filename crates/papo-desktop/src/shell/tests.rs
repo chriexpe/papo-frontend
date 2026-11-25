@@ -19,6 +19,7 @@ mod description;
 mod direct;
 mod direct_accounts;
 mod direct_lists;
+mod editing;
 mod links;
 mod message_menu;
 mod navigation;

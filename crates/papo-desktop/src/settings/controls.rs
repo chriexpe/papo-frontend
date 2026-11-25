@@ -43,6 +43,8 @@ pub(super) struct Ctx<'a> {
     /// The row whose account call is in flight.
     pub(super) waiting: Option<RowId>,
     pub(super) password: &'a super::PasswordForm,
+    /// The panel's account's own photo and banner, once fetched.
+    pub(super) pictures: Option<&'a crate::shell::Pictures>,
 }
 
 /// A group: its optional title, then its rows as one block of tiles.
@@ -89,6 +91,9 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
         Kind::Directions(current) => directions(&setting, current, look),
         Kind::DomainField => super::domain_field::view(cx.domain, look),
         Kind::Destructive { .. } => super::actions::destructive(setting, look),
+        Kind::Picture(use_) => {
+            super::picture_row::view(&setting, use_, cx.pictures, cx.waiting, look)
+        }
         Kind::PasswordForm => super::password_form::view(
             cx.password,
             setting.sub.clone(),
@@ -254,6 +259,7 @@ fn plain_row(setting: Row, look: &Look) -> El {
         | Kind::DomainField
         | Kind::Destructive { .. }
         | Kind::PasswordForm
+        | Kind::Picture(_)
         | Kind::Text { .. } => line,
     }
 }
@@ -276,7 +282,7 @@ fn value_text(value: &str, look: &Look) -> El {
 
 /// A switch: the accent when on, a strong line when off, the knob at its
 /// end.
-fn switch(on: bool, look: &Look) -> El {
+pub(crate) fn switch(on: bool, look: &Look) -> El {
     let (width, height) = SWITCH_PT;
     let inset = (height - SWITCH_KNOB_PT) / 2.0;
     let track = if on {

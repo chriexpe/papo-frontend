@@ -46,6 +46,8 @@ pub(crate) struct PanelView<'a> {
     pub(crate) system_font_known: bool,
     /// The grain's tile for the theme drawn, for Grain's slider.
     pub(crate) grain: Option<&'a rune::Pixels>,
+    /// The panel's account's own photo and banner, once fetched.
+    pub(crate) pictures: Option<&'a crate::shell::Pictures>,
 }
 
 /// The panel over the app, with `preview` over the Profile page's rows
@@ -62,6 +64,7 @@ pub(crate) fn view(panel: &PanelView<'_>, preview: Option<El>, look: &Look) -> E
         account: panel.account,
         system_dark: panel.system_dark,
         system_font_known: panel.system_font_known,
+        pictures: panel.pictures,
     };
     // One margin from the window on three sides, the pill's own inset; the
     // bottom edge one gap above the account pill.
@@ -108,6 +111,7 @@ fn main(
         editing: panel.editing.as_ref().map(|(row, edit)| (*row, edit)),
         waiting: panel.waiting,
         password: &panel.password,
+        pictures: context.pictures,
     };
     let query = panel.query();
     let (title, scope, back, blocks) = if query.is_empty() {

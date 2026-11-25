@@ -90,6 +90,9 @@ pub(crate) enum Kind {
     Value(String),
     /// Runs at once.
     Action,
+    /// A profile picture (Photo, Banner): its picture at the row's end and a
+    /// menu with Change, and Remove for a banner that is set.
+    Picture(crate::image_editor::state::Use),
     /// Loses something, so it asks inside the row first: the question and
     /// its red confirmation; `asking` while it does, `busy` while it runs.
     Destructive {
@@ -135,6 +138,8 @@ pub(crate) struct Context<'a> {
     pub(crate) system_dark: bool,
     /// Whether "Use the system font" can work: the desktop names one.
     pub(crate) system_font_known: bool,
+    /// The panel's account's own photo and banner, once fetched.
+    pub(crate) pictures: Option<&'a crate::shell::Pictures>,
 }
 
 /// What Diagnostics shows: the panel's account's server and connection,
@@ -209,6 +214,7 @@ pub(crate) fn searchable(row: &Row) -> Vec<String> {
         | Kind::PasswordForm
         | Kind::Info
         | Kind::Action
+        | Kind::Picture(_)
         | Kind::Destructive { .. } => {}
     }
     words

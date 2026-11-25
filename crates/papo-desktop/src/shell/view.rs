@@ -149,6 +149,17 @@ fn with_dialogs(mut app: El, shell: &Shell, flow: Option<&sign_in::SignIn>, look
     if let Some(flow) = flow {
         app = app.child(sign_in::popup(flow, &shell.fields, &look));
     }
+    if let Some(open) = &shell.editor {
+        let shown = crate::image_editor::view::Shown {
+            editor: &open.editor,
+            picture: open.picture.as_ref(),
+            kind: open.kind.clone(),
+            name: &open.name,
+            held: shell.editor_held(),
+            size_bytes: open.size_bytes,
+        };
+        app = app.child(crate::image_editor::view::dialog(&shown, &look));
+    }
     if shell.leaving.is_some() {
         app = app.child(crate::quit_ask::view(&look));
     }
@@ -205,6 +216,9 @@ fn settings_panel(shell: &Shell, look: &Look, system_dark: bool) -> Option<El> {
             .grain
             .as_ref()
             .map(|tiles| tiles.pixels(look.theme().is_dark())),
+        pictures: shell
+            .subject_account()
+            .and_then(|account| shell.profile_pictures.get(account, account.user())),
     };
     Some(crate::settings::view(&view, preview, look))
 }

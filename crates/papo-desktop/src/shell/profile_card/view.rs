@@ -7,14 +7,15 @@
 use papo_sdk::Uuid;
 use papo_sdk::permissions::global_permissions;
 use papo_sdk_ui::{PresenceMark, display_name, person, requested_profile};
-use rune::{El, col, el, row, text};
+use rune::{El, SurfaceFit, col, el, row, text};
 
 use super::super::Shell;
 use crate::design::{
-    AVATAR_CARD, Look, RADIUS_CONTROL, SPACE_LG, SPACE_MD, SPACE_SM, TYPE_CAPTION,
+    AVATAR_CARD, Look, RADIUS_CONTROL, RADIUS_PILL, SPACE_LG, SPACE_MD, SPACE_SM, TYPE_CAPTION,
     TYPE_CAPTION_MEDIUM, TYPE_DISPLAY, TYPE_SMALL,
 };
-use crate::person_avatar::person_avatar;
+use crate::person_avatar::photo_avatar;
+use crate::shell::Pictures;
 use crate::strings;
 use crate::timeline::TimelineKey;
 
@@ -31,6 +32,8 @@ pub(in crate::shell) struct PersonFacts {
     pub(in crate::shell) since: Option<String>,
     /// The server the account is on.
     pub(in crate::shell) server: String,
+    /// Their photo and banner, once fetched.
+    pub(in crate::shell) pictures: Pictures,
 }
 
 impl PersonFacts {
@@ -69,6 +72,11 @@ impl PersonFacts {
                 .get(key.account.server())
                 .map(|server| server.name.clone())
                 .unwrap_or_default(),
+            pictures: shell
+                .profile_pictures
+                .get(key.account, user)
+                .cloned()
+                .unwrap_or_default(),
         })
     }
 }
@@ -103,15 +111,36 @@ pub(in crate::shell) fn body(shell: &Shell, look: &Look) -> Option<El> {
 
 /// The top: the avatar with presence and, when `status` says so, the
 /// status bubble; then the name and @handle.
-pub(in crate::shell) fn header(facts: &PersonFacts, status: bool, look: &Look) -> [El; 2] {
+pub(in crate::shell) fn header(facts: &PersonFacts, status: bool, look: &Look) -> [El; 3] {
+    let banner = facts
+        .pictures
+        .banner
+        .as_ref()
+        .filter(|banner| banner.error().is_none());
+    // The banner, 3 : 1 across the top, when one is set: its place is held
+    // while it decodes, which redraws without rebuilding the card.
+    let band = match banner {
+        Some(banner) => el()
+            .key("card-banner")
+            .w_full()
+            .aspect_ratio(3.0)
+            // Inside the card's padding: the pill's corner, less the padding.
+            .radius(look.radius(RADIUS_PILL) - look.space(SPACE_SM))
+            .clip_rounded(look.radius(RADIUS_PILL) - look.space(SPACE_SM))
+            .fill(look.palette.surface_hover)
+            .pixels_fit(banner.pixels(), SurfaceFit::Fill)
+            .a11y_hidden(),
+        None => el(),
+    };
     let mut top = row()
         .w_full()
         .px(look.space(SPACE_LG))
         .pt(look.space(SPACE_LG))
         .gap(look.space(SPACE_MD))
         .items_end()
-        .child(person_avatar(
+        .child(photo_avatar(
             &facts.name,
+            facts.pictures.avatar.as_ref(),
             AVATAR_CARD,
             facts.presence,
             look.palette.surface_pill,
@@ -138,7 +167,7 @@ pub(in crate::shell) fn header(facts: &PersonFacts, status: bool, look: &Look) -
                 .max_lines(1),
         );
     }
-    [top, who]
+    [band, top, who]
 }
 
 /// Where the sections go: the card leads with roles, a DM's profile pane

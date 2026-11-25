@@ -16,6 +16,7 @@ use super::Shell;
 use crate::appearance::Appearance;
 use crate::design::{Background, Density, Theme};
 use crate::general_settings::Language;
+use crate::image_editor::state::Use;
 use crate::menu::{MenuAction, MenuItem, OpenMenu, Placement};
 use crate::settings::colour_field::ColourChange;
 use crate::settings::rows::{density_name, language_name, theme_name};
@@ -31,6 +32,10 @@ pub(crate) enum SettingChoice {
     Density(Density),
     Language(Language),
     Presence(Presence),
+    /// A picture row's Change.
+    ChangePicture(Use),
+    /// The banner row's Remove.
+    RemoveBanner,
 }
 
 impl Shell {
@@ -189,6 +194,7 @@ impl Shell {
                     })
                     .collect()
             }
+            RowId::Photo | RowId::Banner => self.picture_menu(row),
             _ => return,
         };
         self.nav.menu = Some(OpenMenu::new(
@@ -202,6 +208,8 @@ impl Shell {
     /// A choice's menu item was picked.
     pub(crate) fn settings_chosen(&mut self, choice: SettingChoice, tx: &mut Tx) {
         let change = match choice {
+            SettingChoice::ChangePicture(use_) => return self.pick_profile_picture(use_, tx),
+            SettingChoice::RemoveBanner => return self.remove_banner(),
             SettingChoice::Theme(theme) => Change::Theme(theme),
             SettingChoice::Density(density) => Change::Density(density),
             SettingChoice::Language(language) => Change::Language(language),
@@ -271,6 +279,9 @@ impl Shell {
             Target::Presence(presence) => self.save_presence(presence),
             Target::Password => self.settings_password_save(tx),
             Target::ClearCache => self.clear_media_cache(tx),
+            Target::ProfilePicture(picture) => self.save_profile_picture(picture),
+            Target::RemoveBanner => self.remove_banner(),
+            Target::PickPicture(use_) => self.pick_profile_picture(use_, tx),
         }
     }
 

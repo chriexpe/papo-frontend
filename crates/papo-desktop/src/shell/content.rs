@@ -208,6 +208,7 @@ impl Shell {
             || self.shortcuts_open
             || self.jump.is_some()
             || self.leaving.is_some()
+            || self.editor.is_some()
     }
 }
 

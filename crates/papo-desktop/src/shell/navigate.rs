@@ -324,6 +324,7 @@ impl Shell {
             MenuAction::RemoveTile(tile) => {
                 self.remove_tile(tile, tx);
             }
+            MenuAction::EditTile(tile) => self.edit_tile(tile),
             MenuAction::RetrySend {
                 key,
                 local,

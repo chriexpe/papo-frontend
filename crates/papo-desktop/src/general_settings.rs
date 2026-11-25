@@ -1,6 +1,8 @@
 //! The General settings (`docs/design.md` §8, General): the interface's
-//! language (the system's, or one of the app's own) and whether a link to a
-//! host that is not trusted asks first. Both are this device's. The trusted
+//! language (the system's, or one of the app's own), whether a link to a
+//! host that is not trusted asks first, and whether new attachments start
+//! anonymized (shown under Privacy and security, §14.10). All are this
+//! device's. The trusted
 //! domains are `links`' own list; Save media to comes with D7.
 //!
 //! Owns the values, their defaults and their keys in this device's
@@ -20,6 +22,8 @@ const LANGUAGE_KEY: &str = "language";
 const SYSTEM_LANGUAGE: &str = "system";
 /// "Confirm external links".
 const CONFIRM_LINKS_KEY: &str = "confirm_links";
+/// "Anonymize new attachments".
+const ANONYMIZE_NEW_KEY: &str = "anonymize_new_attachments";
 
 /// Which language the interface speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -37,14 +41,19 @@ pub(crate) struct GeneralSettings {
     /// A link to a host that is neither the server's nor trusted asks
     /// before it opens; off, every link opens at once.
     pub(crate) confirm_links: bool,
+    /// A new attachment starts with Anonymize on where the SDK can clean
+    /// it; off, it starts off.
+    pub(crate) anonymize_new: bool,
 }
 
 impl Default for GeneralSettings {
-    /// The system's language, and links ask first.
+    /// The system's language, links ask first, and attachments go as they
+    /// are.
     fn default() -> GeneralSettings {
         GeneralSettings {
             language: Language::System,
             confirm_links: true,
+            anonymize_new: false,
         }
     }
 }
@@ -78,6 +87,9 @@ impl GeneralStore {
             confirm_links: prefs
                 .get(CONFIRM_LINKS_KEY)
                 .unwrap_or(defaults.confirm_links),
+            anonymize_new: prefs
+                .get(ANONYMIZE_NEW_KEY)
+                .unwrap_or(defaults.anonymize_new),
         };
         GeneralStore {
             stored: Stored::new(settings),
@@ -125,7 +137,7 @@ impl GeneralStore {
     }
 }
 
-/// Both keys of `settings`, with their values.
+/// Every key of `settings`, with its value.
 fn entries(settings: &GeneralSettings) -> Vec<(&'static str, Value)> {
     let language = match settings.language {
         Language::System => SYSTEM_LANGUAGE,
@@ -134,6 +146,7 @@ fn entries(settings: &GeneralSettings) -> Vec<(&'static str, Value)> {
     vec![
         (LANGUAGE_KEY, json!(language)),
         (CONFIRM_LINKS_KEY, json!(settings.confirm_links)),
+        (ANONYMIZE_NEW_KEY, json!(settings.anonymize_new)),
     ]
 }
 
@@ -141,13 +154,14 @@ fn entries(settings: &GeneralSettings) -> Vec<(&'static str, Value)> {
 mod tests {
     use rune::prefs::Prefs;
 
-    use super::{CONFIRM_LINKS_KEY, GeneralStore, LANGUAGE_KEY, Language};
+    use super::{ANONYMIZE_NEW_KEY, CONFIRM_LINKS_KEY, GeneralStore, LANGUAGE_KEY, Language};
 
     #[test]
     fn missing_settings_follow_the_system_and_ask_before_links() {
         let store = GeneralStore::read(&Prefs::memory());
         assert_eq!(store.settings().language, Language::System);
         assert!(store.settings().confirm_links);
+        assert!(!store.settings().anonymize_new);
     }
 
     #[test]
@@ -178,10 +192,12 @@ mod tests {
         let mut changed = *store.settings();
         changed.language = Language::Locale("en-US");
         changed.confirm_links = false;
+        changed.anonymize_new = true;
         let written = store.change(changed).expect("a write");
         store.write_of(&written).run().unwrap();
         assert_eq!(store.written(written, true), None);
         assert_eq!(Prefs::at(&path).get::<bool>(CONFIRM_LINKS_KEY), Some(false));
+        assert_eq!(Prefs::at(&path).get::<bool>(ANONYMIZE_NEW_KEY), Some(true));
         assert_eq!(*GeneralStore::read(&Prefs::at(&path)).settings(), changed);
     }
 }

@@ -155,6 +155,7 @@ pub(super) fn applied(current: &GeneralSettings, change: &Change) -> Option<Gene
     match *change {
         Change::Language(language) => next.language = language,
         Change::Switch(RowId::ConfirmLinks, on) => next.confirm_links = on,
+        Change::Switch(RowId::AnonymizeNew, on) => next.anonymize_new = on,
         _ => return None,
     }
     Some(next)
