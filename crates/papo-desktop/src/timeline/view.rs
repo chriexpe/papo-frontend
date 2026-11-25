@@ -39,7 +39,7 @@ const ESTIMATED_ROW_PT: f32 = 44.0;
 /// The state the timeline is drawn from, and the reports its rows send.
 /// Every report names the timeline it came from; one no longer shown is
 /// ignored.
-pub(crate) trait TimelineHost: Sized + 'static {
+pub(crate) trait TimelineHost: crate::message_media::received::MediaHost {
     /// The shown timeline.
     fn timeline(&self) -> Option<&OpenTimeline>;
     /// Rows `range` are visible. Returns whether the view changed.
@@ -138,8 +138,10 @@ pub(crate) struct Style {
     pub(crate) insets_pt: [f32; 2],
     /// The local pictures of your unsent messages' attachments.
     pub(crate) unsent: crate::unsent_media::UnsentMedia,
-    /// The tallest a media box may be, in points (§14.4).
-    pub(crate) media_max_height_pt: f32,
+    /// What received media draw with, and the bounds every media box takes (§14.4).
+    pub(crate) media: crate::message_media::received::MediaStyle,
+    /// The saved pill's file name, while it shows (§14.7).
+    pub(crate) saved_pill: Option<String>,
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and
@@ -183,6 +185,12 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         .seek
         .is_some()
         .then(|| seeking_pill::<S>(key, &style.look));
+    // The seek pill wins the foot while it pages.
+    let saved = style
+        .saved_pill
+        .as_deref()
+        .filter(|_| seeking.is_none())
+        .map(|name| super::controls::saved_pill::<S>(name, style.insets_pt[1], &style.look));
     let rows = col()
         .key("rows")
         // Its messages are the list ↑ and ↓ move along (`docs/design.md`
@@ -248,6 +256,7 @@ pub(crate) fn view<S: TimelineHost>(host: &S, style: Style) -> El {
         .child(viewport)
         .children(stack)
         .children(seeking)
+        .children(saved)
 }
 
 /// The viewport's key: each timeline has its own, so showing another opens

@@ -186,6 +186,23 @@ pub(crate) struct Shell {
     /// What had the keyboard when the pins panel opened, which gets it
     /// back when it closes.
     pins_return_focus: Option<String>,
+    /// Received media as it loads (`docs/design.md` §14.4).
+    media: crate::media_store::MediaStore,
+    /// Where the shown timeline's GIFs are, for which animate.
+    gif_places: received_media::GifPlaces,
+    /// Sizes of attachments this device sent, read from the files: their received rows keep
+    /// their unsent height.
+    own_sizes: Arc<HashMap<papo_sdk::Uuid, papo_sdk_ui::MediaSize>>,
+    /// Saves of received media, and the saved pill.
+    saves: crate::saving::Saves,
+    /// When the saved pill goes, on the window's clock.
+    saved_pill_until_s: Option<f64>,
+    /// Files being fetched for Open, apart from the cards' saves.
+    opening: std::collections::HashSet<crate::media_store::MediaKey>,
+    /// The viewer, while open.
+    viewer: Option<crate::viewer::Viewer>,
+    /// The viewer's room, as last laid out, in points.
+    viewer_room: [f32; 2],
 }
 
 /// The reorder on its way to the SDK, and the newest one waiting for it.
@@ -286,6 +303,14 @@ impl Default for Shell {
             search_runs: 0,
             search_spare: rune::TextEdit::new(""),
             pins_return_focus: None,
+            media: crate::media_store::MediaStore::default(),
+            gif_places: received_media::GifPlaces::default(),
+            own_sizes: Arc::default(),
+            saves: crate::saving::Saves::default(),
+            saved_pill_until_s: None,
+            opening: std::collections::HashSet::new(),
+            viewer: None,
+            viewer_room: [0.0, 0.0],
         }
     }
 }
@@ -364,6 +389,7 @@ impl Shell {
     }
 }
 
+pub(crate) use media_presses::MediaAction;
 mod accounts;
 mod activity;
 mod app_keys;
@@ -382,6 +408,8 @@ mod header;
 mod hover_bar;
 mod jump;
 mod jump_view;
+mod media_copy;
+mod media_presses;
 mod message_keys;
 mod message_menu;
 mod message_open;
@@ -398,6 +426,7 @@ mod reacting;
 mod reactions_list;
 mod reactors;
 mod reading;
+mod received_media;
 mod replies;
 mod search;
 mod search_field;
@@ -425,6 +454,9 @@ mod title;
 mod tray;
 mod unsent;
 mod view;
+mod viewer;
+mod viewer_input;
+mod viewer_view;
 
 pub(crate) use new_message::{
     DIRECT_PILL_KEY, FIND_FIELD_KEY, NEW_MESSAGE_BUTTON_KEY, candidate_key,

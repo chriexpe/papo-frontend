@@ -1,8 +1,10 @@
 //! The Conversations settings (`docs/design.md` §8, Conversations): how the
 //! composer takes Enter and starts a reply, what a row shows (its time, its
 //! avatar), how a timeline opens and what it shows of skipped messages, the
-//! channel description on opening, and the mention and reply highlights'
-//! hues (the reply highlight is drawn once B-006 lands). Every
+//! channel description on opening, the mention and reply highlights'
+//! hues (the reply highlight is drawn once B-006 lands), and the Media group
+//! (Image size, Animate GIFs and stickers; Video size and Autoplay videos
+//! come with playback, D7c). Every
 //! one is this device's: times and avatars could follow the account
 //! (`display.show_timestamps`, `display.show_avatars`) only once the
 //! backend can save one field without the others (B-020).
@@ -13,6 +15,7 @@
 //! holds. What each one changes is its reader's (the composer, the
 //! timeline, the look).
 
+use papo_sdk_ui::MediaSizeSetting;
 use rune::prefs::Prefs;
 use serde_json::{Value, json};
 
@@ -37,6 +40,11 @@ const CHANNEL_DESCRIPTION_KEY: &str = "channel_description";
 const MENTION_HUE_KEY: &str = "mention_hue";
 /// Message highlights › Replies, in OKLCH degrees.
 const REPLY_HUE_KEY: &str = "reply_hue";
+/// Media › Image size: "small", "medium", "large", or `{"custom": [width, height]}`.
+const IMAGE_SIZE_KEY: &str = "image_size";
+/// Media › Animate GIFs and stickers; absent until changed, when it follows the system's
+/// reduced motion.
+const ANIMATE_GIFS_KEY: &str = "animate_gifs";
 
 /// Everything the Conversations page holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +74,18 @@ pub(crate) struct ConversationSettings {
     pub(crate) mention_hue_degrees: f32,
     /// `highlight.reply`'s hue, in OKLCH degrees (0–360).
     pub(crate) reply_hue_degrees: f32,
+    /// The largest box a picture takes (§14.9).
+    pub(crate) image_size: MediaSizeSetting,
+    /// GIFs animate while they show; off, they play while hovered or focused. Unset until
+    /// changed: it then starts off when the system asks for reduced motion.
+    pub(crate) animate_gifs: Option<bool>,
+}
+
+impl ConversationSettings {
+    /// Whether GIFs animate, the system asking for reduced motion or not.
+    pub(crate) fn animates_gifs(&self, reduced_motion: bool) -> bool {
+        self.animate_gifs.unwrap_or(!reduced_motion)
+    }
 }
 
 impl Default for ConversationSettings {
@@ -83,6 +103,8 @@ impl Default for ConversationSettings {
             channel_description: true,
             mention_hue_degrees: MENTION_HIGHLIGHT_HUE_DEGREES,
             reply_hue_degrees: REPLY_HIGHLIGHT_HUE_DEGREES,
+            image_size: MediaSizeSetting::Medium,
+            animate_gifs: None,
         }
     }
 }
@@ -123,6 +145,11 @@ impl ConversationStore {
             channel_description: switch(CHANNEL_DESCRIPTION_KEY, defaults.channel_description),
             mention_hue_degrees: hue(MENTION_HUE_KEY, defaults.mention_hue_degrees),
             reply_hue_degrees: hue(REPLY_HUE_KEY, defaults.reply_hue_degrees),
+            image_size: prefs
+                .get::<Value>(IMAGE_SIZE_KEY)
+                .and_then(|value| size_of(&value))
+                .unwrap_or(defaults.image_size),
+            animate_gifs: prefs.get(ANIMATE_GIFS_KEY),
         };
         ConversationStore {
             stored: Stored::new(settings),
@@ -193,7 +220,45 @@ fn entries(settings: &ConversationSettings) -> Vec<(&'static str, Value)> {
         (CHANNEL_DESCRIPTION_KEY, json!(settings.channel_description)),
         (MENTION_HUE_KEY, json!(settings.mention_hue_degrees)),
         (REPLY_HUE_KEY, json!(settings.reply_hue_degrees)),
+        (IMAGE_SIZE_KEY, size_value(settings.image_size)),
+        (ANIMATE_GIFS_KEY, json!(settings.animate_gifs)),
     ]
+}
+
+/// A size setting as it is saved.
+fn size_value(size: MediaSizeSetting) -> Value {
+    match size {
+        MediaSizeSetting::Small => json!("small"),
+        MediaSizeSetting::Medium => json!("medium"),
+        MediaSizeSetting::Large => json!("large"),
+        MediaSizeSetting::Custom {
+            max_width_pt,
+            max_height_pt,
+        } => json!({ "custom": [max_width_pt, max_height_pt] }),
+    }
+}
+
+/// A saved size setting; none for anything else (a Custom size comes back within its range).
+fn size_of(value: &Value) -> Option<MediaSizeSetting> {
+    match value {
+        Value::String(name) => match name.as_str() {
+            "small" => Some(MediaSizeSetting::Small),
+            "medium" => Some(MediaSizeSetting::Medium),
+            "large" => Some(MediaSizeSetting::Large),
+            _ => None,
+        },
+        Value::Object(object) => {
+            let sides = object.get("custom")?.as_array()?;
+            let side = |index: usize| {
+                sides
+                    .get(index)?
+                    .as_u64()
+                    .map(|side| u16::try_from(side).unwrap_or(u16::MAX))
+            };
+            Some(MediaSizeSetting::custom(side(0)?, side(1)?))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -201,9 +266,10 @@ mod tests {
     use rune::prefs::Prefs;
 
     use super::{
-        ConversationSettings, ConversationStore, ENTER_SENDS_KEY, MENTION_HUE_KEY,
+        ConversationSettings, ConversationStore, ENTER_SENDS_KEY, IMAGE_SIZE_KEY, MENTION_HUE_KEY,
         OPEN_AT_NEWEST_KEY, UNREAD_HOURGLASS_KEY,
     };
+    use papo_sdk_ui::MediaSizeSetting;
 
     #[test]
     fn missing_settings_take_the_designs_defaults() {
@@ -252,10 +318,43 @@ mod tests {
         changed.show_avatars = false;
         changed.mention_hue_degrees = 196.0;
         changed.reply_hue_degrees = 320.0;
+        changed.image_size = MediaSizeSetting::custom(504, 304);
+        changed.animate_gifs = Some(false);
         let written = store.change(changed).expect("a write");
         store.write_of(&written).run().unwrap();
         assert_eq!(store.written(written, true), None);
         let again = ConversationStore::read(&Prefs::at(&path));
         assert_eq!(*again.settings(), changed);
+    }
+
+    #[test]
+    fn animate_gifs_follows_reduced_motion_until_changed() {
+        let mut settings = ConversationSettings::default();
+        assert!(settings.animates_gifs(false));
+        assert!(!settings.animates_gifs(true));
+        settings.animate_gifs = Some(true);
+        assert!(settings.animates_gifs(true));
+    }
+
+    #[test]
+    fn a_saved_image_size_is_read_and_a_wrong_one_is_medium() {
+        let mut prefs = Prefs::memory();
+        prefs.set(IMAGE_SIZE_KEY, "large").unwrap();
+        assert_eq!(
+            ConversationStore::read(&prefs).settings().image_size,
+            MediaSizeSetting::Large
+        );
+        prefs
+            .set(IMAGE_SIZE_KEY, &serde_json::json!({ "custom": [9999, 1] }))
+            .unwrap();
+        assert_eq!(
+            ConversationStore::read(&prefs).settings().image_size,
+            MediaSizeSetting::custom(720, 200)
+        );
+        prefs.set(IMAGE_SIZE_KEY, "huge").unwrap();
+        assert_eq!(
+            ConversationStore::read(&prefs).settings().image_size,
+            MediaSizeSetting::Medium
+        );
     }
 }

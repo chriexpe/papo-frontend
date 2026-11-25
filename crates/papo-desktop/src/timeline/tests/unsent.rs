@@ -61,8 +61,7 @@ fn file(kind: TileKind) -> UnsentFile {
     UnsentFile {
         kind,
         size_bytes: Some(2_516_582),
-        size_px: Some((1600, 1200)),
-        aspect: Some(4.0 / 3.0),
+        media_size: papo_sdk_ui::MediaSize::exact(1600, 1200),
         image: None,
         sharp: None,
     }
@@ -200,9 +199,9 @@ fn a_sharp_picture_landing_redraws_the_row() {
             .map(|entry| Arc::clone(&entry.files))
             .expect("kept")
     };
-    let before = crate::timeline::message_row::pictures_drawn(&files(&media));
+    let before = crate::timeline::row_media::pictures_drawn(&files(&media));
     media.sharpened(local, 0, images.rgba(2, 2, vec![0_u8; 16]));
-    let after = crate::timeline::message_row::pictures_drawn(&files(&media));
+    let after = crate::timeline::row_media::pictures_drawn(&files(&media));
     assert_ne!(before, after);
 }
 

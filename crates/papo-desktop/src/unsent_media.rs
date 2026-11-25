@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use papo_sdk::Uuid;
+use papo_sdk_ui::MediaSize;
 use rune::Image;
 
 use crate::composer::tray::{Tile, TileKind};
@@ -25,12 +26,10 @@ pub(crate) struct UnsentFile {
     /// Its size in bytes as the tray knew it, for when the SDK reports
     /// none (while the file still copies, or once it was sent).
     pub(crate) size_bytes: Option<u64>,
-    /// The picture's size as shown, in pixels, when the SDK inspected it:
-    /// it is never drawn larger (§14.4).
-    pub(crate) size_px: Option<(u32, u32)>,
-    /// Width over height of the picture as shown; none when unknown (the
-    /// box is then 16:9 and the picture letterboxed in it).
-    pub(crate) aspect: Option<f32>,
+    /// What the picture's size is known as: its size as shown, when the SDK inspected it (it is
+    /// never drawn larger, §14.4); else the tile's thumbnail's shape; else nothing (16:9,
+    /// letterboxed). The sent message is drawn from the same, so its row keeps its height.
+    pub(crate) media_size: MediaSize,
     /// The picture drawn until a sharp one is ready (the tile's thumbnail).
     pub(crate) image: Option<Image>,
     /// The picture decoded at the media box's size; shown once ready.
@@ -48,14 +47,19 @@ impl UnsentFile {
             .as_ref()
             .filter(|_| !reshaped)
             .and_then(Image::size)
-            .and_then(|[width, height]| aspect(width, height));
-        let size_px = tile.sent_size_px();
-        let inspected_shape = size_px.and_then(|(width, height)| aspect(width, height));
+            .filter(|[width, height]| *width > 0 && *height > 0)
+            .map(|[width_px, height_px]| MediaSize::Shape {
+                width_px,
+                height_px,
+            });
+        let media_size = match tile.sent_size_px() {
+            Some((width, height)) => MediaSize::exact(width, height),
+            None => thumbnail_shape.unwrap_or(MediaSize::Unknown),
+        };
         UnsentFile {
             kind: tile.kind.clone(),
             size_bytes: tile.size_bytes,
-            size_px,
-            aspect: inspected_shape.or(thumbnail_shape),
+            media_size,
             image: tile.thumbnail.clone().filter(|_| !reshaped),
             sharp: None,
         }
@@ -67,8 +71,7 @@ impl UnsentFile {
         UnsentFile {
             kind: TileKind::File,
             size_bytes: None,
-            size_px: None,
-            aspect: None,
+            media_size: MediaSize::Unknown,
             image: None,
             sharp: None,
         }
@@ -94,12 +97,6 @@ impl UnsentFile {
     pub(crate) fn is_media(&self) -> bool {
         self.kind != TileKind::File
     }
-}
-
-/// Width over height, when both sides are known.
-pub(crate) fn aspect(width: u32, height: u32) -> Option<f32> {
-    #[expect(clippy::cast_precision_loss, reason = "a picture's proportions")]
-    (width > 0 && height > 0).then(|| width as f32 / height as f32)
 }
 
 /// One message's attachments, in order, and the version they are at.
@@ -191,17 +188,10 @@ mod tests {
         UnsentFile {
             kind: TileKind::Image,
             size_bytes: Some(1),
-            size_px: Some((1600, 900)),
-            aspect: aspect(1600, 900),
+            media_size: MediaSize::exact(1600, 900),
             image: None,
             sharp: None,
         }
-    }
-
-    #[test]
-    fn a_shape_needs_both_sides() {
-        assert_eq!(aspect(1600, 900), Some(1600.0 / 900.0));
-        assert_eq!(aspect(0, 900), None);
     }
 
     #[test]

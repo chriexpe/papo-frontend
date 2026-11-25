@@ -253,6 +253,15 @@ fn plain_row(setting: Row, look: &Look) -> El {
             .role("button")
             .label(spoken)
             .on_press_tx(move |shell: &mut Shell, tx| shell.settings_action(id, tx)),
+        Kind::Folder => pressable(line, look)
+            .role("button")
+            .label(format!("{spoken}, {}", strings::settings_change()))
+            .on_press_tx(move |shell: &mut Shell, tx| shell.settings_action(id, tx))
+            .child(
+                text(strings::settings_change())
+                    .font(look.font(TYPE_BODY_MEDIUM))
+                    .color(look.palette.link),
+            ),
         Kind::Slider(_)
         | Kind::ColourField
         | Kind::Directions(_)

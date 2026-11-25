@@ -15,6 +15,7 @@ pub(crate) mod change_marks;
 pub(crate) mod changes;
 pub(crate) mod content;
 mod controls;
+pub(crate) use controls::saved_pill;
 pub(crate) mod echoes;
 mod grouping;
 pub(crate) mod hover_bar;
@@ -30,6 +31,7 @@ pub(crate) mod reading;
 pub(crate) mod replies;
 pub(crate) mod reply_line;
 pub(crate) mod reports;
+mod row_media;
 mod row_parts;
 pub(crate) mod rows;
 pub(crate) mod send_mark;
@@ -156,6 +158,11 @@ pub(crate) struct OpenTimeline {
 }
 
 impl OpenTimeline {
+    /// The rows last reported visible.
+    pub(crate) fn visible_rows(&self) -> std::ops::Range<usize> {
+        self.visible_rows.clone()
+    }
+
     /// A timeline whose window is opening, at `anchor`. Returns the
     /// receiver its watch stops on.
     pub(crate) fn opening(

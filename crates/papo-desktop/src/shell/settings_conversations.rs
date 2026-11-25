@@ -26,6 +26,8 @@ impl Shell {
         if let Some(next) = self.conversations.change(settings) {
             self.write_conversations(next, row, tx);
         }
+        // Animate GIFs takes effect on the GIFs showing now, not at their next move.
+        self.show_gifs();
         super::appearance::keep_place(reading, tx);
     }
 
@@ -61,6 +63,7 @@ impl Shell {
         if let (Some(panel), Some(row)) = (self.settings.as_mut(), row) {
             panel.saved(row, Target::Conversations(settings), ok);
         }
+        self.show_gifs();
         super::appearance::keep_place(reading, tx);
         if let Some(next) = next {
             // The change that waited is the latest one: its row hears.
@@ -84,6 +87,27 @@ pub(super) fn applied(
         Change::Switch(RowId::ChannelDescription, on) => next.channel_description = on,
         Change::Hue(RowId::MentionHue, hue) => next.mention_hue_degrees = hue.rem_euclid(360.0),
         Change::Hue(RowId::ReplyHue, hue) => next.reply_hue_degrees = hue.rem_euclid(360.0),
+        Change::ImageSize(size) => next.image_size = size,
+        Change::Switch(RowId::AnimateGifs, on) => next.animate_gifs = Some(on),
+        Change::Slider {
+            row: row @ (RowId::MediaMaxWidth | RowId::MediaMaxHeight),
+            value,
+            ..
+        } => {
+            let (width, height) = current.image_size.max_size_pt();
+            // A slider's value is within its range, so it fits a u16.
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a slider value between 200 and 720"
+            )]
+            let value = value.round().max(0.0) as u16;
+            next.image_size = if row == RowId::MediaMaxWidth {
+                papo_sdk_ui::MediaSizeSetting::custom(value, height)
+            } else {
+                papo_sdk_ui::MediaSizeSetting::custom(width, value)
+            };
+        }
         _ => return None,
     }
     Some(next)

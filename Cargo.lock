@@ -4228,6 +4228,7 @@ dependencies = [
  "fontique",
  "futures-util",
  "icu_properties",
+ "image",
  "imbl",
  "log",
  "oo7",

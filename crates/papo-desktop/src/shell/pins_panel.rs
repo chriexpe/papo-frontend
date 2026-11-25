@@ -220,6 +220,15 @@ fn list(
             );
     }
     let key = open.key;
+    // Media take the panel's box: 0.55 × its height (§10).
+    let mut style = style.clone();
+    style.media.bounds = papo_sdk_ui::MediaBounds::new(
+        shell.conversations.settings().image_size,
+        f32::INFINITY,
+        max_height_pt * papo_sdk_ui::HOST_HEIGHT_SHARE,
+    );
+    style.media.surface = crate::message_media::received::MediaSurface::Pins;
+    let style = &style;
     let mut rows = Vec::new();
     for (index, pin) in pins.iter().enumerate() {
         if index > 0 {

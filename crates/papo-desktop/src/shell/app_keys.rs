@@ -82,6 +82,10 @@ impl Shell {
         if !running || composing {
             return false;
         }
+        // The viewer keeps the keyboard: the app's keys wait until it closes.
+        if self.viewer.is_some() {
+            return false;
+        }
         if is_shortcuts_key(key) {
             self.toggle_shortcuts(tx);
             return true;

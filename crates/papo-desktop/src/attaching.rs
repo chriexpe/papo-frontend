@@ -13,8 +13,9 @@ use papo_sdk::{MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_AT
 use crate::composer::tray::TileKind;
 
 /// The most bytes a picture may have for its tile to be decoded; a larger
-/// one is drawn as a file tile, so a tile never holds a huge decode.
-pub(crate) const THUMBNAIL_SOURCE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// one is drawn as a file tile, so a tile never holds a huge decode. The
+/// SDK's limit, so the sent message draws it as the same kind.
+pub(crate) const THUMBNAIL_SOURCE_MAX_BYTES: u64 = papo_sdk_ui::MAX_PICTURE_BYTES;
 
 /// What the shell found about one file offered.
 #[derive(Clone, Debug, PartialEq, Eq)]

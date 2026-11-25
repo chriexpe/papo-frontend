@@ -65,7 +65,7 @@ impl Shell {
         if !ok {
             log::warn!("a General setting was not saved");
         }
-        let next = self.general.written(settings, ok);
+        let next = self.general.written(settings.clone(), ok);
         if let (Some(panel), Some(row)) = (self.settings.as_mut(), row) {
             panel.saved(row, Target::General(settings), ok);
         }
@@ -149,9 +149,29 @@ impl Shell {
     }
 }
 
+impl Shell {
+    /// Save media to's Change: the system's folder chooser, then the folder is saved.
+    pub(crate) fn choose_media_folder(&mut self, tx: &mut Tx) {
+        let options = rune::FileDialogOptions {
+            title: crate::strings::settings_choose_folder().to_owned(),
+            directory: self.general.settings().media_folder(),
+            file_name: None,
+            filters: Vec::new(),
+        };
+        tx.open_folder(options, |shell: &mut Shell, answer, tx| {
+            let Ok(Some(folder)) = answer else {
+                return;
+            };
+            let mut next = shell.general.settings().clone();
+            next.save_media_to = Some(folder);
+            shell.settings_save(RowId::SaveMediaTo, Target::General(next), tx);
+        });
+    }
+}
+
 /// `current` with `change` applied, when `change` is a General row's.
 pub(super) fn applied(current: &GeneralSettings, change: &Change) -> Option<GeneralSettings> {
-    let mut next = *current;
+    let mut next = current.clone();
     match *change {
         Change::Language(language) => next.language = language,
         Change::Switch(RowId::ConfirmLinks, on) => next.confirm_links = on,

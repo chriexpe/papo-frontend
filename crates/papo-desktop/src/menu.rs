@@ -57,6 +57,11 @@ pub(crate) enum MenuAction {
     OpenLink { key: TimelineKey, url: String },
     /// Copy `url`.
     CopyLink(String),
+    /// What the media menu does with attachment `at`.
+    Media {
+        at: crate::message_media::received::MediaAt,
+        action: crate::shell::MediaAction,
+    },
     /// Toggle your reaction `emoji` to message `id`.
     React {
         key: TimelineKey,

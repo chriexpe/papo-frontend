@@ -155,6 +155,16 @@ impl Shell {
 pub(super) fn delete_confirm(shell: &Shell, style: &Style) -> Option<El> {
     let DeleteAsk { key, id, as_who } = shell.deleting?;
     let open = shell.tabs.shown().filter(|open| open.key == key)?;
+    // Media take a third of the window in a dialog (§10), and show only.
+    let mut style = style.clone();
+    style.media.bounds = papo_sdk_ui::MediaBounds::new(
+        shell.conversations.settings().image_size,
+        f32::INFINITY,
+        shell.conversation_rect[3] * papo_sdk_ui::DIALOG_HEIGHT_SHARE,
+    );
+    style.media.interactive = false;
+    style.media.surface = crate::message_media::received::MediaSurface::Confirm;
+    let style = &style;
     // A long message scrolls inside its box, so the buttons stay in view.
     let shown = standalone::<Shell>(open, id, style).map(|message| {
         col()

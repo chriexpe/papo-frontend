@@ -21,6 +21,7 @@ mod direct_accounts;
 mod direct_lists;
 mod editing;
 mod links;
+mod media;
 mod message_menu;
 mod navigation;
 mod new_message;

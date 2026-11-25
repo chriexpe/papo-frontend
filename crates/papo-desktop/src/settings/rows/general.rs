@@ -41,7 +41,29 @@ pub(super) fn general(cx: &Context<'_>) -> Vec<Group> {
                 },
             ],
         },
+        Group {
+            title: Some(strings::settings_group_files().to_owned()),
+            rows: vec![Row {
+                id: RowId::SaveMediaTo,
+                title: strings::settings_save_media_to().to_owned(),
+                sub: settings.media_folder().as_deref().map(folder_shown),
+                kind: Kind::Folder,
+            }],
+        },
     ]
+}
+
+/// A folder as the row shows it: the home folder as "~".
+fn folder_shown(folder: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    match home
+        .as_deref()
+        .and_then(|home| folder.strip_prefix(home).ok())
+    {
+        Some(inside) if inside.as_os_str().is_empty() => "~".to_owned(),
+        Some(inside) => format!("~/{}", inside.display()),
+        None => folder.display().to_string(),
+    }
 }
 
 pub(super) fn trusted(cx: &Context<'_>) -> Vec<Group> {

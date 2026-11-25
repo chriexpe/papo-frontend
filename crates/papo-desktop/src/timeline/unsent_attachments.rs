@@ -7,25 +7,24 @@
 //!
 //! Pure: drawn from the SDK's operation and progress and the local
 //! pictures (`unsent_media`); ✕ goes to the host. The pictures are
-//! `unsent_pictures`'; media in sent messages, and Save on a card, are
-//! D7b's.
+//! `unsent_pictures`'; the box, album and card are `message_media`'s, as a
+//! received message's are, so a sent message keeps its row's height.
 
 use papo_sdk::{
     AttachmentProgress, Operation, OperationKind, OperationState, UploadProgress, Uuid,
 };
-use rune::{Color, El, col, el, icon, row, text};
+use papo_sdk_ui::MediaBounds;
+use rune::{Color, El, col, el, icon, row};
 
 use super::TimelineKey;
 use super::unsent_pictures::{album, single};
 use super::view::TimelineHost;
-use crate::attaching::extension_label;
 use crate::design::{
-    EXTENSION_BLOCK_PT, EXTENSION_BLOCK_RADIUS, FILE_CARD_BAR_PT, FILE_CARD_BUTTON_PT,
-    FILE_CARD_MAX_PT, FILE_CARD_PAD_PT, FOCUS_RING_PT, Look, PILL_OUTLINE_PT, RADIUS_CARD,
-    RADIUS_CONTROL, SPACE_MD, SPACE_SM, TYPE_BODY_MEDIUM, TYPE_CAPTION, TYPE_EXTENSION,
+    FILE_CARD_BUTTON_PT, FOCUS_RING_PT, Look, MEDIA_BLOCK_GAP, RADIUS_CONTROL,
     UPLOAD_CANCEL_ICON_PT,
 };
 use crate::icons::X;
+use crate::message_media::{self, FileCard};
 use crate::strings;
 use crate::unsent_media::UnsentFile;
 
@@ -54,9 +53,9 @@ pub(super) struct Unsent<'a> {
     pub(super) version: u64,
     pub(super) files: &'a [UnsentFile],
     pub(super) progress: Option<UploadProgress>,
-    /// The tallest a media box may be: the smaller of the Max height and
-    /// 0.55 × the timeline's height.
-    pub(super) max_height_pt: f32,
+    /// The largest box media may take here (the Image size setting, the column, 0.55 × the
+    /// timeline's height).
+    pub(super) bounds: MediaBounds,
 }
 
 /// The attachments block of an unsent message; none when it has none.
@@ -92,11 +91,11 @@ pub(super) fn attachments<S: TimelineHost>(unsent: &Unsent<'_>, look: &Look) -> 
     let (media, files): (Vec<&Item<'_>>, Vec<&Item<'_>>) =
         items.iter().partition(|item| item.file.is_media());
     let cancel = cancellable.then_some((unsent.key, unsent.local));
-    let mut block = col().gap(look.space(SPACE_SM));
+    let mut block = col().gap(look.space(MEDIA_BLOCK_GAP));
     match media.as_slice() {
         [] => {}
-        [one] => block = block.child(single::<S>(one, cancel, unsent.max_height_pt, look)),
-        many => block = block.child(album::<S>(many, cancel, look)),
+        [one] => block = block.child(single::<S>(one, cancel, unsent.bounds, look)),
+        many => block = block.child(album::<S>(many, cancel, unsent.bounds, look)),
     }
     for item in files {
         block = block.child(file_card::<S>(item, cancel, look));
@@ -204,73 +203,29 @@ fn file_card<S: TimelineHost>(
         Some(total) => strings::media_file(item.name, &strings::size(total)),
         None => item.name.to_owned(),
     };
-    let extension = el()
-        .size(EXTENSION_BLOCK_PT, EXTENSION_BLOCK_PT)
-        .center()
-        .radius(look.radius(EXTENSION_BLOCK_RADIUS))
-        .fill(look.palette.surface_code)
-        .border(PILL_OUTLINE_PT, look.palette.line_subtle)
-        .child(
-            text(extension_label(item.name))
-                .font(look.font(TYPE_EXTENSION))
-                .color(look.palette.text_secondary)
-                .a11y_hidden(),
-        );
-    let words = col()
-        .grow(1.0)
-        .min_w(0.0)
-        .child(
-            text(item.name)
-                .font(look.font(TYPE_BODY_MEDIUM))
-                .color(look.palette.text_primary)
-                .truncate_middle(),
-        )
-        .children(size_line.map(|line| {
-            text(line)
-                .font(look.font(TYPE_CAPTION).mono())
-                .color(look.palette.text_muted)
-        }));
-    let mut card = row()
-        .w_full()
-        .max_w(FILE_CARD_MAX_PT)
-        .pl(FILE_CARD_PAD_PT.0)
-        .pr(FILE_CARD_PAD_PT.1)
-        .py(FILE_CARD_PAD_PT.1)
-        .gap(look.space(SPACE_MD))
-        .items_center()
-        .radius(look.radius(RADIUS_CARD))
-        .clip_rounded(look.radius(RADIUS_CARD))
-        .fill(look.palette.surface_sidebar)
-        .border(PILL_OUTLINE_PT, look.palette.line_subtle)
-        .role("group")
-        .label(label)
-        .child(extension)
-        .child(words);
+    let card = FileCard {
+        name: item.name,
+        size_line: size_line.map(|line| message_media::size_line(line, look)),
+        label,
+    };
+    let mut ends = Vec::new();
+    let mut bar = None;
     if let (Some(share), Some((key, local))) = (share, cancel) {
-        card = card
-            .child(
-                el().size(FILE_CARD_BUTTON_PT, FILE_CARD_BUTTON_PT)
-                    .center()
-                    .radius(look.radius(RADIUS_CONTROL))
-                    .child(cancel_button::<S>(
-                        key,
-                        local,
-                        item.index,
-                        look.palette.text_secondary,
-                        look,
-                    )),
-            )
-            .child(
-                // From the left edge, along the bottom.
-                el().pin(Some(0.0), None, None, Some(0.0))
-                    .w_frac(share)
-                    .h(FILE_CARD_BAR_PT)
-                    .fill(look.palette.accent)
-                    .role("progressbar")
-                    .label(progress_label(item)),
-            );
+        ends.push(
+            el().size(FILE_CARD_BUTTON_PT, FILE_CARD_BUTTON_PT)
+                .center()
+                .radius(look.radius(RADIUS_CONTROL))
+                .child(cancel_button::<S>(
+                    key,
+                    local,
+                    item.index,
+                    look.palette.text_secondary,
+                    look,
+                )),
+        );
+        bar = Some((share, progress_label(item)));
     }
-    card
+    message_media::file_card(card, ends, bar, look)
 }
 
 /// A ring's or bar's spoken name: "Uploading praia.jpg, 34 %". Readable,

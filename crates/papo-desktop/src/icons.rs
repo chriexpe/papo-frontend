@@ -300,6 +300,37 @@ presence_mark!(
     "offline"
 );
 
+line_icon!(
+    /// A picture that could not load (§14.4).
+    IMAGE_OFF,
+    "image-off"
+);
+line_icon!(
+    /// Save: a file card's button, the media menu's Save, the viewer's Save (§14.6–§14.8).
+    DOWNLOAD,
+    "download"
+);
+line_icon!(
+    /// Show in folder and Save as… (§14.6, §14.7).
+    FOLDER,
+    "folder"
+);
+line_icon!(
+    /// The viewer's Zoom in (§14.8).
+    ZOOM_IN,
+    "zoom-in"
+);
+line_icon!(
+    /// The viewer's Zoom out (§14.8).
+    ZOOM_OUT,
+    "zoom-out"
+);
+line_icon!(
+    /// The viewer's Jump to message (§14.8).
+    JUMP,
+    "jump"
+);
+
 #[cfg(test)]
 mod tests;
 line_icon!(

@@ -58,6 +58,41 @@ struct Host {
     controls: Vec<&'static str>,
     /// Your unsent messages' attachments.
     unsent: crate::unsent_media::UnsentMedia,
+    /// What received media draw with.
+    media: crate::message_media::received::MediaStyle,
+}
+
+impl crate::message_media::received::MediaHost for Host {
+    fn media_press(
+        &mut self,
+        _at: crate::message_media::received::MediaAt,
+        _press: crate::message_media::received::MediaPress,
+        _tx: &mut Tx,
+    ) {
+        self.controls.push("media");
+    }
+
+    fn media_moved(
+        &mut self,
+        _key: crate::media_store::MediaKey,
+        _rect: [f32; 4],
+        _animate: bool,
+        _tx: &mut Tx,
+    ) {
+    }
+
+    fn media_hovered(
+        &mut self,
+        _key: crate::media_store::MediaKey,
+        _on: bool,
+        _animate: bool,
+        _tx: &mut Tx,
+    ) {
+    }
+
+    fn saved_pill_shown(&mut self, _tx: &mut Tx) {
+        self.controls.push("saved-show");
+    }
 }
 
 impl TimelineHost for Host {
@@ -207,7 +242,8 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
         reacting: Reacting::unknown(),
         insets_pt: [0.0, 0.0],
         unsent: host.unsent.clone(),
-        media_max_height_pt: crate::design::MEDIA_MAX_PT.1,
+        media: host.media.clone(),
+        saved_pill: None,
     };
     col().w_full().h_full().child(view(host, style))
 }
@@ -265,6 +301,11 @@ fn runtime_with(
         hourglass: true,
         controls: Vec::new(),
         unsent: crate::unsent_media::UnsentMedia::default(),
+        media: crate::message_media::received::MediaStyle::new(papo_sdk_ui::MediaBounds::new(
+            papo_sdk_ui::MediaSizeSetting::Medium,
+            f32::INFINITY,
+            400.0,
+        )),
     };
     let env = Env {
         system_dark: true,
@@ -352,5 +393,6 @@ mod echoes;
 mod hover_bar;
 mod reactions;
 mod reading;
+mod received;
 mod spacing;
 mod unsent;

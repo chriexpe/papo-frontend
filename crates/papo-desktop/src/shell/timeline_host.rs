@@ -32,6 +32,7 @@ impl TimelineHost for Shell {
             .any(|request| matches!(request, Request::FillGap(_)));
         self.send_requests(key, requests);
         self.report_reading();
+        self.want_media();
         filling
     }
 

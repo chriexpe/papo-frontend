@@ -58,19 +58,6 @@ pub(crate) const DROP_CARD_PAD_PT: (f32, f32) = (32.0, 24.0);
 
 /// `radius.card`: media in messages, file cards, albums.
 pub(crate) const RADIUS_CARD: Radius = Radius(10.0);
-/// The media box's limits at the Medium size (§14.9; the Media settings
-/// come with D7b), in points.
-pub(crate) const MEDIA_MAX_PT: (f32, f32) = (448.0, 400.0);
-/// The share of the timeline's height a media box may take (§14.4).
-pub(crate) const MEDIA_MAX_HEIGHT_SHARE: f32 = 0.55;
-/// The box of media whose shape is unknown, width over height.
-pub(crate) const MEDIA_UNKNOWN_ASPECT: f32 = 16.0 / 9.0;
-/// Between an album's cells, in points.
-pub(crate) const ALBUM_GAP_PT: f32 = 2.0;
-/// An album's shape, width over height: two items, three or more.
-pub(crate) const ALBUM_ASPECT: (f32, f32) = (3.0 / 2.0, 4.0 / 3.0);
-/// Cells an album draws; the rest are counted on the last ("+N").
-pub(crate) const ALBUM_CELLS: usize = 4;
 /// The black over an album's last cell when more follow.
 pub(crate) const ALBUM_MORE_ALPHA: f32 = 0.6;
 /// An uploading item's ring: its side and the track's white.
@@ -87,3 +74,16 @@ pub(crate) const FILE_CARD_PAD_PT: (f32, f32) = (10.0, 6.0);
 pub(crate) const FILE_CARD_BAR_PT: f32 = 2.0;
 /// A file card's end button, in points.
 pub(crate) const FILE_CARD_BUTTON_PT: f32 = 38.0;
+/// Between a message's pictures and its file cards, and between cards (unsent and received
+/// alike, so a sent message keeps its height).
+pub(crate) const MEDIA_BLOCK_GAP: super::Space = super::SPACE_SM;
+/// The `image-off` icon of a picture that could not load, in points.
+pub(crate) const MEDIA_FAILED_ICON_PT: f32 = 20.0;
+/// The viewer (§14.8): the black behind it, its pill buttons, ‹ ›, and the ring while the
+/// whole picture loads, in points.
+pub(crate) const VIEWER_BACKDROP_ALPHA: f32 = 0.92;
+pub(crate) const VIEWER_BUTTON_PT: f32 = 32.0;
+pub(crate) const VIEWER_ARROW_PT: f32 = 40.0;
+pub(crate) const VIEWER_RING_PT: f32 = 20.0;
+/// The author's avatar in the viewer's pill (§14.8), in points.
+pub(crate) const VIEWER_AVATAR_PT: f32 = 20.0;

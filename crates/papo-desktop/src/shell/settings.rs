@@ -32,6 +32,8 @@ pub(crate) enum SettingChoice {
     Density(Density),
     Language(Language),
     Presence(Presence),
+    /// Image size's value.
+    ImageSize(papo_sdk_ui::MediaSizeSetting),
     /// A picture row's Change.
     ChangePicture(Use),
     /// The banner row's Remove.
@@ -195,6 +197,7 @@ impl Shell {
                     .collect()
             }
             RowId::Photo | RowId::Banner => self.picture_menu(row),
+            RowId::ImageSize => image_size_items(self.conversations.settings().image_size),
             _ => return,
         };
         self.nav.menu = Some(OpenMenu::new(
@@ -214,6 +217,7 @@ impl Shell {
             SettingChoice::Density(density) => Change::Density(density),
             SettingChoice::Language(language) => Change::Language(language),
             SettingChoice::Presence(presence) => Change::Presence(presence),
+            SettingChoice::ImageSize(size) => Change::ImageSize(size),
         };
         self.settings_change(change, tx);
     }
@@ -235,7 +239,13 @@ impl Shell {
             });
         if let Some(target) = other {
             panel.held(HeldEvent::Ended);
+            let resizes = matches!(&target, Target::Conversations(next)
+                if next.image_size != self.conversations.settings().image_size);
             self.settings_save(change.row(), target, tx);
+            if resizes {
+                // Every box takes the new size: pictures are decoded for it.
+                self.want_media();
+            }
             return;
         }
         let current = panel
@@ -261,7 +271,7 @@ impl Shell {
 
     /// Saves `target` for `row`'s change; a failure shows under the row
     /// when the write comes back.
-    fn settings_save(&mut self, row: RowId, target: Target, tx: &mut Tx) {
+    pub(super) fn settings_save(&mut self, row: RowId, target: Target, tx: &mut Tx) {
         match target {
             Target::Appearance(appearance) => {
                 self.saving_row = Some(row);
@@ -372,6 +382,7 @@ fn applied(
         | Change::Slider { .. }
         | Change::Hue(..)
         | Change::Language(_)
+        | Change::ImageSize(_)
         | Change::Presence(_) => {}
         Change::Colours(colour) => {
             let (background, now) = super::settings_colours::colours_applied(
@@ -385,4 +396,38 @@ fn applied(
         }
     }
     (next, selected)
+}
+
+/// Image size's menu: each preset with its box, then Custom (starting at the current box).
+fn image_size_items(current: papo_sdk_ui::MediaSizeSetting) -> Vec<MenuItem> {
+    use papo_sdk_ui::MediaSizeSetting;
+    let (width, height) = current.max_size_pt();
+    [
+        MediaSizeSetting::Small,
+        MediaSizeSetting::Medium,
+        MediaSizeSetting::Large,
+        MediaSizeSetting::custom(width, height),
+    ]
+    .into_iter()
+    .map(|size| {
+        let chosen = std::mem::discriminant(&size) == std::mem::discriminant(&current);
+        // Custom keeps its own sizes when it is already chosen.
+        let picked = if chosen { current } else { size };
+        let dims = (!matches!(size, MediaSizeSetting::Custom { .. })).then(|| {
+            let (w, h) = size.max_size_pt();
+            crate::strings::settings_size_dims(w, h)
+        });
+        MenuItem::plain(
+            &format!(
+                "settings-image-size-{}",
+                crate::settings::rows::size_name(size)
+            ),
+            crate::settings::rows::size_name(size),
+            MenuAction::Setting(SettingChoice::ImageSize(picked)),
+            false,
+        )
+        .with_sub(dims)
+        .with_radio(chosen)
+    })
+    .collect()
 }

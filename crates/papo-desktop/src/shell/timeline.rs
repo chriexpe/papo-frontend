@@ -45,8 +45,9 @@ impl Shell {
     /// shown, saving its place, and opens or scrolls back to the next.
     /// Without `tx` (a handler that has none) a timeline shown again
     /// returns to its place on the next frame (`poll`).
-    pub(crate) fn sync_timeline(&mut self, tx: Option<&mut Tx>) {
-        self.sync_timeline_at(tx, None);
+    pub(crate) fn sync_timeline(&mut self, mut tx: Option<&mut Tx>) {
+        self.sync_timeline_at(tx.as_deref_mut(), None);
+        self.viewer_follows(tx);
     }
 
     /// [`Self::sync_timeline`], the timeline that shows taking `focus`
@@ -201,6 +202,8 @@ impl Shell {
         }
         if shown {
             self.report_reading();
+            // New or changed rows may hold media; a pin may too.
+            self.want_media();
         }
         if opened {
             self.resolve_replies();
@@ -343,6 +346,8 @@ impl Shell {
         let flash_ended = self.poll_flash(clock_s);
         let description_ended = self.poll_description(clock_s);
         let notice_ended = self.poll_notice(clock_s);
+        let pill_ended = self.poll_saved_pill(clock_s);
+        let ring_shown = self.poll_viewer_ring(clock_s);
         let list_closed = self.poll_reactions();
         let card_closed = self.poll_card();
         let searched = self.poll_search(clock_s);
@@ -352,6 +357,8 @@ impl Shell {
             || flash_ended
             || description_ended
             || notice_ended
+            || pill_ended
+            || ring_shown
             || list_closed
             || card_closed
             || searched
