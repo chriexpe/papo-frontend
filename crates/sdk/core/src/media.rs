@@ -1,4 +1,5 @@
-//! Account-authorized encoded media references; rendering, decoding and durable uploads live elsewhere.
+//! Account-authorized encoded media references and saving attachments to files; rendering,
+//! decoding and durable uploads live elsewhere.
 
 mod cached;
 mod collection;
@@ -11,6 +12,8 @@ mod pins;
 #[cfg(test)]
 mod race_tests;
 mod ranges;
+mod save;
+mod save_names;
 mod service;
 #[cfg(test)]
 mod tests;
@@ -26,6 +29,7 @@ use tokio::sync::Mutex;
 pub(crate) use download::anonymous_client;
 pub use emojis::{EmojiMetadata, EmojiPage};
 pub use ranges::MediaRange;
+pub use save::{MediaSave, SaveFailure, SaveProgress, SaveState, SaveTarget};
 pub use service::MediaService;
 
 /// A remote representation. A local digest is deliberately not a retrieval capability.

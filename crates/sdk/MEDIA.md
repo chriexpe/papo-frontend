@@ -61,6 +61,22 @@ Unix directories/files use 0700/0600; Windows uses the existing private filesyst
 ACL boundary. Admitted blocking work retains the profile lease, and blocking
 unlink retains media exclusion through cancellation. No encoded bytes enter SQLite.
 
+## Saving attachments
+
+`MediaService::save_attachment` writes an attachment's original to a folder or to a file the
+person chose, returning at once with a `MediaSave` handle (progress at most every 100 ms, cancel,
+and the end). The bytes come from the account's cache when it holds the original (no request),
+else they stream from the backend, which authorizes the request; nothing is added to the cache,
+and a denial retires the account's cached copies as a fetch does. Originals are capped at the
+attachment limit; a stream times out only when idle. A folder save writes a hidden partial file,
+syncs it, and renames it over an empty file it claimed with create-new at the first free name
+("name (1).ext", "archive (1).tar.gz"), so it never replaces a file and a name is never half
+written. The uploaded name is untrusted: only its last component is used, without control or
+Windows-refused characters, direction marks or leading dots, and a Windows device name gets a
+leading "_". Nothing is opened for writing before the source answered. A chosen file is replaced
+the same way, from a partial file beside it, or written in place where a sandbox grants only that
+file. A failed, cancelled or dropped save leaves nothing behind, and its handle always ends.
+
 ## Physical budget
 
 `ClientConfig::disk` configures one profile-wide allocated-file ceiling: 1 GiB by
