@@ -100,6 +100,12 @@ impl Shell {
         if self.popup_shown() || self.nav.accounts_open() || self.nav.direct_accounts_open() {
             return false;
         }
+        // Ctrl+O: attach files, the system's key (§12); not from behind the
+        // settings panel.
+        if key.is_command('o') && primary_only(key.mods) && self.settings.is_none() {
+            self.attach_pressed(tx);
+            return true;
+        }
         self.server_number_key(key, tx)
             || self.server_step_key(key, tx)
             || self.unread_step_key(key, tx)

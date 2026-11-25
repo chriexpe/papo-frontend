@@ -105,9 +105,11 @@ pub(crate) fn integer(value: i64) -> String {
     I18N.integer(value)
 }
 
-/// `bytes` in KB, MB or GB, one decimal, in the locale's format.
+/// `bytes` in KB, MB or GB, one decimal, in the locale's format. A KB is
+/// 1024 bytes (Christian, 2026-11-24), so the SDK's 100 MiB limit reads
+/// "100 MB".
 pub(crate) fn size(bytes: u64) -> String {
-    const KB: f64 = 1000.0;
+    const KB: f64 = 1024.0;
     #[expect(clippy::cast_precision_loss, reason = "a size shown to one decimal")]
     let bytes = bytes as f64;
     if bytes < KB * KB {

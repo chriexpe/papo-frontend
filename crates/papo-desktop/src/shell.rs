@@ -32,7 +32,7 @@ pub(crate) struct Shell {
     /// Each channel's edit buffer and where its draft stands.
     pub(crate) composer: Composer,
     /// Each channel's lane of draft writes, shared with the bridge's jobs.
-    draft_writes: composer::DraftWrites,
+    draft_writes: draft_writes::DraftWrites,
     /// A new message's local identity: random in the app, fixed in tests.
     local_ids: fn() -> papo_sdk::Uuid,
     /// "Enter to send".
@@ -130,6 +130,16 @@ pub(crate) struct Shell {
     description: description::Description,
     /// The notice pill, while one shows.
     notice: Option<crate::notice::Notice>,
+    /// Whether a file drag is over the window: it dims and shows the drop
+    /// card (`docs/design.md` §14.1).
+    drop_hover: bool,
+    /// Where the conversation was last drawn, in window points: the drop
+    /// card centres in it.
+    conversation_rect: [f32; 4],
+    /// The watch on each tray tile still copying into staging.
+    copy_watches: copies::CopyWatches,
+    /// The shown tray's keyboard and drag state.
+    pub(crate) tray_ui: crate::composer::tray_ui::TrayUi,
     /// Pins and unpins on their way.
     pinning: reacting::Pinning,
     /// The hover bar stretched into its strip, while one is.
@@ -192,7 +202,7 @@ impl Default for Shell {
     fn default() -> Self {
         Shell {
             composer: Composer::default(),
-            draft_writes: composer::DraftWrites::default(),
+            draft_writes: draft_writes::DraftWrites::default(),
             local_ids: papo_sdk::Uuid::new_v4,
             conversations: crate::conversation_settings::ConversationStore::default(),
             general: crate::general_settings::GeneralStore::default(),
@@ -236,6 +246,10 @@ impl Default for Shell {
             description: description::Description::default(),
             latest_rows: settings_file::LatestRows::default(),
             notice: None,
+            drop_hover: false,
+            conversation_rect: [0.0; 4],
+            copy_watches: copies::CopyWatches::default(),
+            tray_ui: crate::composer::tray_ui::TrayUi::default(),
             pinning: reacting::Pinning::default(),
             stretched: None,
             openings: 0,
@@ -331,12 +345,15 @@ mod accounts;
 mod activity;
 mod app_keys;
 pub(crate) mod appearance;
+mod attaching;
 mod composer;
 mod composer_input;
 mod content;
+mod copies;
 pub(crate) mod deleting;
 mod description;
 pub(crate) mod direct;
+mod draft_writes;
 mod header;
 mod hover_bar;
 mod jump;
@@ -373,11 +390,13 @@ mod settings_file;
 mod settings_general;
 mod settings_password;
 mod sign_in_flow;
+mod staged_files;
 #[cfg(test)]
 mod tests;
 mod timeline;
 mod timeline_host;
 mod title;
+mod tray;
 mod view;
 
 pub(crate) use new_message::{

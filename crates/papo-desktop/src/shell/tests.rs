@@ -35,6 +35,7 @@ mod settings_conversations;
 mod settings_diagnostics;
 mod settings_general;
 mod timeline;
+mod tray;
 mod typing;
 mod writing;
 

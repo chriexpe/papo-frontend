@@ -4,6 +4,7 @@
 
 use papo_sdk::Uuid;
 
+use super::tray::Tile;
 use crate::timeline::TimelineKey;
 
 /// What the shell does for the composer.
@@ -19,15 +20,20 @@ pub(crate) enum Effect {
         text: String,
         mentions: Vec<Uuid>,
         reply_to: Option<Uuid>,
+        /// The tray's staged tiles, in order; a tile still copying waits
+        /// for its own save.
+        tiles: Vec<Tile>,
         seq: u64,
     },
-    /// Queue `text` (its wire form) as a new message with local identity
-    /// `local`, replying to `reply_to` when given, then clear the stored
-    /// draft unless a newer save (`seq`) landed first.
+    /// Queue `text` (its wire form) and `tiles` as a new message with local
+    /// identity `local`, replying to `reply_to` when given, then clear the
+    /// stored draft unless a newer save (`seq`) landed first. A tile still
+    /// copying goes as it is: the message waits as Preparing.
     Send {
         key: TimelineKey,
         text: String,
         reply_to: Option<Uuid>,
+        tiles: Vec<Tile>,
         local: Uuid,
         seq: u64,
     },

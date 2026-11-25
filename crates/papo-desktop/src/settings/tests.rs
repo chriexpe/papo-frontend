@@ -175,13 +175,18 @@ fn without_an_account_there_is_no_connection_to_show() {
 #[test]
 fn the_media_cache_shows_its_measured_size() {
     let facts = DiagnosticsFacts {
-        cache_bytes: Some(12_400_000),
+        cache_bytes: Some(13_002_342),
         ..DiagnosticsFacts::default()
     };
     let rows = diagnostics_rows(&facts);
     assert_eq!(sub_of(&rows, RowId::Cache).as_deref(), Some("12.4 MB used"));
-    assert_eq!(crate::strings::size(950), "1 KB");
-    assert_eq!(crate::strings::size(2_500_000_000), "2.5 GB");
+    assert_eq!(crate::strings::size(1000), "1 KB");
+    assert_eq!(crate::strings::size(2_684_354_560), "2.5 GB");
+    // The SDK's limits are binary: they read as round numbers.
+    assert_eq!(
+        crate::strings::size(papo_sdk::MAX_ATTACHMENT_BYTES),
+        "100 MB"
+    );
 }
 
 #[test]

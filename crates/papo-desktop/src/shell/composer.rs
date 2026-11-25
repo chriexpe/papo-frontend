@@ -4,63 +4,24 @@
 //!
 //! The bridge runs jobs side by side, so draft writes are ordered by the
 //! composer's `seq`, one lane per channel: a write waits for the channel's
-//! lane and is dropped when a newer one has landed ([`Lane`]). Saves and
+//! lane and is dropped when a newer one has landed (`draft_writes`). Saves and
 //! sends go through `Sdk::finish`, so the exit fence lets them land; what
 //! fails comes back to the composer.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use papo_sdk::{
-    DraftBody, MessageTarget, OperationKind, OutgoingError, OutgoingMessage, Session, UnixMicros,
-    Uuid,
-};
+use papo_sdk::{MessageTarget, OutgoingError, OutgoingMessage, Session, Uuid};
 use papo_sdk_ui::display_name;
 use papo_sdk_ui::message_content::{DecodedComposerMentions, decode_composer_mentions};
 use rune::Tx;
-use tokio::sync::Mutex;
 
 use super::Shell;
+use super::draft_writes::{DraftWrites, Stored, queue_message, save_draft, save_effect};
+use super::staged_files::{pictures, restored_files};
+use crate::composer::tray::Tile;
 use crate::composer::{Effect, Sent};
 use crate::sdk_bridge::{Sdk, Updates};
 use crate::timeline::TimelineKey;
-
-/// One lane of draft writes per channel, shared with the bridge's jobs.
-#[derive(Clone, Default)]
-pub(crate) struct DraftWrites(Arc<StdMutex<HashMap<TimelineKey, Arc<Mutex<Lane>>>>>);
-
-impl DraftWrites {
-    /// The lane of `key`'s writes. The map's lock is held only to find it.
-    fn lane(&self, key: TimelineKey) -> Arc<Mutex<Lane>> {
-        let mut lanes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(lanes.entry(key).or_default())
-    }
-
-    /// Forgets the lanes of accounts no longer saved.
-    pub(super) fn retain_accounts(&self, keep: impl Fn(papo_sdk::AccountId) -> bool) {
-        let mut lanes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        lanes.retain(|key, _| keep(key.account));
-    }
-}
-
-/// One channel's write order: the order of the last write that landed.
-/// Held across a write, so a check and its write are one step.
-#[derive(Debug, Default)]
-struct Lane {
-    landed: u64,
-}
-
-impl Lane {
-    /// Whether a write with order `seq` may still land: nothing newer has.
-    fn admits(&self, seq: u64) -> bool {
-        self.landed < seq
-    }
-
-    fn landed(&mut self, seq: u64) {
-        self.landed = self.landed.max(seq);
-    }
-}
 
 impl Shell {
     /// The field's text changed.
@@ -103,6 +64,13 @@ impl Shell {
         }
         let effects = self.composer.show(shown);
         self.run_composer(effects, None);
+        // What was drawn of another channel's tray means nothing here.
+        let ids = self
+            .composer
+            .shown()
+            .map(|(_, draft)| draft.tray.ids())
+            .unwrap_or_default();
+        self.tray_ui.retain(&ids);
     }
 
     /// The window's poll: saves the drafts whose pause is over. Returns
@@ -152,34 +120,22 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect, mention: b
             text,
             mentions,
             reply_to,
+            tiles,
             seq,
         } => {
-            let lane = writes.lane(key);
-            let updates = sdk.updates();
-            sdk.finish(move |client| async move {
-                let mut lane = lane.lock().await;
-                if !lane.admits(seq) {
-                    return;
-                }
-                let saved = match client.session(key.account) {
-                    Ok(session) => {
-                        save_draft(&session, key.channel, text, mentions, reply_to).await
-                    }
-                    Err(error) => Err(error.into()),
-                };
-                match saved {
-                    Ok(()) => lane.landed(seq),
-                    Err(error) => {
-                        log::warn!("a draft was not saved: {error}");
-                        updates.send(move |shell| shell.composer.save_failed(key, seq));
-                    }
-                }
-            });
+            let draft = Stored {
+                text,
+                mentions,
+                reply_to,
+                attachments: tiles.iter().filter_map(Tile::stored).collect(),
+            };
+            save_effect(sdk, writes, key, draft, seq);
         }
         Effect::Send {
             key,
             text,
             reply_to,
+            tiles,
             local,
             seq,
         } => {
@@ -196,16 +152,25 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect, mention: b
                             decoded: decode(None, &text),
                             reply_to,
                             mention,
+                            tiles,
                         };
                         return send_failed(&updates, key, failed, &error.into());
                     }
                 };
-                let queued = queue_message(&session, key.channel, local, &text, reply_to).await;
+                let attachments = tiles.iter().map(Tile::outgoing).collect();
+                let message = OutgoingMessage {
+                    content: text.clone(),
+                    reply_to: reply_to.map(MessageTarget::Remote),
+                    attachments,
+                    ..OutgoingMessage::default()
+                };
+                let queued = queue_message(&session, key.channel, local, message).await;
                 if let Err(error) = queued {
                     let failed = Failed {
                         decoded: decode(Some(&session), &text),
                         reply_to,
                         mention,
+                        tiles,
                     };
                     return send_failed(&updates, key, failed, &error);
                 }
@@ -214,7 +179,7 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect, mention: b
                 if !lane.admits(seq) {
                     return;
                 }
-                match save_draft(&session, key.channel, String::new(), Vec::new(), None).await {
+                match save_draft(&session, key.channel, Stored::default()).await {
                     Ok(()) => lane.landed(seq),
                     Err(error) => log::warn!("a sent draft was not cleared: {error}"),
                 }
@@ -245,25 +210,41 @@ fn load_draft(sdk: &Sdk<Shell>, key: TimelineKey, mention: bool) {
     let updates = sdk.updates();
     sdk.run(move |client| async move {
         let read = match client.session(key.account) {
-            Ok(session) => session.outgoing().draft(key.channel).await.map(|draft| {
-                let (wire, reply_to) = draft.map_or((String::new(), None), |draft| {
-                    let message = draft.body.message;
-                    (message.content, message.reply_to)
-                });
-                // A reply is to a message the server knows; a local
-                // one never reaches a draft.
-                let reply_to = reply_to.and_then(|target| match target {
-                    MessageTarget::Remote(id) => Some(id),
-                    MessageTarget::Local(_) => None,
-                });
-                (decode(Some(&session), &wire), reply_to)
-            }),
+            Ok(session) => match session.outgoing().draft(key.channel).await {
+                Ok(draft) => {
+                    let (wire, reply_to, attachments) =
+                        draft.map_or((String::new(), None, Vec::new()), |draft| {
+                            let message = draft.body.message;
+                            (message.content, message.reply_to, message.attachments)
+                        });
+                    // A reply is to a message the server knows; a local
+                    // one never reaches a draft.
+                    let reply_to = reply_to.and_then(|target| match target {
+                        MessageTarget::Remote(id) => Some(id),
+                        MessageTarget::Local(_) => None,
+                    });
+                    let files = restored_files(&session, attachments).await;
+                    Ok((decode(Some(&session), &wire), reply_to, files))
+                }
+                Err(error) => Err(error),
+            },
             Err(error) => Err(error.into()),
         };
         match read {
-            Ok((decoded, reply_to)) => {
+            Ok((decoded, reply_to, files)) => {
                 updates.send(move |shell| {
-                    let loaded = shell.composer.loaded(key, decoded, reply_to, mention);
+                    let tiles: Vec<Tile> = files
+                        .into_iter()
+                        .map(|file| shell.restored_tile(file))
+                        .collect();
+                    let pictures = pictures(&tiles);
+                    let loaded = shell
+                        .composer
+                        .loaded(key, decoded, reply_to, mention, tiles);
+                    // Files attached while it loaded are saved with it now.
+                    let effects = shell.composer.save_unsaved(key);
+                    shell.run_composer(effects, None);
+                    shell.read_thumbnails(key, pictures);
                     shell.resolve_replies();
                     loaded
                 });
@@ -276,12 +257,13 @@ fn load_draft(sdk: &Sdk<Shell>, key: TimelineKey, mention: bool) {
     });
 }
 
-/// A message the SDK did not queue, to put back in the field.
+/// A message the SDK did not queue, to put back in the field and tray.
 struct Failed {
     decoded: DecodedComposerMentions,
     reply_to: Option<Uuid>,
     /// Where the @ switch starts if its reply comes back.
     mention: bool,
+    tiles: Vec<Tile>,
 }
 
 /// The SDK did not queue `text`: it goes back in the field. A send refused
@@ -293,9 +275,15 @@ fn send_failed(updates: &Updates<Shell>, key: TimelineKey, failed: Failed, error
         decoded,
         reply_to,
         mention,
+        tiles,
     } = failed;
     updates.send(move |shell| {
-        let effects = shell.composer.send_failed(key, decoded, reply_to, mention);
+        // Their watch ended when Send took them: a copy still running is
+        // followed again (one already over answers at once).
+        shell.watch_returned(key, &tiles);
+        let effects = shell
+            .composer
+            .send_failed(key, decoded, reply_to, mention, tiles);
         shell.run_composer(effects, None);
         true
     });
@@ -310,100 +298,4 @@ fn decode(session: Option<&Session>, wire: &str) -> DecodedComposerMentions {
         let user = snapshot.as_deref()?.users.get(id)?;
         display_name(user.nickname.as_deref(), user.username.as_deref())
     })
-}
-
-/// Stores `text` (its wire form) as the channel's draft, with the people it
-/// mentions and the message it replies to; empty clears it.
-async fn save_draft(
-    session: &Session,
-    channel: Uuid,
-    text: String,
-    mentions: Vec<Uuid>,
-    reply_to: Option<Uuid>,
-) -> Result<(), OutgoingError> {
-    let body = DraftBody {
-        message: OutgoingMessage {
-            content: text,
-            reply_to: reply_to.map(MessageTarget::Remote),
-            ..OutgoingMessage::default()
-        },
-        mentions,
-    };
-    session
-        .outgoing()
-        .save_draft(channel, body, now(), None)
-        .await
-        .map(|_revision| ())
-}
-
-/// Queues `text` as a new message with identity `local`, replying to
-/// `reply_to` when given. "Mention when replying" is not sent: the backend
-/// does not store it yet (the switch is a mock).
-async fn queue_message(
-    session: &Session,
-    channel: Uuid,
-    local: Uuid,
-    text: &str,
-    reply_to: Option<Uuid>,
-) -> Result<(), OutgoingError> {
-    let message = OutgoingMessage {
-        content: text.to_owned(),
-        reply_to: reply_to.map(MessageTarget::Remote),
-        ..OutgoingMessage::default()
-    };
-    session
-        .outgoing()
-        .enqueue(channel, local, OperationKind::Message(message), now())
-        .await
-}
-
-/// The wall clock, as the SDK stamps drafts and intents (never to order
-/// them).
-pub(super) fn now() -> UnixMicros {
-    let micros = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_micros()).unwrap_or(i64::MAX)
-        });
-    UnixMicros(micros)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Lane;
-
-    /// A lane that has seen the writes `landed`, in that order.
-    fn after(landed: &[u64]) -> Lane {
-        let mut lane = Lane::default();
-        for &seq in landed {
-            lane.landed(seq);
-        }
-        lane
-    }
-
-    #[test]
-    fn a_save_older_than_a_landed_send_is_dropped() {
-        assert!(!after(&[5]).admits(4));
-    }
-
-    #[test]
-    fn a_newer_save_before_the_send_s_clear_skips_the_clear() {
-        assert!(
-            !after(&[6]).admits(5),
-            "the clear would erase what was typed since"
-        );
-    }
-
-    #[test]
-    fn a_failed_send_lets_the_older_save_land() {
-        // The send never marked the lane.
-        assert!(after(&[3]).admits(4));
-    }
-
-    #[test]
-    fn landing_out_of_order_keeps_the_newest() {
-        let lane = after(&[7, 6]);
-        assert!(!lane.admits(7));
-        assert!(lane.admits(8));
-    }
 }

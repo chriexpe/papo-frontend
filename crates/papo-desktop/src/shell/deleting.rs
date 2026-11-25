@@ -98,7 +98,7 @@ impl Shell {
                     };
                     session
                         .outgoing()
-                        .enqueue(key.channel, local, kind, super::composer::now())
+                        .enqueue(key.channel, local, kind, super::draft_writes::now())
                         .await
                 }
                 Err(error) => Err(error.into()),

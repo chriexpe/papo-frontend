@@ -2,6 +2,7 @@
 //! at once on hide and exit (flush), and what one save writes: the wire
 //! form with its mentions, ordered by `seq`.
 
+use super::mode::Mode;
 use super::{Composer, DraftState, Effect, TimelineKey, WAKE_SLACK_S, mentions};
 
 impl Composer {
@@ -52,26 +53,37 @@ impl Composer {
     }
 
     /// The save of `key`'s buffer, when it has changes; it counts as saved
-    /// from now on.
-    /// An edit is never saved: the stored draft keeps the field as it was
-    /// before the edit.
+    /// from now on. An edit's text is never saved: during an edit the
+    /// stored draft keeps the field as it was before it, with the tray as
+    /// it is now (a file that finished copying meanwhile).
     pub(super) fn save(&mut self, key: TimelineKey) -> Option<Effect> {
         let draft = self.drafts.get(&key)?;
-        if !draft.state.unsaved() || draft.mode.editing().is_some() {
+        if !draft.state.unsaved() {
             return None;
         }
         let seq = self.next_seq();
         let draft = self.drafts.get_mut(&key)?;
         draft.state = DraftState::Saved;
         draft.last_save = Some(seq);
+        let (field, reply) = match &draft.mode {
+            Mode::Editing(editing) => (&editing.before.edit, editing.before.reply.as_ref()),
+            Mode::Writing { reply } => (&draft.edit, reply.as_ref()),
+        };
         Some(Effect::Save {
             key,
-            text: mentions::wire(&draft.edit),
-            mentions: mentions::bindings(&draft.edit)
+            text: mentions::wire(field),
+            mentions: mentions::bindings(field)
                 .into_iter()
                 .map(|binding| binding.id)
                 .collect(),
-            reply_to: draft.mode.reply().map(|reply| reply.id),
+            reply_to: reply.map(|reply| reply.id),
+            tiles: draft
+                .tray
+                .tiles()
+                .iter()
+                .filter(|tile| !tile.preparing())
+                .cloned()
+                .collect(),
             seq,
         })
     }

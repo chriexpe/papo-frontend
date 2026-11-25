@@ -27,6 +27,12 @@ impl Shell {
             .composer
             .shown()
             .is_some_and(|(_, draft)| draft.edit.text.is_empty());
+        // ↑ edits only when the tray is empty too (§14.2): the attachments
+        // would otherwise vanish under the edit.
+        let tray_empty = self
+            .composer
+            .shown()
+            .is_none_or(|(_, draft)| draft.tray.is_empty());
         let primary_only = (key.mods.cmd || key.mods.ctrl) && !key.mods.alt && !key.mods.shift;
         match key.key {
             Key::Escape if bare => {
@@ -43,7 +49,7 @@ impl Shell {
                 self.run_composer(effects, Some(tx));
                 true
             }
-            Key::Up if bare && empty => self.edit_newest(tx),
+            Key::Up if bare && empty && tray_empty => self.edit_newest(tx),
             Key::Up if primary_only && empty => self.focus_newest_message(tx),
             _ => false,
         }

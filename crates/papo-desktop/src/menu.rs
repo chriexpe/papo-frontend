@@ -30,6 +30,8 @@ pub(crate) use strip::Strip;
 pub(crate) enum MenuAction {
     /// Ask to remove this server.
     RemoveServer(ServerId),
+    /// Take this tile out of the shown tray.
+    RemoveTile(crate::composer::tray::TileId),
     /// Send your unsent message `local` again; `unknown`: it may have
     /// arrived, so ask first.
     RetrySend {

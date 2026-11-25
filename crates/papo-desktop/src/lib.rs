@@ -10,6 +10,7 @@
 mod account_switch;
 mod account_watch;
 mod appearance;
+mod attaching;
 mod badges;
 mod channel_pane;
 mod checkbox;
@@ -21,6 +22,7 @@ mod device_settings;
 mod diagnostics;
 mod direct_list;
 mod direct_pane;
+mod drop_card;
 mod fonts;
 mod general_settings;
 mod glass;

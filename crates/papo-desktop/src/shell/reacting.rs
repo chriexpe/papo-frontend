@@ -148,7 +148,7 @@ impl Shell {
                         emoji: ReactionEmoji::Unicode(emoji),
                         add,
                         local,
-                        at: super::composer::now(),
+                        at: super::draft_writes::now(),
                     })
                     .await
                     .map(|_| ())

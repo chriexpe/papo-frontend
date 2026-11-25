@@ -321,6 +321,9 @@ impl Shell {
         }
         match action {
             MenuAction::RemoveServer(server) => self.nav.removing = Some(server),
+            MenuAction::RemoveTile(tile) => {
+                self.remove_tile(tile, tx);
+            }
             MenuAction::RetrySend {
                 key,
                 local,

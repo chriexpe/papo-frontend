@@ -10,8 +10,10 @@
 //! mentions in the field are `markdown`'s, `pairs`' and `mentions`'; the
 //! keys and the @ picker that use them are `editing`'s and `picker`'s.
 //! Replying and editing (the mode, its bars and its moves) are `mode`'s,
-//! `bars`' and `replying`'s.
+//! `bars`' and `replying`'s. The attachment tray is `tray`'s, its changes
+//! `attached`'s and its row `tray_view`'s.
 
+pub(crate) mod attached;
 pub(crate) mod bars;
 mod draft;
 mod editing;
@@ -23,8 +25,12 @@ mod pairs;
 pub(crate) mod picker;
 mod replying;
 mod saving;
+mod sending;
 #[cfg(test)]
 mod tests;
+pub(crate) mod tray;
+pub(crate) mod tray_ui;
+pub(crate) mod tray_view;
 pub(crate) mod view;
 
 use std::collections::HashMap;
@@ -39,6 +45,7 @@ pub(crate) use self::effect::{Effect, Sent};
 use self::mode::{Mode, Reply};
 pub(crate) use self::pairs::{Keystroke, wrap_format};
 pub(crate) use self::picker::Picker;
+use self::tray::Tile;
 pub(crate) use self::view::{COMPOSER_KEY, COMPOSER_PILL_KEY, PillContext, pill};
 use crate::timeline::TimelineKey;
 
@@ -85,6 +92,8 @@ pub(crate) struct Composer {
     /// The `@` whose picker Escape closed, by its offset in the shown
     /// field: it stays closed until another `@` is typed.
     dismissed_at: Option<(TimelineKey, usize)>,
+    /// The last tray tile identity handed out.
+    tile_ids: u64,
 }
 
 impl Composer {
@@ -135,10 +144,12 @@ impl Composer {
         })
     }
 
-    /// Whether the shown field holds anything Send would send.
+    /// Whether the shown field holds anything Send would send: text, or a
+    /// file in the tray (a message can be attachments only, §14.2).
     pub(crate) fn can_send(&self) -> bool {
         self.shown().is_some_and(|(_, draft)| {
-            draft.state != DraftState::Loading && !draft.edit.text.trim().is_empty()
+            draft.state != DraftState::Loading
+                && (!draft.edit.text.trim().is_empty() || !draft.tray.is_empty())
         }) && self.chars_over() == 0
     }
 
@@ -183,15 +194,17 @@ impl Composer {
     }
 
     /// The SDK read `key`'s stored draft: `decoded`, empty when there is
-    /// none, its mentions named. Only a buffer still loading takes it; the
-    /// caret goes to its end. Reading it again later never replaces what
-    /// was typed since.
+    /// none, its mentions named, and its attached files. Only a buffer
+    /// still loading takes it; the caret goes to its end. Reading it again
+    /// later never replaces what was typed since. Files attached while it
+    /// loaded follow the stored ones.
     pub(crate) fn loaded(
         &mut self,
         key: TimelineKey,
         decoded: DecodedComposerMentions,
         reply_to: Option<Uuid>,
         mention: bool,
+        tiles: Vec<Tile>,
     ) -> bool {
         let Some(draft) = self.drafts.get_mut(&key) else {
             return false;
@@ -201,7 +214,13 @@ impl Composer {
         }
         mentions::restore(&mut draft.edit, decoded);
         draft.replaced();
-        draft.state = DraftState::Saved;
+        let attached_meanwhile = !draft.tray.is_empty();
+        draft.tray.restore(tiles);
+        draft.state = if attached_meanwhile {
+            DraftState::Unsaved { due_s: 0.0 }
+        } else {
+            DraftState::Saved
+        };
         draft.mode = Mode::Writing {
             reply: reply_to.map(|id| Reply {
                 id,
@@ -291,101 +310,6 @@ impl Composer {
             effects.push(Effect::ReportTyping(key));
         }
         effects
-    }
-
-    /// Send was pressed: the shown field's text leaves it as a new message
-    /// with identity `local`. The stored draft keeps the text until the SDK
-    /// has queued it (`Effect::Send`).
-    pub(crate) fn send(&mut self, local: Uuid) -> Sent {
-        if self
-            .shown()
-            .is_some_and(|(_, draft)| draft.mode.editing().is_some())
-        {
-            return self.save_edit(local);
-        }
-        if !self.can_send() {
-            return if self.chars_over() > 0 {
-                Sent::TooLong
-            } else {
-                Sent::Nothing
-            };
-        }
-        let Some(key) = self.shown else {
-            return Sent::Nothing;
-        };
-        let seq = self.next_seq();
-        let Some(draft) = self.drafts.get_mut(&key) else {
-            return Sent::Nothing;
-        };
-        let text = mentions::wire(&draft.edit);
-        let reply_to = draft.mode.reply().map(|reply| reply.id);
-        draft.mode = Mode::default();
-        // A sent message never comes back through undo.
-        draft.edit.replace_text("");
-        draft.replaced();
-        draft.state = DraftState::Saved;
-        draft.last_save = Some(seq);
-        if self.failed == Some(key) {
-            self.failed = None;
-        }
-        self.picker = None;
-        Sent::Queued(Effect::Send {
-            key,
-            text,
-            reply_to,
-            local,
-            seq,
-        })
-    }
-
-    /// The SDK did not queue `decoded` for `key`: it goes back in the
-    /// field, before whatever was typed since, and is saved again.
-    pub(crate) fn send_failed(
-        &mut self,
-        key: TimelineKey,
-        decoded: DecodedComposerMentions,
-        reply_to: Option<Uuid>,
-        mention: bool,
-    ) -> Vec<Effect> {
-        let Some(draft) = self.drafts.get_mut(&key) else {
-            return Vec::new();
-        };
-        // During an edit, the text and its reply go to the draft the edit
-        // set aside, and come back with it.
-        if let Mode::Editing(editing) = &mut draft.mode {
-            let before = &mut editing.before;
-            mentions::prepend(&mut before.edit, decoded);
-            if let (Some(id), None) = (reply_to, &before.reply) {
-                before.reply = Some(Reply {
-                    id,
-                    original: None,
-                    mention,
-                });
-            }
-            before.send_failed = true;
-            return Vec::new();
-        }
-        // The reply comes back with its text, unless another one began.
-        if let (
-            Some(id),
-            Mode::Writing {
-                reply: reply @ None,
-            },
-        ) = (reply_to, &mut draft.mode)
-        {
-            *reply = Some(Reply {
-                id,
-                original: None,
-                mention,
-            });
-        }
-        mentions::prepend(&mut draft.edit, decoded);
-        draft.replaced();
-        // Its query, if open, no longer points at the same text.
-        self.picker = None;
-        draft.state = DraftState::Unsaved { due_s: 0.0 };
-        self.failed = Some(key);
-        self.save(key).into_iter().collect()
     }
 
     /// Forgets the buffers of accounts no longer saved; their drafts went

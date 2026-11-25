@@ -34,7 +34,7 @@ fn original() -> Uuid {
 fn showing(text: &str) -> Composer {
     let mut composer = Composer::default();
     composer.show(Some(key()));
-    composer.loaded(key(), plain(text), None, true);
+    composer.loaded(key(), plain(text), None, true, Vec::new());
     composer
 }
 
@@ -75,7 +75,7 @@ fn a_reply_goes_with_its_message_and_comes_back_if_it_fails() {
     };
     assert_eq!(reply_to, Some(original()));
     assert_eq!(composer.shown().unwrap().1.mode.reply().map(|r| r.id), None);
-    composer.send_failed(key(), plain("agreed"), reply_to, true);
+    composer.send_failed(key(), plain("agreed"), reply_to, true, Vec::new());
     assert_eq!(
         composer.shown().unwrap().1.mode.reply().map(|r| r.id),
         Some(original()),
@@ -139,7 +139,7 @@ fn an_emptied_edit_asks_to_delete_and_stays_open() {
 fn a_restored_reply_waits_for_its_original() {
     let mut composer = Composer::default();
     composer.show(Some(key()));
-    composer.loaded(key(), plain("oi"), Some(original()), false);
+    composer.loaded(key(), plain("oi"), Some(original()), false, Vec::new());
     assert_eq!(composer.unresolved_replies(), [(key(), original())]);
     assert!(composer.reply_found(key(), original(), ReplyOriginal::Unknown));
     assert_eq!(composer.unresolved_replies(), []);
@@ -168,7 +168,7 @@ fn a_send_refused_during_an_edit_waits_in_the_draft_it_set_aside() {
     };
     composer.start_edit(key(), original(), plain("the message"));
     assert_eq!(
-        composer.send_failed(key(), plain("sent"), reply_to, true),
+        composer.send_failed(key(), plain("sent"), reply_to, true, Vec::new()),
         []
     );
     assert_eq!(text(&composer), "the message", "the edit is untouched");
@@ -184,4 +184,36 @@ fn a_send_refused_during_an_edit_waits_in_the_draft_it_set_aside() {
         "and was saved"
     );
     assert!(composer.send_failed_here());
+}
+
+#[test]
+fn a_tray_change_during_an_edit_saves_the_field_set_aside_not_the_edit() {
+    use crate::composer::tray::{Tile, TileKind, TileSource};
+    let mut composer = showing("my draft");
+    let id = composer.next_tile_id();
+    let tile = Tile {
+        id,
+        name: "a.pdf".to_owned(),
+        size_bytes: Some(1),
+        kind: TileKind::File,
+        source: TileSource::Fixture,
+        thumbnail: None,
+    };
+    let _ = composer.attach(key(), vec![tile]);
+    composer.start_edit(key(), original(), plain("the message"));
+    // The file's copy failed during the edit: it leaves the tray.
+    let (_, effects) = composer.detach(key(), id);
+    let saved: Vec<(String, usize)> = effects
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::Save { text, tiles, .. } => Some((text, tiles.len())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(saved, [("my draft".to_owned(), 0)]);
+    assert_eq!(
+        text(&composer),
+        "the message",
+        "the edit stays in the field"
+    );
 }

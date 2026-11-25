@@ -166,7 +166,11 @@ impl Shell {
     /// Ends the notice once its time is over. Returns whether the view
     /// changed.
     pub(super) fn poll_notice(&mut self, clock_s: f64) -> bool {
-        if self.notice.is_some_and(|notice| notice.gone(clock_s)) {
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.gone(clock_s))
+        {
             self.notice = None;
             return true;
         }

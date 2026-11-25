@@ -30,7 +30,7 @@ fn key(channel: u128) -> TimelineKey {
 fn showing(text: &str) -> Composer {
     let mut composer = Composer::default();
     assert_eq!(composer.show(Some(key(1))), [Effect::Load(key(1))]);
-    assert!(composer.loaded(key(1), plain(text.to_owned()), None, true));
+    assert!(composer.loaded(key(1), plain(text.to_owned()), None, true, Vec::new()));
     composer
 }
 
@@ -50,7 +50,7 @@ fn a_draft_loads_once_and_the_field_waits_for_it() {
     assert!(composer.is_loading());
     composer.field_mut().insert("lost");
     assert_eq!(text(&composer), "", "no typing while the draft loads");
-    assert!(composer.loaded(key(1), plain("rascunho".to_owned()), None, true));
+    assert!(composer.loaded(key(1), plain("rascunho".to_owned()), None, true, Vec::new()));
     assert_eq!(text(&composer), "rascunho");
     assert!(!composer.is_loading());
     composer.show(Some(key(2)));
@@ -59,7 +59,7 @@ fn a_draft_loads_once_and_the_field_waits_for_it() {
         "shown again, it is not read again"
     );
     assert!(
-        !composer.loaded(key(1), plain("older".to_owned()), None, true),
+        !composer.loaded(key(1), plain("older".to_owned()), None, true, Vec::new()),
         "a late read never replaces the field"
     );
     assert_eq!(text(&composer), "rascunho");
@@ -101,7 +101,7 @@ fn leaving_a_channel_saves_it_and_keeps_its_text() {
         "{effects:?}"
     );
     assert_eq!(effects[1], Effect::Load(key(2)));
-    composer.loaded(key(2), plain(String::new()), None, true);
+    composer.loaded(key(2), plain(String::new()), None, true, Vec::new());
     composer.show(Some(key(1)));
     assert_eq!(text(&composer), "meio");
 }
@@ -182,6 +182,7 @@ fn send_takes_the_text_and_never_a_blank_one() {
             reply_to: None,
             key: key(1),
             text: "olá".to_owned(),
+            tiles: Vec::new(),
             local: Uuid::from_u128(9),
             seq: 1,
         })
@@ -217,7 +218,8 @@ fn a_failed_send_gives_the_text_back_before_what_was_typed_since() {
     composer.send(Uuid::from_u128(9));
     assert!(!composer.send_failed_here());
     type_in(&mut composer, "segunda", 1.0);
-    let effects = composer.send_failed(key(1), plain("primeira".to_owned()), None, true);
+    let effects =
+        composer.send_failed(key(1), plain("primeira".to_owned()), None, true, Vec::new());
     assert_eq!(text(&composer), "primeira\nsegunda");
     assert!(composer.send_failed_here());
     assert!(
