@@ -50,9 +50,11 @@ impl Shell {
         if self.sdk.is_none() {
             return;
         }
-        if let Some(job) = self.audio.store.next_read() {
-            self.start_audio_read(job);
-            self.media_reads.busy = true;
+        while let Some(job) = self.audio.store.next_read() {
+            if self.start_audio_read(job) {
+                self.media_reads.busy = true;
+                return;
+            }
         }
     }
 }

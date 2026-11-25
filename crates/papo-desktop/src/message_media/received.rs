@@ -27,8 +27,9 @@ use super::{
     Layer, album, failed, file_card_view::file_card_of, gif_badge, inner_edge, more_mark, painted,
     single_box,
 };
-use crate::audio_store::AudioView;
+use crate::audio_store::{AudioKey, AudioView};
 use crate::design::{FOCUS_RING_PT, Look, MEDIA_BLOCK_GAP, TYPE_CAPTION_MEDIUM};
+pub(crate) use crate::media_store::attachment_id;
 use crate::media_store::{MediaKey, MediaView};
 use crate::saving::SaveView;
 use crate::strings;
@@ -100,7 +101,7 @@ pub(crate) trait MediaHost: Sized + 'static {
     /// shows.
     fn video_volume_open(&mut self, key: MediaKey, on: bool, tx: &mut Tx);
     /// A press on audio `key`'s player (at `at`).
-    fn audio_press(&mut self, at: MediaAt, key: MediaKey, press: AudioPress, tx: &mut Tx);
+    fn audio_press(&mut self, at: MediaAt, key: AudioKey, press: AudioPress, tx: &mut Tx);
 }
 
 /// What every received attachment in one view draws with.
@@ -139,7 +140,7 @@ pub(crate) struct MediaStyle {
     /// Audio: what is read and what plays.
     pub(crate) audio: AudioView,
     /// The waveform the pointer is over, and where along it (0 to 1).
-    pub(crate) audio_hover: Option<(MediaKey, f32)>,
+    pub(crate) audio_hover: Option<(AudioKey, f32)>,
 }
 
 /// The id a picture shares with the viewer's while it shows it, so the viewer grows out of the
@@ -207,14 +208,6 @@ impl MediaStyle {
             .and_then(|id| self.own_sizes.get(&id).copied())
             .unwrap_or_else(|| MediaSize::of(attachment))
     }
-}
-
-/// An attachment's ID, when it parses.
-pub(crate) fn attachment_id(attachment: &Attachment) -> Option<Uuid> {
-    attachment
-        .id
-        .as_deref()
-        .and_then(|id| Uuid::parse_str(id).ok())
 }
 
 /// Whether `attachment` draws in the media box: a picture or a video.

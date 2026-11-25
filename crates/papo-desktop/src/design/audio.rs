@@ -20,3 +20,10 @@ pub(crate) const AUDIO_HAIRLINE_PT: f32 = 1.0;
 pub(crate) const AUDIO_HOVER_TIME_GAP_PT: f32 = 4.0;
 /// A step with ←/→ on the waveform, in ms.
 pub(crate) const AUDIO_SEEK_STEP_MS: u64 = 5_000;
+/// ✕ on an unsent audio's capsule while it uploads (Christian, 2026-11-25: in its top corner,
+/// level with the name, so the capsule keeps its width when sent): its icon (its target twice
+/// that), and the target's inset from the capsule's top and end, in points. Its icon's end lines
+/// up with the time's.
+pub(crate) const AUDIO_CANCEL_ICON_PT: f32 = 11.0;
+pub(crate) const AUDIO_CANCEL_TOP_PT: f32 = 3.0;
+pub(crate) const AUDIO_CANCEL_END_PT: f32 = AUDIO_END_PAD_PT - AUDIO_CANCEL_ICON_PT / 2.0;

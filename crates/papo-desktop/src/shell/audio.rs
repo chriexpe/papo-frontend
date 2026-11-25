@@ -1,26 +1,28 @@
 //! The shell's side of audio in messages (`docs/design.md` §14.5): what is near the view, the
-//! one player (sound only, from the SDK's cache), its clock, and the rules that cross into
-//! video: one sound at a time, the window off screen (Keep playing when hidden), leaving the
-//! conversation. The rules themselves are `audio_store`'s; reading and waveforms are
-//! `audio_reads`', presses and keys `audio_presses`'.
+//! one player (sound only, from the SDK's cache, or an unsent audio's staged file), its clock,
+//! and the rules that cross into video: one sound at a time, the window off screen (Keep
+//! playing when hidden), leaving the conversation. The rules themselves are `audio_store`'s;
+//! reading and waveforms are `audio_reads`', presses and keys `audio_presses`', an unsent
+//! audio's end `unsent_audio`'s.
 
 use std::sync::Arc;
 
-use papo_sdk::{AccountId, Attachment, MediaSource};
+use papo_sdk::{AccountId, Attachment};
 use papo_sdk_ui::{AUDIO_FILE_BARS, AttachmentKind, DEFAULT_CACHE_ENTRIES, WaveformCache};
 use rune::Tx;
 
 use super::Shell;
 use super::audio_reads::Running;
-use crate::audio_store::{AudioDesired, AudioStore};
+use crate::audio_store::{AudioDesired, AudioKey, AudioStore};
 use crate::media_store::MediaKey;
 use crate::message_media::received::attachment_id;
 use crate::playback::{PlaybackFailure, Player, PlayerSetup, PlayerState, SeekMode};
 use crate::timeline::TimelineKey;
 
 /// The live player.
-struct Live {
-    key: MediaKey,
+pub(super) struct Live {
+    /// Its audio; moves to the server's attachment when the audio is sent.
+    pub(super) key: AudioKey,
     player: Box<dyn Player>,
     /// Numbers its opening, so a late answer from an earlier one is let go.
     serial: u64,
@@ -33,9 +35,9 @@ pub(crate) struct Audio {
     pub(super) store: AudioStore,
     /// Finished waveforms, in the SDK's cache: an audio read again needs only its length.
     pub(super) waveforms: WaveformCache,
-    live: Option<Live>,
+    pub(super) live: Option<Live>,
     /// The player opening, by its serial.
-    pub(super) opening: Option<(MediaKey, u64)>,
+    pub(super) opening: Option<(AudioKey, u64)>,
     /// Numbers players and waveform decodes.
     pub(super) serial: u64,
     /// The read holding `media_reads`' slot.
@@ -45,7 +47,7 @@ pub(crate) struct Audio {
     /// The conversation the audio with the player is in: leaving it pauses the audio.
     pub(super) conversation: Option<TimelineKey>,
     /// The waveform the pointer is over, and where along it (0 to 1).
-    pub(crate) hover: Option<(MediaKey, f32)>,
+    pub(crate) hover: Option<(AudioKey, f32)>,
     /// What the playing audio's row shows: its second and its played bars.
     shown: Option<(u64, usize)>,
     /// When the playing audio's time is read next, on the window's clock (other wakes, a
@@ -75,7 +77,7 @@ impl Shell {
     /// The audio the shown timeline draws (its visible and near rows, and the open pins) is
     /// `keys`, in order: what isn't read is read in turn. Showing another conversation leaves
     /// the one the audio plays in.
-    pub(super) fn want_audio(&mut self, keys: Vec<MediaKey>) {
+    pub(super) fn want_audio(&mut self, keys: Vec<AudioKey>) {
         let shown = self.tabs.shown().map(|open| open.key);
         if self.audio.conversation.is_some() && self.audio.conversation != shown {
             self.leave_audio();
@@ -133,35 +135,27 @@ impl Shell {
         }
     }
 
-    /// Opens the player for `want`, from the audio's original in the SDK's cache; long audio
-    /// without its waveform decodes it meanwhile.
+    /// Opens the player for `want`, from the audio's original in the SDK's cache (an unsent
+    /// one's staged file); long audio without its waveform decodes it meanwhile.
     fn open_audio(&mut self, want: AudioDesired) {
         let Some(sdk) = self.sdk.clone() else {
             return;
         };
+        let key = want.key;
+        let Some(source) = self.audio_source(key) else {
+            self.audio
+                .store
+                .player_failed(key, PlaybackFailure::Unavailable);
+            return;
+        };
         self.audio.serial += 1;
         let serial = self.audio.serial;
-        let key = want.key;
         self.audio.opening = Some((key, serial));
         let fill = self.start_fill(key);
         let engine = self.videos.engine();
         let updates = sdk.updates();
         sdk.run(move |client| async move {
-            let source = MediaSource::Attachment(key.attachment);
-            let bytes = match client.session(key.account) {
-                Ok(session) => {
-                    let media = session.media();
-                    match media.cached(source.clone()).await {
-                        Ok(data) => Some(data.value.bytes),
-                        Err(_) => media
-                            .fetch(source, false)
-                            .await
-                            .ok()
-                            .map(|data| data.value.bytes),
-                    }
-                }
-                Err(_) => None,
-            };
+            let bytes = source.bytes(&client, true).await;
             let changed_updates = updates.clone();
             let changed: crate::playback::Changed = Arc::new(move || {
                 changed_updates.send(move |shell| shell.audio_changed(serial));
@@ -181,25 +175,28 @@ impl Shell {
                 super::audio_reads::fill_waveform(&engine, bytes, fill, &updates);
             }
             updates.send(move |shell| {
-                shell.audio_opened(key, serial, want, player);
+                shell.audio_opened(serial, want, player);
                 true
             });
         });
     }
 
-    /// The player for audio `key` opened (or its bytes couldn't be read).
+    /// Player `serial` opened (or its bytes couldn't be read), as `applied` asked. Its audio
+    /// is the one opening now, which may have been sent meanwhile.
     pub(super) fn audio_opened(
         &mut self,
-        key: MediaKey,
         serial: u64,
         applied: AudioDesired,
         player: Option<Box<dyn Player>>,
     ) {
-        if self.audio.opening != Some((key, serial)) {
+        let Some((key, _)) = self
+            .audio
+            .opening
+            .take_if(|(_, opening)| *opening == serial)
+        else {
             // No longer wanted, or superseded: dropping it stops it.
             return;
-        }
-        self.audio.opening = None;
+        };
         let Some(player) = player else {
             self.audio.store.player_failed(key, PlaybackFailure::Broken);
             return;
@@ -247,7 +244,7 @@ impl Shell {
     }
 
     /// Moves the live player of audio `key` to `position_ms`, if it has one.
-    pub(super) fn seek_audio_player(&mut self, key: MediaKey, position_ms: u64) {
+    pub(super) fn seek_audio_player(&mut self, key: AudioKey, position_ms: u64) {
         if let Some(live) = self.audio.live.as_mut().filter(|live| live.key == key) {
             live.player.seek(position_ms, SeekMode::Accurate);
             self.audio.shown = None;
@@ -339,14 +336,16 @@ impl Shell {
 }
 
 /// The audio among `attachments` of account `account`: its keys, in order.
-pub(super) fn audio_wanted(account: AccountId, attachments: &[Attachment]) -> Vec<MediaKey> {
+pub(super) fn audio_wanted(account: AccountId, attachments: &[Attachment]) -> Vec<AudioKey> {
     attachments
         .iter()
         .filter(|attachment| AttachmentKind::of(attachment) == AttachmentKind::Audio)
         .filter_map(attachment_id)
-        .map(|attachment| MediaKey {
-            account,
-            attachment,
+        .map(|attachment| {
+            AudioKey::Received(MediaKey {
+                account,
+                attachment,
+            })
         })
         .collect()
 }

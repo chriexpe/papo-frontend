@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 use papo_sdk_ui::{AUDIO_FILE_BARS, MAX_AHEAD_DURATION_MS, Waveform};
 
-use crate::media_store::MediaKey;
 use crate::playback::{AudioRead, PlaybackFailure};
 
 /// Audio remembered (its length, waveform and place) beyond what is near the view.
@@ -41,14 +40,14 @@ pub(crate) enum Reading {
 /// `ahead_max_ms`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ReadJob {
-    pub(crate) key: MediaKey,
+    pub(crate) key: AudioKey,
     pub(crate) ahead_max_ms: Option<u64>,
 }
 
 /// How the one player should be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AudioDesired {
-    pub(crate) key: MediaKey,
+    pub(crate) key: AudioKey,
     pub(crate) playing: bool,
     /// Where a new player starts, in milliseconds.
     pub(crate) start_ms: u64,
@@ -95,19 +94,28 @@ impl Entry {
 /// Audio's rules.
 #[derive(Default)]
 pub(crate) struct AudioStore {
-    entries: HashMap<MediaKey, Entry>,
+    entries: HashMap<AudioKey, Entry>,
     /// Audio near the view, in the order it shows.
-    wanted: Vec<MediaKey>,
+    wanted: Vec<AudioKey>,
     /// Entries in the order they were last wanted, for forgetting the oldest.
-    recent: VecDeque<MediaKey>,
+    recent: VecDeque<AudioKey>,
     /// The audio with a player, and whether it plays.
-    current: Option<(MediaKey, bool)>,
+    current: Option<(AudioKey, bool)>,
+    /// Unsent audio sent since, to the server's attachment it goes on as (`sent`): a view or a
+    /// want still naming the unsent file finds it.
+    moved: HashMap<AudioKey, AudioKey>,
 }
 
 impl AudioStore {
     /// The shown views draw the audio `keys` now, in order (visible and near rows).
-    pub(crate) fn want(&mut self, keys: impl IntoIterator<Item = MediaKey>) {
-        self.wanted = keys.into_iter().collect();
+    pub(crate) fn want(&mut self, keys: impl IntoIterator<Item = AudioKey>) {
+        let mut wanted: Vec<AudioKey> = Vec::new();
+        for key in keys.into_iter().map(|key| self.resolve(key)) {
+            if !wanted.contains(&key) {
+                wanted.push(key);
+            }
+        }
+        self.wanted = wanted;
         for key in &self.wanted {
             self.entries.entry(*key).or_insert_with(Entry::new);
             self.recent.retain(|recent| recent != key);
@@ -132,7 +140,7 @@ impl AudioStore {
     }
 
     /// Audio `key`'s read ended.
-    pub(crate) fn read(&mut self, key: MediaKey, outcome: Result<AudioRead, PlaybackFailure>) {
+    pub(crate) fn read(&mut self, key: AudioKey, outcome: Result<AudioRead, PlaybackFailure>) {
         let Some(entry) = self.entries.get_mut(&key) else {
             return;
         };
@@ -155,7 +163,7 @@ impl AudioStore {
     }
 
     /// Audio `key`'s read was let go before it ended (no longer wanted): it waits again.
-    pub(crate) fn read_dropped(&mut self, key: MediaKey) {
+    pub(crate) fn read_dropped(&mut self, key: AudioKey) {
         if let Some(entry) = self.entries.get_mut(&key)
             && entry.reading == Reading::Running
         {
@@ -165,7 +173,7 @@ impl AudioStore {
 
     /// Audio `key`'s waveform as decoded so far (it fills in while long audio plays), or
     /// finished. A finished one is never replaced by a partial one.
-    pub(crate) fn filled(&mut self, key: MediaKey, waveform: Waveform) {
+    pub(crate) fn filled(&mut self, key: AudioKey, waveform: Waveform) {
         let Some(entry) = self.entries.get_mut(&key) else {
             return;
         };
@@ -177,7 +185,7 @@ impl AudioStore {
 
     /// Audio `key` was decoded to its end while it played: its waveform, and its length when
     /// the container didn't state one.
-    pub(crate) fn fill_done(&mut self, key: MediaKey, read: AudioRead) {
+    pub(crate) fn fill_done(&mut self, key: AudioKey, read: AudioRead) {
         if let Some(entry) = self.entries.get_mut(&key)
             && entry.reading == (Reading::Read { duration_ms: None })
         {
@@ -191,7 +199,7 @@ impl AudioStore {
     }
 
     /// Whether audio `key` lacks its finished waveform: playing it decodes it.
-    pub(crate) fn needs_waveform(&self, key: MediaKey) -> bool {
+    pub(crate) fn needs_waveform(&self, key: AudioKey) -> bool {
         self.entries
             .get(&key)
             .is_some_and(|entry| !entry.waveform.as_ref().is_some_and(Waveform::is_complete))
@@ -199,7 +207,7 @@ impl AudioStore {
 
     /// Plays audio `key` (from where it was) when it was read; it takes the one player. Returns
     /// whether it plays.
-    pub(crate) fn play(&mut self, key: MediaKey) -> bool {
+    pub(crate) fn play(&mut self, key: AudioKey) -> bool {
         let Some(entry) = self.entries.get_mut(&key) else {
             return false;
         };
@@ -212,7 +220,7 @@ impl AudioStore {
     }
 
     /// Pauses audio `key` where it is.
-    pub(crate) fn pause(&mut self, key: MediaKey) {
+    pub(crate) fn pause(&mut self, key: AudioKey) {
         if let Some((current, playing)) = &mut self.current
             && *current == key
         {
@@ -234,7 +242,7 @@ impl AudioStore {
 
     /// Audio `key` moved to `position_ms` (a seek, clamped to its length), playing or paused as
     /// it was. Seeking a paused audio that never played shows its time from then on.
-    pub(crate) fn seek(&mut self, key: MediaKey, position_ms: u64) -> u64 {
+    pub(crate) fn seek(&mut self, key: AudioKey, position_ms: u64) -> u64 {
         let Some(entry) = self.entries.get_mut(&key) else {
             return position_ms;
         };
@@ -247,24 +255,24 @@ impl AudioStore {
     }
 
     /// Audio `key` is at `position_ms` while it plays (read from its player).
-    pub(crate) fn moved(&mut self, key: MediaKey, position_ms: u64) {
+    pub(crate) fn moved(&mut self, key: AudioKey, position_ms: u64) {
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.position_ms = position_ms;
         }
     }
 
     /// Where audio `key` is.
-    pub(crate) fn position_ms(&self, key: MediaKey) -> u64 {
+    pub(crate) fn position_ms(&self, key: AudioKey) -> u64 {
         self.entries.get(&key).map_or(0, |entry| entry.position_ms)
     }
 
     /// Audio `key`'s length, when read.
-    pub(crate) fn duration_ms(&self, key: MediaKey) -> Option<u64> {
+    pub(crate) fn duration_ms(&self, key: AudioKey) -> Option<u64> {
         self.entries.get(&key).and_then(Entry::duration_ms)
     }
 
     /// Audio `key` reached its end: back at the start, at rest, its player let go.
-    pub(crate) fn ended(&mut self, key: MediaKey) {
+    pub(crate) fn ended(&mut self, key: AudioKey) {
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.position_ms = 0;
             entry.played = false;
@@ -275,12 +283,12 @@ impl AudioStore {
     }
 
     /// Audio `key`'s player failed: it is drawn as a file card from now on.
-    pub(crate) fn player_failed(&mut self, key: MediaKey, failure: PlaybackFailure) {
+    pub(crate) fn player_failed(&mut self, key: AudioKey, failure: PlaybackFailure) {
         self.read(key, Err(failure));
     }
 
     /// Audio `key`'s player was let go at `position_ms`: it resumes there.
-    pub(crate) fn released(&mut self, key: MediaKey, position_ms: u64) {
+    pub(crate) fn released(&mut self, key: AudioKey, position_ms: u64) {
         self.moved(key, position_ms);
     }
 
@@ -291,7 +299,7 @@ impl AudioStore {
     }
 
     /// Audio `key` failed and the person asked again: it is read again.
-    pub(crate) fn retry(&mut self, key: MediaKey) {
+    pub(crate) fn retry(&mut self, key: AudioKey) {
         if let Some(entry) = self.entries.get_mut(&key)
             && matches!(entry.reading, Reading::Failed(_))
         {
@@ -310,24 +318,50 @@ impl AudioStore {
         })
     }
 
+    /// The audio `key` names now: the server's attachment for an unsent audio since sent.
+    pub(crate) fn resolve(&self, key: AudioKey) -> AudioKey {
+        self.moved.get(&key).copied().unwrap_or(key)
+    }
+
+    /// Whether audio `key` is known (wanted once, not forgotten).
+    pub(crate) fn knows(&self, key: AudioKey) -> bool {
+        self.entries.contains_key(&key)
+    }
+
+    /// Whether audio `key` was read.
+    pub(crate) fn is_read(&self, key: AudioKey) -> bool {
+        self.entries
+            .get(&key)
+            .is_some_and(|entry| matches!(entry.reading, Reading::Read { .. }))
+    }
+
+    /// Audio `key`'s waveform, when decoded to its end.
+    pub(crate) fn finished_waveform(&self, key: AudioKey) -> Option<Waveform> {
+        self.entries
+            .get(&key)
+            .and_then(|entry| entry.waveform.clone())
+            .filter(Waveform::is_complete)
+    }
+
     /// What views read.
     pub(crate) fn view(&self) -> AudioView {
         AudioView::of(
             self.entries
                 .iter()
                 .map(|(key, entry)| (*key, self.shown_of(*key, entry))),
+            self.moved.clone(),
         )
     }
 
     /// How audio `key` draws now, when it is known: for a single audio, without building the
     /// whole view.
-    pub(crate) fn shown(&self, key: MediaKey) -> Option<AudioShown> {
+    pub(crate) fn shown(&self, key: AudioKey) -> Option<AudioShown> {
         self.entries
             .get(&key)
             .map(|entry| self.shown_of(key, entry))
     }
 
-    fn shown_of(&self, key: MediaKey, entry: &Entry) -> AudioShown {
+    fn shown_of(&self, key: AudioKey, entry: &Entry) -> AudioShown {
         AudioShown {
             reading: entry.reading,
             bars: entry.bars.clone(),
@@ -339,7 +373,8 @@ impl AudioStore {
     }
 
     /// Whether audio `key` is near the view now.
-    pub(crate) fn is_wanted(&self, key: MediaKey) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_wanted(&self, key: AudioKey) -> bool {
         self.wanted.contains(&key)
     }
 
@@ -356,12 +391,16 @@ impl AudioStore {
                 return;
             }
             self.entries.remove(&oldest);
+            self.moved.retain(|_, to| *to != oldest);
         }
     }
 }
 
+mod key;
+mod sent;
 mod view;
 
+pub(crate) use key::AudioKey;
 pub(crate) use view::{AudioShown, AudioView};
 
 #[cfg(test)]

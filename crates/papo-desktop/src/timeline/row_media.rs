@@ -10,6 +10,8 @@ use super::OpenTimeline;
 use super::row_parts::{Origin, RowMessage};
 use super::unsent_attachments::{self, Unsent};
 use super::view::{Style, TimelineHost};
+use crate::audio_store::AudioKey;
+use crate::composer::tray::TileKind;
 use crate::design::{Look, MESSAGE_BLOCK_GAP};
 use crate::media_store::MediaKey;
 use crate::message_media::received::{self, MediaAt, MediaStyle, MediaSurface, attachment_id};
@@ -60,6 +62,32 @@ pub(crate) struct AudioDrawn {
     playing: bool,
     /// The hairline's place over the waveform, in whole points.
     hover_pt: Option<u32>,
+}
+
+/// How audio `key` draws, for its row's memo; none before it is known.
+fn audio_drawn(media: &MediaStyle, key: AudioKey) -> Option<AudioDrawn> {
+    let key = media.audio.resolve(key);
+    let shown = media.audio.get(key)?;
+    let hover_pt = media
+        .audio_hover
+        .filter(|(hovered, _)| *hovered == key)
+        .map(|(_, share)| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a place over a 254 pt waveform"
+            )]
+            let points = (share * crate::message_media::audio::waveform_pt()).round() as u32;
+            points
+        });
+    Some(AudioDrawn {
+        reading: shown.reading,
+        bars_version: shown.bars_version,
+        shown_s: shown.shown_ms().map(|ms| ms / 1000),
+        played_bars: shown.played_bars(papo_sdk_ui::AUDIO_FILE_BARS),
+        playing: shown.playing,
+        hover_pt,
+    })
 }
 
 /// What a received message's attachments draw from, for the row's memo: each attachment's
@@ -144,30 +172,7 @@ pub(crate) fn received_signature(
                         media.video_surfaces.contains_key(&key),
                     ))
                 }),
-                audio: key.and_then(|key| {
-                    let shown = media.audio.get(key)?;
-                    let hover_pt = media
-                        .audio_hover
-                        .filter(|(hovered, _)| *hovered == key)
-                        .map(|(_, share)| {
-                            #[expect(
-                                clippy::cast_possible_truncation,
-                                clippy::cast_sign_loss,
-                                reason = "a place over a 254 pt waveform"
-                            )]
-                            let points =
-                                (share * crate::message_media::audio::waveform_pt()).round() as u32;
-                            points
-                        });
-                    Some(AudioDrawn {
-                        reading: shown.reading,
-                        bars_version: shown.bars_version,
-                        shown_s: shown.shown_ms().map(|ms| ms / 1000),
-                        played_bars: shown.played_bars(papo_sdk_ui::AUDIO_FILE_BARS),
-                        playing: shown.playing,
-                        hover_pt,
-                    })
-                }),
+                audio: key.and_then(|key| audio_drawn(media, AudioKey::Received(key))),
             }
         })
         .collect();
@@ -206,13 +211,29 @@ pub(super) fn unsent_of<'a>(
         files: &entry.files,
         progress: style.reacting.outgoing.progress_for(operation.id),
         bounds: style.media.bounds,
+        media: &style.media,
     })
 }
 
+/// What an unsent message's attachments draw from, for the row's memo (`signature`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct UnsentSignature {
+    state: u8,
+    sent_bytes: u64,
+    /// The pictures' version (`unsent_media`).
+    version: u64,
+    /// For each file, whether a picture shows and whether it is the sharp one.
+    pictures: Vec<(bool, bool)>,
+    /// Each audio's key (its presses name it) and how it draws.
+    audio: Vec<(AudioKey, Option<AudioDrawn>)>,
+    /// The media box's sides.
+    bounds: [u32; 2],
+}
+
 /// What changes an unsent message's attachments draw: its state, how much
-/// has left, the pictures' version and which have decoded, and the media
-/// box's height, for the row's memo.
-pub(super) fn signature(unsent: &Unsent<'_>) -> (u8, u64, u64, Vec<(bool, bool)>, u32, u32) {
+/// has left, the pictures' version and which have decoded, its audio's
+/// players, and the media box's height, for the row's memo.
+pub(super) fn signature(unsent: &Unsent<'_>) -> UnsentSignature {
     let state = match unsent.operation.state {
         OperationState::Preparing => 0,
         OperationState::Queued => 1,
@@ -225,14 +246,27 @@ pub(super) fn signature(unsent: &Unsent<'_>) -> (u8, u64, u64, Vec<(bool, bool)>
         .progress
         .map_or(0, |progress| progress.bytes_uploaded);
     let pictures = pictures_drawn(unsent.files);
-    (
+    let audio = unsent
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, file)| file.kind == TileKind::Audio)
+        .map(|(index, _)| {
+            let key = AudioKey::of_operation(unsent.key.account, unsent.operation, index);
+            (key, audio_drawn(unsent.media, key))
+        })
+        .collect();
+    UnsentSignature {
         state,
-        sent,
-        unsent.version,
+        sent_bytes: sent,
+        version: unsent.version,
         pictures,
-        unsent.bounds.max_width_pt.to_bits(),
-        unsent.bounds.max_height_pt.to_bits(),
-    )
+        audio,
+        bounds: [
+            unsent.bounds.max_width_pt.to_bits(),
+            unsent.bounds.max_height_pt.to_bits(),
+        ],
+    }
 }
 
 /// For each file, whether a picture shows and whether it is the sharp

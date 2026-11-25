@@ -101,11 +101,18 @@ impl Shell {
         let mut wants = Vec::new();
         let mut videos = Vec::new();
         let mut audio = Vec::new();
+        // Your messages the timeline shows sent before their queue said so.
+        let mut sent_audio = Vec::new();
         if let Some(open) = self.tabs.shown() {
             let visible = visible_span(open);
             let from = visible.start.saturating_sub(NEAR_ROWS);
             let to = (visible.end + NEAR_ROWS).min(open.items.len());
             for item in open.items.iter().skip(from).take(to.saturating_sub(from)) {
+                // Your unsent message's audio plays as a sent one's does.
+                if let TimelineItem::LocalEcho { operation, .. } = item.as_ref() {
+                    sent_audio.extend(self.sent_audio(open.key.account, operation));
+                    audio.extend(self.unsent_audio_wanted(open.key.account, operation));
+                }
                 if let TimelineItem::Message { message, .. } = item.as_ref() {
                     let attachments = message.attachments.as_deref().unwrap_or_default();
                     audio.extend(super::audio::audio_wanted(open.key.account, attachments));
@@ -165,6 +172,9 @@ impl Shell {
             }
         }
         self.want_videos(videos);
+        for (from, to) in sent_audio {
+            self.audio_sent(from, to);
+        }
         self.want_audio(audio);
         let wanted: HashSet<MediaKey> = wants.iter().map(|want| want.key).collect();
         self.gif_places.rects.retain(|key, _| wanted.contains(key));
@@ -468,7 +478,7 @@ impl crate::message_media::received::MediaHost for Shell {
     fn audio_press(
         &mut self,
         at: crate::message_media::received::MediaAt,
-        key: MediaKey,
+        key: crate::audio_store::AudioKey,
         press: crate::message_media::audio::AudioPress,
         tx: &mut Tx,
     ) {

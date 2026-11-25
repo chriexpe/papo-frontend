@@ -81,6 +81,10 @@ impl Shell {
                 self.drop_unresolved(account, &outgoing, tx);
                 self.unsent_follow(account, &outgoing);
                 self.activity.entry(account).or_default().outgoing = Some(outgoing);
+                // Unsent audio drawn before its file was staged is read now.
+                if self.unsent_audio_waits(account) {
+                    self.want_media();
+                }
                 if self.uploads_ended(tx) {
                     return true;
                 }

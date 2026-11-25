@@ -5,21 +5,23 @@
 //! is a slider (←/→ 5 s, Space plays or pauses). Audio that can't be read or played is a file
 //! card instead (Christian, 2026-11-25), which `received` draws.
 //!
-//! An unsent audio draws the same capsule (`capsule`), so its row keeps its height when sent.
+//! An unsent audio is the same player (`player`), playing its local file, with its upload's
+//! size after its name, ✕ in its top corner and the accent bar along its foot (§14.3), so its
+//! row keeps its size when sent.
 
 use papo_sdk::Attachment;
 use papo_sdk_ui::AUDIO_FILE_BARS;
-use rune::{El, Key, Tx, col, el, icon, row, text};
+use rune::{El, col, el, icon, row, text};
 
 use super::received::{
     MediaAt, MediaHost, MediaPress, MediaStyle, attachment_id, media_element_key,
 };
-use crate::audio_store::{AudioShown, Reading};
+use crate::audio_store::{AudioKey, AudioShown, Reading};
 use crate::design::{
-    AUDIO_BAR_GAP_PT, AUDIO_BAR_MAX_PT, AUDIO_BAR_MIN_PT, AUDIO_BAR_PT, AUDIO_END_PAD_PT,
-    AUDIO_FILE_PT, AUDIO_HAIRLINE_PT, AUDIO_HOVER_TIME_GAP_PT, AUDIO_PLAY_ICON_PT, AUDIO_PLAY_PT,
-    AUDIO_SEEK_STEP_MS, FILE_CARD_BAR_PT, FOCUS_RING_PT, Look, PILL_OUTLINE_PT, RADIUS_PILL,
-    SPACE_SM, SPACE_XS, Surfaces, TYPE_CAPTION, TYPE_SMALL_MEDIUM,
+    AUDIO_BAR_GAP_PT, AUDIO_BAR_MAX_PT, AUDIO_BAR_MIN_PT, AUDIO_BAR_PT, AUDIO_CANCEL_END_PT,
+    AUDIO_CANCEL_TOP_PT, AUDIO_END_PAD_PT, AUDIO_FILE_PT, AUDIO_PLAY_ICON_PT, AUDIO_PLAY_PT,
+    FILE_CARD_BAR_PT, FOCUS_RING_PT, Look, PILL_OUTLINE_PT, SPACE_XS, TYPE_CAPTION,
+    TYPE_SMALL_MEDIUM,
 };
 use crate::icons::{PAUSE, PLAY};
 use crate::media_store::MediaKey;
@@ -38,6 +40,30 @@ pub(crate) enum AudioPress {
     Hover(Option<f32>),
 }
 
+/// One audio's player, as `player` draws it.
+#[derive(Clone, Copy)]
+pub(crate) struct Player<'a> {
+    /// Its message's row, and its place among the message's attachments.
+    pub(crate) at: MediaAt,
+    pub(crate) key: AudioKey,
+    pub(crate) name: &'a str,
+    pub(crate) shown: &'a AudioShown,
+    /// It takes presses and the keyboard (not in a confirmation, which shows the message only).
+    pub(crate) interactive: bool,
+    /// The pointer's place over its waveform (0 to 1), while there.
+    pub(crate) hover: Option<f32>,
+}
+
+/// What an unsent audio's capsule adds while it uploads (§14.3).
+pub(crate) struct Uploading {
+    /// "1.2 of 5 MB", after the name.
+    pub(crate) size_line: String,
+    /// ✕, for the capsule's top corner; none when the upload can't be cancelled.
+    pub(crate) cancel: Option<El>,
+    /// The upload's share (0 to 1) and its spoken name: the accent bar along the foot.
+    pub(crate) bar: (f32, String),
+}
+
 /// The waveform's width: its bars and the gaps between them, in points.
 pub(crate) fn waveform_pt() -> f32 {
     #[expect(clippy::cast_precision_loss, reason = "64 bars")]
@@ -53,10 +79,10 @@ pub(crate) fn audio_card<S: MediaHost>(
     style: &MediaStyle,
     look: &Look,
 ) -> Option<El> {
-    let key = MediaKey {
+    let key = AudioKey::Received(MediaKey {
         account: at.account,
         attachment: attachment_id(attachment)?,
-    };
+    });
     let shown = style
         .audio
         .get(key)
@@ -65,22 +91,57 @@ pub(crate) fn audio_card<S: MediaHost>(
     if matches!(shown.reading, Reading::Failed(_)) {
         return None;
     }
-    let name = attachment.original_file_name.as_deref().unwrap_or_default();
-    let interactive = style.interactive;
-    let read = matches!(shown.reading, Reading::Read { .. });
-    let hover = style
+    let shown_player = Player {
+        at,
+        key,
+        name: attachment.original_file_name.as_deref().unwrap_or_default(),
+        shown: &shown,
+        interactive: style.interactive,
+        hover: hover_of(style, key),
+    };
+    let mut card = player::<S>(shown_player, None, look);
+    if style.interactive {
+        card = card.on_secondary_press(move |host: &mut S, press, tx| {
+            host.media_press(at, MediaPress::Menu(Some([press.x, press.y])), tx);
+        });
+    }
+    Some(card)
+}
+
+/// Where the pointer is over audio `key`'s waveform (0 to 1), while it is there.
+pub(crate) fn hover_of(style: &MediaStyle, key: AudioKey) -> Option<f32> {
+    let key = style.audio.resolve(key);
+    style
         .audio_hover
-        .filter(|(hovered, _)| *hovered == key && interactive)
-        .map(|(_, share)| share);
-    let waveform = waveform(&shown, look);
-    let waveform = if interactive && read {
-        slider::<S>(at, key, &shown, waveform, hover, look)
+        .filter(|(hovered, _)| *hovered == key && style.interactive)
+        .map(|(_, share)| share)
+}
+
+/// An audio's player (received, or unsent with `uploading`): the play disc, its name over the
+/// waveform, its time. Once read it plays, and its waveform seeks.
+pub(crate) fn player<S: MediaHost>(
+    player: Player<'_>,
+    uploading: Option<Uploading>,
+    look: &Look,
+) -> El {
+    let Player {
+        at,
+        key,
+        name,
+        shown,
+        interactive,
+        hover,
+    } = player;
+    let live = interactive && matches!(shown.reading, Reading::Read { .. });
+    let waveform = waveform(shown, look);
+    let waveform = if live {
+        slider::<S>(at, key, shown, waveform, hover, look)
     } else {
         waveform
     };
     let time = shown.shown_ms().map(strings::clock).unwrap_or_default();
     let disc = play_disc(shown.playing, look);
-    let disc = if interactive && read {
+    let disc = if live {
         let press = if shown.playing {
             AudioPress::Pause
         } else {
@@ -99,44 +160,50 @@ pub(crate) fn audio_card<S: MediaHost>(
     } else {
         disc.a11y_hidden()
     };
-    let mut card = capsule(
+    capsule(
         disc,
         name,
         waveform,
         time_slot(&time, shown.duration_ms(), look),
-        None,
+        uploading,
         look,
     )
     .key(media_element_key(at))
-    .label(strings::media_audio(name));
-    if interactive {
-        card = card.on_secondary_press(move |host: &mut S, press, tx| {
-            host.media_press(at, MediaPress::Menu(Some([press.x, press.y])), tx);
-        });
-    }
-    Some(card)
+    .label(strings::media_audio(name))
 }
 
-/// The capsule: `disc` at its start, `name` over `waveform`, then `time`, and when `bar` is
-/// given (an upload's share and spoken name) the 2 pt accent bar along its foot.
-pub(crate) fn capsule(
+/// The capsule: `disc` at its start, `name` over `waveform`, then `time`; while `uploading`,
+/// the size after the name, ✕ in the top corner and the accent bar along the foot.
+fn capsule(
     disc: El,
     name: &str,
     waveform: El,
     time: El,
-    bar: Option<(f32, String)>,
+    uploading: Option<Uploading>,
     look: &Look,
 ) -> El {
     let inset = (AUDIO_FILE_PT - AUDIO_PLAY_PT) / 2.0;
+    let name = text(name)
+        .font(look.font(TYPE_SMALL_MEDIUM))
+        .color(look.palette.text_primary)
+        .truncate_middle();
+    let (name_line, uploading) = match uploading {
+        Some(Uploading {
+            size_line,
+            cancel,
+            bar,
+        }) => {
+            let size = text(format!(" · {size_line}"))
+                .font(look.font(TYPE_CAPTION).mono())
+                .color(look.palette.text_muted);
+            let line = row().items_center().child(name.shrink()).child(size);
+            (line, Some((cancel, bar)))
+        }
+        None => (row().child(name), None),
+    };
     let words = col()
         .gap(look.space(SPACE_XS))
-        .child(
-            text(name)
-                .font(look.font(TYPE_SMALL_MEDIUM))
-                .color(look.palette.text_primary)
-                .max_w(waveform_pt())
-                .truncate_middle(),
-        )
+        .child(name_line.max_w(waveform_pt()))
         .child(waveform);
     // As wide as what it holds, at the content column's start.
     let mut built = row()
@@ -153,7 +220,7 @@ pub(crate) fn capsule(
         .child(disc)
         .child(words)
         .child(time);
-    if let Some((share, label)) = bar {
+    if let Some((cancel, (share, label))) = uploading {
         built = built.clip_rounded(AUDIO_FILE_PT / 2.0).child(
             el().pin(Some(0.0), None, None, Some(0.0))
                 .w_frac(share.clamp(0.0, 1.0))
@@ -162,13 +229,21 @@ pub(crate) fn capsule(
                 .role("progressbar")
                 .label(label),
         );
+        if let Some(cancel) = cancel {
+            built = built.child(cancel.pin(
+                None,
+                Some(AUDIO_CANCEL_TOP_PT),
+                Some(AUDIO_CANCEL_END_PT),
+                None,
+            ));
+        }
     }
     built
 }
 
 /// The play disc: `text.primary` with its icon in `surface.content` (§14.5: neutral, not the
 /// accent, so a channel of audio isn't a column of accent dots).
-pub(crate) fn play_disc(playing: bool, look: &Look) -> El {
+fn play_disc(playing: bool, look: &Look) -> El {
     let glyph = if playing { &PAUSE } else { &PLAY };
     disc(
         icon(glyph, AUDIO_PLAY_ICON_PT).color(look.palette.surface_content),
@@ -176,8 +251,8 @@ pub(crate) fn play_disc(playing: bool, look: &Look) -> El {
     )
 }
 
-/// The disc with `inner` at its centre (the play icon, or an upload's ✕).
-pub(crate) fn disc(inner: El, look: &Look) -> El {
+/// The disc with `inner` at its centre.
+fn disc(inner: El, look: &Look) -> El {
     el().size(AUDIO_PLAY_PT, AUDIO_PLAY_PT)
         .center()
         .radius(AUDIO_PLAY_PT / 2.0)
@@ -187,7 +262,7 @@ pub(crate) fn disc(inner: El, look: &Look) -> El {
 
 /// The time after the waveform, in mono `text.muted`; as wide as the length's, so the capsule
 /// keeps its width while the time played counts up.
-pub(crate) fn time_slot(time: &str, duration_ms: Option<u64>, look: &Look) -> El {
+fn time_slot(time: &str, duration_ms: Option<u64>, look: &Look) -> El {
     let font = look.font(TYPE_CAPTION).mono();
     let widest = duration_ms.map(strings::clock).unwrap_or_default();
     col()
@@ -197,7 +272,7 @@ pub(crate) fn time_slot(time: &str, duration_ms: Option<u64>, look: &Look) -> El
 }
 
 /// The bars: each from its peak, flat while unknown; the played ones in `text.primary`.
-pub(crate) fn waveform(shown: &AudioShown, look: &Look) -> El {
+fn waveform(shown: &AudioShown, look: &Look) -> El {
     let played = shown.played_bars(AUDIO_FILE_BARS);
     let bars = (0..AUDIO_FILE_BARS).map(|index| {
         let level = shown
@@ -226,101 +301,6 @@ pub(crate) fn waveform(shown: &AudioShown, look: &Look) -> El {
         .children(bars)
 }
 
-/// The waveform as a slider: pressed or dragged it seeks, the pointer over it draws the
-/// hairline and the time there, ←/→ step 5 s and Space plays or pauses.
-fn slider<S: MediaHost>(
-    at: MediaAt,
-    key: MediaKey,
-    shown: &AudioShown,
-    bars: El,
-    hover: Option<f32>,
-    look: &Look,
-) -> El {
-    let duration_ms = shown.duration_ms().unwrap_or_default();
-    #[expect(clippy::cast_precision_loss, reason = "a length in ms")]
-    let duration = duration_ms as f64;
-    #[expect(clippy::cast_precision_loss, reason = "a position in ms")]
-    let position = shown.position_ms as f64;
-    let step_ms = i64::try_from(AUDIO_SEEK_STEP_MS).unwrap_or(i64::MAX);
-    let playing = shown.playing;
-    let width = waveform_pt();
-    let mut slider = bars
-        .key(format!("{}-wave", media_element_key(at)))
-        .role("slider")
-        .label(strings::audio_seek(shown.position_ms, shown.duration_ms()))
-        .range_value(position, 0.0, duration.max(1.0))
-        .range_step(f64::from(
-            u32::try_from(AUDIO_SEEK_STEP_MS).unwrap_or(5_000),
-        ))
-        .focusable(true)
-        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .on_step(move |host: &mut S, delta, tx| {
-            host.audio_press(at, key, AudioPress::SeekBy(i64::from(delta) * step_ms), tx);
-        })
-        .on_set_value(move |host: &mut S, value, tx| {
-            #[expect(clippy::cast_possible_truncation, reason = "a share of a length")]
-            let share = (value / duration.max(1.0)) as f32;
-            host.audio_press(at, key, AudioPress::Seek(share), tx);
-        })
-        .on_drag(move |host: &mut S, drag, tx| {
-            let share = (drag.x / drag.w.max(1.0)).clamp(0.0, 1.0);
-            let press = if drag.phase == rune::Phase::Up {
-                AudioPress::Seek(share)
-            } else {
-                AudioPress::Hover(Some(share))
-            };
-            host.audio_press(at, key, press, tx);
-        })
-        .on_pointer_move_local(move |host: &mut S, pointer, tx| {
-            let share = (pointer.x / width).clamp(0.0, 1.0);
-            host.audio_press(at, key, AudioPress::Hover(Some(share)), tx);
-        })
-        .on_hover_change(move |host: &mut S, on, tx| {
-            if on {
-                tx.live_only();
-            } else {
-                host.audio_press(at, key, AudioPress::Hover(None), tx);
-            }
-        })
-        .on_key(move |host: &mut S, event: &rune::KeyEvent, tx: &mut Tx| {
-            let plain = !(event.mods.ctrl || event.mods.alt || event.mods.cmd || event.mods.logo);
-            let space = matches!(&event.key, Key::Text(typed) if typed == " ");
-            if !(plain && space) {
-                return false;
-            }
-            let press = if playing {
-                AudioPress::Pause
-            } else {
-                AudioPress::Play
-            };
-            host.audio_press(at, key, press, tx);
-            true
-        });
-    if let Some(share) = hover {
-        let x = width * share;
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a share of a length in ms"
-        )]
-        let at_ms = (f64::from(share) * duration) as u64;
-        let hairline = el()
-            .pin(Some(x), Some(0.0), None, Some(0.0))
-            .w(AUDIO_HAIRLINE_PT)
-            .fill(look.palette.text_primary)
-            .a11y_hidden();
-        // Under the hairline, below the capsule's foot, over whatever follows.
-        let below_pt = f32::midpoint(AUDIO_FILE_PT, AUDIO_BAR_MAX_PT) + AUDIO_HOVER_TIME_GAP_PT;
-        let time = text(strings::clock(at_ms))
-            .font(look.font(TYPE_CAPTION).mono())
-            .color(look.palette.text_primary)
-            .px(look.space(SPACE_SM))
-            .radius(look.radius(RADIUS_PILL))
-            .pill_surface(look)
-            .pin(Some(x), Some(below_pt), None, None)
-            .raise()
-            .a11y_hidden();
-        slider = slider.child(hairline).child(time);
-    }
-    slider
-}
+mod slider;
+
+use slider::slider;

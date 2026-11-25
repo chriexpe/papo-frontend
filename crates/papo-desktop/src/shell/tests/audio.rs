@@ -1,7 +1,7 @@
 //! Audio in the shell (`docs/design.md` §14.5), headless and without GStreamer: Space on a
 //! focused message plays its audio and quiets videos, a played audio replays from the start
 //! after it ended, leaving the conversation pauses it, and how a read that was stopped or ran
-//! out of time lands.
+//! out of time lands. Your unsent audio is `unsent_audio`'s.
 
 use std::sync::Arc;
 
@@ -13,12 +13,12 @@ use serde_json::json;
 
 use super::replying::{conversation, message_id};
 use super::{FRAME_S, Shell, press};
-use crate::audio_store::{AudioDesired, Reading};
+use crate::audio_store::{AudioDesired, AudioKey, Reading};
 use crate::media_store::MediaKey;
 use crate::playback::{AudioRead, PlaybackFailure, Player, PlayerState, PlayerStatus, SeekMode};
 use crate::timeline::rows::message_key;
 
-fn audio_id() -> papo_sdk::Uuid {
+pub(super) fn audio_id() -> papo_sdk::Uuid {
     papo_sdk::Uuid::from_u128(0x9400)
 }
 
@@ -56,22 +56,22 @@ fn with_audio(read: Option<Result<AudioRead, PlaybackFailure>>) -> Runtime<Shell
         if let Some(read) = read {
             let job = shell.audio.store.next_read().unwrap();
             shell.audio.reading = Some(super::super::audio_reads::Running::new(job.key, 1));
-            shell.audio_read(key, read);
+            shell.audio_read(1, read);
         }
     });
     settle(&mut rt);
     rt
 }
 
-fn audio_key_of(shell: &Shell) -> MediaKey {
-    MediaKey {
+pub(super) fn audio_key_of(shell: &Shell) -> AudioKey {
+    AudioKey::Received(MediaKey {
         account: shell.tabs.shown().unwrap().key.account,
         attachment: audio_id(),
-    }
+    })
 }
 
 /// Audio `duration_ms` long, its waveform read.
-fn clip(duration_ms: u64) -> AudioRead {
+pub(super) fn clip(duration_ms: u64) -> AudioRead {
     let mut builder = WaveformBuilder::new(None);
     builder.push(&[0.5; 1_024], 1);
     AudioRead {
@@ -87,9 +87,9 @@ fn settle(rt: &mut Runtime<Shell>) {
 }
 
 /// A player that says it is in `state` at `position_ms`.
-struct Fake {
-    state: PlayerState,
-    position_ms: u64,
+pub(super) struct Fake {
+    pub(super) state: PlayerState,
+    pub(super) position_ms: u64,
 }
 
 impl Player for Fake {
@@ -136,7 +136,7 @@ fn an_audio_that_ended_plays_again_from_the_start() {
             state: PlayerState::Ended,
             position_ms: 30_000,
         };
-        shell.audio_opened(key, 7, want, Some(Box::new(ended)));
+        shell.audio_opened(7, want, Some(Box::new(ended)));
         assert_eq!(shell.audio.store.desired(), None, "ended: its player went");
         assert!(shell.audio.store.play(key));
         assert_eq!(shell.audio.store.desired().unwrap().start_ms, 0);
@@ -164,7 +164,7 @@ fn a_read_let_go_because_it_left_the_view_waits_again() {
         shell.audio.reading = Some(running);
         shell.audio.store.want([]);
         shell.audio_read(
-            key,
+            1,
             Ok(AudioRead {
                 duration_ms: None,
                 waveform: None,
@@ -181,7 +181,7 @@ fn a_read_let_go_because_it_left_the_view_waits_again() {
         running.stop();
         shell.audio.reading = Some(running);
         shell.audio.store.want([]);
-        shell.audio_read(key, Err(PlaybackFailure::Unsupported));
+        shell.audio_read(2, Err(PlaybackFailure::Unsupported));
         assert_eq!(
             shell.audio.store.shown(key).unwrap().reading,
             Reading::Failed(PlaybackFailure::Unsupported)

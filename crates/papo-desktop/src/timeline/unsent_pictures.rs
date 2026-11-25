@@ -13,7 +13,9 @@ use super::TimelineKey;
 use super::unsent_attachments::{Item, Upload, cancel_button, progress_label};
 use super::view::TimelineHost;
 use crate::composer::tray::TileKind;
-use crate::design::{Look, UPLOAD_RING_PT, UPLOAD_RING_TRACK_ALPHA, UPLOAD_SCRIM_ALPHA};
+use crate::design::{
+    Look, UPLOAD_CANCEL_ICON_PT, UPLOAD_RING_PT, UPLOAD_RING_TRACK_ALPHA, UPLOAD_SCRIM_ALPHA,
+};
 use crate::message_media::{
     Layer, album as album_frame, gif_badge, inner_edge, length_badge, more_mark, painted,
     single_box,
@@ -115,6 +117,7 @@ fn with_upload<S: TimelineHost>(
             local,
             item.index,
             Color::WHITE,
+            UPLOAD_CANCEL_ICON_PT,
             look,
         ));
     }
