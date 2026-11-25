@@ -74,6 +74,19 @@ fn without_text_the_first_attachment_names_the_kind() {
                 name: "notes.pdf".into(),
             },
         ),
+        // Drawn as cards, so named as files: a picture no client decodes, and audio.
+        (
+            "image/heic",
+            Snippet::File {
+                name: "notes.pdf".into(),
+            },
+        ),
+        (
+            "audio/ogg",
+            Snippet::File {
+                name: "notes.pdf".into(),
+            },
+        ),
     ] {
         let snippet = of_message(&wire(json!({
             "attachments": [{ "mime_type": mime, "original_file_name": "notes.pdf" }],

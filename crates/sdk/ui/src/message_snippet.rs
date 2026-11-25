@@ -4,6 +4,7 @@
 
 use papo_sdk::{MentionTarget, Message, Uuid};
 
+use crate::attachment_kind::AttachmentKind;
 use crate::message_content::{Block, Inline, MessageContent};
 
 /// What one line can say about a message, in order of preference: its first line of text,
@@ -13,13 +14,13 @@ use crate::message_content::{Block, Inline, MessageContent};
 pub enum Snippet {
     /// The first non-empty line of text, never empty.
     Text(Vec<SnippetPart>),
-    /// The first attachment is an animated GIF.
+    /// The first attachment is a GIF.
     Gif,
-    /// The first attachment is an image.
+    /// The first attachment is a JPEG, PNG or WebP picture (`AttachmentKind::Image`).
     Image,
     /// The first attachment is a video.
     Video,
-    /// The first attachment is another file.
+    /// The first attachment is another file (audio included, until clients play it).
     File {
         /// Its original file name, as uploaded.
         name: String,
@@ -67,17 +68,14 @@ pub fn snippet(message: &Message, content: &MessageContent) -> Snippet {
         return Snippet::Text(line.finish());
     }
     if let Some(attachment) = message.attachments.as_deref().and_then(<[_]>::first) {
-        let mime = attachment.mime_type.as_deref().unwrap_or_default();
-        return if mime.eq_ignore_ascii_case("image/gif") {
-            Snippet::Gif
-        } else if mime.starts_with("image/") {
-            Snippet::Image
-        } else if mime.starts_with("video/") {
-            Snippet::Video
-        } else {
-            Snippet::File {
+        // The word follows what the message draws: audio is a file until clients play it.
+        return match AttachmentKind::of(attachment) {
+            AttachmentKind::Gif => Snippet::Gif,
+            AttachmentKind::Image => Snippet::Image,
+            AttachmentKind::Video => Snippet::Video,
+            AttachmentKind::Audio | AttachmentKind::File => Snippet::File {
                 name: attachment.original_file_name.clone().unwrap_or_default(),
-            }
+            },
         };
     }
     if message
