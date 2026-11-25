@@ -221,6 +221,7 @@ fn a_draft_keeps_the_original_and_its_edit_until_the_message_is_sent() -> Result
         let edit = AttachmentEdit {
             anonymize: Anonymize::Required,
             random_name: false,
+            random_name_chosen: false,
             quarter_turns: 1,
             crop: Some(CropRect {
                 x: 0,
@@ -417,6 +418,57 @@ fn anonymizing_where_supported_still_gives_a_document_its_random_name() -> Resul
             upload.files[0].sha256,
             <[u8; 32]>::from(Sha256::digest(&original))
         );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+/// An anonymized photo whose random name the sender chose and saw, sent as `name`; the name the
+/// server received.
+async fn sent_under_chosen(
+    f: &Fixture,
+    name: &str,
+) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let (session, channel) = signed_in(f).await?;
+    let edit = AttachmentEdit {
+        random_name: true,
+        random_name_chosen: true,
+        ..anonymous()
+    };
+    session
+        .outgoing()
+        .enqueue(
+            channel,
+            id(1),
+            message_with(OutgoingAttachment::from_bytes(name, photo()).with_edit(edit)),
+            UnixMicros(0),
+        )
+        .await?;
+    state(&session, id(1), OperationState::Sent).await?;
+    let upload = f.server().take_received_upload().await.ok_or("no upload")?;
+    Ok(upload.files[0].filename.clone())
+}
+
+#[test]
+fn a_random_name_the_sender_chose_and_saw_is_the_one_sent() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let sent = sent_under_chosen(&f, "k3f9q2mzx81bd0a.jpg").await?;
+        assert_eq!(sent, "k3f9q2mzx81bd0a.jpg");
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn a_chosen_name_that_is_not_random_is_replaced() -> Result {
+    let f = Fixture::new(Config::default())?;
+    f.run(async {
+        let sent = sent_under_chosen(&f, "IMG_2041.JPG").await?;
+        assert_ne!(sent, "IMG_2041.JPG");
+        let (stem, extension) = sent.split_once('.').ok_or("no extension")?;
+        assert_eq!(stem.len(), papo_sdk::NAME_LENGTH);
+        assert_eq!(extension, "jpg");
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()
