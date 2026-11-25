@@ -10,7 +10,7 @@ use rune::Tx;
 
 use super::Shell;
 use crate::conversation_settings::ConversationSettings;
-use crate::settings::{Change, RowId, Target};
+use crate::settings::{Change, RowId, SizedMedia, Target};
 
 impl Shell {
     /// Shows `settings` and saves them, the message being read kept in its
@@ -87,14 +87,26 @@ pub(super) fn applied(
         Change::Switch(RowId::ChannelDescription, on) => next.channel_description = on,
         Change::Hue(RowId::MentionHue, hue) => next.mention_hue_degrees = hue.rem_euclid(360.0),
         Change::Hue(RowId::ReplyHue, hue) => next.reply_hue_degrees = hue.rem_euclid(360.0),
-        Change::ImageSize(size) => next.image_size = size,
+        Change::MediaSize(SizedMedia::Images, size) => next.image_size = size,
+        Change::MediaSize(SizedMedia::Videos, size) => next.video_size = size,
         Change::Switch(RowId::AnimateGifs, on) => next.animate_gifs = Some(on),
+        Change::Switch(RowId::AutoplayVideos, on) => next.autoplay_videos = Some(on),
         Change::Slider {
-            row: row @ (RowId::MediaMaxWidth | RowId::MediaMaxHeight),
+            row:
+                row @ (RowId::MediaMaxWidth
+                | RowId::MediaMaxHeight
+                | RowId::VideoMaxWidth
+                | RowId::VideoMaxHeight),
             value,
             ..
         } => {
-            let (width, height) = current.image_size.max_size_pt();
+            let videos = matches!(row, RowId::VideoMaxWidth | RowId::VideoMaxHeight);
+            let size = if videos {
+                &mut next.video_size
+            } else {
+                &mut next.image_size
+            };
+            let (width, height) = size.max_size_pt();
             // A slider's value is within its range, so it fits a u16.
             #[expect(
                 clippy::cast_possible_truncation,
@@ -102,7 +114,7 @@ pub(super) fn applied(
                 reason = "a slider value between 200 and 720"
             )]
             let value = value.round().max(0.0) as u16;
-            next.image_size = if row == RowId::MediaMaxWidth {
+            *size = if matches!(row, RowId::MediaMaxWidth | RowId::VideoMaxWidth) {
                 papo_sdk_ui::MediaSizeSetting::custom(value, height)
             } else {
                 papo_sdk_ui::MediaSizeSetting::custom(width, value)

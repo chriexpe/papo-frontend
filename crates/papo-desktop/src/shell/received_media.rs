@@ -39,6 +39,17 @@ impl Shell {
     /// The largest box media take in the shown timeline (§14.4): the Image size setting, the
     /// content column, and 0.55 × the conversation's height.
     pub(super) fn media_bounds(&self, look: &Look) -> MediaBounds {
+        self.bounds_at(self.conversations.settings().image_size, look)
+    }
+
+    /// The largest box a video takes in the shown timeline (§14.4, §14.9): the Video size, the
+    /// content column, and 0.55 × the conversation's height.
+    pub(super) fn video_bounds(&self, look: &Look) -> MediaBounds {
+        self.bounds_at(self.conversations.settings().video_size, look)
+    }
+
+    /// The bounds of a size `setting` in the shown timeline.
+    fn bounds_at(&self, setting: papo_sdk_ui::MediaSizeSetting, look: &Look) -> MediaBounds {
         let [_, _, width_pt, height_pt] = self.conversation_rect;
         let spacing = look.row_spacing(self.message_layout());
         let lead_pt = match spacing.lead {
@@ -50,7 +61,7 @@ impl Shell {
         // Before the conversation is laid out its size is unknown: the setting alone bounds it.
         let known = |value: f32| if value > 0.0 { value } else { f32::INFINITY };
         MediaBounds::new(
-            self.conversations.settings().image_size,
+            setting,
             known(width_pt - insets_pt - lead_pt),
             known(height_pt) * HOST_HEIGHT_SHARE,
         )
@@ -68,6 +79,12 @@ impl Shell {
             surface: crate::message_media::received::MediaSurface::Timeline,
             revealed: Arc::clone(&self.revealed),
             viewing: self.viewer.as_ref().map(|viewer| viewer.at),
+            video_bounds: self.video_bounds(look),
+            videos: self.videos.view(),
+            video_surfaces: self.videos.surfaces(),
+            video_attention: self.videos.attention,
+            video_volume_open: self.videos.volume_open,
+            video_volume: self.videos.volume.get(),
         }
     }
 
@@ -77,8 +94,10 @@ impl Shell {
         // Sizes are the same in every theme.
         let look = self.look(false);
         let bounds = self.media_bounds(&look);
+        let video_bounds = self.video_bounds(&look);
         let scale = self.scale;
         let mut wants = Vec::new();
+        let mut videos = Vec::new();
         if let Some(open) = self.tabs.shown() {
             let visible = visible_span(open);
             let from = visible.start.saturating_sub(NEAR_ROWS);
@@ -93,6 +112,18 @@ impl Shell {
                         &self.revealed,
                         bounds,
                         scale,
+                    ));
+                    videos.extend(super::videos::videos_wanted(
+                        attachments,
+                        &super::videos::Wanting {
+                            account: open.key.account,
+                            own_sizes: &self.own_sizes,
+                            revealed: &self.revealed,
+                            bounds: video_bounds,
+                            album_bounds: bounds,
+                            scale,
+                            still: false,
+                        },
                     ));
                 }
             }
@@ -112,9 +143,23 @@ impl Shell {
                         bounds,
                         scale,
                     ));
+                    // A pinned video shows its first frame; it plays in the conversation.
+                    videos.extend(super::videos::videos_wanted(
+                        attachments,
+                        &super::videos::Wanting {
+                            account: open.key.account,
+                            own_sizes: &self.own_sizes,
+                            revealed: &self.revealed,
+                            bounds: video_bounds,
+                            album_bounds: bounds,
+                            scale,
+                            still: true,
+                        },
+                    ));
                 }
             }
         }
+        self.want_videos(videos);
         let wanted: HashSet<MediaKey> = wants.iter().map(|want| want.key).collect();
         self.gif_places.rects.retain(|key, _| wanted.contains(key));
         let jobs = self.media.want(wants);
@@ -289,7 +334,7 @@ fn visible_span(open: &crate::timeline::OpenTimeline) -> std::ops::Range<usize> 
 }
 
 /// The share of `rect`'s height between `top_pt` and `bottom_pt`.
-fn shown_share(rect: [f32; 4], top_pt: f32, bottom_pt: f32) -> f32 {
+pub(super) fn shown_share(rect: [f32; 4], top_pt: f32, bottom_pt: f32) -> f32 {
     let [_, y, _, height] = rect;
     if height <= 0.0 {
         return 0.0;
@@ -380,6 +425,50 @@ impl crate::message_media::received::MediaHost for Shell {
 
     fn saved_pill_shown(&mut self, tx: &mut Tx) {
         self.saved_pill_show(tx);
+    }
+
+    fn video_press(
+        &mut self,
+        at: crate::message_media::received::MediaAt,
+        key: MediaKey,
+        press: crate::message_media::video::VideoPress,
+        tx: &mut Tx,
+    ) {
+        self.worked_outside();
+        self.press_video(at, key, press, tx);
+    }
+
+    fn video_moved(&mut self, key: MediaKey, rect: [f32; 4], reduced_motion: bool, tx: &mut Tx) {
+        if !Shell::video_moved(self, key, rect, reduced_motion) {
+            tx.live_only();
+        }
+    }
+
+    fn video_attention(&mut self, key: MediaKey, on: bool, tx: &mut Tx) {
+        let before = self.videos.attention;
+        if on {
+            self.videos.attention = Some(key);
+        } else if self.videos.attention == Some(key) {
+            self.videos.attention = None;
+        }
+        if self.videos.attention == before {
+            tx.live_only();
+        } else {
+            // The bar's seek bar moves by quarter seconds, the rest by seconds.
+            self.videos.next_clock_s = None;
+        }
+    }
+
+    fn video_volume_open(&mut self, key: MediaKey, on: bool, tx: &mut Tx) {
+        let before = self.videos.volume_open;
+        if on {
+            self.videos.volume_open = Some(key);
+        } else if self.videos.volume_open == Some(key) {
+            self.videos.volume_open = None;
+        }
+        if self.videos.volume_open == before {
+            tx.live_only();
+        }
     }
 }
 

@@ -9,9 +9,11 @@
 //! Pure: the state is `Viewer`'s, the handlers the shell's.
 
 use rune::{
-    Align, Color, Curve, Easing, El, Icon, Image, SurfaceFit, Transition, col, el, icon, row, text,
+    Align, Color, Curve, Easing, El, Icon, Image, NativeSurface, SurfaceFit, Transition, col, el,
+    icon, row, text,
 };
 
+use super::video::VideoShown;
 use super::{CLEAR_SIDE_PT, CLEAR_TOP_PT, Viewer};
 use crate::design::{
     FOCUS_RING_PT, HIDDEN_BLUR_PT, Look, PILL_ICON_PT, RADIUS_AVATAR, RADIUS_PILL, SPACE_LG,
@@ -46,6 +48,15 @@ pub(crate) struct Shown<'a> {
     /// The id the item shares with its box in the conversation (only the one the viewer opened
     /// on), so the viewer grows out of the box and shrinks back into it.
     pub(crate) matched: Option<String>,
+    /// A video item: its frames, why it can't play, and its controls.
+    pub(crate) video: Option<ViewerVideoShown<'a>>,
+}
+
+/// A video item as the viewer draws it.
+pub(crate) struct ViewerVideoShown<'a> {
+    pub(crate) surface: &'a NativeSurface,
+    pub(crate) failure: Option<crate::playback::PlaybackFailure>,
+    pub(crate) controls: VideoShown,
 }
 
 /// The viewer over the window; `look` is already the always-dark one.
@@ -53,7 +64,11 @@ pub(crate) fn view(shown: &Shown<'_>, look: &Look) -> El {
     let viewer = shown.viewer;
     let item = viewer.item();
     let name = item.map_or("", |item| item.name.as_str());
-    let label = strings::viewer_label(name, viewer.current + 1, viewer.items.len());
+    let label = if shown.video.is_some() {
+        strings::viewer_label_video(name, viewer.current + 1, viewer.items.len())
+    } else {
+        strings::viewer_label(name, viewer.current + 1, viewer.items.len())
+    };
     // The window keeps its full opacity, so the picture growing out of its box is seen whole
     // the whole way; the black behind it fades in and out over the same 180 ms.
     let backdrop = el()
@@ -76,6 +91,16 @@ pub(crate) fn view(shown: &Shown<'_>, look: &Look) -> El {
         .on_key(|shell: &mut Shell, key, tx| shell.viewer_key(key, tx))
         .child(stage(shown, look))
         .child(top(shown, look));
+    if let Some(video) = &shown.video {
+        root = root.on_pointer_move_local(|shell: &mut Shell, _, tx| {
+            if !shell.viewer_pointer_moved(tx) {
+                tx.live_only();
+            }
+        });
+        if video.failure.is_none() && video.controls.bar {
+            root = root.child(super::video::bar(&video.controls, look));
+        }
+    }
     if viewer.current > 0 {
         root = root.child(arrow(
             &CHEVRON_LEFT,
@@ -121,7 +146,9 @@ fn stage(shown: &Shown<'_>, look: &Look) -> El {
     let x = room_w / 2.0 + placed.offset[0] - width / 2.0;
     let y = room_h / 2.0 + placed.offset[1] - height / 2.0;
     let mut pixels = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0));
-    if let Some(image) = shown
+    if let Some(video) = &shown.video {
+        pixels = pixels.native_surface(video.surface, SurfaceFit::Fill);
+    } else if let Some(image) = shown
         .picture
         .filter(|image| image.is_ready() && image.error().is_none())
     {
@@ -159,6 +186,9 @@ fn stage(shown: &Shown<'_>, look: &Look) -> El {
         .child(picture);
     if shown.hidden {
         stage = stage.child(hidden_mark());
+    }
+    if let Some(failure) = shown.video.as_ref().and_then(|video| video.failure) {
+        return stage.child(super::video::failure(failure, look));
     }
     // Nothing to draw and the whole picture failed: say so, with Retry. With the
     // conversation's copy drawn, that copy stays.
@@ -275,13 +305,15 @@ fn actions_pill(shown: &Shown<'_>, look: &Look) -> El {
                 shell.viewer_zoom_step(true);
             },
         ))
-        .child(button(
-            "viewer-copy",
-            &COPY,
-            strings::viewer_copy(),
-            look,
-            Shell::viewer_copy,
-        ))
+        .children(shown.video.is_none().then(|| {
+            button(
+                "viewer-copy",
+                &COPY,
+                strings::viewer_copy(),
+                look,
+                Shell::viewer_copy,
+            )
+        }))
         .child(button(
             "viewer-save",
             &DOWNLOAD,

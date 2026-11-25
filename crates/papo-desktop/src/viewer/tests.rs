@@ -28,6 +28,7 @@ fn album(count: usize, opened: usize) -> Viewer {
             },
             name: format!("{index}.jpg"),
             gif: false,
+            video: false,
         })
         .collect();
     Viewer::new(at(opened), items, "Ana".into(), "Today, 21:30".into())

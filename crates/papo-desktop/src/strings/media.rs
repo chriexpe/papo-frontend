@@ -58,7 +58,7 @@ pub(crate) fn file_failed() -> (String, String) {
 }
 
 /// `text` before its `*action*` and the action, each trimmed.
-fn split_action(text: &str) -> (String, String) {
+pub(super) fn split_action(text: &str) -> (String, String) {
     let mut parts = text.split('*');
     let said = parts.next().unwrap_or_default().trim().to_owned();
     let action = parts.next().unwrap_or_default().trim().to_owned();

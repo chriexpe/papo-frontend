@@ -202,11 +202,12 @@ pub(crate) fn slider_value(id: RowId, value: f32) -> String {
         RowId::Slider(ShapeValue::TextSize) => {
             strings::settings_value_px(&strings::decimal(value, 1))
         }
-        RowId::Slider(ShapeValue::Blur) => strings::settings_value_px(&strings::decimal(value, 0)),
+        RowId::Slider(ShapeValue::Blur)
+        | RowId::MediaMaxWidth
+        | RowId::MediaMaxHeight
+        | RowId::VideoMaxWidth
+        | RowId::VideoMaxHeight => strings::settings_value_px(&strings::decimal(value, 0)),
         RowId::Slider(_) => strings::settings_value_times(&strings::decimal(value, 2)),
-        RowId::MediaMaxWidth | RowId::MediaMaxHeight => {
-            strings::settings_value_px(&strings::decimal(value, 0))
-        }
         _ => strings::settings_value_percent(&strings::decimal(value * 100.0, 0)),
     }
 }

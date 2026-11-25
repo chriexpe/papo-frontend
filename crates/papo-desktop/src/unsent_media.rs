@@ -34,6 +34,9 @@ pub(crate) struct UnsentFile {
     pub(crate) image: Option<Image>,
     /// The picture decoded at the media box's size; shown once ready.
     pub(crate) sharp: Option<Image>,
+    /// A video's first frame, length and size, as its tile read it (or read back from
+    /// staging).
+    pub(crate) video: Option<crate::composer::tray::LocalVideo>,
 }
 
 impl UnsentFile {
@@ -62,6 +65,7 @@ impl UnsentFile {
             media_size,
             image: tile.thumbnail.clone().filter(|_| !reshaped),
             sharp: None,
+            video: tile.video.clone(),
         }
     }
 
@@ -74,6 +78,7 @@ impl UnsentFile {
             media_size: MediaSize::Unknown,
             image: None,
             sharp: None,
+            video: None,
         }
     }
 
@@ -155,6 +160,25 @@ impl UnsentMedia {
         self.insert(local, files);
     }
 
+    /// Video `index` of message `local` was read from staging: its first frame now draws (its
+    /// box keeps the size it was first drawn at).
+    pub(crate) fn video_read(
+        &mut self,
+        local: Uuid,
+        index: usize,
+        video: crate::composer::tray::LocalVideo,
+    ) {
+        let Some(entry) = self.entries.get(&local) else {
+            return;
+        };
+        let mut files = entry.files.to_vec();
+        let Some(file) = files.get_mut(index) else {
+            return;
+        };
+        file.video = Some(video);
+        self.insert(local, files);
+    }
+
     /// A queue listed message `local`.
     pub(crate) fn listed(&mut self, local: Uuid) {
         self.listed.insert(local);
@@ -191,6 +215,7 @@ mod tests {
             media_size: MediaSize::exact(1600, 900),
             image: None,
             sharp: None,
+            video: None,
         }
     }
 

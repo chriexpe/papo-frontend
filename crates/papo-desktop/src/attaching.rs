@@ -110,13 +110,17 @@ pub(crate) fn plan(offered: &[Offered], held: usize, held_bytes: u64) -> Plan {
     Plan { taken, refused }
 }
 
-/// How many leading bytes [`kind_of`] reads.
-pub(crate) const HEAD_BYTES: usize = 12;
+/// How many leading bytes [`kind_of`] reads: enough for an MP4's brand after a 64-bit box size.
+pub(crate) const HEAD_BYTES: usize = 24;
 
 /// The tile a file makes, from its first bytes and size: a picture Rune
-/// decodes (JPEG, PNG, WebP, GIF) small enough to decode, else a file.
+/// decodes (JPEG, PNG, WebP, GIF) small enough to decode, a video the
+/// server will call one (`is_video`), else a file.
 /// Only for drawing: what the SDK may clean is the SDK's to say.
 pub(crate) fn kind_of(head: &[u8], size_bytes: u64) -> TileKind {
+    if is_video(head) {
+        return TileKind::Video;
+    }
     if size_bytes > THUMBNAIL_SOURCE_MAX_BYTES {
         return TileKind::File;
     }
@@ -131,6 +135,35 @@ pub(crate) fn kind_of(head: &[u8], size_bytes: u64) -> TileKind {
     } else {
         TileKind::File
     }
+}
+
+/// ISO media brands the server takes for audio (M4A and kin) or a picture (AVIF, HEIC).
+const NOT_VIDEO_BRANDS: [&[u8; 4]; 14] = [
+    b"M4A ", b"M4B ", b"M4P ", b"F4A ", b"avif", b"avis", b"heic", b"heix", b"hevc", b"hevx",
+    b"heim", b"heis", b"mif1", b"msf1",
+];
+
+/// Whether a file starting with `head` is a video as the server sniffs one, so its unsent row
+/// takes the shape its sent row will: an ISO media file (MP4, MOV, 3GP) whose brand is not an
+/// audio or picture one, a Matroska or `WebM` file, or an AVI.
+fn is_video(head: &[u8]) -> bool {
+    if head.get(4..8) == Some(b"ftyp") {
+        let Some(size) = head
+            .get(..4)
+            .and_then(|size| <[u8; 4]>::try_from(size).ok())
+        else {
+            return false;
+        };
+        // A box size of 1 means a 64-bit size follows, and the brand after it.
+        let brand_at = if u32::from_be_bytes(size) == 1 { 16 } else { 8 };
+        let Some(brand) = head.get(brand_at..brand_at + 4) else {
+            return false;
+        };
+        return !NOT_VIDEO_BRANDS.iter().any(|not| brand == not.as_slice());
+    }
+    let matroska = head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]);
+    let avi = head.starts_with(b"RIFF") && head.get(8..12) == Some(b"AVI ");
+    matroska || avi
 }
 
 /// The name for a pasted picture: `base` ("image.png") for the first,
@@ -266,6 +299,22 @@ mod tests {
         assert_eq!(kind_of(b"RIFF\0\0\0\0WEBP", 10), TileKind::Image);
         assert_eq!(kind_of(b"GIF89a", 10), TileKind::Gif);
         assert_eq!(kind_of(b"%PDF-1.7", 10), TileKind::File);
+        assert_eq!(
+            kind_of(b"\0\0\0\x20ftypisom\0\0\x02\0", 10),
+            TileKind::Video
+        );
+        assert_eq!(kind_of(b"\0\0\0\x14ftypqt  \0\0\0\0", 10), TileKind::Video);
+        assert_eq!(kind_of(b"\0\0\0\x20ftypM4A \0\0\0\0", 10), TileKind::File);
+        assert_eq!(
+            kind_of(&[0x1A, 0x45, 0xDF, 0xA3, 0x9F], 10),
+            TileKind::Video
+        );
+        assert_eq!(kind_of(b"RIFF\0\0\0\0AVI LIST", 10), TileKind::Video);
+        // A video is a video at any size: its first frame is read, not the whole decoded.
+        assert_eq!(
+            kind_of(b"\0\0\0\x20ftypisom\0\0\x02\0", 90 << 20),
+            TileKind::Video
+        );
         assert_eq!(kind_of(b"\0\0\0\x18ftypheic", 10), TileKind::File);
     }
 

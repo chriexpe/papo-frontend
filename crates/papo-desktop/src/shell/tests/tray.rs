@@ -22,6 +22,7 @@ pub(super) fn tile(shell: &mut Shell, name: &str, kind: TileKind) -> Tile {
         kind,
         source: TileSource::Fixture,
         thumbnail: None,
+        video: None,
         inspection: crate::composer::tray::Inspection::Pending,
         edit: papo_sdk::AttachmentEdit::default(),
         typed_name: None,

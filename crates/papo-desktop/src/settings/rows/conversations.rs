@@ -13,7 +13,7 @@ use papo_sdk_ui::{CUSTOM_HEIGHT_PT, CUSTOM_STEP_PT, CUSTOM_WIDTH_PT, MediaSizeSe
 
 use super::{Context, Group, Kind, Row, Slider, Track};
 use crate::design::{Density, MENTION_HIGHLIGHT_HUE_DEGREES};
-use crate::settings::{PageId, RowId};
+use crate::settings::{PageId, RowId, SizedMedia};
 use crate::strings;
 
 /// The hues a highlight's swatches offer, in OKLCH degrees: amber (the
@@ -102,17 +102,45 @@ pub(super) fn conversations(cx: &Context<'_>) -> Vec<Group> {
     ]
 }
 
-/// The Media group (§14.9): Image size, its sliders under Custom, Animate GIFs and stickers.
+/// The Media group (§14.9): Image size and Video size, each with its sliders under Custom,
+/// Animate GIFs and stickers, Autoplay videos.
 fn media(cx: &Context<'_>) -> Vec<Row> {
-    let size = cx.conversations.image_size;
+    let mut rows = size_rows(
+        SizedMedia::Images,
+        strings::settings_image_size(),
+        cx.conversations.image_size,
+    );
+    rows.extend(size_rows(
+        SizedMedia::Videos,
+        strings::settings_video_size(),
+        cx.conversations.video_size,
+    ));
+    rows.push(switch(
+        RowId::AnimateGifs,
+        strings::settings_animate_gifs(),
+        None,
+        cx.conversations.animates_gifs(cx.reduced_motion),
+    ));
+    rows.push(switch(
+        RowId::AutoplayVideos,
+        strings::settings_autoplay(),
+        Some(strings::settings_autoplay_sub()),
+        cx.conversations.autoplays_videos(cx.reduced_motion),
+    ));
+    rows
+}
+
+/// A size row (`media`'s), and under Custom its Max width and Max height sliders.
+fn size_rows(media: SizedMedia, title: &str, size: MediaSizeSetting) -> Vec<Row> {
     let mut rows = vec![Row {
-        id: RowId::ImageSize,
-        title: strings::settings_image_size().to_owned(),
+        id: media.row(),
+        title: title.to_owned(),
         sub: None,
         kind: Kind::Choice(size_name(size).to_owned()),
     }];
     if let MediaSizeSetting::Custom { .. } = size {
         let (width, height) = size.max_size_pt();
+        let (width_row, height_row) = media.slider_rows();
         let slider = |id, title: &str, value: u16, range: &std::ops::RangeInclusive<u16>| Row {
             id,
             title: title.to_owned(),
@@ -126,24 +154,18 @@ fn media(cx: &Context<'_>) -> Vec<Row> {
             }),
         };
         rows.push(slider(
-            RowId::MediaMaxWidth,
+            width_row,
             strings::settings_max_width(),
             width,
             &CUSTOM_WIDTH_PT,
         ));
         rows.push(slider(
-            RowId::MediaMaxHeight,
+            height_row,
             strings::settings_max_height(),
             height,
             &CUSTOM_HEIGHT_PT,
         ));
     }
-    rows.push(switch(
-        RowId::AnimateGifs,
-        strings::settings_animate_gifs(),
-        None,
-        cx.conversations.animates_gifs(cx.reduced_motion),
-    ));
     rows
 }
 

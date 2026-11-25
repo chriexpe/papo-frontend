@@ -158,6 +158,7 @@ mod shortcuts;
 mod sign_in;
 mod timeline;
 mod uploading;
+mod video;
 
 pub(crate) use account::*;
 pub(crate) use appearance_names::*;
@@ -181,6 +182,7 @@ pub(crate) use shortcuts::*;
 pub(crate) use sign_in::*;
 pub(crate) use timeline::*;
 pub(crate) use uploading::*;
+pub(crate) use video::*;
 
 #[cfg(test)]
 mod tests {

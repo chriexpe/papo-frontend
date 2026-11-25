@@ -42,6 +42,7 @@ impl Shell {
             kind: file.kind,
             source: TileSource::Staged(file.staged),
             thumbnail: None,
+            video: None,
             inspection: Inspection::Pending,
             edit: file.edit,
             typed_name: None,
@@ -56,7 +57,10 @@ impl Shell {
             return;
         };
         let scale = self.scale;
+        let engine = self.videos.engine();
+        let video_box_px = self.video_probe_box_px();
         for file in files {
+            let engine = std::sync::Arc::clone(&engine);
             let updates = sdk.updates();
             let images = std::sync::Arc::clone(&images);
             sdk.run(move |client| async move {
@@ -72,7 +76,16 @@ impl Shell {
                 } else {
                     None
                 };
+                let video = if file.video {
+                    super::videos::read_local_video(&session, &file.staged, engine, video_box_px)
+                        .await
+                } else {
+                    None
+                };
                 updates.send_tx(move |shell, tx| {
+                    if let Some(video) = video {
+                        shell.composer.tile_video(key, file.id, video);
+                    }
                     shell.tile_read(key, file.id, inspection, thumbnail, tx)
                 });
             });
@@ -125,6 +138,8 @@ pub(super) struct StagedRead {
     pub(super) staged: StagedAttachment,
     /// It draws a picture, and its thumbnail is still to decode.
     pub(super) thumbnail: bool,
+    /// It is a video not read yet: its first frame, length and size.
+    pub(super) video: bool,
 }
 
 /// What an inspection's outcome says of the file. A failure that is not
@@ -181,7 +196,9 @@ impl StagedRead {
         tile.staged().map(|staged| StagedRead {
             id: tile.id,
             staged: staged.clone(),
-            thumbnail: tile.kind != TileKind::File && tile.thumbnail.is_none(),
+            thumbnail: matches!(tile.kind, TileKind::Image | TileKind::Gif)
+                && tile.thumbnail.is_none(),
+            video: tile.kind == TileKind::Video && tile.video.is_none(),
         })
     }
 }

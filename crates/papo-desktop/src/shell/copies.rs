@@ -112,6 +112,7 @@ impl Shell {
                 kind: file.kind,
                 source: TileSource::Copying(file.pending),
                 thumbnail: None,
+                video: None,
                 inspection: Inspection::Pending,
                 edit: self.new_attachment_edit(),
                 typed_name: None,

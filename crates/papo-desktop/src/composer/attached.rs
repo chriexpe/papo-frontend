@@ -174,6 +174,20 @@ impl Composer {
         true
     }
 
+    /// Video tile `id` of `key`'s tray was read: its first frame, length and size.
+    pub(crate) fn tile_video(
+        &mut self,
+        key: TimelineKey,
+        id: TileId,
+        video: crate::composer::tray::LocalVideo,
+    ) -> bool {
+        let Some(tile) = self.tile_mut(key, id) else {
+            return false;
+        };
+        tile.video = Some(video);
+        true
+    }
+
     /// The SDK inspected tile `id` of `key`'s tray. Returns the tile, when
     /// it is still there.
     pub(crate) fn tile_inspected(

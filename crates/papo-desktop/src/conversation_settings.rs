@@ -3,8 +3,7 @@
 //! avatar), how a timeline opens and what it shows of skipped messages, the
 //! channel description on opening, the mention and reply highlights'
 //! hues (the reply highlight is drawn once B-006 lands), and the Media group
-//! (Image size, Animate GIFs and stickers; Video size and Autoplay videos
-//! come with playback, D7c). Every
+//! (Image size, Video size, Animate GIFs and stickers, Autoplay videos). Every
 //! one is this device's: times and avatars could follow the account
 //! (`display.show_timestamps`, `display.show_avatars`) only once the
 //! backend can save one field without the others (B-020).
@@ -45,6 +44,10 @@ const IMAGE_SIZE_KEY: &str = "image_size";
 /// Media › Animate GIFs and stickers; absent until changed, when it follows the system's
 /// reduced motion.
 const ANIMATE_GIFS_KEY: &str = "animate_gifs";
+/// Media › Video size, saved as Image size is.
+const VIDEO_SIZE_KEY: &str = "video_size";
+/// Media › Autoplay videos; absent until changed, when it follows the system's reduced motion.
+const AUTOPLAY_VIDEOS_KEY: &str = "autoplay_videos";
 
 /// Everything the Conversations page holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -79,12 +82,23 @@ pub(crate) struct ConversationSettings {
     /// GIFs animate while they show; off, they play while hovered or focused. Unset until
     /// changed: it then starts off when the system asks for reduced motion.
     pub(crate) animate_gifs: Option<bool>,
+    /// The largest box a video takes (§14.9).
+    pub(crate) video_size: MediaSizeSetting,
+    /// Clips of a minute or less play muted while they show (§14.5). Unset until changed: it
+    /// then starts off when the system asks for reduced motion.
+    pub(crate) autoplay_videos: Option<bool>,
 }
 
 impl ConversationSettings {
     /// Whether GIFs animate, the system asking for reduced motion or not.
     pub(crate) fn animates_gifs(&self, reduced_motion: bool) -> bool {
         self.animate_gifs.unwrap_or(!reduced_motion)
+    }
+
+    /// Whether short videos play muted while they show, the system asking for reduced motion or
+    /// not.
+    pub(crate) fn autoplays_videos(&self, reduced_motion: bool) -> bool {
+        self.autoplay_videos.unwrap_or(!reduced_motion)
     }
 }
 
@@ -105,6 +119,8 @@ impl Default for ConversationSettings {
             reply_hue_degrees: REPLY_HIGHLIGHT_HUE_DEGREES,
             image_size: MediaSizeSetting::Medium,
             animate_gifs: None,
+            video_size: MediaSizeSetting::Medium,
+            autoplay_videos: None,
         }
     }
 }
@@ -150,6 +166,11 @@ impl ConversationStore {
                 .and_then(|value| size_of(&value))
                 .unwrap_or(defaults.image_size),
             animate_gifs: prefs.get(ANIMATE_GIFS_KEY),
+            video_size: prefs
+                .get::<Value>(VIDEO_SIZE_KEY)
+                .and_then(|value| size_of(&value))
+                .unwrap_or(defaults.video_size),
+            autoplay_videos: prefs.get(AUTOPLAY_VIDEOS_KEY),
         };
         ConversationStore {
             stored: Stored::new(settings),
@@ -222,6 +243,8 @@ fn entries(settings: &ConversationSettings) -> Vec<(&'static str, Value)> {
         (REPLY_HUE_KEY, json!(settings.reply_hue_degrees)),
         (IMAGE_SIZE_KEY, size_value(settings.image_size)),
         (ANIMATE_GIFS_KEY, json!(settings.animate_gifs)),
+        (VIDEO_SIZE_KEY, size_value(settings.video_size)),
+        (AUTOPLAY_VIDEOS_KEY, json!(settings.autoplay_videos)),
     ]
 }
 
@@ -320,6 +343,8 @@ mod tests {
         changed.reply_hue_degrees = 320.0;
         changed.image_size = MediaSizeSetting::custom(504, 304);
         changed.animate_gifs = Some(false);
+        changed.video_size = MediaSizeSetting::Large;
+        changed.autoplay_videos = Some(true);
         let written = store.change(changed).expect("a write");
         store.write_of(&written).run().unwrap();
         assert_eq!(store.written(written, true), None);

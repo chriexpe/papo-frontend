@@ -40,6 +40,7 @@ mod settings_general;
 mod timeline;
 mod tray;
 mod typing;
+mod video;
 mod writing;
 
 const SIZE_PT: (f32, f32) = (1000.0, 700.0);

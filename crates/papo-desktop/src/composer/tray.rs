@@ -24,9 +24,27 @@ pub(crate) enum TileKind {
     Image,
     /// A GIF: a thumbnail with a "GIF" badge.
     Gif,
-    /// Anything else, videos included until they can be decoded (D7c): the
-    /// extension block, the name and the size.
+    /// A video: its first frame with its length in a badge, once read.
+    Video,
+    /// Anything else: the extension block, the name and the size.
     File,
+}
+
+impl TileKind {
+    /// Whether it draws as a picture in the media box (a still, a GIF, a video's first frame)
+    /// rather than a file card.
+    pub(crate) fn is_boxed(&self) -> bool {
+        *self != TileKind::File
+    }
+}
+
+/// A local video as read for its tile and its unsent message: its first frame on a surface,
+/// its length and its size as shown.
+#[derive(Clone, Debug)]
+pub(crate) struct LocalVideo {
+    pub(crate) surface: rune::NativeSurface,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) size_px: Option<[u32; 2]>,
 }
 
 /// What the SDK's inspection (`inspect_image`) said of a tile's file.
@@ -74,6 +92,8 @@ pub(crate) struct Tile {
     pub(crate) source: TileSource,
     /// The picture decoded at tile size, once its bytes were read.
     pub(crate) thumbnail: Option<Image>,
+    /// A video's first frame, length and size, once its bytes were read.
+    pub(crate) video: Option<LocalVideo>,
     /// What the SDK said of the staged file.
     pub(crate) inspection: Inspection,
     /// The crop, turns, Random name and Anonymize it is sent with; applied
@@ -99,6 +119,8 @@ impl PartialEq for Tile {
             && self.kind == other.kind
             && same_source
             && self.thumbnail.as_ref().map(Image::id) == other.thumbnail.as_ref().map(Image::id)
+            && self.video.as_ref().map(|video| video.surface.revision())
+                == other.video.as_ref().map(|video| video.surface.revision())
             && self.inspection == other.inspection
             && self.edit == other.edit
             && self.typed_name == other.typed_name
@@ -128,6 +150,9 @@ impl Tile {
 
     /// The picture as it will be sent, in pixels: cropped and turned.
     pub(crate) fn sent_size_px(&self) -> Option<(u32, u32)> {
+        if let Some(video) = &self.video {
+            return video.size_px.map(|[width, height]| (width, height));
+        }
         let (width, height) = self.size_px()?;
         if let Some(crop) = self.edit.crop {
             return Some((crop.width, crop.height));

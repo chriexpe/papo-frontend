@@ -11,6 +11,7 @@ use rune::Image;
 use crate::media_store::MediaKey;
 use crate::message_media::received::MediaAt;
 
+pub(crate) mod video;
 pub(crate) mod view;
 
 /// One notch of zoom.
@@ -34,6 +35,8 @@ pub(crate) struct ViewerItem {
     pub(crate) key: MediaKey,
     pub(crate) name: String,
     pub(crate) gif: bool,
+    /// A video: it plays here (`shell::viewer_video`), and has no whole picture to fetch.
+    pub(crate) video: bool,
 }
 
 /// The open viewer.

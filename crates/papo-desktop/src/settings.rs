@@ -179,12 +179,20 @@ pub(crate) enum RowId {
     ReplyHue,
     /// Media › Image size.
     ImageSize,
-    /// Media › a Custom size's Max width.
+    /// Media › a Custom Image size's Max width.
     MediaMaxWidth,
-    /// Media › a Custom size's Max height.
+    /// Media › a Custom Image size's Max height.
     MediaMaxHeight,
+    /// Media › Video size.
+    VideoSize,
+    /// Media › a Custom Video size's Max width.
+    VideoMaxWidth,
+    /// Media › a Custom Video size's Max height.
+    VideoMaxHeight,
     /// Media › Animate GIFs and stickers.
     AnimateGifs,
+    /// Media › Autoplay videos.
+    AutoplayVideos,
     /// Files › Save media to.
     SaveMediaTo,
     Language,
@@ -213,6 +221,31 @@ impl RowId {
     }
 }
 
+/// Which media a size setting bounds (§14.9: images and videos each have their own).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SizedMedia {
+    Images,
+    Videos,
+}
+
+impl SizedMedia {
+    /// Its size row.
+    pub(crate) fn row(self) -> RowId {
+        match self {
+            SizedMedia::Images => RowId::ImageSize,
+            SizedMedia::Videos => RowId::VideoSize,
+        }
+    }
+
+    /// Its Custom size's Max width and Max height rows.
+    pub(crate) fn slider_rows(self) -> (RowId, RowId) {
+        match self {
+            SizedMedia::Images => (RowId::MediaMaxWidth, RowId::MediaMaxHeight),
+            SizedMedia::Videos => (RowId::VideoMaxWidth, RowId::VideoMaxHeight),
+        }
+    }
+}
+
 /// What a row asks for; the shell applies it (`shell/settings.rs`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Change {
@@ -232,8 +265,8 @@ pub(crate) enum Change {
     Colours(colour_field::ColourChange),
     /// A hue swatch picked, in OKLCH degrees.
     Hue(RowId, f32),
-    /// Image size's menu.
-    ImageSize(papo_sdk_ui::MediaSizeSetting),
+    /// Image size's or Video size's menu.
+    MediaSize(SizedMedia, papo_sdk_ui::MediaSizeSetting),
     /// Language's menu.
     Language(Language),
     /// Presence's menu.
@@ -250,7 +283,7 @@ impl Change {
             Change::Accent(_) => RowId::Accent,
             Change::Direction(_) => RowId::Directions,
             Change::Language(_) => RowId::Language,
-            Change::ImageSize(_) => RowId::ImageSize,
+            Change::MediaSize(media, _) => media.row(),
             Change::Presence(_) => RowId::Presence,
             Change::Colours(_) => RowId::Field,
         }

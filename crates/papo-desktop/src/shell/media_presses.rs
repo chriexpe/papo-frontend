@@ -70,7 +70,10 @@ impl Shell {
                 self.run_media_jobs(jobs);
             }
             MediaPress::Save => {
-                self.save_media(at, &attachment, SaveTo::MediaFolder { with_pill: false });
+                // A card shows its own save; boxed media (a video whose format can't play
+                // here) end with the saved pill.
+                let with_pill = crate::message_media::received::is_boxed(&attachment);
+                self.save_media(at, &attachment, SaveTo::MediaFolder { with_pill });
             }
             MediaPress::CancelSave => {
                 self.saves.cancel(key);
@@ -97,9 +100,12 @@ impl Shell {
         let Some(attachment) = self.attachment_at(at) else {
             return;
         };
-        let picture = AttachmentKind::of(&attachment).is_picture();
+        let kind = AttachmentKind::of(&attachment);
+        let picture = kind.is_picture();
+        // Pictures and videos open in the viewer; a file through the system.
+        let viewed = picture || kind == AttachmentKind::Video;
         match action {
-            MediaAction::Open if picture => self.open_viewer(at, tx),
+            MediaAction::Open if viewed => self.open_viewer(at, tx),
             MediaAction::Open => {
                 let saved = attachment_id(&attachment).and_then(|id| {
                     let key = MediaKey {
@@ -121,7 +127,7 @@ impl Shell {
                 }
             }
             MediaAction::Save => {
-                self.save_media(at, &attachment, SaveTo::MediaFolder { with_pill: picture });
+                self.save_media(at, &attachment, SaveTo::MediaFolder { with_pill: viewed });
             }
             MediaAction::SaveAs => {
                 let name = attachment.original_file_name.clone().unwrap_or_default();
@@ -161,6 +167,8 @@ impl Shell {
             .map(|name| name.to_string_lossy().into_owned());
         let (open_icon, save_label) = if picture {
             (&icons::IMAGE, strings::menu_save_image())
+        } else if kind == AttachmentKind::Video {
+            (&icons::VIDEO, strings::menu_save_video())
         } else {
             (&icons::EXTERNAL, strings::menu_save_file())
         };

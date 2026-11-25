@@ -42,6 +42,7 @@ mod navigation;
 mod notice;
 mod own_profile;
 mod person_avatar;
+mod playback;
 #[cfg(test)]
 mod private_bus;
 mod profile_dir;
@@ -66,6 +67,9 @@ mod timeline;
 mod trusted_domains;
 mod typing_line;
 mod unsent_media;
+mod video_store;
+mod video_surface;
+mod video_volume;
 mod viewer;
 mod window;
 

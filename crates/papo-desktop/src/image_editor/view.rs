@@ -160,7 +160,9 @@ fn header(editor: &Editor, title: &str, look: &Look) -> El {
 
 /// A GIF's preview or a file's card, where an image has its stage.
 fn preview(shown: &Shown<'_>, look: &Look) -> El {
-    if shown.kind == TileKind::File {
+    // A video shows its file card too: its Anonymize and preview come with the SDK's video
+    // cleaning.
+    if matches!(shown.kind, TileKind::File | TileKind::Video) {
         let card = row()
             .w_full()
             .px(look.space(SPACE_MD) + 2.0)
@@ -327,7 +329,9 @@ fn foot(shown: &Shown<'_>, look: &Look) -> El {
 /// saved at.
 fn note(shown: &Shown<'_>) -> String {
     let editor = shown.editor;
-    if shown.kind == TileKind::File {
+    // A video shows its file card too: its Anonymize and preview come with the SDK's video
+    // cleaning.
+    if matches!(shown.kind, TileKind::File | TileKind::Video) {
         // What goes: its kind and size; a file is never re-encoded.
         let size = shown.size_bytes.map(strings::size).unwrap_or_default();
         return strings::editor_note_file(&extension_label(shown.name), &size);

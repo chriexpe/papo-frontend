@@ -23,6 +23,13 @@ use crate::strings;
 
 mod file_card_view;
 pub(crate) mod received;
+pub(crate) mod video;
+pub(crate) mod video_bar;
+
+/// A 4 pt track `share` filled (a seek bar, a volume), for the viewer's video bar too.
+pub(crate) fn video_track(share: f32) -> El {
+    video_bar::track(share, None)
+}
 
 /// A single picture's box: `boxed`'s shape at most `boxed`'s size, narrower only when the
 /// column is, at `radius.card`. The caller adds its picture, its marks and [`inner_edge`].
@@ -169,8 +176,19 @@ pub(crate) fn gif_badge(look: &Look) -> El {
         .child(badge(strings::media_gif().to_owned(), look))
 }
 
+/// A video's length at its bottom left, in the badge style.
+pub(crate) fn length_badge(words: String, look: &Look) -> El {
+    el().pin(
+        Some(crate::design::VIDEO_MARK_INSET_PT),
+        None,
+        None,
+        Some(crate::design::VIDEO_MARK_INSET_PT),
+    )
+    .child(badge(words, look))
+}
+
 /// A badge: white mono on 60 % black.
-fn badge(words: String, look: &Look) -> El {
+pub(crate) fn badge(words: String, look: &Look) -> El {
     text(words)
         .font(look.font(TYPE_MEDIA_BADGE))
         .color(Color::WHITE)

@@ -91,22 +91,29 @@ impl Shell {
         let Some(entry) = self.unsent.get(local) else {
             return;
         };
-        let drawn: Vec<usize> = entry
+        // Each drawn file, and whether it is a video still without its first frame.
+        let drawn: Vec<(usize, TileKind, bool)> = entry
             .files
             .iter()
             .enumerate()
             .filter(|(_, file)| file.is_media())
-            .map(|(index, _)| index)
+            .map(|(index, file)| (index, file.kind.clone(), file.video.is_none()))
             .take(ALBUM_CELLS)
             .collect();
-        for index in drawn {
+        for (index, kind, unread) in drawn {
             let Some(Some(staged)) = staged.get(index) else {
                 continue;
             };
             if !self.unsent_reads.sharpening.insert((local, index)) {
                 continue;
             }
-            self.read_unsent_picture(account, local, index, staged.clone());
+            match kind {
+                TileKind::Video if unread => {
+                    self.read_unsent_video(account, local, index, staged.clone());
+                }
+                TileKind::Video => {}
+                _ => self.read_unsent_picture(account, local, index, staged.clone()),
+            }
         }
     }
 
@@ -147,6 +154,39 @@ impl Shell {
         });
     }
 
+    /// Reads a video from staging for its first frame, off the UI thread.
+    fn read_unsent_video(
+        &mut self,
+        account: AccountId,
+        local: Uuid,
+        index: usize,
+        staged: StagedAttachment,
+    ) {
+        let Some(sdk) = self.sdk.clone() else {
+            return;
+        };
+        let engine = self.videos.engine();
+        let box_px = self.video_probe_box_px();
+        let updates = sdk.updates();
+        sdk.run(move |client| async move {
+            let Ok(session) = client.session(account) else {
+                return;
+            };
+            let Some(video) =
+                super::videos::read_local_video(&session, &staged, engine, box_px).await
+            else {
+                return;
+            };
+            updates.send(move |shell| {
+                if !shell.unsent.contains(local) {
+                    return false;
+                }
+                shell.unsent.video_read(local, index, video);
+                true
+            });
+        });
+    }
+
     /// Reads back message `local`, which this run never drew (it was sent
     /// before a relaunch): each staged file's kind and a picture's size
     /// from the SDK's inspection, then its pictures. Its echo waits for
@@ -165,13 +205,23 @@ impl Shell {
         let Some(sdk) = self.sdk.clone() else {
             return;
         };
+        let engine = self.videos.engine();
+        let video_box_px = self.video_probe_box_px();
         let updates = sdk.updates();
         sdk.run(move |client| async move {
             let session = client.session(account).ok();
             let mut files = Vec::new();
             for staged in &staged {
                 let file = match (&session, staged) {
-                    (Some(session), Some(staged)) => restored_file(session, staged).await,
+                    (Some(session), Some(staged)) => {
+                        restored_file(
+                            session,
+                            staged,
+                            std::sync::Arc::clone(&engine),
+                            video_box_px,
+                        )
+                        .await
+                    }
                     _ => UnsentFile::unknown(),
                 };
                 files.push(file);
@@ -218,13 +268,31 @@ impl Shell {
 
 /// One staged file read back: its kind from its first bytes, and for a
 /// picture its size from the SDK's inspection.
-async fn restored_file(session: &papo_sdk::Session, staged: &StagedAttachment) -> UnsentFile {
+async fn restored_file(
+    session: &papo_sdk::Session,
+    staged: &StagedAttachment,
+    engine: std::sync::Arc<dyn crate::playback::Engine>,
+    video_box_px: [u32; 2],
+) -> UnsentFile {
     let head = read_staged(session, staged, HEAD_BYTES as u64)
         .await
         .unwrap_or_default();
     let kind = attaching::kind_of(&head, staged.size_bytes());
+    // A video's first frame, length and size, read before its row is first drawn.
+    let video = if kind == TileKind::Video {
+        super::videos::read_local_video(session, staged, engine, video_box_px).await
+    } else {
+        None
+    };
     let media_size = if kind == TileKind::File {
         MediaSize::Unknown
+    } else if kind == TileKind::Video {
+        video
+            .as_ref()
+            .and_then(|video| video.size_px)
+            .map_or(MediaSize::Unknown, |[width, height]| {
+                MediaSize::exact(width, height)
+            })
     } else {
         session
             .outgoing()
@@ -241,5 +309,6 @@ async fn restored_file(session: &papo_sdk::Session, staged: &StagedAttachment) -
         media_size,
         image: None,
         sharp: None,
+        video,
     }
 }

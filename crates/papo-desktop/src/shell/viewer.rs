@@ -68,6 +68,7 @@ impl Shell {
                     },
                     name: attachment.original_file_name.clone().unwrap_or_default(),
                     gif: AttachmentKind::of(attachment) == AttachmentKind::Gif,
+                    video: AttachmentKind::of(attachment) == AttachmentKind::Video,
                 })
             })
             .collect();
@@ -92,6 +93,7 @@ impl Shell {
         self.viewer_room = self.expected_viewer_room();
         self.viewer = Some(Viewer::new(at, items, author, when));
         self.load_viewer_picture(tx);
+        self.follow_viewer_video(tx);
         tx.focus(VIEWER_KEY, true);
     }
 
@@ -129,7 +131,12 @@ impl Shell {
         let Some(viewer) = self.viewer.as_mut() else {
             return;
         };
-        let Some(key) = viewer.item().map(|item| item.key) else {
+        // A video plays rather than loads a picture.
+        let Some(key) = viewer
+            .item()
+            .filter(|item| !item.video)
+            .map(|item| item.key)
+        else {
             return;
         };
         viewer.asked_s = Some(tx.clock());
@@ -210,6 +217,19 @@ impl Shell {
             #[expect(clippy::cast_precision_loss, reason = "picture sides")]
             return [width as f32, height as f32];
         }
+        // A video's size as its probe read it.
+        let probed = viewer
+            .item()
+            .filter(|item| item.video)
+            .and_then(|item| self.videos.view().get(item.key).copied())
+            .and_then(|video| match video.reading {
+                crate::video_store::Reading::Read(info) => info.video_px,
+                _ => None,
+            });
+        if let Some([width, height]) = probed {
+            #[expect(clippy::cast_precision_loss, reason = "video sides")]
+            return [width as f32, height as f32];
+        }
         let attachment = viewer.item().and_then(|item| {
             self.attachment_at(MediaAt {
                 index: item.index,
@@ -253,6 +273,14 @@ impl Shell {
 
     /// Copy image (Ctrl+C).
     pub(crate) fn viewer_copy(&mut self, tx: &mut Tx) {
+        let video = self
+            .viewer
+            .as_ref()
+            .and_then(Viewer::item)
+            .is_some_and(|item| item.video);
+        if video {
+            return;
+        }
         if let Some(at) = self.viewer_at() {
             self.media_action(at, MediaAction::CopyImage, tx);
         }
@@ -270,6 +298,7 @@ impl Shell {
         let Some(viewer) = self.viewer.take() else {
             return;
         };
+        self.follow_viewer_video(tx);
         if viewer.full_screen {
             tx.toggle_full_screen();
         }
@@ -288,6 +317,7 @@ impl Shell {
         let Some(viewer) = self.viewer.take() else {
             return;
         };
+        self.follow_viewer_video(tx);
         if viewer.full_screen {
             tx.toggle_full_screen();
         }
@@ -339,7 +369,9 @@ impl Shell {
         if on.is_none() || on == shown {
             return;
         }
-        if let Some(viewer) = self.viewer.take()
+        let closed = self.viewer.take();
+        self.stop_viewer_video();
+        if let Some(viewer) = closed
             && viewer.full_screen
             && let Some(tx) = tx
         {

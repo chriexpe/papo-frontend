@@ -336,8 +336,6 @@ line_icon!(
     "jump"
 );
 
-#[cfg(test)]
-mod tests;
 line_icon!(
     /// A tray tile whose picture goes anonymized, and the editor's
     /// Anonymize row.
@@ -364,3 +362,32 @@ line_icon!(
     CROP,
     "crop"
 );
+line_icon!(
+    /// A video's play: the control bar, a waiting video's play button, an album cell's mark
+    /// (§14.5).
+    PLAY,
+    "play"
+);
+line_icon!(
+    /// A playing video's pause (§14.5).
+    PAUSE,
+    "pause"
+);
+line_icon!(
+    /// A video's sound is off: the button at rest and the control bar's volume (§14.5).
+    VOLUME_OFF,
+    "volume-off"
+);
+line_icon!(
+    /// The control bar's full screen: it opens the viewer (§14.5).
+    FULLSCREEN,
+    "fullscreen"
+);
+line_icon!(
+    /// A video that can't play (§14.5).
+    VIDEO,
+    "video"
+);
+
+#[cfg(test)]
+mod tests;
