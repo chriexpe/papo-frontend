@@ -89,8 +89,10 @@ pub use mentions::{
     contains_user_mention, decode_mentions_for_editing, encode_mentions_with_bindings,
     encode_user_mention, extract_user_mentions, parse_user_mention, scan_mentions,
 };
+mod inline_avatar;
 pub mod permissions;
 mod private_fs;
+pub use inline_avatar::{InlineAvatarError, inline_avatar};
 mod profiles;
 mod read_points;
 mod reading;
