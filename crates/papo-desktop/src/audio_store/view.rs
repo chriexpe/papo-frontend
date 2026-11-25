@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::AudioKey;
 use super::Reading;
-use crate::media_store::MediaKey;
 
 /// How one audio draws.
 #[derive(Clone, Debug, PartialEq)]
@@ -67,14 +67,30 @@ impl AudioShown {
 
 /// Every audio's look, cheap to clone.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct AudioView(Arc<HashMap<MediaKey, AudioShown>>);
+pub(crate) struct AudioView {
+    shown: Arc<HashMap<AudioKey, AudioShown>>,
+    /// Unsent audio since sent, to the server's attachment (`AudioStore::sent`).
+    moved: Arc<HashMap<AudioKey, AudioKey>>,
+}
 
 impl AudioView {
-    pub(super) fn of(shown: impl Iterator<Item = (MediaKey, AudioShown)>) -> AudioView {
-        AudioView(Arc::new(shown.collect()))
+    pub(super) fn of(
+        shown: impl Iterator<Item = (AudioKey, AudioShown)>,
+        moved: HashMap<AudioKey, AudioKey>,
+    ) -> AudioView {
+        AudioView {
+            shown: Arc::new(shown.collect()),
+            moved: Arc::new(moved),
+        }
     }
 
-    pub(crate) fn get(&self, key: MediaKey) -> Option<&AudioShown> {
-        self.0.get(&key)
+    /// How audio `key` draws: an unsent audio since sent draws as the server's attachment.
+    pub(crate) fn get(&self, key: AudioKey) -> Option<&AudioShown> {
+        self.shown.get(&self.resolve(key))
+    }
+
+    /// The audio `key` names now (`AudioStore::resolve`).
+    pub(crate) fn resolve(&self, key: AudioKey) -> AudioKey {
+        self.moved.get(&key).copied().unwrap_or(key)
     }
 }

@@ -80,7 +80,8 @@ impl Shell {
             .chain(std::iter::once(outgoing))
             .flat_map(|snapshot| snapshot.operations.iter().map(|operation| operation.id))
             .collect();
-        self.unsent.forget_gone(|local| queued.contains(&local));
+        let gone = self.unsent.forget_gone(|local| queued.contains(&local));
+        self.unsent_audio_follow(account, outgoing, &gone);
         self.unsent_reads
             .sharpening
             .retain(|(local, _)| queued.contains(local));
@@ -240,6 +241,8 @@ impl Shell {
                 }
                 shell.unsent.insert(local, files);
                 shell.sharpen(account, local, &staged);
+                // Its audio, now known as audio, is read.
+                shell.want_media();
                 true
             });
         });

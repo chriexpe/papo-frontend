@@ -39,6 +39,7 @@ pub(crate) mod standalone;
 #[cfg(test)]
 mod tests;
 mod unsent_attachments;
+mod unsent_audio;
 mod unsent_pictures;
 mod view;
 pub(crate) mod watch;

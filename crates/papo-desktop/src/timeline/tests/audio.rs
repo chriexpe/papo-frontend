@@ -13,7 +13,7 @@ use rune::{Key, KeyEvent, Mods, Runtime};
 use serde_json::{Value, json};
 
 use super::{Host, key, runtime, until_idle};
-use crate::audio_store::AudioStore;
+use crate::audio_store::{AudioKey, AudioStore};
 use crate::design::MessageLayout;
 use crate::media_store::MediaKey;
 use crate::playback::{AudioRead, PlaybackFailure};
@@ -21,11 +21,11 @@ use crate::playback::{AudioRead, PlaybackFailure};
 const MESSAGE: u128 = 1;
 const AUDIO: u128 = 9_001;
 
-fn audio_key() -> MediaKey {
-    MediaKey {
+fn audio_key() -> AudioKey {
+    AudioKey::Received(MediaKey {
         account: key().account,
         attachment: Uuid::from_u128(AUDIO),
-    }
+    })
 }
 
 fn audio() -> Value {

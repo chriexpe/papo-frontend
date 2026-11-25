@@ -15,6 +15,14 @@ pub(crate) struct MediaKey {
     pub(crate) attachment: Uuid,
 }
 
+/// An attachment's ID, when it parses.
+pub(crate) fn attachment_id(attachment: &papo_sdk::Attachment) -> Option<Uuid> {
+    attachment
+        .id
+        .as_deref()
+        .and_then(|id| Uuid::parse_str(id).ok())
+}
+
 /// What a view drawing an attachment asks for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Want {

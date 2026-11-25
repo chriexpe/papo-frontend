@@ -41,6 +41,7 @@ mod settings_general;
 mod timeline;
 mod tray;
 mod typing;
+mod unsent_audio;
 mod video;
 mod writing;
 

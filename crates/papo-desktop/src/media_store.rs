@@ -16,7 +16,7 @@ use rune::Image;
 mod budgets;
 mod view;
 pub(crate) use budgets::Budgets;
-pub(crate) use view::{Fetch, Job, MediaKey, MediaView, Want, decoded_bytes};
+pub(crate) use view::{Fetch, Job, MediaKey, MediaView, Want, attachment_id, decoded_bytes};
 
 /// Fetches running at once. The SDK admits two media fetches per profile; more would only
 /// queue there, where a fetch for a row already scrolled away can't be dropped.

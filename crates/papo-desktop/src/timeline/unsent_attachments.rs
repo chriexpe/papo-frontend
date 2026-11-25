@@ -1,14 +1,15 @@
 //! Your unsent message's attachments (`docs/design.md` §14.3, §14.4,
-//! §14.6): pictures in the media box (one, or an album), other files as
-//! cards, each with its upload's progress. A picture waiting or uploading
-//! has a scrim and a ring with ✕ inside; a file card an accent bar along
-//! its bottom, "12.4 of 100 MB" and ✕ at its end. ✕ cancels the whole
-//! message, never one file.
+//! §14.6): pictures in the media box (one, or an album), audio as its
+//! player, other files as cards, each with its upload's progress. A picture
+//! waiting or uploading has a scrim and a ring with ✕ inside; a file card an
+//! accent bar along its bottom, "12.4 of 100 MB" and ✕ at its end. ✕ cancels
+//! the whole message, never one file.
 //!
 //! Pure: drawn from the SDK's operation and progress and the local
 //! pictures (`unsent_media`); ✕ goes to the host. The pictures are
-//! `unsent_pictures`'; the box, album and card are `message_media`'s, as a
-//! received message's are, so a sent message keeps its row's height.
+//! `unsent_pictures`', the audio `unsent_audio`'s; the box, album, player
+//! and card are `message_media`'s, as a received message's are, so a sent
+//! message keeps its row's height.
 
 use papo_sdk::{
     AttachmentProgress, Operation, OperationKind, OperationState, UploadProgress, Uuid,
@@ -17,16 +18,17 @@ use papo_sdk_ui::MediaBounds;
 use rune::{Color, El, col, el, icon, row};
 
 use super::TimelineKey;
+use super::unsent_audio::audio_player;
 use super::unsent_pictures::{album, single};
 use super::view::TimelineHost;
-use crate::audio_store::AudioShown;
 use crate::composer::tray::TileKind;
 use crate::design::{
     FILE_CARD_BUTTON_PT, FOCUS_RING_PT, Look, MEDIA_BLOCK_GAP, RADIUS_CONTROL,
     UPLOAD_CANCEL_ICON_PT,
 };
 use crate::icons::X;
-use crate::message_media::{self, FileCard, audio};
+use crate::message_media::received::MediaStyle;
+use crate::message_media::{self, FileCard};
 use crate::strings;
 use crate::unsent_media::UnsentFile;
 
@@ -58,6 +60,8 @@ pub(super) struct Unsent<'a> {
     /// The largest box media may take here (the Image size setting, the column, 0.55 × the
     /// timeline's height).
     pub(super) bounds: MediaBounds,
+    /// What media draw with: the audio players among them.
+    pub(super) media: &'a MediaStyle,
 }
 
 /// The attachments block of an unsent message; none when it has none.
@@ -101,7 +105,7 @@ pub(super) fn attachments<S: TimelineHost>(unsent: &Unsent<'_>, look: &Look) -> 
     }
     for item in files {
         let card = if item.file.kind == TileKind::Audio {
-            audio_capsule::<S>(item, cancel, look)
+            audio_player::<S>(unsent, item, cancel, look)
         } else {
             file_card::<S>(item, cancel, look)
         };
@@ -161,25 +165,27 @@ fn upload_of(progress: AttachmentProgress) -> Upload {
     }
 }
 
-/// ✕: cancels the whole message's upload.
+/// ✕, its icon `icon_pt` points in a round target twice that: cancels the whole message's
+/// upload.
 pub(super) fn cancel_button<S: TimelineHost>(
     key: TimelineKey,
     local: Uuid,
     index: usize,
     ink: Color,
+    icon_pt: f32,
     look: &Look,
 ) -> El {
     row()
         .key(format!("upload-cancel-{local}-{index}"))
-        .size(UPLOAD_CANCEL_ICON_PT * 2.0, UPLOAD_CANCEL_ICON_PT * 2.0)
+        .size(icon_pt * 2.0, icon_pt * 2.0)
         .center()
-        .radius(UPLOAD_CANCEL_ICON_PT)
+        .radius(icon_pt)
         .role("button")
         .label(strings::upload_cancel())
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(move |host: &mut S| host.upload_cancelled(key, local))
-        .child(icon(&X, UPLOAD_CANCEL_ICON_PT).color(ink))
+        .child(icon(&X, icon_pt).color(ink))
 }
 
 /// A file as a card (§14.6): the extension block, the name in one line
@@ -212,6 +218,7 @@ fn file_card<S: TimelineHost>(
                     local,
                     item.index,
                     look.palette.text_secondary,
+                    UPLOAD_CANCEL_ICON_PT,
                     look,
                 )),
         );
@@ -220,39 +227,9 @@ fn file_card<S: TimelineHost>(
     message_media::file_card(card, ends, bar, look)
 }
 
-/// An unsent audio: the player's capsule, as its sent message draws it, so the row keeps its
-/// height (§14.3, a file or audio card): the upload's size in the time's place, the accent bar
-/// along its foot, and ✕ in the play disc's place while it uploads.
-fn audio_capsule<S: TimelineHost>(
-    item: &Item<'_>,
-    cancel: Option<(TimelineKey, Uuid)>,
-    look: &Look,
-) -> El {
-    let (size_line, share) = upload_line(item);
-    let uploading = share.zip(cancel);
-    let disc = match uploading {
-        Some((_, (key, local))) => audio::disc(
-            cancel_button::<S>(key, local, item.index, look.palette.surface_content, look),
-            look,
-        ),
-        None => audio::play_disc(false, look).a11y_hidden(),
-    };
-    let time = audio::time_slot(&size_line.unwrap_or_default(), None, look);
-    let bar = uploading.map(|(share, _)| (share, progress_label(item)));
-    audio::capsule(
-        disc,
-        item.name,
-        audio::waveform(&AudioShown::unread(), look),
-        time,
-        bar,
-        look,
-    )
-    .label(strings::media_audio(item.name))
-}
-
 /// An unsent file's size line and its upload's share: "12.4 of 100 MB" while it waits or
 /// sends, its size once sent.
-fn upload_line(item: &Item<'_>) -> (Option<String>, Option<f32>) {
+pub(super) fn upload_line(item: &Item<'_>) -> (Option<String>, Option<f32>) {
     match item.upload {
         Upload::Sending {
             share,

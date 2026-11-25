@@ -5,15 +5,28 @@ use papo_sdk_ui::{MAX_AHEAD_DURATION_MS, WaveformBuilder};
 
 use super::*;
 
-fn key(n: u128) -> MediaKey {
-    MediaKey {
-        account: AccountId::new(
-            ServerAddress::parse("https://audio.example.invalid")
-                .unwrap()
-                .id(),
-            Uuid::from_u128(1),
-        ),
+fn account() -> AccountId {
+    AccountId::new(
+        ServerAddress::parse("https://audio.example.invalid")
+            .unwrap()
+            .id(),
+        Uuid::from_u128(1),
+    )
+}
+
+fn key(n: u128) -> AudioKey {
+    AudioKey::Received(crate::media_store::MediaKey {
+        account: account(),
         attachment: Uuid::from_u128(0x200 + n),
+    })
+}
+
+/// Attachment `index` of unsent message `local`.
+fn unsent(local: u128, index: usize) -> AudioKey {
+    AudioKey::Unsent {
+        account: account(),
+        local: Uuid::from_u128(0x300 + local),
+        index,
     }
 }
 
@@ -180,4 +193,82 @@ fn a_failing_player_lets_its_audio_go() {
     store.play(key(1));
     store.player_failed(key(1), PlaybackFailure::Unsupported);
     assert_eq!(store.desired(), None);
+}
+
+/// Unsent audio read and playing at 2 s.
+fn playing_unsent() -> AudioStore {
+    let mut store = AudioStore::default();
+    store.want([unsent(1, 0)]);
+    let job = store.next_read().unwrap();
+    store.read(
+        job.key,
+        Ok(AudioRead {
+            duration_ms: Some(6_000),
+            waveform: Some(tone()),
+        }),
+    );
+    store.play(unsent(1, 0));
+    store.moved(unsent(1, 0), 2_000);
+    store
+}
+
+#[test]
+fn sent_audio_keeps_playing_under_the_server_attachment() {
+    let mut store = playing_unsent();
+    store.sent(unsent(1, 0), key(1));
+    assert_eq!(store.shown(unsent(1, 0)), None);
+    let shown = store.shown(key(1)).unwrap();
+    assert!(shown.playing);
+    assert_eq!(shown.position_ms, 2_000);
+    assert_eq!(shown.duration_ms(), Some(6_000));
+    assert!(store.is_wanted(key(1)));
+    assert_eq!(store.desired().unwrap().key, key(1));
+    assert!(store.finished_waveform(key(1)).is_some());
+    // Already read: nothing to read again.
+    assert_eq!(store.next_read(), None);
+}
+
+#[test]
+fn sent_before_it_was_read_keeps_the_server_reading_and_takes_the_place() {
+    let mut store = AudioStore::default();
+    store.want([unsent(1, 0), key(1)]);
+    store.seek(unsent(1, 0), 1_000);
+    store.sent(unsent(1, 0), key(1));
+    let shown = store.shown(key(1)).unwrap();
+    assert_eq!(shown.reading, Reading::Queued);
+    assert_eq!(shown.position_ms, 1_000);
+    assert_eq!(store.next_read().unwrap().key, key(1));
+}
+
+#[test]
+fn discarded_audio_stops_and_is_forgotten() {
+    let mut store = playing_unsent();
+    store.discarded(Uuid::from_u128(0x301));
+    assert_eq!(store.shown(unsent(1, 0)), None);
+    assert_eq!(store.desired(), None);
+    assert!(!store.is_wanted(unsent(1, 0)));
+}
+
+#[test]
+fn a_want_naming_a_sent_audio_finds_it_under_the_server_attachment() {
+    let mut store = playing_unsent();
+    store.sent(unsent(1, 0), key(1));
+    store.want([unsent(1, 0)]);
+    assert_eq!(
+        store.shown(unsent(1, 0)),
+        None,
+        "never read again as unsent"
+    );
+    assert!(store.is_wanted(key(1)));
+    assert!(store.view().get(unsent(1, 0)).unwrap().playing);
+}
+
+#[test]
+fn a_local_file_that_failed_is_read_again_from_the_server() {
+    let mut store = AudioStore::default();
+    store.want([unsent(1, 0)]);
+    let job = store.next_read().unwrap();
+    store.read(job.key, Err(PlaybackFailure::Unavailable));
+    store.sent(unsent(1, 0), key(1));
+    assert_eq!(store.shown(key(1)).unwrap().reading, Reading::Queued);
 }

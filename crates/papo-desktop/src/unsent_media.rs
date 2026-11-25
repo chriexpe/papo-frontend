@@ -185,8 +185,8 @@ impl UnsentMedia {
     }
 
     /// Forgets the listed messages `pending` says no queue holds any more
-    /// (sent and gone, or discarded).
-    pub(crate) fn forget_gone(&mut self, pending: impl Fn(Uuid) -> bool) {
+    /// (sent and gone, or discarded), and returns them.
+    pub(crate) fn forget_gone(&mut self, pending: impl Fn(Uuid) -> bool) -> Vec<Uuid> {
         let gone: Vec<Uuid> = self
             .listed
             .iter()
@@ -194,12 +194,13 @@ impl UnsentMedia {
             .filter(|local| !pending(*local))
             .collect();
         if gone.is_empty() {
-            return;
+            return gone;
         }
         for local in &gone {
             self.listed.remove(local);
         }
         Arc::make_mut(&mut self.entries).retain(|local, _| !gone.contains(local));
+        gone
     }
 }
 

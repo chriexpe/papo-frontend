@@ -8,7 +8,7 @@ use papo_sdk_ui::AttachmentKind;
 use rune::Tx;
 
 use super::Shell;
-use crate::audio_store::Reading;
+use crate::audio_store::{AudioKey, Reading};
 use crate::media_store::MediaKey;
 use crate::message_media::audio::AudioPress;
 use crate::message_media::received::{MediaAt, attachment_id};
@@ -20,10 +20,12 @@ impl Shell {
     pub(super) fn press_audio(
         &mut self,
         at: MediaAt,
-        key: MediaKey,
+        key: AudioKey,
         press: AudioPress,
         tx: &mut Tx,
     ) {
+        // A row may still name an unsent audio its queue has since sent.
+        let key = self.audio.store.resolve(key);
         match press {
             AudioPress::Play => {
                 if self.audio.store.play(key) {
@@ -73,14 +75,14 @@ impl Shell {
 
     /// Moves audio `key` to `position_ms` (within its length): its player now, else where it
     /// opens.
-    fn seek_audio(&mut self, key: MediaKey, position_ms: u64) {
+    fn seek_audio(&mut self, key: AudioKey, position_ms: u64) {
         let position_ms = self.audio.store.seek(key, position_ms);
         self.seek_audio_player(key, position_ms);
     }
 
-    /// Space or K on focused message `id` of timeline `key` plays or pauses its first audio
-    /// (a video in the message takes the keys first, `message_video_key`). Returns whether it
-    /// took the key.
+    /// Space or K on focused message `id` of timeline `key` (yours unsent too) plays or pauses
+    /// its first audio (a video in the message takes the keys first, `message_video_key`).
+    /// Returns whether it took the key.
     pub(super) fn message_audio_key(
         &mut self,
         key: TimelineKey,
@@ -98,25 +100,11 @@ impl Shell {
             message: id,
             index: 0,
         };
-        let Some(message) = self.message_at(at) else {
-            return false;
-        };
-        let attachments = message.attachments.as_deref().unwrap_or_default();
-        let Some((index, audio)) =
-            attachments
-                .iter()
-                .enumerate()
-                .find_map(|(index, attachment)| {
-                    (AttachmentKind::of(attachment) == AttachmentKind::Audio)
-                        .then(|| attachment_id(attachment).map(|id| (index, id)))
-                        .flatten()
-                })
+        let Some((index, audio)) = self
+            .received_audio(at)
+            .or_else(|| self.unsent_audio(key, id))
         else {
             return false;
-        };
-        let audio = MediaKey {
-            account: key.account,
-            attachment: audio,
         };
         let playing = self
             .audio
@@ -130,6 +118,20 @@ impl Shell {
         };
         self.press_audio(MediaAt { index, ..at }, audio, press, tx);
         true
+    }
+
+    /// Received message `at`'s first audio: its place and key.
+    fn received_audio(&self, at: MediaAt) -> Option<(usize, AudioKey)> {
+        let message = self.message_at(at)?;
+        let attachments = message.attachments.as_deref().unwrap_or_default();
+        attachments
+            .iter()
+            .enumerate()
+            .find_map(|(index, attachment)| {
+                (AttachmentKind::of(attachment) == AttachmentKind::Audio)
+                    .then(|| attachment_key(at, attachment).map(|key| (index, key)))
+                    .flatten()
+            })
     }
 
     /// Whether attachment `at` is audio that couldn't be read for a reason another read may
@@ -155,10 +157,10 @@ impl Shell {
     }
 }
 
-/// Attachment `at`'s media key, when it has an ID.
-fn attachment_key(at: MediaAt, attachment: &Attachment) -> Option<MediaKey> {
-    Some(MediaKey {
+/// Received attachment `at`'s audio key, when it has an ID.
+fn attachment_key(at: MediaAt, attachment: &Attachment) -> Option<AudioKey> {
+    Some(AudioKey::Received(MediaKey {
         account: at.account,
         attachment: attachment_id(attachment)?,
-    })
+    }))
 }
