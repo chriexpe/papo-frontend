@@ -104,7 +104,8 @@ impl Shell {
 
     /// Asks for person `user`'s profile when timeline `key`'s account does
     /// not have it yet; the SDK publishes it with the account's resources.
-    pub(super) fn load_profile(&self, key: TimelineKey, user: Uuid) {
+    pub(super) fn load_profile(&mut self, key: TimelineKey, user: Uuid) {
+        self.want_pictures(key.account, user);
         let known = self
             .shown_timeline(key)
             .and_then(|open| open.resources.as_deref())

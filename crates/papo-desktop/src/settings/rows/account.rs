@@ -1,7 +1,7 @@
-//! The account's pages (`docs/design.md` §8): Profile (Nickname, Status,
-//! About you; Presence, Typing phrase), and Privacy and security (Blocked
-//! people with Unblock, Change password, Sign out). Photo and Banner come
-//! with D7's image editor.
+//! The account's pages (`docs/design.md` §8): Profile (Photo, Banner,
+//! Nickname, Status, About you; Presence, Typing phrase), and Privacy and
+//! security (Blocked people with Unblock, Anonymize new attachments, Change
+//! password, Sign out).
 //!
 //! Owns these pages' rows; the profile is the SDK's (`own_profile`), what
 //! the rows do the shell's (`shell/settings_account`).
@@ -9,6 +9,8 @@
 use papo_sdk_ui::PresenceMark;
 
 use super::{Context, Group, Kind, Row};
+use crate::general_settings::GeneralSettings;
+use crate::image_editor::state::Use;
 use crate::own_profile::OwnProfile;
 use crate::server_list::BlockedPerson;
 use crate::settings::{PageId, Presence, RowId};
@@ -68,6 +70,18 @@ pub(super) fn profile(facts: &AccountFacts) -> Vec<Group> {
         Group {
             title: Some(strings::settings_group_profile(&facts.server)),
             rows: vec![
+                Row {
+                    id: RowId::Photo,
+                    title: strings::settings_photo().to_owned(),
+                    sub: None,
+                    kind: Kind::Picture(Use::Avatar),
+                },
+                Row {
+                    id: RowId::Banner,
+                    title: strings::settings_banner().to_owned(),
+                    sub: None,
+                    kind: Kind::Picture(Use::Banner),
+                },
                 text_row(
                     RowId::Nickname,
                     strings::settings_nickname(),
@@ -121,7 +135,7 @@ pub(super) fn profile(facts: &AccountFacts) -> Vec<Group> {
     ]
 }
 
-pub(super) fn privacy(facts: &AccountFacts) -> Vec<Group> {
+pub(super) fn privacy(facts: &AccountFacts, general: &GeneralSettings) -> Vec<Group> {
     let password_sub = if facts.password_changed {
         strings::settings_password_changed().to_owned()
     } else {
@@ -130,12 +144,21 @@ pub(super) fn privacy(facts: &AccountFacts) -> Vec<Group> {
     vec![
         Group {
             title: Some(strings::settings_group_privacy().to_owned()),
-            rows: vec![Row {
-                id: RowId::Blocked,
-                title: strings::settings_blocked().to_owned(),
-                sub: Some(strings::settings_blocked_sub(facts.blocked.len())),
-                kind: Kind::SubPage(PageId::Blocked, String::new()),
-            }],
+            rows: vec![
+                Row {
+                    id: RowId::Blocked,
+                    title: strings::settings_blocked().to_owned(),
+                    sub: Some(strings::settings_blocked_sub(facts.blocked.len())),
+                    kind: Kind::SubPage(PageId::Blocked, String::new()),
+                },
+                // This device's, unlike the rest of the page.
+                Row {
+                    id: RowId::AnonymizeNew,
+                    title: strings::settings_anonymize().to_owned(),
+                    sub: Some(strings::settings_anonymize_sub().to_owned()),
+                    kind: Kind::Switch(general.anonymize_new),
+                },
+            ],
         },
         Group {
             title: Some(strings::settings_group_sign_in().to_owned()),
@@ -256,7 +279,7 @@ pub(super) fn of(page: PageId, cx: &Context<'_>) -> Vec<Group> {
     };
     match page {
         PageId::Profile => profile(facts),
-        PageId::Privacy => privacy(facts),
+        PageId::Privacy => privacy(facts, cx.general),
         PageId::Blocked => blocked(facts),
         PageId::Password => password(facts),
         _ => Vec::new(),

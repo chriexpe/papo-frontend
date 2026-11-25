@@ -302,3 +302,29 @@ presence_mark!(
 
 #[cfg(test)]
 mod tests;
+line_icon!(
+    /// A tray tile whose picture goes anonymized, and the editor's
+    /// Anonymize row.
+    ANONYMOUS,
+    "anonymous"
+);
+line_icon!(
+    /// A tray tile whose name goes random.
+    RENAMED,
+    "renamed"
+);
+line_icon!(
+    /// The image editor's Rotate.
+    ROTATE,
+    "rotate"
+);
+line_icon!(
+    /// Either end of the image editor's zoom slider.
+    IMAGE,
+    "image"
+);
+line_icon!(
+    /// A tray tile's Edit.
+    CROP,
+    "crop"
+);

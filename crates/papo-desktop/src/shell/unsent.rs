@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use papo_sdk::{AccountId, OperationKind, OutgoingSnapshot, StagedAttachment, Uuid};
 
 use super::Shell;
-use super::staged_files::read_staged;
+use super::staged_files::{decoded, read_staged};
 use crate::attaching::{self, HEAD_BYTES, THUMBNAIL_SOURCE_MAX_BYTES};
 use crate::composer::tray::{Tile, TileKind};
 use crate::design::{ALBUM_CELLS, MEDIA_MAX_PT};
@@ -130,7 +130,7 @@ impl Shell {
             else {
                 return;
             };
-            let image = images.load_scaled(bytes, MEDIA_MAX_PT.0, scale);
+            let image = decoded(images.load_scaled(bytes, MEDIA_MAX_PT.0, scale)).await;
             updates.send(move |shell| {
                 // Sent and gone meanwhile: nothing draws it.
                 if !shell.unsent.contains(local) {

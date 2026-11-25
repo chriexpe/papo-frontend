@@ -32,6 +32,8 @@ pub(crate) enum MenuAction {
     RemoveServer(ServerId),
     /// Take this tile out of the shown tray.
     RemoveTile(crate::composer::tray::TileId),
+    /// Opens the image editor on a tray tile.
+    EditTile(crate::composer::tray::TileId),
     /// Send your unsent message `local` again; `unknown`: it may have
     /// arrived, so ask first.
     RetrySend {

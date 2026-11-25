@@ -42,6 +42,9 @@ pub(crate) enum Refused {
     Folder,
     /// A file could not be read.
     Unreadable { name: String },
+    /// An image the SDK cannot clean (HEIC, TIFF, RAW) while Anonymize is
+    /// on: never sent as it is.
+    CannotAnonymize { name: String },
 }
 
 /// What one offer comes to: the indices (into the offer) of the files

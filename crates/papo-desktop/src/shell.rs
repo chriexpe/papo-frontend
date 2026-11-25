@@ -149,6 +149,13 @@ pub(crate) struct Shell {
     unsent_reads: unsent::UnsentReads,
     /// A quit or close waiting for "Quit while uploading?".
     pub(crate) leaving: Option<crate::quit_ask::Leaving>,
+    /// The image editor, while open (`shell/editing.rs`).
+    pub(crate) editor: Option<editing::OpenEditor>,
+    /// Editor openings this run, so a read lands only on the one that
+    /// asked.
+    editor_openings: u64,
+    /// People's photos and banners fetched this run.
+    pub(crate) profile_pictures: profile_pictures::ProfilePictures,
     /// Pins and unpins on their way.
     pinning: reacting::Pinning,
     /// The hover bar stretched into its strip, while one is.
@@ -263,6 +270,9 @@ impl Default for Shell {
             unsent: crate::unsent_media::UnsentMedia::default(),
             unsent_reads: unsent::UnsentReads::default(),
             leaving: None,
+            editor: None,
+            editor_openings: 0,
+            profile_pictures: profile_pictures::ProfilePictures::default(),
             pinning: reacting::Pinning::default(),
             stretched: None,
             openings: 0,
@@ -367,6 +377,7 @@ pub(crate) mod deleting;
 mod description;
 pub(crate) mod direct;
 mod draft_writes;
+mod editing;
 mod header;
 mod hover_bar;
 mod jump;
@@ -377,10 +388,12 @@ mod message_open;
 mod navigate;
 mod new_message;
 mod outgoing;
+mod own_pictures;
 pub(crate) mod pins;
 mod pins_panel;
 mod profile_card;
 mod profile_pane;
+mod profile_pictures;
 mod reacting;
 mod reactions_list;
 mod reactors;
@@ -416,5 +429,6 @@ mod view;
 pub(crate) use new_message::{
     DIRECT_PILL_KEY, FIND_FIELD_KEY, NEW_MESSAGE_BUTTON_KEY, candidate_key,
 };
+pub(crate) use profile_pictures::Pictures;
 pub(crate) use settings::SettingChoice;
 pub(crate) use view::view;

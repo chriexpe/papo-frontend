@@ -60,12 +60,19 @@ impl Shell {
                 .as_deref()
                 .and_then(|instant| self.local_time.full_date(instant)),
             server: facts.server.clone(),
+            pictures: self
+                .subject_account()
+                .and_then(|account| self.profile_pictures.get(account, account.user()))
+                .cloned()
+                .unwrap_or_default(),
         };
         col()
             .key("settings-profile-preview")
             .w_full()
             .pb(look.space(SPACE_LG))
             .radius(look.radius(TILE_OUTER_RADIUS))
+            // The banner runs to the card's rounded top.
+            .clip_rounded(look.radius(TILE_OUTER_RADIUS))
             .fill(look.palette.surface_tile)
             .role("group")
             .label(strings::card_label(&person.name))
@@ -80,10 +87,11 @@ impl Shell {
 
     /// Profile opened: the account's profile is read back, so its text
     /// rows hold confirmed values and can be edited.
-    pub(crate) fn read_own_profile(&self) {
-        let (Some(account), Some(sdk)) = (self.subject_account(), &self.sdk) else {
+    pub(crate) fn read_own_profile(&mut self) {
+        let (Some(account), Some(sdk)) = (self.subject_account(), self.sdk.clone()) else {
             return;
         };
+        self.want_pictures(account, account.user());
         sdk.run(move |client| async move {
             let Ok(session) = client.session(account) else {
                 return;
@@ -235,7 +243,7 @@ impl Shell {
 
     /// Runs `work` for `row`: the row waits, then shows the confirmed value
     /// or, failing, its danger line with Try again saving `target` again.
-    fn account_call<Work>(
+    pub(super) fn account_call<Work>(
         &mut self,
         row: RowId,
         target: Target,

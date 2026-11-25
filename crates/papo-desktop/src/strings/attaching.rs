@@ -112,5 +112,6 @@ pub(crate) fn attach_refused(refused: &Refused) -> String {
         }
         Refused::Folder => text!("attach.folder").to_owned(),
         Refused::Unreadable { name } => template!("attach.unreadable", "name" => name),
+        Refused::CannotAnonymize { name } => super::attach_cannot_anonymize(name),
     }
 }

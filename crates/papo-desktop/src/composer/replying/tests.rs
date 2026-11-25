@@ -198,7 +198,9 @@ fn a_tray_change_during_an_edit_saves_the_field_set_aside_not_the_edit() {
         kind: TileKind::File,
         source: TileSource::Fixture,
         thumbnail: None,
-        size_px: None,
+        inspection: crate::composer::tray::Inspection::Pending,
+        edit: papo_sdk::AttachmentEdit::default(),
+        typed_name: None,
     };
     let _ = composer.attach(key(), vec![tile]);
     composer.start_edit(key(), original(), plain("the message"));

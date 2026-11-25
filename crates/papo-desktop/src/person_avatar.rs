@@ -6,10 +6,12 @@
 //! Owns only the drawing; the presence comes from the SDK
 //! (`AccountActivity::presence_mark`), the sizes from `design`, and saying
 //! the presence with the person's name is the caller's
-//! (`strings::person_with_presence`). Pictures are a later slice.
+//! (`strings::person_with_presence`). A photo, where the caller has one
+//! (the profile cards), takes the letter's place; elsewhere photos are a
+//! later slice.
 
 use papo_sdk_ui::PresenceMark;
-use rune::{Color, El, Icon, el, icon, text};
+use rune::{Color, El, Icon, Image, SurfaceFit, el, icon, text};
 
 use crate::design::{AvatarSize, Look};
 use crate::icons::{PRESENCE_AWAY, PRESENCE_BUSY, PRESENCE_OFFLINE, PRESENCE_ONLINE};
@@ -25,16 +27,35 @@ pub(crate) fn person_avatar(
     surface: Color,
     look: &Look,
 ) -> El {
-    let tile = el()
+    photo_avatar(name, None, size, presence, surface, look)
+}
+
+/// [`person_avatar`] showing `photo`: the tile fills in as it decodes (a
+/// decode redraws without rebuilding the view); the letter shows without
+/// one, or when it fails.
+pub(crate) fn photo_avatar(
+    name: &str,
+    photo: Option<&Image>,
+    size: AvatarSize,
+    presence: Option<PresenceMark>,
+    surface: Color,
+    look: &Look,
+) -> El {
+    let radius = look.radius(size.radius);
+    let base = el()
         .size(size.side_pt, size.side_pt)
-        .radius(look.radius(size.radius))
-        .center()
-        .fill(look.palette.surface_hover)
-        .child(
+        .radius(radius)
+        .fill(look.palette.surface_hover);
+    let tile = match photo.filter(|photo| photo.error().is_none()) {
+        Some(photo) => base
+            .clip_rounded(radius)
+            .pixels_fit(photo.pixels(), SurfaceFit::Fill),
+        None => base.center().child(
             text(initial(name))
                 .font(look.font(size.letter))
                 .color(look.palette.text_secondary),
-        );
+        ),
+    };
     let avatar = el()
         .size(size.side_pt, size.side_pt)
         .a11y_hidden()

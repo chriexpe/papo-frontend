@@ -14,7 +14,7 @@ use crate::composer::tray::{Tile, TileKind, TileSource};
 use crate::composer::tray_view::TRAY_KEY;
 
 /// A tile of `kind` named `name`, as a headless test makes it.
-fn tile(shell: &mut Shell, name: &str, kind: TileKind) -> Tile {
+pub(super) fn tile(shell: &mut Shell, name: &str, kind: TileKind) -> Tile {
     Tile {
         id: shell.composer.next_tile_id(),
         name: name.to_owned(),
@@ -22,12 +22,14 @@ fn tile(shell: &mut Shell, name: &str, kind: TileKind) -> Tile {
         kind,
         source: TileSource::Fixture,
         thumbnail: None,
-        size_px: None,
+        inspection: crate::composer::tray::Inspection::Pending,
+        edit: papo_sdk::AttachmentEdit::default(),
+        typed_name: None,
     }
 }
 
 /// #general with an empty field and three files in its tray.
-fn with_three() -> Runtime<Shell> {
+pub(super) fn with_three() -> Runtime<Shell> {
     let mut rt = writing("");
     rt.update(|shell, _tx| {
         let key = shown(shell);
@@ -43,7 +45,7 @@ fn with_three() -> Runtime<Shell> {
     rt
 }
 
-fn names(rt: &Runtime<Shell>) -> Vec<String> {
+pub(super) fn names(rt: &Runtime<Shell>) -> Vec<String> {
     rt.state
         .composer
         .shown()
@@ -64,12 +66,12 @@ fn current(rt: &Runtime<Shell>) -> Option<String> {
     draft.tray.get(id).map(|tile| tile.name.clone())
 }
 
-fn key_with(rt: &mut Runtime<Shell>, key: Key, mods: Mods) {
+pub(super) fn key_with(rt: &mut Runtime<Shell>, key: Key, mods: Mods) {
     rt.key(KeyEvent { key, mods });
     rt.frame(FRAME_S);
 }
 
-fn shift_tab(rt: &mut Runtime<Shell>) {
+pub(super) fn shift_tab(rt: &mut Runtime<Shell>) {
     let mods = Mods {
         shift: true,
         ..Mods::default()

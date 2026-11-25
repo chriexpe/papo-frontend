@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use super::composer::shown as shown_key;
 use super::navigation::click;
 use super::replying::{conversation, item, lia, resources_owned_by};
 use super::*;
@@ -234,4 +235,26 @@ fn a_mention_opens_its_persons_card_beside_it() {
         panic!("beside the mention");
     };
     assert!((left..left + width).contains(&x) && (top..top + height).contains(&y));
+}
+
+#[test]
+fn a_banner_runs_across_the_top_of_the_card_and_the_photo_replaces_the_letter() {
+    let mut rt = conversation("");
+    rt.update(|shell, _tx| {
+        let account = shown_key(shell).account;
+        let images = rune::ImageCache::new(Arc::new(|| {}));
+        let pictures = crate::shell::Pictures {
+            avatar: Some(images.rgba(2, 2, vec![255; 16])),
+            banner: Some(images.rgba(3, 1, vec![255; 12])),
+        };
+        shell
+            .profile_pictures
+            .read_for_test(account, lia(), pictures);
+    });
+    open_lias_card(&mut rt);
+    let band = rt.presented("card-banner").map(|(rect, _)| rect);
+    let Some([_, _, width, height]) = band else {
+        panic!("no banner: {}", tree(&rt));
+    };
+    assert!((width / height - 3.0).abs() < 0.05, "{width} × {height}");
 }
