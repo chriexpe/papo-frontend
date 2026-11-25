@@ -90,6 +90,7 @@ pub(crate) fn snippet_text(snippet: &Snippet, resources: Option<&ResourceSnapsho
         Snippet::Gif => strings::reply_gif().to_owned(),
         Snippet::Image => strings::reply_image().to_owned(),
         Snippet::Video => strings::reply_video().to_owned(),
+        Snippet::Audio => strings::reply_audio().to_owned(),
         Snippet::File { name } => strings::reply_file(name),
         Snippet::Link { title, domain } => match (title, domain) {
             (Some(title), Some(domain)) => format!("{title} · {domain}"),

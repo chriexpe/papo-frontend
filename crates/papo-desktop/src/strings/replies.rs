@@ -35,6 +35,11 @@ pub(crate) fn reply_video() -> &'static str {
     text!("reply.video")
 }
 
+/// A snippet for audio.
+pub(crate) fn reply_audio() -> &'static str {
+    text!("reply.audio")
+}
+
 /// A snippet for a GIF.
 pub(crate) fn reply_gif() -> &'static str {
     text!("reply.gif")
