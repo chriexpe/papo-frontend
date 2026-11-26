@@ -14,7 +14,7 @@ use papo_sdk::{AccountId, CustomEmoji, MediaSource, Uuid};
 use rune::Pixels;
 
 mod drawing;
-pub(crate) use drawing::{EmojiPlace, inline_image, with_images};
+pub(crate) use drawing::{EmojiPlace, emoji_square, inline_image, with_images};
 
 /// The most decoded emoji kept: at most `DECODE_MAX_PX`² × 4 bytes each, so about 26 MiB.
 const MAX_KEPT: usize = 256;

@@ -2,7 +2,8 @@
 //! and tray leave as one message, and come back when it is not queued.
 
 use papo_sdk::Uuid;
-use papo_sdk_ui::message_content::DecodedComposerMentions;
+use papo_sdk_ui::emoji_used;
+use papo_sdk_ui::message_content::{CustomEmojis, DecodedComposerMentions};
 
 use super::mode::{Mode, Reply};
 use super::tray::Tile;
@@ -10,9 +11,10 @@ use super::{Composer, DraftState, Effect, Sent, TimelineKey, mentions};
 
 impl Composer {
     /// Send was pressed: the shown field's text leaves it as a new message
-    /// with identity `local`. The stored draft keeps the text until the SDK
-    /// has queued it (`Effect::Send`).
-    pub(crate) fn send(&mut self, local: Uuid) -> Sent {
+    /// with identity `local`, its emoji found as the account's `emojis`
+    /// resolve them. The stored draft keeps the text until the SDK has
+    /// queued it (`Effect::Send`).
+    pub(crate) fn send(&mut self, local: Uuid, emojis: &CustomEmojis) -> Sent {
         if self
             .shown()
             .is_some_and(|(_, draft)| draft.mode.editing().is_some())
@@ -34,6 +36,7 @@ impl Composer {
             return Sent::Nothing;
         };
         let text = mentions::wire(&draft.edit);
+        let emoji = emoji_used(&emojis.parse(&text));
         let reply_to = draft.mode.reply().map(|reply| reply.id);
         let tiles = draft.tray.take();
         draft.mode = Mode::default();
@@ -53,6 +56,7 @@ impl Composer {
             tiles,
             local,
             seq,
+            emoji,
         })
     }
 

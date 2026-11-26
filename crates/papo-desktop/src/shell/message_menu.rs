@@ -5,7 +5,6 @@
 //! reactions and pins it asks for are `reacting`'s.
 
 use papo_sdk::Uuid;
-use papo_sdk::operations::reactions::ReactionEmoji;
 use papo_sdk_ui::{PinChange, reaction_chips};
 use rune::Tx;
 
@@ -189,13 +188,13 @@ impl Shell {
     /// account's quick reactions are known.
     fn menu_strip(&self, key: TimelineKey, id: Uuid, message: &papo_sdk::Message) -> Option<Strip> {
         let chips = reaction_chips(message, &self.outgoing(key.account));
-        let emoji: Vec<(String, bool)> = self
+        let look = self.reaction_emoji(key.account);
+        let emoji: Vec<(crate::reaction_emoji::ShownReaction, bool)> = self
             .quick_reactions(key.account)
             .iter()
-            .map(|emoji| {
-                let unicode = ReactionEmoji::Unicode(emoji.clone());
-                let mine = chips.iter().any(|chip| chip.mine && chip.emoji == unicode);
-                (emoji.clone(), mine)
+            .filter_map(|emoji| {
+                let mine = chips.iter().any(|chip| chip.mine && chip.emoji == *emoji);
+                Some((look.shown(emoji)?, mine))
             })
             .collect();
         (!emoji.is_empty()).then_some(Strip {

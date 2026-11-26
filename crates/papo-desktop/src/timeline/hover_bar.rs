@@ -12,14 +12,16 @@
 //! the host.
 
 use papo_sdk::Uuid;
-use rune::{Anim, El, Icon, el, icon, row, text};
+use papo_sdk_ui::operations::ReactionEmoji;
+use rune::{Anim, El, Icon, el, icon, row};
 
 use super::TimelineKey;
 use super::view::TimelineHost;
 use crate::design::{
     Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Radius, SPACE_LG, SPACE_SM, SPACE_XS,
-    Surfaces, TYPE_BODY,
+    Surfaces,
 };
+use crate::reaction_emoji::ShownReaction;
 use crate::strings;
 
 /// The bar's height, in points (`size.hover-bar`).
@@ -40,7 +42,7 @@ pub(crate) const BAR_REACTIONS: usize = 3;
 pub(crate) struct Bar {
     /// Quick reactions shown, most used first, and whether each is yours:
     /// three folded, eight stretched. Empty when you may not react.
-    pub(crate) emoji: Vec<(String, bool)>,
+    pub(crate) emoji: Vec<(ShownReaction, bool)>,
     /// Add reaction stretched the bar: the emoji ← and → are on.
     pub(crate) stretched: Option<usize>,
     pub(crate) reply: bool,
@@ -52,7 +54,7 @@ pub(crate) struct Bar {
 pub(crate) enum BarPress {
     /// Toggle your reaction `emoji`.
     React {
-        emoji: String,
+        emoji: ReactionEmoji,
     },
     /// Add reaction: the bar stretches into the strip, or folds back.
     AddReaction,
@@ -158,18 +160,18 @@ fn emoji_buttons<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, look: &
     bar.emoji
         .iter()
         .enumerate()
-        .map(|(index, (emoji, mine))| {
+        .map(|(index, (shown, mine))| {
             let press = BarPress::React {
-                emoji: emoji.clone(),
+                emoji: shown.emoji.clone(),
             };
             let label = if *mine {
-                strings::reaction_take_back(emoji)
+                strings::reaction_take_back(&shown.name)
             } else {
-                strings::reaction_react(emoji)
+                strings::reaction_react(&shown.name)
             };
             let mut cell = button::<S>(key, id, format!("bar-emoji-{index}"), press, look)
                 .label(label)
-                .child(text(emoji.clone()).font(look.font(TYPE_BODY)));
+                .child(shown.glyph(PILL_BUTTON_PT - 4.0, look));
             if *mine {
                 cell = cell
                     .fill(look.palette.accent_soft)

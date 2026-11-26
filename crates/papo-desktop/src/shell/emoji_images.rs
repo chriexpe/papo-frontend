@@ -8,9 +8,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use papo_sdk::OutgoingSnapshot;
 use papo_sdk::{AccountId, CustomEmoji, EmojiCatalog, Uuid};
-use papo_sdk_ui::TimelineItem;
 use papo_sdk_ui::message_content::CustomEmojis;
+use papo_sdk_ui::operations::ReactionEmoji;
+use papo_sdk_ui::{TimelineItem, reaction_chips};
 use rune::Pixels;
 
 use super::Shell;
@@ -95,14 +97,21 @@ impl Shell {
     fn shown_emoji(&self, account: AccountId) -> BTreeSet<Uuid> {
         let mut ids = BTreeSet::new();
         if let Some(open) = self.tabs.shown() {
+            let outgoing = self.outgoing(account);
             let visible = super::received_media::visible_span(open);
             let from = visible.start.saturating_sub(NEAR_ROWS);
             let to = (visible.end + NEAR_ROWS).min(open.items.len());
             for item in open.items.iter().skip(from).take(to.saturating_sub(from)) {
                 match item.as_ref() {
                     TimelineItem::Message {
-                        id, content, reply, ..
+                        id,
+                        message,
+                        content,
+                        reply,
+                        ..
                     } => {
+                        // Its reaction chips draw custom emoji too.
+                        ids.extend(custom_reactions(message, &outgoing));
                         // An edit in flight shows its own text.
                         let shown = open
                             .changes
@@ -143,6 +152,15 @@ impl Shell {
                 ids.extend(custom_emoji_ids(&item.content));
             }
         }
+        // The hover bar's, the strip's and the menu's quick reactions.
+        ids.extend(
+            self.quick_reactions(account)
+                .iter()
+                .filter_map(|emoji| match emoji {
+                    ReactionEmoji::Custom(id) => Some(*id),
+                    ReactionEmoji::Unicode(_) => None,
+                }),
+        );
         ids.extend(self.composer.emoji_ids());
         ids.extend(self.composer_reply_emoji());
         ids
@@ -196,6 +214,17 @@ impl Shell {
             });
         }
     }
+}
+
+/// The custom emoji `message`'s reaction chips draw, read as the chips read them.
+fn custom_reactions(message: &papo_sdk::Message, outgoing: &OutgoingSnapshot) -> Vec<Uuid> {
+    reaction_chips(message, outgoing)
+        .into_iter()
+        .filter_map(|chip| match chip.emoji {
+            ReactionEmoji::Custom(id) => Some(id),
+            ReactionEmoji::Unicode(_) => None,
+        })
+        .collect()
 }
 
 /// The largest emoji image decoded, in pixels a side: the server's emoji are at most 256 KiB,

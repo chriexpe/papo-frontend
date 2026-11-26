@@ -1,15 +1,16 @@
-//! Custom emoji drawn in a line of text (`docs/design.md` §9, Emoji): the image in place of its
-//! `:name:`, the square a loading one reserves, room kept clear in a hidden spoiler. What each
-//! emoji draws as is the store's.
+//! Custom emoji drawn (`docs/design.md` §9, Emoji): in a line of text, the image in place of its
+//! `:name:`, the square a loading one reserves, room kept clear in a hidden spoiler; standing
+//! alone (a reaction, a picker cell, a suggestion row), the image in a square. What each emoji
+//! draws as is the store's.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 
-use rune::{Color, El, InlineImage, Pixels, TextStyle};
+use rune::{Color, El, InlineImage, Pixels, TextStyle, el, text};
 
 use super::EmojiLook;
-use crate::design::{EMOJI_LOADING_RADIUS, Look, emoji_box};
+use crate::design::{EMOJI_LOADING_RADIUS, Look, TYPE_CAPTION, emoji_box};
 
 /// Where an emoji is drawn in a line of text.
 #[derive(Clone, Copy)]
@@ -45,6 +46,40 @@ pub(crate) fn inline_image(look: &EmojiLook, place: EmojiPlace, ui: &Look) -> Op
         height - below,
         below,
     ))
+}
+
+/// A custom emoji standing alone, `side_pt` square: its image fitted in the square, the square
+/// in `surface.hover` while it loads; its `name` in words when it failed (§9), cut to at most
+/// `failed_max_pt` wide so a long name keeps to its cell. Hidden from assistive technology: what
+/// holds it speaks for it.
+pub(crate) fn emoji_square(
+    look: &EmojiLook,
+    side_pt: f32,
+    name: &str,
+    failed_max_pt: f32,
+    ui: &Look,
+) -> El {
+    match look {
+        EmojiLook::Ready { pixels, aspect } => {
+            let (width, height) = if *aspect >= 1.0 {
+                (side_pt, side_pt / aspect)
+            } else {
+                (side_pt * aspect, side_pt)
+            };
+            el().size(width, height).pixels(pixels).a11y_hidden()
+        }
+        EmojiLook::Loading => el()
+            .size(side_pt, side_pt)
+            .radius(ui.radius(EMOJI_LOADING_RADIUS))
+            .fill(ui.palette.surface_hover)
+            .a11y_hidden(),
+        EmojiLook::Failed => text(name.to_owned())
+            .font(ui.font(TYPE_CAPTION))
+            .color(ui.palette.text_secondary)
+            .max_w(failed_max_pt)
+            .truncate()
+            .a11y_hidden(),
+    }
 }
 
 /// `el`, a line of text in `font`, with the custom emoji at `emoji` (byte ranges of its text,

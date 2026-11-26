@@ -100,14 +100,18 @@ impl Shell {
     /// Whether your reaction `emoji` to message `id` is there, when you may
     /// change it now: none without the permission, or while a change of it
     /// is on its way (the chip waits).
-    pub(super) fn reacts_with(&self, key: TimelineKey, id: Uuid, emoji: &str) -> Option<bool> {
+    pub(super) fn reacts_with(
+        &self,
+        key: TimelineKey,
+        id: Uuid,
+        emoji: &ReactionEmoji,
+    ) -> Option<bool> {
         let open = self.tabs.shown().filter(|open| open.key == key)?;
         let message = open.message(id).map(|(message, _)| message.as_ref())?;
         let outgoing = self.outgoing(key.account);
-        let unicode = ReactionEmoji::Unicode(emoji.to_owned());
         let chip = reaction_chips(message, &outgoing)
             .into_iter()
-            .find(|chip| chip.emoji == unicode);
+            .find(|chip| chip.emoji == *emoji);
         match chip {
             Some(chip) => chip
                 .can_toggle(super::replies::channel_capabilities(open))
@@ -121,18 +125,23 @@ impl Shell {
     /// A chip, the bar's or the strip's emoji, 1 2 3: your reaction `emoji`
     /// to message `id` is taken back when yours, else added; nothing while
     /// a change of it waits or the account may not. Returns whether it went.
-    pub(super) fn toggle_reaction(&mut self, key: TimelineKey, id: Uuid, emoji: &str) -> bool {
+    pub(crate) fn toggle_reaction(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        emoji: &ReactionEmoji,
+    ) -> bool {
         let Some(mine) = self.reacts_with(key, id, emoji) else {
             return false;
         };
-        self.react(key, id, emoji.to_owned(), !mine);
+        self.react(key, id, emoji.clone(), !mine);
         true
     }
 
     /// A quick reaction or a chip: your reaction `emoji` to message `id`
     /// is added (`add`) or taken back. The chip waits for the SDK's answer;
     /// a refused one is said.
-    pub(crate) fn react(&mut self, key: TimelineKey, id: Uuid, emoji: String, add: bool) {
+    pub(crate) fn react(&mut self, key: TimelineKey, id: Uuid, emoji: ReactionEmoji, add: bool) {
         let Some(sdk) = &self.sdk else {
             return;
         };
@@ -145,7 +154,7 @@ impl Shell {
                     .set(ReactionIntent {
                         channel: key.channel,
                         message: MessageTarget::Remote(id),
-                        emoji: ReactionEmoji::Unicode(emoji),
+                        emoji,
                         add,
                         local,
                         at: super::draft_writes::now(),

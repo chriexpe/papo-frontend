@@ -55,8 +55,13 @@ impl Shell {
 
     /// A secondary click on message `id`'s chip for `emoji`: the list
     /// opens beside the chip, on that emoji.
-    pub(super) fn open_chip_reactions(&mut self, key: TimelineKey, id: Uuid, emoji: &str) {
-        let filter = Some(ReactionEmoji::Unicode(emoji.to_owned()));
+    pub(super) fn open_chip_reactions(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        emoji: &ReactionEmoji,
+    ) {
+        let filter = Some(emoji.clone());
         let mut menu = OpenMenu::with_entries(
             Placement::Below(chip_key(id, emoji)),
             COMPOSER_KEY.to_owned(),
@@ -195,6 +200,8 @@ pub(super) fn body(shell: &Shell, look: &Look) -> Option<El> {
     let keys: Vec<Uuid> = rows.iter().map(|reactor| reactor.user).collect();
     let all = view.filter.is_none();
     let look = *look;
+    let emoji = shell.reaction_emoji(view.key.account);
+    let row_emoji = emoji.clone();
     let shown = rows.len();
     let count = shown + if waiting { SKELETON_ROWS } else { 0 };
     let list_rows = col()
@@ -212,7 +219,7 @@ pub(super) fn body(shell: &Shell, look: &Look) -> Option<El> {
                 })
             },
             move |_shell: &Shell, index| match rows.get(index) {
-                Some(reactor) => rows::reactor_row(reactor, &names[index], all, &look),
+                Some(reactor) => rows::reactor_row(reactor, &names[index], all, &row_emoji, &look),
                 None => rows::skeleton_row(&look),
             },
         )
@@ -224,7 +231,7 @@ pub(super) fn body(shell: &Shell, look: &Look) -> Option<El> {
         .w_full()
         .gap(look.space(SPACE_SM))
         .children(header)
-        .child(rows::tabs(&chips, view.filter.as_ref(), &look))
+        .child(rows::tabs(&chips, view.filter.as_ref(), &emoji, &look))
         .child(
             el().w_full()
                 .h(PILL_OUTLINE_PT)

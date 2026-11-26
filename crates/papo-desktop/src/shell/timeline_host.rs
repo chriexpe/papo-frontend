@@ -2,6 +2,7 @@
 //! seen, the viewport and rows moved, presses inside content, gaps to
 //! retry, an unsent message's mark. Each names its timeline; one no longer shown changes nothing.
 
+use papo_sdk_ui::operations::ReactionEmoji;
 use std::ops::Range;
 
 use papo_sdk::Uuid;
@@ -182,7 +183,13 @@ impl TimelineHost for Shell {
         }
     }
 
-    fn chip_menu_requested(&mut self, key: TimelineKey, id: Uuid, emoji: String, _tx: &mut Tx) {
+    fn chip_menu_requested(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        emoji: ReactionEmoji,
+        _tx: &mut Tx,
+    ) {
         self.worked_outside();
         if self.tabs.is_shown(key) {
             self.open_chip_reactions(key, id, &emoji);

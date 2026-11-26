@@ -12,6 +12,7 @@
 //! out. What each menu lists is the view that opens it.
 
 use papo_sdk::{ServerId, Uuid};
+use papo_sdk_ui::operations::ReactionEmoji;
 use rune::{Align, Cx, El, Icon, Side, col, el, icon, row, text};
 
 use crate::design::{
@@ -72,7 +73,7 @@ pub(crate) enum MenuAction {
     React {
         key: TimelineKey,
         id: Uuid,
-        emoji: String,
+        emoji: ReactionEmoji,
     },
     /// The search scope: this channel, or the whole server.
     SearchScope { channel: bool },
@@ -137,7 +138,7 @@ pub(crate) struct ReactionsView {
     pub(crate) key: TimelineKey,
     pub(crate) id: Uuid,
     /// The tab: one emoji's people, or everyone's.
-    pub(crate) filter: Option<papo_sdk_ui::operations::ReactionEmoji>,
+    pub(crate) filter: Option<ReactionEmoji>,
     /// Opened from a chip, not the menu: Escape closes it.
     pub(crate) from_chip: bool,
 }
@@ -340,7 +341,13 @@ pub(crate) const PROFILE_CARD_WIDTH_PT: f32 = 300.0;
 /// Draws `menu` over everything, anchored by its placement: its entries,
 /// or `body` in their place (the reactions list). Escape and a click
 /// outside close it; Return or a click picks an item.
-pub(crate) fn view(menu: &OpenMenu, body: Option<El>, look: &Look, cx: &Cx<Shell>) -> El {
+pub(crate) fn view(
+    menu: &OpenMenu,
+    body: Option<El>,
+    images: &crate::emoji_images::EmojiLooks,
+    look: &Look,
+    cx: &Cx<Shell>,
+) -> El {
     let (anchor, side, align, width) = match &menu.placement {
         Placement::GrowFrom(key) => {
             let width = cx.layout_size(key).map_or(menu.width_pt, |[w, _]| w);
@@ -364,7 +371,7 @@ pub(crate) fn view(menu: &OpenMenu, body: Option<El>, look: &Look, cx: &Cx<Shell
         .entries
         .iter()
         .enumerate()
-        .map(|(index, entry)| line(entry, Some(index) == first, look));
+        .map(|(index, entry)| line(entry, Some(index) == first, images, look));
     let (width, role) = match (&body, &menu.card) {
         (Some(_), Some(_)) => (PROFILE_CARD_WIDTH_PT, "dialog"),
         // A channel's description is as wide as it was opened.
@@ -406,7 +413,7 @@ pub(crate) fn pointer_point(menu: &OpenMenu) -> Option<El> {
     )
 }
 
-fn line(entry: &Entry, first: bool, look: &Look) -> El {
+fn line(entry: &Entry, first: bool, images: &crate::emoji_images::EmojiLooks, look: &Look) -> El {
     match entry {
         Entry::Header(words) => el()
             .w_full()
@@ -417,7 +424,7 @@ fn line(entry: &Entry, first: bool, look: &Look) -> El {
                     .font(look.font(TYPE_CAPTION))
                     .color(look.palette.text_muted),
             ),
-        Entry::Strip(strip) => strip::view(strip, first, look),
+        Entry::Strip(strip) => strip::view(strip, first, images, look),
         Entry::Item(item) => item_row(item, first, look),
         Entry::Divider => el()
             .w_full()

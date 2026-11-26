@@ -8,6 +8,7 @@
 //! Pure: rows read the host's state when Rune builds them, and their
 //! handlers name their timeline and item by key, never by index.
 
+use papo_sdk_ui::operations::ReactionEmoji;
 use std::borrow::Cow;
 use std::ops::Range;
 
@@ -102,7 +103,13 @@ pub(crate) trait TimelineHost: crate::message_media::received::MediaHost {
     fn chip_hovered(&mut self, key: TimelineKey, id: Uuid);
     /// The reactions list was asked for beside message `id`'s chip for
     /// `emoji`, by a secondary click on it.
-    fn chip_menu_requested(&mut self, key: TimelineKey, id: Uuid, emoji: String, tx: &mut Tx);
+    fn chip_menu_requested(
+        &mut self,
+        key: TimelineKey,
+        id: Uuid,
+        emoji: ReactionEmoji,
+        tx: &mut Tx,
+    );
     /// A link's menu was asked for, by a secondary click on `url` at `at`,
     /// in window points.
     fn link_menu_requested(&mut self, key: TimelineKey, url: String, at: [f32; 2], tx: &mut Tx);

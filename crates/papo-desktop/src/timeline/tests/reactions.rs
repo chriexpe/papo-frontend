@@ -1,6 +1,7 @@
-//! Reaction chips, headless: one per Unicode emoji under the message in
-//! the SDK's order, spoken with their count and "including you", custom
-//! emoji left out, and none at all on a message without reactions.
+//! Reaction chips, headless: one per emoji under the message in the SDK's
+//! order, spoken with their count and "including you"; a custom emoji by
+//! its `:name:` once the catalog names it, left out before; none at all on
+//! a message without reactions.
 
 use std::sync::Arc;
 
@@ -68,6 +69,35 @@ fn chips_follow_the_backend_and_say_yours() {
     // Custom emoji wait for the catalog; with what the account may do not
     // known yet, nothing offers to add a reaction.
     assert_eq!(labels, ["🧀, 4", "👍, 3, including you"]);
+}
+
+#[test]
+fn a_custom_emoji_chip_shows_once_the_catalog_names_it() {
+    let mut rt = runtime(reacted(), MessageLayout::default());
+    let catalog = papo_sdk::EmojiCatalog {
+        revision: 1,
+        emojis: vec![papo_sdk::CustomEmoji {
+            id: papo_sdk::Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0009),
+            name: "gato".to_owned(),
+            format: "png".to_owned(),
+            created_at: String::new(),
+        }],
+    };
+    rt.update(|host, _tx| {
+        host.reacting.emoji = Some(crate::reaction_emoji::ReactionEmojiLook {
+            account: super::key().account,
+            names: papo_sdk_ui::message_content::CustomEmojis::new(&catalog),
+            images: crate::emoji_images::EmojiLooks::default(),
+        });
+    });
+    super::until_idle(&mut rt);
+    let labels: Vec<String> = rt
+        .elements()
+        .into_iter()
+        .filter(|element| element.path.contains("/chips/") && element.role == "button")
+        .filter_map(|element| element.label)
+        .collect();
+    assert_eq!(labels, ["🧀, 4", "👍, 3, including you", ":gato:, 2"]);
 }
 
 #[test]

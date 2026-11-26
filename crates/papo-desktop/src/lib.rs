@@ -55,6 +55,7 @@ mod progress_ring;
 mod provider_players;
 mod quit_ask;
 mod rail;
+mod reaction_emoji;
 mod recent_jumps;
 mod reconnect_hints;
 mod remove_server;

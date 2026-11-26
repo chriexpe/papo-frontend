@@ -12,6 +12,7 @@ use crate::design::{
     RADIUS_PILL, ROW_ICON_PT, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL_MEDIUM,
     TYPE_TITLE,
 };
+use crate::reaction_emoji::{ReactionEmojiLook, ShownReaction};
 use crate::strings;
 
 /// A row's height, in points.
@@ -22,8 +23,10 @@ const BACK_KEY: &str = "reactions-back";
 /// The element key of the tab for `filter` (All when none).
 pub(super) fn tab_key(filter: Option<&ReactionEmoji>) -> String {
     match filter {
-        Some(ReactionEmoji::Unicode(emoji)) => format!("reactions-tab-{emoji}"),
-        _ => "reactions-tab-all".to_owned(),
+        // By kind: a server's "Unicode" text could be "all" or a custom emoji's ID.
+        Some(ReactionEmoji::Unicode(emoji)) => format!("reactions-tab-u-{emoji}"),
+        Some(ReactionEmoji::Custom(id)) => format!("reactions-tab-c-{id}"),
+        None => "reactions-tab-all".to_owned(),
     }
 }
 
@@ -60,23 +63,32 @@ pub(super) fn header(look: &Look) -> El {
 
 /// All, then each emoji with its count, in the chips' order; the chosen
 /// one in the link colour on `accent.soft`.
-pub(super) fn tabs(chips: &[ReactionChip], chosen: Option<&ReactionEmoji>, look: &Look) -> El {
+pub(super) fn tabs(
+    chips: &[ReactionChip],
+    chosen: Option<&ReactionEmoji>,
+    emoji: &ReactionEmojiLook,
+    look: &Look,
+) -> El {
     let mut tabs = vec![tab(
         None,
-        strings::reactions_all().to_owned(),
+        (None, strings::reactions_all().to_owned()),
         None,
         chosen.is_none(),
         look,
     )];
     for chip in chips {
-        let ReactionEmoji::Unicode(emoji) = &chip.emoji else {
+        // A custom emoji the catalog doesn't have has no chip and no tab.
+        let Some(shown) = emoji.shown(&chip.emoji) else {
             continue;
         };
         let selected = chosen == Some(&chip.emoji);
         tabs.push(tab(
             Some(chip.emoji.clone()),
-            format!("{emoji} {}", chip.count),
-            Some(strings::reactions_tab(emoji, chip.count)),
+            (
+                Some(shown.glyph(crate::reaction_emoji::FAILED_NAME_MAX_PT, look)),
+                chip.count.to_string(),
+            ),
+            Some(strings::reactions_tab(&shown.name, chip.count)),
             selected,
             look,
         ));
@@ -90,9 +102,11 @@ pub(super) fn tabs(chips: &[ReactionChip], chosen: Option<&ReactionEmoji>, look:
         .children(tabs)
 }
 
+/// A tab: its filter, what it draws (an emoji, then words), how it is spoken when not as the
+/// words, and whether it is chosen.
 fn tab(
     filter: Option<ReactionEmoji>,
-    words: String,
+    (glyph, words): (Option<El>, String),
     spoken: Option<String>,
     selected: bool,
     look: &Look,
@@ -121,12 +135,20 @@ fn tab(
         .focus_selected(selected)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press(move |shell: &mut Shell| shell.reactions_tab(filter.clone()))
+        .gap(look.space(SPACE_SM))
+        .children(glyph)
         .child(text(words).font(look.font(TYPE_SMALL_MEDIUM)).color(ink))
 }
 
 /// One person: the avatar, the name, "you" by yours, and on All every
 /// emoji they used. A press or Enter opens their card.
-pub(super) fn reactor_row(reactor: &Reactor, name: &str, all: bool, look: &Look) -> El {
+pub(super) fn reactor_row(
+    reactor: &Reactor,
+    name: &str,
+    all: bool,
+    emoji: &ReactionEmojiLook,
+    look: &Look,
+) -> El {
     let user = reactor.user;
     let mut line = row()
         .w_full()
@@ -166,18 +188,22 @@ pub(super) fn reactor_row(reactor: &Reactor, name: &str, all: bool, look: &Look)
         );
     }
     if all {
-        let emoji: String = reactor
+        let reacted: Vec<ShownReaction> = reactor
             .emoji
             .iter()
-            .filter_map(|emoji| match emoji {
-                ReactionEmoji::Unicode(emoji) => Some(emoji.as_str()),
-                ReactionEmoji::Custom(_) => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+            .filter_map(|used| emoji.shown(used))
+            .collect();
+        // The emoji are drawn hidden from assistive technology: the row says them.
+        let names: Vec<&str> = reacted.iter().map(|shown| shown.name.as_str()).collect();
+        if !names.is_empty() {
+            line = line.label(format!("{name}, {}", names.join(" ")));
+        }
+        let glyphs = reacted
+            .iter()
+            .map(|shown| shown.glyph(crate::reaction_emoji::FAILED_NAME_MAX_PT, look));
         line = line
             .child(el().grow(1.0))
-            .child(text(emoji).font(look.font(TYPE_BODY)));
+            .child(row().gap(look.space(SPACE_SM)).center_y().children(glyphs));
     }
     line
 }
