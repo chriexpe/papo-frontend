@@ -86,6 +86,9 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                         cx,
                     ));
                 }
+                if let Some(picker) = &shell.emoji_picker {
+                    app = app.child(super::emoji_picker::view(shell, picker, &look, cx));
+                }
                 if let Some(notice) = &shell.notice {
                     app = app.child(notice::view(notice, composer::COMPOSER_PILL_KEY, &look));
                 }
@@ -318,14 +321,7 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
         let reply = draft.mode.reply()?;
         timeline::replies::reply_text(open, reply.id, reply.original.as_ref())
     });
-    let context = composer::PillContext {
-        placeholder: &placeholder,
-        enter_sends: shell.conversations.settings().enter_sends,
-        original: original.as_ref(),
-        me: shown.map_or(papo_sdk::Uuid::nil(), |(key, _)| key.account.user()),
-        tray_ui: &shell.tray_ui,
-        emoji: shell.emoji_images.looks(),
-    };
+    let context = shell.pill_context(&placeholder, original.as_ref());
     let state = shell.picked_dm_access().zip(shell.nav.picked_dm());
     let composer = match (state, &title) {
         (Some((access, picked)), super::title::Title::Direct { name, .. }) => {

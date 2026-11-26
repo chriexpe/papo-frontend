@@ -272,6 +272,32 @@ impl Composer {
             .unwrap_or_default()
     }
 
+    /// The emoji picker's pick goes in at channel `key`'s caret: a Unicode emoji as itself, a
+    /// custom one as its pill. Nothing while that field isn't shown or its draft still loads.
+    /// Whether the field changed.
+    pub(crate) fn insert_emoji(
+        &mut self,
+        key: TimelineKey,
+        choice: &crate::emoji_picker::EmojiChoice,
+    ) -> bool {
+        if self.shown != Some(key) {
+            return false;
+        }
+        let Some(draft) = self.drafts.get_mut(&key) else {
+            return false;
+        };
+        if draft.state == DraftState::Loading {
+            return false;
+        }
+        match choice {
+            crate::emoji_picker::EmojiChoice::Unicode(emoji) => draft.edit.insert(emoji.glyph),
+            crate::emoji_picker::EmojiChoice::Custom(emoji) => {
+                emoji::insert(&mut draft.edit, emoji.id, &emoji.name, &draft.preview);
+            }
+        }
+        true
+    }
+
     /// Every `:name:` in channel `key`'s field becomes its emoji (a draft restored, a message
     /// taken back, a catalog that arrived). `fresh`: the text was just put there, so undo
     /// starts after it.

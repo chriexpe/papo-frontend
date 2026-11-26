@@ -23,8 +23,8 @@ use crate::timeline::{Reacting, TimelineKey};
 pub(crate) struct Stretched {
     pub(crate) key: TimelineKey,
     pub(crate) id: Uuid,
-    /// The emoji ← and → are on.
-    pub(crate) chosen: usize,
+    /// The spot ← and → are on.
+    pub(crate) chosen: crate::quick_strip::StripSpot,
 }
 
 /// One account's live state, as its watch last posted it.

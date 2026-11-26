@@ -47,6 +47,22 @@ pub(crate) fn bind_typed(edit: &mut TextEdit, emojis: &CustomEmojis, code: &[Pre
     true
 }
 
+/// The picker's pick (§16.2): custom emoji `id`, named `name`, goes in at the caret, over any
+/// selection, as its pill; inside code, as its `:name:` in words, as typing it there leaves it.
+/// One undo step.
+pub(crate) fn insert(edit: &mut TextEdit, id: Uuid, name: &str, code: &[PreviewSpan]) {
+    let (start, end) = edit.range();
+    let at = start.min(end);
+    let label = format!(":{name}:");
+    let in_code = in_code(&(at..at), code);
+    edit.undo_group(|edit| {
+        edit.insert(&label);
+        if !in_code {
+            edit.replace_with_pill(at..at + label.len(), pill_id(id), &label);
+        }
+    });
+}
+
 /// Every `:name:` of the field's text outside code and pills becomes the emoji's pill: a
 /// restored draft, or a message taken back for editing. Offsets don't move: each label is the
 /// text already there.

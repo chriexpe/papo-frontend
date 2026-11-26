@@ -201,7 +201,7 @@ impl Shell {
             key,
             id,
             emoji,
-            chosen: 0,
+            chosen: crate::quick_strip::StripSpot::FIRST,
         })
     }
 

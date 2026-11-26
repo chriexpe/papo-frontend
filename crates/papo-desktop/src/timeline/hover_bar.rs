@@ -21,6 +21,7 @@ use crate::design::{
     Look, PILL_BUTTON_PT, PILL_ICON_PT, PILL_OUTLINE_PT, Radius, SPACE_LG, SPACE_SM, SPACE_XS,
     Surfaces,
 };
+use crate::quick_strip::StripSpot;
 use crate::reaction_emoji::ShownReaction;
 use crate::strings;
 
@@ -43,8 +44,8 @@ pub(crate) struct Bar {
     /// Quick reactions shown, most used first, and whether each is yours:
     /// three folded, eight stretched. Empty when you may not react.
     pub(crate) emoji: Vec<(ShownReaction, bool)>,
-    /// Add reaction stretched the bar: the emoji ← and → are on.
-    pub(crate) stretched: Option<usize>,
+    /// Add reaction stretched the bar: the spot ← and → are on.
+    pub(crate) stretched: Option<StripSpot>,
     pub(crate) reply: bool,
     pub(crate) edit: bool,
 }
@@ -58,6 +59,8 @@ pub(crate) enum BarPress {
     },
     /// Add reaction: the bar stretches into the strip, or folds back.
     AddReaction,
+    /// More emoji, at the stretched strip's left end: the picker, for a reaction.
+    MoreEmoji,
     Reply,
     Edit,
     /// More: the message menu, grown from the bar.
@@ -72,7 +75,25 @@ pub(crate) fn more_key(id: Uuid) -> String {
 /// Message `id`'s bar, pinned over the row's top-right and seen while its
 /// hover group (the row) is lit.
 pub(super) fn bar<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, look: &Look) -> El {
-    let mut buttons = emoji_buttons::<S>(key, id, bar, look);
+    let mut buttons = Vec::new();
+    // More emoji joins the strip's left end (§16.2), only while it is stretched.
+    if let Some(spot) = bar.stretched {
+        let mut more = icon_button::<S>(
+            key,
+            id,
+            "bar-more-emoji",
+            &crate::icons::SMILE_WINK_PLUS,
+            strings::more_emoji(),
+            None,
+            BarPress::MoreEmoji,
+            look,
+        );
+        if spot == StripSpot::More {
+            more = more.border(PILL_OUTLINE_PT * 2.0, look.palette.focus_ring);
+        }
+        buttons.push(more);
+    }
+    buttons.extend(emoji_buttons::<S>(key, id, bar, look));
     if !buttons.is_empty() {
         buttons.push(
             el().w(PILL_OUTLINE_PT)
@@ -177,7 +198,7 @@ fn emoji_buttons<S: TimelineHost>(key: TimelineKey, id: Uuid, bar: &Bar, look: &
                     .fill(look.palette.accent_soft)
                     .border(PILL_OUTLINE_PT, look.palette.accent);
             }
-            if bar.stretched == Some(index) {
+            if bar.stretched == Some(StripSpot::Emoji(index)) {
                 cell = cell.border(PILL_OUTLINE_PT * 2.0, look.palette.focus_ring);
             }
             cell

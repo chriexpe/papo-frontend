@@ -69,6 +69,8 @@ pub(crate) enum MenuAction {
         at: crate::message_media::received::MediaAt,
         action: crate::shell::MediaAction,
     },
+    /// More emoji: the picker opens to react to message `id`.
+    MoreEmoji { key: TimelineKey, id: Uuid },
     /// Toggle your reaction `emoji` to message `id`.
     React {
         key: TimelineKey,

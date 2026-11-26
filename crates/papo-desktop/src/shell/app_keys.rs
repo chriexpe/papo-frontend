@@ -86,6 +86,14 @@ impl Shell {
         if self.viewer.is_some() {
             return false;
         }
+        // The emoji picker holds the keyboard as a dialog does; its own key closes it.
+        if self.emoji_picker.is_some() {
+            if key.is_command('e') && primary_only(key.mods) {
+                self.close_emoji_picker(tx);
+                return true;
+            }
+            return false;
+        }
         if is_shortcuts_key(key) {
             self.toggle_shortcuts(tx);
             return true;
@@ -110,6 +118,12 @@ impl Shell {
         // settings panel.
         if key.is_command('o') && primary_only(key.mods) && self.settings.is_none() {
             self.attach_pressed(tx);
+            return true;
+        }
+        // Ctrl+E: the Emoji tab, for the shown field (§16.5); not from behind the settings
+        // panel.
+        if key.is_command('e') && primary_only(key.mods) && self.settings.is_none() {
+            self.emoji_button_pressed(tx);
             return true;
         }
         self.server_number_key(key, tx)

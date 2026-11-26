@@ -25,7 +25,13 @@ macro_rules! line_icon {
         pub(crate) static $name: Icon = Icon {
             name: concat!("papo-", $file),
             view: LINE_VIEW,
-            body: include_str!(concat!("../assets/icons/Icons/", $file, ".svg")),
+            // From the crate's root, so the macro reads the same file from any module.
+            body: include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/icons/Icons/",
+                $file,
+                ".svg"
+            )),
         };
     };
 }
@@ -37,7 +43,12 @@ macro_rules! presence_mark {
         pub(crate) static $name: Icon = Icon {
             name: concat!("papo-presence-", $file),
             view: PRESENCE_VIEW,
-            body: include_str!(concat!("../assets/icons/Presence/", $file, ".svg")),
+            body: include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/icons/Presence/",
+                $file,
+                ".svg"
+            )),
         };
     };
 }
@@ -393,6 +404,9 @@ line_icon!(
     VIDEO,
     "video"
 );
+
+mod picker;
+pub(crate) use picker::*;
 
 #[cfg(test)]
 mod tests;
