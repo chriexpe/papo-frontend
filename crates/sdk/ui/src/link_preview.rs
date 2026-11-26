@@ -2,21 +2,23 @@
 //! in what order and how many, a card's parts, a link to a bare GIF drawn as media, and whether
 //! a video is the provider's player or a clip the server relays. One anatomy for every kind:
 //! each part shows when the embed has it, since the server sends no kind. Whether a provider's
-//! player may load, and from where, is [`crate::provider_player`]'s.
+//! player may load, and from where, is [`crate::provider_player`]'s: the server's player page,
+//! else the one the card's page names (a `TikTok` video, a Spotify or `SoundCloud`
+//! track).
 //! Owns only the rules, from the wire alone; drawing, the colour's contrast, the words and the
 //! Show link previews setting are the client's.
 //!
 //! Every picture is the server's relay of what it downloaded ([`MediaSource::EmbedImage`]) and
 //! every clip its video relay ([`MediaSource::EmbedVideo`]). The only addresses a preview exposes
 //! are the page's own, which the message already links, and an allowlisted provider's player,
-//! rebuilt from its parts and loaded only once you press play: the embed's media, author and
+//! rebuilt from its parsed id and loaded only once you press play: the embed's media, author and
 //! icon addresses are never handed out, so showing a preview cannot contact the site.
 
 use papo_sdk::{Embed, EmbedMedia, MediaSource, Message, Uuid};
 
 use crate::attachment_kind::AttachmentKind;
 use crate::media_box::{MediaBounds, MediaBox, MediaFit, MediaSize, largest_of_shape, media_box};
-use crate::provider_player::{PLAYER_ASPECT, ProviderPlayer};
+use crate::provider_player::{PLAYER_ASPECT, PlayerKind, ProviderPlayer};
 
 /// The most previews a message draws, in link order; a fourth link stays text.
 pub const MAX_PREVIEWS: usize = 3;
@@ -83,6 +85,9 @@ pub struct LinkCard {
     pub picture: Option<CardPicture>,
     /// A video, whose poster is `picture` when the server relayed one.
     pub video: Option<CardVideo>,
+    /// A provider's audio player (Spotify, `SoundCloud`) that the page names, whose cover is
+    /// `picture` (§15.4).
+    pub track: Option<ProviderPlayer>,
     /// The footer's text.
     pub footer: Option<String>,
 }
@@ -177,6 +182,14 @@ pub fn preview(embed: &Embed) -> Option<LinkPreview> {
             picture: picture?,
         }));
     }
+    // A player the page names: an allowlisted provider's link (derived, never fetched).
+    let named = page
+        .as_ref()
+        .and_then(|page| ProviderPlayer::from_page_address(&page.address));
+    let (named_video, track) = match named {
+        Some(player) if player.kind() == PlayerKind::Audio => (None, Some(player)),
+        named => (named, None),
+    };
     let card = LinkCard {
         embed: id,
         page,
@@ -191,7 +204,8 @@ pub fn preview(embed: &Embed) -> Option<LinkPreview> {
         title: text(embed.title.as_deref()),
         description: text(embed.description.as_deref()),
         fields: fields(embed),
-        video: video(id, embed, picture.as_ref()),
+        video: video(id, embed, picture.as_ref(), named_video),
+        track,
         picture,
         footer: text(
             embed
@@ -204,7 +218,8 @@ pub fn preview(embed: &Embed) -> Option<LinkPreview> {
         || card.description.is_some()
         || !card.fields.is_empty()
         || card.picture.is_some()
-        || card.video.is_some();
+        || card.video.is_some()
+        || card.track.is_some();
     shows_something.then(|| LinkPreview::Card(Box::new(card)))
 }
 
@@ -272,8 +287,17 @@ fn picture(embed: Uuid, wire: &Embed) -> Option<CardPicture> {
     })
 }
 
-fn video(embed: Uuid, wire: &Embed, poster: Option<&CardPicture>) -> Option<CardVideo> {
-    let video = wire.video.as_ref()?;
+/// The card's video: a clip the server relays, else the provider's player (the server's player
+/// page, else `named`, the one the page names); a provider player off the allowlist has none.
+fn video(
+    embed: Uuid,
+    wire: &Embed,
+    poster: Option<&CardPicture>,
+    named: Option<ProviderPlayer>,
+) -> Option<CardVideo> {
+    let Some(video) = wire.video.as_ref() else {
+        return named.map(|player| CardVideo::Provider(Some(player)));
+    };
     let mime = video
         .mime_type
         .as_deref()
@@ -286,7 +310,8 @@ fn video(embed: Uuid, wire: &Embed, poster: Option<&CardPicture>) -> Option<Card
         let player = video
             .url
             .as_deref()
-            .and_then(ProviderPlayer::from_embed_address);
+            .and_then(ProviderPlayer::from_embed_address)
+            .or(named);
         return Some(CardVideo::Provider(player));
     };
     let size = match size(video) {
