@@ -143,6 +143,8 @@ impl Shell {
             };
             group.extend(pin.map(|pin| pin.with_shortcut(strings::shortcut_pin())));
         }
+        // A GIF that arrived as a GIPHY link takes a star (§16.4).
+        group.extend(self.favorite_item(key, id, message));
         if actions.view_reactions {
             group.push(item(
                 "menu-view-reactions",

@@ -450,6 +450,7 @@ mod draft_writes;
 mod editing;
 mod emoji_images;
 mod emoji_picker;
+mod gif_favorites;
 mod gif_picker;
 mod gif_tiles;
 mod header;

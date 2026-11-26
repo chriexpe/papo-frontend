@@ -75,6 +75,16 @@ impl Shell {
                 .with_shortcut("O"),
             ));
         }
+        // Right after Open: a conversation GIF that takes a star (§16.4).
+        let key = crate::timeline::TimelineKey {
+            account: at.account,
+            channel: at.channel,
+        };
+        let favorite = (at.surface == crate::message_media::received::MediaSurface::Timeline)
+            .then(|| self.message_at(at))
+            .flatten()
+            .and_then(|message| self.favorite_item(key, at.message, &message));
+        entries.extend(favorite.map(Entry::Item));
         entries.extend([
             Entry::Item(
                 MenuItem::plain(

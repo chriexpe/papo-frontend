@@ -386,6 +386,9 @@ impl Shell {
                 self.toggle_reaction(key, id, &emoji);
             }
             MenuAction::MoreEmoji { key, id } => self.more_emoji_pressed(key, id, tx),
+            MenuAction::FavoriteGif { key, id } => {
+                self.star_message_gif(key, id, tx);
+            }
             MenuAction::Person { key, user, action } => self.person_action(key, user, action, tx),
             MenuAction::Setting(choice) => self.settings_chosen(choice, tx),
             MenuAction::SearchScope { channel } => {

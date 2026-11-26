@@ -113,6 +113,16 @@ pub(crate) fn shortcuts_emoji() -> &'static str {
     text!("shortcuts.emoji")
 }
 
+/// S's row in A focused message: its GIF's favorite.
+pub(crate) fn shortcuts_fav_message() -> &'static str {
+    text!("shortcuts.fav_message")
+}
+
+/// Ctrl+D's row in Composer: the GIF picker's chosen GIF's favorite.
+pub(crate) fn shortcuts_fav_picker() -> &'static str {
+    text!("shortcuts.fav_picker")
+}
+
 /// Ctrl+G's row in Composer: the GIF picker.
 pub(crate) fn shortcuts_gif() -> &'static str {
     text!("shortcuts.gif")

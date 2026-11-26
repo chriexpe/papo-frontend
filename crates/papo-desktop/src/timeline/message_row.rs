@@ -87,6 +87,7 @@ pub(super) fn message_row<S: TimelineHost>(
         unsent_version,
         received.as_ref().map(|(_, signature)| signature.clone()),
         text_hidden,
+        starred(row_message, style),
     );
     let row_key = if history {
         message_key(id)
@@ -442,4 +443,11 @@ pub(crate) fn created_us(message: &Message) -> Option<i64> {
     MessageKey::from_message(message)
         .ok()
         .map(|key| key.created_at_us)
+}
+
+/// Whether the row's GIF is a favorite: its star's fill, so adding or removing one redraws the
+/// row.
+fn starred(row_message: &RowMessage<'_>, style: &Style) -> bool {
+    papo_sdk_ui::favorite_gif(row_message.message)
+        .is_some_and(|gif| style.media.favorite_gifs.contains(&gif.id))
 }

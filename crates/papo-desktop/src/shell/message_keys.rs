@@ -56,6 +56,9 @@ impl Shell {
             return true;
         }
         match &event.key {
+            Key::Text(letter) if letter.eq_ignore_ascii_case("s") => {
+                self.star_message_gif(key, id, tx)
+            }
             Key::Text(letter) if letter.eq_ignore_ascii_case("r") => self.reply_to(key, id, tx),
             Key::Text(letter) if letter.eq_ignore_ascii_case("e") => self.edit(key, id, tx),
             Key::Text(letter) if letter.eq_ignore_ascii_case("p") => self.toggle_pin(key, id),

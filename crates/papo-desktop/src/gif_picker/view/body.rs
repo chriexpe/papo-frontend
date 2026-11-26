@@ -14,6 +14,7 @@ use crate::design::{
     FOCUS_RING_PT, Look, PILL_ICON_PT, RADIUS_CONTROL, RADIUS_PILL, SPACE_MD, SPACE_SM,
     SPINNER_PERIOD_S, TYPE_CAPTION, TYPE_SMALL, TYPE_SMALL_MEDIUM,
 };
+use crate::gif_star::{StarPlace, star};
 use crate::icons::{SPINNER, STAR};
 use crate::message_media::{Layer, failed, painted};
 use crate::shell::Shell;
@@ -85,6 +86,12 @@ fn tile(picker: &GifPicker, placed: Placed, width_pt: f32, given: &GifLook<'_>) 
     let drawn = given.media.get(key);
     let image = drawn.and_then(|drawn| drawn.picture(given.media.animates(key)));
     let at = placed.at;
+    let favorite = given.favorites.contains(&gif.id);
+    let keyboard = picker.cursor == Some(at);
+    let mut label = strings::picker_gif_tile(&gif.title);
+    if favorite {
+        label = format!("{label}, {}", strings::fav_is());
+    }
     let base = el()
         .key(tile_key(at, gif))
         .w(width_pt)
@@ -93,7 +100,8 @@ fn tile(picker: &GifPicker, placed: Placed, width_pt: f32, given: &GifLook<'_>) 
         .clip_rounded(TILE_RADIUS_PT);
     let mut tile = painted(base, image, MediaFit::Fill, Layer::default(), look)
         .role("option")
-        .label(strings::picker_gif_tile(&gif.title))
+        .label(label)
+        .hover_group()
         .on_press_tx(move |shell: &mut Shell, tx| {
             let keep = tx.mods().shift;
             shell.gif_pressed(at, keep, tx);
@@ -107,10 +115,21 @@ fn tile(picker: &GifPicker, placed: Placed, width_pt: f32, given: &GifLook<'_>) 
             .on_press_tx(move |shell: &mut Shell, _tx| shell.gif_tile_retry(key));
         tile = tile.child(failed(retry, look));
     }
-    if picker.cursor == Some(at) {
+    if keyboard {
         tile = tile.outline(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring);
     }
-    tile
+    // Its star (§16.4), 4 pt in: on hover or the keyboard, and always, filled, on a favorite.
+    let place = StarPlace {
+        favorite,
+        inset_pt: 4.0,
+        always: favorite || keyboard,
+    };
+    tile.child(star::<Shell>(
+        format!("{}-star", tile_key(at, gif)),
+        place,
+        move |shell: &mut Shell, tx| shell.gif_tile_star_pressed(at, tx),
+        look,
+    ))
 }
 
 /// Placeholder tiles while a page comes, shimmering (still under reduced motion: Rune holds a

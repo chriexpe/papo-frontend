@@ -69,6 +69,8 @@ pub(crate) enum MenuAction {
         at: crate::message_media::received::MediaAt,
         action: crate::shell::MediaAction,
     },
+    /// Add to favorites / Remove from favorites: message `id`'s GIF.
+    FavoriteGif { key: TimelineKey, id: Uuid },
     /// More emoji: the picker opens to react to message `id`.
     MoreEmoji { key: TimelineKey, id: Uuid },
     /// Toggle your reaction `emoji` to message `id`.
