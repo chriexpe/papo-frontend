@@ -14,12 +14,19 @@ use super::{CustomEmojiRef, MessageContent, parser};
 pub struct CustomEmojis {
     revision: u64,
     refs: Arc<[CustomEmojiRef]>,
-    /// Each name's first emoji in `refs`, built once per catalog: a timeline resolves every
-    /// `:candidate:` of thousands of messages against up to `MAX_CUSTOM_EMOJI` names.
-    index: Arc<HashMap<String, usize>>,
-    /// Each emoji's place in `refs` by its ID: a reaction names its emoji by ID, and a row of
-    /// chips asks for each.
-    ids: Arc<HashMap<Uuid, usize>>,
+    /// Where each emoji is in `refs`, built once per catalog.
+    index: Arc<Index>,
+}
+
+/// The ways into a catalog's emoji. One `Arc` for both keeps `CustomEmojis` small: clients hold
+/// one in every timeline window and search.
+#[derive(Debug, Default)]
+struct Index {
+    /// Each name's first emoji: a timeline resolves every `:candidate:` of thousands of messages
+    /// against up to `MAX_CUSTOM_EMOJI` names.
+    names: HashMap<String, usize>,
+    /// Each ID's emoji: a reaction names its emoji by ID, and a row of chips asks for each.
+    ids: HashMap<Uuid, usize>,
 }
 
 impl PartialEq for CustomEmojis {
@@ -50,7 +57,7 @@ impl<'a> EmojiNames<'a> {
     pub(crate) fn find(self, name: &str) -> Option<&'a CustomEmojiRef> {
         match self {
             EmojiNames::List(list) => list.iter().find(|entry| entry.name == name),
-            EmojiNames::Index(emojis) => emojis.index.get(name).map(|at| &emojis.refs[*at]),
+            EmojiNames::Index(emojis) => emojis.index.names.get(name).map(|at| &emojis.refs[*at]),
         }
     }
 }
@@ -71,17 +78,18 @@ impl CustomEmojis {
                 name: emoji.name.clone(),
             })
             .collect();
-        let mut index = HashMap::with_capacity(refs.len());
-        let mut ids = HashMap::with_capacity(refs.len());
+        let mut index = Index {
+            names: HashMap::with_capacity(refs.len()),
+            ids: HashMap::with_capacity(refs.len()),
+        };
         for (at, entry) in refs.iter().enumerate() {
-            index.entry(entry.name.clone()).or_insert(at);
-            ids.entry(entry.id).or_insert(at);
+            index.names.entry(entry.name.clone()).or_insert(at);
+            index.ids.entry(entry.id).or_insert(at);
         }
         Self {
             revision: catalog.revision,
             refs,
             index: Arc::new(index),
-            ids: Arc::new(ids),
         }
     }
 
@@ -123,7 +131,7 @@ impl CustomEmojis {
     /// longer has it.
     #[must_use]
     pub fn get(&self, id: Uuid) -> Option<&CustomEmojiRef> {
-        self.ids.get(&id).map(|at| &self.refs[*at])
+        self.index.ids.get(&id).map(|at| &self.refs[*at])
     }
 
     /// The emoji, in the catalog's order.
