@@ -19,7 +19,13 @@ const GIPHY_ID: &str = "ReocLd5xHpvanCOQ7Y";
 
 /// Message 3 becomes a GIPHY GIF link the server made a `gif` embed.
 fn with_gif(rt: &mut Runtime<Shell>) {
-    rt.update(|shell, _tx| {
+    with_gifs(rt, &[GIPHY_ID]);
+}
+
+/// Message 3 holds one GIPHY GIF link per ID, each a `gif` embed.
+fn with_gifs(rt: &mut Runtime<Shell>, ids: &[&str]) {
+    let ids: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+    rt.update(move |shell, _tx| {
         let open = shell.tabs.shown_mut().unwrap();
         let at = open
             .items
@@ -36,16 +42,26 @@ fn with_gif(rt: &mut Runtime<Shell>) {
         else {
             unreachable!()
         };
-        let embeds = serde_json::from_value(serde_json::json!([{
-            "id": "00000000-0000-4000-8000-000000000006",
-            "fetch_method": "gif",
-            "url": format!("https://giphy.com/gifs/{GIPHY_ID}"),
-            "title": "Football",
-            "thumbnail": { "mime_type": "image/gif", "width": 200, "height": 150 },
-        }]))
-        .unwrap();
+        let embeds: Vec<serde_json::Value> = ids
+            .iter()
+            .enumerate()
+            .map(|(n, id)| {
+                serde_json::json!({
+                    "id": format!("00000000-0000-4000-8000-00000000000{n}"),
+                    "fetch_method": "gif",
+                    "url": format!("https://giphy.com/gifs/{id}"),
+                    "title": "Football",
+                    "thumbnail": { "mime_type": "image/gif", "width": 200, "height": 150 },
+                })
+            })
+            .collect();
+        let embeds = serde_json::from_value(serde_json::Value::Array(embeds)).unwrap();
+        let links: Vec<String> = ids
+            .iter()
+            .map(|id| format!("https://media1.giphy.com/media/{id}/giphy.gif"))
+            .collect();
         let message = Message {
-            content: Some(format!("https://media1.giphy.com/media/{GIPHY_ID}/giphy.gif")),
+            content: Some(links.join(" ")),
             embeds: Some(embeds),
             ..Message::clone(&message)
         };
@@ -157,4 +173,27 @@ fn ctrl_d_in_the_picker_stars_the_keyboards_gif_which_is_then_spoken_as_a_favori
         .filter_map(|element| element.label)
         .collect();
     assert_eq!(options, ["GIF, Football, favorite"]);
+}
+
+#[test]
+fn each_gif_of_a_message_has_its_own_star() {
+    let mut rt = conversation("");
+    with_gifs(&mut rt, &["aaa111", "bbb222"]);
+    let key = rt.state.tabs.shown().unwrap().key;
+    rt.update(move |shell, tx| {
+        let second = crate::message_media::received::MediaAt {
+            surface: crate::message_media::received::MediaSurface::Timeline,
+            account: key.account,
+            channel: key.channel,
+            message: message_id(3),
+            index: 1,
+        };
+        crate::message_media::received::MediaHost::gif_star_pressed(shell, second, tx);
+    });
+    let favorites = rt.state.favorite_gifs(key.account);
+    assert!(
+        favorites.contains("bbb222"),
+        "the second picture's star stars the second GIF"
+    );
+    assert!(!favorites.contains("aaa111"));
 }

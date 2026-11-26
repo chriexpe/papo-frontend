@@ -67,42 +67,11 @@ pub(crate) fn previews<S: TimelineHost>(
                     look,
                 )
                 .child(inner_edge(look));
-                with_star::<S>(cell, at, message, style, look)
+                crate::gif_star::with_star::<S>(cell, at, message, media.embed, style, look)
             }
         });
     }
     Some(block)
-}
-
-/// A GIF in the conversation that arrived as a GIPHY link wears its star (§16.4): shown while
-/// it is pointed at or focus is in it, 6 pt in from its top-right corner; filled on a favorite.
-/// Pins, search and a confirmation draw none.
-fn with_star<S: TimelineHost>(
-    cell: El,
-    at: MediaAt,
-    message: &Message,
-    style: &MediaStyle,
-    look: &Look,
-) -> El {
-    let starred = style.interactive && style.surface == MediaSurface::Timeline;
-    let Some(gif) = papo_sdk_ui::favorite_gif(message).filter(|_| starred) else {
-        return cell;
-    };
-    let place = crate::gif_star::StarPlace {
-        favorite: style.favorite_gifs.contains(&gif.id),
-        inset_pt: 6.0,
-        always: false,
-    };
-    let key = format!(
-        "{}-star",
-        crate::message_media::received::media_element_key(at)
-    );
-    cell.hover_group().child(crate::gif_star::star::<S>(
-        key,
-        place,
-        move |host: &mut S, tx| host.gif_star_pressed(at, tx),
-        look,
-    ))
 }
 
 /// The element key of the card at `at`: menus open beside it.

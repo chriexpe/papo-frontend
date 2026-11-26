@@ -81,9 +81,9 @@ impl Shell {
             channel: at.channel,
         };
         let favorite = (at.surface == crate::message_media::received::MediaSurface::Timeline)
-            .then(|| self.message_at(at))
+            .then(|| self.media_gif_of(at))
             .flatten()
-            .and_then(|message| self.favorite_item(key, at.message, &message));
+            .map(|(embed, gif)| self.favorite_item_for(key, at.message, Some(embed), &gif));
         entries.extend(favorite.map(Entry::Item));
         entries.extend([
             Entry::Item(

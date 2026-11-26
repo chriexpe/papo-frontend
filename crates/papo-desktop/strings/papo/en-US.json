@@ -765,7 +765,7 @@
   "fav.remove": "Remove from favorites",
   "fav.added": "Added to favorites",
   "fav.is": "favorite",
-  "fav.failed": "Couldn't save the favorite.",
+  "fav.failed": "Couldn't change the favorite.",
   "shortcut.favorite": "S",
   "picker.search_emoji": "Search emoji",
   "picker.frequent": "Frequently used",

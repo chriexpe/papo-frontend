@@ -214,7 +214,7 @@ pub(crate) fn settings_max_height() -> &'static str {
     text!("settings.max_height")
 }
 
-/// Animate GIFs and stickers.
+/// Animate GIFs and emoji.
 pub(crate) fn settings_animate_gifs() -> &'static str {
     text!("settings.animate_gifs")
 }

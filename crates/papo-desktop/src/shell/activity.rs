@@ -123,7 +123,7 @@ impl Shell {
                 self.shows_account(account)
             }
             Posted::FavoriteGifs(favorites) => {
-                self.activity.entry(account).or_default().favorite_gifs = Arc::new(favorites);
+                self.favorites_posted(account, favorites);
                 self.shows_account(account)
             }
             Posted::Outgoing(outgoing) => {

@@ -445,9 +445,8 @@ pub(crate) fn created_us(message: &Message) -> Option<i64> {
         .map(|key| key.created_at_us)
 }
 
-/// Whether the row's GIF is a favorite: its star's fill, so adding or removing one redraws the
-/// row.
-fn starred(row_message: &RowMessage<'_>, style: &Style) -> bool {
-    papo_sdk_ui::favorite_gif(row_message.message)
-        .is_some_and(|gif| style.media.favorite_gifs.contains(&gif.id))
+/// Which of the row's GIFs are favorites: their stars' fill, so adding or removing one redraws
+/// the row.
+fn starred(row_message: &RowMessage<'_>, style: &Style) -> Vec<bool> {
+    crate::gif_star::starred(row_message.message, &style.media.favorite_gifs)
 }

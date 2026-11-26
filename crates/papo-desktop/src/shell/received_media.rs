@@ -497,10 +497,7 @@ fn pictures_wanted(
 
 impl crate::message_media::received::MediaHost for Shell {
     fn gif_star_pressed(&mut self, at: MediaAt, tx: &mut Tx) {
-        let Some(gif) = self
-            .message_at(at)
-            .and_then(|message| papo_sdk_ui::favorite_gif(&message))
-        else {
+        let Some(gif) = self.media_gif(at) else {
             return;
         };
         self.toggle_gif_favorite(at.account, gif, tx);

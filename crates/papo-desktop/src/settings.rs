@@ -202,7 +202,7 @@ pub(crate) enum RowId {
     EmbedMaxHeight,
     /// Show link previews.
     LinkPreviews,
-    /// Media › Animate GIFs and stickers.
+    /// Media › Animate GIFs and emoji.
     AnimateGifs,
     /// Media › Autoplay videos.
     AutoplayVideos,

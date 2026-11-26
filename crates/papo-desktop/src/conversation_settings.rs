@@ -3,7 +3,7 @@
 //! avatar), how a timeline opens and what it shows of skipped messages, the
 //! channel description on opening, the mention and reply highlights'
 //! hues (the reply highlight is drawn once B-006 lands), and the Media group
-//! (Image size, Video size, Embed size, Animate GIFs and stickers, Autoplay
+//! (Image size, Video size, Embed size, Animate GIFs and emoji, Autoplay
 //! videos, Keep playing when hidden), and Show link previews. Every
 //! one is this device's: times and avatars could follow the account
 //! (`display.show_timestamps`, `display.show_avatars`) only once the
@@ -46,7 +46,7 @@ const MENTION_HUE_KEY: &str = "mention_hue";
 const REPLY_HUE_KEY: &str = "reply_hue";
 /// Media › Image size: "small", "medium", "large", or `{"custom": [width, height]}`.
 const IMAGE_SIZE_KEY: &str = "image_size";
-/// Media › Animate GIFs and stickers; absent until changed, when it follows the system's
+/// Media › Animate GIFs and emoji; absent until changed, when it follows the system's
 /// reduced motion.
 const ANIMATE_GIFS_KEY: &str = "animate_gifs";
 /// Media › Video size, saved as Image size is.
