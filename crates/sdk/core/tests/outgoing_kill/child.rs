@@ -192,6 +192,7 @@ fn draft() -> DraftBody {
                 url: "https://example.invalid/synthetic.gif".into(),
                 page_url: "https://example.invalid/synthetic".into(),
                 title: String::new(),
+                ..Default::default()
             }),
             attachments: vec![OutgoingAttachment::from_bytes("kill.bin", vec![0, 255, 1])],
             ..Default::default()

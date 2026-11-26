@@ -168,6 +168,18 @@ pub fn link_previews(message: &Message) -> Vec<LinkPreview> {
         .collect()
 }
 
+/// Whether `message` hides its text (`docs/design.md` §16, "A GIF-only message hides its
+/// link"): the text is one link and nothing else, and the server made it a `gif` embed, so
+/// only the GIF shows. A copy of the message still copies the link; that is the client's.
+#[must_use]
+pub fn hides_text(message: &Message) -> bool {
+    let text = message.content.as_deref().unwrap_or_default().trim();
+    let one_link = !text.is_empty()
+        && !text.contains(char::is_whitespace)
+        && url::Url::parse(text).is_ok_and(|url| matches!(url.scheme(), "http" | "https"));
+    one_link && matches!(link_previews(message).as_slice(), [LinkPreview::Media(_)])
+}
+
 /// The preview `embed` makes, or `None` when the server found nothing to show.
 #[must_use]
 pub fn preview(embed: &Embed) -> Option<LinkPreview> {

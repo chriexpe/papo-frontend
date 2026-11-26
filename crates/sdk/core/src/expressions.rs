@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub use catalog::{CatalogPage, GiphyConfig};
 
 /// Stable saved GIF metadata. Encoded bytes use the shared media store.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gif {
     /// Provider's stable opaque ID.
     pub id: String,
@@ -23,6 +23,23 @@ pub struct Gif {
     pub page_url: String,
     /// Provider title metadata, never used as an identifier.
     pub title: String,
+    /// The original's width and height in pixels; zero when the provider didn't say (a GIF
+    /// saved before sizes were kept).
+    #[serde(default)]
+    pub width: u32,
+    /// See [`Gif::width`].
+    #[serde(default)]
+    pub height: u32,
+    /// A smaller rendition for grids: GIPHY's `fixed_width`, 200 pixels wide. Empty when the
+    /// provider sent none; the original stands in.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preview_url: String,
+    /// The preview's width and height in pixels; zero without one.
+    #[serde(default)]
+    pub preview_width: u32,
+    /// See [`Gif::preview_width`].
+    #[serde(default)]
+    pub preview_height: u32,
 }
 
 impl Gif {
@@ -30,7 +47,8 @@ impl Gif {
         if self.id.is_empty() || self.id.len() > 256 || self.title.len() > 4096 {
             return Err(ExpressionError::InvalidData);
         }
-        for raw in [&self.url, &self.page_url] {
+        let preview = (!self.preview_url.is_empty()).then_some(&self.preview_url);
+        for raw in [&self.url, &self.page_url].into_iter().chain(preview) {
             let url = url::Url::parse(raw).map_err(|_| ExpressionError::InvalidData)?;
             if raw.len() > 8192
                 || url.scheme() != "https"
