@@ -126,13 +126,14 @@ fn a_video_without_a_type_is_the_providers_player_with_a_poster() {
 }
 
 #[test]
-fn a_player_page_off_the_allowlist_is_a_provider_video_that_never_loads() {
-    // A custom or webhook embed may carry any address as its video.
+fn a_player_address_off_the_allowlist_is_never_loaded() {
+    // A custom or webhook embed may carry any address as its video, on any page.
     for address in [
         "https://evil.example/embed/dQw4w9WgXcQ",
         "https://player.vimeo.com/video/76979871",
     ] {
         let mut embed = provider_video(6);
+        embed.url = Some("https://news.example/story".into());
         embed.video = Some(EmbedMedia {
             url: Some(address.into()),
             ..Default::default()
@@ -140,12 +141,44 @@ fn a_player_page_off_the_allowlist_is_a_provider_video_that_never_loads() {
         let card = card(preview(&embed).unwrap());
         assert_eq!(card.video, Some(CardVideo::Provider(None)), "{address}");
         let shown = format!("{card:?}");
-        assert!(!shown.contains("evil.example") && !shown.contains("vimeo"));
+        assert!(!shown.contains("evil.example") && !shown.contains("player.vimeo"));
     }
-    let mut no_address = provider_video(7);
-    no_address.video = Some(EmbedMedia::default());
-    let card = card(preview(&no_address).unwrap());
-    assert_eq!(card.video, Some(CardVideo::Provider(None)));
+    // On a provider's own page, the player is the page's, whatever the wire's address says.
+    let mut embed = provider_video(7);
+    embed.video = Some(EmbedMedia {
+        url: Some("https://evil.example/embed/dQw4w9WgXcQ".into()),
+        ..Default::default()
+    });
+    let Some(CardVideo::Provider(Some(player))) = card(preview(&embed).unwrap()).video else {
+        panic!("the page's player");
+    };
+    assert_eq!(
+        player.address(),
+        "https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1"
+    );
+}
+
+#[test]
+fn a_providers_page_without_a_player_from_the_server_names_one() {
+    let mut tiktok = article(9);
+    tiktok.fetch_method = Some("oembed".into());
+    tiktok.provider = Some("TikTok".into());
+    tiktok.url = Some("https://www.tiktok.com/@scout2015/video/6718335390845095173".into());
+    let tiktok_card = card(preview(&tiktok).unwrap());
+    let Some(CardVideo::Provider(Some(player))) = &tiktok_card.video else {
+        panic!("a TikTok player: {:?}", tiktok_card.video);
+    };
+    assert_eq!(player.provider, PlayerProvider::TikTok);
+    assert_eq!(tiktok_card.track, None);
+    let mut spotify = article(10);
+    spotify.url = Some("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT".into());
+    let track = card(preview(&spotify).unwrap());
+    assert_eq!(track.video, None, "a track is not a video");
+    assert!(track.picture.is_some(), "its cover");
+    assert_eq!(
+        track.track.map(|player| player.provider),
+        Some(PlayerProvider::Spotify)
+    );
 }
 
 #[test]

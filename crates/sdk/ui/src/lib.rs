@@ -16,7 +16,7 @@ pub use link_preview::{
     PreviewMedia, UNSIZED_PICTURE_ASPECT, card_box, link_previews, preview,
 };
 mod provider_player;
-pub use provider_player::{PLAYER_ASPECT, PlayerProvider, ProviderPlayer};
+pub use provider_player::{PLAYER_ASPECT, PlayerKind, PlayerProvider, ProviderPlayer};
 mod media_box;
 pub use media_box::{
     ALBUM_CELLS, ALBUM_GAP_PT, AlbumCell, AlbumLayout, CUSTOM_HEIGHT_PT, CUSTOM_STEP_PT,
