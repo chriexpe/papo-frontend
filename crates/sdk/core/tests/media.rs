@@ -1,7 +1,9 @@
-//! Public account media isolation, conditional recovery, provider credential separation and
-//! saving attachments over loopback.
+//! Public account media isolation, conditional recovery, provider credential separation,
+//! relayed embed pictures and saving attachments over loopback.
 
 #![cfg(feature = "test-support")]
+#[path = "media_cases/embed_picture.rs"]
+mod embed_picture;
 mod fixture;
 #[path = "media_cases/lifecycle.rs"]
 mod lifecycle;

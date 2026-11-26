@@ -51,6 +51,7 @@ pub(super) async fn download(
             MediaSource::Attachment(id) => rest.attachment_bytes(*id, None).await?,
             MediaSource::Thumbnail(id) => rest.attachment_thumbnail_bytes(*id).await?,
             MediaSource::EmbedVideo(id) => rest.embed_video_bytes(*id, None).await?,
+            MediaSource::EmbedImage { embed, .. } => embed_image(&rest, *embed).await?,
             MediaSource::UserAvatar { user: id, .. }
             | MediaSource::WebhookAvatar { webhook: id, .. } => {
                 rest.conditional_avatar_bytes(
@@ -72,6 +73,37 @@ pub(super) async fn download(
         () = epoch.cancel.cancelled() => Err(crate::ClientError::Superseded.into()),
         result = tokio::time::timeout(session.client.inner.config.request_timeout, work) => result.map_err(|_| crate::ClientError::Timeout)?,
     }
+}
+
+/// The relayed picture of embed `id`: `GET /embeds/{id}` carries it as base64 beside the
+/// embed's text, with its type on the embed's thumbnail. An embed without one is unavailable.
+async fn embed_image(
+    rest: &papo_api::RestClient,
+    id: crate::Uuid,
+) -> Result<papo_api::media::MediaResponse, MediaError> {
+    use base64::Engine;
+    let embed = rest
+        .embed(id)
+        .await
+        .map_err(papo_api::media::MediaError::from)?;
+    let encoded = embed.image_data.ok_or(MediaError::Unavailable)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| MediaError::InvalidData)?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    let content_type = embed
+        .thumbnail
+        .and_then(|thumbnail| thumbnail.mime_type)
+        .filter(|mime| mime.starts_with("image/"))
+        .and_then(|mime| reqwest::header::HeaderValue::from_str(&mime).ok());
+    if let Some(content_type) = content_type {
+        headers.insert(reqwest::header::CONTENT_TYPE, content_type);
+    }
+    Ok(papo_api::media::MediaResponse {
+        status: 200,
+        bytes,
+        headers,
+    })
 }
 
 pub(super) async fn authenticated(

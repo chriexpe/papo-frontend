@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// One synthetic representation and its explicitly scripted access result.
 #[derive(Clone)]
 pub struct EncodedMedia {
-    /// Exact route under attachments, media, avatars, emojis or the catalog fixture.
+    /// Exact route under attachments, media, avatars, emojis, embeds or the catalog fixture.
     pub path: String,
     /// Encoded response body.
     pub bytes: Vec<u8>,
@@ -52,6 +52,7 @@ impl TestServer {
             "/users/",
             "/webhooks/",
             "/emojis",
+            "/embeds/",
             "/catalog/",
         ]
         .iter()

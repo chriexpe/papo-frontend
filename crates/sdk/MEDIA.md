@@ -25,6 +25,11 @@ ETag/Last-Modified validators; a changed revision fetches unconditionally. User
 AvatarUpdate invalidates that account's old user-avatar references. Missing,
 hash-corrupt or oversized files discard validators and permit an authoritative
 replacement rather than repeatedly accepting an unusable 304 response.
+An embed's picture (`EmbedImage`) is the one the backend downloaded and relays as
+base64 inside `GET /embeds/{id}`; its key carries the embed's `fetched_at` (else
+`created_at`), because a refetch keeps the embed's ID and may change the picture.
+No embed address (page, media, player, author or icon) is ever fetched, so
+showing a card never contacts the site; the answer is read up to 16 MiB.
 Ranges validate Content-Range and response length; an ignored Range response is
 sliced to the requested bounded interval. A partial grant never grants the full
 object. Responses are capped at 100 MiB with two concurrent media fetches.
@@ -67,7 +72,8 @@ unlink retains media exclusion through cancellation. No encoded bytes enter SQLi
 person chose, returning at once with a `MediaSave` handle (progress at most every 100 ms, cancel,
 and the end). The bytes come from the account's cache when it holds the original (no request),
 else they stream from the backend, which authorizes the request; nothing is added to the cache,
-and a denial retires the account's cached copies as a fetch does. Originals are capped at the
+and a denial retires the account's cached copies as a fetch does. `save_embed_image` saves an
+embed's relayed picture the same way, from the cache or in one relay answer. Originals are capped at the
 attachment limit; a stream times out only when idle. A folder save writes a hidden partial file,
 syncs it, and renames it over an empty file it claimed with create-new at the first free name
 ("name (1).ext", "archive (1).tar.gz"), so it never replaces a file and a name is never half

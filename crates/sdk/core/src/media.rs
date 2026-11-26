@@ -46,6 +46,15 @@ pub enum MediaSource {
     Thumbnail(crate::Uuid),
     /// Backend-relayed embed video.
     EmbedVideo(crate::Uuid),
+    /// The picture the backend downloaded for an embed (a link card's picture or a video's
+    /// poster) and relays inside `GET /embeds/{id}`, so showing it never asks the site.
+    EmbedImage {
+        /// Backend embed UUID.
+        embed: crate::Uuid,
+        /// The embed's `fetched_at` (else `created_at`) as sent: a refetch keeps the embed's
+        /// UUID and may change its picture, so a new revision is a new representation.
+        revision: String,
+    },
     /// A bounded encoded range of a blob, original attachment or relayed video; partial refs never grant full access.
     Range {
         /// Original representation; nested ranges and mutable avatars are refused.
