@@ -72,7 +72,7 @@ pub(crate) fn picture_of(preview: &LinkPreview) -> Option<&CardPicture> {
 
 /// A card's provider video, when it is the provider's player (not a clip the server relays).
 pub(crate) fn is_provider_video(preview: &LinkPreview) -> bool {
-    matches!(preview, LinkPreview::Card(card) if card.video == Some(CardVideo::Provider))
+    matches!(preview, LinkPreview::Card(card) if matches!(card.video, Some(CardVideo::Provider(_))))
 }
 
 /// A preview's relayed clip: its key and its source.

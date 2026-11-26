@@ -12,10 +12,11 @@ pub use waveform::{
 };
 mod link_preview;
 pub use link_preview::{
-    CardField, CardPicture, CardVideo, LinkCard, LinkPreview, MAX_FIELDS, MAX_PREVIEWS,
-    PLAYER_ASPECT, PageLink, PreviewMedia, UNSIZED_PICTURE_ASPECT, card_box, link_previews,
-    preview,
+    CardField, CardPicture, CardVideo, LinkCard, LinkPreview, MAX_FIELDS, MAX_PREVIEWS, PageLink,
+    PreviewMedia, UNSIZED_PICTURE_ASPECT, card_box, link_previews, preview,
 };
+mod provider_player;
+pub use provider_player::{PLAYER_ASPECT, PlayerProvider, ProviderPlayer};
 mod media_box;
 pub use media_box::{
     ALBUM_CELLS, ALBUM_GAP_PT, AlbumCell, AlbumLayout, CUSTOM_HEIGHT_PT, CUSTOM_STEP_PT,

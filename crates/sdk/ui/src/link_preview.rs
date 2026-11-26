@@ -1,19 +1,22 @@
 //! What a message's link previews show (`docs/design.md` §15.1): which embeds become previews,
 //! in what order and how many, a card's parts, a link to a bare GIF drawn as media, and whether
 //! a video is the provider's player or a clip the server relays. One anatomy for every kind:
-//! each part shows when the embed has it, since the server sends no kind.
+//! each part shows when the embed has it, since the server sends no kind. Whether a provider's
+//! player may load, and from where, is [`crate::provider_player`]'s.
 //! Owns only the rules, from the wire alone; drawing, the colour's contrast, the words and the
 //! Show link previews setting are the client's.
 //!
 //! Every picture is the server's relay of what it downloaded ([`MediaSource::EmbedImage`]) and
-//! every clip its video relay ([`MediaSource::EmbedVideo`]). The only address a preview exposes
-//! is the page's own, which the message already links: the embed's media, player, author and
+//! every clip its video relay ([`MediaSource::EmbedVideo`]). The only addresses a preview exposes
+//! are the page's own, which the message already links, and an allowlisted provider's player,
+//! rebuilt from its parts and loaded only once you press play: the embed's media, author and
 //! icon addresses are never handed out, so showing a preview cannot contact the site.
 
 use papo_sdk::{Embed, EmbedMedia, MediaSource, Message, Uuid};
 
 use crate::attachment_kind::AttachmentKind;
 use crate::media_box::{MediaBounds, MediaBox, MediaFit, MediaSize, largest_of_shape, media_box};
+use crate::provider_player::{PLAYER_ASPECT, ProviderPlayer};
 
 /// The most previews a message draws, in link order; a fourth link stays text.
 pub const MAX_PREVIEWS: usize = 3;
@@ -23,10 +26,6 @@ pub const MAX_FIELDS: usize = 6;
 
 /// The shape a card picture without a width and height is reserved at (width over height).
 pub const UNSIZED_PICTURE_ASPECT: f32 = 1.91;
-
-/// The shape a provider's player, and so its poster, is reserved at (width over height). The
-/// server sends no player ratio.
-pub const PLAYER_ASPECT: f32 = 16.0 / 9.0;
 
 /// The server's `fetch_method` for a link straight to a GIF (or a GIF provider's page): its
 /// picture is the animated GIF itself.
@@ -122,8 +121,10 @@ pub struct CardPicture {
 /// The video a card shows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CardVideo {
-    /// The provider's own player, which only a `WebView` can load: the poster stands for it.
-    Provider,
+    /// The provider's own player, which only a `WebView` can load: the poster stands for it
+    /// until you press play. `None` when the player page isn't an allowlisted provider's, so
+    /// it never loads and the poster only opens the page in the browser.
+    Provider(Option<ProviderPlayer>),
     /// A clip the server relays, played like a video file.
     Clip {
         /// Always [`MediaSource::EmbedVideo`].
@@ -208,14 +209,19 @@ pub fn preview(embed: &Embed) -> Option<LinkPreview> {
 }
 
 /// The box a card's picture or video takes within `bounds` (Embed size's, in the card's
-/// column), so the row is reserved before anything loads: a provider's poster is the player's
-/// 16 : 9 at the largest; a clip its own size, never enlarged; a picture its own size, never
+/// column), so the row is reserved before anything loads: a provider's poster, and its player
+/// in the same box, is the player's shape (16 : 9 without one) at the largest; a clip its own size, never enlarged; a picture its own size, never
 /// enlarged, else 1.91 : 1 at the largest. Pictures fill their box; a clip of unknown size is
 /// letterboxed as a video file is.
 #[must_use]
 pub fn card_box(card: &LinkCard, bounds: MediaBounds) -> Option<MediaBox> {
     match (&card.video, &card.picture) {
-        (Some(CardVideo::Provider), _) => Some(filled(PLAYER_ASPECT, bounds)),
+        (Some(CardVideo::Provider(player)), _) => {
+            let aspect = player
+                .as_ref()
+                .map_or(PLAYER_ASPECT, |player| player.aspect);
+            Some(filled(aspect, bounds))
+        }
         (Some(CardVideo::Clip { size, .. }), _) => Some(media_box(*size, bounds)),
         (None, Some(picture)) => Some(match picture.size {
             MediaSize::Unknown => filled(UNSIZED_PICTURE_ASPECT, bounds),
@@ -277,7 +283,11 @@ fn video(embed: Uuid, wire: &Embed, poster: Option<&CardPicture>) -> Option<Card
     // The server sets a type only on a video it relays (`/embeds/{id}/video`); a provider's
     // player page has none.
     let Some(mime) = mime else {
-        return Some(CardVideo::Provider);
+        let player = video
+            .url
+            .as_deref()
+            .and_then(ProviderPlayer::from_embed_address);
+        return Some(CardVideo::Provider(player));
     };
     let size = match size(video) {
         MediaSize::Unknown => poster.map_or(MediaSize::Unknown, |poster| poster.size),
