@@ -71,6 +71,9 @@ pub(crate) enum Kind {
     DomainField,
     /// A list item with Remove: what it removes.
     Remove(String),
+    /// A player site (Embedded players): Clear data while it has data, Remove while it is
+    /// allowed.
+    Site(SiteRow),
     /// A line of text with no control (an empty list's).
     Note,
     /// Text, edited in place (§8: Cancel and Save, a count, Enter and
@@ -107,6 +110,16 @@ pub(crate) enum Kind {
     },
 }
 
+/// A player site's row (Embedded players): whose, and which of its buttons show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SiteRow {
+    pub(crate) provider: papo_sdk_ui::PlayerProvider,
+    /// Clear data: the site has data stored.
+    pub(crate) clear: bool,
+    /// Remove: the site is allowed.
+    pub(crate) remove: bool,
+}
+
 /// A slider's value, range and look.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Slider {
@@ -136,6 +149,10 @@ pub(crate) struct Context<'a> {
     pub(crate) conversations: &'a ConversationSettings,
     pub(crate) general: &'a GeneralSettings,
     pub(crate) trusted: &'a BTreeSet<String>,
+    /// Embedded players' switch and allowed sites.
+    pub(crate) players: &'a crate::embedded_players::PlayerSettings,
+    /// The player sites with data stored.
+    pub(crate) sites_with_data: &'a BTreeSet<papo_sdk_ui::PlayerProvider>,
     pub(crate) diagnostics: &'a DiagnosticsFacts,
     /// The panel's account; none when no account is signed in.
     pub(crate) account: Option<&'a AccountFacts>,
@@ -174,6 +191,7 @@ pub(crate) fn page(page: PageId, cx: &Context<'_>) -> Vec<Group> {
         PageId::Highlights => conversations::highlights(cx),
         PageId::General => general::general(cx),
         PageId::Trusted => general::trusted(cx),
+        PageId::Players => general::players(cx),
         PageId::Diagnostics => diagnostics::diagnostics(cx),
     }
 }
@@ -192,6 +210,7 @@ pub(crate) fn page_title(page: PageId) -> &'static str {
         PageId::Highlights => strings::settings_highlights(),
         PageId::General => strings::settings_general(),
         PageId::Trusted => strings::settings_trusted(),
+        PageId::Players => strings::settings_players(),
         PageId::Diagnostics => strings::settings_diagnostics(),
     }
 }
@@ -215,6 +234,7 @@ pub(crate) fn searchable(row: &Row) -> Vec<String> {
         | Kind::Hues(_)
         | Kind::DomainField
         | Kind::Remove(_)
+        | Kind::Site(_)
         | Kind::Note
         | Kind::Unblock(_)
         | Kind::PasswordForm

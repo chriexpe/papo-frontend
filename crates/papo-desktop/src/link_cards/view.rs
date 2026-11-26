@@ -11,7 +11,10 @@ use papo_sdk_ui::{
 use rune::color::srgb_decode;
 use rune::{Color, El, Link, LinkPaint, Span, col, el, icon, rich, row, text};
 
-use super::{CardPress, attachment_count, clip_of, is_provider_video, name_of, provider_of};
+use super::player::{self, PlayerBox};
+use super::{
+    CardPress, attachment_count, clip_of, is_provider_video, name_of, player_of, provider_of,
+};
 use crate::design::{
     CARD_DESCRIPTION_LINES, CARD_FIELD_COLUMN_GAP_PT, CARD_FIELD_ROW_GAP_PT,
     CARD_FIELD_VALUE_LINES, CARD_FIELDS_PER_ROW, CARD_RULE_PT, FOCUS_RING_PT, LETTER_TILE_PT,
@@ -22,7 +25,7 @@ use crate::design::{
     VIDEO_PLAY_PT, card_rule,
 };
 use crate::icons::PLAY;
-use crate::message_media::received::{MediaAt, MediaStyle, Shown, picture_cell};
+use crate::message_media::received::{MediaAt, MediaStyle, MediaSurface, Shown, picture_cell};
 use crate::message_media::video::{self, VideoCell};
 use crate::message_media::{glass, inner_edge, single_box};
 use crate::strings;
@@ -193,7 +196,7 @@ fn provider_line(card: &LinkCard, tile: Color, look: &Look) -> Option<El> {
 
 /// A 12 pt tile in `fill` with the first letter of `name`, standing for the favicon the server
 /// does not relay (§15.2).
-fn letter_tile(name: &str, fill: Color) -> El {
+pub(crate) fn letter_tile(name: &str, fill: Color) -> El {
     let letter: String = name
         .chars()
         .find(|c| c.is_alphanumeric())
@@ -338,8 +341,27 @@ fn picture<S: TimelineHost>(
         };
         cell = cell
             .label(label)
-            .child(provider_chip(&provider, chip_tile, look))
-            .child(open_disc::<S>(at, style, look));
+            .child(provider_chip(&provider, chip_tile, look));
+        let plays = style.interactive && style.surface == MediaSurface::Timeline;
+        cell = match player_of(at, preview).filter(|_| plays) {
+            // The player's layers sit beside the poster, not in it: the poster's keys (Enter
+            // and Space open the viewer) must not take the ask's.
+            Some((key, descriptor)) => player::player::<S>(
+                single_box(boxed, look),
+                cell,
+                &PlayerBox {
+                    at,
+                    key,
+                    provider: descriptor.provider.name(),
+                    title: card.title.as_deref(),
+                    players: &style.players,
+                },
+                look,
+            ),
+            // Pins, search and confirmations never play (§15.1), and a provider off the
+            // allowlist has no player: the page opens in the browser.
+            None => cell.child(open_disc::<S>(at, style, look)),
+        };
     }
     Some(cell.child(inner_edge(look)))
 }
@@ -371,8 +393,8 @@ fn provider_chip(provider: &str, tile: Color, look: &Look) -> El {
     ))
 }
 
-/// The poster's play disc: until the provider's player lands (D8b) it opens the page in the
-/// browser, by §9's link rules, and says so.
+/// The play disc of a poster that never plays here: it opens the page in the browser, by §9's
+/// link rules, and says so.
 fn open_disc<S: TimelineHost>(at: MediaAt, style: &MediaStyle, look: &Look) -> El {
     let mut disc = el()
         .size(VIDEO_PLAY_PT, VIDEO_PLAY_PT)

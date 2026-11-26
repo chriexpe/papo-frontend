@@ -11,6 +11,7 @@ use rune::Image;
 use crate::media_store::{MediaKey, MediaOf};
 use crate::message_media::received::MediaAt;
 
+pub(crate) mod provider;
 pub(crate) mod video;
 pub(crate) mod view;
 

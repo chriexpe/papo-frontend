@@ -350,7 +350,8 @@ impl Shell {
         let ring_shown = self.poll_viewer_ring(clock_s);
         let video_clock = self.poll_videos(clock_s, tx)
             | self.poll_viewer_video(clock_s, tx)
-            | self.poll_audio(clock_s, tx);
+            | self.poll_audio(clock_s, tx)
+            | self.poll_players(clock_s, tx);
         let list_closed = self.poll_reactions();
         let card_closed = self.poll_card();
         let searched = self.poll_search(clock_s);

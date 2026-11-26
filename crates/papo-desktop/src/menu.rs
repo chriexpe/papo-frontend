@@ -57,6 +57,12 @@ pub(crate) enum MenuAction {
     OpenLink { key: TimelineKey, url: String },
     /// Copy `url`.
     CopyLink(String),
+    /// What a provider video's menu does with its player (§15.6).
+    Player {
+        at: crate::message_media::received::MediaAt,
+        key: crate::provider_players::PlayerKey,
+        action: PlayerAction,
+    },
     /// What the media menu does with attachment `at`.
     Media {
         at: crate::message_media::received::MediaAt,
@@ -94,6 +100,17 @@ pub(crate) enum PersonAction {
     /// Not ban them after all.
     CancelBan,
     Ban,
+}
+
+/// What a provider video's menu does with its player (`docs/design.md` §15.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlayerAction {
+    /// Play (Space): asks first when the site isn't allowed.
+    Play,
+    /// Open viewer (O): loads the player first when it isn't live.
+    OpenViewer,
+    /// Close player: the poster returns.
+    Close,
 }
 
 /// What the message menu does to its message.

@@ -28,6 +28,7 @@ mod navigation;
 mod new_message;
 mod outgoing;
 mod pins;
+pub(super) mod players;
 mod profile_card;
 mod quit_ask;
 mod replying;

@@ -239,6 +239,9 @@ fn plain_row(setting: Row, look: &Look) -> El {
         Kind::Remove(host) => line
             .label(spoken)
             .child(super::actions::remove_button(id, &host, look)),
+        Kind::Site(site) => line
+            .label(spoken)
+            .child(super::actions::site_buttons(id, site, look)),
         Kind::Unblock(name) => match id {
             RowId::BlockedPerson(user) => line
                 .label(spoken)

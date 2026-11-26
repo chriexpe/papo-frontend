@@ -39,6 +39,10 @@ pub(crate) struct PanelView<'a> {
     pub(crate) conversations: &'a ConversationSettings,
     pub(crate) general: &'a GeneralSettings,
     pub(crate) trusted: &'a BTreeSet<String>,
+    /// Embedded players' switch and allowed sites.
+    pub(crate) players: &'a crate::embedded_players::PlayerSettings,
+    /// The player sites with data stored.
+    pub(crate) sites_with_data: &'a BTreeSet<papo_sdk_ui::PlayerProvider>,
     pub(crate) diagnostics: &'a DiagnosticsFacts,
     /// The panel's account; none when no account is signed in.
     pub(crate) account: Option<&'a AccountFacts>,
@@ -61,6 +65,8 @@ pub(crate) fn view(panel: &PanelView<'_>, preview: Option<El>, look: &Look) -> E
         conversations: panel.conversations,
         general: panel.general,
         trusted: panel.trusted,
+        players: panel.players,
+        sites_with_data: panel.sites_with_data,
         diagnostics: panel.diagnostics,
         account: panel.account,
         system_dark: panel.system_dark,

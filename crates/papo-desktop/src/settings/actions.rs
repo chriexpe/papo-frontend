@@ -109,6 +109,38 @@ pub(super) fn remove_button(id: RowId, host: &str, look: &Look) -> El {
     )
 }
 
+/// A player site's Clear data (while it has data) and Remove (while it is allowed), each at
+/// once.
+pub(super) fn site_buttons(id: RowId, site: super::rows::SiteRow, look: &Look) -> El {
+    let super::rows::SiteRow {
+        provider,
+        clear,
+        remove,
+    } = site;
+    let mut buttons = row().gap(look.space(crate::design::SPACE_SM));
+    if clear {
+        buttons = buttons.child(chip(
+            format!("{}-clear", id.key()),
+            strings::settings_players_clear(),
+            &strings::settings_players_clear_spoken(provider.name()),
+            Tone::Plain,
+            move |shell: &mut Shell, tx| shell.settings_players_clear(provider, tx),
+            look,
+        ));
+    }
+    if remove {
+        buttons = buttons.child(chip(
+            format!("{}-remove", id.key()),
+            strings::settings_trusted_remove(),
+            &strings::settings_players_remove_spoken(provider.name()),
+            Tone::Plain,
+            move |shell: &mut Shell, tx| shell.settings_players_remove(provider, tx),
+            look,
+        ));
+    }
+    buttons
+}
+
 /// A blocked person's Unblock, at once (§8: undone the same way).
 pub(super) fn unblock_button(id: RowId, user: papo_sdk::Uuid, name: &str, look: &Look) -> El {
     chip(

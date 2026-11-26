@@ -37,3 +37,38 @@ pub(crate) const PROVIDER_CHIP_INSET_PT: f32 = 8.0;
 pub(crate) const PROVIDER_PLAY_HOVER_ALPHA: f32 = 0.66;
 /// A late preview's growth (§15.1), none under reduced motion.
 pub(crate) const PREVIEW_GROW_S: f32 = 0.16;
+/// A provider poster under the ask or loading dims to 42 % (§15.3): black over it at this.
+pub(crate) const PLAYER_DIM_ALPHA: f32 = 0.58;
+/// The ask's panel of dark glass at the box's foot: its near-black, its blur, its padding and
+/// the gap between its words and its buttons.
+pub(crate) const PLAYER_ASK_RGB: [u8; 3] = [14, 16, 22];
+pub(crate) const PLAYER_ASK_ALPHA: f32 = 0.84;
+pub(crate) const PLAYER_ASK_BLUR_PT: f32 = 14.0;
+pub(crate) const PLAYER_ASK_PAD_PT: f32 = 12.0;
+pub(crate) const PLAYER_ASK_GAP_PT: f32 = 9.0;
+/// The ask's and a failure's buttons: height, side padding and the gap between them; the
+/// ask's second button is white at this, its third's words white at the other.
+pub(crate) const PLAYER_BUTTON_PT: f32 = 30.0;
+pub(crate) const PLAYER_BUTTON_PAD_PT: f32 = 12.0;
+pub(crate) const PLAYER_BUTTON_GAP_PT: f32 = 8.0;
+pub(crate) const PLAYER_BUTTON_SECONDARY_ALPHA: f32 = 0.14;
+pub(crate) const PLAYER_BUTTON_GHOST_ALPHA: f32 = 0.82;
+/// Loading: a 36 pt disc with its turning ring, shown after half a second.
+pub(crate) const PLAYER_RING_PT: f32 = 36.0;
+pub(crate) const PLAYER_RING_ICON_PT: f32 = 22.0;
+pub(crate) const PLAYER_RING_PERIOD_S: f64 = 0.9;
+pub(crate) const PLAYER_RING_AFTER_S: f64 = 0.5;
+/// A live player's two glass buttons at its top right: size, the gap between them, their
+/// near-black, its alpha at rest and under the pointer, and the blur behind.
+pub(crate) const PLAYER_GLASS_PT: f32 = 28.0;
+pub(crate) const PLAYER_GLASS_GAP_PT: f32 = 6.0;
+pub(crate) const PLAYER_GLASS_RGB: [u8; 3] = [10, 12, 18];
+pub(crate) const PLAYER_GLASS_ALPHA: f32 = 0.58;
+pub(crate) const PLAYER_GLASS_HOVER_ALPHA: f32 = 0.8;
+pub(crate) const PLAYER_GLASS_BLUR_PT: f32 = 8.0;
+pub(crate) const PLAYER_GLASS_ICON_PT: f32 = 16.0;
+/// A failed player's icon and the gap between its parts.
+pub(crate) const PLAYER_FAIL_ICON_PT: f32 = 20.0;
+pub(crate) const PLAYER_FAIL_GAP_PT: f32 = 8.0;
+/// The note on a released player's poster, a badge at its foot's start: its padding.
+pub(crate) const PLAYER_NOTE_PAD_PT: (f32, f32) = (8.0, 2.0);

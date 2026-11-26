@@ -205,6 +205,8 @@ pub(crate) struct Shell {
     opening: std::collections::HashSet<crate::media_store::MediaKey>,
     /// Videos in messages: what is read, what plays (`docs/design.md` §14.5).
     videos: videos::Videos,
+    /// Provider players (§15.3): the WebView thread, the store and their setting.
+    players: players::Players,
     /// Audio in messages: what is read, what plays (`docs/design.md` §14.5).
     audio: audio::Audio,
     /// The one read of a video or an audio at a time.
@@ -326,6 +328,7 @@ impl Default for Shell {
             opening: std::collections::HashSet::new(),
             revealed: Arc::default(),
             videos: videos::Videos::default(),
+            players: players::Players::default(),
             audio: audio::Audio::default(),
             media_reads: media_reads::MediaReads::default(),
             viewer: None,
@@ -363,6 +366,7 @@ impl Shell {
     /// settings.
     pub(crate) fn setup(&mut self, waker: rune::Waker) {
         self.videos.set_waker(Arc::clone(&waker));
+        self.players.set_waker(Arc::clone(&waker));
         let images = ImageCache::new(waker);
         self.grain = Some(crate::grain::GrainTiles::new(&images));
         self.images = Some(Arc::new(images));
@@ -376,6 +380,7 @@ impl Shell {
         crate::strings::use_language(self.general.settings().language);
         self.appearance = crate::appearance::AppearanceStore::read(&prefs);
         self.videos.volume = crate::video_volume::VideoVolume::read(&prefs);
+        self.players.settings = crate::embedded_players::EmbeddedPlayers::read(&prefs);
     }
 
     /// Takes the account watch's summary, and opens the screens it calls for.
@@ -449,6 +454,12 @@ mod outgoing;
 mod own_pictures;
 pub(crate) mod pins;
 mod pins_panel;
+mod player_events;
+mod player_menu;
+mod player_poll;
+mod player_presses;
+mod player_viewer;
+mod players;
 mod preview_wants;
 mod profile_card;
 mod profile_pane;
@@ -476,6 +487,7 @@ mod settings_diagnostics;
 mod settings_file;
 mod settings_general;
 mod settings_password;
+mod settings_players;
 mod sign_in_flow;
 mod staged_files;
 #[cfg(test)]

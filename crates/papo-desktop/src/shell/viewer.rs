@@ -175,7 +175,7 @@ impl Shell {
     /// The room the viewer's stage will have: the window (the conversation reaches its bottom
     /// right corner) less the pills' clear band at the top and the margins at the sides and
     /// below.
-    fn expected_viewer_room(&self) -> [f32; 2] {
+    pub(super) fn expected_viewer_room(&self) -> [f32; 2] {
         let [x, y, width, height] = self.conversation_rect;
         let window = [x + width, y + height];
         [

@@ -93,6 +93,16 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 serde_json = "1"
 env_logger = "0.11"
 
+# Provider players in WPE WebKit (`docs/design.md` §15.3), found when the app runs: the
+# system's libWPEWebKit-2.0 is opened with libloading, so a machine without it builds and runs
+# the same binary with players off (§15.7), and its display, view and toplevel are subclassed
+# through GObject. All three are the versions Cargo.lock already holds (ash and GStreamer use
+# them); Linux only, where WPE is the WebView.
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8.9"
+glib-sys = "0.21.5"
+gobject-sys = "0.21.5"
+
 [build-dependencies]
 rune-i18n = { git = "https://github.com/chriexpe/rune", rev = "2b976182eea764ab12723a4d261f80a246862d2e", features = ["codegen"] }
 

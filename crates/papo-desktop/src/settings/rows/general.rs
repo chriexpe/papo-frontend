@@ -1,16 +1,17 @@
-//! The General page and its Trusted domains sub-page (`docs/design.md`
-//! §8): Language; Links (Confirm external links, Trusted domains), and the
-//! domains themselves, with a field that adds one. Save media to comes
-//! with D7.
+//! The General page and its Trusted domains and Embedded players sub-pages
+//! (`docs/design.md` §8, §15.7): Language; Links (Confirm external links,
+//! Trusted domains, Embedded players), the domains themselves with a field
+//! that adds one, and the players' switch and sites; Files (Save media to).
 //!
-//! Owns these pages' rows; the settings are `general_settings`' and
-//! `trusted_domains`'.
+//! Owns these pages' rows; the settings are `general_settings`',
+//! `trusted_domains`' and `embedded_players`'.
 
-use super::{Context, Group, Kind, Row};
+use super::{Context, Group, Kind, Row, SiteRow};
 use crate::general_settings::Language;
 use crate::settings::{PageId, RowId};
 use crate::strings;
 use crate::trusted_domains::host_id;
+use papo_sdk_ui::PlayerProvider;
 
 pub(super) fn general(cx: &Context<'_>) -> Vec<Group> {
     let settings = cx.general;
@@ -38,6 +39,12 @@ pub(super) fn general(cx: &Context<'_>) -> Vec<Group> {
                     title: strings::settings_trusted().to_owned(),
                     sub: Some(strings::settings_trusted_sub(cx.trusted.len())),
                     kind: Kind::SubPage(PageId::Trusted, String::new()),
+                },
+                Row {
+                    id: RowId::Players,
+                    title: strings::settings_players().to_owned(),
+                    sub: Some(strings::settings_players_sub(cx.players.allowed.len())),
+                    kind: Kind::SubPage(PageId::Players, String::new()),
                 },
             ],
         },
@@ -99,6 +106,59 @@ pub(super) fn trusted(cx: &Context<'_>) -> Vec<Group> {
         },
         Group {
             title: None,
+            rows: list,
+        },
+    ]
+}
+
+/// Embedded players (`docs/design.md` §15.7): Play videos and music from other sites, then a
+/// row for every site that is allowed or still has data, with Clear data while it has data
+/// and Remove while it is allowed, then the notes.
+pub(super) fn players(cx: &Context<'_>) -> Vec<Group> {
+    let sites: Vec<Row> = PlayerProvider::ALL
+        .into_iter()
+        .filter(|provider| {
+            cx.players.allowed.contains(provider) || cx.sites_with_data.contains(provider)
+        })
+        .map(|provider| Row {
+            id: RowId::PlayersSite(provider),
+            title: provider.name().to_owned(),
+            sub: Some(provider.host().to_owned()),
+            kind: Kind::Site(SiteRow {
+                provider,
+                clear: cx.sites_with_data.contains(&provider),
+                remove: cx.players.allowed.contains(&provider),
+            }),
+        })
+        .collect();
+    let mut list = if sites.is_empty() {
+        vec![Row {
+            id: RowId::PlayersNote,
+            title: strings::settings_players_empty().to_owned(),
+            sub: None,
+            kind: Kind::Note,
+        }]
+    } else {
+        sites
+    };
+    list.push(Row {
+        id: RowId::PlayersNote,
+        title: strings::settings_players_list_note().to_owned(),
+        sub: Some(strings::settings_players_clear_note().to_owned()),
+        kind: Kind::Note,
+    });
+    vec![
+        Group {
+            title: None,
+            rows: vec![Row {
+                id: RowId::PlayersOn,
+                title: strings::settings_players_on().to_owned(),
+                sub: Some(strings::settings_players_on_sub().to_owned()),
+                kind: Kind::Switch(cx.players.on),
+            }],
+        },
+        Group {
+            title: Some(strings::settings_players_sites().to_owned()),
             rows: list,
         },
     ]

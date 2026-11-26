@@ -33,9 +33,11 @@ impl Shell {
                         account: at.account,
                         channel: at.channel,
                     });
-                    // One sound at a time: a video's sound goes quiet (it keeps playing).
+                    // One sound at a time: a video's sound goes quiet (it keeps playing), and
+                    // so do provider players.
                     self.videos.store.mute_all();
                     self.reconcile_videos();
+                    self.quiet_players();
                 }
             }
             AudioPress::Pause => self.audio.store.pause(key),

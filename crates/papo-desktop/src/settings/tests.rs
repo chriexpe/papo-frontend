@@ -14,6 +14,10 @@ static CONVERSATIONS: std::sync::LazyLock<ConversationSettings> =
 static GENERAL: std::sync::LazyLock<GeneralSettings> =
     std::sync::LazyLock::new(GeneralSettings::default);
 static TRUSTED: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+static PLAYERS: std::sync::LazyLock<crate::embedded_players::PlayerSettings> =
+    std::sync::LazyLock::new(crate::embedded_players::PlayerSettings::default);
+static SITES: std::collections::BTreeSet<papo_sdk_ui::PlayerProvider> =
+    std::collections::BTreeSet::new();
 static DIAGNOSTICS: std::sync::LazyLock<DiagnosticsFacts> =
     std::sync::LazyLock::new(DiagnosticsFacts::default);
 
@@ -23,6 +27,8 @@ fn context(appearance: &Appearance) -> Context<'_> {
         conversations: &CONVERSATIONS,
         general: &GENERAL,
         trusted: &TRUSTED,
+        players: &PLAYERS,
+        sites_with_data: &SITES,
         diagnostics: &DIAGNOSTICS,
         account: None,
         system_dark: true,

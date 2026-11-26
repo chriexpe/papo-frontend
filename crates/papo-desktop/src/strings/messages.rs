@@ -86,6 +86,11 @@ pub(crate) fn link_menu_copy() -> &'static str {
     text!("link_menu.copy")
 }
 
+/// The Space key, as menus show it (a provider video's Play).
+pub(crate) fn shortcut_space() -> &'static str {
+    text!("shortcut.space")
+}
+
 /// Reply's key.
 pub(crate) fn shortcut_reply() -> &'static str {
     text!("shortcut.reply")

@@ -119,6 +119,11 @@ line_icon!(
     "copy"
 );
 line_icon!(
+    /// The provider viewer's Copy link (`docs/design.md` §15.5).
+    LINK,
+    "link"
+);
+line_icon!(
     /// Copy as Markdown.
     MARKDOWN,
     "markdown"

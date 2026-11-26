@@ -80,13 +80,15 @@ pub(crate) enum PageId {
     General,
     /// General › Trusted domains.
     Trusted,
+    /// General › Embedded players.
+    Players,
     Diagnostics,
 }
 
 impl PageId {
     /// Every page, nav pages first and in the nav's order: what the search
     /// looks through.
-    pub(crate) const ALL: [PageId; 12] = [
+    pub(crate) const ALL: [PageId; 13] = [
         PageId::Profile,
         PageId::Privacy,
         PageId::Appearance,
@@ -99,6 +101,7 @@ impl PageId {
         PageId::Shape,
         PageId::Highlights,
         PageId::Trusted,
+        PageId::Players,
     ];
 
     /// The account's pages, in the nav's order (Profile is its tile).
@@ -123,7 +126,7 @@ impl PageId {
             | PageId::Diagnostics => None,
             PageId::Background | PageId::Shape => Some(PageId::Appearance),
             PageId::Highlights => Some(PageId::Conversations),
-            PageId::Trusted => Some(PageId::General),
+            PageId::Trusted | PageId::Players => Some(PageId::General),
             PageId::Blocked | PageId::Password => Some(PageId::Privacy),
         }
     }
@@ -214,6 +217,14 @@ pub(crate) enum RowId {
     TrustedAdd,
     /// A trusted domain, by its host's id (`trusted_domains::host_id`).
     TrustedHost(u64),
+    /// General › Embedded players.
+    Players,
+    /// Play videos and music from other sites.
+    PlayersOn,
+    /// A site on Embedded players' list.
+    PlayersSite(papo_sdk_ui::PlayerProvider),
+    /// The notes under the sites.
+    PlayersNote,
     Connected,
     Reconnect,
     Cache,
@@ -296,6 +307,8 @@ pub(crate) enum Target {
     Conversations(ConversationSettings),
     General(GeneralSettings),
     Trusted(BTreeSet<String>),
+    /// Embedded players' switch and allowed sites.
+    Players(crate::embedded_players::PlayerSettings),
     /// A profile field (`papo_sdk`'s `change_profile`).
     Profile(ProfileChange),
     Presence(Presence),
@@ -331,6 +344,7 @@ impl Target {
                 | Target::Conversations(_)
                 | Target::General(_)
                 | Target::Trusted(_)
+                | Target::Players(_)
         )
     }
 }
