@@ -89,6 +89,7 @@ impl Shell {
     /// Results `range` are drawn: near the end, the next page is asked,
     /// one at a time, and not after a failure (its Try again row asks).
     pub(crate) fn search_rows_visible(&mut self, range: Range<usize>) -> bool {
+        self.hydrate_visible_hits(range.clone());
         let Some(search) = self.search.as_ref() else {
             return false;
         };

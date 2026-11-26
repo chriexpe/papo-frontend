@@ -462,6 +462,7 @@ mod replies;
 mod search;
 mod search_field;
 mod search_hits;
+mod search_hydration;
 mod search_keys;
 mod search_list;
 mod search_open;

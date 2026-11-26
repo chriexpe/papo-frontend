@@ -240,12 +240,15 @@ fn results_area(shell: &Shell, search: &Search, style: &Style, max_height_pt: f3
                 .child(count_row(search, results, &look))
                 .child(nothing_found(shell, search, &look)),
         ),
-        Found::Ready(results) => Some(
-            col()
-                .w_full()
-                .child(count_row(search, results, &look))
-                .child(search_hits::hits(search, style, max_height_pt)),
-        ),
+        Found::Ready(results) => {
+            let style = search_hits::results_style(shell, style, max_height_pt);
+            Some(
+                col()
+                    .w_full()
+                    .child(count_row(search, results, &look))
+                    .child(search_hits::hits(search, &style, max_height_pt)),
+            )
+        }
     }
 }
 

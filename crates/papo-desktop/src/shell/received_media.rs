@@ -115,8 +115,8 @@ impl Shell {
         // Your messages the timeline shows sent before their queue said so.
         let mut sent_audio = Vec::new();
         // The messages whose media show: the conversation's visible and near rows, then the
-        // open pins' (§10: media included), whose videos show their first frame only (they
-        // play in the conversation).
+        // open pins' and the search results' whole messages (§10: media included), whose
+        // videos show their first frame only (they play in the conversation).
         let mut shown: Vec<(Arc<papo_sdk::Message>, bool)> = Vec::new();
         let account = self.tabs.shown().map(|open| open.key.account);
         if let Some(open) = self.tabs.shown() {
@@ -140,6 +140,32 @@ impl Shell {
             if pins_open && let Some(pins) = open.pins.list() {
                 shown.extend(pins.iter().map(|pin| (Arc::clone(&pin.message), true)));
             }
+        }
+        if let Some(search) = self
+            .search
+            .as_ref()
+            .filter(|search| Some(search.account) == account)
+        {
+            // Only the results on screen: the panel keeps up to 32 whole messages.
+            let on_screen: Vec<Uuid> = match &search.found {
+                super::search::Found::Ready(results) => {
+                    let range = search.hydrated.visible();
+                    results
+                        .items()
+                        .iter()
+                        .skip(range.start)
+                        .take(range.len())
+                        .map(|item| item.id())
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+            shown.extend(
+                search
+                    .hydrated
+                    .messages(on_screen)
+                    .map(|message| (Arc::clone(message), true)),
+            );
         }
         let mut wants = Vec::new();
         let mut videos = Vec::new();

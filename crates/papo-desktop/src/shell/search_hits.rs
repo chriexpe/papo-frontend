@@ -109,6 +109,7 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
     let marked = search.opened == Some(item.id());
     let first = index == 0;
     let id = item.id();
+    let (whole, media) = whole_message(search, item, open.key.account, style);
     let version = (
         style.look,
         style.layout,
@@ -120,9 +121,11 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
         marked,
         channel_line.is_some(),
         open.revealed(id),
+        whole.as_ref().map(|message| Arc::as_ptr(message) as usize),
+        media,
     );
     memo(format!("hit-{id}"), version, || {
-        let shown = standalone_hit::<Shell>(open, item, style);
+        let shown = standalone_hit::<Shell>(open, item, whole.as_deref(), style);
         let mut line = col()
             .key(hit_row_key(id))
             .w_full()
@@ -168,6 +171,46 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
             }))
             .child(line)
     })
+}
+
+/// How the results draw: media and cards take the panel's box, 0.55 × its height (§10), as
+/// pins' do, on their own surface.
+pub(super) fn results_style(shell: &Shell, style: &Style, max_height_pt: f32) -> Style {
+    let mut style = style.clone();
+    let cap_pt = max_height_pt * papo_sdk_ui::HOST_HEIGHT_SHARE;
+    let settings = shell.conversations.settings();
+    style.media.bounds = papo_sdk_ui::MediaBounds::new(settings.image_size, f32::INFINITY, cap_pt);
+    style.media.embed_bounds = papo_sdk_ui::MediaBounds::of_max_size(
+        settings.embed_size.max_size_pt(),
+        f32::INFINITY,
+        cap_pt,
+    );
+    style.media.surface = crate::message_media::received::MediaSurface::Search;
+    style
+}
+
+/// Result `item`'s whole message once hydrated, and what its media draw from, for its memo.
+fn whole_message(
+    search: &Search,
+    item: &SearchResultItem,
+    account: papo_sdk::AccountId,
+    style: &Style,
+) -> (
+    Option<Arc<papo_sdk::Message>>,
+    Option<crate::timeline::ReceivedSignature>,
+) {
+    let whole = search.hydrated.message(item.id()).cloned();
+    let media = whole.as_ref().map(|message| {
+        let at = crate::message_media::received::MediaAt {
+            surface: style.media.surface,
+            account,
+            channel: item.channel,
+            message: item.id(),
+            index: 0,
+        };
+        crate::timeline::received_signature(at, message, &style.media)
+    });
+    (whole, media)
 }
 
 /// The opened result in one line, on `highlight.selected`.

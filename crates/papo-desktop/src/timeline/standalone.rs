@@ -36,7 +36,15 @@ pub(crate) fn standalone<S: TimelineHost>(
         } if *current == id => Some((message, content)),
         _ => None,
     })?;
-    Some(draw::<S>(open, id, message, content, style, None))
+    Some(draw::<S>(
+        open,
+        id,
+        message,
+        content,
+        style,
+        None,
+        open.key.channel,
+    ))
 }
 
 /// `message` on its own, from its own content (a pin the conversation
@@ -48,24 +56,27 @@ pub(crate) fn standalone_message<S: TimelineHost>(
     content: &MessageContent,
     style: &Style,
 ) -> El {
-    draw::<S>(open, id, message, content, style, None)
+    draw::<S>(open, id, message, content, style, None, open.key.channel)
 }
 
-/// A search result on its own, from what the hit carries; its author by
-/// the username the backend sent when the roster no longer holds them.
+/// A search result on its own, from its whole message once hydrated (`whole`: media and
+/// cards included), else from what the hit carries; its author by the username the backend
+/// sent when the roster no longer holds them.
 pub(crate) fn standalone_hit<S: TimelineHost>(
     open: &OpenTimeline,
     item: &SearchResultItem,
+    whole: Option<&Message>,
     style: &Style,
 ) -> El {
     let fallback = item.author_username.as_deref();
     draw::<S>(
         open,
         item.id(),
-        &item.message,
+        whole.unwrap_or(&item.message),
         &item.content,
         style,
         fallback,
+        item.channel,
     )
 }
 
@@ -76,6 +87,7 @@ fn draw<S: TimelineHost>(
     content: &MessageContent,
     style: &Style,
     fallback_name: Option<&str>,
+    channel: Uuid,
 ) -> El {
     let look = style.look;
     let spacing = look.row_spacing(style.layout);
@@ -110,7 +122,7 @@ fn draw<S: TimelineHost>(
     let at = MediaAt {
         surface: style.media.surface,
         account: open.key.account,
-        channel: open.key.channel,
+        channel,
         message: id,
         index: 0,
     };
