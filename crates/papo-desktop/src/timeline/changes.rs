@@ -18,7 +18,7 @@ use std::sync::Arc;
 use imbl::Vector;
 use papo_sdk::{Operation, OperationKind, OperationState, Uuid};
 use papo_sdk_ui::TimelineItem;
-use papo_sdk_ui::message_content::MessageContent;
+use papo_sdk_ui::message_content::{CustomEmojis, MessageContent};
 
 /// Where a change to a message stands, as its row shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -47,9 +47,10 @@ pub(crate) struct Change {
     pub(crate) edit: Option<(String, Arc<MessageContent>)>,
 }
 
-/// The changes among a timeline's message items, by message ID.
+/// The changes among a timeline's message items, by message ID, and the custom emoji revision
+/// their edits were parsed against.
 #[derive(Default)]
-pub(crate) struct Changes(HashMap<Uuid, Change>);
+pub(crate) struct Changes(HashMap<Uuid, Change>, u64);
 
 impl Changes {
     /// Message `id`'s change, if one is in flight.
@@ -58,8 +59,13 @@ impl Changes {
     }
 
     /// Follows `items`: keeps the changes whose operation image is the
-    /// same, builds the new ones, forgets the settled.
-    pub(crate) fn refresh(&mut self, items: &Vector<Arc<TimelineItem>>) {
+    /// same, builds the new ones, forgets the settled. Another emoji
+    /// catalog parses every edit again.
+    pub(crate) fn refresh(&mut self, items: &Vector<Arc<TimelineItem>>, emojis: &CustomEmojis) {
+        if self.1 != emojis.revision() {
+            self.0.clear();
+            self.1 = emojis.revision();
+        }
         let mut next = HashMap::new();
         for item in items {
             let TimelineItem::Message {
@@ -74,7 +80,7 @@ impl Changes {
                 .0
                 .remove(id)
                 .filter(|change| Arc::ptr_eq(&change.operation, operation));
-            if let Some(change) = kept.or_else(|| build(operation)) {
+            if let Some(change) = kept.or_else(|| build(operation, emojis)) {
                 next.insert(*id, change);
             }
         }
@@ -82,7 +88,7 @@ impl Changes {
     }
 }
 
-fn build(operation: &Arc<Operation>) -> Option<Change> {
+fn build(operation: &Arc<Operation>, emojis: &CustomEmojis) -> Option<Change> {
     let failed = matches!(
         operation.state,
         OperationState::Failed | OperationState::Unknown
@@ -96,7 +102,7 @@ fn build(operation: &Arc<Operation>) -> Option<Change> {
             } else {
                 ChangeState::Saving
             };
-            let parsed = Arc::new(MessageContent::parse(content));
+            let parsed = Arc::new(emojis.parse(content));
             (state, Some((content.clone(), parsed)))
         }
         OperationKind::Delete { .. } if failed => (ChangeState::DeleteFailed, None),

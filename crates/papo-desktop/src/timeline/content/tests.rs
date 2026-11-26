@@ -206,3 +206,50 @@ fn a_known_persons_mention_names_them_and_is_a_link_to_their_card() {
             .any(|mark| matches!(mark, Mark::Mention { person: None, .. }))
     );
 }
+
+fn doc_with_gato(source: &str) -> Doc {
+    let gato = papo_sdk_ui::message_content::CustomEmojiRef {
+        id: Uuid::from_u128(7),
+        name: "gato".into(),
+    };
+    Doc::new(
+        &MessageContent::parse_with_custom_emojis(source, &[gato]),
+        &Context {
+            resources: None,
+            revealed: &[],
+            jumbo: true,
+        },
+    )
+}
+
+#[test]
+fn a_custom_emoji_is_marked_over_its_name_and_copies_as_it() {
+    let doc = doc_with_gato("oi :gato: tudo");
+    let run = doc.runs()[0];
+    assert_eq!(
+        whole(run),
+        "oi :gato: tudo",
+        "the selection copies its name"
+    );
+    assert!(run.marks.iter().any(|mark| matches!(
+        mark,
+        Mark::Emoji { range, id } if *range == (3..9) && *id == Uuid::from_u128(7)
+    )));
+}
+
+#[test]
+fn custom_emoji_alone_are_jumbo_with_their_marks() {
+    let doc = doc_with_gato(" :gato: 🔥 ");
+    let [Node::Jumbo(run)] = doc.nodes.as_slice() else {
+        panic!("one jumbo line");
+    };
+    assert!(run.jumbo);
+    assert_eq!(run.text, ":gato: 🔥");
+    assert_eq!(
+        run.marks
+            .iter()
+            .filter(|mark| matches!(mark, Mark::Emoji { .. }))
+            .count(),
+        1
+    );
+}

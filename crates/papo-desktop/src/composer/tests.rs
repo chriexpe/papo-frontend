@@ -4,6 +4,7 @@
 //! send gives the text back.
 
 use papo_sdk::{AccountId, ServerAddress, Uuid};
+use papo_sdk_ui::message_content::CustomEmojis;
 
 use super::{Composer, Effect, MAX_MESSAGE_CHARS, SAVE_AFTER_S, Sent, TYPING_EVERY_S};
 use crate::timeline::TimelineKey;
@@ -36,7 +37,7 @@ fn showing(text: &str) -> Composer {
 
 fn type_in(composer: &mut Composer, text: &str, clock_s: f64) -> Vec<Effect> {
     composer.field_mut().insert(text);
-    composer.edited(clock_s)
+    composer.edited(clock_s, &CustomEmojis::default())
 }
 
 fn text(composer: &Composer) -> &str {
@@ -164,7 +165,7 @@ fn typing_is_reported_at_most_every_few_seconds() {
     );
     composer.field_mut().replace_text("");
     assert_eq!(
-        reports(composer.edited(20.0)),
+        reports(composer.edited(20.0, &CustomEmojis::default())),
         0,
         "emptying the field is not typing"
     );
@@ -205,7 +206,7 @@ fn an_over_long_message_stays_in_the_field() {
     composer
         .field_mut()
         .replace_text("é".repeat(MAX_MESSAGE_CHARS + 2));
-    composer.edited(1.0);
+    composer.edited(1.0, &CustomEmojis::default());
     assert_eq!(composer.chars_over(), 2);
     assert_eq!(composer.send(Uuid::from_u128(9)), Sent::TooLong);
     assert_eq!(text(&composer).chars().count(), MAX_MESSAGE_CHARS + 2);

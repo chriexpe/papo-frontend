@@ -109,6 +109,25 @@ impl Tabs {
             .find(|open| open.key == key && open.ticket == ticket)
     }
 
+    /// The accounts with an open timeline, each once.
+    pub(crate) fn open_accounts(&self) -> impl Iterator<Item = AccountId> + '_ {
+        let mut seen = std::collections::BTreeSet::new();
+        self.open
+            .iter()
+            .map(|open| open.key.account)
+            .filter(move |account| seen.insert(*account))
+    }
+
+    /// The open timelines of account `account`, shown or not.
+    pub(crate) fn of_account_mut(
+        &mut self,
+        account: AccountId,
+    ) -> impl Iterator<Item = &mut OpenTimeline> + '_ {
+        self.open
+            .iter_mut()
+            .filter(move |open| open.key.account == account)
+    }
+
     /// The open timeline `key`, shown or not.
     pub(crate) fn open_mut(&mut self, key: TimelineKey) -> Option<&mut OpenTimeline> {
         self.open.iter_mut().find(|open| open.key == key)

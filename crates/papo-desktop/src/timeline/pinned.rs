@@ -13,7 +13,7 @@ use std::sync::Arc;
 use imbl::Vector;
 use papo_sdk::{Message, Uuid};
 use papo_sdk_ui::TimelineItem;
-use papo_sdk_ui::message_content::MessageContent;
+use papo_sdk_ui::message_content::{CustomEmojis, MessageContent};
 
 /// One pin, ready to draw.
 pub(crate) struct Pin {
@@ -31,6 +31,8 @@ pub(crate) struct Pins {
     ids: HashSet<Uuid>,
     /// The last fetch of the list failed.
     pub(crate) failed: bool,
+    /// The custom emoji revision the pins were parsed against.
+    emojis: u64,
 }
 
 impl Pins {
@@ -41,7 +43,13 @@ impl Pins {
         &mut self,
         pins: Option<Vector<Arc<Message>>>,
         items: &Vector<Arc<TimelineItem>>,
+        emojis: &CustomEmojis,
     ) {
+        // Another emoji catalog parses every pin again; the timeline's items already follow it.
+        if self.emojis != emojis.revision() {
+            self.list = None;
+            self.emojis = emojis.revision();
+        }
         let Some(pins) = pins else {
             self.list = None;
             self.ids.clear();
@@ -62,9 +70,7 @@ impl Pins {
                     .map(|pin| Arc::clone(&pin.content))
                     .or_else(|| held(items, message))
                     .unwrap_or_else(|| {
-                        Arc::new(MessageContent::parse(
-                            message.content.as_deref().unwrap_or_default(),
-                        ))
+                        Arc::new(emojis.parse(message.content.as_deref().unwrap_or_default()))
                     });
                 Some(Pin {
                     id,
@@ -75,6 +81,17 @@ impl Pins {
             .collect();
         self.ids = list.iter().map(|pin| pin.id).collect();
         self.list = Some(list);
+    }
+
+    /// Parses the pins again against `emojis`, a new catalog.
+    pub(crate) fn resolve(&mut self, items: &Vector<Arc<TimelineItem>>, emojis: &CustomEmojis) {
+        let messages = self
+            .list
+            .as_ref()
+            .map(|list| list.iter().map(|pin| Arc::clone(&pin.message)).collect());
+        if messages.is_some() {
+            self.set(messages, items, emojis);
+        }
     }
 
     /// The pins, newest first; none while not known.

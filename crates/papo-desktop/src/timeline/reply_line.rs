@@ -8,6 +8,7 @@
 //! italic beside a dashed square, and one not available "Reply to an
 //! earlier message", neither pressable.
 
+use crate::emoji_images::{EmojiLook, with_images};
 use papo_sdk::Uuid;
 use rune::{El, Span, el, icon, row, text};
 
@@ -30,6 +31,8 @@ pub(super) struct ReplyLine {
     pub(super) pinged: bool,
     /// The original a press jumps to, when history holds it.
     pub(super) jump: Option<Uuid>,
+    /// What the original's custom emoji draw as, by their ranges of its snippet.
+    pub(super) emoji: Vec<(std::ops::Range<usize>, EmojiLook)>,
 }
 
 /// The reply line of a message in timeline `key`, at a density whose lead
@@ -103,6 +106,8 @@ pub(super) fn reply_line<S: TimelineHost>(
 /// original that is gone.
 fn content<S: TimelineHost>(key: TimelineKey, line: &ReplyLine, look: &Look) -> El {
     let line_pt = look.font(TYPE_SMALL).line_px();
+    // Where the snippet starts in the words: after the name and a space.
+    let mut snippet_at = None;
     let (lead, words, spans) = match &line.original {
         OriginalText::Message { name, snippet, .. } => {
             let name = if line.pinged {
@@ -126,6 +131,7 @@ fn content<S: TimelineHost>(key: TimelineKey, line: &ReplyLine, look: &Look) -> 
                         .font(look.font(TYPE_SMALL))
                         .color(look.palette.text_secondary),
                 );
+            snippet_at = Some(name.len() + 1);
             (Some(avatar), format!("{name} {snippet}"), spans)
         }
         OriginalText::Deleted => {
@@ -154,14 +160,18 @@ fn content<S: TimelineHost>(key: TimelineKey, line: &ReplyLine, look: &Look) -> 
         .gap(look.space(SPACE_SM))
         .center_y()
         .children(lead)
-        .child(
+        .child(with_images(
             text(words)
                 .font(look.font(TYPE_SMALL))
                 .color(look.palette.text_muted)
                 .spans(spans)
                 .truncate()
                 .min_w(0.0),
-        );
+            snippet_at.unwrap_or_default(),
+            snippet_at.map(|_| line.emoji.clone()).unwrap_or_default(),
+            look.font(TYPE_SMALL),
+            look,
+        ));
     if let Some(original) = line.jump {
         content = content
             .radius(look.radius(RADIUS_CONTROL))

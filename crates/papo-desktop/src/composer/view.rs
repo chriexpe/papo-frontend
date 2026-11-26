@@ -20,6 +20,7 @@ use crate::design::{
     RADIUS_COMPOSER, RADIUS_PILL, SEND_BUTTON, SPACE_LG, SPACE_MD, SPACE_SM, Surfaces, TYPE_BODY,
     TYPE_SMALL,
 };
+use crate::emoji_images::{EmojiKey, EmojiLooks, EmojiPlace, inline_image};
 use crate::icons::{CHECK, PAPERCLIP, SEND};
 use crate::shell::Shell;
 use crate::strings;
@@ -52,6 +53,8 @@ pub(crate) struct PillContext<'a> {
     pub(crate) me: Uuid,
     /// The tray's keyboard and drag state.
     pub(crate) tray_ui: &'a TrayUi,
+    /// What custom emoji draw as.
+    pub(crate) emoji: EmojiLooks,
 }
 
 /// The pill for the shown channel, with the line over it when there is
@@ -63,13 +66,23 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         original,
         me,
         tray_ui,
+        ref emoji,
     } = *context;
-    let Some((_, draft)) = composer.shown() else {
+    let Some((key, draft)) = composer.shown() else {
         // Nothing to write in: still the notice pill's anchor, at no height.
         return col().key(COMPOSER_PILL_KEY).w_full();
     };
     let loading = composer.is_loading();
-    let field = field(composer, &draft.edit, placeholder, enter_sends, look);
+    // The reply's original draws its custom emoji too.
+    let bar_emoji = match original {
+        Some(OriginalText::Message { emoji: ranges, .. }) => emoji.of(key.account, ranges),
+        _ => Vec::new(),
+    };
+    let emoji = FieldEmoji {
+        looks: emoji.clone(),
+        account: key.account,
+    };
+    let field = field(composer, &draft.edit, placeholder, enter_sends, emoji, look);
     let line_pt = look.font(TYPE_BODY).line_px();
     // One line sits level with Send; more lines grow the pill upward.
     let field = col()
@@ -99,7 +112,7 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         .w_full()
         .radius(look.radius(RADIUS_COMPOSER))
         .pill_surface(look)
-        .children(bar(&draft.mode, original, me, look))
+        .children(bar(&draft.mode, original, me, &bar_emoji, look))
         // An edit leaves the attachments alone (§11), so they are not shown.
         .children(
             draft
@@ -173,16 +186,24 @@ fn paperclip(look: &Look) -> El {
 
 /// The message field: Markdown styled in place, mentions as pills, Enter
 /// and Send, pastes of files, and no typing while the draft loads.
+/// The field's custom emoji: what they draw as, for the account it writes as.
+struct FieldEmoji {
+    looks: EmojiLooks,
+    account: papo_sdk::AccountId,
+}
+
 fn field(
     composer: &Composer,
     edit: &rune::TextEdit,
     placeholder: &str,
     enter_sends: bool,
+    emoji: FieldEmoji,
     look: &Look,
 ) -> El {
     let loading = composer.is_loading();
     let style = composer.field_style(look);
     let (chip, ink) = (look.palette.accent_soft, look.palette.link);
+    let plain = look.palette.text_primary;
     let mut field = text_input(edit, look.font(TYPE_BODY))
         .key(COMPOSER_KEY)
         .label(strings::composer_label())
@@ -195,8 +216,29 @@ fn field(
         .caret(look.palette.accent, look.palette.text_selection)
         .spans(style.spans)
         .strikes(style.strikes)
-        // Every pill is a mention, drawn as a message draws one.
-        .pill_style(move |_| PillStyle::default().bg(chip).fg(ink));
+        // A mention's pill is drawn as a message draws one; an emoji's whose image failed is
+        // its name as plain text (§9).
+        .pill_style(move |id| match super::emoji::of_pill(id) {
+            Some(_) => PillStyle::default().bg(rune::Color::TRANSPARENT).fg(plain),
+            None => PillStyle::default().bg(chip).fg(ink),
+        })
+        // An emoji's pill is its image at line height (§16.2, §9 Inline).
+        .pill_inline_image({
+            let ui = *look;
+            let font = look.font(TYPE_BODY);
+            move |id| {
+                let key = EmojiKey {
+                    account: emoji.account,
+                    id: super::emoji::of_pill(id)?,
+                };
+                let place = EmojiPlace {
+                    font,
+                    jumbo: false,
+                    hidden: false,
+                };
+                inline_image(&emoji.looks.look(key), place, &ui)
+            }
+        });
     if let Some(row) = composer.picker().and_then(Picker::chosen_key) {
         field = field.active_descendant(row).expanded(true);
     }

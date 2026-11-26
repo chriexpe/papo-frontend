@@ -134,6 +134,8 @@ impl Shell {
             .and_then(|open| open.resources.clone());
         let decoded = decode(resources.as_deref(), wire);
         let effects = self.composer.start_edit(key, id, decoded);
+        let emojis = self.custom_emojis(key.account);
+        self.composer.bind_emojis(key, &emojis, true);
         self.run_composer(effects, Some(tx));
         tx.scroll_into_view(anchor_key(id));
         tx.focus(COMPOSER_KEY, false);

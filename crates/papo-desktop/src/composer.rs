@@ -18,6 +18,7 @@ pub(crate) mod bars;
 mod draft;
 mod editing;
 mod effect;
+pub(crate) mod emoji;
 mod markdown;
 pub(crate) mod mentions;
 pub(crate) mod mode;
@@ -36,7 +37,7 @@ pub(crate) mod view;
 use std::collections::HashMap;
 
 use papo_sdk::{AccountId, Uuid};
-use papo_sdk_ui::message_content::DecodedComposerMentions;
+use papo_sdk_ui::message_content::{CustomEmojis, DecodedComposerMentions};
 use rune::TextEdit;
 
 pub(crate) use self::draft::Draft;
@@ -267,7 +268,36 @@ impl Composer {
     /// The shown field's text changed at `clock_s`: the draft is saved once
     /// typing pauses, and typing is reported at most every
     /// [`TYPING_EVERY_S`].
-    pub(crate) fn edited(&mut self, clock_s: f64) -> Vec<Effect> {
+    /// The custom emoji the shown field holds.
+    pub(crate) fn emoji_ids(&self) -> Vec<Uuid> {
+        self.shown()
+            .map(|(_, draft)| emoji::ids(&draft.edit))
+            .unwrap_or_default()
+    }
+
+    /// Every `:name:` in channel `key`'s field becomes its emoji (a draft restored, a message
+    /// taken back, a catalog that arrived). `fresh`: the text was just put there, so undo
+    /// starts after it.
+    pub(crate) fn bind_emojis(&mut self, key: TimelineKey, emojis: &CustomEmojis, fresh: bool) {
+        let Some(draft) = self.drafts.get_mut(&key) else {
+            return;
+        };
+        if draft.state == DraftState::Loading {
+            return;
+        }
+        let before = emoji::ids(&draft.edit).len();
+        emoji::bind_all(&mut draft.edit, emojis, &draft.preview);
+        if emoji::ids(&draft.edit).len() == before {
+            return;
+        }
+        if fresh {
+            draft.edit.clear_history();
+            draft.edit.set_caret(draft.edit.text.len());
+        }
+        draft.refresh();
+    }
+
+    pub(crate) fn edited(&mut self, clock_s: f64, emojis: &CustomEmojis) -> Vec<Effect> {
         let Some(key) = self.shown else {
             return Vec::new();
         };
@@ -286,6 +316,12 @@ impl Composer {
         let keystroke = keystroke.as_ref().map(|(_, keystroke)| keystroke);
         draft.pairs.changed(&mut draft.edit, keystroke);
         draft.refresh();
+        // A typed colon may close a `:name:`.
+        if keystroke.is_some_and(|key| *key == Keystroke::Text(":".into()))
+            && emoji::bind_typed(&mut draft.edit, emojis, &draft.preview)
+        {
+            draft.refresh();
+        }
         if draft.mode.editing().is_some() {
             // An edit is neither saved nor reported as typing.
             return Vec::new();

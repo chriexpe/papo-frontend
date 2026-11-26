@@ -7,6 +7,9 @@
 //! Pure: what the original says is the shell's to work out
 //! (`timeline::replies`); the presses go to the shell.
 
+use std::ops::Range;
+
+use crate::emoji_images::{EmojiLook, with_images};
 use papo_sdk::Uuid;
 use rune::{El, Span, el, icon, row, text};
 
@@ -34,6 +37,7 @@ pub(super) fn bar(
     mode: &Mode,
     original: Option<&OriginalText>,
     me: Uuid,
+    emoji: &[(Range<usize>, EmojiLook)],
     look: &Look,
 ) -> Option<El> {
     let content = match mode {
@@ -41,7 +45,7 @@ pub(super) fn bar(
         Mode::Writing { reply: Some(reply) } => {
             let original = original.unwrap_or(&OriginalText::Earlier);
             let own = original.by(me);
-            let line = reply_line(original, own, look);
+            let line = reply_line(original, own, emoji, look);
             let switch = match original {
                 OriginalText::Message { name, .. } if !own => {
                     Some(mention_switch(name, reply.mention, look))
@@ -103,7 +107,14 @@ pub(super) fn bar(
 
 /// "Replying to Lia · is the build green?", or what stands for an
 /// original that is missing.
-fn reply_line(original: &OriginalText, own: bool, look: &Look) -> El {
+fn reply_line(
+    original: &OriginalText,
+    own: bool,
+    emoji: &[(Range<usize>, EmojiLook)],
+    look: &Look,
+) -> El {
+    // Where the snippet starts in the line, when it shows.
+    let mut snippet_at = None;
     let (line, spans) = match original {
         OriginalText::Message { name, snippet, .. } => {
             let lead = if own {
@@ -122,7 +133,9 @@ fn reply_line(original: &OriginalText, own: bool, look: &Look) -> El {
             let line = if snippet.is_empty() {
                 lead
             } else {
-                format!("{lead} · {snippet}")
+                let line = format!("{lead} · {snippet}");
+                snippet_at = Some(line.len() - snippet.len());
+                line
             };
             (line, spans)
         }
@@ -137,13 +150,17 @@ fn reply_line(original: &OriginalText, own: bool, look: &Look) -> El {
             (line, spans)
         }
     };
-    text(line)
+    let drawn = text(line)
         .font(look.font(TYPE_SMALL))
         .color(look.palette.text_muted)
         .spans(spans)
         .truncate()
         .grow(1.0)
-        .min_w(0.0)
+        .min_w(0.0);
+    match snippet_at {
+        Some(at) => with_images(drawn, at, emoji.to_vec(), look.font(TYPE_SMALL), look),
+        None => drawn,
+    }
 }
 
 /// The @ switch: on, the link colour on `accent.soft`; off, `text.muted`

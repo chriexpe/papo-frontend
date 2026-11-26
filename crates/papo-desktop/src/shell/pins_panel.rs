@@ -5,6 +5,7 @@
 //! on its own divided by hairlines, Unpin on hover or focus. Shrunk
 //! (`PanelPeek`), it keeps its header and one line for the opened pin.
 
+use crate::emoji_images::{EmojiLooks, with_images};
 use std::sync::Arc;
 
 use rune::{Cx, El, KeyEvent, ScrollSpec, col, el, icon, memo, row, text};
@@ -61,7 +62,7 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
         .child(el().grow(1.0))
         .child(super::header::pins_button(true, &look));
     let body = if state.peek {
-        peek_line(open, &state, &look)
+        peek_line(open, &state, &look, &style.emoji)
     } else {
         Some(list(
             shell,
@@ -119,7 +120,12 @@ pub(super) fn panel(shell: &Shell, style: &Style, cx: &Cx<Shell>) -> Option<El> 
 }
 
 /// The opened pin in one line, on `highlight.selected`.
-fn peek_line(open: &OpenTimeline, state: &PinsPanel, look: &Look) -> Option<El> {
+fn peek_line(
+    open: &OpenTimeline,
+    state: &PinsPanel,
+    look: &Look,
+    emoji: &EmojiLooks,
+) -> Option<El> {
     let id = state.opened?;
     let pin = open.pins.get(id)?;
     let original = papo_sdk_ui::ReplyOriginal::Held {
@@ -127,7 +133,7 @@ fn peek_line(open: &OpenTimeline, state: &PinsPanel, look: &Look) -> Option<El> 
         message: Arc::clone(&pin.message),
         content: Arc::clone(&pin.content),
     };
-    peek_row(&original, open, look)
+    peek_row(&original, open, look, emoji)
 }
 
 /// A shrunk panel's one line for the message opened from it (a pin, a
@@ -137,10 +143,18 @@ pub(super) fn peek_row(
     original: &papo_sdk_ui::ReplyOriginal,
     open: &OpenTimeline,
     look: &Look,
+    looks: &EmojiLooks,
 ) -> Option<El> {
-    let OriginalText::Message { name, snippet, .. } = original_text(original, open) else {
+    let OriginalText::Message {
+        name,
+        snippet,
+        emoji,
+        ..
+    } = original_text(original, open)
+    else {
         return None;
     };
+    let emoji = looks.of(open.key.account, &emoji);
     let line = row()
         .w_full()
         .px(look.space(SPACE_LG))
@@ -159,14 +173,18 @@ pub(super) fn peek_row(
                 .color(look.palette.text_primary)
                 .max_lines(1),
         )
-        .child(
+        .child(with_images(
             text(snippet)
                 .font(look.font(TYPE_SMALL))
                 .color(look.palette.text_secondary)
                 .grow(1.0)
                 .min_w(0.0)
                 .truncate(),
-        );
+            0,
+            emoji,
+            look.font(TYPE_SMALL),
+            look,
+        ));
     // Inset by padding, so the highlight stays inside the panel's corners.
     Some(
         col()

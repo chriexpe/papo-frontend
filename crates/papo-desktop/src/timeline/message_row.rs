@@ -105,6 +105,7 @@ pub(super) fn message_row<S: TimelineHost>(
                 hint: edited_hint(at, &style.time),
             }),
             standalone: false,
+            emoji: &style.emoji,
         };
         let body = body_of::<S>(
             &doc,

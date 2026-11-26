@@ -143,6 +143,10 @@ impl Shell {
         revision: u64,
         answer: Result<SearchPage, SearchError>,
     ) -> bool {
+        let Some(account) = self.current_search(revision).map(|search| search.account) else {
+            return false;
+        };
+        let emojis = self.custom_emojis(account);
         let Some(search) = self.current_search(revision) else {
             return false;
         };
@@ -150,7 +154,10 @@ impl Shell {
         match answer {
             Ok(page) => {
                 search.generation = Some(page.generation);
-                search.found = Found::Ready(SearchResults::first_within(&page, search.window));
+                let mut results = SearchResults::first_within(&page, search.window);
+                // Its `:name:` draw as the account's emoji, and so do later pages'.
+                results.set_custom_emojis(&emojis);
+                search.found = Found::Ready(results);
             }
             // The search is still current, so the SDK cancelled it (its
             // connection went): said as a failure, never left waiting.

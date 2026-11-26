@@ -28,7 +28,12 @@ impl Shell {
     pub(crate) fn composer_edited(&mut self, tx: &mut Tx) {
         // Typing is work outside a header panel.
         self.worked_outside();
-        let effects = self.composer.edited(tx.clock());
+        let emojis = self
+            .composer
+            .shown()
+            .map(|(key, _)| self.custom_emojis(key.account))
+            .unwrap_or_default();
+        let effects = self.composer.edited(tx.clock(), &emojis);
         self.run_composer(effects, Some(tx));
         self.refresh_picker();
     }
@@ -247,6 +252,9 @@ fn load_draft(sdk: &Sdk<Shell>, key: TimelineKey, mention: bool) {
                     let loaded = shell
                         .composer
                         .loaded(key, decoded, reply_to, mention, tiles);
+                    let emojis = shell.custom_emojis(key.account);
+                    shell.composer.bind_emojis(key, &emojis, true);
+                    shell.want_emoji();
                     // Files attached while it loaded are saved with it now.
                     let effects = shell.composer.save_unsaved(key);
                     shell.run_composer(effects, None);

@@ -71,6 +71,7 @@ impl Shell {
             return;
         };
         self.conversation_left();
+        self.timelines_follow_emojis();
         match tx.as_deref_mut() {
             Some(tx) => self.description_opened(tx),
             // No clock to time a strip by: the last channel's goes anyway.
@@ -195,7 +196,7 @@ impl Shell {
             Posted::Reading(overlay) => open.reading.overlay_changed(overlay),
             Posted::Resources(resources) => open.resources = Some(resources),
             Posted::PinsOpened(handle) => open.pins_handle = Some(handle),
-            Posted::Pins(pins) => open.pins.set(pins, &open.items),
+            Posted::Pins(pins) => open.pins.set(pins, &open.items, &open.emojis),
             Posted::PinsFailed => open.pins.failed = true,
             Posted::Failed => open.phase = crate::timeline::Phase::Failed,
             Posted::Closed => open.phase = crate::timeline::Phase::Closed,

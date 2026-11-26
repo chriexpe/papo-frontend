@@ -330,6 +330,7 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
         unsent: host.unsent.clone(),
         media: host.media.clone(),
         saved_pill: None,
+        emoji: crate::emoji_images::EmojiLooks::default(),
     };
     col().w_full().h_full().child(view(host, style))
 }

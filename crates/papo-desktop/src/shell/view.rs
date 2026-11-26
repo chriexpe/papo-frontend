@@ -282,6 +282,7 @@ fn timeline_style(
             .pill()
             .filter(|_| shell.viewer.is_none())
             .map(|pill| pill.name.clone()),
+        emoji: shell.emoji_images.looks(),
     }
 }
 
@@ -322,6 +323,7 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
         original: original.as_ref(),
         me: shown.map_or(papo_sdk::Uuid::nil(), |(key, _)| key.account.user()),
         tray_ui: &shell.tray_ui,
+        emoji: shell.emoji_images.looks(),
     };
     let state = shell.picked_dm_access().zip(shell.nav.picked_dm());
     let composer = match (state, &title) {

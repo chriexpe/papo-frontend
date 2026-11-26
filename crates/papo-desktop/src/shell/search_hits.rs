@@ -214,7 +214,12 @@ fn whole_message(
 }
 
 /// The opened result in one line, on `highlight.selected`.
-pub(super) fn peek_line(open: &OpenTimeline, search: &Search, look: &Look) -> Option<El> {
+pub(super) fn peek_line(
+    open: &OpenTimeline,
+    search: &Search,
+    look: &Look,
+    emoji: &crate::emoji_images::EmojiLooks,
+) -> Option<El> {
     let id = search.opened?;
     let Found::Ready(results) = &search.found else {
         return None;
@@ -225,7 +230,7 @@ pub(super) fn peek_line(open: &OpenTimeline, search: &Search, look: &Look) -> Op
         message: Arc::new(item.message.clone()),
         content: Arc::clone(&item.content),
     };
-    super::pins_panel::peek_row(&original, open, look)
+    super::pins_panel::peek_row(&original, open, look, emoji)
 }
 
 /// The next page failed: "Couldn't search. Try again" past the last result.

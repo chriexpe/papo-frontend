@@ -208,6 +208,7 @@ impl Shell {
         self.gif_places.rects.retain(|key, _| wanted.contains(key));
         let jobs = self.media.want(wants);
         self.run_media_jobs(jobs);
+        self.want_emoji();
     }
 
     /// Starts `jobs`: each fetches through the SDK's cache and decodes off the UI thread, then

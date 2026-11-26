@@ -36,6 +36,10 @@ pub(crate) struct Activity {
     pub(crate) outgoing: Option<Arc<OutgoingSnapshot>>,
     /// Its quick reactions, most used first; empty until posted.
     pub(crate) quick: Arc<[String]>,
+    /// Its custom emoji catalog; none until posted.
+    pub(crate) emojis: Option<Arc<papo_sdk::EmojiCatalog>>,
+    /// That catalog as message content resolves against it.
+    pub(crate) custom: papo_sdk_ui::message_content::CustomEmojis,
     /// Its connection; none until posted.
     pub(crate) link: Option<crate::diagnostics::Link>,
     /// Refused reactions already being dropped, so each is said once.
@@ -73,6 +77,13 @@ impl Shell {
                     .as_ref()
                     .is_some_and(|panel| panel.page() == crate::settings::PageId::Diagnostics)
             }
+            Posted::Emojis(catalog) => {
+                let activity = self.activity.entry(account).or_default();
+                activity.custom = papo_sdk_ui::message_content::CustomEmojis::new(&catalog);
+                activity.emojis = Some(catalog);
+                self.custom_emojis_changed(account);
+                self.shows_account(account)
+            }
             Posted::Quick(quick) => {
                 self.activity.entry(account).or_default().quick = quick.into();
                 self.shows_account(account)
@@ -102,6 +113,7 @@ impl Shell {
                     self.awaited_dm = None;
                 }
                 self.dm_access.retain(|id, _| id.account != account);
+                self.emoji_images.forget(account);
                 self.sync_timeline(Some(tx));
                 self.activity.remove(&account);
                 true
