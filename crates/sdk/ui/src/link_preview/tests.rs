@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::media_box::{EmbedSizeSetting, MediaSizeSetting};
+use crate::provider_player::PlayerProvider;
 use papo_sdk::{EmbedAuthor, EmbedField, EmbedFooter};
 
 fn id(n: u128) -> String {
@@ -41,7 +42,7 @@ fn provider_video(n: u128) -> Embed {
         id: Some(id(n)),
         fetch_method: Some("oembed".into()),
         provider: Some("YouTube".into()),
-        url: Some("https://www.youtube.com/watch?v=abc".into()),
+        url: Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".into()),
         title: Some("A video".into()),
         author: Some(EmbedAuthor {
             name: Some("A channel".into()),
@@ -50,7 +51,7 @@ fn provider_video(n: u128) -> Embed {
         }),
         thumbnail: Some(media(Some("image/webp"), Some(384), Some(288))),
         video: Some(EmbedMedia {
-            url: Some("https://www.youtube.com/embed/abc".into()),
+            url: Some("https://www.youtube.com/embed/dQw4w9WgXcQ".into()),
             ..Default::default()
         }),
         ..Default::default()
@@ -113,8 +114,54 @@ fn the_provider_name_comes_before_the_site_name_and_the_author_follows_it() {
 #[test]
 fn a_video_without_a_type_is_the_providers_player_with_a_poster() {
     let card = card(preview(&provider_video(4)).unwrap());
-    assert_eq!(card.video, Some(CardVideo::Provider));
+    let Some(CardVideo::Provider(Some(player))) = &card.video else {
+        panic!("an allowlisted player was expected: {:?}", card.video);
+    };
+    assert_eq!(player.provider, PlayerProvider::YouTube);
+    assert_eq!(
+        player.address(),
+        "https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1"
+    );
     assert!(card.picture.is_some(), "the poster");
+}
+
+#[test]
+fn a_player_page_off_the_allowlist_is_a_provider_video_that_never_loads() {
+    // A custom or webhook embed may carry any address as its video.
+    for address in [
+        "https://evil.example/embed/dQw4w9WgXcQ",
+        "https://player.vimeo.com/video/76979871",
+    ] {
+        let mut embed = provider_video(6);
+        embed.video = Some(EmbedMedia {
+            url: Some(address.into()),
+            ..Default::default()
+        });
+        let card = card(preview(&embed).unwrap());
+        assert_eq!(card.video, Some(CardVideo::Provider(None)), "{address}");
+        let shown = format!("{card:?}");
+        assert!(!shown.contains("evil.example") && !shown.contains("vimeo"));
+    }
+    let mut no_address = provider_video(7);
+    no_address.video = Some(EmbedMedia::default());
+    let card = card(preview(&no_address).unwrap());
+    assert_eq!(card.video, Some(CardVideo::Provider(None)));
+}
+
+#[test]
+fn the_players_name_is_the_allowlists_not_the_embeds() {
+    let mut embed = provider_video(8);
+    embed.provider = Some("Your Bank".into());
+    let card = card(preview(&embed).unwrap());
+    let Some(CardVideo::Provider(Some(player))) = &card.video else {
+        panic!("an allowlisted player was expected");
+    };
+    assert_eq!(player.provider.name(), "YouTube");
+    assert_eq!(
+        card.provider.as_deref(),
+        Some("Your Bank"),
+        "the card's own line"
+    );
 }
 
 #[test]
@@ -250,7 +297,7 @@ fn only_an_http_page_is_offered_and_never_the_embeds_other_addresses() {
     let card = card(preview(&unsafe_page).unwrap());
     assert!(card.page.is_none(), "the card still shows, without a link");
     let shown = format!("{:?}", preview(&provider_video(31)).unwrap());
-    for hidden in ["/embed/abc", "/@channel", "site.example/media"] {
+    for hidden in ["/embed/", "/@channel", "site.example/media"] {
         assert!(!shown.contains(hidden), "{hidden} is never handed out");
     }
 }
