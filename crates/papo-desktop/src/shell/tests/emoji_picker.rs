@@ -14,8 +14,9 @@ use super::{FRAME_S, Shell, press, type_text};
 use crate::composer::COMPOSER_KEY;
 use crate::composer::view::EMOJI_BUTTON_KEY;
 use crate::emoji_picker::PickerFor;
-use crate::emoji_picker::view::{EMOJI_PICKER_KEY, EMOJI_SEARCH_KEY};
+use crate::emoji_picker::view::EMOJI_SEARCH_KEY;
 use crate::live_watch::Posted;
+use crate::picker::PICKER_KEY as EMOJI_PICKER_KEY;
 
 fn key(rt: &mut Runtime<Shell>, key: Key, mods: Mods) {
     rt.key(KeyEvent { key, mods });
@@ -111,7 +112,7 @@ fn escape_clears_the_search_then_closes() {
     type_text(&mut rt, "x");
     press(&mut rt, Key::Escape);
     assert!(open(&rt));
-    assert_eq!(rt.state.emoji_picker.as_ref().unwrap().search.text, "");
+    assert_eq!(rt.state.emoji_picker().unwrap().search.text, "");
     press(&mut rt, Key::Escape);
     assert!(!open(&rt));
     assert_eq!(focused(&rt).as_deref(), Some(COMPOSER_KEY));
@@ -154,7 +155,7 @@ fn more_emoji_leads_a_stretched_strip_and_opens_the_tab_for_a_reaction() {
         assert!(shell.strip_key(at, id, &enter, tx));
     });
     rt.frame(FRAME_S);
-    let target = rt.state.emoji_picker.as_ref().map(|picker| picker.target);
+    let target = rt.state.emoji_picker().map(|picker| picker.target);
     assert_eq!(
         target,
         Some(PickerFor::Reaction {
@@ -164,7 +165,7 @@ fn more_emoji_leads_a_stretched_strip_and_opens_the_tab_for_a_reaction() {
     );
     rt.update(|shell, tx| shell.emoji_cell_pressed(0, false, tx));
     rt.frame(FRAME_S);
-    assert!(rt.state.emoji_picker.is_none(), "a pick reacts and closes");
+    assert!(rt.state.picker.is_none(), "a pick reacts and closes");
 }
 
 #[test]

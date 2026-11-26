@@ -49,6 +49,8 @@ impl Shell {
     /// at once. While a message is edited nothing opens and the notice
     /// says why.
     pub(crate) fn attach_pressed(&mut self, tx: &mut Tx) {
+        // A press outside the picker closes it (§16.1); this one skips `worked_outside`.
+        self.drop_emoji_picker();
         match self.attach_target() {
             Ok(key) => {
                 let options = FileDialogOptions {

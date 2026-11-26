@@ -2,7 +2,7 @@
 //! field, growing to [`COMPOSER_MAX_LINES`] lines and then scrolling inside,
 //! and Send (Save while editing, §11), with the line over it that says the
 //! text is too long or a send failed, and the reply or edit bar as its
-//! header row (`bars`), and the 😊 that opens the emoji picker (§16.1).
+//! header row (`bars`), and the picker's tabs, 😊 Emoji and GIF (§16.1).
 //!
 //! Pure: it reads the composer and hands Enter, Shift+Enter, edits and Send
 //! to the shell.
@@ -21,7 +21,7 @@ use crate::design::{
     TYPE_SMALL,
 };
 use crate::emoji_images::{EmojiKey, EmojiLooks, EmojiPlace, inline_image};
-use crate::icons::{CHECK, PAPERCLIP, SEND, SMILE};
+use crate::icons::{CHECK, GIF, PAPERCLIP, SEND, SMILE};
 use crate::shell::Shell;
 use crate::strings;
 use crate::timeline::replies::OriginalText;
@@ -55,8 +55,10 @@ pub(crate) struct PillContext<'a> {
     pub(crate) tray_ui: &'a TrayUi,
     /// What custom emoji draw as.
     pub(crate) emoji: EmojiLooks,
-    /// The emoji picker is open for this field: its tab, the 😊, is lit.
+    /// The emoji picker is open for this field on its Emoji tab: the 😊 is lit.
     pub(crate) emoji_open: bool,
+    /// The picker is open on its GIF tab: the GIF button is lit.
+    pub(crate) gif_open: bool,
 }
 
 /// The pill for the shown channel, with the line over it when there is
@@ -70,6 +72,7 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         tray_ui,
         ref emoji,
         emoji_open,
+        gif_open,
     } = *context;
     let Some((key, draft)) = composer.shown() else {
         // Nothing to write in: still the notice pill's anchor, at no height.
@@ -109,7 +112,7 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         .gap(look.space(SPACE_SM))
         .items_end()
         .child(field)
-        .child(emoji_button(emoji_open, look))
+        .child(picker_tabs(emoji_open, gif_open, look))
         .child(action);
     let pill = col()
         .key(COMPOSER_PILL_KEY)
@@ -268,37 +271,74 @@ fn field(
 
 /// The element key of the pill's 😊, the Emoji tab.
 pub(crate) const EMOJI_BUTTON_KEY: &str = "composer-emoji";
+/// The element key of the pill's GIF button, the GIF tab.
+pub(crate) const GIF_BUTTON_KEY: &str = "composer-gif";
 
-/// The pill's 😊 (§16.1): the picker's Emoji tab, kept where it is; lit in the link colour on
-/// `accent.soft` while the tab is open, and pressing it again closes the picker.
-fn emoji_button(open: bool, look: &Look) -> El {
-    let (fill, ink) = if open {
-        (look.palette.accent_soft, look.palette.link)
+/// The picker's tabs, the pill's own buttons kept where they are (§16.1): 😊 Emoji and GIF, a
+/// tab list ← and → move between. The open one is the link colour on `accent.soft`; pressing it
+/// again closes the picker, pressing the other switches.
+fn picker_tabs(emoji_open: bool, gif_open: bool, look: &Look) -> El {
+    row()
+        .gap(2.0)
+        .center_y()
+        .role("tablist")
+        .focus_group()
+        .child(tab_button(
+            (EMOJI_BUTTON_KEY, &SMILE, strings::picker_emoji()),
+            strings::shortcut_emoji(),
+            emoji_open,
+            Shell::emoji_button_pressed,
+            look,
+        ))
+        .child(tab_button(
+            (GIF_BUTTON_KEY, &GIF, strings::picker_gifs()),
+            strings::shortcut_gif(),
+            gif_open,
+            Shell::gif_button_pressed,
+            look,
+        ))
+}
+
+/// One of the pill's tabs: its key, icon and name, its key chord, whether it is open, and its
+/// press.
+fn tab_button(
+    (key, glyph, name): (&'static str, &'static rune::Icon, &'static str),
+    chord: &'static str,
+    open: bool,
+    press: fn(&mut Shell, &mut rune::Tx),
+    look: &Look,
+) -> El {
+    let (fill, ink, hover_ink) = if open {
+        (
+            look.palette.accent_soft,
+            look.palette.link,
+            look.palette.link,
+        )
     } else {
-        (rune::Color::TRANSPARENT, look.palette.text_secondary)
-    };
-    let hover_ink = if open {
-        look.palette.link
-    } else {
-        look.palette.text_primary
+        (
+            rune::Color::TRANSPARENT,
+            look.palette.text_secondary,
+            look.palette.text_primary,
+        )
     };
     row()
-        .key(EMOJI_BUTTON_KEY)
+        .key(key)
         .size(look.space(SEND_BUTTON), look.space(SEND_BUTTON))
         .center()
         .radius(action_radius(look))
         .fill(fill)
-        .role("button")
-        .label(strings::picker_emoji())
-        .help(strings::picker_emoji())
-        .help_keys([strings::shortcut_emoji()])
+        .role("tab")
+        .label(name)
+        .help(name)
+        .help_keys([chord])
         .expanded(open)
         .focusable(true)
+        .focus_selected(open)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .hover(look.on_pill(look.palette.surface_hover))
         .hover_group()
-        .on_press_tx(|shell: &mut Shell, tx| shell.emoji_button_pressed(tx))
-        .child(icon(&SMILE, PILL_ICON_PT).color(ink).group_color(hover_ink))
+        .on_press_tx(press)
+        .child(icon(glyph, PILL_ICON_PT).color(ink).group_color(hover_ink))
 }
 
 /// Send's and Save's corner radius: concentric with the pill, whose edge

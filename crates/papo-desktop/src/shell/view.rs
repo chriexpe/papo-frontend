@@ -90,8 +90,8 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                         cx,
                     ));
                 }
-                if let Some(picker) = &shell.emoji_picker {
-                    app = app.child(super::emoji_picker::view(shell, picker, &look, cx));
+                if let Some(picker) = &shell.picker {
+                    app = app.child(super::picker::view(shell, picker, &look, cx));
                 }
                 if let Some(notice) = &shell.notice {
                     app = app.child(notice::view(notice, composer::COMPOSER_PILL_KEY, &look));

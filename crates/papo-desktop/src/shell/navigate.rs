@@ -96,8 +96,9 @@ impl Shell {
     /// Keys no control took: Alt+↑/↓ between channels, then Ctrl+A in the
     /// timeline.
     pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
-        // The emoji picker is modal: what stands behind it takes no keys (Ctrl+E is the app's).
-        if self.emoji_picker.is_some() {
+        // The open picker holds the keyboard: only the app's own keys (its tabs' among them)
+        // reach past it.
+        if self.picker.is_some() {
             return self.app_key(key, tx);
         }
         self.app_key(key, tx)

@@ -80,12 +80,16 @@ impl Shell {
 
     /// ✕ on the reply bar.
     pub(crate) fn reply_closed(&mut self) {
+        // A press outside the picker closes it (§16.1); this one skips `worked_outside`.
+        self.drop_emoji_picker();
         let effects = self.composer.cancel_reply().unwrap_or_default();
         self.run_composer(effects, None);
     }
 
     /// ✕ on the edit bar.
     pub(crate) fn edit_closed(&mut self) {
+        // A press outside the picker closes it (§16.1); this one skips `worked_outside`.
+        self.drop_emoji_picker();
         let effects = self.composer.cancel_edit().unwrap_or_default();
         self.run_composer(effects, None);
     }

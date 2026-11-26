@@ -43,6 +43,8 @@ impl Shell {
     /// Send, or the Enter that sends: the text leaves the field and is
     /// queued.
     pub(crate) fn composer_send(&mut self, tx: &mut Tx) {
+        // A press outside the picker closes it (§16.1); this one skips `worked_outside`.
+        self.drop_emoji_picker();
         let local = (self.local_ids)();
         let emojis = self
             .composer
@@ -123,6 +125,7 @@ impl Shell {
             tray_ui: &self.tray_ui,
             emoji: self.emoji_images.looks(),
             emoji_open: self.emoji_open_for_field(),
+            gif_open: self.gif_open(),
         }
     }
 

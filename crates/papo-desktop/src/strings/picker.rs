@@ -77,3 +77,73 @@ pub(crate) fn emoji_category(category: EmojiCategory) -> &'static str {
 pub(crate) fn more_emoji() -> &'static str {
     text!("reaction.more_emoji")
 }
+
+/// The picker as a dialog on the GIF tab, and the pill's GIF button: "GIFs".
+pub(crate) fn picker_gifs() -> &'static str {
+    text!("picker.gifs")
+}
+
+/// The GIF tab's search field.
+pub(crate) fn picker_search_gifs() -> &'static str {
+    text!("picker.search_gifs")
+}
+
+/// The GIF chips: Favorites, Recent, Trending.
+pub(crate) fn picker_favorites() -> &'static str {
+    text!("picker.favorites")
+}
+
+pub(crate) fn picker_recent() -> &'static str {
+    text!("picker.recent")
+}
+
+pub(crate) fn picker_trending() -> &'static str {
+    text!("picker.trending")
+}
+
+/// Favorites with none yet.
+pub(crate) fn picker_fav_empty() -> &'static str {
+    text!("picker.fav_empty")
+}
+
+/// A search GIPHY has nothing for: "No GIFs for “{q}”".
+pub(crate) fn picker_no_gifs(query: &str) -> String {
+    template!("picker.no_gifs", "q" => query)
+}
+
+/// A build without a GIPHY key, in the search field's place.
+pub(crate) fn picker_no_key() -> &'static str {
+    text!("picker.no_key")
+}
+
+/// GIPHY unreachable, and its button.
+pub(crate) fn picker_failed() -> &'static str {
+    text!("picker.failed")
+}
+
+pub(crate) fn picker_try_again() -> &'static str {
+    text!("picker.try_again")
+}
+
+/// Under the tiles while the next page comes.
+pub(crate) fn picker_loading_more() -> &'static str {
+    text!("picker.loading_more")
+}
+
+/// GIPHY's attribution, at the search field's right end (GIPHY's name: not translated).
+pub(crate) fn picker_powered() -> &'static str {
+    text!("picker.powered")
+}
+
+/// A GIF tile as spoken: "GIF, {title}", or "GIF" without one.
+pub(crate) fn picker_gif_tile(title: &str) -> String {
+    if title.trim().is_empty() {
+        return text!("picker.gif_untitled").to_owned();
+    }
+    template!("picker.gif_tile", "title" => title)
+}
+
+/// Ctrl+G, the GIF tab's key.
+pub(crate) fn shortcut_gif() -> &'static str {
+    text!("shortcut.gif")
+}
