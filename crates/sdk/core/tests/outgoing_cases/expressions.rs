@@ -9,6 +9,7 @@ fn gif() -> Gif {
         url: "https://example.invalid/synthetic.gif".into(),
         page_url: "https://example.invalid/synthetic".into(),
         title: String::new(),
+        ..Default::default()
     }
 }
 

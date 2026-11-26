@@ -412,3 +412,36 @@ fn a_thumbnail_the_server_holds_no_picture_for_draws_no_picture() {
         "no stored type: the server holds no bytes"
     );
 }
+
+#[test]
+fn a_message_that_is_only_its_gif_link_hides_its_text() {
+    let link = "https://media.giphy.com/media/abcDEF123xyz/giphy.gif";
+    let gif = Embed {
+        id: Some(id(7)),
+        fetch_method: Some("gif".into()),
+        url: Some(link.into()),
+        thumbnail: Some(media(Some("image/gif"), Some(200), Some(150))),
+        ..Default::default()
+    };
+    let with_text = |text: &str, embeds: Vec<Embed>| Message {
+        content: Some(text.into()),
+        ..message(embeds)
+    };
+    assert!(hides_text(&with_text(link, vec![gif.clone()])));
+    assert!(
+        hides_text(&with_text(&format!(" {link}\n"), vec![gif.clone()])),
+        "spaces around it"
+    );
+    assert!(
+        !hides_text(&with_text(&format!("olha {link}"), vec![gif.clone()])),
+        "words beside it"
+    );
+    assert!(
+        !hides_text(&with_text(link, Vec::new())),
+        "no embed yet: the link shows"
+    );
+    assert!(
+        !hides_text(&with_text("https://example.com/a", vec![article(1)])),
+        "a card"
+    );
+}

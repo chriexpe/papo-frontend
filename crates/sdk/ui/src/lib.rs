@@ -13,7 +13,7 @@ pub use waveform::{
 mod link_preview;
 pub use link_preview::{
     CardField, CardPicture, CardVideo, LinkCard, LinkPreview, MAX_FIELDS, MAX_PREVIEWS, PageLink,
-    PreviewMedia, UNSIZED_PICTURE_ASPECT, card_box, link_previews, preview,
+    PreviewMedia, UNSIZED_PICTURE_ASPECT, card_box, hides_text, link_previews, preview,
 };
 mod provider_player;
 pub use provider_player::{PLAYER_ASPECT, PlayerKind, PlayerProvider, ProviderPlayer};

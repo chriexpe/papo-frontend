@@ -78,6 +78,44 @@ fn giphy_transport_is_cookie_free_paginated_and_generation_scoped() -> Result {
     f.finish()
 }
 
+#[test]
+fn giphy_trending_searches_come_from_the_provider_without_credentials() -> Result {
+    let mut f = Fixture::new(Config::default())?;
+    let account =
+        f.run(async { Ok::<_, Box<dyn std::error::Error>>(accounts(&f).await?.0.account()) })??;
+    let endpoint = format!("{}/catalog/trending", f.server().base_url());
+    f.config.giphy = Some(papo_sdk::GiphyConfig::loopback(
+        (0..32).map(|_| 'x').collect(),
+        endpoint,
+    )?);
+    f.reopen()?;
+    f.run(async {
+        let session = f.client().handle().session(account)?;
+        fixture::online(&session).await?;
+        let body = serde_json::json!({"data": ["bom dia", "sexta"], "meta": {"status": 200}});
+        f.server()
+            .set_encoded_media(EncodedMedia {
+                path: "/catalog/trending-searches".into(),
+                bytes: serde_json::to_vec(&body)?,
+                users: BTreeSet::new(),
+                etag: None,
+                status: 200,
+                content_range: None,
+            })
+            .await?;
+        let searches = session.expressions().trending_searches().await?;
+        assert_eq!(searches.value, ["bom dia", "sexta"]);
+        let observations = f.server().take_media_observations().await;
+        assert!(
+            observations
+                .iter()
+                .all(|request| !request.cookie && !request.authorization)
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
 async fn accounts(f: &Fixture) -> Result<(Session, Session)> {
     let client = f.client().handle();
     let server = client

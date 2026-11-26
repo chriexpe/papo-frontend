@@ -12,6 +12,7 @@ fn gif() -> Gif {
         url: "https://example.invalid/encoded.gif".into(),
         page_url: "https://example.invalid/item".into(),
         title: String::new(),
+        ..Default::default()
     }
 }
 
@@ -115,4 +116,72 @@ fn allocating_expression_order_uses_an_index_instead_of_scanning_other_accounts(
             .await
             .unwrap();
     });
+}
+
+fn item(n: usize) -> serde_json::Value {
+    serde_json::json!({
+        "id": format!("gif{n:04}"), "url": format!("https://giphy.com/gifs/x-gif{n:04}"),
+        "title": "A GIF",
+        "images": {
+            "original": {"url": "https://media.giphy.com/media/a/giphy.gif", "width": "480", "height": "270"},
+            "fixed_width": {"url": "https://media.giphy.com/media/a/200w.gif", "width": "200", "height": "113"}
+        }
+    })
+}
+
+fn page(count: usize, offset: u32, total: u32) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "data": (0..count).map(item).collect::<Vec<_>>(),
+        "pagination": {"offset": offset, "count": count, "total_count": total},
+        "meta": {"status": 200}
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_page_holds_fifty_gifs_with_their_sizes_and_preview() {
+    let parsed = catalog::parse_page_for_test(&page(50, 0, 1000), 0, false).unwrap();
+    assert_eq!(parsed.gifs.len(), 50);
+    assert_eq!(parsed.next_offset, Some(50));
+    let first = &parsed.gifs[0];
+    assert_eq!((first.width, first.height), (480, 270));
+    assert_eq!(
+        first.preview_url,
+        "https://media.giphy.com/media/a/200w.gif"
+    );
+    assert_eq!((first.preview_width, first.preview_height), (200, 113));
+    assert!(catalog::parse_page_for_test(&page(51, 0, 1000), 0, false).is_err());
+}
+
+#[test]
+fn trending_stops_at_its_last_offset_and_a_search_goes_further() {
+    let trending = catalog::parse_page_for_test(&page(50, 450, 10_000), 450, false).unwrap();
+    assert_eq!(
+        trending.next_offset, None,
+        "500 is past trending's last offset"
+    );
+    let search = catalog::parse_page_for_test(&page(50, 450, 10_000), 450, true).unwrap();
+    assert_eq!(search.next_offset, Some(500));
+}
+
+#[test]
+fn trending_searches_keep_clean_terms_in_order() {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "data": ["bom dia", "  sexta  ", "", "x".repeat(51), "kkkk"],
+        "meta": {"status": 200}
+    }))
+    .unwrap();
+    assert_eq!(
+        catalog::parse_searches_for_test(&body).unwrap(),
+        ["bom dia", "sexta", "kkkk"]
+    );
+}
+
+#[test]
+fn a_gif_saved_before_sizes_still_decodes() {
+    let old: Gif = serde_json::from_str(
+        r#"{"id":"a","url":"https://x.invalid/a.gif","page_url":"https://x.invalid/a","title":""}"#,
+    )
+    .unwrap();
+    assert_eq!((old.width, old.preview_url.as_str()), (0, ""));
 }
