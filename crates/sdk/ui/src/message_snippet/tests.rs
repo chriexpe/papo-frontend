@@ -96,6 +96,30 @@ fn without_text_the_first_attachment_names_the_kind() {
 }
 
 #[test]
+fn a_gif_only_message_is_a_gif_like_a_gif_attachment() {
+    let gif = json!({
+        "id": "00000000-0000-4000-8000-000000000006",
+        "fetch_method": "gif",
+        "url": "https://giphy.com/gifs/abc123",
+        "title": "A GIF",
+        "thumbnail": { "mime_type": "image/gif", "width": 200, "height": 150 },
+    });
+    let only = of_message(&wire(json!({
+        "content": "https://media2.giphy.com/media/abc123/giphy.gif",
+        "embeds": [gif.clone()],
+    })));
+    assert_eq!(only, Snippet::Gif);
+    let captioned = of_message(&wire(json!({
+        "content": "olha https://media2.giphy.com/media/abc123/giphy.gif",
+        "embeds": [gif],
+    })));
+    assert!(
+        matches!(captioned, Snippet::Text(_)),
+        "with words, the words"
+    );
+}
+
+#[test]
 fn a_link_only_message_is_its_embeds_title_and_host() {
     let embed = json!({ "title": "Papo release notes", "url": "https://example.org/notes" });
     let linked = of_message(&wire(json!({

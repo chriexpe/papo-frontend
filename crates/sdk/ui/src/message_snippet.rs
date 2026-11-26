@@ -14,7 +14,8 @@ use crate::message_content::{Block, Inline, MessageContent};
 pub enum Snippet {
     /// The first non-empty line of text, never empty.
     Text(Vec<SnippetPart>),
-    /// The first attachment is a GIF.
+    /// The first attachment is a GIF, or the message is one GIF link it hides
+    /// (`link_preview::hides_text`).
     Gif,
     /// The first attachment is a JPEG, PNG or WebP picture (`AttachmentKind::Image`).
     Image,
@@ -61,6 +62,11 @@ pub enum SnippetPart {
 /// Sums `message` (whose parsed content is `content`) up in one line.
 #[must_use]
 pub fn snippet(message: &Message, content: &MessageContent) -> Snippet {
+    // A GIF-only message shows only its GIF, so its line says so, as a GIF attachment's does
+    // (`docs/design.md` §16, "A GIF-only message hides its link").
+    if crate::link_preview::hides_text(message) {
+        return Snippet::Gif;
+    }
     if let Some(link) = only_link(content) {
         return link_snippet(message, Some(&link));
     }
