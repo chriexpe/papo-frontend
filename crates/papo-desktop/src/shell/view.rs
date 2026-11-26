@@ -96,6 +96,10 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                     cx.system_dark(),
                     cx.system_reduced_motion(),
                 ));
+                // The provider viewer takes its player over the window; its menu opens above.
+                if let Some(viewer) = super::player_viewer::view(shell, cx) {
+                    app = app.child(viewer);
+                }
                 if let Some(menu) = &shell.nav.menu {
                     app = app.children(menu::pointer_point(menu));
                     let body = if menu.description.is_some() {
@@ -233,6 +237,8 @@ fn settings_panel(
         conversations: shell.conversations.settings(),
         general: shell.general.settings(),
         trusted: shell.content.trusted.hosts(),
+        players: shell.players.settings.settings(),
+        sites_with_data: &shell.players.sites_with_data,
         diagnostics: &diagnostics,
         account: account.as_ref(),
         system_dark,

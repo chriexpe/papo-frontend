@@ -144,6 +144,8 @@ pub(crate) struct MediaStyle {
     pub(crate) audio: AudioView,
     /// The waveform the pointer is over, and where along it (0 to 1).
     pub(crate) audio_hover: Option<(AudioKey, f32)>,
+    /// Provider players: whether they can load, and each one's state.
+    pub(crate) players: crate::link_cards::player::PlayersView,
 }
 
 /// The id a picture shares with the viewer's while it shows it, so the viewer grows out of the
@@ -200,6 +202,7 @@ impl MediaStyle {
             video_volume: 1.0,
             audio: AudioView::default(),
             audio_hover: None,
+            players: crate::link_cards::player::PlayersView::default(),
         }
     }
 

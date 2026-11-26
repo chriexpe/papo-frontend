@@ -283,6 +283,28 @@ impl TimelineHost for Host {
         self.controls.push("card");
     }
 
+    fn player_event(
+        &mut self,
+        _at: crate::message_media::received::MediaAt,
+        _key: crate::provider_players::PlayerKey,
+        _event: crate::link_cards::player::PlayerEvent,
+        _tx: &mut Tx,
+    ) {
+        self.controls.push("player");
+    }
+
+    fn player_key(
+        &mut self,
+        _at: crate::message_media::received::MediaAt,
+        _key: crate::provider_players::PlayerKey,
+        _event: &rune::KeyEvent,
+        _tx: &mut Tx,
+    ) -> bool {
+        false
+    }
+
+    fn player_moved(&mut self, _key: crate::provider_players::PlayerKey, _rect: [f32; 4]) {}
+
     fn message_menu_requested(
         &mut self,
         _key: TimelineKey,

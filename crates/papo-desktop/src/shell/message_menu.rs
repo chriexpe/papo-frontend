@@ -165,6 +165,7 @@ impl Shell {
         let copies = copy::copies(&self.copy_source(open), id)?;
         push_group(&mut entries, link_items(key, &copies.links));
         let previews_shown = self.conversations.settings().link_previews;
+        push_group(&mut entries, self.message_player_items(key, id));
         push_group(
             &mut entries,
             super::link_cards::card_menu_items(key, message, previews_shown, &copies.links),

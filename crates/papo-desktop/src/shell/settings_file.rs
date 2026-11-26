@@ -17,6 +17,7 @@ pub(crate) struct LatestRows {
     pub(crate) conversations: Option<RowId>,
     pub(crate) general: Option<RowId>,
     pub(crate) trusted: Option<RowId>,
+    pub(crate) players: Option<RowId>,
 }
 
 impl Shell {

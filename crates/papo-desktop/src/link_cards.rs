@@ -9,11 +9,14 @@
 
 use papo_sdk::{AccountId, MediaSource, Message, Uuid};
 use papo_sdk_ui::{
-    CardPicture, CardVideo, LinkPreview, MediaBounds, MediaBox, card_box, media_box,
+    CardPicture, CardVideo, LinkPreview, MediaBounds, MediaBox, ProviderPlayer, card_box, media_box,
 };
 
 use crate::media_store::MediaKey;
+use crate::message_media::received::MediaAt;
+use crate::provider_players::PlayerKey;
 
+pub(crate) mod player;
 pub(crate) mod view;
 
 /// What a press on a card asks for, besides its picture's (which are media presses) and its
@@ -22,8 +25,8 @@ pub(crate) mod view;
 pub(crate) enum CardPress {
     /// The card's menu, beside the pointer at `at` (window points).
     Menu([f32; 2]),
-    /// A provider video's play disc: until its player lands (D8b), the page opens in the
-    /// browser, by §9's link rules.
+    /// A provider video's play disc where it never plays (pins, search, a confirmation): the
+    /// page opens in the browser, by §9's link rules.
     OpenInBrowser,
 }
 
@@ -73,6 +76,27 @@ pub(crate) fn picture_of(preview: &LinkPreview) -> Option<&CardPicture> {
 /// A card's provider video, when it is the provider's player (not a clip the server relays).
 pub(crate) fn is_provider_video(preview: &LinkPreview) -> bool {
     matches!(preview, LinkPreview::Card(card) if matches!(card.video, Some(CardVideo::Provider(_))))
+}
+
+/// A card's provider player, when its video is an allowlisted provider's (the SDK's
+/// descriptor): the player's key at `at` and the descriptor.
+pub(crate) fn player_of(
+    at: MediaAt,
+    preview: &LinkPreview,
+) -> Option<(PlayerKey, &ProviderPlayer)> {
+    let LinkPreview::Card(card) = preview else {
+        return None;
+    };
+    let Some(CardVideo::Provider(Some(player))) = &card.video else {
+        return None;
+    };
+    let key = PlayerKey {
+        account: at.account,
+        channel: at.channel,
+        message: at.message,
+        embed: card.embed,
+    };
+    Some((key, player))
 }
 
 /// A preview's relayed clip: its key and its source.

@@ -1,8 +1,8 @@
-//! The shell's side of link cards (`docs/design.md` §15.1, §15.6, D8a): a card's menu (§10's
-//! link menu; a provider video's reads Open in browser), the poster's play disc opening the
-//! page until the player lands, and a preview picture's media presses and menu actions (the
-//! viewer, Save, Save as…, Copy image, Retry), as an attachment's. The card items of a
-//! message's menu are `card_menu_items`.
+//! The shell's side of link cards (`docs/design.md` §15.1, §15.6): a card's menu (§10's link
+//! menu; a provider video with a player opens the player's menu, `player_presses`), the play
+//! disc where a poster never plays opening the page, and a preview picture's media presses and
+//! menu actions (the viewer, Save, Save as…, Copy image, Retry), as an attachment's. The card
+//! items of a message's menu are `card_menu_items`.
 
 use papo_sdk::Message;
 use papo_sdk_ui::{AttachmentKind, LinkPreview};
@@ -50,6 +50,12 @@ impl Shell {
         match press {
             CardPress::OpenInBrowser => self.link_pressed(key, page.address.clone(), tx),
             CardPress::Menu(point) => {
+                if let Some((player, _)) = crate::link_cards::player_of(at, &preview).filter(|_| {
+                    at.surface == crate::message_media::received::MediaSurface::Timeline
+                }) {
+                    self.open_player_menu(at, player, Some(point));
+                    return;
+                }
                 let open_label = if is_provider_video(&preview) {
                     strings::embed_open_browser()
                 } else {
@@ -58,37 +64,6 @@ impl Shell {
                 self.open_link_menu_as(key, page.address.clone(), point, open_label);
             }
         }
-    }
-
-    /// Space or K (`typed`) on focused message `id` (§15.6): its first provider video opens in
-    /// the browser, by §9's link rules, until its player lands (D8b). Returns whether one did.
-    pub(super) fn message_card_key(
-        &mut self,
-        key: TimelineKey,
-        id: papo_sdk::Uuid,
-        typed: &str,
-        tx: &mut Tx,
-    ) -> bool {
-        if typed != " " && !typed.eq_ignore_ascii_case("k") {
-            return false;
-        }
-        let shown = self.conversations.settings().link_previews;
-        let page = self
-            .tabs
-            .shown()
-            .filter(|open| open.key == key)
-            .and_then(|open| open.message(id))
-            .and_then(|(message, _)| {
-                crate::link_cards::previews(message, shown)
-                    .into_iter()
-                    .find(is_provider_video)
-                    .and_then(|preview| preview.page().cloned())
-            });
-        let Some(page) = page else {
-            return false;
-        };
-        self.link_pressed(key, page.address, tx);
-        true
     }
 
     /// A media press on a preview's picture: the viewer, its menu, Retry.

@@ -206,6 +206,30 @@ impl TimelineHost for Shell {
         self.press_card(at, press, tx);
     }
 
+    fn player_event(
+        &mut self,
+        at: crate::message_media::received::MediaAt,
+        key: crate::provider_players::PlayerKey,
+        event: crate::link_cards::player::PlayerEvent,
+        tx: &mut Tx,
+    ) {
+        Shell::player_event(self, at, key, event, tx);
+    }
+
+    fn player_key(
+        &mut self,
+        at: crate::message_media::received::MediaAt,
+        key: crate::provider_players::PlayerKey,
+        event: &KeyEvent,
+        tx: &mut Tx,
+    ) -> bool {
+        Shell::player_key(self, at, key, event, tx)
+    }
+
+    fn player_moved(&mut self, key: crate::provider_players::PlayerKey, rect: [f32; 4]) {
+        Shell::player_moved(self, key, rect);
+    }
+
     fn message_menu_requested(
         &mut self,
         key: TimelineKey,

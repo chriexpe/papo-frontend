@@ -106,7 +106,7 @@ fn subject_tile(account: &AccountFacts, current: bool, look: &Look) -> El {
 fn nav_icon(page: PageId) -> &'static rune::Icon {
     match page {
         PageId::Conversations | PageId::Highlights => &CHAT,
-        PageId::General | PageId::Trusted => &GLOBE,
+        PageId::General | PageId::Trusted | PageId::Players => &GLOBE,
         PageId::Diagnostics => &PULSE,
         PageId::Appearance | PageId::Background | PageId::Shape => &PALETTE,
         PageId::Privacy | PageId::Blocked | PageId::Password | PageId::Profile => &SHIELD,

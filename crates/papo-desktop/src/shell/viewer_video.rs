@@ -207,6 +207,7 @@ impl Shell {
         self.videos.store.mute_all();
         self.reconcile_videos();
         self.pause_audio();
+        self.quiet_players();
     }
 
     /// A press on the viewer's video controls (or its keys).
@@ -278,6 +279,7 @@ impl Shell {
             .is_some_and(|video| !video.muted && video.status.state == PlayerState::Playing);
         if sounds {
             self.pause_audio();
+            self.quiet_players();
         }
     }
 

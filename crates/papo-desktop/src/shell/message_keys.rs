@@ -60,11 +60,11 @@ impl Shell {
             Key::Text(letter) if letter.eq_ignore_ascii_case("e") => self.edit(key, id, tx),
             Key::Text(letter) if letter.eq_ignore_ascii_case("p") => self.toggle_pin(key, id),
             Key::Text(letter) if letter.eq_ignore_ascii_case("o") => {
-                self.open_message_media(key, id, tx)
+                self.message_player_key(key, id, letter, tx) || self.open_message_media(key, id, tx)
             }
             Key::Text(typed) if self.message_video_key(key, id, typed, tx) => true,
             Key::Text(typed) if self.message_audio_key(key, id, typed, tx) => true,
-            Key::Text(typed) if self.message_card_key(key, id, typed, tx) => true,
+            Key::Text(typed) if self.message_player_key(key, id, typed, tx) => true,
             Key::Text(digit) if matches!(digit.as_str(), "1" | "2" | "3") => {
                 let index = usize::from(digit.as_bytes()[0] - b'1');
                 self.quick_react(key, id, index)

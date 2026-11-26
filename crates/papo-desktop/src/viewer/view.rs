@@ -338,7 +338,7 @@ fn actions_pill(shown: &Shown<'_>, look: &Look) -> El {
 }
 
 /// An icon button on a pill.
-fn button(
+pub(super) fn button(
     key: &'static str,
     glyph: &'static Icon,
     label: &'static str,

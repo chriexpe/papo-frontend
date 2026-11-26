@@ -100,6 +100,7 @@ impl Shell {
             video_volume: self.videos.volume.get(),
             audio: self.audio.store.view(),
             audio_hover: self.audio.hover,
+            players: self.players.view(self.players.store.viewer()),
         }
     }
 

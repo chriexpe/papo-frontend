@@ -36,6 +36,45 @@ impl Shell {
             .iter()
             .map(|(message, still)| (crate::link_cards::previews(message, shown), *still))
             .collect();
+        // A provider's poster shows or comes near: the WebView thread opens (once), so a
+        // press on play finds WPE ready or known missing.
+        let has_player = previews
+            .iter()
+            .flat_map(|(previews, _)| previews)
+            .any(|preview| {
+                matches!(
+                    preview,
+                    LinkPreview::Card(card)
+                        if matches!(card.video, Some(papo_sdk_ui::CardVideo::Provider(Some(_))))
+                )
+            });
+        if has_player {
+            self.want_players();
+        }
+        let drawn: std::collections::HashSet<crate::provider_players::PlayerKey> = messages
+            .iter()
+            .zip(&previews)
+            .flat_map(|((message, _), (previews, _))| {
+                let channel = message.channel_id.as_deref().and_then(|id| id.parse().ok());
+                let id = message.id.as_deref().and_then(|id| id.parse().ok());
+                previews.iter().filter_map(move |preview| {
+                    let (LinkPreview::Card(card), Some(channel), Some(message)) =
+                        (preview, channel, id)
+                    else {
+                        return None;
+                    };
+                    matches!(card.video, Some(papo_sdk_ui::CardVideo::Provider(Some(_)))).then_some(
+                        crate::provider_players::PlayerKey {
+                            account,
+                            channel,
+                            message,
+                            embed: card.embed,
+                        },
+                    )
+                })
+            })
+            .collect();
+        self.players_drawn(&drawn);
         let pictures: Vec<(Want, MediaSource)> = previews
             .iter()
             .flat_map(|(previews, _)| pictures_of_previews(account, previews, &boxes))

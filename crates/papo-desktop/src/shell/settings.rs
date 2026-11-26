@@ -128,6 +128,7 @@ impl Shell {
         match page {
             PageId::Diagnostics => self.measure_media_cache(),
             PageId::Profile => self.read_own_profile(),
+            PageId::Players => self.players_page_opened(),
             _ => {}
         }
     }
@@ -254,6 +255,10 @@ impl Shell {
             self.save_presence(presence);
             return;
         }
+        if let Change::Switch(RowId::PlayersOn, on) = change {
+            self.settings_players_on(on, tx);
+            return;
+        }
         let Some(panel) = self.settings.as_mut() else {
             return;
         };
@@ -308,6 +313,7 @@ impl Shell {
             }
             Target::Conversations(settings) => self.set_conversations(settings, Some(row), tx),
             Target::General(settings) => self.set_general(settings, Some(row), tx),
+            Target::Players(settings) => self.set_players(settings, Some(row), tx),
             Target::Trusted(hosts) => {
                 self.latest_rows.trusted = Some(row);
                 if let Some(hosts) = self.content.trusted.replace(hosts) {

@@ -368,6 +368,7 @@ impl Shell {
             MenuAction::OpenLink { key, url } => self.link_pressed(key, url, tx),
             MenuAction::CopyLink(url) => tx.copy(url),
             MenuAction::Media { at, action } => self.media_action(at, action, tx),
+            MenuAction::Player { at, key, action } => self.player_action(at, key, action, tx),
             MenuAction::React { key, id, emoji } => {
                 self.toggle_reaction(key, id, &emoji);
             }

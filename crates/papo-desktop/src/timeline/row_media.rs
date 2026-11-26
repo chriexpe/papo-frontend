@@ -116,7 +116,26 @@ fn audio_drawn(media: &MediaStyle, key: AudioKey) -> Option<AudioDrawn> {
 
 /// What one link preview's picture or clip draws from, for its row's memo, as an attachment's.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct PreviewState(AttachmentState);
+pub(crate) struct PreviewState(AttachmentState, Option<PlayerState>);
+
+/// What a provider player's box draws from (`link_cards::player`): whether players load, its
+/// phase, its ring, its glass buttons, its cursor, whether the viewer has it, and whether it
+/// has a surface.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PlayerState {
+    loadable: bool,
+    shown: Option<PlayerLook>,
+}
+
+/// A player's phase, ring, glass buttons, cursor, viewer and surface, as its box draws them.
+type PlayerLook = (
+    std::mem::Discriminant<crate::provider_players::Phase>,
+    bool,
+    bool,
+    std::mem::Discriminant<rune::Cursor>,
+    bool,
+    bool,
+);
 
 /// What a received message's attachments and link previews draw from, for the row's memo: the
 /// message itself (its address: the SDK replaces a message whole when its embeds change, so it
@@ -225,7 +244,20 @@ pub(crate) fn received_signature(
                 .or_else(|| {
                     crate::link_cards::picture_key(at.account, preview).map(|(key, _)| key)
                 });
-            PreviewState(state_of(at, key, false, media))
+            let player = crate::link_cards::player_of(at, preview).map(|(player, _)| PlayerState {
+                loadable: media.players.loadable,
+                shown: media.players.shown.get(&player).map(|shown| {
+                    (
+                        std::mem::discriminant(&shown.phase),
+                        shown.ring,
+                        shown.chrome,
+                        std::mem::discriminant(&shown.cursor),
+                        shown.in_viewer,
+                        shown.surface.is_some(),
+                    )
+                }),
+            });
+            PreviewState(state_of(at, key, false, media), player)
         })
         .collect();
     (

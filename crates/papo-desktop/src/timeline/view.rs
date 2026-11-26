@@ -114,6 +114,25 @@ pub(crate) trait TimelineHost: crate::message_media::received::MediaHost {
         press: crate::link_cards::CardPress,
         tx: &mut Tx,
     );
+    /// Something to do for provider player `key`, whose box is at media place `at` (§15.3).
+    fn player_event(
+        &mut self,
+        at: crate::message_media::received::MediaAt,
+        key: crate::provider_players::PlayerKey,
+        event: crate::link_cards::player::PlayerEvent,
+        tx: &mut Tx,
+    );
+    /// A key while player `key`'s page has the keyboard: whether Papo took it (the first Esc,
+    /// the Menu key) rather than the page.
+    fn player_key(
+        &mut self,
+        at: crate::message_media::received::MediaAt,
+        key: crate::provider_players::PlayerKey,
+        event: &KeyEvent,
+        tx: &mut Tx,
+    ) -> bool;
+    /// Player `key`'s box is at `rect` (window points), for the out-of-view rule.
+    fn player_moved(&mut self, key: crate::provider_players::PlayerKey, rect: [f32; 4]);
     /// Message `id`'s menu was asked for: by a secondary click at `at`, in
     /// window points, else from its hover bar.
     fn message_menu_requested(

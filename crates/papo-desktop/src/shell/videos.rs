@@ -472,9 +472,10 @@ impl Shell {
             }
         }
         self.reconcile_videos();
-        // One sound at a time: a video's sound pauses audio.
+        // One sound at a time: a video's sound pauses audio and quiets provider players.
         if self.videos.store.has_sound() {
             self.pause_audio();
+            self.quiet_players();
         }
     }
 
