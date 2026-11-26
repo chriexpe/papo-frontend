@@ -4,6 +4,8 @@
 #![cfg(feature = "test-support")]
 #[path = "media_cases/embed_picture.rs"]
 mod embed_picture;
+#[path = "media_cases/emoji_catalog.rs"]
+mod emoji_catalog;
 mod fixture;
 #[path = "media_cases/lifecycle.rs"]
 mod lifecycle;

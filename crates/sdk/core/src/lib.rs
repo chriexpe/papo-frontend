@@ -38,6 +38,11 @@ mod disk_budget;
 mod generation;
 pub use discovery::{AddedServer, DiscoveryFailure, MAX_ICON_BYTES, ServerDiscovery, ServerIcon};
 pub use disk_budget::{DiskBudget, DiskError, DiskFault, DiskReport, DiskStatus};
+mod emoji_catalog;
+pub use emoji_catalog::{
+    CustomEmoji, EmojiCatalog, EmojiCatalogError, EmojiCatalogService, EmojiCatalogUpdate,
+    MAX_CUSTOM_EMOJI,
+};
 mod expressions;
 pub use expressions::{
     CatalogPage, ExpressionError, ExpressionService, ExpressionSnapshot, Gif, GiphyConfig, Sticker,

@@ -20,6 +20,8 @@ pub(crate) struct Resources {
     pub(crate) server: Option<Server>,
     pub(crate) channels: BTreeMap<String, Channel>,
     pub(crate) roles: Vec<Role>,
+    pub(crate) emojis: Vec<papo_api::wire::Emoji>,
+    pub(crate) emoji_pages_served: u64,
     pub(crate) profiles: BTreeMap<String, UserProfile>,
     pub(crate) dms: BTreeMap<String, Vec<DirectConversation>>,
     pub(crate) blocks: BTreeMap<String, Vec<UserSummary>>,
@@ -63,6 +65,7 @@ impl Resources {
             path,
             "/channels"
                 | "/roles"
+                | "/emojis"
                 | "/users"
                 | "/dms"
                 | "/users/blocks"
@@ -84,6 +87,7 @@ impl Resources {
                 }),
             ),
             ("GET", "/users") => self.members(query),
+            ("GET", "/emojis") => self.emoji_page(query),
             ("POST", "/users/profile_batch") => self.profile_batch(body, path),
             ("POST", "/users/user_summary_batch") => self.summary_batch(body, path),
             ("GET", "/dms") => Reply::json(

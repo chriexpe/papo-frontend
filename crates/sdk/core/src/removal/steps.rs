@@ -101,6 +101,7 @@ impl RemovalJobs {
                     "expression_favorites",
                     "expression_recent",
                     "expression_usage",
+                    "emoji_catalog",
                 ] {
                     tx.execute(
                         &format!("DELETE FROM {table} WHERE server_id=?1 AND user_id=?2"),

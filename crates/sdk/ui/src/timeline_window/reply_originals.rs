@@ -9,12 +9,10 @@ use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use papo_sdk::{
-    AccountId, HistorySnapshot, InvalidMessageKey, LocatedMessage, Message, MessageLocator, Uuid,
-};
+use papo_sdk::{HistorySnapshot, InvalidMessageKey, LocatedMessage, Message, MessageLocator, Uuid};
 
 use crate::{
-    content_cache::{self, ContentCacheKey},
+    content_cache::{self, ContentScope},
     message_content::MessageContent,
     timeline_item::ReplyOriginal,
 };
@@ -22,7 +20,7 @@ use crate::{
 /// Resolves originals for one projection of one window.
 pub(crate) struct Originals<'a> {
     raw: &'a HistorySnapshot,
-    cache_scope: Option<(AccountId, Uuid)>,
+    scope: ContentScope<'a>,
     /// The window's messages seen so far. An original is normally older than its reply, so a
     /// window projected oldest first has usually met it; one that has not (a skewed clock) is
     /// still found in history.
@@ -34,10 +32,10 @@ pub(crate) struct Originals<'a> {
 }
 
 impl<'a> Originals<'a> {
-    pub(crate) fn new(raw: &'a HistorySnapshot, cache_scope: Option<(AccountId, Uuid)>) -> Self {
+    pub(crate) fn new(raw: &'a HistorySnapshot, scope: ContentScope<'a>) -> Self {
         Self {
             raw,
-            cache_scope,
+            scope,
             shown: HashMap::new(),
             locator: OnceCell::new(),
             misses: Cell::new(0),
@@ -80,18 +78,15 @@ impl<'a> Originals<'a> {
         }
         Ok(match self.locate(id)? {
             LocatedMessage::Held { index, .. } => match self.raw.messages.get(index) {
-                Some(message) => {
-                    let key = self.cache_scope.map(|(account, channel)| ContentCacheKey {
-                        account,
-                        channel,
-                        message: id,
-                    });
-                    ReplyOriginal::Held {
-                        id,
-                        message: Arc::clone(message),
-                        content: content_cache::get_or_parse(key, message),
-                    }
-                }
+                Some(message) => ReplyOriginal::Held {
+                    id,
+                    message: Arc::clone(message),
+                    content: content_cache::get_or_parse(
+                        self.scope.key(id),
+                        message,
+                        self.scope.emojis,
+                    ),
+                },
                 None => ReplyOriginal::Unknown,
             },
             LocatedMessage::Deleted => ReplyOriginal::Deleted,

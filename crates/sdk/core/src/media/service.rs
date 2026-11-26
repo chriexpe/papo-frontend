@@ -55,7 +55,7 @@ impl MediaService {
     ) -> Result<Generated<MediaData>, MediaError> {
         self.run(move |session, epoch| async move {
             let store = &session.client.inner.media;
-            let _admission = Arc::clone(&store.fetches)
+            let admission = Arc::clone(&store.fetches)
                 .acquire_owned()
                 .await
                 .map_err(|_| MediaError::TaskStopped)?;
@@ -74,6 +74,11 @@ impl MediaService {
                 }
                 None => None,
             };
+            if previous.is_none() && matches!(source, MediaSource::Emoji { .. }) {
+                // Listing for the image waits on no fetch slot.
+                drop(admission);
+                return missing_emoji(&session, &epoch, &source).await;
+            }
             let mut response = match download(&session, &epoch, &source, previous.as_ref()).await {
                 Ok(response) => response,
                 Err(error) => {
@@ -192,6 +197,29 @@ impl MediaService {
             })
             .await?
     }
+}
+
+/// An emoji image the store lacks: it has no route of its own, only the server's list carries
+/// it, so list again (throttled, `emoji_catalog`) and look once more, also when another listing
+/// may have stored it meanwhile.
+async fn missing_emoji(
+    session: &Session,
+    epoch: &Epoch,
+    source: &MediaSource,
+) -> Result<Generated<MediaData>, MediaError> {
+    crate::emoji_catalog::refresh_for_missing_image(session, source).await;
+    let (_, value) = session
+        .client
+        .inner
+        .media
+        .cached_reference(session, epoch, source, false)
+        .await?
+        .ok_or(MediaError::Unavailable)?;
+    session.inner.epochs.validate(epoch.generation)?;
+    Ok(Generated {
+        generation: epoch.generation,
+        value,
+    })
 }
 
 impl super::MediaStore {

@@ -270,6 +270,8 @@ impl Timeline {
         let reading = session.subscribe_reading();
         let catch_up = session.subscribe_catch_up();
         let observer = session.reading_observer();
+        // A catalog that can't be followed leaves `:name:` as text; the window still opens.
+        let emoji_updates = session.emoji_catalog().subscribe().await.ok();
         let mut state = WindowState::new(
             subscription,
             reading.clone(),
@@ -277,6 +279,7 @@ impl Timeline {
             live,
             Some(session.account()),
             channel,
+            emoji_updates,
             &config,
         )?;
         // Every window draws pending edits and deletions; only a live one draws echoes.

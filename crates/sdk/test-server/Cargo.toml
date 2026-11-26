@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 papo-api = { path = "../api" }
+# Emoji images travel base64 in `GET /emojis`, as the backend sends them; reuses locked base64.
+base64 = "0.22.1"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["sink"] }

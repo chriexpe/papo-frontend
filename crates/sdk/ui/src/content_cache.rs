@@ -11,7 +11,7 @@ use std::{
 
 use papo_sdk::{AccountId, Message, Uuid};
 
-use crate::message_content::MessageContent;
+use crate::message_content::{CustomEmojis, MessageContent};
 
 const MAX_CACHED_REVISIONS: usize = 4096;
 
@@ -22,10 +22,31 @@ pub(crate) struct ContentCacheKey {
     pub message: Uuid,
 }
 
+/// Where parsed content is shared (`cache`: the account and channel, none to share nothing)
+/// and what its `:name:` resolves against.
+#[derive(Clone, Copy)]
+pub(crate) struct ContentScope<'a> {
+    pub cache: Option<(AccountId, Uuid)>,
+    pub emojis: &'a CustomEmojis,
+}
+
+impl ContentScope<'_> {
+    /// The cache key of message `message`, when content is shared.
+    pub fn key(&self, message: Uuid) -> Option<ContentCacheKey> {
+        self.cache.map(|(account, channel)| ContentCacheKey {
+            account,
+            channel,
+            message,
+        })
+    }
+}
+
 #[derive(Clone)]
 struct CacheEntry {
     message: Weak<Message>,
     content: Weak<MessageContent>,
+    /// The custom emoji revision the content was resolved against.
+    emojis: u64,
     seq: u64,
 }
 
@@ -48,8 +69,12 @@ impl CacheState {
         &self,
         key: &ContentCacheKey,
         current: &Arc<Message>,
+        emojis: u64,
     ) -> Option<(Arc<Message>, Arc<MessageContent>)> {
-        let entry = self.entries.get(key)?;
+        let entry = self
+            .entries
+            .get(key)
+            .filter(|entry| entry.emojis == emojis)?;
         let cached_msg = entry.message.upgrade()?;
         let cached_content = entry.content.upgrade()?;
         same_or_ptr_eq(&cached_msg, current).then_some((cached_msg, cached_content))
@@ -60,6 +85,7 @@ impl CacheState {
         key: ContentCacheKey,
         message: &Arc<Message>,
         content: &Arc<MessageContent>,
+        emojis: u64,
     ) {
         if !self.entries.contains_key(&key) && self.entries.len() >= MAX_CACHED_REVISIONS {
             self.evict_stale_or_oldest();
@@ -71,6 +97,7 @@ impl CacheState {
             CacheEntry {
                 message: Arc::downgrade(message),
                 content: Arc::downgrade(content),
+                emojis,
                 seq,
             },
         );
@@ -134,205 +161,54 @@ pub(crate) fn refresh_revision(
     key: ContentCacheKey,
     message: &Arc<Message>,
     content: &Arc<MessageContent>,
+    emojis: &CustomEmojis,
 ) {
     let mut cache = shared_cache()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache.insert(key, message, content);
+    cache.insert(key, message, content, emojis.revision());
 }
 
-/// Returns a shared parsed [`MessageContent`] for `(key, message)`, parsing outside the lock on miss.
+/// Returns a shared parsed [`MessageContent`] for `(key, message)` resolved against `emojis`,
+/// parsing outside the lock on miss. Content resolved against another emoji revision is a miss.
 pub(crate) fn get_or_parse(
     key: Option<ContentCacheKey>,
     message: &Arc<Message>,
+    emojis: &CustomEmojis,
 ) -> Arc<MessageContent> {
+    let revision = emojis.revision();
     if let Some(key) = key {
         let hit = {
             let cache = shared_cache()
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cache.get_matching(&key, message)
+            cache.get_matching(&key, message, revision)
         };
         if let Some((cached_msg, cached_content)) = hit {
             if !Arc::ptr_eq(&cached_msg, message) {
-                refresh_revision(key, message, &cached_content);
+                refresh_revision(key, message, &cached_content, emojis);
             }
             return cached_content;
         }
     }
 
-    let parsed = Arc::new(MessageContent::parse(
-        message.content.as_deref().unwrap_or(""),
-    ));
+    let parsed = Arc::new(emojis.parse(message.content.as_deref().unwrap_or("")));
 
     if let Some(key) = key {
         let mut cache = shared_cache()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((cached_msg, cached_content)) = cache.get_matching(&key, message) {
+        if let Some((cached_msg, cached_content)) = cache.get_matching(&key, message, revision) {
             if !Arc::ptr_eq(&cached_msg, message) {
-                cache.insert(key, message, &cached_content);
+                cache.insert(key, message, &cached_content, revision);
             }
             return cached_content;
         }
-        cache.insert(key, message, &parsed);
+        cache.insert(key, message, &parsed, revision);
     }
 
     parsed
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use papo_sdk::ServerAddress;
-
-    fn account(user_seed: u128, host: &str) -> AccountId {
-        let server = ServerAddress::parse(host).expect("valid server URL").id();
-        AccountId::new(server, Uuid::from_u128(user_seed))
-    }
-
-    fn message(id: u128, body: &str, edited_at: Option<&str>) -> Arc<Message> {
-        Arc::new(Message {
-            id: Some(Uuid::from_u128(id).to_string()),
-            content: Some(body.into()),
-            edited_at: edited_at.map(str::to_owned),
-            ..Message::default()
-        })
-    }
-
-    #[test]
-    fn reuses_across_metadata_diffs_and_drops_when_weak_holders_go_away() {
-        let key = ContentCacheKey {
-            account: account(0xA1, "https://cache-reuse.invalid"),
-            channel: Uuid::from_u128(0xC1),
-            message: Uuid::from_u128(0xD1),
-        };
-        let msg_v1 = message(0xD1, "**hello** world", None);
-        let parsed_v1 = get_or_parse(Some(key), &msg_v1);
-        let again = get_or_parse(Some(key), &msg_v1);
-        assert!(Arc::ptr_eq(&parsed_v1, &again));
-
-        let mut reaction_updated = (*msg_v1).clone();
-        reaction_updated.reactions = Some(Vec::new());
-        let msg_v1_react = Arc::new(reaction_updated);
-        let after_react = get_or_parse(Some(key), &msg_v1_react);
-        assert!(Arc::ptr_eq(&parsed_v1, &after_react));
-
-        let edited = message(0xD1, "**edited** world", Some("2026-01-01T00:01:00Z"));
-        let parsed_v2 = get_or_parse(Some(key), &edited);
-        assert!(!Arc::ptr_eq(&parsed_v1, &parsed_v2));
-
-        let weak = Arc::downgrade(&parsed_v2);
-        drop(parsed_v2);
-        assert!(
-            weak.upgrade().is_none(),
-            "cache must never hold strong references"
-        );
-    }
-
-    #[test]
-    fn isolates_different_accounts_even_with_identical_ids_and_content() {
-        let channel = Uuid::from_u128(0xC2);
-        let msg_id = Uuid::from_u128(0xD2);
-        let msg = message(0xD2, "same text", None);
-
-        let a = get_or_parse(
-            Some(ContentCacheKey {
-                account: account(1, "https://iso.invalid"),
-                channel,
-                message: msg_id,
-            }),
-            &msg,
-        );
-        let b = get_or_parse(
-            Some(ContentCacheKey {
-                account: account(2, "https://iso.invalid"),
-                channel,
-                message: msg_id,
-            }),
-            &msg,
-        );
-        assert!(!Arc::ptr_eq(&a, &b));
-    }
-
-    #[test]
-    fn bounds_live_entries_without_unbounded_growth() {
-        let acct = account(9, "https://bound.invalid");
-        let channel = Uuid::from_u128(0xC3);
-        let mut cache = CacheState::default();
-        let mut retained = Vec::new();
-        for index in 0..=(MAX_CACHED_REVISIONS * 2 + 32) {
-            let msg_id = Uuid::from_u128(index as u128 + 1);
-            let msg = message(index as u128 + 1, "entry", None);
-            let parsed = Arc::new(MessageContent::parse("entry"));
-            cache.insert(
-                ContentCacheKey {
-                    account: acct,
-                    channel,
-                    message: msg_id,
-                },
-                &msg,
-                &parsed,
-            );
-            retained.push((msg, parsed));
-        }
-        assert!(cache.entries.len() <= MAX_CACHED_REVISIONS);
-    }
-
-    #[test]
-    fn reclaims_dropped_entries_during_eviction() {
-        let acct = account(10, "https://reclaim.invalid");
-        let channel = Uuid::from_u128(0xC4);
-        let mut cache = CacheState::default();
-        let first_id = Uuid::from_u128(1);
-        let first_msg = message(1, "drop me", None);
-        let first_parsed = Arc::new(MessageContent::parse("drop me"));
-        cache.insert(
-            ContentCacheKey {
-                account: acct,
-                channel,
-                message: first_id,
-            },
-            &first_msg,
-            &first_parsed,
-        );
-        let mut kept = Vec::new();
-        for index in 2..=MAX_CACHED_REVISIONS {
-            let msg_id = Uuid::from_u128(index as u128);
-            let msg = message(index as u128, "keep", None);
-            let parsed = Arc::new(MessageContent::parse("keep"));
-            cache.insert(
-                ContentCacheKey {
-                    account: acct,
-                    channel,
-                    message: msg_id,
-                },
-                &msg,
-                &parsed,
-            );
-            kept.push((msg, parsed));
-        }
-        drop(first_msg);
-        drop(first_parsed);
-
-        let extra_id = Uuid::from_u128(99_999);
-        let extra_msg = message(99_999, "extra", None);
-        let extra_parsed = Arc::new(MessageContent::parse("extra"));
-        cache.insert(
-            ContentCacheKey {
-                account: acct,
-                channel,
-                message: extra_id,
-            },
-            &extra_msg,
-            &extra_parsed,
-        );
-        assert_eq!(cache.entries.len(), MAX_CACHED_REVISIONS);
-        assert_eq!(cache.evictions_since_sweep, 0);
-        assert!(cache.entries.contains_key(&ContentCacheKey {
-            account: acct,
-            channel,
-            message: extra_id,
-        }));
-    }
-}
+mod tests;

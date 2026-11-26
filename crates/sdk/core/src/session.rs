@@ -51,6 +51,7 @@ pub(crate) struct SessionInner {
     pub detached: crate::search::DetachedStore,
     pub notifications: crate::notifications::Notifications,
     pub expression_changes: watch::Sender<u64>,
+    pub emoji_catalog: crate::emoji_catalog::Shared,
     pub calls: Arc<crate::calls::SessionCalls>,
 }
 impl SessionInner {
@@ -127,6 +128,7 @@ impl SessionInner {
             detached: crate::search::DetachedStore::default(),
             notifications: crate::notifications::Notifications::default(),
             expression_changes: watch::channel(0).0,
+            emoji_catalog: crate::emoji_catalog::Shared::default(),
             calls,
         })
     }

@@ -5,10 +5,10 @@ use std::ops::Range;
 use pulldown_cmark::{Alignment, Event, Parser, Tag, TagEnd};
 
 use crate::message_content::{
+    custom_emojis::EmojiNames,
     fences::{normalize_fences, read_code_block},
     model::{
-        Block, CustomEmojiRef, Inline, ListItem, MAX_NESTING_DEPTH, MessageContent, TableAlignment,
-        TextStyle,
+        Block, Inline, ListItem, MAX_NESTING_DEPTH, MessageContent, TableAlignment, TextStyle,
     },
     preprocess::{
         CheckedOffsetEvents, escape_plus_list_markers, heading_level, is_inline_end, is_safe_href,
@@ -19,7 +19,7 @@ use crate::message_content::{
 };
 
 /// Parses Markdown `source` into [`MessageContent`] and resolves Layer 2 mentions/custom emoji.
-pub(crate) fn parse(source: &str, custom_emojis: &[CustomEmojiRef]) -> MessageContent {
+pub(crate) fn parse(source: &str, custom_emojis: EmojiNames<'_>) -> MessageContent {
     if source.is_empty() {
         return MessageContent::default();
     }
@@ -60,7 +60,7 @@ pub(crate) fn parse(source: &str, custom_emojis: &[CustomEmojiRef]) -> MessageCo
     content
 }
 
-fn literal_fallback(source: &str, custom_emojis: &[CustomEmojiRef]) -> MessageContent {
+fn literal_fallback(source: &str, custom_emojis: EmojiNames<'_>) -> MessageContent {
     let text = normalize_newlines(source).into_owned();
     let inlines = apply_tokens_to_inlines(
         vec![Inline::Text {
@@ -82,7 +82,7 @@ fn literal_fallback(source: &str, custom_emojis: &[CustomEmojiRef]) -> MessageCo
 struct Builder<'a> {
     source: &'a str,
     blank_marker: &'a str,
-    custom_emojis: &'a [CustomEmojiRef],
+    custom_emojis: EmojiNames<'a>,
     bold: u32,
     italic: u32,
     strikethrough: u32,

@@ -49,6 +49,7 @@ fn initial_live_snapshot_includes_arrival_after_empty_page_without_waiting_for_a
         true,
         None,
         Uuid::from_u128(4),
+        None,
         &config,
     )
     .unwrap();

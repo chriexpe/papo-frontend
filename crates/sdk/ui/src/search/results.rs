@@ -10,7 +10,7 @@ use std::sync::Arc;
 use papo_sdk::{Message, MessageKey, SearchCursor, SearchHit, SearchPage, Uuid};
 
 use super::local_days::SearchWindow;
-use crate::message_content::MessageContent;
+use crate::message_content::{CustomEmojis, MessageContent};
 
 /// One result.
 #[derive(Clone)]
@@ -33,9 +33,10 @@ pub struct SearchResultItem {
 }
 
 impl SearchResultItem {
-    /// The hit as a result; none when its identity is malformed.
+    /// The hit as a result, its text resolved against `emojis`; none when its identity is
+    /// malformed.
     #[must_use]
-    pub fn of(hit: &SearchHit) -> Option<Self> {
+    pub fn of(hit: &SearchHit, emojis: &CustomEmojis) -> Option<Self> {
         let result = &hit.result;
         let id = result.id.as_deref()?;
         let created_at = result.created_at.as_deref()?;
@@ -53,9 +54,7 @@ impl SearchResultItem {
         };
         Some(Self {
             hit: hit.clone(),
-            content: Arc::new(MessageContent::parse(
-                result.content.as_deref().unwrap_or_default(),
-            )),
+            content: Arc::new(emojis.parse(result.content.as_deref().unwrap_or_default())),
             message,
             channel,
             channel_name: result.channel_name.clone(),
@@ -86,6 +85,8 @@ pub struct SearchResults {
     /// The instants kept: local date filters' exact days.
     window: SearchWindow,
     items: Vec<Arc<SearchResultItem>>,
+    /// What the results' `:name:` resolves to.
+    emojis: CustomEmojis,
     /// The listed messages' ids.
     listed: HashSet<Uuid>,
     next: Option<SearchCursor>,
@@ -115,7 +116,7 @@ impl SearchResults {
     /// malformed or outside the window is left out.
     pub fn append(&mut self, page: &SearchPage) {
         for hit in &page.hits {
-            let Some(item) = SearchResultItem::of(hit) else {
+            let Some(item) = SearchResultItem::of(hit, &self.emojis) else {
                 continue;
             };
             let at_us = item.key.created_at_us;
@@ -135,6 +136,20 @@ impl SearchResults {
         }
         self.next.clone_from(&page.next);
         self.complete = page.next.is_none();
+    }
+
+    /// Resolves the results' `:name:` against `emojis` from now on, parsing the ones already
+    /// listed again when the catalog revision changed.
+    pub fn set_custom_emojis(&mut self, emojis: &CustomEmojis) {
+        if emojis.revision() == self.emojis.revision() {
+            return;
+        }
+        self.emojis = emojis.clone();
+        for item in &mut self.items {
+            let text = item.message.content.as_deref().unwrap_or_default();
+            let content = Arc::new(self.emojis.parse(text));
+            Arc::make_mut(item).content = content;
+        }
     }
 
     /// The results, in the backend's order.
