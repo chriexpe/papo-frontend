@@ -166,11 +166,16 @@ async fn process(
                 channel: super::id(Some(&message.channel_id))?,
                 message: super::id(Some(&message.id))?,
                 author: message.author_id.parse().ok(),
+                external_author: message
+                    .external_author
+                    .and_then(|author| author.name)
+                    .filter(|name| !name.trim().is_empty()),
                 triggered: matches!(
                     policy::classify_direct(&message.content, session.account().user()),
                     policy::Classification::KnownTrigger(_)
                 ),
                 content: message.content,
+                attachments: message.attachments,
                 read: false,
                 trigger_revision: None,
                 observed_at_us: point.created_at_us,
@@ -204,6 +209,12 @@ async fn process(
                 };
                 if let Some((_, recent)) = recent_candidate {
                     candidate.message_point = recent.message_point;
+                    if candidate.external_author.is_none() {
+                        candidate.external_author = recent.external_author.clone();
+                    }
+                    if candidate.attachments.is_empty() {
+                        candidate.attachments = recent.attachments.clone();
+                    }
                 }
                 if candidate.message_point.is_none() {
                     if !state.lookup_queue.is_empty() {

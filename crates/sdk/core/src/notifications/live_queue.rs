@@ -111,9 +111,20 @@ fn merge_candidate(existing: &mut Candidate, candidate: Candidate) {
     if candidate.triggered && !existing.triggered {
         let point = candidate.message_point.or(existing.message_point);
         let read = existing.read || candidate.read;
+        let external_author = candidate
+            .external_author
+            .clone()
+            .or_else(|| existing.external_author.clone());
+        let attachments = if candidate.attachments.is_empty() {
+            existing.attachments.clone()
+        } else {
+            candidate.attachments.clone()
+        };
         *existing = candidate;
         existing.message_point = point;
         existing.read = read;
+        existing.external_author = external_author;
+        existing.attachments = attachments;
         if let Some(point) = point {
             existing.observed_at_us = point.created_at_us;
         }
@@ -123,6 +134,12 @@ fn merge_candidate(existing: &mut Candidate, candidate: Candidate) {
         {
             existing.message_point = Some(point);
             existing.observed_at_us = point.created_at_us;
+        }
+        if existing.external_author.is_none() {
+            existing.external_author = candidate.external_author;
+        }
+        if existing.attachments.is_empty() {
+            existing.attachments = candidate.attachments;
         }
         existing.read |= candidate.read;
     }

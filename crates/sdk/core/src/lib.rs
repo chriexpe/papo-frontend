@@ -128,9 +128,10 @@ pub use resources::{
 };
 mod notifications;
 pub use notifications::{
-    ChannelNotificationMode, InboxCursor, InboxPage, NotificationDelivery, NotificationDiagnostics,
-    NotificationError, NotificationRecord, NotificationService, NotificationSettings,
-    NotificationStatus, NotificationTarget, PushDevice, PushRegistration,
+    AccountNotificationPolicy, ChannelNotificationMode, InboxCursor, InboxPage,
+    NotificationDelivery, NotificationDiagnostics, NotificationError, NotificationRecord,
+    NotificationService, NotificationSettings, NotificationStatus, NotificationTarget, PushDevice,
+    PushRegistration,
 };
 mod scoped_request;
 mod search;

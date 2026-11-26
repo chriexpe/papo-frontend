@@ -5,6 +5,8 @@ mod catch_up_state;
 pub(crate) mod catch_up_sync;
 mod counts;
 pub(crate) mod evidence;
+pub(crate) mod live;
+mod mark_all;
 mod observers;
 pub(crate) mod position_publish;
 pub(crate) mod positions;
@@ -330,6 +332,23 @@ impl Session {
             .dispatch(async move {
                 let _token = token;
                 Ok(catch_up_ops::clear_catch_up_inner(&session, channel).await)
+            })
+            .await
+            .map_err(ReadingError::from)?
+    }
+
+    /// Marks every unread admitted server channel read through this account's durable read path
+    /// (`synchronous=FULL` local points + debounced `PUT /channels/{id}/read` uploads) and clears
+    /// their active catch-up intervals. Direct conversations are left untouched.
+    /// # Errors
+    /// Returns storage, generation, revocation or session errors.
+    pub async fn mark_all_read(&self) -> Result<(), ReadingError> {
+        let session = self.clone();
+        let token = self.inner.tasks.token();
+        self.client
+            .dispatch(async move {
+                let _token = token;
+                Ok(mark_all::mark_all_read_inner(&session).await)
             })
             .await
             .map_err(ReadingError::from)?

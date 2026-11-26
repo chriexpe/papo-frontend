@@ -10,6 +10,7 @@ mod live_queue;
 pub(crate) mod policy;
 pub(crate) mod push;
 mod triggers;
+pub use backend::AccountNotificationPolicy;
 pub use inbox::{InboxCursor, InboxPage, NotificationRecord};
 pub use policy::{ChannelNotificationMode, NotificationSettings};
 pub use push::{PushDevice, PushRegistration};
@@ -111,8 +112,16 @@ pub struct NotificationTarget {
 pub struct NotificationDelivery {
     /// Scoped identity; call `validate_target` before presentation/tap navigation.
     pub target: NotificationTarget,
+    /// Author user UUID when the message was sent by a server member.
+    pub author: Option<Uuid>,
+    /// Resolved author display name (external/webhook name, or member nickname/username).
+    pub author_name: Option<String>,
+    /// Whether the target channel is an admitted direct conversation.
+    pub is_dm: bool,
     /// Preview is absent unless account and device policy explicitly allow it.
     pub preview: Option<String>,
+    /// Live message attachments; always empty when `preview` is absent.
+    pub attachments: Vec<papo_api::wire::Attachment>,
     /// Whether sound is permitted by the shared policy.
     pub sound: bool,
 }
@@ -121,6 +130,8 @@ pub(crate) struct Notifications {
     pub push_closing: AtomicBool,
     pub inbox_revision: AtomicU64,
     pub backend: Mutex<Option<backend::BackendPolicy>>,
+    pub account_policy:
+        std::sync::Arc<crate::observable::StateCell<Option<AccountNotificationPolicy>>>,
     pub canonical_points: tokio::sync::Mutex<context::CanonicalPoints>,
     pub poll_serial: tokio::sync::Mutex<()>,
     pub serial: tokio::sync::Mutex<()>,
@@ -140,6 +151,7 @@ impl Default for Notifications {
             push_closing: AtomicBool::new(false),
             inbox_revision: AtomicU64::new(0),
             backend: Mutex::default(),
+            account_policy: crate::observable::StateCell::new(None),
             canonical_points: tokio::sync::Mutex::default(),
             poll_serial: tokio::sync::Mutex::new(()),
             serial: tokio::sync::Mutex::new(()),
@@ -174,6 +186,18 @@ impl NotificationService {
     #[must_use]
     pub fn subscribe_status(&self) -> watch::Receiver<NotificationStatus> {
         self.session.inner.notifications.status.subscribe()
+    }
+    /// Returns the last admitted account-scoped notification settings reported by the server,
+    /// or `None` before the session has authenticated with `whoami`.
+    #[must_use]
+    pub fn account_policy(&self) -> Option<AccountNotificationPolicy> {
+        *self.session.inner.notifications.account_policy.borrow()
+    }
+    /// Subscribes to account-scoped notification settings reported by the server (`whoami` and
+    /// `Operations::change_notification_settings`). Closes on sign-out, removal or shutdown.
+    #[must_use]
+    pub fn subscribe_account_policy(&self) -> watch::Receiver<Option<AccountNotificationPolicy>> {
+        self.session.inner.notifications.account_policy.subscribe()
     }
     /// Returns account-scoped live notification queue diagnostics without IDs or message content.
     #[must_use]

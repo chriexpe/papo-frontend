@@ -6,7 +6,9 @@ use papo_api::wire::{
 };
 use papo_sdk::{
     ClientError,
-    operations::{OperationError, RefreshStatus, profile::ProfileChange},
+    operations::{
+        OperationError, RefreshStatus, profile::ProfileChange, settings::NotificationPolicyChange,
+    },
 };
 
 use super::{Fixture, Result, setup};
@@ -325,6 +327,114 @@ fn accepted_dm_setting_does_not_claim_unavailable_backend_policy_readback() -> R
         );
         assert_eq!(receipt.value.notification_settings.as_deref(), Some("off"));
         receipt.validate(&first)?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn change_notification_settings_merges_one_field_and_preserves_theme_and_display() -> Result {
+    let f = Fixture::new(papo_test_server::Config::default())?;
+    f.run(async {
+        let (first, _, _) = setup(&f).await?;
+        let receipt = first
+            .operations()
+            .change_notification_settings(NotificationPolicyChange {
+                message_preview: Some(false),
+                ..NotificationPolicyChange::default()
+            })
+            .await?;
+        assert_eq!(receipt.refresh, RefreshStatus::Updated);
+        let config = receipt.value.config.ok_or("missing config")?;
+        assert_eq!(config.theme.as_deref(), Some("system"));
+        let display = config.display.ok_or("missing display")?;
+        assert_eq!(display.font_size.as_deref(), Some("medium"));
+        assert_eq!(display.message_density.as_deref(), Some("normal"));
+        assert_eq!(display.show_timestamps, Some(true));
+        assert_eq!(display.show_avatars, Some(true));
+        let notifications = config.notifications.ok_or("missing notifications")?;
+        assert_eq!(notifications.enabled, Some(true));
+        assert_eq!(notifications.mentions, Some(true));
+        assert_eq!(notifications.message_preview, Some(false));
+        assert_eq!(notifications.sound, Some(true));
+
+        let policy = first
+            .notifications()
+            .account_policy()
+            .ok_or("missing account policy")?;
+        assert!(policy.enabled);
+        assert!(policy.mentions);
+        assert!(!policy.message_preview);
+        assert!(policy.sound);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn two_notification_setting_changes_at_once_both_land() -> Result {
+    let f = Fixture::new(papo_test_server::Config::default())?;
+    f.run(async {
+        let (first, _, _) = setup(&f).await?;
+        let operations = first.operations();
+        let (mentions, sound) = tokio::join!(
+            operations.change_notification_settings(NotificationPolicyChange {
+                mentions: Some(false),
+                ..NotificationPolicyChange::default()
+            }),
+            operations.change_notification_settings(NotificationPolicyChange {
+                sound: Some(false),
+                ..NotificationPolicyChange::default()
+            }),
+        );
+        mentions?;
+        sound?;
+        let policy = first
+            .notifications()
+            .account_policy()
+            .ok_or("missing account policy")?;
+        assert!(policy.enabled);
+        assert!(!policy.mentions);
+        assert!(policy.message_preview);
+        assert!(!policy.sound);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn change_notification_settings_refuses_incomplete_whoami_without_writing() -> Result {
+    let f = Fixture::new(papo_test_server::Config::default())?;
+    f.run(async {
+        let (first, _, _) = setup(&f).await?;
+        let _ = f.server().take_operation_requests().await;
+        f.server()
+            .queue_operation_response(
+                "GET",
+                "/auth/whoami",
+                200,
+                serde_json::json!({
+                    "id": first.account().user().to_string(),
+                    "username": "op-first",
+                    "settings": {"version": 1, "config": {"notifications": {"enabled": true}}}
+                }),
+            )
+            .await?;
+        let result = first
+            .operations()
+            .change_notification_settings(NotificationPolicyChange {
+                sound: Some(false),
+                ..NotificationPolicyChange::default()
+            })
+            .await;
+        assert!(matches!(result, Err(OperationError::InvalidData)));
+        let requests = f.server().take_operation_requests().await;
+        assert!(
+            !requests
+                .iter()
+                .any(|(method, path, _, _)| method == "PUT" && path == "/users/settings"),
+            "incomplete whoami must not dispatch PUT /users/settings"
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()

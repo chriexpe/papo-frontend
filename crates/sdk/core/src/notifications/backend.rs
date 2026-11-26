@@ -2,6 +2,26 @@
 use crate::{ClientError, Generation, session::SessionInner};
 use papo_api::wire::{Notifications, WhoamiResponseSettings};
 
+/// Effective account-scoped notification settings reported by the server (`whoami`).
+/// Device overrides remain separate in [`super::NotificationSettings`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors backend UserConfig.notifications booleans"
+)]
+pub struct AccountNotificationPolicy {
+    /// Connection generation that admitted this policy.
+    pub generation: Generation,
+    /// Master account notification switch (`notifications.enabled`).
+    pub enabled: bool,
+    /// Mention alerts (`notifications.mentions`).
+    pub mentions: bool,
+    /// Show message content in notifications (`notifications.messagePreview`).
+    pub message_preview: bool,
+    /// Play notification sound (`notifications.sound`).
+    pub sound: bool,
+}
+
 pub(crate) struct BackendPolicy {
     pub generation: Generation,
     version: i64,
@@ -30,9 +50,11 @@ pub(crate) fn remember(
             .as_ref()
             .is_none_or(|current| current.generation != generation || version >= current.version)
         {
+            let [enabled, mentions, message_preview, sound] = effective_config(&config);
             let changed = cached.as_ref().is_none_or(|current| {
                 current.generation != generation
-                    || effective_config(&current.config) != effective_config(&config)
+                    || effective_config(&current.config)
+                        != [enabled, mentions, message_preview, sound]
             });
             *cached = Some(BackendPolicy {
                 generation,
@@ -41,6 +63,15 @@ pub(crate) fn remember(
             });
             drop(cached);
             if changed {
+                session.notifications.account_policy.send_replace(Some(
+                    AccountNotificationPolicy {
+                        generation,
+                        enabled,
+                        mentions,
+                        message_preview,
+                        sound,
+                    },
+                ));
                 session.notifications.policy_changes.send_replace(());
             }
         }

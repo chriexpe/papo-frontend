@@ -26,7 +26,13 @@ pub(crate) fn record_candidate(
         channel: super::id(record.channel_id.as_deref())?,
         message: super::id(record.message_id.as_deref())?,
         author: record.author_id.as_deref().and_then(|id| id.parse().ok()),
+        external_author: record
+            .external_author
+            .as_ref()
+            .and_then(|author| author.name.clone())
+            .filter(|name| !name.trim().is_empty()),
         content: record.message_content.clone().unwrap_or_default(),
+        attachments: Vec::new(),
         triggered: true,
         read: record.read != Some(false),
         trigger_revision: None,

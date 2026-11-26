@@ -255,7 +255,9 @@ pub(crate) struct Candidate {
     pub channel: Uuid,
     pub message: Uuid,
     pub author: Option<Uuid>,
+    pub external_author: Option<String>,
     pub content: String,
+    pub attachments: Vec<papo_api::wire::Attachment>,
     pub triggered: bool,
     pub read: bool,
     pub trigger_revision: Option<u64>,
@@ -323,6 +325,21 @@ pub(super) fn decide(
     {
         return Ok(None);
     }
+    let allow_preview = settings.preview && backend.message_preview != Some(false);
+    let author_name = candidate.external_author.clone().or_else(|| {
+        let uid = candidate.author?;
+        let snapshot = session.inner.resources.borrow();
+        let user = snapshot.users.get(uid)?;
+        user.nickname
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                user.username
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+            })
+            .map(str::to_owned)
+    });
     Ok(Some(NotificationDelivery {
         target: NotificationTarget {
             account: session.account(),
@@ -330,8 +347,15 @@ pub(super) fn decide(
             channel: candidate.channel,
             message: candidate.message,
         },
-        preview: (settings.preview && backend.message_preview != Some(false))
-            .then(|| candidate.content.chars().take(512).collect()),
+        author: candidate.author,
+        author_name,
+        is_dm: dm,
+        preview: allow_preview.then(|| candidate.content.chars().take(512).collect()),
+        attachments: if allow_preview {
+            candidate.attachments.clone()
+        } else {
+            Vec::new()
+        },
         sound: settings.sound && backend.sound != Some(false),
     }))
 }

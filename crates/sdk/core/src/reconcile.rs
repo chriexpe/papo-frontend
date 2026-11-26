@@ -103,7 +103,8 @@ async fn replay(
         crate::notifications::live::submit(session, epoch.generation, &event);
         if crate::history::live::relevant(&event) {
             collect(session, epoch, socket, journal, async {
-                crate::history::live::apply(session, connection, epoch.generation, &event).await
+                crate::history::live::apply(session, connection, epoch.generation, &event).await?;
+                crate::reading::live::observe_message(session, epoch.generation, &event).await
             })
             .await?;
         }

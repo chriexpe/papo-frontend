@@ -3,6 +3,8 @@
 #![cfg(feature = "test-support")]
 
 mod fixture;
+#[path = "reading_cases/mark_all.rs"]
+mod mark_all;
 #[path = "reading_cases/reconcile.rs"]
 mod reconcile;
 use fixture::{Fixture, Result, login, register};
