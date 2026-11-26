@@ -28,6 +28,7 @@ use crate::design::{
 };
 use crate::general_settings::GeneralSettings;
 use crate::icons::{ARROW_LEFT, X};
+use crate::notification_settings::NotificationPrefs;
 use crate::shell::Shell;
 use crate::strings;
 
@@ -37,6 +38,7 @@ pub(crate) struct PanelView<'a> {
     /// The saved settings (the draft is the panel's own).
     pub(crate) saved: &'a Appearance,
     pub(crate) conversations: &'a ConversationSettings,
+    pub(crate) notifications: &'a NotificationPrefs,
     pub(crate) general: &'a GeneralSettings,
     pub(crate) trusted: &'a BTreeSet<String>,
     /// Embedded players' switch and allowed sites.
@@ -63,6 +65,7 @@ pub(crate) fn view(panel: &PanelView<'_>, preview: Option<El>, look: &Look) -> E
     let context = Context {
         appearance,
         conversations: panel.conversations,
+        notifications: panel.notifications,
         general: panel.general,
         trusted: panel.trusted,
         players: panel.players,

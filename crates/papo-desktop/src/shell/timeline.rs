@@ -47,6 +47,7 @@ impl Shell {
     /// returns to its place on the next frame (`poll`).
     pub(crate) fn sync_timeline(&mut self, mut tx: Option<&mut Tx>) {
         self.sync_timeline_at(tx.as_deref_mut(), None);
+        self.sync_visible_channel();
         self.viewer_follows(tx);
     }
 
@@ -205,6 +206,7 @@ impl Shell {
             self.report_reading();
             // New or changed rows may hold media; a pin may too.
             self.want_media();
+            self.try_open_pending_notification(tx);
         }
         if opened {
             self.resolve_replies();
@@ -355,6 +357,7 @@ impl Shell {
             | self.poll_players(clock_s, tx);
         let list_closed = self.poll_reactions() | self.poll_emoji_picker(tx);
         let card_closed = self.poll_card();
+        let server_card_changed = self.poll_server_card(clock_s);
         let searched = self.poll_search(clock_s) | self.poll_gif_search(clock_s, tx);
         restored
             || copied_ended
@@ -367,6 +370,7 @@ impl Shell {
             || video_clock
             || list_closed
             || card_closed
+            || server_card_changed
             || searched
     }
 

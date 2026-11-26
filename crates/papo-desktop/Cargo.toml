@@ -63,6 +63,9 @@ rune-highlights = { git = "https://github.com/chriexpe/rune", rev = "7638f0a632b
 # Liquid glass on the floating surfaces (`docs/design.md` §5): `Fx::lens` bends
 # what is behind a pill at its rim. Rune's own effect layers, at Rune's pin.
 rune-fx = { git = "https://github.com/chriexpe/rune", rev = "7638f0a632b8f8c3132e22809d0de57eb479c0ef" }
+# Desktop OS notifications (`docs/design.md` §8, D9a): Flatpak Notification portal and
+# `org.freedesktop.Notifications` on Linux, at Rune's pin.
+rune-notify = { git = "https://github.com/chriexpe/rune", rev = "7638f0a632b8f8c3132e22809d0de57eb479c0ef" }
 # The texture format of Rune's isolated layers, which the glass compositor
 # names to rune-fx; the version Rune locks.
 wgpu = { version = "30.0.1", default-features = false }

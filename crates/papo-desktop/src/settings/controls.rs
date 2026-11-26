@@ -172,6 +172,22 @@ pub(super) fn tile(setting: Row, first: bool, last: bool, cx: &Ctx<'_>) -> El {
     )
 }
 
+fn row_words(title: &str, sub: Option<&str>, look: &Look) -> El {
+    let mut words = col().grow(1.0).min_w(0.0).child(
+        text(title.to_owned())
+            .font(look.font(TYPE_BODY_MEDIUM))
+            .color(look.palette.text_primary),
+    );
+    if let Some(sub) = sub {
+        words = words.child(
+            text(sub.to_owned())
+                .font(look.font(TYPE_CAPTION))
+                .color(look.palette.text_muted),
+        );
+    }
+    words
+}
+
 /// A row of title, summary and its control at the end: a switch, a
 /// choice, a sub-page or the accent swatches.
 fn plain_row(setting: Row, look: &Look) -> El {
@@ -181,18 +197,7 @@ fn plain_row(setting: Row, look: &Look) -> El {
         sub,
         kind,
     } = setting;
-    let mut words = col().grow(1.0).min_w(0.0).child(
-        text(title.clone())
-            .font(look.font(TYPE_BODY_MEDIUM))
-            .color(look.palette.text_primary),
-    );
-    if let Some(sub) = &sub {
-        words = words.child(
-            text(sub.clone())
-                .font(look.font(TYPE_CAPTION))
-                .color(look.palette.text_muted),
-        );
-    }
+    let words = row_words(&title, sub.as_deref(), look);
     let line = row()
         .key(id.key())
         .w_full()
@@ -256,6 +261,11 @@ fn plain_row(setting: Row, look: &Look) -> El {
             .role("button")
             .label(spoken)
             .on_press_tx(move |shell: &mut Shell, tx| shell.settings_action(id, tx)),
+        Kind::ChevronAction => pressable(line, look)
+            .role("button")
+            .label(spoken)
+            .on_press_tx(move |shell: &mut Shell, tx| shell.settings_action(id, tx))
+            .child(icon(&CHEVRON_RIGHT, ROW_ICON_PT).color(look.palette.text_muted)),
         Kind::Folder => pressable(line, look)
             .role("button")
             .label(format!("{spoken}, {}", strings::settings_change()))

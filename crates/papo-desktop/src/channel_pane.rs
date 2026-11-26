@@ -23,6 +23,7 @@ use crate::design::{
 use crate::icons::{GEAR, HASH, SPEAKER, SWITCH};
 use crate::navigation::Navigation;
 use crate::rail::initial;
+use crate::server_card::{self, CardState, SERVER_CARD_OPEN_KEY};
 use crate::server_list::{AccountEntry, ChannelEntry, ServerEntry};
 use crate::shell::Shell;
 use crate::strings;
@@ -40,7 +41,12 @@ pub(crate) fn channel_key(channel: &str) -> String {
 }
 
 /// The pane for the selected server; empty when there is none.
-pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, look: &Look) -> El {
+pub(crate) fn view(
+    nav: &Navigation,
+    icons: &HashMap<ServerId, Image>,
+    card_state: CardState,
+    look: &Look,
+) -> El {
     let pane = col()
         .key("channel-pane")
         .role("navigation")
@@ -54,10 +60,12 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, look: &Lo
         return pane;
     };
     let accounts_open = nav.accounts_open();
+    let card_open = nav.server_card_open();
     let server_row = server_row(
         server,
         icons.get(&server.id),
         accounts_open,
+        card_open,
         accounts_badge(nav, server),
         look,
     )
@@ -69,6 +77,12 @@ pub(crate) fn view(nav: &Navigation, icons: &HashMap<ServerId, Image>, look: &Lo
         (
             spacer,
             Some(account_switch::grown(server, server_row, look)),
+        )
+    } else if card_open {
+        let spacer = el().w_full().h(look.space(PANE_PILL_HEIGHT));
+        (
+            spacer,
+            Some(server_card::grown(server, server_row, card_state, look)),
         )
     } else {
         (chrome(server_row, look), None)
@@ -91,6 +105,7 @@ fn server_row(
     server: &ServerEntry,
     image: Option<&Image>,
     accounts_open: bool,
+    card_open: bool,
     badge: Badge,
     look: &Look,
 ) -> El {
@@ -108,12 +123,27 @@ fn server_row(
                 .max_lines(1),
         );
     }
+    let card_button = row()
+        .key(SERVER_CARD_OPEN_KEY)
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(look.space(SPACE_MD))
+        .center_y()
+        .radius(pill_button_radius(look))
+        .hover(look.on_pill(look.palette.surface_hover))
+        .role("button")
+        .label(format!("{}, {}", server.name, strings::server_card_open()))
+        .expanded(card_open)
+        .focusable(true)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+        .on_press_tx(Shell::toggle_server_card)
+        .child(avatar(&server.name, image, look))
+        .child(names);
     let options = pill_button(SERVER_OPTIONS_KEY, &GEAR, look)
         .label(strings::server_options())
         .on_press_tx(|shell: &mut Shell, tx| shell.open_server_menu(tx));
     pill_row(look)
-        .child(avatar(&server.name, image, look))
-        .child(names)
+        .child(card_button)
         .child(switch_button(
             SWITCH_ACCOUNT_KEY,
             badge,

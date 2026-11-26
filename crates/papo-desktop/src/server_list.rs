@@ -13,8 +13,9 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use papo_sdk::{
-    AccountId, BadgesSnapshot, ChannelKind, ChannelRecord, ClientHandle, MAX_ICON_BYTES,
-    MediaSource, RegistrySnapshot, ResourceSnapshot, SavedAccount, ServerId, Session, Uuid,
+    AccountId, AccountNotificationPolicy, BackendMode, BadgesSnapshot, ChannelKind, ChannelRecord,
+    ClientHandle, MAX_ICON_BYTES, MediaSource, RegistrySnapshot, ResourceSnapshot, SavedAccount,
+    ServerId, Session, Uuid,
 };
 use papo_sdk_ui::{ServerBadgesSnapshot, ServerListService};
 use tokio::sync::watch;
@@ -91,6 +92,10 @@ pub(crate) struct ServerEntry {
     pub(crate) blocked: Vec<BlockedPerson>,
     /// The shown account's own profile, once its resources are read.
     pub(crate) own: Option<OwnProfile>,
+    /// Total member count reported by the server/roster.
+    pub(crate) member_count: usize,
+    /// The shown account's server-side notification settings (`whoami`).
+    pub(crate) notification_policy: Option<AccountNotificationPolicy>,
     /// The server's badge: its shown account's unread and mentions in the
     /// server's channels (its DMs are Direct's).
     pub(crate) badge: Badge,
@@ -126,6 +131,8 @@ pub(crate) struct ChannelEntry {
     pub(crate) name: String,
     /// Its description, when it has one (§8: shown as the channel opens).
     pub(crate) topic: Option<String>,
+    /// Server-side per-channel notification mode, if reported.
+    pub(crate) notification_mode: Option<BackendMode>,
     pub(crate) badge: Badge,
 }
 
@@ -151,6 +158,10 @@ pub(crate) struct ServerResources {
     pub(crate) blocked: Vec<BlockedPerson>,
     /// The account's own profile.
     pub(crate) own: OwnProfile,
+    /// Member count reported by the server/roster.
+    pub(crate) member_count: usize,
+    /// Server-side account notification policy (`whoami`).
+    pub(crate) notification_policy: Option<AccountNotificationPolicy>,
 }
 
 /// Builds the rail from the registry and the resources of each server's
@@ -198,6 +209,8 @@ pub(crate) fn project(
                     .unwrap_or_default(),
                 blocked: found.map(|found| found.blocked.clone()).unwrap_or_default(),
                 own: found.map(|found| found.own.clone()),
+                member_count: found.map_or(0, |found| found.member_count),
+                notification_policy: found.and_then(|found| found.notification_policy),
                 // The shown account's server channels, so the tile always
                 // agrees with the rows below it, active account or not; its
                 // DMs count on Direct instead.
@@ -265,6 +278,7 @@ pub(crate) fn channels<'a>(
                 .topic
                 .clone()
                 .filter(|topic| !topic.trim().is_empty()),
+            notification_mode: channel.notification_settings.clone(),
             badge,
         });
     }
@@ -426,6 +440,8 @@ fn read_resources(
         };
         let snapshot = Arc::clone(&wait_for_change(session.subscribe_resources(), changes));
         let badges = Arc::clone(&wait_for_change(session.subscribe_badges(), changes));
+        let notification_policy =
+            wait_for_change(session.notifications().subscribe_account_policy(), changes);
         // An image from an earlier connection is stale until the SDK
         // recounts for this one, as the aggregate already treats it.
         let current = (badges.version != 0 && badges.generation == session.generation())
@@ -433,6 +449,7 @@ fn read_resources(
         let icon = icons.for_account(account.id, &session);
         let mut read = resources(&snapshot, current, icon);
         read.own = OwnProfile::of(&snapshot, account.id.user());
+        read.notification_policy = notification_policy;
         found.insert(account.id, read);
     }
     found
@@ -498,6 +515,12 @@ fn resources(
             })
             .collect(),
         own: OwnProfile::default(),
+        member_count: server
+            .and_then(|server| server.member_count)
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or(0)
+            .max(snapshot.members.iter().len()),
+        notification_policy: None,
     }
 }
 

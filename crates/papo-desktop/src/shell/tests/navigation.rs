@@ -38,6 +38,7 @@ pub(super) fn entry(name: &str, channels: &[&str]) -> ServerEntry {
                 id: format!("{name}-{channel}"),
                 name: (*channel).to_owned(),
                 topic: None,
+                notification_mode: None,
                 badge: Badge::default(),
             })
             .collect(),
@@ -45,11 +46,14 @@ pub(super) fn entry(name: &str, channels: &[&str]) -> ServerEntry {
             id: format!("{name}-hangout"),
             name: "hangout".to_owned(),
             topic: None,
+            notification_mode: None,
             badge: Badge::default(),
         }],
         direct_badges: std::collections::BTreeMap::new(),
         blocked: Vec::new(),
         own: None,
+        member_count: 0,
+        notification_policy: None,
         badge: Badge::default(),
     }
 }
@@ -132,7 +136,7 @@ fn tab_goes_rail_then_add_then_the_server_pill_then_channels() {
     rt.accessibility_action(&tile_key(named("Lumen")), Action::Focus, None);
     rt.frame(FRAME_S);
     let mut order = vec![focused(&rt).unwrap()];
-    for _ in 0..4 {
+    for _ in 0..5 {
         press(&mut rt, Key::Tab);
         order.push(focused(&rt).unwrap());
     }
@@ -141,6 +145,7 @@ fn tab_goes_rail_then_add_then_the_server_pill_then_channels() {
         [
             tile_key(named("Lumen")),
             ADD_KEY.to_owned(),
+            "server-card-open".to_owned(),
             "switch-account".to_owned(),
             "server-options".to_owned(),
             "channel-Lumen-general".to_owned(),

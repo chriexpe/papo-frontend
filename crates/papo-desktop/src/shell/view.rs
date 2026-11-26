@@ -243,6 +243,7 @@ fn settings_panel(
         panel,
         saved: shell.appearance.appearance(),
         conversations: shell.conversations.settings(),
+        notifications: shell.notification_prefs.settings(),
         general: shell.general.settings(),
         trusted: shell.content.trusted.hosts(),
         players: shell.players.settings.settings(),
@@ -410,7 +411,7 @@ fn app(shell: &Shell, look: &Look, cx: &Cx<Shell>) -> El {
         .child(if shell.nav.direct_shown() {
             direct_pane::view(shell, look)
         } else {
-            channel_pane::view(&shell.nav, &shell.icons, look)
+            channel_pane::view(&shell.nav, &shell.icons, shell.server_card_state(), look)
         })
         .child(edge())
         .child(conversation)

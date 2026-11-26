@@ -18,7 +18,7 @@ use crate::design::{
     AVATAR_ROW, FIELD_OUTLINE_PT, FOCUS_RING_PT, Look, PANE_EDGE_PT, PILL_ICON_PT, ROW_ICON_PT,
     SPACE_MD, SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_BODY_MEDIUM, TYPE_CAPTION_MEDIUM, TYPE_SMALL,
 };
-use crate::icons::{CHAT, GLOBE, PALETTE, PULSE, SEARCH, SHIELD, X};
+use crate::icons::{BELL, CHAT, GLOBE, PALETTE, PULSE, SEARCH, SHIELD, X};
 use crate::person_avatar::person_avatar;
 use crate::shell::Shell;
 use crate::strings;
@@ -30,6 +30,7 @@ pub(super) fn view(panel: &SettingsPanel, context: &Context<'_>, look: &Look) ->
     let pages = PageId::NAV.into_iter().map(|page| {
         let summary = match page {
             PageId::Appearance => rows::appearance_summary(context.appearance, context.system_dark),
+            PageId::Notifications => rows::notifications_summary(context).to_owned(),
             PageId::General => rows::general_summary(context),
             PageId::Diagnostics => strings::settings_diagnostics_summary().to_owned(),
             _ => rows::conversations_summary().to_owned(),
@@ -106,6 +107,7 @@ fn subject_tile(account: &AccountFacts, current: bool, look: &Look) -> El {
 fn nav_icon(page: PageId) -> &'static rune::Icon {
     match page {
         PageId::Conversations | PageId::Highlights => &CHAT,
+        PageId::Notifications => &BELL,
         PageId::General | PageId::Trusted | PageId::Players => &GLOBE,
         PageId::Diagnostics => &PULSE,
         PageId::Appearance | PageId::Background | PageId::Shape => &PALETTE,

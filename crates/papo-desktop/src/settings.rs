@@ -23,8 +23,10 @@ use crate::appearance::{Appearance, ShapeValue};
 use crate::conversation_settings::ConversationSettings;
 use crate::design::{Accent, BackgroundColour, Density, Theme};
 use crate::general_settings::{GeneralSettings, Language};
+use crate::notification_settings::NotificationPrefs;
 use papo_sdk::Uuid;
 use papo_sdk::operations::profile::ProfileChange;
+use papo_sdk::operations::settings::NotificationPolicyChange;
 
 mod account_forms;
 mod actions;
@@ -77,6 +79,7 @@ pub(crate) enum PageId {
     Conversations,
     /// Conversations › Message highlights.
     Highlights,
+    Notifications,
     General,
     /// General › Trusted domains.
     Trusted,
@@ -88,11 +91,12 @@ pub(crate) enum PageId {
 impl PageId {
     /// Every page, nav pages first and in the nav's order: what the search
     /// looks through.
-    pub(crate) const ALL: [PageId; 13] = [
+    pub(crate) const ALL: [PageId; 14] = [
         PageId::Profile,
         PageId::Privacy,
         PageId::Appearance,
         PageId::Conversations,
+        PageId::Notifications,
         PageId::General,
         PageId::Diagnostics,
         PageId::Blocked,
@@ -108,9 +112,10 @@ impl PageId {
     pub(crate) const ACCOUNT: [PageId; 2] = [PageId::Profile, PageId::Privacy];
 
     /// The App pages in the nav, in order.
-    pub(crate) const NAV: [PageId; 4] = [
+    pub(crate) const NAV: [PageId; 5] = [
         PageId::Appearance,
         PageId::Conversations,
+        PageId::Notifications,
         PageId::General,
         PageId::Diagnostics,
     ];
@@ -122,6 +127,7 @@ impl PageId {
             | PageId::Privacy
             | PageId::Appearance
             | PageId::Conversations
+            | PageId::Notifications
             | PageId::General
             | PageId::Diagnostics => None,
             PageId::Background | PageId::Shape => Some(PageId::Appearance),
@@ -210,6 +216,20 @@ pub(crate) enum RowId {
     KeepPlaying,
     /// Files › Save media to.
     SaveMediaTo,
+    /// Notifications › Message notifications.
+    NotifyMessages,
+    /// Notifications › Notify mentions.
+    NotifyMentions,
+    /// Notifications › Show the message in the notification.
+    NotifyPreview,
+    /// Notifications › Sound.
+    NotifySound,
+    /// Notifications › sync note ("These follow your account on {server}.").
+    NotifySyncNote,
+    /// Notifications › Tray counter.
+    TrayCounter,
+    /// Notifications › Channel notifications (opens active server's card).
+    ChannelNotifications,
     Language,
     ConfirmLinks,
     Trusted,
@@ -305,12 +325,15 @@ pub(crate) struct ColourState {
 pub(crate) enum Target {
     Appearance(Appearance),
     Conversations(ConversationSettings),
+    Notifications(NotificationPrefs),
     General(GeneralSettings),
     Trusted(BTreeSet<String>),
     /// Embedded players' switch and allowed sites.
     Players(crate::embedded_players::PlayerSettings),
     /// A profile field (`papo_sdk`'s `change_profile`).
     Profile(ProfileChange),
+    /// An account notification toggle (`papo_sdk`'s `change_notification_settings`).
+    NotificationPolicy(NotificationPolicyChange),
     Presence(Presence),
     /// Change password: the form still holds what it sends.
     Password,
@@ -342,6 +365,7 @@ impl Target {
             self,
             Target::Appearance(_)
                 | Target::Conversations(_)
+                | Target::Notifications(_)
                 | Target::General(_)
                 | Target::Trusted(_)
                 | Target::Players(_)

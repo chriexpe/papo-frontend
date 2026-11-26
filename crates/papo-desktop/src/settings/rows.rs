@@ -16,6 +16,7 @@ use crate::conversation_settings::ConversationSettings;
 use crate::design::Accent;
 use crate::diagnostics::Link;
 use crate::general_settings::GeneralSettings;
+use crate::notification_settings::NotificationPrefs;
 use crate::strings;
 use account::AccountFacts;
 
@@ -26,6 +27,7 @@ mod appearance;
 mod conversations;
 mod diagnostics;
 mod general;
+mod notifications;
 
 pub(crate) use appearance::{
     accent_name, appearance_summary, density_name, direction_name, slider_value, theme_name,
@@ -34,6 +36,7 @@ pub(crate) use conversations::{
     HIGHLIGHT_HUES, conversations_summary, keep_playing_name, size_name,
 };
 pub(crate) use general::{general_summary, language_name};
+pub(crate) use notifications::notifications_summary;
 
 /// A group of rows: one block of tiles, with an optional title.
 pub(crate) struct Group {
@@ -95,6 +98,8 @@ pub(crate) enum Kind {
     Value(String),
     /// Runs at once.
     Action,
+    /// Runs an action that opens another surface (e.g. a server's card), with ›.
+    ChevronAction,
     /// A folder, shown under the title, with Change at the row's end (Save media to).
     Folder,
     /// A profile picture (Photo, Banner): its picture at the row's end and a
@@ -147,6 +152,7 @@ pub(crate) enum Track {
 pub(crate) struct Context<'a> {
     pub(crate) appearance: &'a Appearance,
     pub(crate) conversations: &'a ConversationSettings,
+    pub(crate) notifications: &'a NotificationPrefs,
     pub(crate) general: &'a GeneralSettings,
     pub(crate) trusted: &'a BTreeSet<String>,
     /// Embedded players' switch and allowed sites.
@@ -189,6 +195,7 @@ pub(crate) fn page(page: PageId, cx: &Context<'_>) -> Vec<Group> {
         PageId::Shape => appearance::shape(cx),
         PageId::Conversations => conversations::conversations(cx),
         PageId::Highlights => conversations::highlights(cx),
+        PageId::Notifications => notifications::notifications(cx),
         PageId::General => general::general(cx),
         PageId::Trusted => general::trusted(cx),
         PageId::Players => general::players(cx),
@@ -208,6 +215,7 @@ pub(crate) fn page_title(page: PageId) -> &'static str {
         PageId::Shape => strings::settings_shape(),
         PageId::Conversations => strings::settings_conversations(),
         PageId::Highlights => strings::settings_highlights(),
+        PageId::Notifications => strings::settings_notifications(),
         PageId::General => strings::settings_general(),
         PageId::Trusted => strings::settings_trusted(),
         PageId::Players => strings::settings_players(),
@@ -240,6 +248,7 @@ pub(crate) fn searchable(row: &Row) -> Vec<String> {
         | Kind::PasswordForm
         | Kind::Info
         | Kind::Action
+        | Kind::ChevronAction
         | Kind::Folder
         | Kind::Picture(_)
         | Kind::Destructive { .. } => {}

@@ -15,6 +15,7 @@ use crate::settings::RowId;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LatestRows {
     pub(crate) conversations: Option<RowId>,
+    pub(crate) notifications: Option<RowId>,
     pub(crate) general: Option<RowId>,
     pub(crate) trusted: Option<RowId>,
     pub(crate) players: Option<RowId>,
@@ -54,6 +55,7 @@ impl Shell {
         let waiting = [
             self.appearance.pending_write(),
             self.conversations.pending_write(),
+            self.notification_prefs.pending_write(),
             self.general.pending_write(),
             self.content.trusted.pending_write(),
             self.layout.pending_write(),

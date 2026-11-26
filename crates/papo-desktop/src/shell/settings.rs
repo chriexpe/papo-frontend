@@ -52,12 +52,14 @@ impl Shell {
             return;
         }
         self.settings = Some(SettingsPanel::new());
+        self.sync_visible_channel();
         tx.focus(SEARCH_KEY, true);
     }
 
     /// Closes the panel; a drag still running is dropped, not saved.
     pub(crate) fn close_settings(&mut self) {
         self.settings = None;
+        self.sync_visible_channel();
     }
 
     /// Escape with nothing left to clear, or a press outside: the panel
@@ -255,6 +257,10 @@ impl Shell {
             self.save_presence(presence);
             return;
         }
+        if let Some((row, policy)) = super::settings_notifications::account_change(&change) {
+            self.save_notification_policy(row, policy);
+            return;
+        }
         if let Change::Switch(RowId::PlayersOn, on) = change {
             self.settings_players_on(on, tx);
             return;
@@ -264,6 +270,9 @@ impl Shell {
         };
         let other = super::settings_conversations::applied(self.conversations.settings(), &change)
             .map(Target::Conversations)
+            .or_else(|| {
+                super::settings_notifications::device_applied(&change).map(Target::Notifications)
+            })
             .or_else(|| {
                 super::settings_general::applied(self.general.settings(), &change)
                     .map(Target::General)
@@ -312,6 +321,7 @@ impl Shell {
                 self.set_appearance(appearance, tx);
             }
             Target::Conversations(settings) => self.set_conversations(settings, Some(row), tx),
+            Target::Notifications(prefs) => self.set_notification_prefs(prefs, Some(row), tx),
             Target::General(settings) => self.set_general(settings, Some(row), tx),
             Target::Players(settings) => self.set_players(settings, Some(row), tx),
             Target::Trusted(hosts) => {
@@ -321,6 +331,7 @@ impl Shell {
                 }
             }
             Target::Profile(change) => self.save_profile(row, change),
+            Target::NotificationPolicy(change) => self.save_notification_policy(row, change),
             Target::Presence(presence) => self.save_presence(presence),
             Target::Password => self.settings_password_save(tx),
             Target::ClearCache => self.clear_media_cache(tx),
