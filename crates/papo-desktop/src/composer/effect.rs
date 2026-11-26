@@ -36,6 +36,9 @@ pub(crate) enum Effect {
         tiles: Vec<Tile>,
         local: Uuid,
         seq: u64,
+        /// The emoji it holds, counted toward Frequently used and the quick reactions
+        /// (`docs/design.md` §16, "One ranking") once it is queued.
+        emoji: Vec<String>,
     },
     /// Queue an edit of your message `id` to `text` (its wire form), with
     /// local identity `local`. The stored draft is not touched.

@@ -118,7 +118,8 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                         && !menu.people
                         && menu.description.is_none();
                     if body.is_some() || bodiless {
-                        app = app.child(menu::view(menu, body, &look, cx));
+                        let images = shell.emoji_images.looks();
+                        app = app.child(menu::view(menu, body, &images, &look, cx));
                     }
                 }
                 if let Some(viewer) = super::viewer_view::view(shell, cx) {

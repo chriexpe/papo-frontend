@@ -17,6 +17,7 @@ use super::replying::{conversation, message_id};
 use super::{FRAME_S, Shell, press};
 use crate::live_watch::Posted;
 use crate::menu::Entry;
+use crate::shell::tests::ranked;
 use crate::timeline::rows::message_key;
 
 /// The message whose row has the keyboard.
@@ -242,7 +243,7 @@ fn the_quick_reactions_lead_the_bar_and_the_menus_strip() {
         let quick = ["🧀", "👍", "😂", "❤️", "🔥", "😭", "👀", "🙏"]
             .map(str::to_owned)
             .to_vec();
-        shell.activity_posted(account, Posted::Quick(quick), tx);
+        shell.activity_posted(account, Posted::Usage(ranked(&quick)), tx);
     });
     rt.frame(FRAME_S);
     let bar: Vec<String> = rt
@@ -275,12 +276,66 @@ fn the_quick_reactions_lead_the_bar_and_the_menus_strip() {
 }
 
 #[test]
+fn a_custom_emoji_used_most_leads_the_bar_by_its_name_while_the_catalog_has_it() {
+    let mut rt = conversation("");
+    let gato = Uuid::from_u128(77);
+    rt.update(move |shell, tx| {
+        let account = shell.tabs.shown().unwrap().key.account;
+        let catalog = papo_sdk::EmojiCatalog {
+            revision: 1,
+            emojis: vec![papo_sdk::CustomEmoji {
+                id: gato,
+                name: "gato".to_owned(),
+                format: "png".to_owned(),
+                created_at: String::new(),
+            }],
+        };
+        shell.activity_posted(account, Posted::Emojis(Arc::new(catalog)), tx);
+        let quick = [gato.to_string(), "👍".to_owned()];
+        shell.activity_posted(account, Posted::Usage(ranked(&quick)), tx);
+    });
+    rt.frame(FRAME_S);
+    let bar = |rt: &Runtime<Shell>| -> Vec<String> {
+        rt.elements()
+            .into_iter()
+            .filter(|element| {
+                element
+                    .path
+                    .contains(&format!("/{}/", message_key(message_id(3))))
+                    && element.path.contains("/bar/")
+                    && element.role == "button"
+            })
+            .filter_map(|element| element.label)
+            .take(3)
+            .collect()
+    };
+    assert_eq!(
+        bar(&rt),
+        ["React with :gato:", "React with 👍", "React with 😂"]
+    );
+    // The server no longer has it: the defaults fill its place.
+    rt.update(|shell, tx| {
+        let account = shell.tabs.shown().unwrap().key.account;
+        let empty = papo_sdk::EmojiCatalog {
+            revision: 2,
+            emojis: Vec::new(),
+        };
+        shell.activity_posted(account, Posted::Emojis(Arc::new(empty)), tx);
+    });
+    rt.frame(FRAME_S);
+    assert_eq!(
+        bar(&rt),
+        ["React with 👍", "React with 😂", "React with ❤️"]
+    );
+}
+
+#[test]
 fn a_stretched_bar_folds_when_the_pointer_moves_to_another_message() {
     let mut rt = conversation("");
     rt.update(|shell, tx| {
         let account = shell.tabs.shown().unwrap().key.account;
         let quick = ["🧀", "👍", "😂"].map(str::to_owned).to_vec();
-        shell.activity_posted(account, Posted::Quick(quick), tx);
+        shell.activity_posted(account, Posted::Usage(ranked(&quick)), tx);
     });
     let key = rt.state.tabs.shown().unwrap().key;
     rt.update(move |shell, _tx| shell.toggle_strip(key, message_id(3)));

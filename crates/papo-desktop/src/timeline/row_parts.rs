@@ -5,7 +5,6 @@
 
 use papo_sdk::{Message, Operation, Uuid};
 use papo_sdk_ui::message_content::MessageContent;
-use papo_sdk_ui::operations::ReactionEmoji;
 use papo_sdk_ui::{
     ReactionChip, ReplyOriginal, attention, display_name, message_actions, reaction_chips,
 };
@@ -231,10 +230,9 @@ fn bar(
             .quick
             .iter()
             .take(shown)
-            .map(|emoji| {
-                let unicode = ReactionEmoji::Unicode(emoji.clone());
-                let mine = chips.iter().any(|chip| chip.mine && chip.emoji == unicode);
-                (emoji.clone(), mine)
+            .filter_map(|emoji| {
+                let mine = chips.iter().any(|chip| chip.mine && chip.emoji == *emoji);
+                Some((reacting.shown(emoji)?, mine))
             })
             .collect()
     } else {
@@ -255,20 +253,21 @@ fn chips(open: &OpenTimeline, id: Uuid, chips: &[ReactionChip], style: &Style) -
     let list = open.reactors.get(id, chips).filter(|list| list.started);
     chips
         .iter()
-        .map(|chip| Chip {
-            toggles: chip.can_toggle(reacting.capabilities),
-            who: list.and_then(|list| who(open, list, chip)),
-            reaction: chip.clone(),
+        .filter_map(|chip| {
+            let shown = reacting.shown(&chip.emoji)?;
+            Some(Chip {
+                toggles: chip.can_toggle(reacting.capabilities),
+                who: list.map(|list| who(open, list, chip, &shown.name)),
+                reaction: chip.clone(),
+                shown,
+            })
         })
         .collect()
 }
 
 /// "Lia, Yuki and 2 others reacted with 🧀": the first two people read
 /// whose names are known (you first), and the chip's count.
-fn who(open: &OpenTimeline, list: &ReactorList, chip: &ReactionChip) -> Option<String> {
-    let ReactionEmoji::Unicode(emoji) = &chip.emoji else {
-        return None;
-    };
+fn who(open: &OpenTimeline, list: &ReactorList, chip: &ReactionChip, emoji: &str) -> String {
     let resources = open.resources.as_deref();
     let names: Vec<String> = list
         .reactors
@@ -284,5 +283,5 @@ fn who(open: &OpenTimeline, list: &ReactorList, chip: &ReactionChip) -> Option<S
         .take(2)
         .collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    Some(strings::reaction_who(&names, chip.count, emoji))
+    strings::reaction_who(&names, chip.count, emoji)
 }

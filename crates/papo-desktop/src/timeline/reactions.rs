@@ -7,9 +7,8 @@
 //! on the message. The chips are not Tab stops: a focused message's keys
 //! and its menu reach the same reactions.
 //!
-//! Custom emoji are left out until the SDK has an emoji catalog to name
-//! them. Spoken: "🧀, 4, including you" (the emoji stands for its name;
-//! the desktop has no CLDR name table).
+//! A custom emoji shows its image and is spoken by its `:name:`; one the
+//! catalog doesn't have is left out. Spoken: "🧀, 4, including you".
 
 use papo_sdk::Uuid;
 use papo_sdk_ui::ReactionChip;
@@ -19,15 +18,18 @@ use rune::{El, icon, row, text};
 use super::TimelineKey;
 use super::view::TimelineHost;
 use crate::design::{
-    CHIP_ICON_PT, Look, PILL_OUTLINE_PT, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TYPE_BODY,
-    TYPE_SMALL_MEDIUM,
+    CHIP_ICON_PT, Look, PILL_OUTLINE_PT, RADIUS_CONTROL, SPACE_MD, SPACE_SM, TYPE_SMALL_MEDIUM,
 };
 use crate::strings;
 
 /// The element key of message `id`'s chip for `emoji`, which its
 /// reactions list opens beside.
-pub(crate) fn chip_key(id: Uuid, emoji: &str) -> String {
-    format!("chip-{id}-{emoji}")
+pub(crate) fn chip_key(id: Uuid, emoji: &ReactionEmoji) -> String {
+    // By kind: a server's "Unicode" text could be a custom emoji's ID.
+    match emoji {
+        ReactionEmoji::Unicode(glyph) => format!("chip-{id}-u-{glyph}"),
+        ReactionEmoji::Custom(custom) => format!("chip-{id}-c-{custom}"),
+    }
 }
 
 /// A chip's height, in points.
@@ -40,12 +42,14 @@ const WAITING_OPACITY: f32 = 0.6;
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(super) struct Chip {
     pub(super) reaction: ReactionChip,
+    /// Its emoji as drawn.
+    pub(super) shown: crate::reaction_emoji::ShownReaction,
     pub(super) toggles: bool,
     /// Who reacted, once a page of who reacted is read.
     pub(super) who: Option<String>,
 }
 
-/// The chips message `id` shows (Unicode emoji only, in the SDK's order),
+/// The chips message `id` shows (in the SDK's order),
 /// and the add chip when `add`. None when there is nothing to show.
 pub(super) fn chips<S: TimelineHost>(
     key: TimelineKey,
@@ -59,7 +63,7 @@ pub(super) fn chips<S: TimelineHost>(
     }
     let mut cells: Vec<El> = chips
         .iter()
-        .filter_map(|chip| chip_cell::<S>(key, id, chip, look))
+        .map(|chip| chip_cell::<S>(key, id, chip, look))
         .collect();
     if cells.is_empty() {
         return None;
@@ -99,10 +103,9 @@ pub(super) fn chips<S: TimelineHost>(
     )
 }
 
-fn chip_cell<S: TimelineHost>(key: TimelineKey, id: Uuid, chip: &Chip, look: &Look) -> Option<El> {
-    let ReactionEmoji::Unicode(emoji) = &chip.reaction.emoji else {
-        return None;
-    };
+fn chip_cell<S: TimelineHost>(key: TimelineKey, id: Uuid, chip: &Chip, look: &Look) -> El {
+    let shown = &chip.shown;
+    let emoji = &shown.name;
     let ReactionChip {
         count,
         mine,
@@ -128,7 +131,7 @@ fn chip_cell<S: TimelineHost>(key: TimelineKey, id: Uuid, chip: &Chip, look: &Lo
         )
     };
     let mut cell = row()
-        .key(chip_key(id, emoji))
+        .key(chip_key(id, &shown.emoji))
         .h(CHIP_HEIGHT_PT)
         .px(look.space(SPACE_MD))
         .gap(look.space(SPACE_SM))
@@ -138,7 +141,7 @@ fn chip_cell<S: TimelineHost>(key: TimelineKey, id: Uuid, chip: &Chip, look: &Lo
         .border(PILL_OUTLINE_PT, line)
         .role("button")
         .label(label)
-        .child(text(emoji.clone()).font(look.font(TYPE_BODY)))
+        .child(shown.glyph(crate::reaction_emoji::FAILED_NAME_MAX_PT, look))
         .child(
             text(count.to_string())
                 .font(look.font(TYPE_SMALL_MEDIUM))
@@ -152,7 +155,7 @@ fn chip_cell<S: TimelineHost>(key: TimelineKey, id: Uuid, chip: &Chip, look: &Lo
             tx.live_only();
         });
     {
-        let emoji = emoji.clone();
+        let emoji = shown.emoji.clone();
         cell = cell.on_secondary_press(move |host: &mut S, _press, tx| {
             host.chip_menu_requested(key, id, emoji.clone(), tx);
         });
@@ -163,7 +166,7 @@ fn chip_cell<S: TimelineHost>(key: TimelineKey, id: Uuid, chip: &Chip, look: &Lo
     if waiting {
         cell = cell.opacity(WAITING_OPACITY).busy(true);
     } else if chip.toggles {
-        let emoji = emoji.clone();
+        let emoji = shown.emoji.clone();
         cell = cell
             .hover(look.palette.surface_hover)
             .on_press_tx(move |host: &mut S, tx| {
@@ -177,5 +180,5 @@ fn chip_cell<S: TimelineHost>(key: TimelineKey, id: Uuid, chip: &Chip, look: &Lo
                 );
             });
     }
-    Some(cell)
+    cell
 }

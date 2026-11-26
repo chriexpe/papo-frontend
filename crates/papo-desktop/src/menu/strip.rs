@@ -5,14 +5,15 @@
 //! emoji you already reacted with wears your chip's colours, and choosing
 //! it takes your reaction back, as the chip does.
 
+use crate::reaction_emoji::ShownReaction;
 use papo_sdk::Uuid;
-use rune::{El, Key, KeyEvent, Tx, el, row, text};
+use rune::{El, Key, KeyEvent, Tx, el, row};
 
 use super::MenuAction;
 use crate::design::{
     FOCUS_RING_PT, Look, MENU_ROW_HEIGHT_PT, PILL_OUTLINE_PT, RADIUS_PILL, SPACE_SM, SPACE_XS,
-    TYPE_BODY,
 };
+use crate::emoji_images::EmojiLooks;
 use crate::shell::Shell;
 use crate::strings;
 use crate::timeline::TimelineKey;
@@ -28,7 +29,7 @@ pub(crate) struct Strip {
     pub(crate) key: TimelineKey,
     pub(crate) id: Uuid,
     /// The quick reactions, most used first, and whether each is yours.
-    pub(crate) emoji: Vec<(String, bool)>,
+    pub(crate) emoji: Vec<(ShownReaction, bool)>,
     /// The one ← and → are on.
     pub(crate) chosen: usize,
 }
@@ -36,24 +37,25 @@ pub(crate) struct Strip {
 impl Strip {
     /// The action reacting with emoji `index` is: toggling yours.
     pub(crate) fn action(&self, index: usize) -> Option<MenuAction> {
-        let (emoji, _) = self.emoji.get(index)?;
+        let (shown, _) = self.emoji.get(index)?;
         Some(MenuAction::React {
             key: self.key,
             id: self.id,
-            emoji: emoji.clone(),
+            emoji: shown.emoji.clone(),
         })
     }
 }
 
-/// Draws the strip, the menu's first item when `first`.
-pub(super) fn view(strip: &Strip, first: bool, look: &Look) -> El {
+/// Draws the strip, the menu's first item when `first`, its custom emoji as `images` hold them
+/// now (an image may land while the menu is open).
+pub(super) fn view(strip: &Strip, first: bool, images: &EmojiLooks, look: &Look) -> El {
     // Concentric with the menu, whose edge is one `space.sm` out.
     let strip_radius_pt = Look::nested_radius(look.radius(RADIUS_PILL), look.space(SPACE_SM));
     let cells = strip
         .emoji
         .iter()
         .enumerate()
-        .map(|(index, (emoji, mine))| {
+        .map(|(index, (shown, mine))| {
             let action = strip.action(index);
             let mut cell = row()
                 .key(format!("{STRIP_KEY}-{index}"))
@@ -73,7 +75,12 @@ pub(super) fn view(strip: &Strip, first: bool, look: &Look) -> El {
                         shell.menu_picked(action, tx);
                     }
                 })
-                .child(text(emoji.clone()).font(look.font(TYPE_BODY)));
+                .child(
+                    shown
+                        .clone()
+                        .drawn(strip.key.account, images)
+                        .glyph(CELL_PT - 4.0, look),
+                );
             if *mine {
                 cell = cell
                     .fill(look.palette.accent_soft)
@@ -86,11 +93,11 @@ pub(super) fn view(strip: &Strip, first: bool, look: &Look) -> El {
             cell
         });
     let chosen = strip.emoji.get(strip.chosen);
-    let label = chosen.map_or_else(String::new, |(emoji, mine)| {
+    let label = chosen.map_or_else(String::new, |(shown, mine)| {
         if *mine {
-            strings::reaction_take_back(emoji)
+            strings::reaction_take_back(&shown.name)
         } else {
-            strings::reaction_react(emoji)
+            strings::reaction_react(&shown.name)
         }
     });
     let action = strip.action(strip.chosen);

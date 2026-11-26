@@ -44,7 +44,12 @@ impl Shell {
     /// queued.
     pub(crate) fn composer_send(&mut self, tx: &mut Tx) {
         let local = (self.local_ids)();
-        match self.composer.send(local) {
+        let emojis = self
+            .composer
+            .shown()
+            .map(|(key, _)| self.custom_emojis(key.account))
+            .unwrap_or_default();
+        match self.composer.send(local, &emojis) {
             Sent::Queued(effect) => {
                 if let Effect::Send { tiles, local, .. } = &effect {
                     // Drawn at their final size from now on (§14.3).
@@ -151,6 +156,7 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect, mention: b
             tiles,
             local,
             seq,
+            emoji,
         } => {
             let lane = writes.lane(key);
             let updates = sdk.updates();
@@ -175,6 +181,7 @@ fn run_effect(sdk: &Sdk<Shell>, writes: &DraftWrites, effect: Effect, mention: b
                     content: text.clone(),
                     reply_to: reply_to.map(MessageTarget::Remote),
                     attachments,
+                    emoji,
                     ..OutgoingMessage::default()
                 };
                 let queued = queue_message(&session, key.channel, local, message).await;

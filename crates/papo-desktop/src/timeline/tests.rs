@@ -58,6 +58,8 @@ struct Host {
     controls: Vec<&'static str>,
     /// Your unsent messages' attachments.
     unsent: crate::unsent_media::UnsentMedia,
+    /// What the rows read to draw reactions.
+    reacting: Reacting,
     /// What received media draw with.
     media: crate::message_media::received::MediaStyle,
 }
@@ -260,7 +262,13 @@ impl TimelineHost for Host {
         self.controls.push("chip-hovered");
     }
 
-    fn chip_menu_requested(&mut self, _key: TimelineKey, _id: Uuid, _emoji: String, _tx: &mut Tx) {
+    fn chip_menu_requested(
+        &mut self,
+        _key: TimelineKey,
+        _id: Uuid,
+        _emoji: papo_sdk_ui::operations::ReactionEmoji,
+        _tx: &mut Tx,
+    ) {
         self.controls.push("chip-menu");
     }
 
@@ -325,7 +333,7 @@ fn host_view(host: &Host, _cx: &mut Cx<Host>) -> El {
         time,
         hourglass: host.hourglass,
         selected: None,
-        reacting: Reacting::unknown(),
+        reacting: host.reacting.clone(),
         insets_pt: [0.0, 0.0],
         unsent: host.unsent.clone(),
         media: host.media.clone(),
@@ -388,6 +396,7 @@ fn runtime_with(
         hourglass: true,
         controls: Vec::new(),
         unsent: crate::unsent_media::UnsentMedia::default(),
+        reacting: Reacting::unknown(),
         media: crate::message_media::received::MediaStyle::new(papo_sdk_ui::MediaBounds::new(
             papo_sdk_ui::MediaSizeSetting::Medium,
             f32::INFINITY,

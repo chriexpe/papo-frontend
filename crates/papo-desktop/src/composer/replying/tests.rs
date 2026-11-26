@@ -71,7 +71,9 @@ fn a_reply_goes_with_its_message_and_comes_back_if_it_fails() {
     composer.start_reply(key(), original(), None, true);
     composer.field_mut().insert("agreed");
     composer.edited(1.0, &CustomEmojis::default());
-    let Sent::Queued(Effect::Send { reply_to, .. }) = composer.send(Uuid::from_u128(5)) else {
+    let Sent::Queued(Effect::Send { reply_to, .. }) =
+        composer.send(Uuid::from_u128(5), &CustomEmojis::default())
+    else {
         panic!("sent");
     };
     assert_eq!(reply_to, Some(original()));
@@ -111,7 +113,7 @@ fn saving_an_edit_queues_it_and_puts_the_draft_back() {
             id, text: edited, ..
         },
         save: None,
-    } = composer.send(Uuid::from_u128(5))
+    } = composer.send(Uuid::from_u128(5), &CustomEmojis::default())
     else {
         panic!("an edit");
     };
@@ -131,7 +133,7 @@ fn an_emptied_edit_asks_to_delete_and_stays_open() {
     composer.field_mut().replace_text("");
     composer.edited(2.0, &CustomEmojis::default());
     assert_eq!(
-        composer.send(Uuid::from_u128(5)),
+        composer.send(Uuid::from_u128(5), &CustomEmojis::default()),
         Sent::DeleteInstead {
             key: key(),
             id: original()
@@ -168,7 +170,9 @@ fn a_send_refused_during_an_edit_waits_in_the_draft_it_set_aside() {
     composer.start_reply(key(), Uuid::from_u128(7), None, true);
     composer.field_mut().insert("sent");
     composer.edited(1.0, &CustomEmojis::default());
-    let Sent::Queued(Effect::Send { reply_to, .. }) = composer.send(Uuid::from_u128(5)) else {
+    let Sent::Queued(Effect::Send { reply_to, .. }) =
+        composer.send(Uuid::from_u128(5), &CustomEmojis::default())
+    else {
         panic!("sent");
     };
     composer.start_edit(key(), original(), plain("the message"));

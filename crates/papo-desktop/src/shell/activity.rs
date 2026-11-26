@@ -34,8 +34,10 @@ pub(crate) struct Activity {
     pub(crate) people: Option<Arc<AccountActivity>>,
     /// Its outgoing queue: a chip whose change is in it waits.
     pub(crate) outgoing: Option<Arc<OutgoingSnapshot>>,
-    /// Its quick reactions, most used first; empty until posted.
-    pub(crate) quick: Arc<[String]>,
+    /// Its emoji count, most used first: Frequently used and the quick reactions read it.
+    pub(crate) usage: Arc<[(String, u64)]>,
+    /// Its quick reactions, most used first, from the count and the catalog.
+    pub(crate) quick: Arc<[papo_sdk_ui::operations::ReactionEmoji]>,
     /// Its custom emoji catalog; none until posted.
     pub(crate) emojis: Option<Arc<papo_sdk::EmojiCatalog>>,
     /// That catalog as message content resolves against it.
@@ -44,6 +46,19 @@ pub(crate) struct Activity {
     pub(crate) link: Option<crate::diagnostics::Link>,
     /// Refused reactions already being dropped, so each is said once.
     dropping: HashSet<Uuid>,
+}
+
+/// How many quick reactions an account keeps: the message menu's strip.
+const QUICK_REACTIONS: usize = 8;
+
+impl Activity {
+    /// The quick reactions from the emoji count and the catalog (`quick_reactions`: custom
+    /// emoji while the catalog has them, then the defaults).
+    fn rank_quick(&mut self) {
+        self.quick =
+            papo_sdk_ui::quick_reactions(&self.usage, self.emojis.as_deref(), QUICK_REACTIONS)
+                .into();
+    }
 }
 
 impl Shell {
@@ -93,11 +108,16 @@ impl Shell {
                 let activity = self.activity.entry(account).or_default();
                 activity.custom = papo_sdk_ui::message_content::CustomEmojis::new(&catalog);
                 activity.emojis = Some(catalog);
+                activity.rank_quick();
                 self.custom_emojis_changed(account);
                 self.shows_account(account)
             }
-            Posted::Quick(quick) => {
-                self.activity.entry(account).or_default().quick = quick.into();
+            Posted::Usage(usage) => {
+                let activity = self.activity.entry(account).or_default();
+                activity.usage = usage.into();
+                activity.rank_quick();
+                // A custom emoji may have joined the quick reactions.
+                self.want_emoji();
                 self.shows_account(account)
             }
             Posted::Outgoing(outgoing) => {
@@ -145,8 +165,23 @@ impl Shell {
         self.activity.get(&account)?.people.as_deref()
     }
 
+    /// What the account's reaction emoji are called and draw as.
+    pub(crate) fn reaction_emoji(
+        &self,
+        account: AccountId,
+    ) -> crate::reaction_emoji::ReactionEmojiLook {
+        crate::reaction_emoji::ReactionEmojiLook {
+            account,
+            names: self.custom_emojis(account),
+            images: self.emoji_images.looks(),
+        }
+    }
+
     /// The account's quick reactions, most used first.
-    pub(crate) fn quick_reactions(&self, account: AccountId) -> Arc<[String]> {
+    pub(crate) fn quick_reactions(
+        &self,
+        account: AccountId,
+    ) -> Arc<[papo_sdk_ui::operations::ReactionEmoji]> {
         self.activity
             .get(&account)
             .map_or_else(|| Arc::from([]), |activity| Arc::clone(&activity.quick))
@@ -170,6 +205,7 @@ impl Shell {
         Reacting {
             outgoing: self.outgoing(account),
             quick: self.quick_reactions(account),
+            emoji: Some(self.reaction_emoji(account)),
             capabilities: super::replies::channel_capabilities(open),
             stretched: self
                 .stretched

@@ -1,7 +1,7 @@
 //! Watches each signed-in account for what the shell draws live beyond a
 //! timeline: its outgoing queue (a chip waits while its change is in
-//! flight; a refused reaction is said and dropped), its quick reactions,
-//! ranked by the SDK from the account's own use (`quick_reactions`), its
+//! flight; a refused reaction is said and dropped), its count of emoji used
+//! (which the SDK ranks into the quick reactions and Frequently used), its
 //! people's activity (presence marks, status phrases, who types where), its
 //! custom emoji catalog, and its connection with the heartbeat's round trip
 //! (Settings › Diagnostics).
@@ -20,7 +20,6 @@ use papo_sdk::{
 };
 use papo_sdk_ui::{
     AccountActivity, ActivityService, ExpressionLibraryService, ExpressionLibraryUpdate,
-    ExpressionLibraryView, quick_reactions,
 };
 use rune::Tx;
 use tokio::task::{AbortHandle, JoinSet};
@@ -28,15 +27,12 @@ use tokio::task::{AbortHandle, JoinSet};
 use crate::diagnostics::Link;
 use crate::sdk_bridge::Updates;
 
-/// How many quick reactions an account keeps: the message menu's strip.
-pub(crate) const QUICK_REACTIONS: usize = 8;
-
 /// What the shell hears about one account.
 pub(crate) enum Posted {
     /// Its outgoing queue now.
     Outgoing(Arc<OutgoingSnapshot>),
-    /// Its quick reactions now, most used first.
-    Quick(Vec<String>),
+    /// Its emoji count now, most used first.
+    Usage(Vec<(String, u64)>),
     /// Its people's activity now.
     People(Arc<AccountActivity>),
     /// Its custom emoji catalog now.
@@ -130,16 +126,15 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
         .await;
     let mut library = match library {
         Ok(library) => {
-            // A library that starts in a fault still has the defaults.
-            let quick = ranked(&library.baseline).unwrap_or_else(|| unicode_quick(&[]));
-            post(Posted::Quick(quick));
+            // A library that starts in a fault ranks no use: the defaults.
+            post(Posted::Usage(usage(&library.baseline).unwrap_or_default()));
             Some(library)
         }
         Err(error) => {
             // Without its counts, the account's quick reactions are the
             // defaults (`quick_reactions` of no use).
             log::debug!("an account's reaction use is not watched: {error}");
-            post(Posted::Quick(unicode_quick(&[])));
+            post(Posted::Usage(Vec::new()));
             None
         }
     };
@@ -177,8 +172,8 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
             update = next_library(library.as_mut()) => match update {
                 ExpressionLibraryUpdate::Closed => library = None,
                 update => {
-                    if let Some(quick) = ranked(&update) {
-                        post(Posted::Quick(quick));
+                    if let Some(count) = usage(&update) {
+                        post(Posted::Usage(count));
                     }
                 }
             },
@@ -216,26 +211,10 @@ async fn next_library(
     }
 }
 
-/// The quick reactions an update ranks; none for a fault, which keeps the
-/// last ranking.
-fn ranked(update: &ExpressionLibraryUpdate) -> Option<Vec<String>> {
+/// The emoji count an update holds; none for a fault, which keeps the last one.
+fn usage(update: &ExpressionLibraryUpdate) -> Option<Vec<(String, u64)>> {
     match update {
-        ExpressionLibraryUpdate::Reset(view) => Some(ranking(view)),
+        ExpressionLibraryUpdate::Reset(view) => Some(view.emoji_usage.clone()),
         _ => None,
     }
-}
-
-fn ranking(view: &ExpressionLibraryView) -> Vec<String> {
-    unicode_quick(&view.emoji_usage)
-}
-
-/// The quick reactions the hover bar draws: Unicode ones, until it draws custom emoji too.
-fn unicode_quick(usage: &[(String, u64)]) -> Vec<String> {
-    quick_reactions(usage, None, QUICK_REACTIONS)
-        .into_iter()
-        .filter_map(|emoji| match emoji {
-            papo_sdk_ui::operations::ReactionEmoji::Unicode(glyph) => Some(glyph),
-            papo_sdk_ui::operations::ReactionEmoji::Custom(_) => None,
-        })
-        .collect()
 }

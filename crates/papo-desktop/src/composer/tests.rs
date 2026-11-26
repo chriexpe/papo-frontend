@@ -141,11 +141,36 @@ fn later_writes_carry_later_sequence_numbers() {
         reply_to: None,
         seq: second,
         ..
-    }) = composer.send(Uuid::from_u128(9))
+    }) = composer.send(Uuid::from_u128(9), &CustomEmojis::default())
     else {
         panic!("a send");
     };
     assert!(second > first);
+}
+
+#[test]
+fn a_send_counts_its_unicode_and_custom_emoji_as_the_catalog_names_them() {
+    let catalog = papo_sdk::EmojiCatalog {
+        revision: 2,
+        emojis: vec![papo_sdk::CustomEmoji {
+            id: Uuid::from_u128(7),
+            name: "gato".to_owned(),
+            format: "png".to_owned(),
+            created_at: String::new(),
+        }],
+    };
+    let mut composer = showing("");
+    composer.field_mut().replace_text("oi 🧀 :gato: :sumiu:");
+    let Sent::Queued(Effect::Send { emoji, .. }) =
+        composer.send(Uuid::from_u128(9), &CustomEmojis::new(&catalog))
+    else {
+        panic!("a send");
+    };
+    assert_eq!(
+        emoji,
+        papo_sdk_ui::emoji_used(&CustomEmojis::new(&catalog).parse("🧀 :gato:"))
+    );
+    assert_eq!(emoji.len(), 2, "an unknown :name: is text, not an emoji");
 }
 
 #[test]
@@ -174,9 +199,12 @@ fn typing_is_reported_at_most_every_few_seconds() {
 #[test]
 fn send_takes_the_text_and_never_a_blank_one() {
     let mut composer = showing(" \n ");
-    assert_eq!(composer.send(Uuid::from_u128(9)), Sent::Nothing);
+    assert_eq!(
+        composer.send(Uuid::from_u128(9), &CustomEmojis::default()),
+        Sent::Nothing
+    );
     composer.field_mut().replace_text("olá");
-    let sent = composer.send(Uuid::from_u128(9));
+    let sent = composer.send(Uuid::from_u128(9), &CustomEmojis::default());
     assert_eq!(
         sent,
         Sent::Queued(Effect::Send {
@@ -186,6 +214,7 @@ fn send_takes_the_text_and_never_a_blank_one() {
             tiles: Vec::new(),
             local: Uuid::from_u128(9),
             seq: 1,
+            emoji: Vec::new(),
         })
     );
     assert_eq!(text(&composer), "");
@@ -208,7 +237,10 @@ fn an_over_long_message_stays_in_the_field() {
         .replace_text("é".repeat(MAX_MESSAGE_CHARS + 2));
     composer.edited(1.0, &CustomEmojis::default());
     assert_eq!(composer.chars_over(), 2);
-    assert_eq!(composer.send(Uuid::from_u128(9)), Sent::TooLong);
+    assert_eq!(
+        composer.send(Uuid::from_u128(9), &CustomEmojis::default()),
+        Sent::TooLong
+    );
     assert_eq!(text(&composer).chars().count(), MAX_MESSAGE_CHARS + 2);
 }
 
@@ -216,7 +248,7 @@ fn an_over_long_message_stays_in_the_field() {
 fn a_failed_send_gives_the_text_back_before_what_was_typed_since() {
     let mut composer = showing("");
     composer.field_mut().replace_text("primeira");
-    composer.send(Uuid::from_u128(9));
+    composer.send(Uuid::from_u128(9), &CustomEmojis::default());
     assert!(!composer.send_failed_here());
     type_in(&mut composer, "segunda", 1.0);
     let effects =

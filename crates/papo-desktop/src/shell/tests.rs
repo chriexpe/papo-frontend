@@ -377,3 +377,12 @@ fn open_on_an_already_added_server_signs_its_signed_out_account_in_again() {
     assert!(!tree.contains("\"Change server\""), "{tree}");
     assert_eq!(rt.state.fields.username.text, "ana");
 }
+
+/// An emoji count that ranks `quick` in its order, most used first.
+pub(crate) fn ranked(quick: &[String]) -> Vec<(String, u64)> {
+    quick
+        .iter()
+        .zip((1..=100).rev())
+        .map(|(emoji, count)| (emoji.clone(), count))
+        .collect()
+}
