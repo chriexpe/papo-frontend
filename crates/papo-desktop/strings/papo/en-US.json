@@ -736,5 +736,7 @@
   "settings.players_clear_spoken": "Clear {{site}}'s data",
   "settings.players_remove_spoken": "Remove {{site}}",
   "settings.players_clear.note": "Clearing a site's data signs you out of it in Papo.",
-  "shortcut.space": "Space"
+  "shortcut.space": "Space",
+  "embed.track_label": "Track from {{provider}}, {{title}}",
+  "embed.track_label_untitled": "Track from {{provider}}"
 }

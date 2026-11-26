@@ -72,3 +72,10 @@ pub(crate) const PLAYER_FAIL_ICON_PT: f32 = 20.0;
 pub(crate) const PLAYER_FAIL_GAP_PT: f32 = 8.0;
 /// The note on a released player's poster, a badge at its foot's start: its padding.
 pub(crate) const PLAYER_NOTE_PAD_PT: (f32, f32) = (8.0, 2.0);
+/// A track's card (§15.4): its cover, the play disc on it and the disc's icon, the gap to the
+/// title beside it, and the strip its player plays in.
+pub(crate) const PLAYER_COVER_PT: f32 = 96.0;
+pub(crate) const PLAYER_COVER_DISC_PT: f32 = 36.0;
+pub(crate) const PLAYER_COVER_ICON_PT: f32 = 18.0;
+pub(crate) const PLAYER_COVER_GAP_PT: f32 = 12.0;
+pub(crate) const PLAYER_STRIP_PT: f32 = 152.0;

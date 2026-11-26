@@ -1,10 +1,10 @@
-//! Provider players' rules (`docs/design.md` §15.3, §15.5, §15.6): a poster until you press
+//! Provider players' rules (`docs/design.md` §15.3–§15.6): a poster until you press
 //! play, the ask inside the card for a site you haven't allowed, loading, playing, released
 //! after 10 s below half shown (the poster returns with its note), failed. At most two live
 //! players: starting a third releases the one touched longest ago. One sound at a time: a
 //! player that starts sounding quiets the others, other media quiets them all, and a quieted
-//! player sounds again when you use it. The viewer takes a live player over, which keeps it
-//! live wherever its row is.
+//! player sounds again when you use it (`sound`). The viewer takes a live player over, which keeps it
+//! live wherever its row is. A track is released when its conversation is left (`stop`).
 //!
 //! Pure: it decides, and says what the WebViews must do ([`Command`]); the shell carries the
 //! commands out, draws, and asks the person (`web_view`, `link_cards`). A player's key is its
@@ -17,6 +17,8 @@ use papo_sdk_ui::ProviderPlayer;
 
 use crate::web_view::PageId;
 
+mod sound;
+
 /// The most live players.
 pub(crate) const MAX_LIVE: usize = 2;
 /// How long a player below half shown stays live.
@@ -24,7 +26,7 @@ pub(crate) const RELEASE_AFTER_S: f64 = 10.0;
 /// The share of its box a player shows to count as in view.
 pub(crate) const SHOWN_SHARE: f32 = 0.5;
 
-/// Which provider video: an embed of a message.
+/// Which provider player (a video or a track): an embed of a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PlayerKey {
     pub(crate) account: AccountId,
@@ -42,7 +44,8 @@ pub(crate) enum Phase {
     Loading { since_s: f64 },
     /// Its page draws.
     Playing,
-    /// Released after it left the view: the poster with its note.
+    /// Released after it left the view (a track: its conversation was left): the poster or
+    /// cover, a video's with its note.
     Stopped,
     /// Its page couldn't load.
     Failed,
@@ -80,12 +83,13 @@ struct Entry {
     muted: bool,
 }
 
-/// What a page's sound change means for the rest of the app.
-#[derive(Debug, Default, PartialEq)]
-pub(crate) struct SoundChange {
-    /// A player started sounding: other media go quiet.
-    pub(crate) quiet_others: bool,
-    pub(crate) commands: Vec<Command>,
+impl Entry {
+    /// Releases its live page: stopped, the poster returns, and play starts over.
+    fn release(&mut self) -> Option<Command> {
+        self.phase = Phase::Stopped;
+        self.out_since_s = None;
+        self.page.take().map(Command::Close)
+    }
 }
 
 /// The players.
@@ -114,6 +118,24 @@ impl PlayerStore {
             .iter()
             .find(|(_, entry)| entry.page == Some(page))
             .map(|(key, _)| *key)
+    }
+
+    /// What `key`'s player plays.
+    pub(crate) fn kind(&self, key: PlayerKey) -> Option<papo_sdk_ui::PlayerKind> {
+        self.entries.get(&key).map(|entry| entry.player.kind())
+    }
+
+    /// Releases `key`'s live player at once (a track whose conversation was left): the poster
+    /// returns, and play starts it again from the beginning.
+    pub(crate) fn stop(&mut self, key: PlayerKey) -> Vec<Command> {
+        if self.viewer == Some(key) {
+            self.viewer = None;
+        }
+        self.entries
+            .get_mut(&key)
+            .and_then(Entry::release)
+            .into_iter()
+            .collect()
     }
 
     /// Whose player `key` is.
@@ -283,68 +305,12 @@ impl PlayerStore {
             };
             let due_s = out_s + RELEASE_AFTER_S;
             if due_s <= now_s {
-                entry.phase = Phase::Stopped;
-                entry.out_since_s = None;
-                commands.extend(entry.page.take().map(Command::Close));
+                commands.extend(entry.release());
             } else {
                 next_s = Some(next_s.map_or(due_s, |next| next.min(due_s)));
             }
         }
         (commands, next_s)
-    }
-
-    /// Page `page` started or stopped sounding.
-    pub(crate) fn sound(&mut self, page: PageId, sounding: bool) -> SoundChange {
-        let Some(key) = self.key_of(page) else {
-            return SoundChange::default();
-        };
-        let muted = self.entries.get(&key).is_some_and(|entry| entry.muted);
-        if !sounding || muted {
-            return SoundChange::default();
-        }
-        SoundChange {
-            quiet_others: true,
-            commands: self.quiet(Some(key)),
-        }
-    }
-
-    /// Other media started sounding: every player goes quiet.
-    pub(crate) fn quiet_all(&mut self) -> Vec<Command> {
-        self.quiet(None)
-    }
-
-    /// `key` was used: a quieted player sounds again, and the others go quiet. Returns the
-    /// commands and whether other media must go quiet.
-    pub(crate) fn unquiet(&mut self, key: PlayerKey) -> SoundChange {
-        self.touch(key);
-        let Some(entry) = self.entries.get_mut(&key) else {
-            return SoundChange::default();
-        };
-        let Some(page) = entry.page.filter(|_| entry.muted) else {
-            return SoundChange::default();
-        };
-        entry.muted = false;
-        let mut commands = vec![Command::Mute(page, false)];
-        commands.extend(self.quiet(Some(key)));
-        SoundChange {
-            quiet_others: true,
-            commands,
-        }
-    }
-
-    /// Mutes every live player but `except`.
-    fn quiet(&mut self, except: Option<PlayerKey>) -> Vec<Command> {
-        let mut commands = Vec::new();
-        for (key, entry) in &mut self.entries {
-            if Some(*key) == except || entry.muted {
-                continue;
-            }
-            if let Some(page) = entry.page {
-                entry.muted = true;
-                commands.push(Command::Mute(page, true));
-            }
-        }
-        commands
     }
 
     /// The viewer takes `key`'s live player (or lets it go with `None`).

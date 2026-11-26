@@ -35,15 +35,15 @@ fn record(call: String) {
     CALLS.with_borrow_mut(|calls| calls.push(call));
 }
 
-fn calls() -> Vec<String> {
+pub(super) fn calls() -> Vec<String> {
     CALLS.with_borrow(Clone::clone)
 }
 
 impl PageHost for Recorder {
     fn open(&self, id: Page, spec: PageSpec) {
         record(format!(
-            "open {id} {} {} muted={}",
-            spec.site, spec.address, spec.muted
+            "open {id} {} {} muted={} size={}x{}",
+            spec.site, spec.address, spec.muted, spec.size_pt[0], spec.size_pt[1]
         ));
     }
     fn resize(&self, id: Page, _size_pt: [f32; 2], _scale: f32) {
@@ -69,13 +69,13 @@ impl PageHost for Recorder {
     }
 }
 
-fn embed_id() -> papo_sdk::Uuid {
+pub(super) fn embed_id() -> papo_sdk::Uuid {
     papo_sdk::Uuid::from_u128(0x9500)
 }
 
 /// The conversation with message 3 linking a YouTube video, as the server's oEmbed crawl
 /// sends it.
-fn with_youtube() -> Runtime<Shell> {
+pub(super) fn with_youtube() -> Runtime<Shell> {
     CALLS.with_borrow_mut(Vec::clear);
     let mut rt = conversation("");
     rt.update(move |shell, _tx| {
@@ -113,13 +113,13 @@ fn with_youtube() -> Runtime<Shell> {
     rt
 }
 
-fn settle(rt: &mut Runtime<Shell>) {
+pub(super) fn settle(rt: &mut Runtime<Shell>) {
     for _ in 0..4 {
         rt.frame(FRAME_S);
     }
 }
 
-fn player_key(rt: &Runtime<Shell>) -> PlayerKey {
+pub(super) fn player_key(rt: &Runtime<Shell>) -> PlayerKey {
     let shown = rt.state.tabs.shown().unwrap().key;
     PlayerKey {
         account: shown.account,
@@ -129,12 +129,12 @@ fn player_key(rt: &Runtime<Shell>) -> PlayerKey {
     }
 }
 
-fn focus_message(rt: &mut Runtime<Shell>) {
+pub(super) fn focus_message(rt: &mut Runtime<Shell>) {
     rt.update(|_shell, tx| tx.focus(message_key(message_id(3)), true));
     settle(rt);
 }
 
-fn opened() -> Vec<String> {
+pub(super) fn opened() -> Vec<String> {
     calls()
         .into_iter()
         .filter(|call| call.starts_with("open"))
@@ -157,7 +157,7 @@ fn close(rt: &mut Runtime<Shell>, key: PlayerKey) {
 }
 
 /// Space, then Enter on the ask's focused Play.
-fn play_once(rt: &mut Runtime<Shell>) {
+pub(super) fn play_once(rt: &mut Runtime<Shell>) {
     focus_message(rt);
     press(rt, Key::Text(" ".to_owned()));
     settle(rt);
@@ -185,7 +185,9 @@ fn space_asks_for_a_site_not_allowed_and_enter_plays_once() {
     settle(&mut rt);
     assert_eq!(
         opened(),
-        vec!["open 1 youtube https://www.youtube.com/embed/aqz-KE-bpKQ?autoplay=1 muted=false"]
+        vec![
+            "open 1 youtube https://www.youtube.com/embed/aqz-KE-bpKQ?autoplay=1 muted=false size=436x245"
+        ]
     );
     assert!(matches!(
         rt.state.players.store.phase(key),

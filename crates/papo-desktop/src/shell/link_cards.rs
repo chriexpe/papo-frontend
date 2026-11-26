@@ -12,8 +12,7 @@ use super::Shell;
 use super::media_presses::{MediaAction, SaveTo, SavedSource, Saving};
 use crate::icons;
 use crate::link_cards::{
-    CardPress, MediaItem, is_provider_video, media_item, name_of, picture_key, picture_of,
-    saved_source,
+    CardPress, MediaItem, media_item, name_of, picture_key, picture_of, saved_source,
 };
 use crate::links;
 use crate::menu::{MenuAction, MenuItem};
@@ -56,7 +55,7 @@ impl Shell {
                     self.open_player_menu(at, player, Some(point));
                     return;
                 }
-                let open_label = if is_provider_video(&preview) {
+                let open_label = if crate::link_cards::plays_on_provider(&preview) {
                     strings::embed_open_browser()
                 } else {
                     strings::link_menu_open()
@@ -180,7 +179,7 @@ pub(super) fn card_menu_items(
         let Some(page) = &card.page else {
             continue;
         };
-        let provider_video = is_provider_video(preview);
+        let provider_video = crate::link_cards::plays_on_provider(preview);
         let linked = text_links
             .iter()
             .any(|link| url::Url::parse(link).is_ok_and(|link| link.as_str() == page.address));

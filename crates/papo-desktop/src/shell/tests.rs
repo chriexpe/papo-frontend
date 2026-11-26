@@ -40,6 +40,7 @@ mod settings_conversations;
 mod settings_diagnostics;
 mod settings_general;
 mod timeline;
+mod tracks;
 mod tray;
 mod typing;
 mod unsent_audio;

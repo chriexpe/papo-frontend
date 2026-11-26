@@ -17,6 +17,8 @@ use crate::message_media::received::MediaAt;
 use crate::provider_players::PlayerKey;
 
 pub(crate) mod player;
+pub(crate) mod provider_marks;
+mod track;
 pub(crate) mod view;
 
 /// What a press on a card asks for, besides its picture's (which are media presses) and its
@@ -73,12 +75,18 @@ pub(crate) fn picture_of(preview: &LinkPreview) -> Option<&CardPicture> {
     }
 }
 
+/// Whether a card plays through a provider's page: its provider video (not a clip the server
+/// relays) or its track.
+pub(crate) fn plays_on_provider(preview: &LinkPreview) -> bool {
+    matches!(preview, LinkPreview::Card(card) if card.track.is_some()) || is_provider_video(preview)
+}
+
 /// A card's provider video, when it is the provider's player (not a clip the server relays).
 pub(crate) fn is_provider_video(preview: &LinkPreview) -> bool {
     matches!(preview, LinkPreview::Card(card) if matches!(card.video, Some(CardVideo::Provider(_))))
 }
 
-/// A card's provider player, when its video is an allowlisted provider's (the SDK's
+/// A card's provider player, when its video or track is an allowlisted provider's (the SDK's
 /// descriptor): the player's key at `at` and the descriptor.
 pub(crate) fn player_of(
     at: MediaAt,
@@ -87,7 +95,9 @@ pub(crate) fn player_of(
     let LinkPreview::Card(card) = preview else {
         return None;
     };
-    let Some(CardVideo::Provider(Some(player))) = &card.video else {
+    let ((Some(CardVideo::Provider(Some(player))), _) | (_, Some(player))) =
+        (&card.video, &card.track)
+    else {
         return None;
     };
     let key = PlayerKey {
