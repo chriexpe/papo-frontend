@@ -71,7 +71,19 @@ impl Shell {
                         .is_some_and(|card| card.key.account == account)
             }
             Posted::Link(link) => {
+                let came_back = matches!(link, crate::diagnostics::Link::Online { .. })
+                    && !matches!(
+                        self.activity
+                            .get(&account)
+                            .and_then(|activity| activity.link.as_ref()),
+                        Some(crate::diagnostics::Link::Online { .. })
+                    );
                 self.activity.entry(account).or_default().link = Some(link);
+                // Emoji whose fetch failed while offline are asked for again.
+                if came_back && self.emoji_images.reconnected(account) {
+                    self.want_emoji();
+                    return true;
+                }
                 // Only Diagnostics shows it.
                 self.settings
                     .as_ref()

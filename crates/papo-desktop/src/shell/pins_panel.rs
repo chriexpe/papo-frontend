@@ -313,6 +313,7 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
             &pin.message,
             &style.media,
         ),
+        style.emoji.of_content(key.account, &pin.content),
     );
     // Concentric with the panel, whose edge is one `space.sm` out.
     let row_radius_pt = Look::nested_radius(look.radius(RADIUS_PILL), look.space(SPACE_SM));

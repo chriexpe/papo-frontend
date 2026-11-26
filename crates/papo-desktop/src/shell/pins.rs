@@ -72,6 +72,8 @@ impl Shell {
         });
         self.pins_return_focus = tx.focused().map(str::to_owned);
         self.refresh_pins(key);
+        // Pins already known post nothing new: their emoji are asked for now.
+        self.want_emoji();
         // The keyboard follows a keyboard open; a click moves no focus.
         if keyboard {
             tx.focus(PINS_PANEL_KEY, true);

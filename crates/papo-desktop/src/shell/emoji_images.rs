@@ -14,7 +14,7 @@ use papo_sdk_ui::message_content::CustomEmojis;
 use rune::Pixels;
 
 use super::Shell;
-use crate::emoji_images::{DECODE_MAX_PX, EmojiJob};
+use crate::emoji_images::{DECODE_MAX_PX, EmojiFailure, EmojiJob};
 use crate::timeline::content::custom_emoji_ids;
 
 /// Rows past the visible ones whose emoji are fetched too, so a short scroll finds them drawn.
@@ -68,25 +68,34 @@ impl Shell {
         }
     }
 
-    /// Asks for the images of the custom emoji the shown views name.
-    pub(super) fn want_emoji(&mut self) {
+    /// Asks for the images of the custom emoji the shown views name. Returns whether a view
+    /// draws something else now (an emoji its catalog no longer has shows its name).
+    pub(super) fn want_emoji(&mut self) -> bool {
+        // Without the SDK nothing could be fetched: nothing is asked, so nothing waits.
+        if self.sdk.is_none() {
+            return false;
+        }
         let Some(account) = self.tabs.shown().map(|open| open.key.account) else {
-            return;
+            return false;
         };
         let ids = self.shown_emoji(account);
         let Some(catalog) = self.catalog(account).cloned() else {
-            return;
+            return false;
         };
-        let wanted: Vec<&CustomEmoji> = ids.iter().filter_map(|id| catalog.get(*id)).collect();
+        let (known, unknown): (Vec<Uuid>, Vec<Uuid>) =
+            ids.into_iter().partition(|id| catalog.get(*id).is_some());
+        let changed = self.emoji_images.unknown(account, unknown);
+        let wanted: Vec<&CustomEmoji> = known.iter().filter_map(|id| catalog.get(*id)).collect();
         let jobs = self.emoji_images.want(account, wanted);
         self.run_emoji_jobs(jobs);
+        changed
     }
 
     /// The custom emoji the views of `account` name now.
     fn shown_emoji(&self, account: AccountId) -> BTreeSet<Uuid> {
         let mut ids = BTreeSet::new();
         if let Some(open) = self.tabs.shown() {
-            let visible = open.visible_rows();
+            let visible = super::received_media::visible_span(open);
             let from = visible.start.saturating_sub(NEAR_ROWS);
             let to = (visible.end + NEAR_ROWS).min(open.items.len());
             for item in open.items.iter().skip(from).take(to.saturating_sub(from)) {
@@ -135,7 +144,25 @@ impl Shell {
             }
         }
         ids.extend(self.composer.emoji_ids());
+        ids.extend(self.composer_reply_emoji());
         ids
+    }
+
+    /// The custom emoji of the original the composer's reply bar names.
+    fn composer_reply_emoji(&self) -> Vec<Uuid> {
+        let Some((key, draft)) = self.composer.shown() else {
+            return Vec::new();
+        };
+        let Some(reply) = draft.mode.reply() else {
+            return Vec::new();
+        };
+        let open = self.tabs.shown().filter(|open| open.key == key);
+        match crate::timeline::replies::reply_text(open, reply.id, reply.original.as_ref()) {
+            Some(crate::timeline::replies::OriginalText::Message { emoji, .. }) => {
+                emoji.into_iter().map(|(_, id)| id).collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Starts `jobs`: each reads the emoji's image through the SDK's media store and decodes
@@ -161,8 +188,9 @@ impl Shell {
                             .await
                             .ok()
                             .flatten()
+                            .ok_or(EmojiFailure::Decode)
                     }
-                    None => None,
+                    None => Err(EmojiFailure::Fetch),
                 };
                 updates.send(move |shell| shell.emoji_images.landed(&job, image));
             });
@@ -170,10 +198,22 @@ impl Shell {
     }
 }
 
+/// The largest emoji image decoded, in pixels a side: the server's emoji are at most 256 KiB,
+/// so anything larger is not one to draw.
+const DECODE_LIMIT_PX: u32 = 4096;
+
 /// An emoji's image decoded: its first frame (animated emoji are not in D11, §16), fitted
-/// within [`DECODE_MAX_PX`] square, and its aspect. None when it doesn't decode.
+/// within [`DECODE_MAX_PX`] square, and its aspect. None when it doesn't decode or is larger
+/// than [`DECODE_LIMIT_PX`].
 fn decode(bytes: &[u8]) -> Option<(Pixels, f32)> {
-    let image = image::load_from_memory(bytes).ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(DECODE_LIMIT_PX);
+    limits.max_image_height = Some(DECODE_LIMIT_PX);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    reader.limits(limits);
+    let image = reader.decode().ok()?;
     let (width, height) = (image.width(), image.height());
     if width == 0 || height == 0 {
         return None;
@@ -201,13 +241,18 @@ fn decode(bytes: &[u8]) -> Option<(Pixels, f32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::decode;
+    use super::{DECODE_LIMIT_PX, decode};
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let image = image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255]));
         let mut bytes = std::io::Cursor::new(Vec::new());
         image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
         bytes.into_inner()
+    }
+
+    #[test]
+    fn an_image_past_the_limit_is_not_decoded() {
+        assert!(decode(&png(DECODE_LIMIT_PX + 1, 1)).is_none());
     }
 
     #[test]

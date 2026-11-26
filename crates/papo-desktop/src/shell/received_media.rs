@@ -371,7 +371,7 @@ impl Shell {
 /// Where `open`'s visible rows are in its items now: around the rows visible at the last
 /// report, found by ID, since a page arriving above moves every index without a new report;
 /// the reported range before any row is known.
-fn visible_span(open: &crate::timeline::OpenTimeline) -> std::ops::Range<usize> {
+pub(super) fn visible_span(open: &crate::timeline::OpenTimeline) -> std::ops::Range<usize> {
     let ids = open.tracker.visible_ids();
     let places: Vec<usize> = open
         .items

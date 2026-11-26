@@ -123,6 +123,7 @@ fn hit_row(shell: &Shell, index: usize, style: &Style) -> El {
         open.revealed(id),
         whole.as_ref().map(|message| Arc::as_ptr(message) as usize),
         media,
+        style.emoji.of_content(open.key.account, &item.content),
     );
     memo(format!("hit-{id}"), version, || {
         let shown = standalone_hit::<Shell>(open, item, whole.as_deref(), style);

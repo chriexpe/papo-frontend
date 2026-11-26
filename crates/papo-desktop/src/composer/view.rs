@@ -184,14 +184,15 @@ fn paperclip(look: &Look) -> El {
         )
 }
 
-/// The message field: Markdown styled in place, mentions as pills, Enter
-/// and Send, pastes of files, and no typing while the draft loads.
 /// The field's custom emoji: what they draw as, for the account it writes as.
 struct FieldEmoji {
     looks: EmojiLooks,
     account: papo_sdk::AccountId,
 }
 
+/// The message field: Markdown styled in place, mentions and custom emoji
+/// as pills, Enter and Send, pastes of files, and no typing while the draft
+/// loads.
 fn field(
     composer: &Composer,
     edit: &rune::TextEdit,

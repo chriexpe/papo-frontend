@@ -144,7 +144,7 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
             None
         }
     };
-    // Without a catalog, `:name:` stays text; nothing else waits on it.
+    // Without a catalog, `:name:` stays text.
     let mut emojis = session.emoji_catalog().subscribe().await.ok();
     if let Some(catalog) = emojis.as_mut().and_then(ready) {
         post(Posted::Emojis(catalog));

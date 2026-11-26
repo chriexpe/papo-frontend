@@ -265,9 +265,6 @@ impl Composer {
         true
     }
 
-    /// The shown field's text changed at `clock_s`: the draft is saved once
-    /// typing pauses, and typing is reported at most every
-    /// [`TYPING_EVERY_S`].
     /// The custom emoji the shown field holds.
     pub(crate) fn emoji_ids(&self) -> Vec<Uuid> {
         self.shown()
@@ -297,6 +294,10 @@ impl Composer {
         draft.refresh();
     }
 
+    /// The shown field's text changed at `clock_s`: the draft is saved once
+    /// typing pauses, and typing is reported at most every
+    /// [`TYPING_EVERY_S`]. A typed colon that closes one of `emojis`'s
+    /// names makes it that emoji.
     pub(crate) fn edited(&mut self, clock_s: f64, emojis: &CustomEmojis) -> Vec<Effect> {
         let Some(key) = self.shown else {
             return Vec::new();

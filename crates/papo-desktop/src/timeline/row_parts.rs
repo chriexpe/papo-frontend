@@ -12,7 +12,7 @@ use papo_sdk_ui::{
 
 use super::OpenTimeline;
 use super::changes::ChangeState;
-use super::content::{custom_emoji_ids, mention_names};
+use super::content::mention_names;
 use super::echoes::SendState;
 use super::grouping::continues;
 use super::hover_bar::{BAR_REACTIONS, Bar};
@@ -24,7 +24,7 @@ use super::replies::OriginalText;
 use super::replies::original_text;
 use super::reply_line::ReplyLine;
 use super::view::Style;
-use crate::emoji_images::{EmojiKey, EmojiLook};
+use crate::emoji_images::EmojiLook;
 use crate::strings;
 
 /// A row's background (§4, Highlights: one per row, the strongest reason).
@@ -177,15 +177,7 @@ pub(super) fn parts<'a>(
             |(text, _)| text.as_str(),
         ),
         mentions: mention_names(content, open.resources.as_deref()),
-        emoji: custom_emoji_ids(content)
-            .into_iter()
-            .map(|id| {
-                style.emoji.look(EmojiKey {
-                    account: open.key.account,
-                    id,
-                })
-            })
-            .collect(),
+        emoji: style.emoji.of_content(open.key.account, content),
         continued,
         show_time,
         highlight,

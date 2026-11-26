@@ -65,12 +65,18 @@ pub(crate) fn bind_all(edit: &mut TextEdit, emojis: &CustomEmojis, code: &[Previ
             None => at = open + 1,
         }
     }
-    // Back to front: only ranges already done would move, and none do.
-    for name in found.into_iter().rev() {
-        if !in_code(&name.range, code) && !overlaps_pill(edit, &name.range) {
-            edit.replace_with_pill(name.range, pill_id(name.id), &name.label);
+    // One undo step, and the caret and selection stay where they were: offsets don't move,
+    // as each label is the text already there.
+    let (anchor, caret) = edit.range();
+    edit.undo_group(|edit| {
+        // Back to front: only ranges already done would move, and none do.
+        for name in found.into_iter().rev() {
+            if !in_code(&name.range, code) && !overlaps_pill(edit, &name.range) {
+                edit.replace_with_pill(name.range, pill_id(name.id), &name.label);
+            }
         }
-    }
+    });
+    edit.set_selection(anchor, caret);
 }
 
 /// A `:name:` in the text that names an emoji.
@@ -165,5 +171,17 @@ mod tests {
         assert_eq!(ids(&edit).len(), 2);
         let pills: Vec<_> = edit.pills().map(|(range, _)| range).collect();
         assert_eq!(pills, [0..6, 20..26]);
+    }
+
+    #[test]
+    fn binding_keeps_the_caret_and_is_one_undo_step() {
+        let mut edit = typed(":gato: e :gato: tudo");
+        edit.set_caret(9);
+        let code = preview_spans(&edit.text);
+        bind_all(&mut edit, &emojis(), &code);
+        assert_eq!(edit.range(), (9, 9), "the caret stays");
+        assert_eq!(ids(&edit).len(), 2);
+        edit.undo();
+        assert!(ids(&edit).is_empty(), "one undo takes both back");
     }
 }
