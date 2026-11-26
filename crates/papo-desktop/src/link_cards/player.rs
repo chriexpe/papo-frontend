@@ -12,10 +12,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rune::edit::KeyEvent;
-use rune::{Color, Cursor, El, NativeSurface, SurfaceFit, Tx, el, icon, row};
+use rune::{Color, Cursor, El, NativeSurface, SurfaceFit, Tx, col, el, icon, row};
 
 use crate::design::{
-    FOCUS_RING_PT, Look, PLAYER_DIM_ALPHA, PLAYER_GLASS_GAP_PT, PROVIDER_CHIP_INSET_PT,
+    FOCUS_RING_PT, Look, PLAYER_DIM_ALPHA, PLAYER_GLASS_GAP_PT, PLAYER_GLASS_PT,
     PROVIDER_PLAY_HOVER_ALPHA, VIDEO_PLAY_ALPHA, VIDEO_PLAY_ICON_PT, VIDEO_PLAY_PT,
 };
 use crate::icons::{EXTERNAL, PLAY, X};
@@ -109,7 +109,9 @@ pub(crate) fn ask_play_key(key: PlayerKey) -> String {
 
 /// The player's box: `holder`, the reserved box, holding `poster` (its picture and label), the
 /// layers of the player's current state over it, and `chip` naming the provider above any dim
-/// (the live page covers it).
+/// (the live page covers it). Beside the box, a column for a live player's two glass buttons,
+/// outside the page so they never cover the provider's own controls; the pointer over the box
+/// or the column shows them.
 pub(crate) fn player<S: TimelineHost>(
     holder: El,
     poster: El,
@@ -125,13 +127,13 @@ pub(crate) fn player<S: TimelineHost>(
         host.player_moved(key, rect);
         tx.live_only();
     });
-    match state {
-        None => holder.child(poster).child(chip).child(play_disc::<S>(
-            at,
-            key,
-            shown.players.loadable,
-            look,
-        )),
+    let loadable = shown.players.loadable;
+    let boxed = match state {
+        None => holder
+            .child(poster)
+            .child(chip)
+            .child(poster_press::<S>(at, key, loadable))
+            .child(play_disc::<S>(at, key, loadable, look)),
         Some(state) => match state.phase {
             _ if state.in_viewer => holder.child(poster).child(dim::<S>()).child(chip),
             Phase::Asking => holder
@@ -156,11 +158,59 @@ pub(crate) fn player<S: TimelineHost>(
             Phase::Stopped => holder
                 .child(poster.label(strings::embed_stopped_label()))
                 .child(chip)
-                .child(play_disc::<S>(at, key, shown.players.loadable, look))
+                .child(poster_press::<S>(at, key, loadable))
+                .child(play_disc::<S>(at, key, loadable, look))
                 .child(note(look)),
             Phase::Failed => holder.child(poster).child(failed::<S>(at, key, look)),
         },
+    };
+    let live = state.is_some_and(|state| {
+        state.phase == Phase::Playing && state.surface.is_some() && !state.in_viewer
+    });
+    let mut column = col().w(PLAYER_GLASS_PT).gap(PLAYER_GLASS_GAP_PT);
+    if live && state.is_some_and(|state| state.chrome) {
+        column = column
+            .child(glass_button::<S>(
+                at,
+                key,
+                "open",
+                &EXTERNAL,
+                strings::embed_open_browser(),
+                PlayerEvent::OpenInBrowser,
+                look,
+            ))
+            .child(glass_button::<S>(
+                at,
+                key,
+                "close",
+                &X,
+                strings::embed_close_player(),
+                PlayerEvent::Close,
+                look,
+            ));
     }
+    row()
+        .items_start()
+        .gap(PLAYER_GLASS_GAP_PT)
+        .on_hover_change(move |host: &mut S, inside, tx| {
+            host.player_event(at, key, PlayerEvent::Hover(inside), tx);
+        })
+        .child(boxed)
+        .child(column)
+}
+
+/// A press anywhere on a poster plays it (or, with players off, opens the page), as its disc
+/// does; the disc keeps the keyboard.
+fn poster_press<S: TimelineHost>(at: MediaAt, key: PlayerKey, loadable: bool) -> El {
+    let event = if loadable {
+        PlayerEvent::Play
+    } else {
+        PlayerEvent::OpenInBrowser
+    };
+    el().key(format!("{}-poster", page_key(key)))
+        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .a11y_hidden()
+        .on_background_press_tx(move |host: &mut S, tx| host.player_event(at, key, event, tx))
 }
 
 /// `button`'s Enter and Space press it, before the message around it takes them (Enter opens
@@ -220,59 +270,23 @@ fn play_disc<S: TimelineHost>(at: MediaAt, key: PlayerKey, loadable: bool, look:
         .child(disc)
 }
 
-/// The live page: its frames fill the box; on hover or focus its two glass buttons show.
+/// The live page: its frames fill the box.
 fn live<S: TimelineHost>(
     shown: &PlayerBox<'_>,
     state: &PlayerShown,
     surface: &NativeSurface,
     look: &Look,
 ) -> El {
-    let at = shown.at;
-    let key = shown.key;
     let label = strings::embed_player_label(shown.provider, shown.title);
-    let page = page::<S>(at, key, surface, state.cursor, label, look).pin(
+    let page = page::<S>(shown.at, shown.key, surface, state.cursor, label, look).pin(
         Some(0.0),
         Some(0.0),
         Some(0.0),
         Some(0.0),
     );
-    let mut live = el()
-        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+    el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .fill(Color::BLACK)
-        .child(page);
-    if state.chrome {
-        live = live.child(
-            el().pin(
-                None,
-                Some(PROVIDER_CHIP_INSET_PT),
-                Some(PROVIDER_CHIP_INSET_PT),
-                None,
-            )
-            .child(
-                row()
-                    .gap(PLAYER_GLASS_GAP_PT)
-                    .child(glass_button::<S>(
-                        at,
-                        key,
-                        "open",
-                        &EXTERNAL,
-                        strings::embed_open_browser(),
-                        PlayerEvent::OpenInBrowser,
-                        look,
-                    ))
-                    .child(glass_button::<S>(
-                        at,
-                        key,
-                        "close",
-                        &X,
-                        strings::embed_close_player(),
-                        PlayerEvent::Close,
-                        look,
-                    )),
-            ),
-        );
-    }
-    live
+        .child(page)
 }
 
 /// Player `key`'s page as an element, wherever it is drawn (its box or the viewer): its
@@ -298,7 +312,6 @@ pub(crate) fn page<S: TimelineHost>(
         .label(label)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_hover_change(move |host: &mut S, inside, tx| {
-            host.player_event(at, key, PlayerEvent::Hover(inside), tx);
             if !inside {
                 send(host, PageInput::Leave, tx);
             }

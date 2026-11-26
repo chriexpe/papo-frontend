@@ -119,7 +119,7 @@ pub(super) fn ring() -> El {
         )
 }
 
-/// A 28 pt round glass button over the live page.
+/// A 28 pt round glass button beside the live page.
 pub(super) fn glass_button<S: TimelineHost>(
     at: MediaAt,
     key: PlayerKey,
@@ -145,9 +145,6 @@ pub(super) fn glass_button<S: TimelineHost>(
         .label(label)
         .focusable(true)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-        .on_hover_change(move |host: &mut S, inside, tx| {
-            host.player_event(at, key, PlayerEvent::Hover(inside), tx);
-        })
         .on_press_tx(move |host: &mut S, tx| host.player_event(at, key, event, tx))
         .child(icon(shape, PLAYER_GLASS_ICON_PT).color(Color::WHITE));
     pressed_by_keys::<S>(button, at, key, event)

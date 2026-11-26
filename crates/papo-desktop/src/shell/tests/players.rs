@@ -386,3 +386,22 @@ fn a_live_player_whose_row_is_no_longer_drawn_is_released_after_ten_seconds() {
     assert_eq!(rt.state.players.store.phase(key), Some(Phase::Stopped));
     assert!(calls().contains(&"close 1".to_owned()));
 }
+
+#[test]
+fn a_press_anywhere_on_the_poster_plays() {
+    let mut rt = with_youtube();
+    let key = player_key(&rt);
+    // A pointer press away from the disc: the poster's corner.
+    let (x, y) = rt
+        .find(&format!(
+            "{}-poster",
+            crate::link_cards::player::page_key(key)
+        ))
+        .expect("the poster's press layer");
+    rt.pointer_move(x + 20.0, y + 20.0);
+    rt.pointer_down(x + 20.0, y + 20.0);
+    rt.pointer_up(x + 20.0, y + 20.0);
+    settle(&mut rt);
+    assert_eq!(rt.state.players.store.phase(key), Some(Phase::Asking));
+    assert!(rt.state.viewer.is_none(), "not the picture viewer");
+}

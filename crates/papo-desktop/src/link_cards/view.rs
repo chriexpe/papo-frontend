@@ -20,7 +20,7 @@ use crate::design::{
     CARD_FIELD_VALUE_LINES, CARD_FIELDS_PER_ROW, CARD_RULE_PT, FOCUS_RING_PT, LETTER_TILE_PT,
     LETTER_TILE_RADIUS_PT, LINK_UNDERLINE_ALPHA, Look, MESSAGE_BLOCK_GAP, PROVIDER_CHIP_GAP_PT,
     PROVIDER_CHIP_INSET_PT, PROVIDER_CHIP_PAD_PT, PROVIDER_CHIP_PT, PROVIDER_LINE_GAP_PT,
-    PROVIDER_PLAY_HOVER_ALPHA, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
+    PROVIDER_PLAY_HOVER_ALPHA, RADIUS_CARD, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
     TYPE_LETTER_TILE, TYPE_SMALL, TYPE_SMALL_MEDIUM, VIDEO_PLAY_ALPHA, VIDEO_PLAY_ICON_PT,
     VIDEO_PLAY_PT, card_rule,
 };
@@ -345,8 +345,12 @@ fn picture<S: TimelineHost>(
         cell = match player_of(at, preview).filter(|_| plays) {
             // The player's layers sit beside the poster, not in it: the poster's keys (Enter
             // and Space open the viewer) must not take the ask's.
+            // The box at its exact size: beside it sits the column for the live player's
+            // buttons, outside the card's width, so the box keeps Embed size.
             Some((key, descriptor)) => player::player::<S>(
-                single_box(boxed, look),
+                el().size(boxed.width_pt, boxed.height_pt)
+                    .radius(look.radius(RADIUS_CARD))
+                    .clip_rounded(look.radius(RADIUS_CARD)),
                 cell,
                 chip,
                 &PlayerBox {
