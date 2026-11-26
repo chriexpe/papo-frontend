@@ -2,17 +2,19 @@
 
 use imbl::Vector;
 use papo_sdk::{
-    AccountId, HistoryClosedReason, HistoryCursor, HistorySnapshot, HistorySubscription,
-    HistoryUpdate, Message, ReadingSnapshot, Uuid,
+    AccountId, EmojiCatalogUpdate, HistoryClosedReason, HistoryCursor, HistorySnapshot,
+    HistorySubscription, HistoryUpdate, Message, ReadingSnapshot, Uuid,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::watch;
 
 use super::{TimelineConfig, TimelineError};
 use crate::{
+    content_cache::ContentScope,
     list_subscription::Publisher,
+    message_content::CustomEmojis,
     timeline_item::{ReplyOriginal, TimelineItem},
-    timeline_window::{self, Bounds, reply_originals::Originals},
+    timeline_window::{self, Bounds, Previous, reply_originals::Originals},
 };
 
 #[cfg(test)]
@@ -28,6 +30,12 @@ pub(super) struct WindowState {
     /// channel are the same `Arc`s (an upload's progress, another channel's send) changes
     /// no item.
     outgoing_ops: Vec<Arc<papo_sdk::Operation>>,
+    /// The account's custom emoji catalog, when the window follows one.
+    pub emoji_updates: Option<watch::Receiver<EmojiCatalogUpdate>>,
+    /// What `:name:` resolves to now.
+    emojis: CustomEmojis,
+    /// The custom emoji revision the published items were resolved against.
+    projected_emojis: u64,
     pub bounds: Bounds,
     pub older_cursor: Option<HistoryCursor>,
     pub newer_cursor: Option<HistoryCursor>,
@@ -47,8 +55,16 @@ impl WindowState {
         live: bool,
         account: Option<AccountId>,
         channel: Uuid,
+        mut emoji_updates: Option<watch::Receiver<EmojiCatalogUpdate>>,
         config: &TimelineConfig,
     ) -> Result<Self, TimelineError> {
+        // The first projection already resolves against the catalog, so windows opened at
+        // different times share their parses.
+        let emojis = emoji_updates
+            .as_mut()
+            .map_or_else(CustomEmojis::default, |updates| {
+                CustomEmojis::of_update(&updates.borrow_and_update())
+            });
         let reading_version = reading.borrow().version;
         // A message can arrive after an empty page but before the atomic raw subscription.
         // Its captured baseline is already marked seen, so initialization must include it.
@@ -75,6 +91,9 @@ impl WindowState {
             outgoing: None,
             outgoing_version: 0,
             outgoing_ops: Vec::new(),
+            emoji_updates,
+            emojis,
+            projected_emojis: 0,
             history: subscription.updates,
             reading_version,
             reading,
@@ -89,6 +108,7 @@ impl WindowState {
             state.include(&message.cursor().ok_or(TimelineError::InvalidCursor)?)?;
         }
         state.publisher.items = state.project(config)?;
+        state.projected_emojis = state.emojis.revision();
         Ok(state)
     }
 
@@ -117,15 +137,18 @@ impl WindowState {
         let pending = outgoing.as_deref().map_or_else(HashMap::new, |outgoing| {
             timeline_window::pending_changes::by_message(outgoing, self.channel)
         });
-        let cache_scope = self.account.map(|account| (account, self.channel));
+        let scope = self.scope();
         let mut items = timeline_window::project_with_cache(
             &self.raw,
             &self.bounds,
             read,
             self.loading,
             config.offset_provider.as_ref(),
-            &self.publisher.items,
-            cache_scope,
+            Previous {
+                items: &self.publisher.items,
+                emojis: self.projected_emojis,
+            },
+            scope,
             &pending,
         )?;
         // Echoes follow the newest message, so only a live window shows them.
@@ -138,7 +161,7 @@ impl WindowState {
                 self.channel,
                 &self.publisher.items,
                 &self.raw,
-                cache_scope,
+                scope,
             )?;
         }
         Ok(items)
@@ -146,10 +169,7 @@ impl WindowState {
 
     /// What message `id` is, sharing this window's `Arc`s when the window shows it.
     pub fn original(&self, id: Uuid) -> Result<ReplyOriginal, TimelineError> {
-        let mut originals = Originals::new(
-            &self.raw,
-            self.account.map(|account| (account, self.channel)),
-        );
+        let mut originals = Originals::new(&self.raw, self.scope());
         for item in &self.publisher.items {
             if let TimelineItem::Message {
                 id,
@@ -164,6 +184,30 @@ impl WindowState {
         Ok(originals.of(id)?)
     }
 
+    /// Where this window shares parsed content and what it resolves custom emoji against.
+    fn scope(&self) -> ContentScope<'_> {
+        ContentScope {
+            cache: self.account.map(|account| (account, self.channel)),
+            emojis: &self.emojis,
+        }
+    }
+
+    /// Takes the catalog's latest emoji. An unreadable or closed catalog keeps the last ones:
+    /// the window still draws what it resolved.
+    fn take_emojis(&mut self) {
+        let Some(updates) = self.emoji_updates.as_mut() else {
+            return;
+        };
+        let update = updates.borrow_and_update();
+        let EmojiCatalogUpdate::Ready(catalog) = &*update else {
+            return;
+        };
+        // Compared before building: a refresh runs on every history and reading change.
+        if CustomEmojis::revision_of(catalog) != self.emojis.revision() {
+            self.emojis = CustomEmojis::new(catalog);
+        }
+    }
+
     pub fn reproject(&mut self, config: &TimelineConfig, reset: bool) -> Result<(), TimelineError> {
         let version = self
             .publisher
@@ -171,6 +215,7 @@ impl WindowState {
             .checked_add(1)
             .ok_or(TimelineError::VersionExhausted)?;
         let items = self.project(config)?;
+        self.projected_emojis = self.emojis.revision();
         self.publisher
             .publish(version, self.raw.generation, items, reset, |item| {
                 item.identity()
@@ -191,6 +236,9 @@ impl WindowState {
             }
             _ => return Err(TimelineError::InvalidCursor),
         };
+        self.take_emojis();
+        // Also when a projection after a catalog change failed: the next one must resolve it.
+        let emojis_changed = self.projected_emojis != self.emojis.revision();
         let reading_version = self.reading.borrow_and_update().version;
         let (outgoing_version, outgoing_ops) = self.outgoing.as_mut().map_or_else(
             || (0, Vec::new()),
@@ -213,7 +261,10 @@ impl WindowState {
                 .iter()
                 .zip(&self.outgoing_ops)
                 .all(|(a, b)| Arc::ptr_eq(a, b));
-        if outgoing_only && (self.outgoing_version == outgoing_version || same_ops) {
+        if outgoing_only
+            && !emojis_changed
+            && (self.outgoing_version == outgoing_version || same_ops)
+        {
             self.outgoing_version = outgoing_version;
             return Ok(());
         }
@@ -226,6 +277,7 @@ impl WindowState {
         self.outgoing_ops = outgoing_ops;
         if outgoing_only {
             let items = self.project(config)?;
+            self.projected_emojis = self.emojis.revision();
             if items == self.publisher.items {
                 return Ok(());
             }

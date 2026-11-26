@@ -5,6 +5,7 @@
 //! this pass only transforms plain/formatted text leaves outside code spans, code blocks and links.
 
 use crate::message_content::{
+    custom_emojis::EmojiNames,
     model::{Block, CustomEmojiRef, Inline, ListItem, TextStyle},
     spoiler::{InlinePiece, push_coalesced},
 };
@@ -14,10 +15,7 @@ const MAX_SHORTCODE_SCAN_BYTES: usize = 128;
 
 /// Expands Layer 2 tokens (`@mention`, `@everyone`, `:emoji:`) across parser pieces before
 /// spoiler matching while keeping unsafe links and image fallbacks (`allow_tokens = false`) literal.
-pub(crate) fn expand_pieces(
-    pieces: Vec<InlinePiece>,
-    catalog: &[CustomEmojiRef],
-) -> Vec<InlinePiece> {
+pub(crate) fn expand_pieces(pieces: Vec<InlinePiece>, catalog: EmojiNames<'_>) -> Vec<InlinePiece> {
     let mut coalesced: Vec<InlinePiece> = Vec::with_capacity(pieces.len());
     for piece in pieces {
         match (coalesced.last_mut(), piece) {
@@ -88,7 +86,7 @@ pub(crate) fn expand_pieces(
 /// Extracts canonical mentions and optional custom emoji from non-code, non-link text leaves.
 pub(crate) fn apply_tokens_to_inlines(
     inlines: Vec<Inline>,
-    catalog: &[CustomEmojiRef],
+    catalog: EmojiNames<'_>,
 ) -> Vec<Inline> {
     let mut out = Vec::with_capacity(inlines.len());
     for inline in inlines {
@@ -114,7 +112,7 @@ pub(crate) fn apply_tokens_to_inlines(
 /// Applies custom emoji matching onto an existing block tree without re-parsing `CommonMark`.
 pub(crate) fn apply_custom_emojis_to_blocks(
     blocks: &[Block],
-    catalog: &[CustomEmojiRef],
+    catalog: EmojiNames<'_>,
 ) -> Vec<Block> {
     blocks
         .iter()
@@ -161,7 +159,7 @@ pub(crate) fn apply_custom_emojis_to_blocks(
         .collect()
 }
 
-fn apply_emoji_inlines(inlines: &[Inline], catalog: &[CustomEmojiRef]) -> Vec<Inline> {
+fn apply_emoji_inlines(inlines: &[Inline], catalog: EmojiNames<'_>) -> Vec<Inline> {
     let mut out = Vec::with_capacity(inlines.len());
     for inline in inlines {
         match inline {
@@ -185,23 +183,18 @@ fn apply_emoji_inlines(inlines: &[Inline], catalog: &[CustomEmojiRef]) -> Vec<In
     out
 }
 
-fn needs_token_scan(text: &str, catalog: &[CustomEmojiRef]) -> bool {
+fn needs_token_scan(text: &str, catalog: EmojiNames<'_>) -> bool {
     text.contains('@') || (!catalog.is_empty() && text.contains(':'))
 }
 
-fn split_text_tokens(
-    text: &str,
-    style: TextStyle,
-    catalog: &[CustomEmojiRef],
-    out: &mut Vec<Inline>,
-) {
+fn split_text_tokens(text: &str, style: TextStyle, catalog: EmojiNames<'_>, out: &mut Vec<Inline>) {
     split_text_tokens_with_options(text, style, catalog, true, out);
 }
 
 fn split_text_tokens_with_options(
     text: &str,
     style: TextStyle,
-    catalog: &[CustomEmojiRef],
+    catalog: EmojiNames<'_>,
     scan_mentions: bool,
     out: &mut Vec<Inline>,
 ) {
@@ -269,7 +262,7 @@ fn flush_plain(text: &str, range: std::ops::Range<usize>, style: TextStyle, out:
 fn match_custom_emoji_at<'a>(
     text: &str,
     start: usize,
-    catalog: &'a [CustomEmojiRef],
+    catalog: EmojiNames<'a>,
 ) -> Option<(&'a CustomEmojiRef, usize)> {
     let after = text.get(start + 1..)?;
     let search_limit = after.len().min(MAX_SHORTCODE_SCAN_BYTES + 1);
@@ -291,6 +284,6 @@ fn match_custom_emoji_at<'a>(
         return None;
     }
     let candidate = &after[..close];
-    let entry = catalog.iter().find(|entry| entry.name == candidate)?;
+    let entry = catalog.find(candidate)?;
     Some((entry, start + 1 + close + 1))
 }

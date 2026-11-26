@@ -2,9 +2,7 @@
 //! message order and read points.
 
 use imbl::Vector;
-use papo_sdk::{
-    AccountId, HistoryGap, HistoryOrder, HistorySnapshot, Message, MessageKey, ReadState, Uuid,
-};
+use papo_sdk::{HistoryGap, HistoryOrder, HistorySnapshot, Message, MessageKey, ReadState, Uuid};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
@@ -16,7 +14,7 @@ pub(crate) mod reply_originals;
 use reply_originals::Originals;
 
 use crate::{
-    content_cache::{self, ContentCacheKey},
+    content_cache::{self, ContentScope},
     message_content::MessageContent,
     timeline::TimelineError,
     timeline_item::{ItemIdentity, TimelineDirection, TimelineItem, UtcOffsetProvider},
@@ -47,32 +45,51 @@ pub(crate) fn project(
     offset: &dyn UtcOffsetProvider,
     previous: &Vector<Arc<TimelineItem>>,
 ) -> Result<Vector<Arc<TimelineItem>>, TimelineError> {
+    let emojis = crate::message_content::CustomEmojis::default();
     project_with_cache(
         raw,
         bounds,
         read,
         loading,
         offset,
-        previous,
-        None,
+        Previous {
+            items: previous,
+            emojis: emojis.revision(),
+        },
+        ContentScope {
+            cache: None,
+            emojis: &emojis,
+        },
         &HashMap::new(),
     )
 }
 
-/// Projects only this window, sharing parsed `MessageContent` `Arc`s within `(AccountId, channel)`.
-/// Each message carries its reply's original and its entry in `pending` (by message ID).
+/// A window's last projection: its items and the custom emoji revision their content was
+/// resolved against. Content from another revision is never reused.
+#[derive(Clone, Copy)]
+pub(crate) struct Previous<'a> {
+    pub items: &'a Vector<Arc<TimelineItem>>,
+    pub emojis: u64,
+}
+
+/// Projects only this window, sharing parsed `MessageContent` `Arc`s within the scope's
+/// `(AccountId, channel)` and resolving custom emoji against the scope's catalog. Each message
+/// carries its reply's original and its entry in `pending` (by message ID).
 pub(crate) fn project_with_cache(
     raw: &HistorySnapshot,
     bounds: &Bounds,
     read: Option<&ReadState>,
     loading: [bool; 2],
     offset: &dyn UtcOffsetProvider,
-    previous: &Vector<Arc<TimelineItem>>,
-    cache_scope: Option<(AccountId, Uuid)>,
+    previous: Previous<'_>,
+    scope: ContentScope<'_>,
     pending: &HashMap<Uuid, Arc<papo_sdk::Operation>>,
 ) -> Result<Vector<Arc<TimelineItem>>, TimelineError> {
-    let mut originals = Originals::new(raw, cache_scope);
+    let mut originals = Originals::new(raw, scope);
+    // Content resolved against another custom emoji catalog is parsed again.
+    let same_emojis = previous.emojis == scope.emojis.revision();
     let reusable: BTreeMap<_, _> = previous
+        .items
         .iter()
         .map(|item| (item.identity(), item))
         .collect();
@@ -134,7 +151,7 @@ pub(crate) fn project_with_cache(
                 before: point.message_id,
             });
         }
-        let content = resolve_content(&reusable, cache_scope, point.message_id, message);
+        let content = resolve_content(&reusable, same_emojis, scope, point.message_id, message);
         let reply = originals.of_wire(message.reply_to.as_deref())?;
         originals.show(point.message_id, message, &content);
         values.push(TimelineItem::Message {
@@ -190,33 +207,45 @@ fn insert_deleted_gap_boundaries(
 
 fn resolve_content(
     reusable: &BTreeMap<ItemIdentity, &Arc<TimelineItem>>,
-    cache_scope: Option<(AccountId, Uuid)>,
+    same_emojis: bool,
+    scope: ContentScope<'_>,
     id: Uuid,
     message: &Arc<Message>,
 ) -> Arc<MessageContent> {
-    let key = cache_scope.map(|(account, channel)| ContentCacheKey {
-        account,
-        channel,
-        message: id,
-    });
-    if let Some(old_item) = reusable.get(&ItemIdentity::Message(id))
-        && let TimelineItem::Message {
-            message: old_message,
-            content: old_content,
-            ..
-        } = old_item.as_ref()
-    {
-        if Arc::ptr_eq(old_message, message) {
-            return Arc::clone(old_content);
-        }
-        if content_cache::same_revision(old_message, message) {
-            if let Some(key) = key {
-                content_cache::refresh_revision(key, message, old_content);
-            }
-            return Arc::clone(old_content);
+    let key = scope.key(id);
+    let old = reusable
+        .get(&ItemIdentity::Message(id))
+        .and_then(|item| match item.as_ref() {
+            TimelineItem::Message {
+                message: old_message,
+                content: old_content,
+                ..
+            } if Arc::ptr_eq(old_message, message) => Some((old_content, true)),
+            TimelineItem::Message {
+                message: old_message,
+                content: old_content,
+                ..
+            } if content_cache::same_revision(old_message, message) => Some((old_content, false)),
+            _ => None,
+        });
+    let Some((old_content, same_message)) = old else {
+        return content_cache::get_or_parse(key, message, scope.emojis);
+    };
+    // Another emoji catalog keeps the old `Arc` (and the row) unless the content changes: the
+    // text is parsed again, since even one without a `:` may decode to one (`&#58;`).
+    if !same_emojis {
+        let parsed = content_cache::get_or_parse(key, message, scope.emojis);
+        if parsed != *old_content {
+            return parsed;
         }
     }
-    content_cache::get_or_parse(key, message)
+    // The cache already maps this very message to this content: skip its lock.
+    if !(same_message && same_emojis)
+        && let Some(key) = key
+    {
+        content_cache::refresh_revision(key, message, old_content, scope.emojis);
+    }
+    Arc::clone(old_content)
 }
 
 #[cfg(test)]

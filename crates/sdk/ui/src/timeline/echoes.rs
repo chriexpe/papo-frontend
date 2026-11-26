@@ -1,12 +1,12 @@
 //! Live-window local echoes from committed SDK operations; no native composer or send policy lives here.
 
 use crate::{
-    TimelineItem, timeline_item::ReplyOriginal, timeline_window::reply_originals::Originals,
+    TimelineItem, content_cache::ContentScope, timeline_item::ReplyOriginal,
+    timeline_window::reply_originals::Originals,
 };
 use imbl::Vector;
 use papo_sdk::{
-    AccountId, InvalidMessageKey, MessageTarget, OperationKind, OperationState, OutgoingSnapshot,
-    Uuid,
+    InvalidMessageKey, MessageTarget, OperationKind, OperationState, OutgoingSnapshot, Uuid,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -16,9 +16,9 @@ pub(super) fn append(
     channel: Uuid,
     previous: &Vector<Arc<TimelineItem>>,
     history: &papo_sdk::HistorySnapshot,
-    cache_scope: Option<(AccountId, Uuid)>,
+    scope: ContentScope<'_>,
 ) -> Result<(), InvalidMessageKey> {
-    let mut originals = Originals::new(history, cache_scope);
+    let mut originals = Originals::new(history, scope);
     for item in items.iter() {
         if let TimelineItem::Message {
             id,

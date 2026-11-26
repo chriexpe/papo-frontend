@@ -173,6 +173,7 @@ impl Fixture {
                     live,
                     None,
                     CHANNEL,
+                    None,
                     &config,
                 )
                 .unwrap(),
@@ -336,4 +337,51 @@ fn atomic_baselines_and_stalled_overflow_reconstruct_the_current_items() {
         late.drain(&view.state, &view.images);
     }
     fixture.close();
+}
+
+#[test]
+fn a_new_emoji_catalog_resolves_only_the_messages_that_name_its_emoji() {
+    // Messages 17 and 20 name nothing and keep their items.
+    let mut fixture = Fixture::new();
+    let mut named = (*message(19)).clone();
+    named.content = Some("look :gato:".into());
+    fixture.source.messages.insert(19, Arc::new(named));
+    // Written with entities, it has no `:` in its source and still names the emoji.
+    let mut encoded = (*message(18)).clone();
+    encoded.content = Some("&#58;gato&#58;".into());
+    fixture.source.messages.insert(18, Arc::new(encoded));
+    fixture.publish(1);
+    let (catalog, updates) = watch::channel(papo_sdk::EmojiCatalogUpdate::Ready(Arc::default()));
+    fixture.views[0].state.emoji_updates = Some(updates);
+    fixture.refresh();
+    let before = message_items(&fixture.views[0].state.publisher.items);
+    catalog.send_replace(papo_sdk::EmojiCatalogUpdate::Ready(Arc::new(
+        papo_sdk::EmojiCatalog {
+            revision: 3,
+            emojis: vec![papo_sdk::CustomEmoji {
+                id: Uuid::from_u128(0xE1),
+                name: "gato".into(),
+                format: "png".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            }],
+        },
+    )));
+    fixture.refresh();
+    let after = message_items(&fixture.views[0].state.publisher.items);
+    let changed: Vec<_> = after
+        .iter()
+        .filter(|(id, item)| !Arc::ptr_eq(&before[id], item))
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(changed, [Uuid::from_u128(1800), Uuid::from_u128(1900)]);
+    let TimelineItem::Message { content, .. } = after[&Uuid::from_u128(1900)].as_ref() else {
+        panic!("a message item");
+    };
+    let crate::message_content::Block::Paragraph(inlines) = &content.blocks()[0] else {
+        panic!("a paragraph");
+    };
+    assert!(inlines.iter().any(|inline| matches!(
+        inline,
+        crate::message_content::Inline::CustomEmoji { id, .. } if *id == Uuid::from_u128(0xE1)
+    )));
 }

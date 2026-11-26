@@ -5,6 +5,7 @@
 //! Canonical mention token syntax lives exclusively in [`papo_sdk::mentions`].
 
 mod composer_mentions;
+mod custom_emojis;
 mod fences;
 mod model;
 mod pair_closing;
@@ -30,6 +31,7 @@ pub use composer_mentions::{
     encode_composer_mentions, utf8_offset_to_utf16, utf8_range_to_utf16, utf16_offset_to_utf8,
     utf16_range_to_utf8,
 };
+pub use custom_emojis::CustomEmojis;
 pub use fences::normalize_fenced_code_blocks;
 pub use model::{
     Block, CustomEmojiRef, Inline, ListItem, MAX_NESTING_DEPTH, MessageContent, TableAlignment,

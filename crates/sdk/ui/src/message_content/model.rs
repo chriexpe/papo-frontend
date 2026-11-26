@@ -5,7 +5,7 @@
 
 use papo_sdk::{EmojiMetadata, MentionTarget, Uuid};
 
-use crate::message_content::{parser, tokens};
+use crate::message_content::{custom_emojis::EmojiNames, parser, tokens};
 
 /// Maximum nesting depth permitted across blocks and inline spoilers.
 pub const MAX_NESTING_DEPTH: usize = 64;
@@ -156,13 +156,13 @@ impl MessageContent {
     /// Parses Markdown message content into a bounded, framework-neutral block/inline tree.
     #[must_use]
     pub fn parse(source: &str) -> Self {
-        parser::parse(source, &[])
+        parser::parse(source, EmojiNames::List(&[]))
     }
 
     /// Parses Markdown message content while resolving `:shortcode:` custom emoji against `catalog`.
     #[must_use]
     pub fn parse_with_custom_emojis(source: &str, catalog: &[CustomEmojiRef]) -> Self {
-        parser::parse(source, catalog)
+        parser::parse(source, EmojiNames::List(catalog))
     }
 
     /// Re-scans token-eligible plain text leaves in an already-parsed tree against `catalog`
@@ -176,7 +176,7 @@ impl MessageContent {
             return self.clone();
         }
         Self {
-            blocks: tokens::apply_custom_emojis_to_blocks(&self.blocks, catalog),
+            blocks: tokens::apply_custom_emojis_to_blocks(&self.blocks, EmojiNames::List(catalog)),
         }
     }
 

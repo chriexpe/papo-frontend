@@ -447,3 +447,30 @@ fn a_midnight_the_clock_skips_starts_the_day_at_the_change() {
     let (_, window) = localize_search(days_query(Some("2026-09-06"), None), &chile).unwrap();
     assert_eq!(window.start_us, Some(change_us));
 }
+
+#[test]
+fn results_resolve_custom_emoji_and_follow_a_new_catalog() {
+    let mut emoji_hit = (*hit(1, "2026-01-01T00:00:00Z").result).clone();
+    emoji_hit.content = Some(":gato:".into());
+    let emoji_hit = SearchHit::fixture(account(), Generation::for_test(1), emoji_hit);
+    let mut results = SearchResults::first(&page(vec![emoji_hit], false));
+    let resolved = |results: &SearchResults| {
+        matches!(
+            results.items()[0].content.blocks(),
+            [crate::message_content::Block::Paragraph(inlines)]
+                if matches!(inlines.as_slice(), [crate::message_content::Inline::CustomEmoji { .. }])
+        )
+    };
+    assert!(!resolved(&results), "no catalog yet: the text stays");
+    let catalog = papo_sdk::EmojiCatalog {
+        revision: 2,
+        emojis: vec![papo_sdk::CustomEmoji {
+            id: id(900),
+            name: "gato".into(),
+            format: "png".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        }],
+    };
+    results.set_custom_emojis(&crate::message_content::CustomEmojis::new(&catalog));
+    assert!(resolved(&results));
+}

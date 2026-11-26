@@ -245,3 +245,66 @@ fn timeline_content_cache_isolates_accounts_on_same_channel() -> Result {
     })??;
     fixture.finish()
 }
+
+#[test]
+fn a_server_emoji_resolves_in_the_timeline_and_its_reply_line() -> Result {
+    let fixture = Fixture::new(4, vec![])?;
+    fixture.run(async {
+        let gato = Uuid::parse_str("e0000000-0000-4000-8000-000000000001")?;
+        fixture
+            .server()
+            .set_emojis(vec![papo_test_server::ServerEmoji {
+                id: gato.to_string(),
+                name: "gato".into(),
+                format: "png".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                image: vec![1, 2, 3],
+            }])
+            .await;
+        let session = fixture.signed_in("content-emoji").await?;
+        let original = Uuid::parse_str("91000000-0000-4000-8000-0000000000e1")?;
+        let reply = Uuid::parse_str("91000000-0000-4000-8000-0000000000e2")?;
+        publish_markdown_message(&fixture, original, "2026-01-02T00:00:01.000000Z", ":gato:")
+            .await?;
+        fixture
+            .server()
+            .publish_message(Message {
+                id: Some(reply.to_string()),
+                channel_id: Some(CHANNEL.into()),
+                author_id: fixture.messages[0].author_id.clone(),
+                content: Some("same".into()),
+                reply_to: Some(original.to_string()),
+                created_at: Some("2026-01-02T00:00:02.000000Z".into()),
+                ..Message::default()
+            })
+            .await?;
+        let resolved = |content: &MessageContent| {
+            matches!(
+                content.blocks.as_slice(),
+                [Block::Paragraph(inlines)]
+                    if matches!(inlines.as_slice(), [Inline::CustomEmoji { id, .. }] if *id == gato)
+            )
+        };
+        let live = Timeline::live(session, channel(), config()).await?;
+        let mut subscription = live.subscribe()?;
+        // The catalog lists on connect; the window resolves once it lands.
+        until(&mut subscription, |state| {
+            content_arc(state, original).is_some_and(|content| resolved(&content))
+        })
+        .await?;
+        let reply_original = subscription
+            .items
+            .iter()
+            .find_map(|item| match item.as_ref() {
+                TimelineItem::Message {
+                    id,
+                    reply: Some(papo_sdk_ui::ReplyOriginal::Held { content, .. }),
+                    ..
+                } if *id == reply => Some(Arc::clone(content)),
+                _ => None,
+            });
+        assert!(reply_original.is_some_and(|content| resolved(&content)));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    fixture.finish()
+}

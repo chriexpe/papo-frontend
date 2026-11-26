@@ -23,21 +23,32 @@ impl Timeline {
         let history = state.history.clone();
         let reading = state.reading.clone();
         let outgoing = state.outgoing.clone();
+        let emojis = state.emoji_updates.clone();
         let owner = Arc::clone(&self.inner);
         let changes = stream::unfold(
-            (owner, receiver, history, reading, outgoing),
-            |(owner, mut receiver, mut history, mut reading, mut outgoing)| async move {
+            (owner, receiver, history, reading, outgoing, emojis),
+            |(owner, mut receiver, mut history, mut reading, mut outgoing, mut emojis)| async move {
                 loop {
                     let _ = owner.lock().refresh(&owner.config);
                     let closed = tokio::select! {
                         event = receiver.next() => {
                             return event.map(|event| {
-                                (map_event(event), (owner, receiver, history, reading, outgoing))
+                                (
+                                    map_event(event),
+                                    (owner, receiver, history, reading, outgoing, emojis),
+                                )
                             });
                         }
                         change = history.changed() => change.is_err(),
                         change = reading.changed() => change.is_err(),
-                        change = outgoing_changed(outgoing.as_mut()) => change.is_err(),
+                        change = watch_changed(outgoing.as_mut()) => change.is_err(),
+                        // A closed catalog only stops resolving new emoji; the window goes on.
+                        change = watch_changed(emojis.as_mut()) => {
+                            if change.is_err() {
+                                emojis = None;
+                            }
+                            false
+                        }
                     };
                     if closed {
                         owner.lock().close(HistoryClosedReason::AccountClosed);
@@ -75,10 +86,11 @@ fn map_event(
     }
 }
 
-async fn outgoing_changed(
-    outgoing: Option<&mut tokio::sync::watch::Receiver<Arc<papo_sdk::OutgoingSnapshot>>>,
+/// The next change of an optional watch; never, without one.
+async fn watch_changed<T>(
+    updates: Option<&mut tokio::sync::watch::Receiver<T>>,
 ) -> Result<(), tokio::sync::watch::error::RecvError> {
-    match outgoing {
+    match updates {
         Some(rx) => rx.changed().await,
         None => std::future::pending().await,
     }
