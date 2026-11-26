@@ -95,6 +95,8 @@ pub(crate) trait MediaHost: Sized + 'static {
     /// The pointer or the keyboard came to (or left) a GIF: with Animate GIFs off, it plays
     /// while there.
     fn media_hovered(&mut self, key: MediaKey, on: bool, reduced_motion: bool, tx: &mut Tx);
+    /// The star over the GIF at `at` was pressed: it becomes a favorite, or stops being one.
+    fn gif_star_pressed(&mut self, at: MediaAt, tx: &mut Tx);
     /// The saved pill's Show in folder.
     fn saved_pill_shown(&mut self, tx: &mut Tx);
     /// A press on video `key`'s controls (at `at`).
@@ -154,6 +156,8 @@ pub(crate) struct MediaStyle {
     pub(crate) audio_hover: Option<(AudioKey, f32)>,
     /// Provider players: whether they can load, and each one's state.
     pub(crate) players: crate::link_cards::player::PlayersView,
+    /// The account's favorite GIFs, by GIPHY's ID: their stars are filled (§16.4).
+    pub(crate) favorite_gifs: Arc<HashSet<String>>,
 }
 
 /// The id a picture shares with the viewer's while it shows it, so the viewer grows out of the
@@ -211,6 +215,7 @@ impl MediaStyle {
             audio: AudioView::default(),
             audio_hover: None,
             players: crate::link_cards::player::PlayersView::default(),
+            favorite_gifs: Arc::default(),
         }
     }
 

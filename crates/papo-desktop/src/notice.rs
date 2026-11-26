@@ -51,6 +51,8 @@ pub(crate) enum Refusal {
     FinishEdit,
     /// A GIF from the picker the queue did not take: said as a failed send is.
     Gif,
+    /// A GIF favorite added or removed that the device did not keep.
+    Favorite,
 }
 
 impl Refusal {
@@ -67,6 +69,7 @@ impl Refusal {
             Refusal::Ban => strings::notice_ban_failed(),
             Refusal::FinishEdit => strings::drop_editing(),
             Refusal::Gif => strings::composer_send_failed(),
+            Refusal::Favorite => strings::fav_failed(),
             Refusal::Attach(refused) => return strings::attach_refused(refused).into(),
         };
         words.into()

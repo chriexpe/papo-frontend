@@ -57,7 +57,7 @@ pub(crate) fn previews<S: TimelineHost>(
             LinkPreview::Media(media) => {
                 let boxed = media_box(media.picture.size, style.bounds);
                 let shown = shown_picture(at, preview);
-                picture_cell::<S>(
+                let cell = picture_cell::<S>(
                     single_box(boxed, look),
                     at,
                     &shown,
@@ -66,7 +66,8 @@ pub(crate) fn previews<S: TimelineHost>(
                     style,
                     look,
                 )
-                .child(inner_edge(look))
+                .child(inner_edge(look));
+                crate::gif_star::with_star::<S>(cell, at, message, media.embed, style, look)
             }
         });
     }

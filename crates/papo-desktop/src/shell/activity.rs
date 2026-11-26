@@ -36,6 +36,8 @@ pub(crate) struct Activity {
     pub(crate) outgoing: Option<Arc<OutgoingSnapshot>>,
     /// Its emoji count, most used first: Frequently used and the quick reactions read it.
     pub(crate) usage: Arc<[(String, u64)]>,
+    /// Its favorite GIFs, by GIPHY's ID: their stars are filled.
+    pub(crate) favorite_gifs: Arc<HashSet<String>>,
     /// Its quick reactions, most used first, from the count and the catalog.
     pub(crate) quick: Arc<[papo_sdk_ui::operations::ReactionEmoji]>,
     /// Its custom emoji catalog; none until posted.
@@ -118,6 +120,10 @@ impl Shell {
                 activity.rank_quick();
                 // A custom emoji may have joined the quick reactions.
                 self.want_emoji();
+                self.shows_account(account)
+            }
+            Posted::FavoriteGifs(favorites) => {
+                self.favorites_posted(account, favorites);
                 self.shows_account(account)
             }
             Posted::Outgoing(outgoing) => {

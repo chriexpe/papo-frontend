@@ -113,7 +113,7 @@ pub(super) fn conversations(cx: &Context<'_>) -> Vec<Group> {
 }
 
 /// The Media group (§14.9, §15.7): Image size, Video size and Embed size, each with its sliders
-/// under Custom, Animate GIFs and stickers, Autoplay videos, Keep playing when hidden.
+/// under Custom, Animate GIFs and emoji, Autoplay videos, Keep playing when hidden.
 fn media(cx: &Context<'_>) -> Vec<Row> {
     let mut rows = size_rows(
         strings::settings_image_size(),

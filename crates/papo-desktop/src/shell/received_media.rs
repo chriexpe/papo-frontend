@@ -102,6 +102,11 @@ impl Shell {
             audio: self.audio.store.view(),
             audio_hover: self.audio.hover,
             players: self.players.view(self.players.store.viewer()),
+            favorite_gifs: self
+                .tabs
+                .shown()
+                .map(|open| self.favorite_gifs(open.key.account))
+                .unwrap_or_default(),
         }
     }
 
@@ -491,6 +496,13 @@ fn pictures_wanted(
 }
 
 impl crate::message_media::received::MediaHost for Shell {
+    fn gif_star_pressed(&mut self, at: MediaAt, tx: &mut Tx) {
+        let Some(gif) = self.media_gif(at) else {
+            return;
+        };
+        self.toggle_gif_favorite(at.account, gif, tx);
+    }
+
     fn media_press(
         &mut self,
         at: MediaAt,

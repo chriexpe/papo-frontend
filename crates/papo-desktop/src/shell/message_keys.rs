@@ -1,5 +1,5 @@
 //! A focused message's keys (`docs/design.md` §12): R replies, E edits
-//! yours, P pins or unpins, 1 2 3 react with your top three, + stretches
+//! yours, P pins or unpins, S stars its GIF (§16.4), 1 2 3 react with your top three, + stretches
 //! the hover bar into the strip, Enter opens the menu (Shift+F10 and the
 //! menu key reach it as a secondary click), Ctrl+C copies its text, Delete
 //! asks to delete, Escape goes back to the composer; on a message with a video, Space or K
@@ -56,6 +56,9 @@ impl Shell {
             return true;
         }
         match &event.key {
+            Key::Text(letter) if letter.eq_ignore_ascii_case("s") => {
+                self.star_message_gif(key, id, None, tx)
+            }
             Key::Text(letter) if letter.eq_ignore_ascii_case("r") => self.reply_to(key, id, tx),
             Key::Text(letter) if letter.eq_ignore_ascii_case("e") => self.edit(key, id, tx),
             Key::Text(letter) if letter.eq_ignore_ascii_case("p") => self.toggle_pin(key, id),

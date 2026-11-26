@@ -25,6 +25,9 @@ pub(crate) struct GifSide {
     openings: u64,
     /// Whether this build can search GIPHY (its key is a build's); tests set it.
     pub(super) keyed: bool,
+    /// Favorites on their way to the device (`gif_favorites`).
+    pub(super) favorite_writes:
+        std::collections::HashMap<(AccountId, String), super::gif_favorites::FavoriteWrite>,
 }
 
 impl GifSide {
@@ -33,6 +36,7 @@ impl GifSide {
             tiles: super::gif_tiles::TilePlaces::default(),
             openings: 0,
             keyed,
+            favorite_writes: std::collections::HashMap::new(),
         }
     }
 
@@ -200,10 +204,19 @@ impl Shell {
 
     /// A key in the tab (§16.5), from its search or, without one, its chips: ↓ or Tab into the
     /// tiles, the arrows over them (← → one, ↑ ↓ along a column), Home / End to the first and
-    /// last, Enter sends the chosen one (Shift+Enter keeps the tab open), Escape clears the
-    /// search first, then closes. Returns whether it was taken.
+    /// last, Enter sends the chosen one (Shift+Enter keeps the tab open), Ctrl+D stars it,
+    /// Escape clears the search first, then closes. Returns whether it was taken.
     pub(crate) fn gif_picker_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
         let mods = key.mods;
+        // Ctrl+D, as a browser's bookmark key: the keyboard's tile (letters go to the search).
+        let primary = (mods.ctrl || mods.cmd) && !mods.alt && !mods.shift && !mods.logo;
+        if primary && key.is_command('d') {
+            let Some(at) = self.gif_picker().and_then(|picker| picker.cursor) else {
+                return false;
+            };
+            self.gif_tile_star_pressed(at, tx);
+            return true;
+        }
         if mods.ctrl || mods.cmd || mods.alt || mods.logo {
             return false;
         }
@@ -276,6 +289,19 @@ impl Shell {
             }
             None => self.gif_tile_unhovered(),
         }
+    }
+
+    /// The star on tile `at`, or Ctrl+D on the keyboard's tile: its GIF becomes a favorite or
+    /// stops being one. The tiles stay where they are until the tab opens again (§16.4).
+    pub(crate) fn gif_tile_star_pressed(&mut self, at: usize, tx: &mut Tx) {
+        let (Some(gif), Some((key, _))) = (
+            self.gif_picker()
+                .and_then(|picker| picker.gifs().get(at).cloned()),
+            self.composer.shown(),
+        ) else {
+            return;
+        };
+        self.toggle_gif_favorite(key.account, gif, tx);
     }
 
     /// Tile `at` was pressed (or Enter on it): the GIF is sent at once, as its own message, to
@@ -433,6 +459,7 @@ pub(super) fn view(shell: &Shell, picker: &GifPicker, look: &Look, cx: &Cx<Shell
         },
         media: &media,
         account,
+        favorites: shell.favorite_gifs(account),
     };
     crate::gif_picker::view::view(picker, &given)
 }

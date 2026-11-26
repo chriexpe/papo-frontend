@@ -40,6 +40,9 @@ pub(crate) struct GifLook<'a> {
     pub(crate) media: &'a MediaView,
     /// The account the tab sends as: tiles are fetched as its.
     pub(crate) account: AccountId,
+    /// Its favorite GIFs, by GIPHY's ID, as they stand now: the stars' fill. (The Favorites
+    /// shelf itself is the library as the tab opened.)
+    pub(crate) favorites: std::sync::Arc<std::collections::HashSet<String>>,
 }
 
 /// The element key of GIF `gif`'s tile at place `at`: GIPHY may repeat a GIF across pages.

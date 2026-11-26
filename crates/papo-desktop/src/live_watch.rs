@@ -11,6 +11,7 @@
 //! draws and says from them is the shell's.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
@@ -33,6 +34,8 @@ pub(crate) enum Posted {
     Outgoing(Arc<OutgoingSnapshot>),
     /// Its emoji count now, most used first.
     Usage(Vec<(String, u64)>),
+    /// Its favorite GIFs now, by GIPHY's ID: their stars are filled.
+    FavoriteGifs(HashSet<String>),
     /// Its people's activity now.
     People(Arc<AccountActivity>),
     /// Its custom emoji catalog now.
@@ -128,6 +131,9 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
         Ok(library) => {
             // A library that starts in a fault ranks no use: the defaults.
             post(Posted::Usage(usage(&library.baseline).unwrap_or_default()));
+            post(Posted::FavoriteGifs(
+                favorite_gifs(&library.baseline).unwrap_or_default(),
+            ));
             Some(library)
         }
         Err(error) => {
@@ -175,6 +181,9 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
                     if let Some(count) = usage(&update) {
                         post(Posted::Usage(count));
                     }
+                    if let Some(favorites) = favorite_gifs(&update) {
+                        post(Posted::FavoriteGifs(favorites));
+                    }
                 }
             },
         }
@@ -208,6 +217,22 @@ async fn next_library(
     match library {
         Some(library) => library.next().await,
         None => std::future::pending().await,
+    }
+}
+
+/// The favorite GIFs an update holds, by GIPHY's ID; none for a fault, which keeps the last.
+fn favorite_gifs(update: &ExpressionLibraryUpdate) -> Option<HashSet<String>> {
+    match update {
+        ExpressionLibraryUpdate::Reset(view) => Some(
+            view.favorites
+                .iter()
+                .filter_map(|item| match &item.id {
+                    papo_sdk_ui::ExpressionId::Gif(id) => Some(id.clone()),
+                    papo_sdk_ui::ExpressionId::Sticker(_) => None,
+                })
+                .collect(),
+        ),
+        _ => None,
     }
 }
 

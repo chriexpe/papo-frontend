@@ -31,6 +31,7 @@ mod fonts;
 mod general_settings;
 mod gif_frames;
 mod gif_picker;
+mod gif_star;
 mod glass;
 mod grain;
 mod icons;

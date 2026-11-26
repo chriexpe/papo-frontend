@@ -61,3 +61,8 @@ line_icon!(
     TRENDING,
     "trending"
 );
+line_icon!(
+    /// A favorite GIF's star, filled in the accent: the set's one filled icon.
+    STAR_FILLED,
+    "star-filled"
+);

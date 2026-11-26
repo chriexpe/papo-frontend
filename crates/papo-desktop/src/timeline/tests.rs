@@ -65,6 +65,8 @@ struct Host {
 }
 
 impl crate::message_media::received::MediaHost for Host {
+    fn gif_star_pressed(&mut self, _at: crate::message_media::received::MediaAt, _tx: &mut Tx) {}
+
     fn media_press(
         &mut self,
         _at: crate::message_media::received::MediaAt,

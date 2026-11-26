@@ -23,6 +23,7 @@ mod direct_lists;
 mod editing;
 mod emoji_picker;
 mod emoji_suggestions;
+mod gif_favorites;
 mod gif_picker;
 mod links;
 mod media;

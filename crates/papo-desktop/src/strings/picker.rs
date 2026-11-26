@@ -147,3 +147,32 @@ pub(crate) fn picker_gif_tile(title: &str) -> String {
 pub(crate) fn shortcut_gif() -> &'static str {
     text!("shortcut.gif")
 }
+
+/// The star and the menus: "Add to favorites" / "Remove from favorites".
+pub(crate) fn fav_add() -> &'static str {
+    text!("fav.add")
+}
+
+pub(crate) fn fav_remove() -> &'static str {
+    text!("fav.remove")
+}
+
+/// Said once, politely, when a GIF becomes a favorite.
+pub(crate) fn fav_added() -> &'static str {
+    text!("fav.added")
+}
+
+/// A favorite tile, after its title: "favorite".
+pub(crate) fn fav_is() -> &'static str {
+    text!("fav.is")
+}
+
+/// A favorite the device did not keep.
+pub(crate) fn fav_failed() -> &'static str {
+    text!("fav.failed")
+}
+
+/// S, on a focused GIF message and beside the menus' items.
+pub(crate) fn shortcut_favorite() -> &'static str {
+    text!("shortcut.favorite")
+}
