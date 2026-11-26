@@ -21,6 +21,7 @@
 //! row shows is gathered by `row_parts`.
 
 use papo_sdk::{Message, MessageKey, ResourceSnapshot, Uuid, parse_message_timestamp_us};
+use papo_sdk_ui::message_content::MessageContent;
 use rune::{El, col, el, memo, row, text};
 
 use super::boundary::boundary as boundary_line;
@@ -62,6 +63,11 @@ pub(super) fn message_row<S: TimelineHost>(
     let layout = style.layout;
     let history = matches!(row_message.origin, Origin::History(_));
     let (parts, content) = parts(open, row_message, previous, style);
+    // A GIF-only message shows only its GIF (§16, "A GIF-only message hides its link"); Copy
+    // text still copies the link, read from the message.
+    let text_hidden = papo_sdk_ui::hides_text(row_message.message);
+    let hidden = MessageContent::default();
+    let content = if text_hidden { &hidden } else { content };
     let key = open.key;
     let unsent = unsent_of(open, row_message, style);
     let unsent_version = unsent.as_ref().map(signature);
@@ -80,6 +86,7 @@ pub(super) fn message_row<S: TimelineHost>(
         copied,
         unsent_version,
         received.as_ref().map(|(_, signature)| signature.clone()),
+        text_hidden,
     );
     let row_key = if history {
         message_key(id)

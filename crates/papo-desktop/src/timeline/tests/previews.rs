@@ -106,6 +106,37 @@ fn a_gif_link_is_media_with_its_badge_and_no_card() {
 }
 
 #[test]
+fn a_gif_only_message_shows_its_gif_and_not_its_link() {
+    let link = "https://media2.giphy.com/media/abc123/giphy.gif";
+    let gif = json!({
+        "id": Uuid::from_u128(5_101).to_string(),
+        "fetch_method": "gif",
+        "provider": "GIPHY",
+        "url": "https://giphy.com/gifs/abc123",
+        "title": "A GIF",
+        "thumbnail": {"mime_type": "image/gif", "width": 200, "height": 150},
+    });
+    let rt = runtime(
+        [
+            with_embeds(1, 0, link, &json!([gif.clone()])),
+            with_embeds(2, 60, &format!("olha {link}"), &json!([gif])),
+        ]
+        .into_iter()
+        .collect(),
+        MessageLayout::default(),
+    );
+    let spoken = tree(&rt);
+    assert!(
+        spoken.contains(r#""name":"Someone 14:00 GIF Message actions""#),
+        "the GIF alone, no link: {spoken}"
+    );
+    assert!(
+        spoken.contains(&format!(r#""name":"olha {link} GIF Message actions""#)),
+        "with words, the words and the GIF: {spoken}"
+    );
+}
+
+#[test]
 fn show_link_previews_off_draws_and_reserves_nothing() {
     let items: Vector<_> =
         std::iter::once(with_embeds(1, 0, "the link", &json!([article(1)]))).collect();
