@@ -80,6 +80,7 @@ impl crate::message_media::received::MediaHost for Host {
 
     fn media_moved(
         &mut self,
+        _at: crate::message_media::received::MediaAt,
         _key: crate::media_store::MediaKey,
         _rect: [f32; 4],
         _animate: bool,

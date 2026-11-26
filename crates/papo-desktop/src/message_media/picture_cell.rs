@@ -86,7 +86,7 @@ pub(crate) fn picture_cell<S: MediaHost>(
             let reduced = style.reduced_motion;
             cell = cell
                 .on_layout_tx(move |host: &mut S, rect, tx| {
-                    host.media_moved(key, rect, reduced, tx);
+                    host.media_moved(at, key, rect, reduced, tx);
                 })
                 .on_hover_change(move |host: &mut S, on, tx| {
                     host.media_hovered(key, on, reduced, tx);

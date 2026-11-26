@@ -18,7 +18,7 @@ use super::staged_files::decoded;
 use crate::design::{Lead, Look, MESSAGE_ROW_INSET, TIMELINE_INSET};
 use crate::gif_frames::gif_frames;
 use crate::media_store::{Fetch, Job, MediaKey, MediaOf, Want};
-use crate::message_media::received::{MediaStyle, attachment_id, is_hidden, split};
+use crate::message_media::received::{MediaAt, MediaStyle, attachment_id, is_hidden, split};
 
 /// Rows beyond the visible ones, on each side, whose media load ahead of being seen.
 const NEAR_ROWS: usize = 6;
@@ -29,7 +29,8 @@ const GIF_SHOWN_SHARE: f32 = 0.5;
 /// Where the shown timeline's GIFs are and which one the pointer or keyboard is on.
 #[derive(Default)]
 pub(crate) struct GifPlaces {
-    rects: HashMap<MediaKey, [f32; 4]>,
+    /// Each GIF box's GIF and rect, by its place: the same GIF can show in two boxes.
+    rects: HashMap<MediaAt, (MediaKey, [f32; 4])>,
     hovered: Option<MediaKey>,
     /// The system's reduced motion, as the view last saw it.
     reduced_motion: bool,
@@ -205,7 +206,9 @@ impl Shell {
         }
         self.want_audio(audio);
         let wanted: HashSet<MediaKey> = wants.iter().map(|want| want.key).collect();
-        self.gif_places.rects.retain(|key, _| wanted.contains(key));
+        self.gif_places
+            .rects
+            .retain(|_, (key, _)| wanted.contains(key));
         let jobs = self.media.want(wants);
         self.run_media_jobs(jobs);
         self.want_emoji();
@@ -282,9 +285,15 @@ impl Shell {
         }
     }
 
-    /// GIF `key` is at `rect`; which GIFs animate may change.
-    fn gif_moved(&mut self, key: MediaKey, rect: [f32; 4], reduced_motion: bool) -> bool {
-        self.gif_places.rects.insert(key, rect);
+    /// GIF `key`'s box at `at` is at `rect`; which GIFs animate may change.
+    fn gif_moved(
+        &mut self,
+        at: MediaAt,
+        key: MediaKey,
+        rect: [f32; 4],
+        reduced_motion: bool,
+    ) -> bool {
+        self.gif_places.rects.insert(at, (key, rect));
         self.gif_places.reduced_motion = reduced_motion;
         self.show_gifs()
     }
@@ -300,18 +309,12 @@ impl Shell {
             .tabs
             .shown()
             .and_then(|open| open.tracker.shown_span_pt());
+        let hovered = self.gif_places.hovered;
         let mut showing: Vec<(f32, MediaKey)> = match span {
             None => Vec::new(),
-            Some((top_pt, bottom_pt)) => self
-                .gif_places
-                .rects
-                .iter()
-                .filter(|(key, _)| animate || self.gif_places.hovered == Some(**key))
-                .filter_map(|(key, rect)| {
-                    let shown = shown_share(*rect, top_pt, bottom_pt);
-                    (shown >= GIF_SHOWN_SHARE).then_some((shown, *key))
-                })
-                .collect(),
+            Some(edges) => shown_gifs(self.gif_places.rects.values().copied(), edges, |key| {
+                animate || hovered == Some(key)
+            }),
         };
         showing.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
         let before = self.media.view();
@@ -322,8 +325,8 @@ impl Shell {
         let after = self.media.view();
         self.gif_places
             .rects
-            .keys()
-            .any(|key| before.animates(*key) != after.animates(*key))
+            .values()
+            .any(|(key, _)| before.animates(*key) != after.animates(*key))
     }
 
     /// The pointer or keyboard came to (or left) GIF `key`.
@@ -386,6 +389,29 @@ pub(super) fn visible_span(open: &crate::timeline::OpenTimeline) -> std::ops::Ra
         (Some(first), Some(last)) => *first..*last + 1,
         _ => open.visible_rows(),
     }
+}
+
+/// The GIFs among `places` (each box's GIF and rect) that show at least [`GIF_SHOWN_SHARE`]
+/// between the edges `(top_pt, bottom_pt)`, each with its best box's share, those `animates`
+/// lets play. A GIF in two boxes plays while either shows enough.
+pub(super) fn shown_gifs(
+    places: impl IntoIterator<Item = (MediaKey, [f32; 4])>,
+    (top_pt, bottom_pt): (f32, f32),
+    animates: impl Fn(MediaKey) -> bool,
+) -> Vec<(f32, MediaKey)> {
+    let mut best: HashMap<MediaKey, f32> = HashMap::new();
+    for (key, rect) in places {
+        if !animates(key) {
+            continue;
+        }
+        let shown = shown_share(rect, top_pt, bottom_pt);
+        let share = best.entry(key).or_insert(0.0);
+        *share = share.max(shown);
+    }
+    best.into_iter()
+        .filter(|(_, shown)| *shown >= GIF_SHOWN_SHARE)
+        .map(|(key, shown)| (shown, key))
+        .collect()
 }
 
 /// The share of `rect`'s height between `top_pt` and `bottom_pt`.
@@ -455,7 +481,7 @@ fn pictures_wanted(
 impl crate::message_media::received::MediaHost for Shell {
     fn media_press(
         &mut self,
-        at: crate::message_media::received::MediaAt,
+        at: MediaAt,
         press: crate::message_media::received::MediaPress,
         tx: &mut Tx,
     ) {
@@ -463,8 +489,15 @@ impl crate::message_media::received::MediaHost for Shell {
         self.press_media(at, press, tx);
     }
 
-    fn media_moved(&mut self, key: MediaKey, rect: [f32; 4], reduced_motion: bool, tx: &mut Tx) {
-        if !self.gif_moved(key, rect, reduced_motion) {
+    fn media_moved(
+        &mut self,
+        at: MediaAt,
+        key: MediaKey,
+        rect: [f32; 4],
+        reduced_motion: bool,
+        tx: &mut Tx,
+    ) {
+        if !self.gif_moved(at, key, rect, reduced_motion) {
             tx.live_only();
         }
     }
@@ -481,7 +514,7 @@ impl crate::message_media::received::MediaHost for Shell {
 
     fn video_press(
         &mut self,
-        at: crate::message_media::received::MediaAt,
+        at: MediaAt,
         key: MediaKey,
         press: crate::message_media::video::VideoPress,
         tx: &mut Tx,
@@ -513,7 +546,7 @@ impl crate::message_media::received::MediaHost for Shell {
 
     fn audio_press(
         &mut self,
-        at: crate::message_media::received::MediaAt,
+        at: MediaAt,
         key: crate::audio_store::AudioKey,
         press: crate::message_media::audio::AudioPress,
         tx: &mut Tx,
@@ -540,9 +573,36 @@ impl crate::message_media::received::MediaHost for Shell {
 
 #[cfg(test)]
 mod tests {
-    //! How much of a box shows between the pills.
+    //! How much of a box shows between the pills, and which GIFs play by it.
 
     use super::shown_share;
+    use crate::media_store::MediaKey;
+
+    #[test]
+    fn a_gif_in_two_boxes_plays_while_either_shows_enough() {
+        let account = papo_sdk::AccountId::new(
+            papo_sdk::ServerAddress::parse("https://gif.invalid")
+                .unwrap()
+                .id(),
+            papo_sdk::Uuid::nil(),
+        );
+        // The same GIF sent twice: one embed, so one key, in two boxes.
+        let gif = MediaKey::embed_picture(account, papo_sdk::Uuid::from_u128(7), "r");
+        let places = [
+            (gif, [0.0, 100.0, 100.0, 100.0]),
+            (gif, [0.0, 900.0, 100.0, 100.0]),
+        ];
+        let shown = super::shown_gifs(places, (0.0, 600.0), |_| true);
+        assert_eq!(shown, [(1.0, gif)], "the box on screen keeps it playing");
+        let hidden = [
+            (gif, [0.0, 700.0, 100.0, 100.0]),
+            (gif, [0.0, 900.0, 100.0, 100.0]),
+        ];
+        assert_eq!(
+            super::shown_gifs(hidden, (0.0, 600.0), |_| true),
+            Vec::new()
+        );
+    }
 
     #[test]
     fn the_share_of_a_box_between_the_edges() {
