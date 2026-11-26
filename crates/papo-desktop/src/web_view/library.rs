@@ -147,6 +147,7 @@ symbols! {
     wpe_keymap_get_entries_for_keyval: fn(Object, c_uint, *mut *mut KeymapEntry, *mut c_uint) -> gboolean;
     // WebKit: the view, its settings and policies, its network session.
     webkit_web_view_get_type: fn() -> GType;
+    webkit_web_context_new: fn() -> Object;
     webkit_website_policies_get_type: fn() -> GType;
     webkit_autoplay_policy_get_type: fn() -> GType;
     webkit_web_view_get_wpe_view: fn(Object) -> Object;

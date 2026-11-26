@@ -21,7 +21,7 @@ use glib_sys::GMainLoop;
 
 use super::glib::Context;
 use super::library::{Object, Wpe, loaded};
-use super::page::Page;
+use super::page::{Page, Shared};
 use super::sites::Sites;
 use super::{Events, PageCall, PageId, PageSpec, WebEvent, classes};
 
@@ -79,6 +79,8 @@ pub(super) struct Runtime {
     context: Context,
     main_loop: *mut GMainLoop,
     display: Object,
+    /// Papo's WebKit context, released here when the thread stops.
+    web_context: Object,
     pages: HashMap<PageId, Box<Page>>,
     sites: Sites,
     events: Events,
@@ -119,13 +121,19 @@ impl Runtime {
         let types = classes::types(wpe).map_err(|unavailable| unavailable.0)?;
         let display =
             classes::make_display(wpe, types, render_node).map_err(|unavailable| unavailable.0)?;
-        // SAFETY: a loop on this thread's context.
-        let main_loop = unsafe { glib_sys::g_main_loop_new(context.raw(), glib_sys::GFALSE) };
+        // SAFETY: a loop on this thread's context, and a WebKit context this runtime owns.
+        let (main_loop, web_context) = unsafe {
+            (
+                glib_sys::g_main_loop_new(context.raw(), glib_sys::GFALSE),
+                (wpe.webkit_web_context_new)(),
+            )
+        };
         Ok(Runtime {
             wpe,
             context,
             main_loop,
             display,
+            web_context,
             pages: HashMap::new(),
             sites: Sites::new(wpe, root, events.clone()),
             events: events.clone(),
@@ -142,15 +150,13 @@ impl Runtime {
                 return;
             }
         };
-        match Page::open(
-            self.wpe,
-            self.context,
-            self.display,
-            session,
-            id,
-            spec,
-            self.events.clone(),
-        ) {
+        let shared = Shared {
+            wpe: self.wpe,
+            context: self.context,
+            display: self.display,
+            web_context: self.web_context,
+        };
+        match Page::open(shared, session, id, spec, self.events.clone()) {
             Ok(page) => {
                 self.pages.insert(id, page);
             }
@@ -192,7 +198,10 @@ impl Runtime {
             page.close();
         }
         self.sites.close();
-        // SAFETY: the loop `run` is running.
-        unsafe { glib_sys::g_main_loop_quit(self.main_loop) };
+        // SAFETY: the pages using the context are closed; the loop `run` is running.
+        unsafe {
+            gobject_sys::g_object_unref(self.web_context.cast());
+            glib_sys::g_main_loop_quit(self.main_loop);
+        }
     }
 }

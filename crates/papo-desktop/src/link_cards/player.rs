@@ -107,11 +107,13 @@ pub(crate) fn ask_play_key(key: PlayerKey) -> String {
     format!("player-ask-{}-{}", key.message, key.embed)
 }
 
-/// The player's box: `holder`, the reserved box, holding `poster` (its picture, chip and label)
-/// and over it the layers of the player's current state.
+/// The player's box: `holder`, the reserved box, holding `poster` (its picture and label), the
+/// layers of the player's current state over it, and `chip` naming the provider above any dim
+/// (the live page covers it).
 pub(crate) fn player<S: TimelineHost>(
     holder: El,
     poster: El,
+    chip: El,
     shown: &PlayerBox<'_>,
     look: &Look,
 ) -> El {
@@ -121,19 +123,21 @@ pub(crate) fn player<S: TimelineHost>(
     let layout = move |host: &mut S, rect: [f32; 4]| host.player_moved(key, rect);
     let holder = holder.on_screen_layout(layout);
     match state {
-        None => holder
-            .child(poster)
-            .child(play_disc::<S>(at, key, shown.players.loadable, look)),
+        None => holder.child(poster).child(chip).child(play_disc::<S>(
+            at,
+            key,
+            shown.players.loadable,
+            look,
+        )),
         Some(state) => match state.phase {
-            _ if state.in_viewer => holder.child(poster).child(dim::<S>()),
-            Phase::Asking => holder.child(poster).child(dim::<S>()).child(ask::<S>(
-                at,
-                key,
-                shown.provider,
-                look,
-            )),
+            _ if state.in_viewer => holder.child(poster).child(dim::<S>()).child(chip),
+            Phase::Asking => holder
+                .child(poster)
+                .child(dim::<S>())
+                .child(chip)
+                .child(ask::<S>(at, key, shown.provider, look)),
             Phase::Loading { .. } => {
-                let built = holder.child(poster).child(dim::<S>());
+                let built = holder.child(poster).child(dim::<S>()).child(chip);
                 if state.ring {
                     built.child(ring())
                 } else {
@@ -144,10 +148,11 @@ pub(crate) fn player<S: TimelineHost>(
                 Some(surface) => holder
                     .child(poster)
                     .child(live::<S>(shown, state, surface, look)),
-                None => holder.child(poster).child(dim::<S>()),
+                None => holder.child(poster).child(dim::<S>()).child(chip),
             },
             Phase::Stopped => holder
                 .child(poster.label(strings::embed_stopped_label()))
+                .child(chip)
                 .child(play_disc::<S>(at, key, shown.players.loadable, look))
                 .child(note(look)),
             Phase::Failed => holder.child(poster).child(failed::<S>(at, key, look)),

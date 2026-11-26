@@ -62,17 +62,33 @@ pub(super) struct Page {
     buttons: Cell<u32>,
 }
 
+/// What every page on the WebView thread opens with.
+#[derive(Clone, Copy)]
+pub(super) struct Shared {
+    pub(super) wpe: &'static Wpe,
+    /// The thread's main context, where hand-backs return.
+    pub(super) context: Context,
+    pub(super) display: Object,
+    /// Papo's own WebKit context.
+    pub(super) web_context: Object,
+}
+
 impl Page {
-    /// Opens `spec`'s address on `display`, storing its site data in `session`.
+    /// Opens `spec`'s address with `shared`'s display and WebKit context, storing its site
+    /// data in `session`.
     pub(super) fn open(
-        wpe: &'static Wpe,
-        context: Context,
-        display: Object,
+        shared: Shared,
         session: Object,
         id: PageId,
         spec: PageSpec,
         events: Events,
     ) -> Result<Box<Page>, String> {
+        let Shared {
+            wpe,
+            context,
+            display,
+            web_context,
+        } = shared;
         // SAFETY: WebKit's constructors and getters, on the WPE thread; every object made
         // here is owned by the page or released before returning.
         let (web_view, view, keymap) = unsafe {
@@ -88,6 +104,9 @@ impl Page {
                 (wpe.webkit_web_view_get_type)(),
                 &[
                     (c"display", Value::Object(display)),
+                    // Papo's own context, never WebKit's process-wide default: that one is a
+                    // static WebKit destroys at exit, on the main thread rather than this one.
+                    (c"web-context", Value::Object(web_context)),
                     (c"network-session", Value::Object(session)),
                     (c"website-policies", Value::Object(policies)),
                 ],

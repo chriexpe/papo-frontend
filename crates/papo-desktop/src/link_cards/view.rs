@@ -339,9 +339,8 @@ fn picture<S: TimelineHost>(
             Some(title) => strings::embed_poster_label(&provider, title),
             None => strings::embed_poster_label_untitled(&provider),
         };
-        cell = cell
-            .label(label)
-            .child(provider_chip(&provider, chip_tile, look));
+        cell = cell.label(label);
+        let chip = provider_chip(&provider, chip_tile, look);
         let plays = style.interactive && style.surface == MediaSurface::Timeline;
         cell = match player_of(at, preview).filter(|_| plays) {
             // The player's layers sit beside the poster, not in it: the poster's keys (Enter
@@ -349,6 +348,7 @@ fn picture<S: TimelineHost>(
             Some((key, descriptor)) => player::player::<S>(
                 single_box(boxed, look),
                 cell,
+                chip,
                 &PlayerBox {
                     at,
                     key,
@@ -360,7 +360,7 @@ fn picture<S: TimelineHost>(
             ),
             // Pins, search and confirmations never play (§15.1), and a provider off the
             // allowlist has no player: the page opens in the browser.
-            None => cell.child(open_disc::<S>(at, style, look)),
+            None => cell.child(chip).child(open_disc::<S>(at, style, look)),
         };
     }
     Some(cell.child(inner_edge(look)))
