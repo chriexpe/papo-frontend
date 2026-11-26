@@ -261,7 +261,7 @@ impl RestClient {
 }
 
 /// Read encoded media incrementally; a dishonest or absent Content-Length cannot bypass the limit.
-async fn bounded_body(
+pub(crate) async fn bounded_body(
     mut response: reqwest::Response,
     limit_bytes: usize,
 ) -> Result<Vec<u8>, MediaError> {

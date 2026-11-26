@@ -1,15 +1,29 @@
 //! Owns authorized embed retrieval; media storage and presentation belong to callers.
 
-use crate::{Error, RestClient, Uuid, routes, wire::EmbedWithImage};
+use crate::{Error, RestClient, Uuid, media::bounded_body, routes, wire::EmbedWithImage};
+
+/// The largest answer read, in bytes. It carries the embed's picture in base64 (the backend
+/// keeps a relayed picture under 5 MiB, so about 6.7 MiB encoded) beside a few kilobytes of
+/// text.
+const EMBED_RESPONSE_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 impl RestClient {
     /// Fetches an embed and its optional base64 images using channel read authorization.
-    /// Inaccessible and nonexistent embeds may both produce a 404 response.
+    /// Inaccessible and nonexistent embeds may both produce a 404 response. The body is read
+    /// up to 16 MiB, whatever length the server announces.
     /// # Errors
-    /// Returns transport, backend rejection or response decoding failures.
+    /// Returns transport or backend rejection, or [`Error::Decode`] for an answer that is not
+    /// an embed or is larger than the limit.
     pub async fn embed(&self, id: Uuid) -> Result<EmbedWithImage, Error> {
-        self.json(self.route_request(&routes::GET_EMBEDS_EMBED_ID, &[id.to_string()])?)
+        let request = self.route_request(&routes::GET_EMBEDS_EMBED_ID, &[id.to_string()])?;
+        let response = self.response(request).await?;
+        let body = bounded_body(response, EMBED_RESPONSE_LIMIT_BYTES)
             .await
+            .map_err(|error| match error {
+                crate::media::MediaError::Api(error) => error,
+                _ => Error::Decode,
+            })?;
+        serde_json::from_slice(&body).map_err(|_| Error::Decode)
     }
 }
 

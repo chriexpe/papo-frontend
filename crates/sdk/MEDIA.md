@@ -25,6 +25,11 @@ ETag/Last-Modified validators; a changed revision fetches unconditionally. User
 AvatarUpdate invalidates that account's old user-avatar references. Missing,
 hash-corrupt or oversized files discard validators and permit an authoritative
 replacement rather than repeatedly accepting an unusable 304 response.
+An embed's picture (`EmbedImage`) is the one the backend downloaded and relays as
+base64 inside `GET /embeds/{id}`; its key carries the embed's `fetched_at` (else
+`created_at`), because a refetch keeps the embed's ID and may change the picture.
+No embed address (page, media, player, author or icon) is ever fetched, so
+showing a card never contacts the site; the answer is read up to 16 MiB.
 Ranges validate Content-Range and response length; an ignored Range response is
 sliced to the requested bounded interval. A partial grant never grants the full
 object. Responses are capped at 100 MiB with two concurrent media fetches.
