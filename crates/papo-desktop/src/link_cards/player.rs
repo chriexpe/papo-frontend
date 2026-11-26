@@ -120,8 +120,11 @@ pub(crate) fn player<S: TimelineHost>(
     let at = shown.at;
     let key = shown.key;
     let state = shown.players.shown.get(&key);
-    let layout = move |host: &mut S, rect: [f32; 4]| host.player_moved(key, rect);
-    let holder = holder.on_screen_layout(layout);
+    // Window points, as the shown span the out-of-view rule compares them with.
+    let holder = holder.on_layout_tx(move |host: &mut S, rect: [f32; 4], tx: &mut Tx| {
+        host.player_moved(key, rect);
+        tx.live_only();
+    });
     match state {
         None => holder.child(poster).child(chip).child(play_disc::<S>(
             at,

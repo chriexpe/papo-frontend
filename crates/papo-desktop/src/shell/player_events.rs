@@ -52,8 +52,13 @@ impl Shell {
                 self.players.store.painted(page)
             }
             PageEvent::Failed => {
+                let in_viewer = self.players.store.viewer() == Some(key);
                 let commands = self.players.store.failed(page);
                 self.run_player_commands(commands);
+                if in_viewer {
+                    // The viewer closes with its page: the message takes the keyboard.
+                    tx.focus(crate::timeline::rows::message_part_key(key.message), true);
+                }
                 true
             }
             PageEvent::Sound(sounding) => {

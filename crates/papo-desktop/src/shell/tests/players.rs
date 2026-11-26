@@ -362,3 +362,27 @@ fn embedded_players_lists_allowed_sites_and_sites_with_data() {
     click(&mut rt, &format!("{site}-clear"));
     assert!(calls().contains(&"clear youtube".to_owned()));
 }
+
+#[test]
+fn a_live_player_whose_row_is_no_longer_drawn_is_released_after_ten_seconds() {
+    let mut rt = with_youtube();
+    let key = player_key(&rt);
+    play_once(&mut rt);
+    assert!(rt.state.players.store.page(key).is_some());
+    rt.update(|shell, tx| {
+        // A jump elsewhere: its row is no longer laid out or wanted.
+        shell.players_drawn(&std::collections::HashSet::new());
+        shell.poll_players(100.0, tx);
+        shell.poll_players(105.0, tx);
+    });
+    assert!(
+        rt.state.players.store.page(key).is_some(),
+        "a quick pass costs nothing"
+    );
+    rt.update(|shell, tx| {
+        shell.poll_players(110.5, tx);
+    });
+    assert_eq!(rt.state.players.store.page(key), None);
+    assert_eq!(rt.state.players.store.phase(key), Some(Phase::Stopped));
+    assert!(calls().contains(&"close 1".to_owned()));
+}

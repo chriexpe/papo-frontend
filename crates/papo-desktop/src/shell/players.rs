@@ -43,6 +43,8 @@ pub(crate) struct Players {
     pub(super) surfaces: HashMap<PlayerKey, NativeSurface>,
     /// Where each player's box was last drawn (window points).
     pub(super) rects: HashMap<PlayerKey, [f32; 4]>,
+    /// The size and scale each live page was last given.
+    pub(super) sent: HashMap<PlayerKey, ([f32; 2], f32)>,
     /// Loading players whose ring shows.
     pub(super) ringing: HashSet<PlayerKey>,
     /// The players the pointer is over, and the one with the keyboard.
@@ -81,6 +83,7 @@ impl Players {
             web: Web::NotStarted,
             surfaces: HashMap::new(),
             rects: HashMap::new(),
+            sent: HashMap::new(),
             ringing: HashSet::new(),
             hovered: HashSet::new(),
             focused: None,
@@ -200,9 +203,6 @@ impl Shell {
                 }
             }
         }
-        self.players
-            .rects
-            .retain(|key, _| self.players.store.page(*key).is_some());
     }
 
     fn open_page(
@@ -236,6 +236,7 @@ impl Shell {
             },
         );
         self.players.surfaces.insert(key, surface);
+        self.players.sent.insert(key, (size_pt, self.scale));
         self.players.cursors.remove(&key);
     }
 
@@ -252,6 +253,8 @@ impl Shell {
             .collect();
         self.players.surfaces.retain(|key, _| live.contains(key));
         self.players.ringing.retain(|key| live.contains(key));
+        self.players.sent.retain(|key, _| live.contains(key));
+        self.players.hovered.retain(|key| live.contains(key));
         if self.players.focused.is_some_and(|key| !live.contains(&key)) {
             self.players.focused = None;
         }
@@ -270,18 +273,40 @@ impl Shell {
         (size, false)
     }
 
-    /// Player `key`'s box is at `rect`: its page follows the box's size.
+    /// Player `key`'s box is at `rect` (window points): its page follows the box's size.
     pub(crate) fn player_moved(&mut self, key: PlayerKey, rect: [f32; 4]) {
-        let before = self.players.rects.insert(key, rect);
+        self.players.rects.insert(key, rect);
+        self.size_page(key);
+    }
+
+    /// Sizes `key`'s live page to the box it is drawn in now (its row's or the viewer's) at the
+    /// window's scale, when either changed since it was last told.
+    pub(super) fn size_page(&mut self, key: PlayerKey) {
+        let Some(page) = self.players.store.page(key) else {
+            return;
+        };
+        let (size_pt, _) = self.player_box(key);
+        let scale = self.scale;
         // Layout moves a box by fractions of a point; only a real change resizes the page.
-        let resized = before
-            .is_none_or(|old| (old[2] - rect[2]).abs() >= 0.5 || (old[3] - rect[3]).abs() >= 0.5);
-        if resized
-            && self.players.store.viewer() != Some(key)
-            && let (Some(page), Some(views)) = (self.players.store.page(key), self.players.views())
-        {
-            views.resize(page, [rect[2], rect[3]], self.scale);
+        let changed = self
+            .players
+            .sent
+            .get(&key)
+            .is_none_or(|(sent, sent_scale)| {
+                (sent[0] - size_pt[0]).abs() >= 0.5
+                    || (sent[1] - size_pt[1]).abs() >= 0.5
+                    || (sent_scale - scale).abs() >= 0.01
+            });
+        if changed && let Some(views) = self.players.views() {
+            views.resize(page, size_pt, scale);
+            self.players.sent.insert(key, (size_pt, scale));
         }
+    }
+
+    /// The boxes of the players `drawn` (the previews of the messages shown or near) are kept;
+    /// any other's is forgotten, so a live player whose row is gone counts as out of view.
+    pub(super) fn players_drawn(&mut self, drawn: &HashSet<PlayerKey>) {
+        self.players.rects.retain(|key, _| drawn.contains(key));
     }
 
     /// Whose player `key` is.

@@ -10,6 +10,7 @@
 #![expect(unsafe_code, reason = "WebKit's and WPEPlatform's C objects")]
 
 use std::cell::Cell;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 use glib_sys::{GFALSE, GTRUE};
@@ -17,9 +18,10 @@ use glib_sys::{GFALSE, GTRUE};
 use super::classes;
 use super::frames::Frames;
 use super::glib::{Context, Value, c_string, new_object};
-use super::keys::{KeyPress, PageKey};
 use super::library::{Object, Wpe};
-use super::{Events, PageEvent, PageId, PageInput, PageSpec, PointerButton, WebEvent};
+use super::{Events, PageEvent, PageId, PageSpec, WebEvent};
+
+mod input;
 
 /// What `YouTube` and other players are told the browser is: a Chrome on Linux, as the
 /// Chromium-based clients present themselves, so the player offers its desktop controls.
@@ -31,25 +33,15 @@ const REFERER: &std::ffi::CStr = c"https://io.github.chriexpe.papo/";
 
 const AUTOPLAY_ALLOW: i32 = 0;
 const TOPLEVEL_ACTIVE: u32 = 1 << 2;
-const EVENT_POINTER_DOWN: u32 = 1;
-const EVENT_POINTER_UP: u32 = 2;
-const EVENT_POINTER_MOVE: u32 = 3;
-const EVENT_POINTER_LEAVE: u32 = 5;
-const EVENT_KEY_DOWN: u32 = 6;
-const EVENT_KEY_UP: u32 = 7;
-const SOURCE_MOUSE: u32 = 0;
-const SOURCE_KEYBOARD: u32 = 2;
-const SOURCE_TOUCHPAD: u32 = 4;
-const MODIFIER_BUTTON1: u32 = 1 << 8;
 
 /// A provider page.
 pub(super) struct Page {
     pub(super) id: PageId,
     pub(super) wpe: &'static Wpe,
     pub(super) web_view: Object,
-    view: Object,
+    pub(super) view: Object,
     toplevel: Object,
-    keymap: Object,
+    pub(super) keymap: Object,
     frames: Frames,
     /// Whether an address is still this player (the SDK's `ProviderPlayer::keeps`).
     pub(super) keeps: Arc<dyn Fn(&str) -> bool + Send + Sync>,
@@ -57,13 +49,15 @@ pub(super) struct Page {
     /// The player's document has started to load: later failures (a navigation the policy
     /// refused) leave it as it is.
     pub(super) committed: Cell<bool>,
+    /// The address of the last navigation the person clicked for that leaves the player, until
+    /// a response shows where it went (`policy`).
+    pub(super) clicked: std::cell::RefCell<Option<String>>,
     painted: Cell<bool>,
     /// WPE's bits for the pointer buttons held.
-    buttons: Cell<u32>,
+    pub(super) buttons: Cell<u32>,
 }
 
 /// What every page on the WebView thread opens with.
-#[derive(Clone, Copy)]
 pub(super) struct Shared {
     pub(super) wpe: &'static Wpe,
     /// The thread's main context, where hand-backs return.
@@ -82,7 +76,7 @@ impl Page {
         id: PageId,
         spec: PageSpec,
         events: Events,
-    ) -> Result<Box<Page>, String> {
+    ) -> Result<NonNull<Page>, String> {
         let Shared {
             wpe,
             context,
@@ -125,7 +119,9 @@ impl Page {
             (web_view, view, (wpe.wpe_display_get_keymap)(display))
         };
         let frames = Frames::new(wpe, context, spec.surface.clone());
-        let page = Box::new(Page {
+        // Leaked here and taken back by `close` only: its address is the data of its view and
+        // signal handlers, so the box must never move while they can run.
+        let page: &Page = Box::leak(Box::new(Page {
             id,
             wpe,
             web_view,
@@ -136,10 +132,11 @@ impl Page {
             keeps: spec.keeps,
             events,
             committed: Cell::new(false),
+            clicked: std::cell::RefCell::new(None),
             painted: Cell::new(false),
             buttons: Cell::new(0),
-        });
-        classes::set_page(view, &raw const *page);
+        }));
+        classes::set_page(view, page);
         // SAFETY: the page's own objects; the toplevel was just made for it.
         unsafe {
             (wpe.wpe_view_set_toplevel)(view, page.toplevel);
@@ -151,10 +148,10 @@ impl Page {
             (wpe.wpe_view_map)(view);
             (wpe.wpe_view_set_visible)(view, GTRUE);
         }
-        super::policy::connect(&page);
+        super::policy::connect(page);
         page.mute(spec.muted);
         page.load(&spec.address);
-        Ok(page)
+        Ok(NonNull::from(page))
     }
 
     fn load(&self, address: &str) {
@@ -205,163 +202,6 @@ impl Page {
         }
     }
 
-    /// Forwards `input` to the page.
-    pub(super) fn input(&self, input: PageInput) {
-        let wpe = self.wpe;
-        let time = now_ms();
-        // SAFETY: WPE's event constructors for the page's view; each event is released after
-        // the view took it.
-        unsafe {
-            let event = match input {
-                PageInput::Move { x, y } => (wpe.wpe_event_pointer_move_new)(
-                    EVENT_POINTER_MOVE,
-                    self.view,
-                    SOURCE_MOUSE,
-                    time,
-                    self.buttons.get(),
-                    f64::from(x),
-                    f64::from(y),
-                    0.0,
-                    0.0,
-                ),
-                PageInput::Leave => (wpe.wpe_event_pointer_move_new)(
-                    EVENT_POINTER_LEAVE,
-                    self.view,
-                    SOURCE_MOUSE,
-                    time,
-                    self.buttons.get(),
-                    -1.0,
-                    -1.0,
-                    0.0,
-                    0.0,
-                ),
-                PageInput::Down { x, y, button } => {
-                    let (number, bit) = button_bits(button);
-                    let count = (wpe.wpe_view_compute_press_count)(
-                        self.view,
-                        f64::from(x),
-                        f64::from(y),
-                        number,
-                        time,
-                    );
-                    self.buttons.set(self.buttons.get() | bit);
-                    (wpe.wpe_event_pointer_button_new)(
-                        EVENT_POINTER_DOWN,
-                        self.view,
-                        SOURCE_MOUSE,
-                        time,
-                        self.buttons.get(),
-                        number,
-                        f64::from(x),
-                        f64::from(y),
-                        count,
-                    )
-                }
-                PageInput::Up { x, y, button } => {
-                    let (number, bit) = button_bits(button);
-                    self.buttons.set(self.buttons.get() & !bit);
-                    // WPE takes a press count only on a press: anything else on a release
-                    // makes no event.
-                    (wpe.wpe_event_pointer_button_new)(
-                        EVENT_POINTER_UP,
-                        self.view,
-                        SOURCE_MOUSE,
-                        time,
-                        self.buttons.get(),
-                        number,
-                        f64::from(x),
-                        f64::from(y),
-                        0,
-                    )
-                }
-                PageInput::Wheel {
-                    x,
-                    y,
-                    dx,
-                    dy,
-                    precise,
-                } => (wpe.wpe_event_scroll_new)(
-                    self.view,
-                    if precise {
-                        SOURCE_TOUCHPAD
-                    } else {
-                        SOURCE_MOUSE
-                    },
-                    time,
-                    0,
-                    f64::from(dx),
-                    f64::from(dy),
-                    if precise { GTRUE } else { GFALSE },
-                    GFALSE,
-                    f64::from(x),
-                    f64::from(y),
-                ),
-                PageInput::Key(press) => {
-                    self.key(press, time);
-                    return;
-                }
-            };
-            if !event.is_null() {
-                (wpe.wpe_view_event)(self.view, event);
-                (wpe.wpe_event_unref)(event);
-            }
-        }
-    }
-
-    /// A key goes down and comes up again: Rune reports presses only.
-    fn key(&self, press: KeyPress, time: u32) {
-        let wpe = self.wpe;
-        // SAFETY: WPE's keysym lookup and event constructors for the page's view.
-        unsafe {
-            let keyval = match press.key {
-                PageKey::Keysym(keysym) => keysym,
-                PageKey::Char(character) => (wpe.wpe_unicode_to_keyval)(u32::from(character)),
-            };
-            let keycode = self.keycode(keyval);
-            for kind in [EVENT_KEY_DOWN, EVENT_KEY_UP] {
-                let event = (wpe.wpe_event_keyboard_new)(
-                    kind,
-                    self.view,
-                    SOURCE_KEYBOARD,
-                    time,
-                    press.modifiers,
-                    keycode,
-                    keyval,
-                );
-                if !event.is_null() {
-                    (wpe.wpe_view_event)(self.view, event);
-                    (wpe.wpe_event_unref)(event);
-                }
-            }
-        }
-    }
-
-    /// The hardware keycode the keymap puts `keyval` on, so the page's `code` is right; 0
-    /// when the keymap has none.
-    fn keycode(&self, keyval: u32) -> u32 {
-        if self.keymap.is_null() {
-            return 0;
-        }
-        let mut entries: *mut super::library::KeymapEntry = std::ptr::null_mut();
-        let mut count: u32 = 0;
-        // SAFETY: the keymap fills an array it allocates, freed here.
-        unsafe {
-            let found = (self.wpe.wpe_keymap_get_entries_for_keyval)(
-                self.keymap,
-                keyval,
-                &raw mut entries,
-                &raw mut count,
-            );
-            let keycode = if found != GFALSE && count > 0 && !entries.is_null() {
-                (*entries).keycode
-            } else {
-                0
-            };
-            glib_sys::g_free(entries.cast());
-            keycode
-        }
-    }
-
     /// WebKit rendered `buffer`: it is shown, and the first frame says the player is up.
     pub(super) fn render(&self, buffer: Object) {
         match self.frames.render(self.view, buffer) {
@@ -400,24 +240,4 @@ impl Page {
             gobject_sys::g_object_unref(self.web_view.cast());
         }
     }
-}
-
-/// WPE's number for `button` and its modifier bit.
-fn button_bits(button: PointerButton) -> (u32, u32) {
-    match button {
-        PointerButton::Primary => (1, MODIFIER_BUTTON1),
-    }
-}
-
-/// A millisecond clock for event times.
-fn now_ms() -> u32 {
-    // SAFETY: a plain clock read.
-    let micros = unsafe { glib_sys::g_get_monotonic_time() };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "event times wrap"
-    )]
-    let millis = (micros / 1000) as u32;
-    millis
 }

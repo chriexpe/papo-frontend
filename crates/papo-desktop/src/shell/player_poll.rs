@@ -40,6 +40,10 @@ impl Shell {
                 .collect(),
         };
         self.players.store.shown(&shares, clock_s);
+        // A window resized under the viewer, or moved to a screen of another scale.
+        for (key, _) in self.players.store.live_pages() {
+            self.size_page(key);
+        }
         let (commands, next_s) = self.players.store.release_due(clock_s);
         let released = !commands.is_empty();
         self.run_player_commands(commands);

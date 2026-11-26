@@ -15,6 +15,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::ptr::NonNull;
 use std::thread::JoinHandle;
 
 use glib_sys::GMainLoop;
@@ -33,12 +34,16 @@ pub(super) struct Thread {
 
 impl Thread {
     pub(super) fn start(root: PathBuf, render_node: Option<String>, events: Events) -> Thread {
-        // SAFETY: a new context, whose reference this keeps until `drop` has joined.
-        let context = Context::new(unsafe { glib_sys::g_main_context_new() });
+        let context = Context::new();
+        let thread_context = context.clone();
+        let failed = events.clone();
         let handle = std::thread::Builder::new()
             .name("papo-webview".into())
-            .spawn(move || run(context, root, render_node.as_deref(), &events))
-            .map_err(|error| log::warn!("the WebView thread didn't start: {error}"))
+            .spawn(move || run(&thread_context, root, render_node.as_deref(), &events))
+            .map_err(|error| {
+                log::warn!("the WebView thread didn't start: {error}");
+                failed(WebEvent::Unavailable(error.to_string()));
+            })
             .ok();
         Thread { context, handle }
     }
@@ -64,8 +69,6 @@ impl Drop for Thread {
         {
             log::warn!("the WebView thread panicked");
         }
-        // SAFETY: the reference `start` took; the thread is gone, so nothing iterates it.
-        unsafe { glib_sys::g_main_context_unref(self.context.raw()) };
     }
 }
 
@@ -81,15 +84,16 @@ pub(super) struct Runtime {
     display: Object,
     /// Papo's WebKit context, released here when the thread stops.
     web_context: Object,
-    pages: HashMap<PageId, Box<Page>>,
+    /// Each open page, made by `Page::open` and taken back into its box only to close.
+    pages: HashMap<PageId, NonNull<Page>>,
     sites: Sites,
     events: Events,
 }
 
-fn run(context: Context, root: PathBuf, render_node: Option<&str>, events: &Events) {
+fn run(context: &Context, root: PathBuf, render_node: Option<&str>, events: &Events) {
     // SAFETY: this thread takes the context as its default for every source WebKit adds.
     unsafe { glib_sys::g_main_context_push_thread_default(context.raw()) };
-    match Runtime::new(context, root, render_node, events) {
+    match Runtime::new(context.clone(), root, render_node, events) {
         Ok(runtime) => {
             let main_loop = runtime.main_loop;
             RUNTIME.set(Some(runtime));
@@ -152,7 +156,7 @@ impl Runtime {
         };
         let shared = Shared {
             wpe: self.wpe,
-            context: self.context,
+            context: self.context.clone(),
             display: self.display,
             web_context: self.web_context,
         };
@@ -171,6 +175,8 @@ impl Runtime {
         let Some(page) = self.pages.get(&id) else {
             return;
         };
+        // SAFETY: an open page, alive until `close` takes it out of the map.
+        let page = unsafe { page.as_ref() };
         match call {
             PageCall::Resize { size_pt, scale } => page.resize(size_pt, scale),
             PageCall::Input(input) => page.input(input),
@@ -181,7 +187,8 @@ impl Runtime {
 
     pub(super) fn close(&mut self, id: PageId) {
         if let Some(page) = self.pages.remove(&id) {
-            page.close();
+            // SAFETY: the page `Page::open` leaked, out of the map, taken back once.
+            unsafe { Box::from_raw(page.as_ptr()) }.close();
         }
     }
 
@@ -195,7 +202,8 @@ impl Runtime {
 
     fn stop(&mut self) {
         for (_, page) in self.pages.drain() {
-            page.close();
+            // SAFETY: as `close`.
+            unsafe { Box::from_raw(page.as_ptr()) }.close();
         }
         self.sites.close();
         // SAFETY: the pages using the context are closed; the loop `run` is running.

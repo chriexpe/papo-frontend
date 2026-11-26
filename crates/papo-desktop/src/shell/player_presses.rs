@@ -132,9 +132,9 @@ impl Shell {
         self.want_players();
         self.players.ats.insert(key, at);
         match self.players.store.phase(key) {
-            Some(Phase::Loading { .. } | Phase::Playing) => {
-                tx.focus(page_key(key), true);
-            }
+            // Its page takes the keyboard once it draws.
+            Some(Phase::Loading { .. }) => {}
+            Some(Phase::Playing) => tx.focus(page_key(key), true),
             Some(Phase::Asking) => tx.focus(ask_play_key(key), true),
             None | Some(Phase::Stopped | Phase::Failed) => {
                 if self.players.settings.allows(descriptor.provider) {

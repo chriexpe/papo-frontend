@@ -27,12 +27,11 @@ const MODIFIER_SHIFT: u32 = 1 << 1;
 const MODIFIER_ALT: u32 = 1 << 2;
 const MODIFIER_META: u32 = 1 << 3;
 
-/// `key` with `mods` for the page, or `None` for what a page can't take (a lone modifier, the
-/// Menu key, which opens Papo's menu).
+/// `key` with `mods` for the page, or `None` for what a page never gets: a lone modifier, the
+/// Menu key (Papo's menu), Esc (back to the message) and Ctrl chords (Papo's shortcuts).
 pub(crate) fn key_press(key: &Key, mods: Mods) -> Option<KeyPress> {
     let key = match key {
         Key::Text(text) => PageKey::Char(text.chars().next()?),
-        Key::Command(character) => PageKey::Char(*character),
         Key::Enter => PageKey::Keysym(0xff0d),
         Key::Backspace => PageKey::Keysym(0xff08),
         Key::Delete => PageKey::Keysym(0xffff),
@@ -45,7 +44,6 @@ pub(crate) fn key_press(key: &Key, mods: Mods) -> Option<KeyPress> {
         Key::PageUp => PageKey::Keysym(0xff55),
         Key::PageDown => PageKey::Keysym(0xff56),
         Key::Insert => PageKey::Keysym(0xff63),
-        Key::Escape => PageKey::Keysym(0xff1b),
         Key::Tab if mods.shift => PageKey::Keysym(0xfe20),
         Key::Tab => PageKey::Keysym(0xff09),
         Key::Function(number @ 1..=24) => PageKey::Keysym(0xffbe + u32::from(*number) - 1),
@@ -75,7 +73,6 @@ mod tests {
     fn named_keys_have_their_keysyms() {
         assert_eq!(plain(&Key::Enter), Some(PageKey::Keysym(0xff0d)));
         assert_eq!(plain(&Key::Left), Some(PageKey::Keysym(0xff51)));
-        assert_eq!(plain(&Key::Escape), Some(PageKey::Keysym(0xff1b)));
         assert_eq!(plain(&Key::Function(1)), Some(PageKey::Keysym(0xffbe)));
         assert_eq!(plain(&Key::Function(11)), Some(PageKey::Keysym(0xffc8)));
     }
@@ -97,19 +94,12 @@ mod tests {
         let press = key_press(&Key::Tab, mods).unwrap();
         assert_eq!(press.key, PageKey::Keysym(0xfe20));
         assert_eq!(press.modifiers, MODIFIER_SHIFT | MODIFIER_CONTROL);
-        let command = key_press(
-            &Key::Command('c'),
-            Mods {
-                ctrl: true,
-                cmd: true,
-                ..Mods::default()
-            },
-        );
-        assert_eq!(command.unwrap().key, PageKey::Char('c'));
     }
 
     #[test]
-    fn the_menu_key_stays_papos() {
+    fn papos_own_keys_never_reach_the_page() {
         assert_eq!(plain(&Key::ContextMenu), None);
+        assert_eq!(plain(&Key::Escape), None);
+        assert_eq!(plain(&Key::Command('c')), None);
     }
 }

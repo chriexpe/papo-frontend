@@ -154,33 +154,35 @@ pub(crate) unsafe fn text(text: *const c_char) -> String {
 /// A closure for the WPE thread.
 type Job = Box<dyn FnOnce() + Send>;
 
-/// A thread's main context, to which other threads hand closures.
-#[derive(Clone, Copy)]
+/// A thread's main context, to which other threads hand closures. Each `Context` holds its
+/// own reference, so a hand-back that outlives the WebView thread still invokes on a live
+/// context (its job is then dropped unrun when the last reference goes).
 pub(crate) struct Context(*mut GMainContext);
 
-// SAFETY: a GMainContext is thread-safe; `g_main_context_invoke_full` is the call made from
-// other threads, and the context is kept alive for as long as any `Context` is (the WPE thread
-// holds its reference until it has joined every user).
+// SAFETY: a GMainContext is thread-safe and reference-counted atomically;
+// `g_main_context_invoke_full` is the call made from other threads, and every `Context`
+// holds a reference of its own.
 unsafe impl Send for Context {}
 // SAFETY: as above.
 unsafe impl Sync for Context {}
 
 impl Context {
-    /// The context `raw` (the WPE thread's own).
-    pub(crate) fn new(raw: *mut GMainContext) -> Context {
-        Context(raw)
+    /// A new main context, for the WebView thread.
+    pub(crate) fn new() -> Context {
+        // SAFETY: a new context, whose reference this takes.
+        Context(unsafe { glib_sys::g_main_context_new() })
     }
 
-    pub(crate) fn raw(self) -> *mut GMainContext {
+    pub(crate) fn raw(&self) -> *mut GMainContext {
         self.0
     }
 
     /// Runs `job` on the context's thread, at the next turn of its loop. A job whose loop
     /// has stopped is dropped there without running.
-    pub(crate) fn invoke(self, job: impl FnOnce() + Send + 'static) {
+    pub(crate) fn invoke(&self, job: impl FnOnce() + Send + 'static) {
         let job: *mut Option<Job> = Box::into_raw(Box::new(Some(Box::new(job))));
-        // SAFETY: the context is alive (see the `Send` note); `run` and `drop_job` take the
-        // box back exactly once, the second after the first.
+        // SAFETY: this holds a reference to the context; `run` and `drop_job` take the box
+        // back exactly once, the second after the first.
         unsafe {
             glib_sys::g_main_context_invoke_full(
                 self.0,
@@ -190,6 +192,20 @@ impl Context {
                 Some(drop_job),
             );
         }
+    }
+}
+
+impl Clone for Context {
+    fn clone(&self) -> Context {
+        // SAFETY: a live context (this holds a reference); the clone takes its own.
+        Context(unsafe { glib_sys::g_main_context_ref(self.0) })
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        // SAFETY: the reference this held.
+        unsafe { glib_sys::g_main_context_unref(self.0) };
     }
 }
 

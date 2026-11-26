@@ -194,14 +194,22 @@ unsafe extern "C" fn decide(
                 let request = (wpe.webkit_navigation_action_get_request)(action);
                 let address = text((wpe.webkit_uri_request_get_uri)(request));
                 let clicked = (wpe.webkit_navigation_action_is_user_gesture)(action) != GFALSE;
-                let stays = kind == DECISION_NAVIGATION && (page.keeps)(&address);
-                if !stays && clicked {
-                    tell(page, PageEvent::OpenInBrowser(address));
+                if kind == DECISION_NEW_WINDOW {
+                    // A new window never opens; one the person clicked for is the browser's.
+                    if clicked {
+                        tell(page, PageEvent::OpenInBrowser(address));
+                    }
+                    false
+                } else {
+                    // The decision doesn't say which frame navigates: a click inside a frame of
+                    // the player (an ad, a consent box) stays there. The click is remembered,
+                    // and the main frame's response below sends it to the browser if it would
+                    // take the page off its player.
+                    if clicked && !(page.keeps)(&address) {
+                        page.clicked.replace(Some(address));
+                    }
+                    true
                 }
-                // A navigation the person didn't ask for may be a frame inside the player
-                // (the response check below keeps the page itself on its player); a new
-                // window never opens.
-                stays || (kind == DECISION_NAVIGATION && !clicked)
             }
             DECISION_RESPONSE => {
                 let main =
@@ -211,8 +219,16 @@ unsafe extern "C" fn decide(
                 let address = text((wpe.webkit_uri_request_get_uri)(request));
                 let shown = (wpe.webkit_response_policy_decision_is_mime_type_supported)(decision)
                     != GFALSE;
+                let stays = !main || (page.keeps)(&address);
+                let clicked = page.clicked.take();
+                if main
+                    && !stays
+                    && let Some(clicked) = clicked
+                {
+                    tell(page, PageEvent::OpenInBrowser(clicked));
+                }
                 // A download is a response no page shows.
-                shown && (!main || (page.keeps)(&address))
+                shown && stays
             }
             _ => false,
         };

@@ -61,7 +61,7 @@ impl Frames {
     pub(super) fn render(&self, view: Object, buffer: Object) -> Result<bool, FrameFailure> {
         let back = HandBack::new(
             self.wpe,
-            self.context,
+            self.context.clone(),
             view,
             buffer,
             Arc::clone(&self.alive),

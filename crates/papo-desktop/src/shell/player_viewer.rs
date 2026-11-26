@@ -22,18 +22,15 @@ impl Shell {
         key: crate::provider_players::PlayerKey,
         tx: &mut Tx,
     ) {
-        let Some(page) = self.players.store.page(key) else {
+        if self.players.store.page(key).is_none() {
             return;
-        };
+        }
         if self.viewer.is_some() {
             self.close_viewer(tx);
         }
         self.nav.menu = None;
         self.players.store.set_viewer(Some(key));
-        let size = self.player_viewer_box();
-        if let Some(views) = self.players.views() {
-            views.resize(page, size, self.scale);
-        }
+        self.size_page(key);
         tx.focus(page_key(key), true);
     }
 
@@ -44,10 +41,7 @@ impl Shell {
             return;
         };
         self.players.store.set_viewer(None);
-        let (size, _) = self.player_box(key);
-        if let (Some(page), Some(views)) = (self.players.store.page(key), self.players.views()) {
-            views.resize(page, size, self.scale);
-        }
+        self.size_page(key);
         tx.focus(page_key(key), true);
     }
 
