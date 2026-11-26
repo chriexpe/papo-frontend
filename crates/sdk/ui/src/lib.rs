@@ -11,7 +11,7 @@ pub use waveform::{
     WaveformBuilder, WaveformCache, WaveformKey,
 };
 mod gif_favorite;
-pub use gif_favorite::favorite_gif;
+pub use gif_favorite::{favorite_gif, favorite_gif_of};
 mod link_preview;
 pub use link_preview::{
     CardField, CardPicture, CardVideo, LinkCard, LinkPreview, MAX_FIELDS, MAX_PREVIEWS, PageLink,

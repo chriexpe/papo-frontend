@@ -12,6 +12,8 @@ const FETCH_METHOD_GIF: &str = "gif";
 const PREVIEW_WIDTH_PX: u32 = 200;
 /// GIPHY's IDs are letters and digits, this long at most.
 const MAX_ID_CHARS: usize = 64;
+/// The longest title a kept GIF holds, in bytes (`Gif`'s own bound): a longer one is cut.
+const MAX_TITLE_BYTES: usize = 4096;
 
 /// The GIPHY GIF `message` carries, ready to keep as a favorite; none when it carries none
 /// (another provider's GIF, a link the server didn't make a `gif` embed, or no GIF at all).
@@ -22,11 +24,13 @@ pub fn favorite_gif(message: &Message) -> Option<Gif> {
         .as_deref()
         .unwrap_or_default()
         .iter()
-        .find_map(giphy_gif)
+        .find_map(favorite_gif_of)
 }
 
-/// The GIF of `embed`, when it is a `gif` embed of a GIPHY link.
-fn giphy_gif(embed: &Embed) -> Option<Gif> {
+/// The GIF of `embed`, when it is a `gif` embed of a GIPHY link: for a client that draws each
+/// of a message's previews with its own star.
+#[must_use]
+pub fn favorite_gif_of(embed: &Embed) -> Option<Gif> {
     if embed.fetch_method.as_deref() != Some(FETCH_METHOD_GIF) {
         return None;
     }
@@ -47,7 +51,7 @@ fn giphy_gif(embed: &Embed) -> Option<Gif> {
     let gif = Gif {
         url: format!("https://media.giphy.com/media/{id}/giphy.gif"),
         page_url: format!("https://giphy.com/gifs/{id}"),
-        title: embed.title.clone().unwrap_or_default(),
+        title: cut(embed.title.as_deref().unwrap_or_default(), MAX_TITLE_BYTES),
         width,
         height,
         preview_url: format!("https://media.giphy.com/media/{id}/200w.gif"),
@@ -60,6 +64,15 @@ fn giphy_gif(embed: &Embed) -> Option<Gif> {
         id,
     };
     Some(gif)
+}
+
+/// `text` cut to at most `max_bytes`, at a character's edge.
+fn cut(text: &str, max_bytes: usize) -> String {
+    let mut end = text.len().min(max_bytes);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 /// GIPHY's ID in `address`: a page (`giphy.com/gifs/a-title-ID`, `/clips/…`, `/embed/ID`) or a
@@ -93,7 +106,7 @@ fn giphy_id(address: &str) -> Option<String> {
 mod tests {
     use papo_sdk::{Embed, EmbedMedia, Message};
 
-    use super::{favorite_gif, giphy_id};
+    use super::{favorite_gif, favorite_gif_of, giphy_id};
 
     fn gif_embed(url: &str) -> Embed {
         Embed {
@@ -184,5 +197,17 @@ mod tests {
         };
         assert_eq!(favorite_gif(&linked), None);
         assert_eq!(favorite_gif(&Message::default()), None);
+    }
+
+    #[test]
+    fn each_embed_is_its_own_gif_and_a_long_title_is_cut_to_keep() {
+        let first = gif_embed("https://giphy.com/gifs/aaa111");
+        let mut second = gif_embed("https://giphy.com/gifs/bbb222");
+        second.title = Some("é".repeat(3000));
+        assert_eq!(favorite_gif_of(&first).unwrap().id, "aaa111");
+        let long = favorite_gif_of(&second).unwrap();
+        assert_eq!(long.id, "bbb222");
+        assert!(long.title.len() <= 4096);
+        assert!(long.message().is_ok(), "valid to keep");
     }
 }
