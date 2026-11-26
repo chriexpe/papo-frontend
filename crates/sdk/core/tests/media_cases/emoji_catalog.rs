@@ -161,6 +161,9 @@ fn a_failed_listing_keeps_the_catalog_it_had() -> Result {
         let session = signed_in(&f).await?;
         let mut updates = session.emoji_catalog().subscribe().await?;
         let before = catalog_where(&mut updates, |catalog| catalog.emojis.len() == 2).await?;
+        // The connection's own listing may still be finishing: a refresh now would take its
+        // answer. One refresh settles it, so the next one lists for itself.
+        session.emoji_catalog().refresh().await?;
         let mut failing = encoded("/emojis".into(), BTreeSet::new());
         failing.status = 500;
         f.server().set_encoded_media(failing).await?;
