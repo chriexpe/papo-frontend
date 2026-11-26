@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use papo_sdk::{EmojiCatalog, EmojiCatalogUpdate};
+use papo_sdk::{EmojiCatalog, EmojiCatalogUpdate, Uuid};
 
 use super::{CustomEmojiRef, MessageContent, parser};
 
@@ -17,6 +17,9 @@ pub struct CustomEmojis {
     /// Each name's first emoji in `refs`, built once per catalog: a timeline resolves every
     /// `:candidate:` of thousands of messages against up to `MAX_CUSTOM_EMOJI` names.
     index: Arc<HashMap<String, usize>>,
+    /// Each emoji's place in `refs` by its ID: a reaction names its emoji by ID, and a row of
+    /// chips asks for each.
+    ids: Arc<HashMap<Uuid, usize>>,
 }
 
 impl PartialEq for CustomEmojis {
@@ -69,13 +72,16 @@ impl CustomEmojis {
             })
             .collect();
         let mut index = HashMap::with_capacity(refs.len());
+        let mut ids = HashMap::with_capacity(refs.len());
         for (at, entry) in refs.iter().enumerate() {
             index.entry(entry.name.clone()).or_insert(at);
+            ids.entry(entry.id).or_insert(at);
         }
         Self {
             revision: catalog.revision,
             refs,
             index: Arc::new(index),
+            ids: Arc::new(ids),
         }
     }
 
@@ -113,6 +119,13 @@ impl CustomEmojis {
         EmojiNames::Index(self).find(name)
     }
 
+    /// The emoji with backend ID `id`, through the catalog's index; none when the server no
+    /// longer has it.
+    #[must_use]
+    pub fn get(&self, id: Uuid) -> Option<&CustomEmojiRef> {
+        self.ids.get(&id).map(|at| &self.refs[*at])
+    }
+
     /// The emoji, in the catalog's order.
     #[must_use]
     pub fn refs(&self) -> &[CustomEmojiRef] {
@@ -123,5 +136,42 @@ impl CustomEmojis {
     #[must_use]
     pub fn parse(&self, source: &str) -> MessageContent {
         parser::parse(source, EmojiNames::Index(self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use papo_sdk::{CustomEmoji, EmojiCatalog, Uuid};
+
+    use super::CustomEmojis;
+
+    fn emoji(id: u128, name: &str) -> CustomEmoji {
+        CustomEmoji {
+            id: Uuid::from_u128(id),
+            name: name.to_owned(),
+            format: "png".to_owned(),
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn an_emoji_is_found_by_its_name_and_by_its_id() {
+        let catalog = EmojiCatalog {
+            revision: 4,
+            emojis: vec![emoji(1, "gato"), emoji(2, "cafe")],
+        };
+        let emojis = CustomEmojis::new(&catalog);
+        assert_eq!(
+            emojis.find("cafe").map(|found| found.id),
+            Some(Uuid::from_u128(2))
+        );
+        assert_eq!(
+            emojis
+                .get(Uuid::from_u128(1))
+                .map(|found| found.name.as_str()),
+            Some("gato")
+        );
+        assert_eq!(emojis.get(Uuid::from_u128(3)), None);
+        assert_eq!(CustomEmojis::default().get(Uuid::from_u128(1)), None);
     }
 }
