@@ -1,5 +1,5 @@
 //! Embed pictures come only through the server's relay (`GET /embeds/{id}`), keyed by the
-//! embed's revision; the addresses an embed carries are never contacted.
+//! embed's revision, and save the same way; the addresses an embed carries are never contacted.
 
 use super::*;
 use base64::Engine;
@@ -139,6 +139,99 @@ fn a_denied_embed_retires_its_cached_picture() -> Result {
             session.media().cached(source).await,
             Err(MediaError::Unavailable)
         ));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn an_embed_picture_saves_through_the_relay_then_from_the_cache() -> Result {
+    let f = Fixture::new(Config::default())?;
+    let folder = tempfile::tempdir()?;
+    f.run(async {
+        let site = MediaTestServer::start().await?;
+        let (session, _) = accounts(&f).await?;
+        let id = Uuid::from_u128(2803);
+        let path = format!("/embeds/{id}");
+        let users = BTreeSet::from([session.account().user().to_string()]);
+        let body = relayed(&site.base_url(), b"relayed picture");
+        f.server()
+            .set_encoded_media(answer(&path, users, &body)?)
+            .await?;
+        let target = papo_sdk::SaveTarget::Folder {
+            folder: folder.path().to_path_buf(),
+            name: "picture.webp".into(),
+        };
+        let revision = "2026-11-25T10:00:00Z".to_owned();
+        let saved = session
+            .media()
+            .save_embed_image(id, revision.clone(), target.clone())
+            .finished()
+            .await;
+        assert_eq!(saved, Ok(folder.path().join("picture.webp")));
+        assert_eq!(
+            std::fs::read(folder.path().join("picture.webp"))?,
+            b"relayed picture"
+        );
+        assert_eq!(f.server().take_media_observations().await.len(), 1);
+        session
+            .media()
+            .fetch(
+                MediaSource::EmbedImage {
+                    embed: id,
+                    revision: revision.clone(),
+                },
+                false,
+            )
+            .await?;
+        assert_eq!(
+            f.server().take_media_observations().await.len(),
+            1,
+            "not cached by a save"
+        );
+        let again = session
+            .media()
+            .save_embed_image(id, revision, target)
+            .finished()
+            .await;
+        assert_eq!(again, Ok(folder.path().join("picture (1).webp")));
+        assert!(
+            f.server().take_media_observations().await.is_empty(),
+            "the second save copies the cached picture"
+        );
+        assert!(site.finish().await.is_empty(), "the site saw no request");
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}
+
+#[test]
+fn a_denied_embed_picture_saves_nothing() -> Result {
+    let f = Fixture::new(Config::default())?;
+    let folder = tempfile::tempdir()?;
+    f.run(async {
+        let (session, other) = accounts(&f).await?;
+        let id = Uuid::from_u128(2804);
+        let theirs = BTreeSet::from([other.account().user().to_string()]);
+        let body = relayed("https://site.invalid", b"picture");
+        f.server()
+            .set_encoded_media(answer(&format!("/embeds/{id}"), theirs, &body)?)
+            .await?;
+        let target = papo_sdk::SaveTarget::Folder {
+            folder: folder.path().to_path_buf(),
+            name: "picture.webp".into(),
+        };
+        let saved = session
+            .media()
+            .save_embed_image(id, "only".into(), target)
+            .finished()
+            .await;
+        assert_eq!(saved, Err(papo_sdk::SaveFailure::Gone));
+        assert_eq!(
+            std::fs::read_dir(folder.path())?.count(),
+            0,
+            "nothing left behind"
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })??;
     f.finish()

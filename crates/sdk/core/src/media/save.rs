@@ -1,6 +1,7 @@
-//! Saving an attachment's original into a folder or a file the person chose, with progress and
-//! cancel. The bytes are the original's exactly: from this account's cache when it holds them,
-//! else streamed from the backend as they arrive (never held whole, never added to the cache).
+//! Saving an attachment's original, or an embed's relayed picture, into a folder or a file the
+//! person chose, with progress and cancel. The bytes are the original's exactly: from this
+//! account's cache when it holds them, else from the backend (an original streamed as it
+//! arrives, never held whole; an embed picture in one answer), never added to the cache.
 //! Fetching for display and the cache's grants live elsewhere; the destination's naming lives
 //! in `save_names`.
 //!
@@ -12,9 +13,9 @@
 //! source answered, so a refused save never touches the destination. The destination file is
 //! `destination`'s.
 
-use super::{MediaError, MediaSource};
+use super::MediaError;
 use crate::ClientError;
-use crate::{Session, Uuid, generation::Epoch};
+use crate::{Session, Uuid};
 use std::{
     io::Write,
     path::PathBuf,
@@ -25,7 +26,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 mod destination;
+mod source;
 use destination::Sink;
+use source::{Saving, Source, open_source};
 
 /// The largest original a save writes: the attachment limit.
 const MAX_SAVE_BYTES: u64 = crate::MAX_ATTACHMENT_BYTES;
@@ -192,6 +195,19 @@ impl super::MediaService {
     /// handle has ended as cancelled.
     #[must_use]
     pub fn save_attachment(&self, attachment: Uuid, target: SaveTarget) -> MediaSave {
+        self.start_save(Saving::Attachment(attachment), target)
+    }
+
+    /// Starts saving embed `embed`'s relayed picture (its [`super::MediaSource::EmbedImage`] at
+    /// `revision`) to `target`, as [`Self::save_attachment`] saves an original: from
+    /// this account's cache when it holds the picture, else through the relay; never from the
+    /// site.
+    #[must_use]
+    pub fn save_embed_image(&self, embed: Uuid, revision: String, target: SaveTarget) -> MediaSave {
+        self.start_save(Saving::EmbedImage { embed, revision }, target)
+    }
+
+    fn start_save(&self, saving: Saving, target: SaveTarget) -> MediaSave {
         let (sender, state) = watch::channel(SaveState::Saving(SaveProgress {
             saved_bytes: 0,
             total_bytes: None,
@@ -213,7 +229,7 @@ impl super::MediaService {
         let runtime = session.client.inner.runtime.clone();
         runtime.spawn(async move {
             let _token = token;
-            let result = save(&session, attachment, &target, &stop, &mut publisher).await;
+            let result = save(&session, &saving, &target, &stop, &mut publisher).await;
             publisher.finish(match result {
                 Ok(path) => SaveState::Saved(path),
                 Err(failure) => SaveState::Failed(failure),
@@ -274,20 +290,12 @@ impl Drop for Publisher {
     }
 }
 
-/// Where the original's bytes come from.
-enum Source {
-    /// This account's cached copy, read whole.
-    Cached(Arc<[u8]>),
-    /// The backend's answer, streamed.
-    Streamed(papo_api::media::MediaBody),
-}
-
 /// Runs one save to its end. The destination is opened only once the source answered, and
 /// whatever it wrote is removed unless the save completes (`Sink` sees to it, even when this
 /// future is dropped).
 async fn save(
     session: &Session,
-    attachment: Uuid,
+    saving: &Saving,
     target: &SaveTarget,
     stop: &CancellationToken,
     progress: &mut Publisher,
@@ -308,7 +316,7 @@ async fn save(
     let source = tokio::select! {
         biased;
         () = &mut cancelled => return Err(SaveFailure::Cancelled),
-        source = open_source(session, &epoch, attachment) => source?,
+        source = open_source(session, &epoch, saving) => source?,
     };
     let total_bytes = match &source {
         Source::Cached(bytes) => Some(bytes.len() as u64),
@@ -319,7 +327,8 @@ async fn save(
         total_bytes,
     });
     let target = target.clone();
-    let mut sink = blocking(move || Sink::open(&target, attachment)).await?;
+    let id = saving.id();
+    let mut sink = blocking(move || Sink::open(&target, id)).await?;
     let poured = tokio::select! {
         biased;
         () = &mut cancelled => Err(SaveFailure::Cancelled),
@@ -332,44 +341,6 @@ async fn save(
     });
     // Once every byte is written the save completes: finishing is not cancelled midway.
     blocking(move || sink.finish()).await
-}
-
-/// The original's source: the account's cache when it holds it, else the backend's answer.
-async fn open_source(
-    session: &Session,
-    epoch: &Epoch,
-    attachment: Uuid,
-) -> Result<Source, SaveFailure> {
-    let source = MediaSource::Attachment(attachment);
-    let store = &session.client.inner.media;
-    let cached = store
-        .cached_reference(session, epoch, &source, true)
-        .await
-        .map_err(|error| failure_of(&error))?;
-    if let Some((_, data)) = cached {
-        return Ok(Source::Cached(data.bytes));
-    }
-    let rest = super::download::authenticated(session, epoch)
-        .await
-        .map_err(|error| failure_of(&error))?;
-    let opened = tokio::time::timeout(
-        session.client.inner.config.request_timeout,
-        rest.attachment_body(attachment, MAX_SAVE_BYTES),
-    )
-    .await
-    .map_err(|_| SaveFailure::Unreachable)?;
-    match opened {
-        Ok(body) => Ok(Source::Streamed(body)),
-        Err(error) => {
-            let error = MediaError::Transport(error);
-            if super::download::denied(&error) {
-                let _ = store
-                    .revoke_denied(session, epoch.generation, &source)
-                    .await;
-            }
-            Err(failure_of(&error))
-        }
-    }
 }
 
 /// Writes every byte of `source` into `sink`, publishing progress.
