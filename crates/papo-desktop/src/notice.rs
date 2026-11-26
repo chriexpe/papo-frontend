@@ -49,6 +49,8 @@ pub(crate) enum Refusal {
     Attach(Refused),
     /// Files offered while a message is edited: the edit must end first.
     FinishEdit,
+    /// A GIF from the picker the queue did not take: said as a failed send is.
+    Gif,
 }
 
 impl Refusal {
@@ -64,6 +66,7 @@ impl Refusal {
             Refusal::Unblock => strings::notice_unblock_failed(),
             Refusal::Ban => strings::notice_ban_failed(),
             Refusal::FinishEdit => strings::drop_editing(),
+            Refusal::Gif => strings::composer_send_failed(),
             Refusal::Attach(refused) => return strings::attach_refused(refused).into(),
         };
         words.into()

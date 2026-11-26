@@ -175,6 +175,8 @@ impl Shell {
     /// field (a folded one with its query), a shrunk one stretches back,
     /// and 🔍 on an open one folds it.
     pub(crate) fn search_pressed(&mut self, keyboard: bool, tx: &mut Tx) {
+        // A press outside the picker closes it (§16.1); this one skips `worked_outside`.
+        self.drop_emoji_picker();
         let Some(key) = self.tabs.shown().map(|open| open.key) else {
             return;
         };

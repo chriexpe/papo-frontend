@@ -1,5 +1,5 @@
 //! The emoji picker's icons (`docs/design.md` §16.2, §10): its category strip's, one per
-//! Unicode category without one elsewhere, and More emoji's.
+//! Unicode category without one elsewhere, More emoji's, and the GIF tab's.
 
 use rune::Icon;
 
@@ -45,4 +45,19 @@ line_icon!(
     /// Flags, in the emoji picker's category strip.
     FLAG,
     "flag"
+);
+line_icon!(
+    /// The GIF tab, the pill's GIF button.
+    GIF,
+    "gif"
+);
+line_icon!(
+    /// The Favorites chip.
+    STAR,
+    "star"
+);
+line_icon!(
+    /// The Trending chip.
+    TRENDING,
+    "trending"
 );

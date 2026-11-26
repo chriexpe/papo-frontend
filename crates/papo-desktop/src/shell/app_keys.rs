@@ -86,10 +86,14 @@ impl Shell {
         if self.viewer.is_some() {
             return false;
         }
-        // The emoji picker holds the keyboard as a dialog does; its own key closes it.
-        if self.emoji_picker.is_some() {
+        // The picker holds the keyboard: its tabs' keys switch it or close it, the app's wait.
+        if self.picker.is_some() {
             if key.is_command('e') && primary_only(key.mods) {
-                self.close_emoji_picker(tx);
+                self.emoji_button_pressed(tx);
+                return true;
+            }
+            if key.is_command('g') && primary_only(key.mods) {
+                self.gif_button_pressed(tx);
                 return true;
             }
             return false;
@@ -124,6 +128,11 @@ impl Shell {
         // panel.
         if key.is_command('e') && primary_only(key.mods) && self.settings.is_none() {
             self.emoji_button_pressed(tx);
+            return true;
+        }
+        // Ctrl+G: the GIF tab, likewise.
+        if key.is_command('g') && primary_only(key.mods) && self.settings.is_none() {
+            self.gif_button_pressed(tx);
             return true;
         }
         self.server_number_key(key, tx)

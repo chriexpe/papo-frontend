@@ -17,13 +17,13 @@ use crate::composer::{COMPOSER_KEY, COMPOSER_PILL_KEY};
 use crate::design::Look;
 use crate::emoji_picker::view::{EMOJI_SEARCH_KEY, PickerLook};
 use crate::emoji_picker::{EmojiChoice, EmojiPicker, PickerFor, Section, Step};
+use crate::picker::OpenPicker;
 use crate::timeline::TimelineKey;
 
 impl Shell {
     /// Whether the picker is open for the shown field: the pill's 😊 is lit.
     pub(crate) fn emoji_open_for_field(&self) -> bool {
-        self.emoji_picker
-            .as_ref()
+        self.emoji_picker()
             .is_some_and(|picker| matches!(picker.target, PickerFor::Field(_)))
     }
 
@@ -64,38 +64,24 @@ impl Shell {
             .get(&account)
             .map_or_else(|| Arc::from([]), |activity| Arc::clone(&activity.usage));
         let catalog = self.catalog(account).cloned();
-        // It stands where the menu or a panel would: they close.
+        // It stands where the menu, a panel or a GIF tab on its way would: they close.
+        self.gif.cancel_opening();
         self.worked_outside();
         self.nav.menu = None;
         self.stretched = None;
-        self.emoji_picker = Some(EmojiPicker::new(target, catalog.as_deref(), usage));
+        self.picker = Some(OpenPicker::Emoji(EmojiPicker::new(
+            target,
+            catalog.as_deref(),
+            usage,
+        )));
         tx.focus(EMOJI_SEARCH_KEY, true);
-    }
-
-    /// The picker closes; the keyboard goes back to the field, or to the message a reaction was
-    /// for.
-    pub(crate) fn close_emoji_picker(&mut self, tx: &mut Tx) {
-        let Some(picker) = self.emoji_picker.take() else {
-            return;
-        };
-        match picker.target {
-            PickerFor::Field(_) => tx.focus(COMPOSER_KEY, false),
-            PickerFor::Reaction { message, .. } => {
-                tx.focus(crate::timeline::rows::message_key(message), true);
-            }
-        }
-    }
-
-    /// The picker closes without a word to the keyboard: the conversation it stood over left.
-    pub(super) fn drop_emoji_picker(&mut self) {
-        self.emoji_picker = None;
     }
 
     /// A picker for a reaction whose message went away (deleted, or its conversation no longer
     /// shown) closes; the keyboard goes back to the field. Returns whether it closed.
     pub(super) fn poll_emoji_picker(&mut self, tx: &mut Tx) -> bool {
         let Some(PickerFor::Reaction { key, message }) =
-            self.emoji_picker.as_ref().map(|picker| picker.target)
+            self.emoji_picker().map(|picker| picker.target)
         else {
             return false;
         };
@@ -107,7 +93,7 @@ impl Shell {
         if held {
             return false;
         }
-        self.emoji_picker = None;
+        self.picker = None;
         tx.focus(COMPOSER_KEY, false);
         true
     }
@@ -115,24 +101,24 @@ impl Shell {
     /// The search field's text, for its `on_edit`. With no picker (an event that arrives as it
     /// closes) a spare that nothing reads.
     pub(crate) fn emoji_search_mut(&mut self) -> &mut TextEdit {
-        if let Some(picker) = &mut self.emoji_picker {
-            return &mut picker.search;
+        if let Some(OpenPicker::Emoji(picker)) = &mut self.picker {
+            &mut picker.search
+        } else {
+            self.picker_spare = TextEdit::new("");
+            &mut self.picker_spare
         }
-        self.emoji_spare = TextEdit::new("");
-        &mut self.emoji_spare
     }
 
     /// The search changed: the list is found again.
     pub(crate) fn emoji_searched(&mut self, _tx: &mut Tx) {
         let Some(account) = self
-            .emoji_picker
-            .as_ref()
+            .emoji_picker()
             .map(|picker| picker.target.key().account)
         else {
             return;
         };
         let catalog = self.catalog(account).cloned();
-        if let Some(picker) = &mut self.emoji_picker {
+        if let Some(picker) = self.emoji_picker_mut() {
             picker.rebuild(catalog.as_deref());
         }
         // Other emoji may stand where the lists last said; theirs are asked for.
@@ -141,7 +127,7 @@ impl Shell {
 
     /// The search's ✕.
     pub(crate) fn emoji_search_cleared(&mut self, tx: &mut Tx) {
-        if let Some(picker) = &mut self.emoji_picker {
+        if let Some(picker) = self.emoji_picker_mut() {
             picker.search = TextEdit::new("");
         }
         self.emoji_searched(tx);
@@ -152,8 +138,7 @@ impl Shell {
     pub(super) fn emoji_picker_catalog_changed(&mut self, account: AccountId) {
         let catalog = self.catalog(account).cloned();
         if let Some(picker) = self
-            .emoji_picker
-            .as_mut()
+            .emoji_picker_mut()
             .filter(|picker| picker.target.key().account == account)
         {
             picker.rebuild(catalog.as_deref());
@@ -168,7 +153,7 @@ impl Shell {
         if mods.ctrl || mods.cmd || mods.alt || mods.logo {
             return false;
         }
-        let Some(picker) = &mut self.emoji_picker else {
+        let Some(picker) = self.emoji_picker_mut() else {
             return false;
         };
         let in_results = picker.cursor.is_some();
@@ -216,7 +201,7 @@ impl Shell {
 
     /// The pointer came onto cell `at` (`on`) or left it.
     pub(crate) fn emoji_hovered(&mut self, at: usize, on: bool) {
-        if let Some(picker) = &mut self.emoji_picker {
+        if let Some(picker) = self.emoji_picker_mut() {
             if on {
                 picker.hovered = Some(at);
             } else if picker.hovered == Some(at) {
@@ -228,8 +213,7 @@ impl Shell {
     /// A press on cell `at`; Shift held (`keep`) keeps the picker open.
     pub(crate) fn emoji_cell_pressed(&mut self, at: usize, keep: bool, tx: &mut Tx) {
         let choice = self
-            .emoji_picker
-            .as_ref()
+            .emoji_picker()
             .and_then(|picker| picker.cells().get(at).cloned());
         if let Some(choice) = choice {
             self.emoji_picked(&choice, keep, tx);
@@ -240,13 +224,17 @@ impl Shell {
     /// `keep`; for a reaction it reacts and the picker closes. A reaction already yours stays
     /// (the picker adds; the chip takes back).
     fn emoji_picked(&mut self, choice: &EmojiChoice, keep: bool, tx: &mut Tx) {
-        let Some(target) = self.emoji_picker.as_ref().map(|picker| picker.target) else {
+        let Some(target) = self.emoji_picker().map(|picker| picker.target) else {
             return;
         };
         match target {
             PickerFor::Field(key) => {
                 if self.composer.insert_emoji(key, choice) {
+                    // The pick's own edit is not work outside the picker: it stays open for
+                    // Shift.
+                    let picker = self.picker.take();
                     self.composer_edited(tx);
+                    self.picker = picker;
                 }
                 if keep {
                     tx.focus(EMOJI_SEARCH_KEY, false);
@@ -267,8 +255,7 @@ impl Shell {
     /// The list shows sections `range`; their rows on screen are asked for as they report.
     pub(crate) fn emoji_sections_shown(&mut self, range: Range<usize>) -> bool {
         let changed = self
-            .emoji_picker
-            .as_mut()
+            .emoji_picker_mut()
             .is_some_and(|picker| picker.sections_shown(range));
         if changed {
             self.want_emoji();
@@ -279,8 +266,7 @@ impl Shell {
     /// Section `section` shows its rows of cells `range`: their custom emoji are fetched.
     pub(crate) fn emoji_rows_shown(&mut self, section: Section, range: Range<usize>) -> bool {
         let changed = self
-            .emoji_picker
-            .as_mut()
+            .emoji_picker_mut()
             .is_some_and(|picker| picker.rows_shown(section, range));
         if changed {
             self.want_emoji();
@@ -289,7 +275,7 @@ impl Shell {
     }
 }
 
-/// The open picker drawn (§16.1, §16.2): grown from the text pill, or for a reaction from its
+/// The Emoji tab drawn (§16.1, §16.2): grown from the text pill, or for a reaction from its
 /// message's row, where the hover bar sits; as wide as the pill at most.
 pub(super) fn view(shell: &Shell, picker: &EmojiPicker, look: &Look, cx: &Cx<Shell>) -> El {
     let account = picker.target.key().account;

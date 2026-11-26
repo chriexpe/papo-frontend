@@ -30,6 +30,7 @@ mod emoji_picker;
 mod fonts;
 mod general_settings;
 mod gif_frames;
+mod gif_picker;
 mod glass;
 mod grain;
 mod icons;
@@ -48,6 +49,7 @@ mod navigation;
 mod notice;
 mod own_profile;
 mod person_avatar;
+mod picker;
 mod playback;
 #[cfg(test)]
 mod private_bus;
@@ -196,7 +198,10 @@ fn try_start_bridge(secrets: Arc<Keyring>, post: &Arc<rune::AppHandle<Shell>>) -
 /// servers, so every other saved server stays unreachable. Release builds
 /// never read the variable.
 fn client_config() -> ClientConfig {
-    let config = ClientConfig::default();
+    let config = ClientConfig {
+        giphy: giphy_config(),
+        ..ClientConfig::default()
+    };
     if cfg!(debug_assertions)
         && std::env::var_os("PAPO_DEV_LOOPBACK").is_some_and(|value| value == "1")
     {
@@ -209,6 +214,21 @@ fn client_config() -> ClientConfig {
         };
     }
     config
+}
+
+/// GIPHY's key, given when the app is built (release CI's secret, or the builder's own
+/// environment); a build without one has none, and the GIF tab says so (`docs/design.md` §16.3).
+/// Never printed.
+const GIPHY_KEY: Option<&str> = option_env!("PAPO_GIPHY_API_KEY");
+
+/// Whether this build can search GIPHY.
+pub(crate) fn has_giphy_key() -> bool {
+    giphy_config().is_some()
+}
+
+fn giphy_config() -> Option<papo_sdk::GiphyConfig> {
+    let key = GIPHY_KEY.map(str::trim).filter(|key| !key.is_empty())?;
+    papo_sdk::GiphyConfig::new(key.to_owned()).ok()
 }
 
 /// The log filter when `RUST_LOG` is not set: Papo's own crates at `info`,

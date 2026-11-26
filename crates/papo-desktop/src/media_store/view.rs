@@ -29,6 +29,9 @@ pub(crate) enum MediaOf {
     EmbedPicture { revision: u64 },
     /// An embed's relayed clip, a post's own video.
     EmbedClip,
+    /// A picture fetched from its own address, not through the server: a GIF in the picker's
+    /// GIF tab (§16.3), by its URL (hashed; its SDK source carries it whole).
+    External { url: u64 },
 }
 
 impl MediaKey {
@@ -64,13 +67,39 @@ impl MediaKey {
         }
     }
 
+    /// The picture at `url`, fetched from there, as `account`'s picker shows it.
+    pub(crate) fn external(account: AccountId, url: &str) -> MediaKey {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        url.hash(&mut hasher);
+        MediaKey {
+            account,
+            id: Uuid::nil(),
+            of: MediaOf::External {
+                url: hasher.finish(),
+            },
+        }
+    }
+
+    /// A total order among keys of equal standing: by ID, then by what the key names (a GIF
+    /// tab's tiles share the nil ID and differ by their address).
+    pub(crate) fn order(self) -> (Uuid, u64) {
+        let of = match self.of {
+            MediaOf::Attachment => 0,
+            MediaOf::EmbedClip => 1,
+            MediaOf::EmbedPicture { revision } => revision,
+            MediaOf::External { url } => url,
+        };
+        (self.id, of)
+    }
+
     /// Where the whole of a video or audio, or an attachment's original, comes from; none for
     /// an embed picture, whose source carries a revision the key does not.
     pub(crate) fn whole_source(self) -> Option<papo_sdk::MediaSource> {
         match self.of {
             MediaOf::Attachment => Some(papo_sdk::MediaSource::Attachment(self.id)),
             MediaOf::EmbedClip => Some(papo_sdk::MediaSource::EmbedVideo(self.id)),
-            MediaOf::EmbedPicture { .. } => None,
+            MediaOf::EmbedPicture { .. } | MediaOf::External { .. } => None,
         }
     }
 }

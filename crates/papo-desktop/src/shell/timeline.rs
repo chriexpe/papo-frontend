@@ -355,7 +355,7 @@ impl Shell {
             | self.poll_players(clock_s, tx);
         let list_closed = self.poll_reactions() | self.poll_emoji_picker(tx);
         let card_closed = self.poll_card();
-        let searched = self.poll_search(clock_s);
+        let searched = self.poll_search(clock_s) | self.poll_gif_search(clock_s, tx);
         restored
             || copied_ended
             || new_day

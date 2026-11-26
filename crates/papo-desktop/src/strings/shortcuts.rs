@@ -113,6 +113,11 @@ pub(crate) fn shortcuts_emoji() -> &'static str {
     text!("shortcuts.emoji")
 }
 
+/// Ctrl+G's row in Composer: the GIF picker.
+pub(crate) fn shortcuts_gif() -> &'static str {
+    text!("shortcuts.gif")
+}
+
 /// Escape's row in Composer.
 pub(crate) fn shortcuts_cancel_mode() -> &'static str {
     text!("shortcuts.cancel_mode")

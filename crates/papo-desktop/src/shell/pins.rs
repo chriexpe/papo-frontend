@@ -48,6 +48,8 @@ impl Shell {
     /// 📌 or Ctrl+P (`keyboard`): the panel opens, or a shrunk one stretches
     /// back, or an open one closes.
     pub(crate) fn pins_pressed(&mut self, keyboard: bool, tx: &mut Tx) {
+        // A press outside the picker closes it (§16.1); this one skips `worked_outside`.
+        self.drop_emoji_picker();
         let Some(key) = self.tabs.shown().map(|open| open.key) else {
             return;
         };
@@ -103,11 +105,12 @@ impl Shell {
     /// Input that started outside the panel (a press elsewhere, a wheel
     /// over the conversation, the channels or the rail, typing, a key on a
     /// message): the panel shrinks to the opened pin, or closes when
-    /// nothing was opened. The one rule every outside path calls. Returns
-    /// whether it changed.
+    /// nothing was opened; the search folds; the picker closes. The one
+    /// rule every outside path calls. Returns whether it changed.
     pub(crate) fn worked_outside(&mut self) -> bool {
         let search = self.search_worked_outside();
-        self.pins_worked_outside() || search
+        let picker = self.picker_worked_outside();
+        self.pins_worked_outside() || search || picker
     }
 
     fn pins_worked_outside(&mut self) -> bool {

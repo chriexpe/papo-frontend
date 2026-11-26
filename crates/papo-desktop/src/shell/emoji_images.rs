@@ -161,8 +161,7 @@ impl Shell {
         }
         // The picker's cells on screen.
         if let Some(picker) = self
-            .emoji_picker
-            .as_ref()
+            .emoji_picker()
             .filter(|picker| picker.target.key().account == account)
         {
             ids.extend(picker.shown_custom());

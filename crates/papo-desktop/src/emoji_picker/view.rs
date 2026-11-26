@@ -5,23 +5,22 @@
 
 use papo_sdk::AccountId;
 use papo_sdk_ui::{EmojiCategory, EmojiLanguage};
-use rune::{Align, El, KeyEvent, Side, TextStyle, col, icon, row, text, text_input};
+use rune::{El, KeyEvent, TextStyle, col, icon, row, text, text_input};
 
 use super::{CELL_GAP_PT, COLUMNS, EmojiChoice, EmojiPicker, Section, block_key, section_key};
 use crate::design::{
-    EMOJI_PICKER_GAP_PT, EMOJI_PICKER_MAX_PT, EMOJI_PREVIEW_BAR_PT, EMOJI_PREVIEW_EMOJI_PT,
-    EMOJI_SEARCH_PT, EMOJI_STRIP_PT, Look, PILL_ICON_PT, RADIUS_PILL, SPACE_MD, SPACE_SM, Surfaces,
-    TYPE_BODY, TYPE_CAPTION, TYPE_SMALL, WEIGHT_SEMIBOLD,
+    EMOJI_PREVIEW_BAR_PT, EMOJI_PREVIEW_EMOJI_PT, EMOJI_SEARCH_PT, EMOJI_STRIP_PT, Look,
+    PILL_ICON_PT, RADIUS_PILL, SPACE_MD, SPACE_SM, TYPE_BODY, TYPE_CAPTION, TYPE_SMALL,
+    WEIGHT_SEMIBOLD,
 };
 use crate::emoji_images::{EmojiKey, EmojiLooks, emoji_square};
 use crate::icons::{BALL, BULB, CAR, CLOCK, CUP, FLAG, HEART, LEAF, SEARCH, SMILE, X};
+use crate::picker::Frame;
 use crate::shell::Shell;
 use crate::strings;
 
 mod grid;
 
-/// The element key of the open picker.
-pub(crate) const EMOJI_PICKER_KEY: &str = "emoji-picker";
 /// The element key of its search field.
 pub(crate) const EMOJI_SEARCH_KEY: &str = "emoji-search";
 /// The element key of its list of sections.
@@ -50,27 +49,19 @@ pub(crate) struct PickerLook<'a> {
 /// The open Emoji tab.
 pub(crate) fn view(picker: &EmojiPicker, given: &PickerLook<'_>) -> El {
     let look = given.look;
-    let (max_width, max_height) = EMOJI_PICKER_MAX_PT;
-    let width = given
-        .anchor_width_pt
-        .map_or(max_width, |anchor| anchor.min(max_width));
-    let height = given
-        .conversation_height_pt
-        .map_or(max_height, |room| (room * 0.6).min(max_height));
+    let frame = Frame {
+        look,
+        anchor: given.anchor,
+        anchor_width_pt: given.anchor_width_pt,
+        conversation_height_pt: given.conversation_height_pt,
+    };
+    let (width, _) = frame.size();
     let padding = look.space(SPACE_SM);
     let cell_pt = cell_side(width, padding);
-    let mut panel = col()
-        .key(EMOJI_PICKER_KEY)
-        .w(width)
-        .h(height)
-        .radius(look.radius(RADIUS_PILL))
-        .pill_surface(look)
-        .clip_rounded(look.radius(RADIUS_PILL))
-        .role("dialog")
-        .label(strings::picker_emoji())
-        // A press outside closes it (§16.1); Escape is the search's first (it clears first).
-        .modal_tx(true, |shell: &mut Shell, tx| shell.close_emoji_picker(tx))
-        .anchored_fit(given.anchor, Side::Top, Align::End, EMOJI_PICKER_GAP_PT)
+    let mut panel = frame
+        .panel(strings::picker_emoji())
+        // Escape works from the category strip too.
+        .on_key(|shell: &mut Shell, event: &KeyEvent, tx| shell.emoji_picker_key(event, tx))
         .child(search(picker, look, padding));
     if picker.query().is_empty() {
         panel = panel.child(strip(picker, given, padding));

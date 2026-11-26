@@ -45,16 +45,14 @@ pub(super) fn grid(picker: &EmojiPicker, given: &PickerLook<'_>, cell_pt: f32, p
             estimate_pt,
             |shell: &Shell, index| {
                 let key = shell
-                    .emoji_picker
-                    .as_ref()
+                    .emoji_picker()
                     .and_then(|picker| picker.blocks().get(index))
                     .map_or_else(String::new, |block| block_key(block.section));
                 Cow::Owned(key)
             },
             move |shell: &Shell, index| {
                 let block = shell
-                    .emoji_picker
-                    .as_ref()
+                    .emoji_picker()
                     .and_then(|picker| Some((picker, picker.blocks().get(index)?)));
                 match block {
                     Some((picker, block)) => section_block(picker, index, block, &draw),
@@ -90,7 +88,7 @@ fn section_block(picker: &EmojiPicker, index: usize, block: &Block, draw: &CellL
             draw.side_pt + CELL_GAP_PT,
             move |_shell: &Shell, row| Cow::Owned(cell_row_key(section, row)),
             move |shell: &Shell, row| {
-                let cells = shell.emoji_picker.as_ref().and_then(|picker| {
+                let cells = shell.emoji_picker().and_then(|picker| {
                     let block = picker.blocks().get(index)?;
                     match picker.rows().get(block.cell_rows().start + row)? {
                         Row::Cells { cells, .. } => Some((picker, cells)),

@@ -199,6 +199,7 @@ impl Shell {
             let (pictures, clips) = self.previews_wanted(account, &shown, &look);
             wants.extend(pictures);
             videos.extend(clips);
+            self.want_gif_tiles(&mut wants);
         }
         self.want_videos(videos);
         for (from, to) in sent_audio {
@@ -214,6 +215,14 @@ impl Shell {
         self.want_emoji();
     }
 
+    /// The GIF tab's tiles near its list join `wants`, each fetched from its address.
+    fn want_gif_tiles(&mut self, wants: &mut Vec<Want>) {
+        for (want, source) in self.gif_tiles_wanted() {
+            self.relayed.insert(want.key, source);
+            wants.push(want);
+        }
+    }
+
     /// Starts `jobs`: each fetches through the SDK's cache and decodes off the UI thread, then
     /// lands in the store, which may ask for more.
     pub(super) fn run_media_jobs(&mut self, jobs: Vec<Job>) {
@@ -225,13 +234,14 @@ impl Shell {
             let images = Arc::clone(&images);
             let scale = self.scale;
             let updates = sdk.updates();
-            // An embed's picture is fetched from the exact source its preview names.
+            // An embed's picture is fetched from the exact source its preview names, a GIPHY
+            // tile's from its address.
             let source = match (job.key.of, job.fetch) {
                 (MediaOf::Attachment, Fetch::Thumbnail) => MediaSource::Thumbnail(job.key.id),
                 (MediaOf::Attachment, Fetch::Original | Fetch::Animation) => {
                     MediaSource::Attachment(job.key.id)
                 }
-                (MediaOf::EmbedPicture { .. }, _) => {
+                (MediaOf::EmbedPicture { .. } | MediaOf::External { .. }, _) => {
                     let Some(source) = self.relayed.get(&job.key) else {
                         self.media.dropped(&[job]);
                         continue;
@@ -316,7 +326,9 @@ impl Shell {
                 animate || hovered == Some(key)
             }),
         };
-        showing.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
+        // The GIF tab's tiles that show, as the conversation's do.
+        showing.extend(self.gif_tiles_showing(animate));
+        showing.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.order().cmp(&b.1.order())));
         let before = self.media.view();
         let jobs = self
             .media
