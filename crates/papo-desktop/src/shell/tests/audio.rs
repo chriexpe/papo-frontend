@@ -64,10 +64,10 @@ fn with_audio(read: Option<Result<AudioRead, PlaybackFailure>>) -> Runtime<Shell
 }
 
 pub(super) fn audio_key_of(shell: &Shell) -> AudioKey {
-    AudioKey::Received(MediaKey {
-        account: shell.tabs.shown().unwrap().key.account,
-        attachment: audio_id(),
-    })
+    AudioKey::Received(MediaKey::attachment(
+        shell.tabs.shown().unwrap().key.account,
+        audio_id(),
+    ))
 }
 
 /// Audio `duration_ms` long, its waveform read.

@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use papo_sdk::MediaSource;
 use rune::{NativeSurface, Tx};
 
 use super::Shell;
@@ -118,7 +117,7 @@ impl Shell {
         if failure.is_some() {
             return;
         }
-        let Some(sdk) = self.sdk.clone() else {
+        let (Some(sdk), Some(source)) = (self.sdk.clone(), key.whole_source()) else {
             return;
         };
         let engine = self.videos.engine();
@@ -136,7 +135,6 @@ impl Shell {
         });
         let updates = sdk.updates();
         sdk.run(move |client| async move {
-            let source = MediaSource::Attachment(key.attachment);
             let bytes = match client.session(key.account) {
                 Ok(session) => {
                     let media = session.media();

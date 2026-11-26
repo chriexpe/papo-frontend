@@ -1,11 +1,11 @@
 //! The media menu (`docs/design.md` §14.7), beside the pointer or (from the keyboard) the
-//! media: Open (not on audio, whose player is the way in; Retry instead on audio that couldn't
-//! be read), Save image, video, audio or file with its folder, Save as…, Copy image. Copy link
-//! is left out (B-024). What each item does is `media_presses`'.
+//! media (an attachment, or a link preview's picture): Open (not on audio, whose player is the
+//! way in; Retry instead on audio that couldn't be read), Save image, video, audio or file with
+//! its folder, Save as…, Copy image. Copy link is left out for attachments (B-024). What each
+//! item does is `media_presses`'.
 
 use std::path::Path;
 
-use papo_sdk::Attachment;
 use papo_sdk_ui::AttachmentKind;
 
 use super::Shell;
@@ -19,15 +19,15 @@ use crate::strings;
 const MEDIA_MENU_WIDTH_PT: f32 = 248.0;
 
 impl Shell {
-    /// The media menu for attachment `at`, beside `point` (the pointer, or the media's corner
-    /// for the menu key).
+    /// The media menu for media `at` of `kind`, beside `point` (the pointer, or the media's
+    /// corner for the menu key); `retry_audio` when it is audio that couldn't be read.
     pub(super) fn open_media_menu(
         &mut self,
         at: MediaAt,
-        attachment: &Attachment,
+        kind: AttachmentKind,
+        retry_audio: bool,
         point: Option<[f32; 2]>,
     ) {
-        let kind = AttachmentKind::of(attachment);
         let picture = kind.is_picture();
         let action = |action| MenuAction::Media { at, action };
         let folder = self
@@ -51,7 +51,7 @@ impl Shell {
         // Audio has no Open: its player is the way in (§14.7). One that couldn't be read is
         // offered again instead.
         if audio {
-            if self.audio_retries(at, attachment) {
+            if retry_audio {
                 entries.push(Entry::Item(
                     MenuItem::plain(
                         "menu-media-retry",

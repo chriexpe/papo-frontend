@@ -31,8 +31,44 @@ pub(crate) enum MediaAction {
     Retry,
 }
 
+/// What a save writes out, and under which name and key it shows.
+#[derive(Clone, Debug)]
+pub(super) struct Saving {
+    pub(super) account: papo_sdk::AccountId,
+    /// The saves' key: the card or picture that shows its progress.
+    pub(super) key: MediaKey,
+    /// The file's name.
+    pub(super) name: String,
+    pub(super) source: SavedSource,
+}
+
+/// Where a save's bytes come from.
+#[derive(Clone, Debug)]
+pub(super) enum SavedSource {
+    /// An attachment's original.
+    Attachment(papo_sdk::Uuid),
+    /// An embed's relayed picture.
+    EmbedImage {
+        embed: papo_sdk::Uuid,
+        revision: String,
+    },
+}
+
+impl Saving {
+    /// Attachment `attachment` of media `at`, under its own name; none without an ID.
+    fn of(at: MediaAt, attachment: &Attachment) -> Option<Saving> {
+        let id = attachment_id(attachment)?;
+        Some(Saving {
+            account: at.account,
+            key: MediaKey::attachment(at.account, id),
+            name: attachment.original_file_name.clone().unwrap_or_default(),
+            source: SavedSource::Attachment(id),
+        })
+    }
+}
+
 /// Where a save goes, and what happens once it is done.
-enum SaveTo {
+pub(super) enum SaveTo {
     /// Save media to; a file card shows its progress.
     MediaFolder { with_pill: bool },
     /// The file the save dialog named; it ends with the pill.
@@ -46,21 +82,26 @@ impl Shell {
         message.attachments.as_ref()?.get(at.index).cloned()
     }
 
-    /// A press on attachment `at`.
+    /// A press on media `at`: an attachment, or a link preview's picture.
     pub(super) fn press_media(&mut self, at: MediaAt, press: MediaPress, tx: &mut Tx) {
+        if let Some(preview) = self.preview_at(at) {
+            self.press_preview_media(at, &preview, press, tx);
+            return;
+        }
         let Some(attachment) = self.attachment_at(at) else {
             return;
         };
         let Some(id) = attachment_id(&attachment) else {
             return;
         };
-        let key = MediaKey {
-            account: at.account,
-            attachment: id,
-        };
+        let key = MediaKey::attachment(at.account, id);
         match press {
             MediaPress::Open => self.media_action(at, MediaAction::Open, tx),
-            MediaPress::Menu(point) => self.open_media_menu(at, &attachment, point),
+            MediaPress::Menu(point) => {
+                let retry_audio = self.audio_retries(at, &attachment);
+                let kind = AttachmentKind::of(&attachment);
+                self.open_media_menu(at, kind, retry_audio, point);
+            }
             MediaPress::Retry => {
                 let jobs = self.media.retry(key);
                 self.run_media_jobs(jobs);
@@ -69,7 +110,9 @@ impl Shell {
                 // A card shows its own save; boxed media (a video whose format can't play
                 // here) end with the saved pill.
                 let with_pill = crate::message_media::received::is_boxed(&attachment);
-                self.save_media(at, &attachment, SaveTo::MediaFolder { with_pill });
+                if let Some(saving) = Saving::of(at, &attachment) {
+                    self.save_media(saving, SaveTo::MediaFolder { with_pill });
+                }
             }
             MediaPress::CancelSave => {
                 self.saves.cancel(key);
@@ -91,8 +134,12 @@ impl Shell {
         }
     }
 
-    /// What the media menu's item does for attachment `at`.
+    /// What the media menu's item does for media `at`.
     pub(crate) fn media_action(&mut self, at: MediaAt, action: MediaAction, tx: &mut Tx) {
+        if let Some(preview) = self.preview_at(at) {
+            self.preview_media_action(at, &preview, action, tx);
+            return;
+        }
         let Some(attachment) = self.attachment_at(at) else {
             return;
         };
@@ -104,10 +151,7 @@ impl Shell {
             MediaAction::Open if viewed => self.open_viewer(at, tx),
             MediaAction::Open => {
                 let saved = attachment_id(&attachment).and_then(|id| {
-                    let key = MediaKey {
-                        account: at.account,
-                        attachment: id,
-                    };
+                    let key = MediaKey::attachment(at.account, id);
                     match self.saves.views().get(&key) {
                         Some(SaveView::Saved(path)) => Some(path.clone()),
                         _ => None,
@@ -123,42 +167,55 @@ impl Shell {
                 }
             }
             MediaAction::Save => {
-                self.save_media(at, &attachment, SaveTo::MediaFolder { with_pill: viewed });
+                if let Some(saving) = Saving::of(at, &attachment) {
+                    self.save_media(saving, SaveTo::MediaFolder { with_pill: viewed });
+                }
             }
             MediaAction::SaveAs => {
-                let name = attachment.original_file_name.clone().unwrap_or_default();
-                let options = FileDialogOptions {
-                    title: strings::menu_save_as().to_owned(),
-                    directory: self.general.settings().media_folder(),
-                    file_name: Some(name),
-                    filters: Vec::new(),
-                };
-                // The attachment is kept, not looked up again: the conversation may change
-                // while the dialog is open.
-                tx.save_file(
-                    options,
-                    move |shell: &mut Shell, answer, _tx| match answer {
-                        Ok(Some(path)) => shell.save_media(at, &attachment, SaveTo::Chosen(path)),
-                        Ok(None) => {}
-                        Err(error) => log::warn!("the save dialog did not open: {error}"),
-                    },
-                );
+                if let Some(saving) = Saving::of(at, &attachment) {
+                    self.save_as(saving, tx);
+                }
             }
-            MediaAction::CopyImage => self.copy_image(at, &attachment),
+            MediaAction::CopyImage => {
+                if let Some(id) = attachment_id(&attachment) {
+                    self.copy_image(at, papo_sdk::MediaSource::Attachment(id));
+                }
+            }
             MediaAction::Retry => self.retry_audio(at, &attachment),
         }
     }
 
-    /// Saves attachment `at` to `to`, following it until it ends.
-    fn save_media(&mut self, at: MediaAt, attachment: &Attachment, to: SaveTo) {
-        let (Some(sdk), Some(id)) = (self.sdk.clone(), attachment_id(attachment)) else {
+    /// Asks where to save `saving` with the system's save dialog, then saves it there.
+    pub(super) fn save_as(&mut self, saving: Saving, tx: &mut Tx) {
+        let options = FileDialogOptions {
+            title: strings::menu_save_as().to_owned(),
+            directory: self.general.settings().media_folder(),
+            file_name: Some(saving.name.clone()),
+            filters: Vec::new(),
+        };
+        // What is saved is kept, not looked up again: the conversation may change while the
+        // dialog is open.
+        tx.save_file(
+            options,
+            move |shell: &mut Shell, answer, _tx| match answer {
+                Ok(Some(path)) => shell.save_media(saving, SaveTo::Chosen(path)),
+                Ok(None) => {}
+                Err(error) => log::warn!("the save dialog did not open: {error}"),
+            },
+        );
+    }
+
+    /// Saves `saving` to `to`, following it until it ends.
+    pub(super) fn save_media(&mut self, saving: Saving, to: SaveTo) {
+        let Some(sdk) = self.sdk.clone() else {
             return;
         };
-        let name = attachment.original_file_name.clone().unwrap_or_default();
-        let key = MediaKey {
-            account: at.account,
-            attachment: id,
-        };
+        let Saving {
+            account,
+            key,
+            name,
+            source,
+        } = saving;
         let (target, with_pill) = match to {
             SaveTo::MediaFolder { with_pill } => {
                 let Some(folder) = self.general.settings().media_folder() else {
@@ -199,7 +256,7 @@ impl Shell {
         );
         let updates = sdk.updates();
         sdk.run(move |client| async move {
-            let Ok(session) = client.session(at.account) else {
+            let Ok(session) = client.session(account) else {
                 // The account went or is signed out: the save cannot reach the server.
                 updates.send(move |shell| {
                     let failed = papo_sdk::SaveState::Failed(papo_sdk::SaveFailure::Unreachable);
@@ -207,7 +264,12 @@ impl Shell {
                 });
                 return;
             };
-            let mut handle = session.media().save_attachment(id, target);
+            let mut handle = match source {
+                SavedSource::Attachment(id) => session.media().save_attachment(id, target),
+                SavedSource::EmbedImage { embed, revision } => {
+                    session.media().save_embed_image(embed, revision, target)
+                }
+            };
             {
                 let mut slot = slot
                     .lock()
@@ -242,10 +304,7 @@ impl Shell {
             log::warn!("a file was not opened: the app has no cache folder");
             return;
         };
-        let key = MediaKey {
-            account: at.account,
-            attachment: id,
-        };
+        let key = MediaKey::attachment(at.account, id);
         if !self.opening.insert(key) {
             return;
         }

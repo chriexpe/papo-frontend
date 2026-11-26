@@ -7,15 +7,15 @@ use papo_sdk::{AccountId, ServerAddress, Uuid};
 use super::*;
 
 fn key(n: u128) -> MediaKey {
-    MediaKey {
-        account: AccountId::new(
+    MediaKey::attachment(
+        AccountId::new(
             ServerAddress::parse("https://videos.example.invalid")
                 .unwrap()
                 .id(),
             Uuid::from_u128(1),
         ),
-        attachment: Uuid::from_u128(0x100 + n),
-    }
+        Uuid::from_u128(0x100 + n),
+    )
 }
 
 fn want(n: u128) -> VideoWant {

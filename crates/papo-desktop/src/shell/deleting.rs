@@ -162,6 +162,11 @@ pub(super) fn delete_confirm(shell: &Shell, style: &Style) -> Option<El> {
         f32::INFINITY,
         shell.conversation_rect[3] * papo_sdk_ui::DIALOG_HEIGHT_SHARE,
     );
+    style.media.embed_bounds = papo_sdk_ui::MediaBounds::of_max_size(
+        shell.conversations.settings().embed_size.max_size_pt(),
+        f32::INFINITY,
+        shell.conversation_rect[3] * papo_sdk_ui::DIALOG_HEIGHT_SHARE,
+    );
     style.media.interactive = false;
     style.media.surface = crate::message_media::received::MediaSurface::Confirm;
     let style = &style;

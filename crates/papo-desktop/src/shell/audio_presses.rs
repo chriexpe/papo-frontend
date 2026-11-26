@@ -159,8 +159,8 @@ impl Shell {
 
 /// Received attachment `at`'s audio key, when it has an ID.
 fn attachment_key(at: MediaAt, attachment: &Attachment) -> Option<AudioKey> {
-    Some(AudioKey::Received(MediaKey {
-        account: at.account,
-        attachment: attachment_id(attachment)?,
-    }))
+    Some(AudioKey::Received(MediaKey::attachment(
+        at.account,
+        attachment_id(attachment)?,
+    )))
 }

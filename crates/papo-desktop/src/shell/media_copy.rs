@@ -3,17 +3,17 @@
 
 use std::io::Cursor;
 
-use papo_sdk::{Attachment, MediaSource};
+use papo_sdk::MediaSource;
 use rune::ClipboardContent;
 use rune::clipboard::ClipboardImage;
 
 use super::Shell;
-use crate::message_media::received::{MediaAt, attachment_id};
+use crate::message_media::received::MediaAt;
 
 impl Shell {
-    /// Copies picture `at` as PNG.
-    pub(super) fn copy_image(&mut self, at: MediaAt, attachment: &Attachment) {
-        let (Some(sdk), Some(id)) = (self.sdk.clone(), attachment_id(attachment)) else {
+    /// Copies picture `at` (its whole picture from `source`) as PNG.
+    pub(super) fn copy_image(&mut self, at: MediaAt, source: MediaSource) {
+        let Some(sdk) = self.sdk.clone() else {
             return;
         };
         let updates = sdk.updates();
@@ -21,11 +21,7 @@ impl Shell {
             let Ok(session) = client.session(at.account) else {
                 return;
             };
-            let Ok(data) = session
-                .media()
-                .fetch(MediaSource::Attachment(id), false)
-                .await
-            else {
+            let Ok(data) = session.media().fetch(source, false).await else {
                 return;
             };
             let png = tokio::task::spawn_blocking(move || png_of(&data.value.bytes))

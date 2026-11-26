@@ -4,15 +4,15 @@ use super::*;
 use papo_sdk::{AccountId, ServerAddress, Uuid};
 
 fn key(n: u128) -> MediaKey {
-    MediaKey {
-        account: AccountId::new(
+    MediaKey::attachment(
+        AccountId::new(
             ServerAddress::parse("https://lumen.example.invalid")
                 .unwrap()
                 .id(),
             Uuid::from_u128(8),
         ),
-        attachment: Uuid::from_u128(n),
-    }
+        Uuid::from_u128(n),
+    )
 }
 
 fn want(n: u128, thumbnail_px: Option<(u32, u32)>) -> Want {
@@ -39,7 +39,7 @@ fn picture(images: &rune::ImageCache, side: u32, shade: u8) -> Image {
 
 fn fetches(jobs: &[Job]) -> Vec<(u128, Fetch)> {
     jobs.iter()
-        .map(|job| (job.key.attachment.as_u128(), job.fetch))
+        .map(|job| (job.key.id.as_u128(), job.fetch))
         .collect()
 }
 

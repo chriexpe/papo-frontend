@@ -25,10 +25,7 @@ fn video_id(n: u128) -> Uuid {
 }
 
 fn media_key(n: u128) -> MediaKey {
-    MediaKey {
-        account: key().account,
-        attachment: video_id(n),
-    }
+    MediaKey::attachment(key().account, video_id(n))
 }
 
 fn video(n: u128) -> Value {

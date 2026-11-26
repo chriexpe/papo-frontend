@@ -200,15 +200,15 @@ mod tests {
     use std::rc::Rc;
 
     fn key() -> MediaKey {
-        MediaKey {
-            account: AccountId::new(
+        MediaKey::attachment(
+            AccountId::new(
                 ServerAddress::parse("https://lumen.example.invalid")
                     .unwrap()
                     .id(),
                 Uuid::from_u128(1),
             ),
-            attachment: Uuid::from_u128(2),
-        }
+            Uuid::from_u128(2),
+        )
     }
 
     fn saving(saved_bytes: u64) -> SaveState {

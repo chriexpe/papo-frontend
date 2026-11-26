@@ -22,13 +22,12 @@ fn album(count: usize, opened: usize) -> Viewer {
     let items = (0..count)
         .map(|index| ViewerItem {
             index,
-            key: MediaKey {
-                account: at(0).account,
-                attachment: Uuid::from_u128(10 + index as u128),
-            },
+            key: MediaKey::attachment(at(0).account, Uuid::from_u128(10 + index as u128)),
             name: format!("{index}.jpg"),
             gif: false,
             video: false,
+            source: papo_sdk::MediaSource::Attachment(Uuid::from_u128(10 + index as u128)),
+            size: papo_sdk_ui::MediaSize::Unknown,
         })
         .collect();
     Viewer::new(at(opened), items, "Ana".into(), "Today, 21:30".into())
@@ -113,4 +112,42 @@ fn stepping_fits_and_forgets_the_full_picture() {
     assert!(viewer.step(1));
     assert!(!viewer.placed(PHOTO, ROOM).zoomed);
     assert!(viewer.full.is_none() && viewer.asked_s.is_none());
+}
+
+#[test]
+fn closing_on_a_card_picture_returns_to_that_card_and_on_an_album_past_its_cells_to_plus_n() {
+    let account = at(0).account;
+    let picture = |index: usize, key: MediaKey| ViewerItem {
+        index,
+        key,
+        name: String::new(),
+        gif: false,
+        video: false,
+        source: papo_sdk::MediaSource::Attachment(Uuid::from_u128(1)),
+        size: papo_sdk_ui::MediaSize::Unknown,
+    };
+    // Six pictures (places 0–5), then three cards (places 6–8), drawn first.
+    let mut items: Vec<ViewerItem> = (6..9)
+        .map(|index| {
+            let embed = Uuid::from_u128(100 + index as u128);
+            picture(index, MediaKey::embed_picture(account, embed, "r"))
+        })
+        .collect();
+    items.extend((0..6).map(|index| {
+        picture(
+            index,
+            MediaKey::attachment(account, Uuid::from_u128(10 + index as u128)),
+        )
+    }));
+    let card = Viewer::new(at(8), items.clone(), String::new(), String::new());
+    assert_eq!(
+        card.return_focus(),
+        crate::message_media::received::media_element_key(at(8))
+    );
+    let sixth = Viewer::new(at(5), items, String::new(), String::new());
+    assert_eq!(
+        sixth.return_focus(),
+        crate::message_media::received::media_element_key(at(3)),
+        "the album's \"+N\" cell"
+    );
 }

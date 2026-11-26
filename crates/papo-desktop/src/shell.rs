@@ -193,6 +193,8 @@ pub(crate) struct Shell {
     /// Sizes of attachments this device sent, read from the files: their received rows keep
     /// their unsent height.
     own_sizes: Arc<HashMap<papo_sdk::Uuid, papo_sdk_ui::MediaSize>>,
+    /// The exact SDK source of each embed picture the shown views want (its revision whole).
+    relayed: HashMap<crate::media_store::MediaKey, papo_sdk::MediaSource>,
     /// Saves of received media, and the saved pill.
     saves: crate::saving::Saves,
     /// When the saved pill goes, on the window's clock.
@@ -318,6 +320,7 @@ impl Default for Shell {
             media: crate::media_store::MediaStore::default(),
             gif_places: received_media::GifPlaces::default(),
             own_sizes: Arc::default(),
+            relayed: HashMap::new(),
             saves: crate::saving::Saves::default(),
             saved_pill_until_s: None,
             opening: std::collections::HashSet::new(),
@@ -432,6 +435,7 @@ mod header;
 mod hover_bar;
 mod jump;
 mod jump_view;
+mod link_cards;
 mod media_copy;
 mod media_menu;
 mod media_presses;
@@ -445,6 +449,7 @@ mod outgoing;
 mod own_pictures;
 pub(crate) mod pins;
 mod pins_panel;
+mod preview_wants;
 mod profile_card;
 mod profile_pane;
 mod profile_pictures;
@@ -484,6 +489,7 @@ mod videos;
 mod view;
 mod viewer;
 mod viewer_input;
+mod viewer_items;
 mod viewer_video;
 mod viewer_view;
 

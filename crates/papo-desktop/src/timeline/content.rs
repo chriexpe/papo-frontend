@@ -44,7 +44,7 @@ pub(crate) enum Press {
 impl Press {
     /// The press as a Rune link id. A link's id is its address, which always
     /// has a scheme; the others are marked apart from any.
-    fn id(&self) -> String {
+    pub(crate) fn id(&self) -> String {
         match self {
             Press::Url(url) => url.clone(),
             Press::Spoiler(index) => format!("#spoiler/{index}"),
@@ -60,7 +60,7 @@ impl Press {
         }
     }
 
-    fn parse(id: &str) -> Option<Press> {
+    pub(crate) fn parse(id: &str) -> Option<Press> {
         if id == "#edited" {
             return Some(Press::Edited);
         }

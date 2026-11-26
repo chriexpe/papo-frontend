@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use papo_sdk::{AccountId, Attachment, MediaSource};
+use papo_sdk::{AccountId, Attachment};
 use papo_sdk_ui::{AttachmentKind, MediaBounds, media_box};
 use rune::{NativeSurface, Tx};
 
@@ -203,11 +203,17 @@ impl Shell {
             sdk.run(move |client| async move {
                 let read = async move {
                     let fetched = match client.session(job.key.account) {
-                        Ok(session) => session
-                            .media()
-                            .fetch(MediaSource::Attachment(job.key.attachment), false)
-                            .await
-                            .ok(),
+                        Ok(session) => match job.key.whole_source() {
+                            Some(source) => session
+                                .media()
+                                .fetch(source, false)
+                                .await
+                                .inspect_err(|error| {
+                                    log::debug!("a video was not fetched: {error}");
+                                })
+                                .ok(),
+                            None => None,
+                        },
                         Err(_) => None,
                     };
                     match fetched {
@@ -224,6 +230,9 @@ impl Shell {
                 let outcome = tokio::time::timeout(super::media_reads::READ_DEADLINE, read)
                     .await
                     .unwrap_or(Err(crate::playback::PlaybackFailure::Broken));
+                if let Err(failure) = &outcome {
+                    log::debug!("a video was not read: {failure:?}");
+                }
                 updates.send(move |shell| {
                     shell.video_probed(job.key, outcome);
                     true
@@ -298,7 +307,7 @@ impl Shell {
 
     /// Opens a player for video `key`, from its original in the SDK's cache.
     fn open_video(&mut self, key: MediaKey, want: Desired, volume: f32) {
-        let Some(sdk) = self.sdk.clone() else {
+        let (Some(sdk), Some(source)) = (self.sdk.clone(), key.whole_source()) else {
             return;
         };
         self.videos.serial += 1;
@@ -310,7 +319,6 @@ impl Shell {
         self.videos.opening_box.insert(key, frame_px);
         let updates = sdk.updates();
         sdk.run(move |client| async move {
-            let source = MediaSource::Attachment(key.attachment);
             let bytes = match client.session(key.account) {
                 Ok(session) => {
                     let media = session.media();
@@ -572,10 +580,28 @@ impl Shell {
         changed
     }
 
-    /// Video `key`'s box in device pixels, at the Video size.
+    /// Video `key`'s box in device pixels: an attachment's at the Video size, a preview's clip
+    /// at the Embed size.
     fn video_box_px(&self, key: MediaKey) -> Option<[u32; 2]> {
         let open = self.tabs.shown()?;
         let look = self.look(false);
+        if key.of == crate::media_store::MediaOf::EmbedClip {
+            let embed_bounds = self.embed_bounds(&look);
+            let lead_gap_pt = crate::link_cards::rule_gap_pt(&look, self.message_layout().density);
+            let shown = self.conversations.settings().link_previews;
+            let boxed = open.items.iter().find_map(|item| match item.as_ref() {
+                papo_sdk_ui::TimelineItem::Message { message, .. } => {
+                    crate::link_cards::previews(message, shown)
+                        .iter()
+                        .find(|preview| preview.embed() == key.id)
+                        .and_then(|preview| {
+                            crate::link_cards::clip_box(preview, embed_bounds, lead_gap_pt)
+                        })
+                }
+                _ => None,
+            })?;
+            return Some(device_px(boxed, self.scale));
+        }
         let bounds = self.video_bounds(&look);
         let attachment = open.items.iter().find_map(|item| match item.as_ref() {
             papo_sdk_ui::TimelineItem::Message { message, .. } => message
@@ -583,7 +609,7 @@ impl Shell {
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
-                .find(|attachment| attachment_id(attachment) == Some(key.attachment))
+                .find(|attachment| attachment_id(attachment) == Some(key.id))
                 .cloned(),
             _ => None,
         })?;
@@ -624,7 +650,11 @@ fn box_px(
     let size = attachment_id(attachment)
         .and_then(|id| own_sizes.get(&id).copied())
         .unwrap_or_else(|| papo_sdk_ui::MediaSize::of(attachment));
-    let boxed = media_box(size, bounds);
+    device_px(media_box(size, bounds), scale)
+}
+
+/// `boxed` in device pixels at `scale`.
+pub(super) fn device_px(boxed: papo_sdk_ui::MediaBox, scale: f32) -> [u32; 2] {
     [boxed.width_pt, boxed.height_pt].map(|side| {
         #[expect(
             clippy::cast_possible_truncation,
@@ -674,10 +704,7 @@ pub(super) fn videos_wanted(attachments: &[Attachment], wanting: &Wanting<'_>) -
                 wanting.bounds
             };
             Some(VideoWant {
-                key: MediaKey {
-                    account: wanting.account,
-                    attachment: id,
-                },
+                key: MediaKey::attachment(wanting.account, id),
                 box_px: box_px(attachment, bounds, wanting.own_sizes, wanting.scale),
                 in_album: in_album || wanting.still,
                 hidden: is_hidden(wanting.account, attachment, wanting.revealed),
@@ -759,20 +786,36 @@ impl Shell {
         };
         let attachments = message.attachments.as_deref().unwrap_or_default();
         let (boxed, _) = split(attachments);
-        let Some((index, video)) = boxed.iter().find_map(|index| {
+        let attached = boxed.iter().find_map(|index| {
             let attachment = &attachments[*index];
             (AttachmentKind::of(attachment) == AttachmentKind::Video)
                 .then(|| attachment_id(attachment).map(|id| (*index, id)))
                 .flatten()
-        }) else {
-            return false;
+        });
+        // Else a link preview's clip, alone in its card.
+        let shown = self.conversations.settings().link_previews;
+        let clip = || {
+            let first = crate::link_cards::attachment_count(&message);
+            crate::link_cards::previews(&message, shown)
+                .iter()
+                .enumerate()
+                .find_map(|(place, preview)| {
+                    crate::link_cards::clip_of(key.account, preview)
+                        .map(|(video, _)| (first + place, video))
+                })
+        };
+        let (index, video, alone) = match attached {
+            Some((index, id)) => (
+                index,
+                MediaKey::attachment(key.account, id),
+                boxed.len() == 1,
+            ),
+            None => match clip() {
+                Some((index, video)) => (index, video, true),
+                None => return false,
+            },
         };
         let at = MediaAt { index, ..at };
-        let video = MediaKey {
-            account: key.account,
-            attachment: video,
-        };
-        let alone = boxed.len() == 1;
         let shown = self.videos.view().get(video).copied();
         let press = match typed {
             "f" | "F" => {

@@ -19,16 +19,13 @@ use papo_sdk::{AccountId, Attachment, Uuid};
 use papo_sdk_ui::{
     AlbumLayout, AttachmentKind, MediaBounds, MediaFit, MediaSize, Moderation, media_box,
 };
-use rune::{El, Key, NativeSurface, Tx, col, el, text};
+use rune::{El, NativeSurface, Tx, col, el};
 
 use super::audio::{AudioPress, audio_card};
 use super::video::{self, VideoCell, VideoPress};
-use super::{
-    Layer, album, failed, file_card_view::file_card_of, gif_badge, inner_edge, more_mark, painted,
-    single_box,
-};
+use super::{album, file_card_view::file_card_of, inner_edge, single_box};
 use crate::audio_store::{AudioKey, AudioView};
-use crate::design::{FOCUS_RING_PT, Look, MEDIA_BLOCK_GAP, TYPE_CAPTION_MEDIUM};
+use crate::design::{Look, MEDIA_BLOCK_GAP};
 pub(crate) use crate::media_store::attachment_id;
 use crate::media_store::{MediaKey, MediaView};
 use crate::saving::SaveView;
@@ -127,6 +124,10 @@ pub(crate) struct MediaStyle {
     pub(crate) viewing: Option<MediaAt>,
     /// The largest box a video takes (Video size, §14.9).
     pub(crate) video_bounds: MediaBounds,
+    /// The largest box a link card's picture or a provider's poster takes (Embed size, §15.7).
+    pub(crate) embed_bounds: MediaBounds,
+    /// Show link previews: messages draw their cards (§15.7).
+    pub(crate) previews: bool,
     /// Videos: what plays and where each is.
     pub(crate) videos: VideoView,
     /// Each read video's frames.
@@ -158,12 +159,8 @@ pub(crate) fn is_hidden(
     if !Moderation::of(attachment).hides() {
         return false;
     }
-    attachment_id(attachment).is_none_or(|attachment| {
-        !revealed.contains(&MediaKey {
-            account,
-            attachment,
-        })
-    })
+    attachment_id(attachment)
+        .is_none_or(|attachment| !revealed.contains(&MediaKey::attachment(account, attachment)))
 }
 
 /// The key of attachment `at`'s element (a picture or a file card), unique across surfaces:
@@ -191,6 +188,8 @@ impl MediaStyle {
             revealed: Arc::default(),
             viewing: None,
             video_bounds: bounds,
+            embed_bounds: bounds,
+            previews: true,
             videos: VideoView::default(),
             video_surfaces: Arc::default(),
             video_attention: None,
@@ -316,10 +315,7 @@ fn video_cell(
     if AttachmentKind::of(attachment) != AttachmentKind::Video {
         return None;
     }
-    let key = MediaKey {
-        account: at.account,
-        attachment: attachment_id(attachment)?,
-    };
+    let key = MediaKey::attachment(at.account, attachment_id(attachment)?);
     Some(VideoCell {
         at,
         key,
@@ -328,9 +324,7 @@ fn video_cell(
     })
 }
 
-/// One picture: what has loaded (or the failure with Retry), the GIF badge, "+N" when `more`
-/// follow, drawn on `base` (the box, or an album's cell), focusable, opening the viewer on a
-/// press and the media menu on a secondary press (Rune sends the menu key and ⇧F10 there too).
+/// One attachment's picture (`picture_cell`'s).
 fn picture<S: MediaHost>(
     base: El,
     at: MediaAt,
@@ -341,15 +335,7 @@ fn picture<S: MediaHost>(
     look: &Look,
 ) -> El {
     let gif = AttachmentKind::of(attachment) == AttachmentKind::Gif;
-    let key = attachment_id(attachment).map(|id| MediaKey {
-        account: at.account,
-        attachment: id,
-    });
-    let drawn = key.and_then(|key| style.view.get(key));
     let hidden = is_hidden(at.account, attachment, &style.revealed);
-    // A hidden GIF stays still.
-    let animate = !hidden && key.is_some_and(|key| style.view.animates(key));
-    let image = drawn.and_then(|drawn| drawn.picture(animate));
     let name = attachment.original_file_name.as_deref().unwrap_or_default();
     let label = if hidden {
         strings::spoiler_hidden().to_owned()
@@ -358,85 +344,13 @@ fn picture<S: MediaHost>(
     } else {
         strings::media_image(name)
     };
-    let layer = Layer {
+    let shown = Shown {
+        key: attachment_id(attachment).map(|id| MediaKey::attachment(at.account, id)),
+        gif,
         hidden,
-        in_viewer: style.viewing == Some(at),
-        matched: style.interactive.then(|| viewer_match_id(at)),
+        label,
     };
-    // A press on a hidden picture reveals it; the viewer and the menu still open it on purpose.
-    let press = if hidden {
-        MediaPress::Reveal
-    } else {
-        MediaPress::Open
-    };
-    let mut cell = painted(base, image, fit, layer, look)
-        .key(media_element_key(at))
-        .role("img")
-        .label(label);
-    if style.interactive {
-        cell = cell
-            .role("button")
-            .focusable(true)
-            .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
-            .on_press_tx(move |host: &mut S, tx| host.media_press(at, press, tx))
-            .on_secondary_press(move |host: &mut S, press, tx| {
-                host.media_press(at, MediaPress::Menu(Some([press.x, press.y])), tx);
-            })
-            .on_key(move |host: &mut S, event, tx| media_key(host, at, press, event, tx));
-    }
-    if style.interactive && drawn.is_some_and(|drawn| drawn.failed) {
-        let retry = text(strings::media_retry())
-            .font(look.font(TYPE_CAPTION_MEDIUM))
-            .color(look.palette.link)
-            .role("button")
-            .focusable(true)
-            .on_press_tx(move |host: &mut S, tx| host.media_press(at, MediaPress::Retry, tx));
-        cell = cell.child(failed(retry, look));
-    }
-    if gif {
-        cell = cell.child(gif_badge(look));
-        // Only the conversation's GIFs animate by their place in it.
-        let timeline = style.interactive && at.surface == MediaSurface::Timeline && !hidden;
-        if let Some(key) = key.filter(|_| timeline) {
-            let reduced = style.reduced_motion;
-            cell = cell
-                .on_layout_tx(move |host: &mut S, rect, tx| {
-                    host.media_moved(key, rect, reduced, tx);
-                })
-                .on_hover_change(move |host: &mut S, on, tx| {
-                    host.media_hovered(key, on, reduced, tx);
-                })
-                .on_focus_change(move |host: &mut S, on, tx| {
-                    host.media_hovered(key, on, reduced, tx);
-                });
-        }
-    }
-    if more > 0 {
-        cell = cell.child(more_mark(more, look));
-    }
-    cell
+    picture_cell::<S>(base, at, &shown, fit, more, style, look)
 }
 
-/// Keys on focused media: Enter or Space does what a press does (`press`: open the viewer, or
-/// reveal a hidden picture). (The menu key and ⇧F10 reach the secondary press.)
-pub(crate) fn media_key<S: MediaHost>(
-    host: &mut S,
-    at: MediaAt,
-    press: MediaPress,
-    event: &rune::KeyEvent,
-    tx: &mut Tx,
-) -> bool {
-    let mods = event.mods;
-    if mods.ctrl || mods.cmd || mods.alt || mods.logo || mods.shift {
-        return false;
-    }
-    let opens = match &event.key {
-        Key::Enter => true,
-        Key::Text(space) => space == " ",
-        _ => false,
-    };
-    if opens {
-        host.media_press(at, press, tx);
-    }
-    opens
-}
+pub(crate) use super::picture_cell::{Shown, media_key, picture_cell};

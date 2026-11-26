@@ -2,19 +2,19 @@
 //! (`docs/design.md` §8): When writing (Enter to send), In the conversation
 //! (Show times, Show avatars, Open at the newest message, Unread
 //! hourglass, Description when opening a channel, Message highlights), and
-//! the mention and reply highlights' hue swatches, and Media (Image size,
-//! Custom's Max width and Max height, Animate GIFs and stickers, §14.9).
-//! Mention when replying waits for B-006; Video size and Autoplay videos
-//! come with playback (D7c).
+//! the mention and reply highlights' hue swatches, Media (Image size, Video
+//! size and Embed size with Custom's Max width and Max height, Animate GIFs
+//! and stickers, Autoplay videos, Keep playing when hidden; §14.9, §15.7),
+//! and Show link previews. Mention when replying waits for B-006.
 //!
 //! Owns these pages' rows; the settings are `conversation_settings`'.
 
-use papo_sdk_ui::{CUSTOM_HEIGHT_PT, CUSTOM_STEP_PT, CUSTOM_WIDTH_PT, MediaSizeSetting};
+use papo_sdk_ui::{CUSTOM_STEP_PT, CUSTOM_WIDTH_PT};
 
 use super::{Context, Group, Kind, Row, Slider, Track};
 use crate::design::{Density, MENTION_HIGHLIGHT_HUE_DEGREES};
 use crate::keep_playing::KeepPlaying;
-use crate::settings::{PageId, RowId, SizedMedia};
+use crate::settings::{PageId, RowId, SizeChoice, SizeSetting};
 use crate::strings;
 
 /// The hues a highlight's swatches offer, in OKLCH degrees: amber (the
@@ -100,21 +100,35 @@ pub(super) fn conversations(cx: &Context<'_>) -> Vec<Group> {
             title: Some(strings::settings_media().to_owned()),
             rows: media(cx),
         },
+        Group {
+            title: None,
+            rows: vec![switch(
+                RowId::LinkPreviews,
+                strings::settings_previews(),
+                Some(strings::settings_previews_sub()),
+                settings.link_previews,
+            )],
+        },
     ]
 }
 
-/// The Media group (§14.9): Image size and Video size, each with its sliders under Custom,
-/// Animate GIFs and stickers, Autoplay videos, Keep playing when hidden.
+/// The Media group (§14.9, §15.7): Image size, Video size and Embed size, each with its sliders
+/// under Custom, Animate GIFs and stickers, Autoplay videos, Keep playing when hidden.
 fn media(cx: &Context<'_>) -> Vec<Row> {
     let mut rows = size_rows(
-        SizedMedia::Images,
         strings::settings_image_size(),
-        cx.conversations.image_size,
+        None,
+        SizeSetting::Images(cx.conversations.image_size),
     );
     rows.extend(size_rows(
-        SizedMedia::Videos,
         strings::settings_video_size(),
-        cx.conversations.video_size,
+        None,
+        SizeSetting::Videos(cx.conversations.video_size),
+    ));
+    rows.extend(size_rows(
+        strings::settings_embed_size(),
+        Some(strings::settings_embed_size_sub()),
+        SizeSetting::Embeds(cx.conversations.embed_size),
     ));
     rows.push(switch(
         RowId::AnimateGifs,
@@ -148,14 +162,15 @@ pub(crate) fn keep_playing_name(choice: KeepPlaying) -> &'static str {
 }
 
 /// A size row (`media`'s), and under Custom its Max width and Max height sliders.
-fn size_rows(media: SizedMedia, title: &str, size: MediaSizeSetting) -> Vec<Row> {
+fn size_rows(title: &str, sub: Option<&str>, size: SizeSetting) -> Vec<Row> {
+    let media = size.media();
     let mut rows = vec![Row {
         id: media.row(),
         title: title.to_owned(),
-        sub: None,
-        kind: Kind::Choice(size_name(size).to_owned()),
+        sub: sub.map(str::to_owned),
+        kind: Kind::Choice(size_name(size.choice()).to_owned()),
     }];
-    if let MediaSizeSetting::Custom { .. } = size {
+    if size.choice() == SizeChoice::Custom {
         let (width, height) = size.max_size_pt();
         let (width_row, height_row) = media.slider_rows();
         let slider = |id, title: &str, value: u16, range: &std::ops::RangeInclusive<u16>| Row {
@@ -180,19 +195,19 @@ fn size_rows(media: SizedMedia, title: &str, size: MediaSizeSetting) -> Vec<Row>
             height_row,
             strings::settings_max_height(),
             height,
-            &CUSTOM_HEIGHT_PT,
+            &media.custom_heights(),
         ));
     }
     rows
 }
 
-/// A size setting's name: Small, Medium, Large or Custom.
-pub(crate) fn size_name(size: MediaSizeSetting) -> &'static str {
-    match size {
-        MediaSizeSetting::Small => strings::settings_size_small(),
-        MediaSizeSetting::Medium => strings::settings_size_medium(),
-        MediaSizeSetting::Large => strings::settings_size_large(),
-        MediaSizeSetting::Custom { .. } => strings::settings_size_custom(),
+/// A size choice's name: Small, Medium, Large or Custom.
+pub(crate) fn size_name(choice: SizeChoice) -> &'static str {
+    match choice {
+        SizeChoice::Small => strings::settings_size_small(),
+        SizeChoice::Medium => strings::settings_size_medium(),
+        SizeChoice::Large => strings::settings_size_large(),
+        SizeChoice::Custom => strings::settings_size_custom(),
     }
 }
 

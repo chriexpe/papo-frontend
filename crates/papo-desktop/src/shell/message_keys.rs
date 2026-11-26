@@ -64,6 +64,7 @@ impl Shell {
             }
             Key::Text(typed) if self.message_video_key(key, id, typed, tx) => true,
             Key::Text(typed) if self.message_audio_key(key, id, typed, tx) => true,
+            Key::Text(typed) if self.message_card_key(key, id, typed, tx) => true,
             Key::Text(digit) if matches!(digit.as_str(), "1" | "2" | "3") => {
                 let index = usize::from(digit.as_bytes()[0] - b'1');
                 self.quick_react(key, id, index)

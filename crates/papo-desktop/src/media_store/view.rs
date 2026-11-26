@@ -8,11 +8,71 @@ use std::sync::Arc;
 use papo_sdk::{AccountId, Uuid};
 use rune::Image;
 
-/// One attachment as one account sees it.
+/// One piece of received media as one account sees it: an attachment, or an embed's picture or
+/// clip that the server relays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct MediaKey {
     pub(crate) account: AccountId,
-    pub(crate) attachment: Uuid,
+    /// The attachment's UUID, or the embed's.
+    pub(crate) id: Uuid,
+    pub(crate) of: MediaOf,
+}
+
+/// What a [`MediaKey`] names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MediaOf {
+    /// A message's attachment: its server thumbnail, then its original.
+    Attachment,
+    /// An embed's relayed picture (a link card's, a video's poster, a GIF link's) at a
+    /// revision: a refetch that may change the picture keeps the embed's UUID, so the revision
+    /// (hashed; its SDK source carries it whole) makes the new picture another key.
+    EmbedPicture { revision: u64 },
+    /// An embed's relayed clip, a post's own video.
+    EmbedClip,
+}
+
+impl MediaKey {
+    /// Attachment `id` as `account` sees it.
+    pub(crate) fn attachment(account: AccountId, id: Uuid) -> MediaKey {
+        MediaKey {
+            account,
+            id,
+            of: MediaOf::Attachment,
+        }
+    }
+
+    /// Embed `embed`'s relayed picture at `revision` as `account` sees it.
+    pub(crate) fn embed_picture(account: AccountId, embed: Uuid, revision: &str) -> MediaKey {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        revision.hash(&mut hasher);
+        MediaKey {
+            account,
+            id: embed,
+            of: MediaOf::EmbedPicture {
+                revision: hasher.finish(),
+            },
+        }
+    }
+
+    /// Embed `embed`'s relayed clip as `account` sees it.
+    pub(crate) fn embed_clip(account: AccountId, embed: Uuid) -> MediaKey {
+        MediaKey {
+            account,
+            id: embed,
+            of: MediaOf::EmbedClip,
+        }
+    }
+
+    /// Where the whole of a video or audio, or an attachment's original, comes from; none for
+    /// an embed picture, whose source carries a revision the key does not.
+    pub(crate) fn whole_source(self) -> Option<papo_sdk::MediaSource> {
+        match self.of {
+            MediaOf::Attachment => Some(papo_sdk::MediaSource::Attachment(self.id)),
+            MediaOf::EmbedClip => Some(papo_sdk::MediaSource::EmbedVideo(self.id)),
+            MediaOf::EmbedPicture { .. } => None,
+        }
+    }
 }
 
 /// An attachment's ID, when it parses.

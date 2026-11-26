@@ -30,10 +30,7 @@ impl AudioKey {
     /// was sent, else the unsent file.
     pub(crate) fn of_operation(account: AccountId, operation: &Operation, index: usize) -> Self {
         match sent_attachment(operation, index) {
-            Some(attachment) => AudioKey::Received(MediaKey {
-                account,
-                attachment,
-            }),
+            Some(attachment) => AudioKey::Received(MediaKey::attachment(account, attachment)),
             None => AudioKey::Unsent {
                 account,
                 local: operation.id,

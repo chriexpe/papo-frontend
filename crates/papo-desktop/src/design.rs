@@ -124,6 +124,7 @@ pub(crate) const HEADER_PILL_HEIGHT: Space = Space(36.0);
 mod attachments;
 mod audio;
 mod background;
+mod cards;
 mod code_ink;
 mod colour;
 mod content;
@@ -148,11 +149,15 @@ pub(crate) use background::{
     Accent, Background, BackgroundColour, CHROME_GRADIENT_DEGREES, ChromeFill,
     MAX_BACKGROUND_COLOURS,
 };
+pub(crate) use cards::*;
 pub(crate) use code_ink::CodeInk;
-pub(crate) use colour::{MENTION_HIGHLIGHT_HUE_DEGREES, Palette, REPLY_HIGHLIGHT_HUE_DEGREES};
+pub(crate) use colour::{
+    MENTION_HIGHLIGHT_HUE_DEGREES, Palette, REPLY_HIGHLIGHT_HUE_DEGREES, contrast,
+};
 pub(crate) use content::*;
 pub(crate) use density::*;
 pub(crate) use editor::*;
+pub(crate) use floors::card_rule;
 pub(crate) use look::{Glass, Look, LookSpec, Scale};
 pub(crate) use reading::*;
 pub(crate) use replies::*;

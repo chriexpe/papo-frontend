@@ -10,7 +10,7 @@ use rune::Tx;
 
 use super::Shell;
 use crate::conversation_settings::ConversationSettings;
-use crate::settings::{Change, RowId, SizedMedia, Target};
+use crate::settings::{Change, RowId, SizeChoice, SizeSetting, SizedMedia, Target};
 
 impl Shell {
     /// Shows `settings` and saves them, the message being read kept in its
@@ -87,39 +87,38 @@ pub(super) fn applied(
         Change::Switch(RowId::ChannelDescription, on) => next.channel_description = on,
         Change::Hue(RowId::MentionHue, hue) => next.mention_hue_degrees = hue.rem_euclid(360.0),
         Change::Hue(RowId::ReplyHue, hue) => next.reply_hue_degrees = hue.rem_euclid(360.0),
-        Change::MediaSize(SizedMedia::Images, size) => next.image_size = size,
-        Change::MediaSize(SizedMedia::Videos, size) => next.video_size = size,
+        Change::MediaSize(SizeSetting::Images(size)) => next.image_size = size,
+        Change::MediaSize(SizeSetting::Videos(size)) => next.video_size = size,
+        Change::MediaSize(SizeSetting::Embeds(size)) => next.embed_size = size,
         Change::Switch(RowId::AnimateGifs, on) => next.animate_gifs = Some(on),
         Change::Switch(RowId::AutoplayVideos, on) => next.autoplay_videos = Some(on),
+        Change::Switch(RowId::LinkPreviews, on) => next.link_previews = on,
         Change::KeepPlaying(choice) => next.keep_playing = choice,
-        Change::Slider {
-            row:
-                row @ (RowId::MediaMaxWidth
-                | RowId::MediaMaxHeight
-                | RowId::VideoMaxWidth
-                | RowId::VideoMaxHeight),
-            value,
-            ..
-        } => {
-            let videos = matches!(row, RowId::VideoMaxWidth | RowId::VideoMaxHeight);
-            let size = if videos {
-                &mut next.video_size
-            } else {
-                &mut next.image_size
+        Change::Slider { row, value, .. } => {
+            let media = SizedMedia::of_slider(row)?;
+            let current = match media {
+                SizedMedia::Images => SizeSetting::Images(next.image_size),
+                SizedMedia::Videos => SizeSetting::Videos(next.video_size),
+                SizedMedia::Embeds => SizeSetting::Embeds(next.embed_size),
             };
-            let (width, height) = size.max_size_pt();
+            let (width, height) = current.max_size_pt();
             // A slider's value is within its range, so it fits a u16.
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
-                reason = "a slider value between 200 and 720"
+                reason = "a slider value between 160 and 720"
             )]
             let value = value.round().max(0.0) as u16;
-            *size = if matches!(row, RowId::MediaMaxWidth | RowId::VideoMaxWidth) {
-                papo_sdk_ui::MediaSizeSetting::custom(value, height)
+            let (width, height) = if row == media.slider_rows().0 {
+                (value, height)
             } else {
-                papo_sdk_ui::MediaSizeSetting::custom(width, value)
+                (width, value)
             };
+            match current.with(SizeChoice::Custom, width, height) {
+                SizeSetting::Images(size) => next.image_size = size,
+                SizeSetting::Videos(size) => next.video_size = size,
+                SizeSetting::Embeds(size) => next.embed_size = size,
+            }
         }
         _ => return None,
     }

@@ -116,6 +116,13 @@ fn draw<S: TimelineHost>(
     };
     let attachments = message.attachments.as_deref().unwrap_or_default();
     let media = received::attachments::<S>(at, attachments, &style.media, &look);
+    let previews = crate::link_cards::view::previews::<S>(
+        at,
+        message,
+        &style.media,
+        crate::link_cards::rule_gap_pt(&look, style.layout.density),
+        &look,
+    );
     let draw = Draw {
         look: &look,
         key: open.key,
@@ -159,6 +166,10 @@ fn draw<S: TimelineHost>(
                                 .color(look.palette.text_muted),
                         ),
                 )
-                .child(with_media(content::body::<S>(&doc, &draw), media, &look)),
+                .child(with_media(
+                    content::body::<S>(&doc, &draw),
+                    [previews, media],
+                    &look,
+                )),
         )
 }

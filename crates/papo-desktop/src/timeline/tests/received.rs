@@ -288,10 +288,8 @@ fn a_sensitive_picture_is_a_spoiler_until_revealed_in_the_same_box() {
     );
 
     rt.update(|host, _tx| {
-        let revealed = crate::media_store::MediaKey {
-            account: host.open.key.account,
-            attachment: attachment_id(1),
-        };
+        let revealed =
+            crate::media_store::MediaKey::attachment(host.open.key.account, attachment_id(1));
         host.media.revealed = Arc::new(std::iter::once(revealed).collect());
     });
     until_idle(&mut rt);

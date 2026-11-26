@@ -699,5 +699,15 @@
   "shortcuts.video_full_screen": "O vídeo em tela cheia",
   "shortcuts.play_pause": "Reproduzir / pausar",
   "shortcuts.seek_10": "Voltar / avançar 10 s",
-  "shortcuts.sound": "Ativar / desativar som"
+  "shortcuts.sound": "Ativar / desativar som",
+  "embed.card_label": "Pré-visualização de link, {{provider}}: {{title}}",
+  "embed.card_label_untitled": "Pré-visualização de link, {{provider}}",
+  "embed.poster_label": "Vídeo do {{provider}}, {{title}}",
+  "embed.poster_label_untitled": "Vídeo do {{provider}}",
+  "embed.provider_author": "{{provider}} · {{author}}",
+  "embed.open_browser": "Abrir no navegador",
+  "settings.embed_size": "Tamanho dos embeds",
+  "settings.embed_size.sub": "Imagens dos cartões e players de sites",
+  "settings.previews": "Mostrar pré-visualizações de links",
+  "settings.previews.sub": "Cartões para os links das mensagens. Desligado, o link fica como texto."
 }

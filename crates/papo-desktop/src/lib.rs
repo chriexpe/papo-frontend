@@ -35,6 +35,7 @@ mod keep_playing;
 mod keyring;
 mod layout_prefs;
 mod lifecycle;
+mod link_cards;
 mod links;
 mod live_watch;
 mod media_store;

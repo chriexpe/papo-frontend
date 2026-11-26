@@ -15,10 +15,10 @@ fn account() -> AccountId {
 }
 
 fn key(n: u128) -> AudioKey {
-    AudioKey::Received(crate::media_store::MediaKey {
-        account: account(),
-        attachment: Uuid::from_u128(0x200 + n),
-    })
+    AudioKey::Received(crate::media_store::MediaKey::attachment(
+        account(),
+        Uuid::from_u128(0x200 + n),
+    ))
 }
 
 /// Attachment `index` of unsent message `local`.

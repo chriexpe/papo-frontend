@@ -228,10 +228,10 @@ fn with_album_pictures() -> Runtime<Shell> {
         let images = rune::ImageCache::new(Arc::new(|| {}));
         let account = shell.tabs.shown().unwrap().key.account;
         for n in [1u128, 2] {
-            let key = crate::media_store::MediaKey {
+            let key = crate::media_store::MediaKey::attachment(
                 account,
-                attachment: papo_sdk::Uuid::from_u128(0x9000 + n),
-            };
+                papo_sdk::Uuid::from_u128(0x9000 + n),
+            );
             let want = crate::media_store::Want {
                 key,
                 thumbnail_px: Some((1024, 768)),

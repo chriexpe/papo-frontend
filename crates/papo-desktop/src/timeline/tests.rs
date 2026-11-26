@@ -274,6 +274,15 @@ impl TimelineHost for Host {
         self.controls.push("link-menu");
     }
 
+    fn card_pressed(
+        &mut self,
+        _at: crate::message_media::received::MediaAt,
+        _press: crate::link_cards::CardPress,
+        _tx: &mut Tx,
+    ) {
+        self.controls.push("card");
+    }
+
     fn message_menu_requested(
         &mut self,
         _key: TimelineKey,
@@ -447,6 +456,7 @@ mod content;
 mod controls;
 mod echoes;
 mod hover_bar;
+mod previews;
 mod reactions;
 mod reading;
 mod received;
