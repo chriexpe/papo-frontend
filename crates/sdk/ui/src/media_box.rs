@@ -104,7 +104,7 @@ impl MediaSize {
     }
 }
 
-/// The widths a Custom size may take, in points.
+/// The widths a Custom size may take, in points (Embed size's too).
 pub const CUSTOM_WIDTH_PT: RangeInclusive<u16> = 240..=720;
 
 /// The heights a Custom size may take, in points.
@@ -113,8 +113,8 @@ pub const CUSTOM_HEIGHT_PT: RangeInclusive<u16> = 200..=640;
 /// The step of a Custom size's sliders, in points.
 pub const CUSTOM_STEP_PT: u16 = 8;
 
-/// A media size setting (Image size; Video size too once videos play): the largest box media
-/// may take before the host's own limits.
+/// A media size setting (Image size, Video size): the largest box media may take before the
+/// host's own limits. Embed size is [`EmbedSizeSetting`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum MediaSizeSetting {
     /// 320 × 280.
@@ -162,6 +162,59 @@ impl MediaSizeSetting {
     }
 }
 
+/// The heights Embed size's Custom may take, in points.
+pub const EMBED_CUSTOM_HEIGHT_PT: RangeInclusive<u16> = 160..=640;
+
+/// Embed size (`docs/design.md` §15.7): the largest box of a link card's picture and of a
+/// provider's player, apart from Image size and Video size.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum EmbedSizeSetting {
+    /// 320 × 240.
+    Small,
+    /// 448 × 336, the default.
+    #[default]
+    Medium,
+    /// 600 × 450.
+    Large,
+    /// The sizes chosen on its sliders; build it with [`EmbedSizeSetting::custom`].
+    Custom {
+        /// Max width in points, within [`CUSTOM_WIDTH_PT`] on a [`CUSTOM_STEP_PT`] step.
+        max_width_pt: u16,
+        /// Max height in points, within [`EMBED_CUSTOM_HEIGHT_PT`] on a [`CUSTOM_STEP_PT`]
+        /// step.
+        max_height_pt: u16,
+    },
+}
+
+impl EmbedSizeSetting {
+    /// A Custom size, each side brought into its range and onto the sliders' step.
+    #[must_use]
+    pub fn custom(max_width_pt: u16, max_height_pt: u16) -> EmbedSizeSetting {
+        EmbedSizeSetting::Custom {
+            max_width_pt: on_step(max_width_pt, &CUSTOM_WIDTH_PT),
+            max_height_pt: on_step(max_height_pt, &EMBED_CUSTOM_HEIGHT_PT),
+        }
+    }
+
+    /// Its max width and max height, in points. Custom's sides are brought into their ranges,
+    /// whatever was stored.
+    #[must_use]
+    pub fn max_size_pt(self) -> (u16, u16) {
+        match self {
+            EmbedSizeSetting::Small => (320, 240),
+            EmbedSizeSetting::Medium => (448, 336),
+            EmbedSizeSetting::Large => (600, 450),
+            EmbedSizeSetting::Custom {
+                max_width_pt,
+                max_height_pt,
+            } => (
+                on_step(max_width_pt, &CUSTOM_WIDTH_PT),
+                on_step(max_height_pt, &EMBED_CUSTOM_HEIGHT_PT),
+            ),
+        }
+    }
+}
+
 /// `value` brought into `range` and onto the step counted from its start.
 fn on_step(value: u16, range: &RangeInclusive<u16>) -> u16 {
     let (low, high) = (*range.start(), *range.end());
@@ -186,7 +239,17 @@ impl MediaBounds {
     /// number limits nothing; a side that comes out below one point is one point.
     #[must_use]
     pub fn new(setting: MediaSizeSetting, column_width_pt: f32, height_cap_pt: f32) -> MediaBounds {
-        let (width_pt, height_pt) = setting.max_size_pt();
+        MediaBounds::of_max_size(setting.max_size_pt(), column_width_pt, height_cap_pt)
+    }
+
+    /// The bounds of a setting's `(max width, max height)` in points (Embed size's
+    /// [`EmbedSizeSetting::max_size_pt`], say), in a host as [`MediaBounds::new`] takes it.
+    #[must_use]
+    pub fn of_max_size(
+        (width_pt, height_pt): (u16, u16),
+        column_width_pt: f32,
+        height_cap_pt: f32,
+    ) -> MediaBounds {
         MediaBounds {
             max_width_pt: at_least_one(f32::from(width_pt).min(column_width_pt)),
             max_height_pt: at_least_one(f32::from(height_pt).min(height_cap_pt)),
@@ -197,7 +260,7 @@ impl MediaBounds {
 impl MediaBounds {
     /// These bounds with each side a finite number of at least one point, however they were
     /// built.
-    pub(super) fn sane(self) -> MediaBounds {
+    pub(crate) fn sane(self) -> MediaBounds {
         MediaBounds {
             max_width_pt: at_least_one(self.max_width_pt),
             max_height_pt: at_least_one(self.max_height_pt),
@@ -278,7 +341,7 @@ fn fitted(width: u32, height: u32, bounds: MediaBounds, may_enlarge: bool) -> Me
 }
 
 /// The largest box of `aspect` (width over height) within `bounds`, in whole points.
-pub(super) fn largest_of_shape(aspect: f32, bounds: MediaBounds) -> (f32, f32) {
+pub(crate) fn largest_of_shape(aspect: f32, bounds: MediaBounds) -> (f32, f32) {
     let mut width = bounds.max_width_pt;
     let mut height = width / aspect;
     if height > bounds.max_height_pt {

@@ -10,11 +10,17 @@ pub use waveform::{
     AUDIO_FILE_BARS, DEFAULT_CACHE_ENTRIES, MAX_AHEAD_DURATION_MS, WINDOWS, Waveform,
     WaveformBuilder, WaveformCache, WaveformKey,
 };
+mod link_preview;
+pub use link_preview::{
+    CardField, CardPicture, CardVideo, LinkCard, LinkPreview, MAX_FIELDS, MAX_PREVIEWS,
+    PLAYER_ASPECT, PageLink, PreviewMedia, UNSIZED_PICTURE_ASPECT, card_box, link_previews,
+    preview,
+};
 mod media_box;
 pub use media_box::{
     ALBUM_CELLS, ALBUM_GAP_PT, AlbumCell, AlbumLayout, CUSTOM_HEIGHT_PT, CUSTOM_STEP_PT,
-    CUSTOM_WIDTH_PT, DIALOG_HEIGHT_SHARE, HOST_HEIGHT_SHARE, MediaBounds, MediaBox, MediaFit,
-    MediaSize, MediaSizeSetting, media_box,
+    CUSTOM_WIDTH_PT, DIALOG_HEIGHT_SHARE, EMBED_CUSTOM_HEIGHT_PT, EmbedSizeSetting,
+    HOST_HEIGHT_SHARE, MediaBounds, MediaBox, MediaFit, MediaSize, MediaSizeSetting, media_box,
 };
 mod message_actions;
 pub mod message_content;
