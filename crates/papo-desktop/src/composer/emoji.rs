@@ -3,12 +3,13 @@
 //! (`El::pill_inline_image`). The label is the text sent and saved, so the wire form needs no
 //! encoding, and a restored draft's `:name:` becomes a pill again here. A `:name:` typed whole
 //! becomes one as its closing colon is typed; code never does, as the message would not draw
-//! one there.
+//! one there. Also the `:` query at the caret and its pick (`docs/design.md` §16.2).
 
 use std::ops::Range;
 
 use papo_sdk::Uuid;
 use papo_sdk_ui::message_content::{CustomEmojis, PreviewSpan, PreviewSpanKind};
+use papo_sdk_ui::{EmojiQuery, EmojiSuggestion, emoji_query};
 use rune::TextEdit;
 
 /// What an emoji pill's id starts with, apart from a mention's (a bare UUID).
@@ -60,6 +61,36 @@ pub(crate) fn insert(edit: &mut TextEdit, id: Uuid, name: &str, code: &[PreviewS
         if !in_code {
             edit.replace_with_pill(at..at + label.len(), pill_id(id), &label);
         }
+    });
+}
+
+/// The `:` query the field's caret ends, if any (the SDK's `emoji_query`): a collapsed caret,
+/// outside every pill and outside code, where a `:name:` stays text.
+pub(crate) fn query(edit: &TextEdit, code: &[PreviewSpan]) -> Option<EmojiQuery> {
+    let (start, caret) = edit.range();
+    if start != caret {
+        return None;
+    }
+    let pills: Vec<Range<usize>> = edit.pills().map(|(range, _)| range).collect();
+    let query = emoji_query(&edit.text, caret, &pills)?;
+    (!in_code(&query.byte_range, code)).then_some(query)
+}
+
+/// A suggestion picked: the `:query` becomes the emoji (a custom one as its pill, a Unicode one
+/// as itself) and a space after it, one undo step, as a mention's pick is.
+pub(crate) fn pick(edit: &mut TextEdit, query: &EmojiQuery, suggestion: &EmojiSuggestion) {
+    edit.undo_group(|edit| {
+        match suggestion {
+            EmojiSuggestion::Custom(emoji) => {
+                let label = format!(":{}:", emoji.name);
+                edit.replace_with_pill(query.byte_range.clone(), pill_id(emoji.id), &label);
+            }
+            EmojiSuggestion::Unicode(emoji) => {
+                edit.set_selection(query.byte_range.start, query.byte_range.end);
+                edit.insert(emoji.glyph);
+            }
+        }
+        edit.insert(" ");
     });
 }
 

@@ -35,9 +35,9 @@ impl Shell {
             .unwrap_or_default();
         let effects = self.composer.edited(tx.clock(), &emojis);
         self.run_composer(effects, Some(tx));
-        // A name just bound is asked for at once.
-        self.want_emoji();
         self.refresh_picker();
+        // A name just bound, and the suggestions' emoji, are asked for at once.
+        self.want_emoji();
     }
 
     /// Send, or the Enter that sends: the text leaves the field and is

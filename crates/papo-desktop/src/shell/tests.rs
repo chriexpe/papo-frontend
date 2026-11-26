@@ -22,6 +22,7 @@ mod direct_accounts;
 mod direct_lists;
 mod editing;
 mod emoji_picker;
+mod emoji_suggestions;
 mod links;
 mod media;
 mod message_menu;

@@ -78,10 +78,14 @@ fn body(shell: &Shell, look: &Look, cx: &mut Cx<Shell>) -> El {
                 if let Some(server) = connected {
                     app = app.child(connected_pill(server, &look));
                 }
-                if let Some(picker) = shell.composer.picker() {
+                if let Some(((key, _), picker)) =
+                    shell.composer.shown().zip(shell.composer.picker())
+                {
+                    let rows = shell.suggestion_rows(key.account);
                     app = app.child(composer::picker::view(
                         picker,
                         composer::COMPOSER_PILL_KEY,
+                        &rows,
                         &look,
                         cx,
                     ));

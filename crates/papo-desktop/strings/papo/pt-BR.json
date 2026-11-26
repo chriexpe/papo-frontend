@@ -742,6 +742,7 @@
   "embed.track_label": "Faixa do {{provider}}, {{title}}",
   "embed.track_label_untitled": "Faixa do {{provider}}",
   "picker.emoji": "Emoji",
+  "picker.emoji_suggestions": "Sugestões de emoji",
   "picker.search_emoji": "Buscar emoji",
   "picker.frequent": "Usados com frequência",
   "picker.shift_hint": "Shift+clique para adicionar mais de um",

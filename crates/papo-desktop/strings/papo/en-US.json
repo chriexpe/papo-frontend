@@ -742,6 +742,7 @@
   "embed.track_label": "Track from {{provider}}, {{title}}",
   "embed.track_label_untitled": "Track from {{provider}}",
   "picker.emoji": "Emoji",
+  "picker.emoji_suggestions": "Emoji suggestions",
   "picker.search_emoji": "Search emoji",
   "picker.frequent": "Frequently used",
   "picker.shift_hint": "Shift-click to add more than one",
