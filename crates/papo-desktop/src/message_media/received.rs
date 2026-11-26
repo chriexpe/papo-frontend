@@ -67,7 +67,7 @@ pub(crate) enum MediaSurface {
 }
 
 /// Which attachment of which message, in the view that draws it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct MediaAt {
     pub(crate) surface: MediaSurface,
     pub(crate) account: AccountId,
@@ -81,9 +81,17 @@ pub(crate) struct MediaAt {
 pub(crate) trait MediaHost: Sized + 'static {
     /// A press on attachment `at`.
     fn media_press(&mut self, at: MediaAt, press: MediaPress, tx: &mut Tx);
-    /// A GIF's box is at `rect` (window points), for whether it shows (§5); `reduced_motion`
-    /// is the system's, which Animate GIFs follows unless set.
-    fn media_moved(&mut self, key: MediaKey, rect: [f32; 4], reduced_motion: bool, tx: &mut Tx);
+    /// GIF `key`'s box at `at` is at `rect` (window points), for whether it shows (§5);
+    /// `reduced_motion` is the system's, which Animate GIFs follows unless set. Two boxes can
+    /// show one GIF (the same GIF sent twice shares the server's embed).
+    fn media_moved(
+        &mut self,
+        at: MediaAt,
+        key: MediaKey,
+        rect: [f32; 4],
+        reduced_motion: bool,
+        tx: &mut Tx,
+    );
     /// The pointer or the keyboard came to (or left) a GIF: with Animate GIFs off, it plays
     /// while there.
     fn media_hovered(&mut self, key: MediaKey, on: bool, reduced_motion: bool, tx: &mut Tx);
