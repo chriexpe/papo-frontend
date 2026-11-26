@@ -90,9 +90,9 @@ pub(crate) struct Composer {
     typed: Option<(f64, Keystroke)>,
     /// The @ picker, while an `@` is being typed in the shown field.
     picker: Option<Picker>,
-    /// The `@` whose picker Escape closed, by its offset in the shown
-    /// field: it stays closed until another `@` is typed.
-    dismissed_at: Option<(TimelineKey, usize)>,
+    /// The `@` or `:` whose picker Escape closed, by its offset in the shown
+    /// field and its kind: it stays closed until another is typed.
+    dismissed_at: Option<(TimelineKey, (usize, bool))>,
     /// The last tray tile identity handed out.
     tile_ids: u64,
 }

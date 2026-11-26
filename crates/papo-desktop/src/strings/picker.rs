@@ -10,6 +10,11 @@ pub(crate) fn picker_emoji() -> &'static str {
     text!("picker.emoji")
 }
 
+/// The `:` suggestions over the field, as a list.
+pub(crate) fn emoji_suggestions() -> &'static str {
+    text!("picker.emoji_suggestions")
+}
+
 /// The Emoji tab's search field.
 pub(crate) fn picker_search_emoji() -> &'static str {
     text!("picker.search_emoji")

@@ -57,6 +57,8 @@ impl Shell {
             self.composer.bind_emojis(key, &emojis, false);
         }
         self.emoji_picker_catalog_changed(account);
+        // `:` suggestions typed before the catalog arrived take its emoji now.
+        self.refresh_picker();
         self.want_emoji();
     }
 
@@ -152,6 +154,10 @@ impl Shell {
             for item in results.items().iter().skip(range.start).take(range.len()) {
                 ids.extend(custom_emoji_ids(&item.content));
             }
+        }
+        // The `:` suggestions' rows.
+        if let Some(picker) = self.composer.picker() {
+            ids.extend(picker.custom_emoji());
         }
         // The picker's cells on screen.
         if let Some(picker) = self

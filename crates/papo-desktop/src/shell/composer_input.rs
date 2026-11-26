@@ -1,6 +1,6 @@
 //! The field's keys before it edits (`docs/design.md` §3, "Markdown in
-//! place" and "Composer surfaces"), and the @ picker kept in step with the
-//! field's text.
+//! place" and "Composer surfaces"), and the field's picker (`@` people, `:`
+//! emoji, §16.2) kept in step with the field's text.
 //!
 //! The field asks here first. In order: the open picker's keys; Alt+↑/↓
 //! to another channel (the field's editor would take them otherwise), not
@@ -13,9 +13,12 @@ use rune::{Key, KeyEvent, Tx};
 use super::Shell;
 use crate::composer::COMPOSER_KEY;
 use crate::composer::Keystroke;
-use crate::composer::picker::Picker;
-use papo_sdk::MentionTarget;
-use papo_sdk_ui::mention_suggestions;
+use crate::composer::picker::{Choice, EmojiRows, FieldQuery, Picker, Rows};
+use papo_sdk::AccountId;
+use papo_sdk_ui::{emoji_search, mention_suggestions};
+
+/// The most emoji a `:` suggests: the list scrolls past six.
+const EMOJI_SUGGESTIONS: usize = 50;
 
 impl Shell {
     /// The keys of replying and editing (`docs/design.md` §12), after the
@@ -119,9 +122,20 @@ impl Shell {
         false
     }
 
-    /// The row of `target` was clicked.
-    pub(crate) fn mention_picked(&mut self, target: MentionTarget, tx: &mut Tx) {
-        if self.composer.pick(target) {
+    /// What the field picker's emoji rows read: the images and the server of `account`, the
+    /// one the shown field writes as, and the language names are spoken in.
+    pub(super) fn suggestion_rows(&self, account: AccountId) -> EmojiRows<'_> {
+        EmojiRows {
+            images: self.emoji_images.looks(),
+            account,
+            server: self.server_name(account),
+            language: crate::strings::emoji_language(),
+        }
+    }
+
+    /// A row of the field's picker was clicked: it picks `choice`.
+    pub(crate) fn suggestion_picked(&mut self, choice: &Choice, tx: &mut Tx) {
+        if self.composer.pick(choice) {
             self.composer_edited(tx);
         }
         tx.focus(COMPOSER_KEY, false);
@@ -130,9 +144,17 @@ impl Shell {
     /// The open picker's keys, with no modifier held: ↑ ↓ move, Enter or Tab
     /// picks, Escape closes.
     fn picker_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
-        let Some(chosen) = self.composer.picker().and_then(Picker::chosen_target) else {
+        let Some(chosen) = self.composer.picker().and_then(Picker::chosen) else {
             return false;
         };
+        // An input method's composition takes its own keys (Enter commits it).
+        let composing = self
+            .composer
+            .shown()
+            .is_some_and(|(_, draft)| draft.edit.is_composing());
+        if composing {
+            return false;
+        }
         let mods = key.mods;
         if mods.ctrl || mods.cmd || mods.alt || mods.shift {
             return false;
@@ -147,7 +169,7 @@ impl Shell {
                 true
             }
             Key::Enter | Key::Tab => {
-                if self.composer.pick(chosen) {
+                if self.composer.pick(&chosen) {
                     self.composer_edited(tx);
                 }
                 true
@@ -160,23 +182,37 @@ impl Shell {
         }
     }
 
-    /// Opens, narrows or closes the picker for the @ query at the shown
-    /// field's caret, from the roster of the account it writes in.
+    /// Opens, narrows or closes the picker for the query at the shown field's caret: people
+    /// from the roster of the account it writes in, emoji from its catalog and Unicode.
     pub(super) fn refresh_picker(&mut self) {
-        let Some((key, query)) = self.composer.mention_query() else {
+        let Some((key, query)) = self.composer.field_query() else {
             self.composer.close_picker();
             return;
         };
-        let resources = self
-            .tabs
-            .shown()
-            .filter(|open| open.key == key)
-            .and_then(|open| open.resources.clone());
-        let Some(snapshot) = resources else {
-            self.composer.close_picker();
-            return;
+        let rows = match &query {
+            FieldQuery::Mention(mention) => {
+                let resources = self
+                    .tabs
+                    .shown()
+                    .filter(|open| open.key == key)
+                    .and_then(|open| open.resources.clone());
+                let Some(snapshot) = resources else {
+                    self.composer.close_picker();
+                    return;
+                };
+                Rows::People(mention_suggestions(
+                    &snapshot,
+                    key.account.user(),
+                    key.channel,
+                    &mention.text,
+                ))
+            }
+            FieldQuery::Emoji(emoji) => {
+                let catalog = self.catalog(key.account);
+                let custom = catalog.map_or(&[][..], |catalog| catalog.emojis.as_slice());
+                Rows::Emoji(emoji_search(&emoji.text, custom, EMOJI_SUGGESTIONS))
+            }
         };
-        let found = mention_suggestions(&snapshot, key.account.user(), key.channel, &query.text);
-        self.composer.show_picker(key, query, found);
+        self.composer.show_picker(key, query, rows);
     }
 }

@@ -9,7 +9,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use papo_sdk::Uuid;
+use papo_sdk::{AccountId, Uuid};
 use rune::{Cx, El, Key, KeyEvent, TextEdit, Tx};
 
 use super::Shell;
@@ -149,7 +149,7 @@ impl Shell {
     }
 
     /// The account's catalog changed while the picker lists it.
-    pub(super) fn emoji_picker_catalog_changed(&mut self, account: papo_sdk::AccountId) {
+    pub(super) fn emoji_picker_catalog_changed(&mut self, account: AccountId) {
         let catalog = self.catalog(account).cloned();
         if let Some(picker) = self
             .emoji_picker
@@ -301,11 +301,7 @@ pub(super) fn view(shell: &Shell, picker: &EmojiPicker, look: &Look, cx: &Cx<She
         PickerFor::Field(_) => None,
     }
     .unwrap_or_else(|| COMPOSER_PILL_KEY.to_owned());
-    let server = shell
-        .nav
-        .servers()
-        .get(account.server())
-        .map_or("", |server| server.name.as_str());
+    let server = shell.server_name(account);
     let conversation_height_pt = shell.conversation_rect[3];
     let given = PickerLook {
         look,

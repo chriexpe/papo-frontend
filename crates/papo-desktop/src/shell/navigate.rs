@@ -85,6 +85,14 @@ impl Shell {
         self.sync_timeline(Some(tx));
     }
 
+    /// The name of `account`'s server, as the rail says it; empty for one not listed.
+    pub(super) fn server_name(&self, account: papo_sdk::AccountId) -> &str {
+        self.nav
+            .servers()
+            .get(account.server())
+            .map_or("", |server| server.name.as_str())
+    }
+
     /// Keys no control took: Alt+↑/↓ between channels, then Ctrl+A in the
     /// timeline.
     pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {

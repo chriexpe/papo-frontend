@@ -1,17 +1,16 @@
 //! What the field's keys do beyond typing, on the shown buffer: a typed
 //! character marked as typing (only it may close a pair), Tab past a
-//! closer, a delimiter or shortcut wrapping the selection, and the @
-//! picker's query, rows and pick. Each one that changes the text leaves
+//! closer, a delimiter or shortcut wrapping the selection, and the field
+//! picker's query (`@` or `:`), rows and pick. Each one that changes the text leaves
 //! the shell to run it as an edit (`Composer::edited`), so it is saved as
 //! typing is.
 
 use super::markdown::{FieldStyle, field_style};
-use papo_sdk::MentionTarget;
-use papo_sdk_ui::{MentionQuery, MentionSuggestion};
 
+use super::emoji;
 use super::mentions;
 use super::pairs::{self, Keystroke};
-use super::picker::Picker;
+use super::picker::{Choice, FieldQuery, Picker, Rows};
 use super::{Composer, DraftState};
 use crate::design::Look;
 use crate::timeline::TimelineKey;
@@ -47,76 +46,77 @@ impl Composer {
         })
     }
 
-    /// The @ query at the shown field's caret, unless Escape closed it.
-    pub(crate) fn mention_query(&self) -> Option<(TimelineKey, MentionQuery)> {
+    /// The query at the shown field's caret (an `@` first, then a `:`), unless Escape closed
+    /// it.
+    pub(crate) fn field_query(&self) -> Option<(TimelineKey, FieldQuery)> {
         let (key, draft) = self.shown()?;
         if draft.state == DraftState::Loading {
             return None;
         }
-        let query = mentions::query(&draft.edit)?;
-        if self.dismissed_at == Some((key, query.byte_range.start)) {
+        let query = current_query(draft)?;
+        if self.dismissed_at == Some((key, query.place())) {
             return None;
         }
         Some((key, query))
     }
 
-    /// Shows the picker for `query` with the people it found; none closes
-    /// it. The highlight stays on its row while the query only narrows.
-    pub(crate) fn show_picker(
-        &mut self,
-        key: TimelineKey,
-        query: MentionQuery,
-        candidates: Vec<MentionSuggestion>,
-    ) {
-        if candidates.is_empty() {
+    /// Shows the picker for `query` with what it found; nothing found closes it. The highlight
+    /// stays on its row while the query only narrows.
+    pub(crate) fn show_picker(&mut self, key: TimelineKey, query: FieldQuery, rows: Rows) {
+        if rows.is_empty() {
             self.picker = None;
             return;
         }
-        let selected = self
-            .picker
-            .as_ref()
-            .filter(|open| open.key == key && open.query.byte_range.start == query.byte_range.start)
-            .and_then(|open| open.chosen())
-            .and_then(|chosen| candidates.iter().position(|c| c == chosen))
-            .unwrap_or(0);
-        self.picker = Some(Picker {
+        let picker = Picker {
             key,
             query,
-            candidates,
-            selected,
+            rows,
+            selected: 0,
+        };
+        let kept = self
+            .picker
+            .as_ref()
+            .filter(|open| {
+                open.key == key && open.query.byte_range().start == picker.query.byte_range().start
+            })
+            .and_then(Picker::chosen)
+            .and_then(|chosen| picker.position(&chosen))
+            .unwrap_or(0);
+        self.picker = Some(Picker {
+            selected: kept,
+            ..picker
         });
     }
 
-    /// No @ query at the caret any more, or none to show.
+    /// No query at the caret any more, or nothing to show.
     pub(crate) fn close_picker(&mut self) {
         self.picker = None;
         let at = self
             .shown()
-            .and_then(|(key, draft)| Some((key, mentions::query(&draft.edit)?.byte_range.start)));
+            .and_then(|(key, draft)| Some((key, current_query(draft)?.place())));
         if at != self.dismissed_at {
-            // Another `@` (or none) gets its picker back.
+            // Another `@` or `:` (or none) gets its picker back.
             self.dismissed_at = None;
         }
     }
 
-    /// Escape: the picker closes and stays closed for this `@`.
+    /// Escape: the picker closes and stays closed for this `@` or `:`.
     pub(crate) fn dismiss_picker(&mut self) {
         if let Some(open) = self.picker.take() {
-            self.dismissed_at = Some((open.key, open.query.byte_range.start));
+            self.dismissed_at = Some((open.key, open.query.place()));
         }
     }
 
-    /// The open picker, while the shown field has the keyboard and its
-    /// caret still ends the picker's query. Rune tells no handler when a
-    /// field's caret only moves, so this is checked rather than heard: the
-    /// caret leaving the `@` hides the picker, and its keys go back to the
-    /// field.
+    /// The open picker, while the shown field has the keyboard and its caret still ends the
+    /// picker's query. Rune tells no handler when a field's caret only moves, so this is
+    /// checked rather than heard: the caret leaving the query hides the picker, and its keys go
+    /// back to the field.
     pub(crate) fn picker(&self) -> Option<&Picker> {
         let open = self.picker.as_ref()?;
         let (key, draft) = self.shown()?;
         let current = draft.edit.focused
             && key == open.key
-            && mentions::query(&draft.edit).as_ref() == Some(&open.query);
+            && current_query(draft).as_ref() == Some(&open.query);
         current.then_some(open)
     }
 
@@ -129,22 +129,30 @@ impl Composer {
         }
     }
 
-    /// Enter, Tab or a click on the row of `target`: the query becomes its
-    /// mention. Whether the field changed.
-    pub(crate) fn pick(&mut self, target: MentionTarget) -> bool {
+    /// Enter, Tab or a click on the row of `choice`: the query becomes its mention or its emoji.
+    /// Whether the field changed.
+    pub(crate) fn pick(&mut self, choice: &Choice) -> bool {
         if self.picker().is_none() {
             return false;
         }
         let Some(open) = self.picker.take() else {
             return false;
         };
-        let Some(candidate) = open.candidates.iter().find(|c| c.target == target) else {
-            return false;
-        };
         let Some(draft) = self.shown_editable() else {
             return false;
         };
-        mentions::pick(&mut draft.edit, &open.query, candidate);
+        match (&open.query, &open.rows, choice) {
+            (FieldQuery::Mention(query), Rows::People(people), Choice::Person(target)) => {
+                let Some(candidate) = people.iter().find(|c| c.target == *target) else {
+                    return false;
+                };
+                mentions::pick(&mut draft.edit, query, candidate);
+            }
+            (FieldQuery::Emoji(query), Rows::Emoji(_), Choice::Emoji(suggestion)) => {
+                emoji::pick(&mut draft.edit, query, suggestion);
+            }
+            _ => return false,
+        }
         true
     }
 
@@ -163,4 +171,12 @@ impl Composer {
             .map(|(_, draft)| mentions::wire(&draft.edit))
             .unwrap_or_default()
     }
+}
+
+/// The query `draft`'s caret ends: an `@` first, then a `:` outside code.
+fn current_query(draft: &super::Draft) -> Option<FieldQuery> {
+    if let Some(query) = mentions::query(&draft.edit) {
+        return Some(FieldQuery::Mention(query));
+    }
+    emoji::query(&draft.edit, &draft.preview).map(FieldQuery::Emoji)
 }
