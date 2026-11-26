@@ -80,7 +80,8 @@ pub use outgoing::{
     StagedAttachment, StagingFailure, UploadProgress,
 };
 pub use outgoing::{
-    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_EMOJI_PER_MESSAGE,
+    MAX_MESSAGE_ATTACHMENT_BYTES,
 };
 pub use papo_api::wire::{EmbedInput, EmbedMediaInput};
 mod catch_up;

@@ -100,7 +100,7 @@ impl Registry {
         expected_generation: Option<crate::Generation>,
     ) -> Result<(), OutgoingError> {
         let (mut kind, draft_revision) = match source {
-            EnqueueSource::Kind(kind) => (kind, None),
+            EnqueueSource::Kind(kind) => (*kind, None),
             EnqueueSource::Draft { revision } => {
                 let draft = self
                     .draft_load(session.clone(), channel)

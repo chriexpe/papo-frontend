@@ -194,7 +194,15 @@ pub struct OutgoingMessage {
     /// Optional GIF selection bound to this exact durable message; recents change only in Sent commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gif: Option<crate::Gif>,
+    /// The emoji the text uses, as the account's emoji count keeps them (a custom emoji's ID,
+    /// a Unicode emoji's glyph), each use once, at most [`MAX_EMOJI_PER_MESSAGE`]. Counted in
+    /// the Sent commit, as a confirmed reaction is; the client finds them in what it sends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub emoji: Vec<String>,
 }
+
+/// The most emoji one message counts toward the account's emoji use.
+pub const MAX_EMOJI_PER_MESSAGE: usize = 64;
 
 /// Durable composer state; bindings retain canonical user IDs, never display-name lookup results.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -258,8 +266,18 @@ impl OutgoingMessage {
             }
         }
         validate_text(&self.content)?;
+        validate_emoji(&self.emoji)?;
         validate_attachments(&self.attachments)
     }
+}
+
+/// A message's counted emoji: at most [`MAX_EMOJI_PER_MESSAGE`], each a short nonempty key.
+fn validate_emoji(emoji: &[String]) -> Result<(), super::OutgoingError> {
+    let bad = |key: &String| key.is_empty() || key.chars().count() > 64;
+    if emoji.len() > MAX_EMOJI_PER_MESSAGE || emoji.iter().any(bad) {
+        return Err(super::OutgoingError::InvalidInput);
+    }
+    Ok(())
 }
 
 fn validate_text(content: &str) -> Result<(), super::OutgoingError> {

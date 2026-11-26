@@ -31,8 +31,8 @@ pub struct ExpressionLibraryView {
     pub favorites: Vec<ExpressionItem>,
     /// Confirmed sent GIFs, newest first; selection/Failed/Unknown do not appear.
     pub recents: Vec<ExpressionItem>,
-    /// Account-scoped confirmed reaction counts, descending frequency.
-    pub reaction_usage: Vec<(String, u64)>,
+    /// The account's emoji use (reactions and messages), most used first.
+    pub emoji_usage: Vec<(String, u64)>,
 }
 /// Coalesced view image, durable fault or revocation.
 #[derive(Clone)]
@@ -102,7 +102,7 @@ fn view(snapshot: &ExpressionSnapshot) -> ExpressionLibraryView {
             .chain(snapshot.favorite_stickers.iter().map(sticker))
             .collect(),
         recents: snapshot.recent_gifs.iter().map(gif).collect(),
-        reaction_usage: snapshot.reaction_usage.clone(),
+        emoji_usage: snapshot.emoji_usage.clone(),
     }
 }
 fn project(update: &ExpressionUpdate) -> ExpressionLibraryUpdate {

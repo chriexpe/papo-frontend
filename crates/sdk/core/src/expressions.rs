@@ -73,8 +73,9 @@ pub struct ExpressionSnapshot {
     pub recent_gifs: Vec<Gif>,
     /// At most 128 saved server sticker identities.
     pub favorite_stickers: Vec<Sticker>,
-    /// At most 256 confirmed reaction usage entries, descending frequency.
-    pub reaction_usage: Vec<(String, u64)>,
+    /// The account's emoji use, at most 256 entries, most used first: confirmed reactions and
+    /// the emoji of confirmed messages, a custom emoji by its ID, a Unicode one by its glyph.
+    pub emoji_usage: Vec<(String, u64)>,
 }
 
 /// Catalog and durable-library failures without provider text, URLs or credentials.

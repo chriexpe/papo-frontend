@@ -106,6 +106,13 @@ impl CustomEmojis {
         self.revision
     }
 
+    /// The emoji named `name` (without colons), through the catalog's index; the first,
+    /// should a name repeat.
+    #[must_use]
+    pub fn find(&self, name: &str) -> Option<&CustomEmojiRef> {
+        EmojiNames::Index(self).find(name)
+    }
+
     /// The emoji, in the catalog's order.
     #[must_use]
     pub fn refs(&self) -> &[CustomEmojiRef] {
