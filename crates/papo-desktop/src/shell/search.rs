@@ -111,6 +111,8 @@ pub(crate) struct Search {
     pub(crate) opened: Option<Uuid>,
     /// What had the keyboard before it opened, which gets it back.
     pub(super) return_focus: Option<String>,
+    /// The results on screen hydrated into whole messages, for their media and cards.
+    pub(crate) hydrated: super::search_hydration::Hydrated,
 }
 
 impl Search {
@@ -133,6 +135,7 @@ impl Search {
             highlight: 0,
             opened: None,
             return_focus: None,
+            hydrated: super::search_hydration::Hydrated::default(),
         }
     }
 

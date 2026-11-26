@@ -46,6 +46,12 @@ impl Shell {
                     .get(at.message)
                     .map(|pin| Arc::clone(&pin.message))
             })
+            .or_else(|| {
+                self.search
+                    .as_ref()
+                    .filter(|search| search.account == at.account)
+                    .and_then(|search| search.hydrated.message(at.message).cloned())
+            })
     }
 
     /// Opens the viewer on media `at`: the message's pictures, in order.

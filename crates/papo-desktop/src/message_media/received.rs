@@ -62,6 +62,8 @@ pub(crate) enum MediaSurface {
     Pins,
     /// A confirmation showing the message.
     Confirm,
+    /// The search results.
+    Search,
 }
 
 /// Which attachment of which message, in the view that draws it.
@@ -170,6 +172,7 @@ pub(crate) fn media_element_key(at: MediaAt) -> String {
         MediaSurface::Timeline => format!("media-{}-{}", at.message, at.index),
         MediaSurface::Pins => format!("media-pin-{}-{}", at.message, at.index),
         MediaSurface::Confirm => format!("media-confirm-{}-{}", at.message, at.index),
+        MediaSurface::Search => format!("media-search-{}-{}", at.message, at.index),
     }
 }
 
