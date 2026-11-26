@@ -12,7 +12,7 @@ use std::sync::Arc;
 use imbl::Vector;
 use papo_sdk::{Message, MessageKey, Operation, OperationKind, OperationState, Uuid};
 use papo_sdk_ui::TimelineItem;
-use papo_sdk_ui::message_content::MessageContent;
+use papo_sdk_ui::message_content::{CustomEmojis, MessageContent};
 
 /// Where an unsent message's send stands, as its row shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -49,9 +49,10 @@ pub(crate) struct Echo {
     pub(crate) state: Option<SendState>,
 }
 
-/// The echoes among a timeline's items, by local identity.
+/// The echoes among a timeline's items, by local identity, and the custom emoji revision their
+/// content was parsed against.
 #[derive(Default)]
-pub(crate) struct Echoes(HashMap<Uuid, Echo>);
+pub(crate) struct Echoes(HashMap<Uuid, Echo>, u64);
 
 impl Echo {
     /// The SDK's operation image it was built from.
@@ -69,7 +70,17 @@ impl Echoes {
     /// Follows `items`: builds the echoes whose operation changed, keeps the
     /// rest, forgets those gone. `me` is the account's user, the author of
     /// every echo.
-    pub(crate) fn refresh(&mut self, items: &Vector<Arc<TimelineItem>>, me: Uuid) {
+    pub(crate) fn refresh(
+        &mut self,
+        items: &Vector<Arc<TimelineItem>>,
+        me: Uuid,
+        emojis: &CustomEmojis,
+    ) {
+        // Another emoji catalog parses every echo again.
+        if self.1 != emojis.revision() {
+            self.0.clear();
+            self.1 = emojis.revision();
+        }
         let mut next = HashMap::new();
         for item in items {
             let TimelineItem::LocalEcho { id, operation, .. } = item.as_ref() else {
@@ -79,7 +90,7 @@ impl Echoes {
                 .0
                 .remove(id)
                 .filter(|echo| Arc::ptr_eq(&echo.operation, operation));
-            if let Some(echo) = kept.or_else(|| build(operation, me)) {
+            if let Some(echo) = kept.or_else(|| build(operation, me, emojis)) {
                 next.insert(*id, echo);
             }
         }
@@ -88,7 +99,7 @@ impl Echoes {
 }
 
 /// The echo of `operation`, when it creates a message.
-fn build(operation: &Arc<Operation>, me: Uuid) -> Option<Echo> {
+fn build(operation: &Arc<Operation>, me: Uuid, emojis: &CustomEmojis) -> Option<Echo> {
     let OperationKind::Message(outgoing) = operation.kind.as_ref() else {
         return None;
     };
@@ -112,9 +123,7 @@ fn build(operation: &Arc<Operation>, me: Uuid) -> Option<Echo> {
             ..Message::default()
         })
     });
-    let content = Arc::new(MessageContent::parse(
-        message.content.as_deref().unwrap_or_default(),
-    ));
+    let content = Arc::new(emojis.parse(message.content.as_deref().unwrap_or_default()));
     Some(Echo {
         operation: Arc::clone(operation),
         message,

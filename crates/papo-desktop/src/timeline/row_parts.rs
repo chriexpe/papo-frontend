@@ -20,9 +20,11 @@ use super::message_row::{author_name, created_us};
 use super::reactions::Chip;
 use super::reactors::ReactorList;
 use super::reading::Boundary;
+use super::replies::OriginalText;
 use super::replies::original_text;
 use super::reply_line::ReplyLine;
 use super::view::Style;
+use crate::emoji_images::EmojiLook;
 use crate::strings;
 
 /// A row's background (§4, Highlights: one per row, the strongest reason).
@@ -46,6 +48,8 @@ pub(super) struct Parts<'a> {
     pub(super) body: &'a str,
     /// The names its mentions show.
     pub(super) mentions: Vec<Option<String>>,
+    /// What its custom emoji draw as, in order: the row redraws as their images land.
+    pub(super) emoji: Vec<EmojiLook>,
     /// It continues the group above: no header, the within-group distance.
     pub(super) continued: bool,
     /// Without avatars, the time column shows the time once per minute.
@@ -134,6 +138,10 @@ pub(super) fn parts<'a>(
             .as_deref()
             .and_then(|id| Uuid::parse_str(id).ok());
         ReplyLine {
+            emoji: match &text {
+                OriginalText::Message { emoji, .. } => style.emoji.of(open.key.account, emoji),
+                _ => Vec::new(),
+            },
             pinged: author.is_none_or(|author| !text.by(author)),
             jump: match original {
                 ReplyOriginal::Held { id, .. } => Some(*id),
@@ -169,6 +177,7 @@ pub(super) fn parts<'a>(
             |(text, _)| text.as_str(),
         ),
         mentions: mention_names(content, open.resources.as_deref()),
+        emoji: style.emoji.of_content(open.key.account, content),
         continued,
         show_time,
         highlight,

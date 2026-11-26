@@ -25,6 +25,7 @@ mod direct_list;
 mod direct_pane;
 mod drop_card;
 mod embedded_players;
+mod emoji_images;
 mod fonts;
 mod general_settings;
 mod gif_frames;

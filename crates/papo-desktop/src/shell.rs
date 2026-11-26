@@ -31,6 +31,8 @@ use crate::{direct_list, live_watch};
 pub(crate) struct Shell {
     /// Each channel's edit buffer and where its draft stands.
     pub(crate) composer: Composer,
+    /// Custom emoji images, decoded as content draws them.
+    pub(crate) emoji_images: crate::emoji_images::EmojiImages,
     /// Each channel's lane of draft writes, shared with the bridge's jobs.
     draft_writes: draft_writes::DraftWrites,
     /// A new message's local identity: random in the app, fixed in tests.
@@ -251,6 +253,7 @@ impl Default for Shell {
     fn default() -> Self {
         Shell {
             composer: Composer::default(),
+            emoji_images: crate::emoji_images::EmojiImages::default(),
             draft_writes: draft_writes::DraftWrites::default(),
             local_ids: papo_sdk::Uuid::new_v4,
             conversations: crate::conversation_settings::ConversationStore::default(),
@@ -436,6 +439,7 @@ mod description;
 pub(crate) mod direct;
 mod draft_writes;
 mod editing;
+mod emoji_images;
 mod header;
 mod hover_bar;
 mod jump;

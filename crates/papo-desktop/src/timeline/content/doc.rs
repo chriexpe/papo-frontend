@@ -106,6 +106,8 @@ pub(crate) struct Run {
     /// with others: a list item's marker.
     pub(super) prefix: Option<String>,
     pub(super) joint: Joint,
+    /// A jumbo message's run: its custom emoji are the text size, not the line's height.
+    pub(super) jumbo: bool,
 }
 
 /// A styled byte range of a [`Run`]'s text.
@@ -134,6 +136,11 @@ pub(super) enum Mark {
         known: bool,
         bold: bool,
         person: Option<papo_sdk::Uuid>,
+    },
+    /// A custom emoji: its `:name:`, drawn as its image once it has one.
+    Emoji {
+        range: Range<usize>,
+        id: papo_sdk::Uuid,
     },
     /// Spoiler `index` of its message: its words between its pads.
     Spoiler {
@@ -190,10 +197,7 @@ impl Doc {
             spoilers: 0,
         };
         let nodes = match emoji::jumbo(content).filter(|_| given.jumbo) {
-            Some(emoji) => {
-                let run = builder.plain(emoji.to_owned(), Joint::Line);
-                vec![Node::Jumbo(run)]
-            }
+            Some(parts) => vec![Node::Jumbo(builder.jumbo(&parts))],
             None => builder.blocks(content.blocks(), 0),
         };
         Doc {

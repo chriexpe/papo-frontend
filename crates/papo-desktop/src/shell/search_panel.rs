@@ -65,7 +65,7 @@ pub(super) fn panel(shell: &Shell, title: &Title<'_>, style: &Style, cx: &Cx<She
     let list = shell.search_list();
     let head = head(shell, search, title, list.as_ref(), &look);
     let body = if search.showing == Showing::Peek {
-        search_hits::peek_line(open, search, &look)
+        search_hits::peek_line(open, search, &look, &style.emoji)
     } else {
         open_body(
             shell,

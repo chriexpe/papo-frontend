@@ -98,6 +98,37 @@ pub(crate) const TYPE_JUMBO: Font = {
 /// The most emoji a jumbo message holds.
 pub(crate) const JUMBO_MOST: usize = 3;
 
+/// A loading custom emoji's square: its corner radius (§9).
+pub(crate) const EMOJI_LOADING_RADIUS: Radius = Radius(4.0);
+
+/// Inter's ascender and descender in units of the text size (its `hhea`: 1984 and 494 of
+/// 2048), which with the line's half-leading place the baseline in a line box.
+const INTER_ASCENT: f32 = 1984.0 / 2048.0;
+const INTER_DESCENT: f32 = 494.0 / 2048.0;
+
+/// How far a custom emoji stays inside its line box at the top and at the bottom, in points:
+/// Rune rounds an inline image's box to device pixels, which could otherwise push past the
+/// line's edge by half a pixel and grow it (§9: a line does not grow).
+const EMOJI_INSET_PT: f32 = 0.5;
+
+/// A custom emoji's box in a line of `font` (§9): its height and how far it reaches below the
+/// baseline, in points. Inline it fills the line box, so a line does not grow; in a jumbo
+/// line (`jumbo`) it is the text size, as a Unicode emoji's glyph is.
+pub(crate) fn emoji_box(font: TextStyle, jumbo: bool) -> (f32, f32) {
+    let below_baseline = (font.line_height - font.size * (INTER_ASCENT + INTER_DESCENT)) / 2.0
+        + font.size * INTER_DESCENT;
+    if jumbo {
+        // Centred on the line, as the glyphs it stands among are.
+        let height = font.size;
+        let below = below_baseline - (font.line_height - height) / 2.0;
+        return (height, below.max(0.0));
+    }
+    (
+        font.line_height - 2.0 * EMOJI_INSET_PT,
+        below_baseline - EMOJI_INSET_PT,
+    )
+}
+
 /// The corner radius of a highlighted message row (a mention, the message
 /// being replied to or edited).
 pub(crate) const HIGHLIGHT_ROW_RADIUS: Radius = Radius(8.0);

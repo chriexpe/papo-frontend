@@ -2,8 +2,9 @@
 //! timeline: its outgoing queue (a chip waits while its change is in
 //! flight; a refused reaction is said and dropped), its quick reactions,
 //! ranked by the SDK from the account's own use (`quick_reactions`), its
-//! people's activity (presence marks, status phrases, who types where), and
-//! its connection with the heartbeat's round trip (Settings › Diagnostics).
+//! people's activity (presence marks, status phrases, who types where), its
+//! custom emoji catalog, and its connection with the heartbeat's round trip
+//! (Settings › Diagnostics).
 //!
 //! Owns only the watch loops and what they post. The queue, the usage
 //! counts, the ranking and the activity stay in the SDK; what the shell
@@ -14,7 +15,9 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use papo_sdk::{AccountId, ClientHandle, OutgoingSnapshot, Session};
+use papo_sdk::{
+    AccountId, ClientHandle, EmojiCatalog, EmojiCatalogUpdate, OutgoingSnapshot, Session,
+};
 use papo_sdk_ui::{
     AccountActivity, ActivityService, ExpressionLibraryService, ExpressionLibraryUpdate,
     ExpressionLibraryView, quick_reactions,
@@ -36,6 +39,8 @@ pub(crate) enum Posted {
     Quick(Vec<String>),
     /// Its people's activity now.
     People(Arc<AccountActivity>),
+    /// Its custom emoji catalog now.
+    Emojis(Arc<EmojiCatalog>),
     /// Its connection now.
     Link(Link),
     /// The account's session closed: nothing more comes for it.
@@ -139,8 +144,20 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
             None
         }
     };
+    // Without a catalog, `:name:` stays text.
+    let mut emojis = session.emoji_catalog().subscribe().await.ok();
+    if let Some(catalog) = emojis.as_mut().and_then(ready) {
+        post(Posted::Emojis(catalog));
+    }
     loop {
         tokio::select! {
+            changed = next_change(emojis.as_mut()) => {
+                if changed.is_err() {
+                    emojis = None;
+                } else if let Some(catalog) = emojis.as_mut().and_then(ready) {
+                    post(Posted::Emojis(catalog));
+                }
+            }
             changed = outgoing.changed() => {
                 if changed.is_err() {
                     post(Posted::Closed);
@@ -167,6 +184,26 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
                 }
             },
         }
+    }
+}
+
+/// The catalog a watch holds now; none while it can't be read (the last one stays drawn).
+fn ready(
+    updates: &mut tokio::sync::watch::Receiver<EmojiCatalogUpdate>,
+) -> Option<Arc<EmojiCatalog>> {
+    match &*updates.borrow_and_update() {
+        EmojiCatalogUpdate::Ready(catalog) => Some(Arc::clone(catalog)),
+        _ => None,
+    }
+}
+
+/// The next change of an optional watch; never, without one.
+async fn next_change<T>(
+    updates: Option<&mut tokio::sync::watch::Receiver<T>>,
+) -> Result<(), tokio::sync::watch::error::RecvError> {
+    match updates {
+        Some(updates) => updates.changed().await,
+        None => std::future::pending().await,
     }
 }
 

@@ -142,6 +142,7 @@ fn draw<S: TimelineHost>(
         copied: None,
         edited: None,
         standalone: true,
+        emoji: &style.emoji,
     };
     // Without avatars in the conversation, a message on its own keeps
     // Normal's.

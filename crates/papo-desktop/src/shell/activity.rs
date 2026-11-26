@@ -36,6 +36,10 @@ pub(crate) struct Activity {
     pub(crate) outgoing: Option<Arc<OutgoingSnapshot>>,
     /// Its quick reactions, most used first; empty until posted.
     pub(crate) quick: Arc<[String]>,
+    /// Its custom emoji catalog; none until posted.
+    pub(crate) emojis: Option<Arc<papo_sdk::EmojiCatalog>>,
+    /// That catalog as message content resolves against it.
+    pub(crate) custom: papo_sdk_ui::message_content::CustomEmojis,
     /// Its connection; none until posted.
     pub(crate) link: Option<crate::diagnostics::Link>,
     /// Refused reactions already being dropped, so each is said once.
@@ -67,11 +71,30 @@ impl Shell {
                         .is_some_and(|card| card.key.account == account)
             }
             Posted::Link(link) => {
+                let came_back = matches!(link, crate::diagnostics::Link::Online { .. })
+                    && !matches!(
+                        self.activity
+                            .get(&account)
+                            .and_then(|activity| activity.link.as_ref()),
+                        Some(crate::diagnostics::Link::Online { .. })
+                    );
                 self.activity.entry(account).or_default().link = Some(link);
+                // Emoji whose fetch failed while offline are asked for again.
+                if came_back && self.emoji_images.reconnected(account) {
+                    self.want_emoji();
+                    return true;
+                }
                 // Only Diagnostics shows it.
                 self.settings
                     .as_ref()
                     .is_some_and(|panel| panel.page() == crate::settings::PageId::Diagnostics)
+            }
+            Posted::Emojis(catalog) => {
+                let activity = self.activity.entry(account).or_default();
+                activity.custom = papo_sdk_ui::message_content::CustomEmojis::new(&catalog);
+                activity.emojis = Some(catalog);
+                self.custom_emojis_changed(account);
+                self.shows_account(account)
             }
             Posted::Quick(quick) => {
                 self.activity.entry(account).or_default().quick = quick.into();
@@ -102,6 +125,7 @@ impl Shell {
                     self.awaited_dm = None;
                 }
                 self.dm_access.retain(|id, _| id.account != account);
+                self.emoji_images.forget(account);
                 self.sync_timeline(Some(tx));
                 self.activity.remove(&account);
                 true

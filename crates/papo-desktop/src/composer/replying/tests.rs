@@ -4,6 +4,7 @@
 
 use papo_sdk::{AccountId, ServerAddress, Uuid};
 use papo_sdk_ui::ReplyOriginal;
+use papo_sdk_ui::message_content::CustomEmojis;
 use papo_sdk_ui::message_content::DecodedComposerMentions;
 
 use crate::composer::{Composer, Effect, Sent};
@@ -69,7 +70,7 @@ fn a_reply_goes_with_its_message_and_comes_back_if_it_fails() {
     let mut composer = showing("");
     composer.start_reply(key(), original(), None, true);
     composer.field_mut().insert("agreed");
-    composer.edited(1.0);
+    composer.edited(1.0, &CustomEmojis::default());
     let Sent::Queued(Effect::Send { reply_to, .. }) = composer.send(Uuid::from_u128(5)) else {
         panic!("sent");
     };
@@ -88,7 +89,11 @@ fn an_edit_is_never_saved_and_never_wakes_the_poll() {
     let mut composer = showing("half a thought");
     composer.start_edit(key(), original(), plain("the message"));
     composer.field_mut().insert("!");
-    assert_eq!(composer.edited(2.0), [], "no save, no typing report");
+    assert_eq!(
+        composer.edited(2.0, &CustomEmojis::default()),
+        [],
+        "no save, no typing report"
+    );
     assert_eq!(composer.poll(10.0), []);
     assert_eq!(composer.flush(), []);
 }
@@ -100,7 +105,7 @@ fn saving_an_edit_queues_it_and_puts_the_draft_back() {
     composer.start_edit(key(), original(), plain("the message"));
     assert_eq!(text(&composer), "the message");
     composer.field_mut().insert("!");
-    composer.edited(2.0);
+    composer.edited(2.0, &CustomEmojis::default());
     let Sent::Edited {
         edit: Effect::Edit {
             id, text: edited, ..
@@ -124,7 +129,7 @@ fn an_emptied_edit_asks_to_delete_and_stays_open() {
     let mut composer = showing("");
     composer.start_edit(key(), original(), plain("x"));
     composer.field_mut().replace_text("");
-    composer.edited(2.0);
+    composer.edited(2.0, &CustomEmojis::default());
     assert_eq!(
         composer.send(Uuid::from_u128(5)),
         Sent::DeleteInstead {
@@ -162,7 +167,7 @@ fn a_send_refused_during_an_edit_waits_in_the_draft_it_set_aside() {
     let mut composer = showing("");
     composer.start_reply(key(), Uuid::from_u128(7), None, true);
     composer.field_mut().insert("sent");
-    composer.edited(1.0);
+    composer.edited(1.0, &CustomEmojis::default());
     let Sent::Queued(Effect::Send { reply_to, .. }) = composer.send(Uuid::from_u128(5)) else {
         panic!("sent");
     };

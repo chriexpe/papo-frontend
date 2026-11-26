@@ -102,6 +102,8 @@ impl Shell {
             search.hydrated.visible = range;
         }
         self.hydrate_next_hits();
+        // Results already whole ask for nothing else, but their emoji are on screen now.
+        self.want_emoji();
     }
 
     /// Starts hydrating the next results on screen that were never asked, while slots are free.

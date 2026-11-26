@@ -9,6 +9,7 @@ use papo_sdk_ui::message_content::{Block, Inline, ListItem, TextStyle};
 
 use super::{Context, Item, Joint, Mark, Marker, Node, PAD, Pad, Run};
 use crate::strings;
+use crate::timeline::content::emoji::JumboPart;
 
 /// Numbers texts and spoilers as it lays blocks out.
 pub(super) struct Builder<'a, 'c> {
@@ -102,7 +103,26 @@ impl Builder<'_, '_> {
             marks: Vec::new(),
             prefix: None,
             joint,
+            jumbo: false,
         }
+    }
+
+    /// A jumbo message's run: its Unicode emoji as text, its custom emoji marked.
+    pub(super) fn jumbo(&mut self, parts: &[JumboPart<'_>]) -> Run {
+        let mut run = self.plain(String::new(), Joint::Line);
+        run.jumbo = true;
+        for part in parts {
+            match part {
+                JumboPart::Text(text) => {
+                    push(&mut run, text);
+                }
+                JumboPart::Custom { id, raw } => {
+                    let range = push(&mut run, raw);
+                    run.marks.push(Mark::Emoji { range, id: *id });
+                }
+            }
+        }
+        run
     }
 
     fn run(&mut self, inlines: &[Inline], joint: Joint) -> Run {
@@ -113,6 +133,7 @@ impl Builder<'_, '_> {
             marks: Vec::new(),
             prefix: None,
             joint,
+            jumbo: false,
         };
         self.inlines(&mut run, inlines);
         run
@@ -194,10 +215,11 @@ impl Builder<'_, '_> {
                     );
                     pad(run, Pad::Chip);
                 }
-                // Custom emoji wait for the emoji subsystem: the shortcode
-                // shows as written.
-                Inline::CustomEmoji { raw, .. } => {
-                    push(run, raw);
+                // Its `:name:` stays the text, so a selection copies it; the
+                // drawing sets the image over it.
+                Inline::CustomEmoji { id, raw } => {
+                    let range = push(run, raw);
+                    run.marks.push(Mark::Emoji { range, id: *id });
                 }
             }
         }

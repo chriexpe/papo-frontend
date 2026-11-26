@@ -22,6 +22,7 @@ use papo_sdk::Uuid;
 use rune::{El, col, text};
 
 pub(crate) use self::doc::{Context, Doc, mention_names};
+pub(crate) use self::emoji::custom_emoji_ids;
 use self::inline::Trailer;
 use super::{TimelineHost, TimelineKey};
 use crate::design::{Look, MESSAGE_BLOCK_GAP, TYPE_CAPTION};
@@ -97,6 +98,8 @@ pub(crate) struct Draw<'a> {
     /// Drawn on its own (a header panel, a dialog), not in the
     /// conversation: a press on it is no work outside that panel.
     pub(crate) standalone: bool,
+    /// What its custom emoji draw as.
+    pub(crate) emoji: &'a crate::emoji_images::EmojiLooks,
 }
 
 /// A message was edited.

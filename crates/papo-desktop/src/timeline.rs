@@ -157,6 +157,9 @@ pub(crate) struct OpenTimeline {
     pub(crate) pins_handle: Option<ChannelPins>,
     /// Who reacted to its messages, as far as read.
     pub(crate) reactors: reactors::ReactorLists,
+    /// The account's custom emoji, which echoes, edits in flight and pins resolve against
+    /// (the SDK window resolves its own items).
+    pub(crate) emojis: papo_sdk_ui::message_content::CustomEmojis,
 }
 
 impl OpenTimeline {
@@ -205,6 +208,7 @@ impl OpenTimeline {
             pins: pinned::Pins::default(),
             pins_handle: None,
             reactors: reactors::ReactorLists::default(),
+            emojis: papo_sdk_ui::message_content::CustomEmojis::default(),
         };
         (open, stopped)
     }
@@ -222,8 +226,9 @@ impl OpenTimeline {
     fn with_items(key: TimelineKey, items: Vector<Arc<TimelineItem>>) -> OpenTimeline {
         let (mut open, _stopped) = OpenTimeline::opening(key, 0, None);
         open.items = items;
-        open.echoes.refresh(&open.items, key.account.user());
-        open.changes.refresh(&open.items);
+        open.echoes
+            .refresh(&open.items, key.account.user(), &open.emojis);
+        open.changes.refresh(&open.items, &open.emojis);
         open.phase = Phase::Open;
         open.reading.items_changed(&open.items, true);
         open
@@ -245,8 +250,7 @@ impl OpenTimeline {
         self.version = version;
         self.generation = Some(generation);
         self.items = items;
-        self.echoes.refresh(&self.items, self.key.account.user());
-        self.changes.refresh(&self.items);
+        self.refresh_parsed();
         // Only rows reported from these items count.
         self.reports.jumped();
         self.reading
@@ -359,12 +363,29 @@ impl OpenTimeline {
         if keys_changed {
             self.keys_version += 1;
         }
-        self.echoes.refresh(&self.items, self.key.account.user());
-        self.changes.refresh(&self.items);
+        self.refresh_parsed();
         self.version = update.version;
         self.generation = Some(update.generation);
         let sees_bottom = watched && self.tracker.at_bottom();
         self.reading.items_changed(&self.items, sees_bottom);
+    }
+
+    /// Echoes and edits in flight follow the items.
+    fn refresh_parsed(&mut self) {
+        self.echoes
+            .refresh(&self.items, self.key.account.user(), &self.emojis);
+        self.changes.refresh(&self.items, &self.emojis);
+    }
+
+    /// The account's custom emoji changed: echoes, edits in flight and pins resolve against
+    /// `emojis` from now on.
+    pub(crate) fn set_emojis(&mut self, emojis: papo_sdk_ui::message_content::CustomEmojis) {
+        if emojis == self.emojis {
+            return;
+        }
+        self.emojis = emojis;
+        self.refresh_parsed();
+        self.pins.resolve(&self.items, &self.emojis);
     }
 
     pub(crate) fn handle(&self) -> Option<&Timeline> {

@@ -41,7 +41,11 @@ fn pin(rt: &mut Runtime<Shell>, pinned: &[u128]) {
             })
             .collect();
         let items = open.items.clone();
-        open.pins.set(Some(pins), &items);
+        open.pins.set(
+            Some(pins),
+            &items,
+            &papo_sdk_ui::message_content::CustomEmojis::default(),
+        );
     });
     rt.frame(FRAME_S);
 }

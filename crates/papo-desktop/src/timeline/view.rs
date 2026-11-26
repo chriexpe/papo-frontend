@@ -169,6 +169,8 @@ pub(crate) struct Style {
     pub(crate) media: crate::message_media::received::MediaStyle,
     /// The saved pill's file name, while it shows (§14.7).
     pub(crate) saved_pill: Option<String>,
+    /// What custom emoji draw as.
+    pub(crate) emoji: crate::emoji_images::EmojiLooks,
 }
 
 /// The shown timeline: its rows, skeleton rows while it opens, and

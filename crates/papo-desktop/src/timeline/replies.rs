@@ -29,6 +29,8 @@ pub(crate) enum OriginalText {
         name: String,
         /// The message in one line.
         snippet: String,
+        /// Its custom emoji: the bytes of `snippet` each one's `:name:` takes.
+        emoji: Vec<(std::ops::Range<usize>, Uuid)>,
     },
     /// History knows it was deleted.
     Deleted,
@@ -67,6 +69,7 @@ fn message_text(
     content: &MessageContent,
     resources: Option<&ResourceSnapshot>,
 ) -> OriginalText {
+    let line = snippet_line(&snippet(message, content), resources);
     OriginalText::Message {
         id,
         author: message
@@ -75,13 +78,44 @@ fn message_text(
             .and_then(|author| Uuid::parse_str(author).ok())
             .filter(|_| message.webhook_id.is_none() && message.external_author.is_none()),
         name: author_name(message, resources),
-        snippet: snippet_text(&snippet(message, content), resources),
+        snippet: line.text,
+        emoji: line.emoji,
     }
+}
+
+/// A snippet in one line: its text and where its custom emoji are in it.
+pub(crate) struct SnippetLine {
+    pub(crate) text: String,
+    pub(crate) emoji: Vec<(std::ops::Range<usize>, Uuid)>,
+}
+
+/// A message's snippet in one line: mentions by name, custom emoji by their
+/// `:name:` (drawn as their images over it), a hidden spoiler as blocks,
+/// media and files by their kind.
+pub(crate) fn snippet_line(snippet: &Snippet, resources: Option<&ResourceSnapshot>) -> SnippetLine {
+    let Snippet::Text(parts) = snippet else {
+        return SnippetLine {
+            text: snippet_text(snippet, resources),
+            emoji: Vec::new(),
+        };
+    };
+    let mut line = SnippetLine {
+        text: String::new(),
+        emoji: Vec::new(),
+    };
+    for part in parts {
+        let start = line.text.len();
+        line.text.push_str(&part_text(part, resources));
+        if let SnippetPart::CustomEmoji { id, .. } = part {
+            line.emoji.push((start..line.text.len(), *id));
+        }
+    }
+    line
 }
 
 /// A message's snippet in one line of text: mentions by name, a hidden
 /// spoiler as blocks, media and files by their kind.
-pub(crate) fn snippet_text(snippet: &Snippet, resources: Option<&ResourceSnapshot>) -> String {
+fn snippet_text(snippet: &Snippet, resources: Option<&ResourceSnapshot>) -> String {
     match snippet {
         Snippet::Text(parts) => parts
             .iter()

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 
-use rune::{Color, El, Link, LinkPaint, Span, TextStyle, rich};
+use rune::{Color, El, InlineImage, Link, LinkPaint, Span, TextStyle, rich};
 
 use super::copy::spoken;
 use super::doc::{Mark, PAD, Pad, Run};
@@ -19,6 +19,7 @@ use crate::design::{
     CHIP_PAD, CHIP_RADIUS, CODE_CHIP_OUTLINE_PT, LINK_UNDERLINE_ALPHA, Look, SPOILER_PAD_PT,
     TYPE_CODE, WEIGHT_MEDIUM, WEIGHT_SEMIBOLD,
 };
+use crate::emoji_images::{EmojiKey, EmojiPlace, inline_image};
 use crate::strings;
 use crate::timeline::TimelineHost;
 
@@ -81,6 +82,9 @@ pub(super) fn text<S: TimelineHost>(
         .selection_color(draw.look.palette.text_selection);
     for range in uncopied {
         el = el.uncopied(range);
+    }
+    for (range, image) in emoji_images(run, font, draw) {
+        el = el.inline_image(range, image);
     }
     if let Some(spoken) = spoken(run) {
         let spoken = match trailer {
@@ -181,8 +185,9 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
                         .help(url.clone()),
                 );
             }
-            // Inside a hidden spoiler: nothing shows through.
-            Mark::Strike(_) | Mark::Link { .. } => {}
+            // Inside a hidden spoiler nothing shows through; an emoji's image is set over its
+            // `:name:` by `emoji_images`.
+            Mark::Strike(_) | Mark::Link { .. } | Mark::Emoji { .. } => {}
             Mark::Mention {
                 range,
                 known,
@@ -231,6 +236,30 @@ fn marks(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Drawn {
     drawn.spans.extend(code);
     drawn.spans.extend(covers);
     drawn
+}
+
+/// Each custom emoji of `run` drawn in place of its `:name:` (§9, Emoji); a hidden spoiler's
+/// keep their room, clear, so revealing moves no line.
+fn emoji_images(run: &Run, font: TextStyle, draw: &Draw<'_>) -> Vec<(Range<usize>, InlineImage)> {
+    run.marks
+        .iter()
+        .filter_map(|mark| {
+            let Mark::Emoji { range, id } = mark else {
+                return None;
+            };
+            let key = EmojiKey {
+                account: draw.key.account,
+                id: *id,
+            };
+            let place = EmojiPlace {
+                font,
+                jumbo: run.jumbo,
+                hidden: run.is_hidden(range),
+            };
+            let image = inline_image(&draw.emoji.look(key), place, draw.look)?;
+            Some((range.clone(), image))
+        })
+        .collect()
 }
 
 /// Inline code: mono at `type.small`, on its outlined chip unless hidden.
