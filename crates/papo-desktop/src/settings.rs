@@ -40,6 +40,8 @@ pub(crate) mod password_form;
 mod picture_row;
 pub(crate) mod rows;
 mod search;
+mod sizes;
+pub(crate) use sizes::{SizeChoice, SizeSetting, SizedMedia};
 mod slider;
 mod swatches;
 pub(crate) mod text_row;
@@ -189,6 +191,14 @@ pub(crate) enum RowId {
     VideoMaxWidth,
     /// Media › a Custom Video size's Max height.
     VideoMaxHeight,
+    /// Media › Embed size.
+    EmbedSize,
+    /// Media › a Custom Embed size's Max width.
+    EmbedMaxWidth,
+    /// Media › a Custom Embed size's Max height.
+    EmbedMaxHeight,
+    /// Show link previews.
+    LinkPreviews,
     /// Media › Animate GIFs and stickers.
     AnimateGifs,
     /// Media › Autoplay videos.
@@ -223,31 +233,6 @@ impl RowId {
     }
 }
 
-/// Which media a size setting bounds (§14.9: images and videos each have their own).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SizedMedia {
-    Images,
-    Videos,
-}
-
-impl SizedMedia {
-    /// Its size row.
-    pub(crate) fn row(self) -> RowId {
-        match self {
-            SizedMedia::Images => RowId::ImageSize,
-            SizedMedia::Videos => RowId::VideoSize,
-        }
-    }
-
-    /// Its Custom size's Max width and Max height rows.
-    pub(crate) fn slider_rows(self) -> (RowId, RowId) {
-        match self {
-            SizedMedia::Images => (RowId::MediaMaxWidth, RowId::MediaMaxHeight),
-            SizedMedia::Videos => (RowId::VideoMaxWidth, RowId::VideoMaxHeight),
-        }
-    }
-}
-
 /// What a row asks for; the shell applies it (`shell/settings.rs`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Change {
@@ -267,8 +252,8 @@ pub(crate) enum Change {
     Colours(colour_field::ColourChange),
     /// A hue swatch picked, in OKLCH degrees.
     Hue(RowId, f32),
-    /// Image size's or Video size's menu.
-    MediaSize(SizedMedia, papo_sdk_ui::MediaSizeSetting),
+    /// Image size's, Video size's or Embed size's menu.
+    MediaSize(SizeSetting),
     /// Language's menu.
     Language(Language),
     /// Presence's menu.
@@ -287,7 +272,7 @@ impl Change {
             Change::Accent(_) => RowId::Accent,
             Change::Direction(_) => RowId::Directions,
             Change::Language(_) => RowId::Language,
-            Change::MediaSize(media, _) => media.row(),
+            Change::MediaSize(size) => size.media().row(),
             Change::Presence(_) => RowId::Presence,
             Change::KeepPlaying(_) => RowId::KeepPlaying,
             Change::Colours(_) => RowId::Field,

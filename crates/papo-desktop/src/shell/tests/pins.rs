@@ -388,3 +388,49 @@ fn a_message_under_a_floating_pill_does_not_see_the_pointer_on_it() {
     }
     assert!(checked >= 2, "rows sit under the pills: {checked} checked");
 }
+
+#[test]
+fn a_press_on_pinned_media_or_a_pinned_card_keeps_the_panel_open() {
+    use crate::message_media::received::{MediaAt, MediaHost, MediaPress, MediaSurface};
+    let mut rt = conversation("");
+    pin(&mut rt, &[1]);
+    ctrl_p(&mut rt);
+    let at = |surface| {
+        move |shell: &Shell| {
+            let key = shell.tabs.shown().unwrap().key;
+            MediaAt {
+                surface,
+                account: key.account,
+                channel: key.channel,
+                message: message_id(1),
+                index: 0,
+            }
+        }
+    };
+    let pinned = at(MediaSurface::Pins);
+    rt.update(move |shell, tx| {
+        let at = pinned(shell);
+        shell.media_press(at, MediaPress::Open, tx);
+        crate::timeline::TimelineHost::card_pressed(
+            shell,
+            at,
+            crate::link_cards::CardPress::OpenInBrowser,
+            tx,
+        );
+    });
+    rt.frame(FRAME_S);
+    assert!(
+        rt.state.shown_pins_panel().is_some(),
+        "a press inside the panel keeps it"
+    );
+    let conversation = at(MediaSurface::Timeline);
+    rt.update(move |shell, tx| {
+        let at = conversation(shell);
+        shell.media_press(at, MediaPress::Open, tx);
+    });
+    rt.frame(FRAME_S);
+    assert!(
+        rt.state.shown_pins_panel().is_none(),
+        "the conversation's media is outside it"
+    );
+}

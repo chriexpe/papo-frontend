@@ -699,5 +699,15 @@
   "shortcuts.video_full_screen": "Its video in full screen",
   "shortcuts.play_pause": "Play / pause",
   "shortcuts.seek_10": "Back / forward 10 s",
-  "shortcuts.sound": "Sound on / off"
+  "shortcuts.sound": "Sound on / off",
+  "embed.card_label": "Link preview, {{provider}}: {{title}}",
+  "embed.card_label_untitled": "Link preview, {{provider}}",
+  "embed.poster_label": "Video from {{provider}}, {{title}}",
+  "embed.poster_label_untitled": "Video from {{provider}}",
+  "embed.provider_author": "{{provider}} · {{author}}",
+  "embed.open_browser": "Open in browser",
+  "settings.embed_size": "Embed size",
+  "settings.embed_size.sub": "Link-card pictures and provider players",
+  "settings.previews": "Show link previews",
+  "settings.previews.sub": "Cards for the links in messages. Off, the link stays text."
 }

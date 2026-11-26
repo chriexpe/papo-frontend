@@ -419,7 +419,7 @@ impl VideoStore {
             b.2.cmp(&a.2)
                 .then(b.1.intent.by_person.cmp(&a.1.intent.by_person))
                 .then(b.1.shown.total_cmp(&a.1.shown))
-                .then(a.0.attachment.cmp(&b.0.attachment))
+                .then(a.0.id.cmp(&b.0.id))
         });
         live.truncate(MAX_LIVE);
         live.into_iter()

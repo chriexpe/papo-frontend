@@ -23,9 +23,12 @@ use crate::strings;
 
 pub(crate) mod audio;
 mod file_card_view;
+mod picture_cell;
 pub(crate) mod received;
 pub(crate) mod video;
 pub(crate) mod video_bar;
+
+pub(crate) use video_bar::glass;
 
 /// A 4 pt track `share` filled (a seek bar, a volume), for the viewer's video bar too.
 pub(crate) fn video_track(share: f32) -> El {

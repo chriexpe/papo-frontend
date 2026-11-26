@@ -22,10 +22,7 @@ const MESSAGE: u128 = 1;
 const AUDIO: u128 = 9_001;
 
 fn audio_key() -> AudioKey {
-    AudioKey::Received(MediaKey {
-        account: key().account,
-        attachment: Uuid::from_u128(AUDIO),
-    })
+    AudioKey::Received(MediaKey::attachment(key().account, Uuid::from_u128(AUDIO)))
 }
 
 fn audio() -> Value {

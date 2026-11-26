@@ -106,6 +106,14 @@ pub(crate) trait TimelineHost: crate::message_media::received::MediaHost {
     /// A link's menu was asked for, by a secondary click on `url` at `at`,
     /// in window points.
     fn link_menu_requested(&mut self, key: TimelineKey, url: String, at: [f32; 2], tx: &mut Tx);
+    /// A press on the link card at media place `at` (its picture's presses are media presses,
+    /// its title's a link's).
+    fn card_pressed(
+        &mut self,
+        at: crate::message_media::received::MediaAt,
+        press: crate::link_cards::CardPress,
+        tx: &mut Tx,
+    );
     /// Message `id`'s menu was asked for: by a secondary click at `at`, in
     /// window points, else from its hover bar.
     fn message_menu_requested(

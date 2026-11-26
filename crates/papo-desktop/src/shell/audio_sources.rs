@@ -58,7 +58,7 @@ impl AudioSource {
             AudioSource::Received(key) => {
                 let session = client.session(key.account).ok()?;
                 let media = session.media();
-                let source = MediaSource::Attachment(key.attachment);
+                let source = MediaSource::Attachment(key.id);
                 if cached_first && let Ok(data) = media.cached(source.clone()).await {
                     return Some(data.value.bytes);
                 }

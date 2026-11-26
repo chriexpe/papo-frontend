@@ -90,6 +90,14 @@ impl Shell {
         }
     }
 
+    /// A press on media or a card drawn on `surface`: work outside the header panels only when
+    /// it is the conversation's; a press inside the pins or the results keeps them open.
+    pub(crate) fn worked_on(&mut self, surface: crate::message_media::received::MediaSurface) {
+        if surface == crate::message_media::received::MediaSurface::Timeline {
+            self.worked_outside();
+        }
+    }
+
     /// Input that started outside the panel (a press elsewhere, a wheel
     /// over the conversation, the channels or the rail, typing, a key on a
     /// message): the panel shrinks to the opened pin, or closes when

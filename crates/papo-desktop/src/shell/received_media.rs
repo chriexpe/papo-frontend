@@ -17,7 +17,7 @@ use super::Shell;
 use super::staged_files::decoded;
 use crate::design::{Lead, Look, MESSAGE_ROW_INSET, TIMELINE_INSET};
 use crate::gif_frames::gif_frames;
-use crate::media_store::{Fetch, Job, MediaKey, Want};
+use crate::media_store::{Fetch, Job, MediaKey, MediaOf, Want};
 use crate::message_media::received::{MediaStyle, attachment_id, is_hidden, split};
 
 /// Rows beyond the visible ones, on each side, whose media load ahead of being seen.
@@ -48,8 +48,19 @@ impl Shell {
         self.bounds_at(self.conversations.settings().video_size, look)
     }
 
+    /// The largest box a link card's picture or a provider's poster takes in the shown timeline
+    /// (§15.7): Embed size, the content column, and 0.55 × the conversation's height.
+    pub(super) fn embed_bounds(&self, look: &Look) -> MediaBounds {
+        self.bounds_of(self.conversations.settings().embed_size.max_size_pt(), look)
+    }
+
     /// The bounds of a size `setting` in the shown timeline.
     fn bounds_at(&self, setting: papo_sdk_ui::MediaSizeSetting, look: &Look) -> MediaBounds {
+        self.bounds_of(setting.max_size_pt(), look)
+    }
+
+    /// The bounds of a setting's max width and height (`max_size_pt`) in the shown timeline.
+    fn bounds_of(&self, max_size_pt: (u16, u16), look: &Look) -> MediaBounds {
         let [_, _, width_pt, height_pt] = self.conversation_rect;
         let spacing = look.row_spacing(self.message_layout());
         let lead_pt = match spacing.lead {
@@ -60,8 +71,8 @@ impl Shell {
         let insets_pt = 2.0 * (look.space(TIMELINE_INSET) + look.space(MESSAGE_ROW_INSET));
         // Before the conversation is laid out its size is unknown: the setting alone bounds it.
         let known = |value: f32| if value > 0.0 { value } else { f32::INFINITY };
-        MediaBounds::new(
-            setting,
+        MediaBounds::of_max_size(
+            max_size_pt,
             known(width_pt - insets_pt - lead_pt),
             known(height_pt) * HOST_HEIGHT_SHARE,
         )
@@ -80,6 +91,8 @@ impl Shell {
             revealed: Arc::clone(&self.revealed),
             viewing: self.viewer.as_ref().map(|viewer| viewer.at),
             video_bounds: self.video_bounds(look),
+            embed_bounds: self.embed_bounds(look),
+            previews: self.conversations.settings().link_previews,
             videos: self.videos.view(),
             video_surfaces: self.videos.surfaces(),
             video_attention: self.videos.attention,
@@ -98,11 +111,14 @@ impl Shell {
         let bounds = self.media_bounds(&look);
         let video_bounds = self.video_bounds(&look);
         let scale = self.scale;
-        let mut wants = Vec::new();
-        let mut videos = Vec::new();
         let mut audio = Vec::new();
         // Your messages the timeline shows sent before their queue said so.
         let mut sent_audio = Vec::new();
+        // The messages whose media show: the conversation's visible and near rows, then the
+        // open pins' (§10: media included), whose videos show their first frame only (they
+        // play in the conversation).
+        let mut shown: Vec<(Arc<papo_sdk::Message>, bool)> = Vec::new();
+        let account = self.tabs.shown().map(|open| open.key.account);
         if let Some(open) = self.tabs.shown() {
             let visible = visible_span(open);
             let from = visible.start.saturating_sub(NEAR_ROWS);
@@ -114,62 +130,47 @@ impl Shell {
                     audio.extend(self.unsent_audio_wanted(open.key.account, operation));
                 }
                 if let TimelineItem::Message { message, .. } = item.as_ref() {
-                    let attachments = message.attachments.as_deref().unwrap_or_default();
-                    audio.extend(super::audio::audio_wanted(open.key.account, attachments));
-                    wants.extend(pictures_wanted(
-                        open.key.account,
-                        attachments,
-                        &self.own_sizes,
-                        &self.revealed,
-                        bounds,
-                        scale,
-                    ));
-                    videos.extend(super::videos::videos_wanted(
-                        attachments,
-                        &super::videos::Wanting {
-                            account: open.key.account,
-                            own_sizes: &self.own_sizes,
-                            revealed: &self.revealed,
-                            bounds: video_bounds,
-                            album_bounds: bounds,
-                            scale,
-                            still: false,
-                        },
-                    ));
+                    shown.push((Arc::clone(message), false));
                 }
             }
-            // The pins panel's messages, while it shows them (§10: media included).
             let pins_open = self
                 .pins_panel
                 .as_ref()
                 .is_some_and(|panel| panel.key == open.key);
             if pins_open && let Some(pins) = open.pins.list() {
-                for pin in pins {
-                    let attachments = pin.message.attachments.as_deref().unwrap_or_default();
-                    audio.extend(super::audio::audio_wanted(open.key.account, attachments));
-                    wants.extend(pictures_wanted(
-                        open.key.account,
-                        attachments,
-                        &self.own_sizes,
-                        &self.revealed,
-                        bounds,
-                        scale,
-                    ));
-                    // A pinned video shows its first frame; it plays in the conversation.
-                    videos.extend(super::videos::videos_wanted(
-                        attachments,
-                        &super::videos::Wanting {
-                            account: open.key.account,
-                            own_sizes: &self.own_sizes,
-                            revealed: &self.revealed,
-                            bounds: video_bounds,
-                            album_bounds: bounds,
-                            scale,
-                            still: true,
-                        },
-                    ));
-                }
+                shown.extend(pins.iter().map(|pin| (Arc::clone(&pin.message), true)));
             }
+        }
+        let mut wants = Vec::new();
+        let mut videos = Vec::new();
+        if let Some(account) = account {
+            for (message, still) in &shown {
+                let attachments = message.attachments.as_deref().unwrap_or_default();
+                audio.extend(super::audio::audio_wanted(account, attachments));
+                wants.extend(pictures_wanted(
+                    account,
+                    attachments,
+                    &self.own_sizes,
+                    &self.revealed,
+                    bounds,
+                    scale,
+                ));
+                videos.extend(super::videos::videos_wanted(
+                    attachments,
+                    &super::videos::Wanting {
+                        account,
+                        own_sizes: &self.own_sizes,
+                        revealed: &self.revealed,
+                        bounds: video_bounds,
+                        album_bounds: bounds,
+                        scale,
+                        still: *still,
+                    },
+                ));
+            }
+            let (pictures, clips) = self.previews_wanted(account, &shown, &look);
+            wants.extend(pictures);
+            videos.extend(clips);
         }
         self.want_videos(videos);
         for (from, to) in sent_audio {
@@ -193,13 +194,26 @@ impl Shell {
             let images = Arc::clone(&images);
             let scale = self.scale;
             let updates = sdk.updates();
+            // An embed's picture is fetched from the exact source its preview names.
+            let source = match (job.key.of, job.fetch) {
+                (MediaOf::Attachment, Fetch::Thumbnail) => MediaSource::Thumbnail(job.key.id),
+                (MediaOf::Attachment, Fetch::Original | Fetch::Animation) => {
+                    MediaSource::Attachment(job.key.id)
+                }
+                (MediaOf::EmbedPicture { .. }, _) => {
+                    let Some(source) = self.relayed.get(&job.key) else {
+                        self.media.dropped(&[job]);
+                        continue;
+                    };
+                    source.clone()
+                }
+                // A clip's frames are the video store's.
+                (MediaOf::EmbedClip, _) => {
+                    self.media.dropped(&[job]);
+                    continue;
+                }
+            };
             sdk.run(move |client| async move {
-                let source = match job.fetch {
-                    Fetch::Thumbnail => MediaSource::Thumbnail(job.key.attachment),
-                    Fetch::Original | Fetch::Animation => {
-                        MediaSource::Attachment(job.key.attachment)
-                    }
-                };
                 let fetched = match client.session(job.key.account) {
                     Ok(session) => session.media().fetch(source, false).await.ok(),
                     Err(_) => None,
@@ -271,10 +285,7 @@ impl Shell {
                 })
                 .collect(),
         };
-        showing.sort_by(|a, b| {
-            b.0.total_cmp(&a.0)
-                .then(a.1.attachment.cmp(&b.1.attachment))
-        });
+        showing.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
         let before = self.media.view();
         let jobs = self
             .media
@@ -403,10 +414,7 @@ fn pictures_wanted(
                 _ => box_pt * scale,
             };
             Some(Want {
-                key: MediaKey {
-                    account,
-                    attachment: id,
-                },
+                key: MediaKey::attachment(account, id),
                 thumbnail_px,
                 box_pt,
                 box_px: wanted_px,
@@ -423,7 +431,7 @@ impl crate::message_media::received::MediaHost for Shell {
         press: crate::message_media::received::MediaPress,
         tx: &mut Tx,
     ) {
-        self.worked_outside();
+        self.worked_on(at.surface);
         self.press_media(at, press, tx);
     }
 
@@ -450,7 +458,7 @@ impl crate::message_media::received::MediaHost for Shell {
         press: crate::message_media::video::VideoPress,
         tx: &mut Tx,
     ) {
-        self.worked_outside();
+        self.worked_on(at.surface);
         self.press_video(at, key, press, tx);
     }
 
@@ -484,7 +492,7 @@ impl crate::message_media::received::MediaHost for Shell {
     ) {
         // The pointer passing over a waveform is no work: an opened pin or result stays open.
         if !matches!(press, crate::message_media::audio::AudioPress::Hover(_)) {
-            self.worked_outside();
+            self.worked_on(at.surface);
         }
         self.press_audio(at, key, press, tx);
     }

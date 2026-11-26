@@ -22,7 +22,7 @@ use crate::settings::colour_field::ColourChange;
 use crate::settings::rows::{density_name, language_name, theme_name};
 use crate::settings::{
     Change, HeldEvent, PageId, Presence, RowId, SEARCH_KEY, SETTINGS_BUTTON_KEY, SettingsPanel,
-    SizedMedia, Target,
+    SizeChoice, SizeSetting, SizedMedia, Target,
 };
 
 /// What a choice's menu sets.
@@ -32,8 +32,8 @@ pub(crate) enum SettingChoice {
     Density(Density),
     Language(Language),
     Presence(Presence),
-    /// Image size's or Video size's value.
-    MediaSize(SizedMedia, papo_sdk_ui::MediaSizeSetting),
+    /// Image size's, Video size's or Embed size's value.
+    MediaSize(SizeSetting),
     /// Keep playing when hidden's value.
     KeepPlaying(crate::keep_playing::KeepPlaying),
     /// A picture row's Change.
@@ -199,12 +199,15 @@ impl Shell {
                     .collect()
             }
             RowId::Photo | RowId::Banner => self.picture_menu(row),
-            RowId::ImageSize => {
-                size_items(SizedMedia::Images, self.conversations.settings().image_size)
-            }
-            RowId::VideoSize => {
-                size_items(SizedMedia::Videos, self.conversations.settings().video_size)
-            }
+            RowId::ImageSize => size_items(SizeSetting::Images(
+                self.conversations.settings().image_size,
+            )),
+            RowId::VideoSize => size_items(SizeSetting::Videos(
+                self.conversations.settings().video_size,
+            )),
+            RowId::EmbedSize => size_items(SizeSetting::Embeds(
+                self.conversations.settings().embed_size,
+            )),
             RowId::KeepPlaying => {
                 let current = self.conversations.settings().keep_playing;
                 crate::keep_playing::KeepPlaying::ALL
@@ -239,7 +242,7 @@ impl Shell {
             SettingChoice::Density(density) => Change::Density(density),
             SettingChoice::Language(language) => Change::Language(language),
             SettingChoice::Presence(presence) => Change::Presence(presence),
-            SettingChoice::MediaSize(media, size) => Change::MediaSize(media, size),
+            SettingChoice::MediaSize(size) => Change::MediaSize(size),
             SettingChoice::KeepPlaying(choice) => Change::KeepPlaying(choice),
         };
         self.settings_change(change, tx);
@@ -425,37 +428,39 @@ fn applied(
     (next, selected)
 }
 
-/// A size row's menu (Image size's or Video size's): each preset with its box, then Custom
-/// (starting at the current box).
-fn size_items(media: SizedMedia, current: papo_sdk_ui::MediaSizeSetting) -> Vec<MenuItem> {
-    use papo_sdk_ui::MediaSizeSetting;
+/// A size row's menu (Image size's, Video size's or Embed size's): each preset with its box,
+/// then Custom (starting at the current box).
+fn size_items(current: SizeSetting) -> Vec<MenuItem> {
     let (width, height) = current.max_size_pt();
+    let media = match current.media() {
+        SizedMedia::Images => "image",
+        SizedMedia::Videos => "video",
+        SizedMedia::Embeds => "embed",
+    };
     [
-        MediaSizeSetting::Small,
-        MediaSizeSetting::Medium,
-        MediaSizeSetting::Large,
-        MediaSizeSetting::custom(width, height),
+        SizeChoice::Small,
+        SizeChoice::Medium,
+        SizeChoice::Large,
+        SizeChoice::Custom,
     ]
     .into_iter()
-    .map(|size| {
-        let chosen = std::mem::discriminant(&size) == std::mem::discriminant(&current);
+    .map(|choice| {
+        let chosen = choice == current.choice();
         // Custom keeps its own sizes when it is already chosen.
-        let picked = if chosen { current } else { size };
-        let dims = (!matches!(size, MediaSizeSetting::Custom { .. })).then(|| {
-            let (w, h) = size.max_size_pt();
+        let picked = if chosen {
+            current
+        } else {
+            current.with(choice, width, height)
+        };
+        let dims = (choice != SizeChoice::Custom).then(|| {
+            let (w, h) = picked.max_size_pt();
             crate::strings::settings_size_dims(w, h)
         });
+        // Keyed by the choice, not its translated name.
         MenuItem::plain(
-            &format!(
-                "settings-{}-size-{}",
-                match media {
-                    SizedMedia::Images => "image",
-                    SizedMedia::Videos => "video",
-                },
-                crate::settings::rows::size_name(size)
-            ),
-            crate::settings::rows::size_name(size),
-            MenuAction::Setting(SettingChoice::MediaSize(media, picked)),
+            &format!("settings-{media}-size-{choice:?}"),
+            crate::settings::rows::size_name(choice),
+            MenuAction::Setting(SettingChoice::MediaSize(picked)),
             false,
         )
         .with_sub(dims)

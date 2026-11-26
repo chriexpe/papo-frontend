@@ -8,7 +8,7 @@
 
 use rune::Image;
 
-use crate::media_store::MediaKey;
+use crate::media_store::{MediaKey, MediaOf};
 use crate::message_media::received::MediaAt;
 
 pub(crate) mod video;
@@ -30,13 +30,18 @@ pub(crate) const CLEAR_SIDE_PT: f32 = 24.0;
 /// One picture the viewer steps through.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ViewerItem {
-    /// Its place among the message's attachments.
+    /// Its place among the message's media: its attachments, then its link previews.
     pub(crate) index: usize,
     pub(crate) key: MediaKey,
     pub(crate) name: String,
     pub(crate) gif: bool,
     /// A video: it plays here (`shell::viewer_video`), and has no whole picture to fetch.
     pub(crate) video: bool,
+    /// Where its whole picture comes from: an attachment's original, or an embed's relayed
+    /// picture (which is already whole).
+    pub(crate) source: papo_sdk::MediaSource,
+    /// Its size as known before the whole picture decodes.
+    pub(crate) size: papo_sdk_ui::MediaSize,
 }
 
 /// The open viewer.
@@ -91,14 +96,29 @@ impl Viewer {
         }
     }
 
-    /// The element that gets the keyboard back on close: the item showing, or in an album the
-    /// last cell drawn ("+N") for one past it.
+    /// The element that gets the keyboard back on close: the item showing, or for an album's
+    /// picture past the cells drawn the last cell ("+N").
     pub(crate) fn return_focus(&self) -> String {
-        let shown = self.current.min(papo_sdk_ui::ALBUM_CELLS - 1);
-        let index = self
-            .items
-            .get(shown)
-            .map_or(self.at.index, |item| item.index);
+        let index = match self.item() {
+            Some(item) if item.key.of == MediaOf::Attachment => {
+                let pictures: Vec<usize> = self
+                    .items
+                    .iter()
+                    .filter(|other| other.key.of == MediaOf::Attachment)
+                    .map(|other| other.index)
+                    .collect();
+                let place = pictures
+                    .iter()
+                    .position(|index| *index == item.index)
+                    .unwrap_or_default();
+                pictures
+                    .get(place.min(papo_sdk_ui::ALBUM_CELLS - 1))
+                    .copied()
+                    .unwrap_or(item.index)
+            }
+            Some(item) => item.index,
+            None => self.at.index,
+        };
         crate::message_media::received::media_element_key(MediaAt { index, ..self.at })
     }
 

@@ -47,19 +47,26 @@ impl Shell {
     /// A link's menu beside the pointer at `at`: Open link, with its host,
     /// and Copy link, nothing else (`docs/design.md` §10, Link menu).
     pub(super) fn open_link_menu(&mut self, key: TimelineKey, url: String, at: [f32; 2]) {
+        self.open_link_menu_as(key, url, at, strings::link_menu_open());
+    }
+
+    /// The link menu with its first item named `open_label` (a provider video's card says
+    /// Open in browser, §15.6).
+    pub(super) fn open_link_menu_as(
+        &mut self,
+        key: TimelineKey,
+        url: String,
+        at: [f32; 2],
+        open_label: &str,
+    ) {
         let open_link = MenuAction::OpenLink {
             key,
             url: url.clone(),
         };
         let items = vec![
-            MenuItem::plain(
-                "menu-link-open",
-                strings::link_menu_open(),
-                open_link,
-                false,
-            )
-            .with_icon(&icons::EXTERNAL)
-            .with_sub(links::host(&url)),
+            MenuItem::plain("menu-link-open", open_label, open_link, false)
+                .with_icon(&icons::EXTERNAL)
+                .with_sub(links::host(&url)),
             MenuItem::plain(
                 "menu-link-copy",
                 strings::link_menu_copy(),
@@ -157,6 +164,11 @@ impl Shell {
         push_group(&mut entries, group);
         let copies = copy::copies(&self.copy_source(open), id)?;
         push_group(&mut entries, link_items(key, &copies.links));
+        let previews_shown = self.conversations.settings().link_previews;
+        push_group(
+            &mut entries,
+            super::link_cards::card_menu_items(key, message, previews_shown, &copies.links),
+        );
         push_group(&mut entries, copy_items(key, id, &copies));
         if actions.delete.is_some() {
             let mut delete = item(

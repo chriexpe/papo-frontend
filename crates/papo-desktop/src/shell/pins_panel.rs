@@ -227,6 +227,11 @@ fn list(
         f32::INFINITY,
         max_height_pt * papo_sdk_ui::HOST_HEIGHT_SHARE,
     );
+    style.media.embed_bounds = papo_sdk_ui::MediaBounds::of_max_size(
+        shell.conversations.settings().embed_size.max_size_pt(),
+        f32::INFINITY,
+        max_height_pt * papo_sdk_ui::HOST_HEIGHT_SHARE,
+    );
     style.media.surface = crate::message_media::received::MediaSurface::Pins;
     let style = &style;
     let mut rows = Vec::new();
@@ -287,7 +292,7 @@ fn pin_row(open: &OpenTimeline, pin: &Pin, unpin: bool, marked: bool, style: &St
                 message: id,
                 index: 0,
             },
-            pin.message.attachments.as_deref().unwrap_or_default(),
+            &pin.message,
             &style.media,
         ),
     );

@@ -69,7 +69,7 @@ pub(super) fn cache_key(key: AudioKey) -> Option<WaveformKey> {
     match key {
         AudioKey::Received(key) => Some(WaveformKey {
             account: key.account,
-            attachment: key.attachment,
+            attachment: key.id,
         }),
         AudioKey::Unsent { .. } => None,
     }

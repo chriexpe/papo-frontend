@@ -33,7 +33,10 @@ use super::local_time::LocalTime;
 use super::no_avatar::without_avatars;
 use super::reactions;
 use super::reply_line::reply_line;
-use super::row_media::{media_of, received_of, signature, unsent_of, with_media};
+use super::row_media::{
+    Body, ReceivedSignature, glides, media_of, previews_grow, previews_of, received_of, signature,
+    unsent_of,
+};
 use super::row_parts::{Highlight, Origin, Parts, RowMessage, parts};
 use super::rows::{author_key, avatar_key, echo_key, message_key, message_part_key};
 use super::send_mark::send_mark;
@@ -103,18 +106,16 @@ pub(super) fn message_row<S: TimelineHost>(
             }),
             standalone: false,
         };
-        let body = with_media(
-            content::body::<S>(&doc, &draw),
-            media_of::<S>(
-                unsent.as_ref(),
-                received.as_ref(),
-                row_message,
-                style,
-                &look,
-            ),
+        let body = body_of::<S>(
+            &doc,
+            &draw,
+            &parts,
+            unsent.as_ref(),
+            received.as_ref(),
+            row_message,
+            style,
             &look,
         );
-        let body = with_after::<S>(body, key, id, &parts, &look, &style.look);
         let mark = mark::<S>(key, id, &parts, &style.look);
         let line = parts.reply.as_ref().map(|line| {
             let spacing = look.row_spacing(layout);
@@ -126,7 +127,8 @@ pub(super) fn message_row<S: TimelineHost>(
             .map(|bar| hover_bar::bar::<S>(key, id, bar, &style.look));
         let (enter, exit) = hover_bar::row_motion();
         let name_press = author_press::<S>(key, row_message.message, history);
-        build(id, &parts, line, body, mark, style, name_press, |message| {
+        let grows = previews_grow(received.as_ref(), style);
+        let built = build(id, &parts, line, body, mark, style, name_press, |message| {
             if !history {
                 return message;
             }
@@ -157,33 +159,56 @@ pub(super) fn message_row<S: TimelineHost>(
                 // 2026-11-22): a click leaves the keyboard where it was.
                 .preserve_focus_on_press(true)
                 .on_key(move |host: &mut S, event, tx| host.message_key(key, id, event, tx))
-        })
+        });
+        glides(built, grows)
     })
 }
 
-/// `body` with what follows it: the reaction chips, and a failed deletion's line (drawn in
+/// A message's body: its text, its blocks (link previews, then attachments) and what follows.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row's parts, each drawn by its own module"
+)]
+fn body_of<S: TimelineHost>(
+    doc: &Doc,
+    draw: &Draw<'_>,
+    parts: &Parts<'_>,
+    unsent: Option<&super::unsent_attachments::Unsent<'_>>,
+    received: Option<&(crate::message_media::received::MediaAt, ReceivedSignature)>,
+    row_message: &RowMessage<'_>,
+    style: &Style,
+    look: &Look,
+) -> Body {
+    Body {
+        text: content::body::<S>(doc, draw),
+        blocks: [
+            previews_of::<S>(received, row_message, style, look),
+            media_of::<S>(unsent, received, row_message, style, look),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        after: after::<S>(draw.key, draw.message, parts, look, &style.look),
+    }
+}
+
+/// What follows a message's blocks: its reaction chips, and a failed deletion's line (drawn in
 /// `full`, the row's look before it read quieter).
-fn with_after<S: TimelineHost>(
-    mut body: El,
+fn after<S: TimelineHost>(
     key: TimelineKey,
     id: Uuid,
     parts: &Parts<'_>,
     look: &Look,
     full: &Look,
-) -> El {
+) -> Vec<El> {
+    let mut after = Vec::new();
     if let Some(chips) = reactions::chips::<S>(key, id, &parts.chips, parts.add_chip, look) {
-        body = col()
-            .gap(look.space(MESSAGE_BLOCK_GAP))
-            .child(body)
-            .child(chips);
+        after.push(chips);
     }
     if let Some((local, ChangeState::DeleteFailed)) = parts.change {
-        body = col()
-            .gap(look.space(MESSAGE_BLOCK_GAP))
-            .child(body)
-            .child(delete_failed_line::<S>(key, local, full));
+        after.push(delete_failed_line::<S>(key, local, full));
     }
-    body
+    after
 }
 
 /// The row's look: a message or edit still on its way reads quieter.
@@ -229,7 +254,7 @@ fn build(
     id: Uuid,
     parts: &Parts<'_>,
     line: Option<El>,
-    body: El,
+    body: Body,
     mark: Option<El>,
     style: &Style,
     name_press: impl Fn(El, String) -> El,
@@ -274,7 +299,7 @@ fn build(
                     name_press(tile, avatar_key(id))
                 })
             };
-            (Some(lead), content.child(body))
+            (Some(lead), content.child(body.joined(&look)))
         }
         Lead::Gutter(width_pt) => {
             let mut lead = el().key("lead").w(width_pt);

@@ -3,8 +3,8 @@
 //! avatar), how a timeline opens and what it shows of skipped messages, the
 //! channel description on opening, the mention and reply highlights'
 //! hues (the reply highlight is drawn once B-006 lands), and the Media group
-//! (Image size, Video size, Animate GIFs and stickers, Autoplay videos, Keep
-//! playing when hidden). Every
+//! (Image size, Video size, Embed size, Animate GIFs and stickers, Autoplay
+//! videos, Keep playing when hidden), and Show link previews. Every
 //! one is this device's: times and avatars could follow the account
 //! (`display.show_timestamps`, `display.show_avatars`) only once the
 //! backend can save one field without the others (B-020).
@@ -15,13 +15,16 @@
 //! holds. What each one changes is its reader's (the composer, the
 //! timeline, the look).
 
-use papo_sdk_ui::MediaSizeSetting;
+use papo_sdk_ui::{EmbedSizeSetting, MediaSizeSetting};
 use rune::prefs::Prefs;
 use serde_json::{Value, json};
 
 use crate::design::{MENTION_HIGHLIGHT_HUE_DEGREES, REPLY_HIGHLIGHT_HUE_DEGREES};
 use crate::device_settings::{SettingsFile, Stored, Write};
 use crate::keep_playing::KeepPlaying;
+
+mod saved_size;
+use saved_size::{SavedSize, saved_size};
 
 /// "Enter to send".
 const ENTER_SENDS_KEY: &str = "enter_sends";
@@ -52,6 +55,10 @@ const VIDEO_SIZE_KEY: &str = "video_size";
 const AUTOPLAY_VIDEOS_KEY: &str = "autoplay_videos";
 /// Media › Keep playing when hidden: "nothing", "audio", "video" or "both".
 const KEEP_PLAYING_KEY: &str = "keep_playing_hidden";
+/// Media › Embed size, saved as Image size is.
+const EMBED_SIZE_KEY: &str = "embed_size";
+/// Show link previews.
+const LINK_PREVIEWS_KEY: &str = "link_previews";
 
 /// Everything the Conversations page holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,6 +100,10 @@ pub(crate) struct ConversationSettings {
     pub(crate) autoplay_videos: Option<bool>,
     /// Which sound a person started goes on while the window is off screen.
     pub(crate) keep_playing: KeepPlaying,
+    /// The largest box a link card's picture or a provider's player takes (§15.7).
+    pub(crate) embed_size: EmbedSizeSetting,
+    /// Messages draw cards for their links; off, the links stay text and nothing is reserved.
+    pub(crate) link_previews: bool,
 }
 
 impl ConversationSettings {
@@ -128,6 +139,8 @@ impl Default for ConversationSettings {
             video_size: MediaSizeSetting::Medium,
             autoplay_videos: None,
             keep_playing: KeepPlaying::default(),
+            embed_size: EmbedSizeSetting::Medium,
+            link_previews: true,
         }
     }
 }
@@ -168,20 +181,19 @@ impl ConversationStore {
             channel_description: switch(CHANNEL_DESCRIPTION_KEY, defaults.channel_description),
             mention_hue_degrees: hue(MENTION_HUE_KEY, defaults.mention_hue_degrees),
             reply_hue_degrees: hue(REPLY_HUE_KEY, defaults.reply_hue_degrees),
-            image_size: prefs
-                .get::<Value>(IMAGE_SIZE_KEY)
-                .and_then(|value| size_of(&value))
-                .unwrap_or(defaults.image_size),
+            image_size: saved_size(prefs, IMAGE_SIZE_KEY)
+                .map_or(defaults.image_size, SavedSize::media),
             animate_gifs: prefs.get(ANIMATE_GIFS_KEY),
-            video_size: prefs
-                .get::<Value>(VIDEO_SIZE_KEY)
-                .and_then(|value| size_of(&value))
-                .unwrap_or(defaults.video_size),
+            video_size: saved_size(prefs, VIDEO_SIZE_KEY)
+                .map_or(defaults.video_size, SavedSize::media),
             autoplay_videos: prefs.get(AUTOPLAY_VIDEOS_KEY),
             keep_playing: prefs
                 .get::<String>(KEEP_PLAYING_KEY)
                 .and_then(|saved| KeepPlaying::of_saved(&saved))
                 .unwrap_or(defaults.keep_playing),
+            embed_size: saved_size(prefs, EMBED_SIZE_KEY)
+                .map_or(defaults.embed_size, SavedSize::embed),
+            link_previews: switch(LINK_PREVIEWS_KEY, defaults.link_previews),
         };
         ConversationStore {
             stored: Stored::new(settings),
@@ -252,48 +264,23 @@ fn entries(settings: &ConversationSettings) -> Vec<(&'static str, Value)> {
         (CHANNEL_DESCRIPTION_KEY, json!(settings.channel_description)),
         (MENTION_HUE_KEY, json!(settings.mention_hue_degrees)),
         (REPLY_HUE_KEY, json!(settings.reply_hue_degrees)),
-        (IMAGE_SIZE_KEY, size_value(settings.image_size)),
+        (
+            IMAGE_SIZE_KEY,
+            SavedSize::of_media(settings.image_size).value(),
+        ),
         (ANIMATE_GIFS_KEY, json!(settings.animate_gifs)),
-        (VIDEO_SIZE_KEY, size_value(settings.video_size)),
+        (
+            VIDEO_SIZE_KEY,
+            SavedSize::of_media(settings.video_size).value(),
+        ),
         (AUTOPLAY_VIDEOS_KEY, json!(settings.autoplay_videos)),
         (KEEP_PLAYING_KEY, json!(settings.keep_playing.saved())),
+        (
+            EMBED_SIZE_KEY,
+            SavedSize::of_embed(settings.embed_size).value(),
+        ),
+        (LINK_PREVIEWS_KEY, json!(settings.link_previews)),
     ]
-}
-
-/// A size setting as it is saved.
-fn size_value(size: MediaSizeSetting) -> Value {
-    match size {
-        MediaSizeSetting::Small => json!("small"),
-        MediaSizeSetting::Medium => json!("medium"),
-        MediaSizeSetting::Large => json!("large"),
-        MediaSizeSetting::Custom {
-            max_width_pt,
-            max_height_pt,
-        } => json!({ "custom": [max_width_pt, max_height_pt] }),
-    }
-}
-
-/// A saved size setting; none for anything else (a Custom size comes back within its range).
-fn size_of(value: &Value) -> Option<MediaSizeSetting> {
-    match value {
-        Value::String(name) => match name.as_str() {
-            "small" => Some(MediaSizeSetting::Small),
-            "medium" => Some(MediaSizeSetting::Medium),
-            "large" => Some(MediaSizeSetting::Large),
-            _ => None,
-        },
-        Value::Object(object) => {
-            let sides = object.get("custom")?.as_array()?;
-            let side = |index: usize| {
-                sides
-                    .get(index)?
-                    .as_u64()
-                    .map(|side| u16::try_from(side).unwrap_or(u16::MAX))
-            };
-            Some(MediaSizeSetting::custom(side(0)?, side(1)?))
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -301,10 +288,10 @@ mod tests {
     use rune::prefs::Prefs;
 
     use super::{
-        ConversationSettings, ConversationStore, ENTER_SENDS_KEY, IMAGE_SIZE_KEY, MENTION_HUE_KEY,
-        OPEN_AT_NEWEST_KEY, UNREAD_HOURGLASS_KEY,
+        ConversationSettings, ConversationStore, EMBED_SIZE_KEY, ENTER_SENDS_KEY, IMAGE_SIZE_KEY,
+        MENTION_HUE_KEY, OPEN_AT_NEWEST_KEY, UNREAD_HOURGLASS_KEY,
     };
-    use papo_sdk_ui::MediaSizeSetting;
+    use papo_sdk_ui::{EmbedSizeSetting, MediaSizeSetting};
 
     #[test]
     fn missing_settings_take_the_designs_defaults() {
@@ -357,6 +344,8 @@ mod tests {
         changed.animate_gifs = Some(false);
         changed.video_size = MediaSizeSetting::Large;
         changed.autoplay_videos = Some(true);
+        changed.embed_size = EmbedSizeSetting::custom(304, 168);
+        changed.link_previews = false;
         let written = store.change(changed).expect("a write");
         store.write_of(&written).run().unwrap();
         assert_eq!(store.written(written, true), None);
@@ -393,5 +382,17 @@ mod tests {
             ConversationStore::read(&prefs).settings().image_size,
             MediaSizeSetting::Medium
         );
+    }
+
+    #[test]
+    fn embed_size_is_saved_apart_and_custom_keeps_its_own_heights() {
+        let mut prefs = Prefs::memory();
+        prefs
+            .set(EMBED_SIZE_KEY, &serde_json::json!({ "custom": [9999, 1] }))
+            .unwrap();
+        let settings = *ConversationStore::read(&prefs).settings();
+        assert_eq!(settings.embed_size, EmbedSizeSetting::custom(720, 160));
+        assert_eq!(settings.image_size, MediaSizeSetting::Medium);
+        assert!(settings.link_previews, "on by default");
     }
 }

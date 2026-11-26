@@ -79,10 +79,7 @@ pub(crate) fn audio_card<S: MediaHost>(
     style: &MediaStyle,
     look: &Look,
 ) -> Option<El> {
-    let key = AudioKey::Received(MediaKey {
-        account: at.account,
-        attachment: attachment_id(attachment)?,
-    });
+    let key = AudioKey::Received(MediaKey::attachment(at.account, attachment_id(attachment)?));
     let shown = style
         .audio
         .get(key)

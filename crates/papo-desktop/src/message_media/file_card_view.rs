@@ -33,10 +33,7 @@ pub(crate) fn file_card_of<S: MediaHost>(
         .size_bytes
         .and_then(|size| u64::try_from(size).ok());
     let save = attachment_id(attachment)
-        .map(|attachment| MediaKey {
-            account: at.account,
-            attachment,
-        })
+        .map(|attachment| MediaKey::attachment(at.account, attachment))
         .and_then(|key| style.saves.get(&key));
     let (line, ends, bar) = save_parts::<S>(at, save, total, look);
     let label = match &total {

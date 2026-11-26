@@ -21,6 +21,8 @@ use super::theme::Theme;
 
 /// How far the lightness moves per step while it looks for the floors.
 const LIGHTNESS_STEP: f32 = 0.002;
+/// How far a card rule's lightness moves per step.
+const RULE_LIGHTNESS_STEP: f32 = 0.01;
 /// How much chroma a tinted surface gives up per step.
 const CHROMA_STEP: f32 = 0.001;
 /// The contrast a role-coloured name keeps on `surface.sidebar` and
@@ -155,6 +157,25 @@ pub(crate) fn role_name(role: Color, palette: &Palette) -> Color {
     reach_floor(lightness, chroma, hue_degrees, step, |name| {
         contrast(name, palette.surface_sidebar) >= ROLE_NAME_FLOOR
             && contrast(name, palette.surface_hover) >= ROLE_NAME_FLOOR
+    })
+}
+
+/// A link card's rule in its embed's colour `colour` (§15.1): its hue and chroma, its lightness
+/// moved toward the text until it holds [`super::CARD_RULE_FLOOR`] on `surface.content`, the
+/// message list. A colour that already does keeps its lightness.
+pub(crate) fn card_rule(colour: Color, palette: &Palette) -> Color {
+    let (lightness, chroma, hue_degrees) = lch(colour);
+    let text_is_lighter =
+        palette.text_primary.to_oklab()[0] > palette.surface_content.to_oklab()[0];
+    // Coarser than the other floors: a 2 pt rule needs no finer lightness, and it is fitted
+    // while its row is built.
+    let step = if text_is_lighter {
+        RULE_LIGHTNESS_STEP
+    } else {
+        -RULE_LIGHTNESS_STEP
+    };
+    reach_floor(lightness, chroma, hue_degrees, step, |rule| {
+        contrast(rule, palette.surface_content) >= super::CARD_RULE_FLOOR
     })
 }
 

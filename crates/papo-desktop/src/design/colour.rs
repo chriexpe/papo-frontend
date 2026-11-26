@@ -351,7 +351,7 @@ fn text_on(background: Color) -> Color {
 
 /// WCAG 2 contrast ratio. Rune colours are linear sRGB, so the relative
 /// luminance is a weighted sum of the channels as they are.
-pub(super) fn contrast(a: Color, b: Color) -> f32 {
+pub(crate) fn contrast(a: Color, b: Color) -> f32 {
     let luminance = |c: Color| 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
     let (la, lb) = (luminance(a), luminance(b));
     let (light, dark) = if la > lb { (la, lb) } else { (lb, la) };

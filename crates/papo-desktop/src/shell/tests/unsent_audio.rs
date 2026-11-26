@@ -125,7 +125,7 @@ fn a_sent_audio_keeps_playing_under_the_server_attachment() {
         };
         let cached = papo_sdk_ui::WaveformKey {
             account: media.account,
-            attachment: media.attachment,
+            attachment: media.id,
         };
         assert!(
             audio.waveforms.get(cached).is_some(),

@@ -289,7 +289,7 @@ pub(super) fn play_mark<S: MediaHost>(
 }
 
 /// `mark` on dark glass: the canvas's near-black at 55 %, the picture behind blurred 8 pt.
-pub(super) fn glass(mark: El) -> El {
+pub(crate) fn glass(mark: El) -> El {
     let [r, g, b] = VIDEO_GLASS_RGB.map(|channel| f32::from(channel) / 255.0);
     mark.fill(Color {
         r,

@@ -59,10 +59,7 @@ fn with_video(duration_ms: u64) -> Runtime<Shell> {
                 pending: None,
             }),
         );
-        let key = MediaKey {
-            account,
-            attachment: video_id(),
-        };
+        let key = MediaKey::attachment(account, video_id());
         let mut store = VideoStore::default();
         let jobs = store.want([VideoWant {
             key,
@@ -88,10 +85,7 @@ fn with_video(duration_ms: u64) -> Runtime<Shell> {
 }
 
 fn video_key(rt: &Runtime<Shell>) -> MediaKey {
-    MediaKey {
-        account: rt.state.tabs.shown().unwrap().key.account,
-        attachment: video_id(),
-    }
+    MediaKey::attachment(rt.state.tabs.shown().unwrap().key.account, video_id())
 }
 
 fn settle(rt: &mut Runtime<Shell>) {
@@ -189,10 +183,9 @@ fn video_size_and_autoplay_videos_sit_in_the_media_group() {
     assert_eq!(settings.autoplay_videos, Some(false));
     rt.update(|shell, tx| {
         shell.settings_chosen(
-            crate::shell::SettingChoice::MediaSize(
-                crate::settings::SizedMedia::Videos,
+            crate::shell::SettingChoice::MediaSize(crate::settings::SizeSetting::Videos(
                 papo_sdk_ui::MediaSizeSetting::custom(504, 304),
-            ),
+            )),
             tx,
         );
     });

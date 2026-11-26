@@ -196,6 +196,16 @@ impl TimelineHost for Shell {
         }
     }
 
+    fn card_pressed(
+        &mut self,
+        at: crate::message_media::received::MediaAt,
+        press: crate::link_cards::CardPress,
+        tx: &mut Tx,
+    ) {
+        self.worked_on(at.surface);
+        self.press_card(at, press, tx);
+    }
+
     fn message_menu_requested(
         &mut self,
         key: TimelineKey,

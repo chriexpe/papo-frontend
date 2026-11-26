@@ -6,20 +6,19 @@
 
 use std::sync::Arc;
 
-use papo_sdk::{MediaSource, Message};
-use papo_sdk_ui::{AttachmentKind, MediaSize, TimelineItem};
+use papo_sdk::Message;
+use papo_sdk_ui::{MediaSize, TimelineItem};
 use rune::Tx;
 
 use super::Shell;
 use super::media_presses::MediaAction;
 use super::staged_files::decoded;
-use crate::media_store::MediaKey;
-use crate::message_media::received::{MediaAt, MediaSurface, attachment_id, is_hidden, split};
+use crate::message_media::received::{MediaAt, MediaSurface, is_hidden};
 use crate::strings;
 use crate::timeline::local_time::day_label;
 use crate::timeline::{author_name, created_us};
 use crate::viewer::view::VIEWER_KEY;
-use crate::viewer::{CLEAR_SIDE_PT, CLEAR_TOP_PT, Viewer, ViewerItem};
+use crate::viewer::{CLEAR_SIDE_PT, CLEAR_TOP_PT, Viewer};
 
 /// How long the full picture may take before its ring shows, in seconds.
 const RING_AFTER_S: f64 = 0.5;
@@ -49,29 +48,12 @@ impl Shell {
             })
     }
 
-    /// Opens the viewer on picture `at`: the message's pictures, in order.
+    /// Opens the viewer on media `at`: the message's pictures, in order.
     pub(super) fn open_viewer(&mut self, at: MediaAt, tx: &mut Tx) {
         let Some(message) = self.message_at(at) else {
             return;
         };
-        let attachments = message.attachments.as_deref().unwrap_or_default();
-        let (pictures, _) = split(attachments);
-        let items: Vec<ViewerItem> = pictures
-            .iter()
-            .filter_map(|index| {
-                let attachment = &attachments[*index];
-                Some(ViewerItem {
-                    index: *index,
-                    key: MediaKey {
-                        account: at.account,
-                        attachment: attachment_id(attachment)?,
-                    },
-                    name: attachment.original_file_name.clone().unwrap_or_default(),
-                    gif: AttachmentKind::of(attachment) == AttachmentKind::Gif,
-                    video: AttachmentKind::of(attachment) == AttachmentKind::Video,
-                })
-            })
-            .collect();
+        let items = self.viewer_items(at.account, &message);
         if items.is_empty() {
             return;
         }
@@ -115,8 +97,11 @@ impl Shell {
         let Some(message) = self.message_at(at) else {
             return false;
         };
-        let attachments = message.attachments.as_deref().unwrap_or_default();
-        let Some(first) = split(attachments).0.first().copied() else {
+        let Some(first) = self
+            .viewer_items(at.account, &message)
+            .first()
+            .map(|item| item.index)
+        else {
             return false;
         };
         self.open_viewer(MediaAt { index: first, ..at }, tx);
@@ -132,10 +117,10 @@ impl Shell {
             return;
         };
         // A video plays rather than loads a picture.
-        let Some(key) = viewer
+        let Some((key, source)) = viewer
             .item()
             .filter(|item| !item.video)
-            .map(|item| item.key)
+            .map(|item| (item.key, item.source.clone()))
         else {
             return;
         };
@@ -144,11 +129,7 @@ impl Shell {
         let updates = sdk.updates();
         sdk.run(move |client| async move {
             let fetched = match client.session(key.account) {
-                Ok(session) => session
-                    .media()
-                    .fetch(MediaSource::Attachment(key.attachment), false)
-                    .await
-                    .ok(),
+                Ok(session) => session.media().fetch(source, false).await.ok(),
                 Err(_) => None,
             };
             let image = match fetched {
@@ -230,19 +211,7 @@ impl Shell {
             #[expect(clippy::cast_precision_loss, reason = "video sides")]
             return [width as f32, height as f32];
         }
-        let attachment = viewer.item().and_then(|item| {
-            self.attachment_at(MediaAt {
-                index: item.index,
-                ..viewer.at
-            })
-        });
-        let size = attachment
-            .as_ref()
-            .map_or(MediaSize::Unknown, |attachment| {
-                attachment_id(attachment)
-                    .and_then(|id| self.own_sizes.get(&id).copied())
-                    .unwrap_or_else(|| MediaSize::of(attachment))
-            });
+        let size = viewer.item().map_or(MediaSize::Unknown, |item| item.size);
         #[expect(clippy::cast_precision_loss, reason = "picture sides")]
         match size {
             MediaSize::Exact {

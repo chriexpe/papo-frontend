@@ -341,11 +341,6 @@ pub(super) fn audio_wanted(account: AccountId, attachments: &[Attachment]) -> Ve
         .iter()
         .filter(|attachment| AttachmentKind::of(attachment) == AttachmentKind::Audio)
         .filter_map(attachment_id)
-        .map(|attachment| {
-            AudioKey::Received(MediaKey {
-                account,
-                attachment,
-            })
-        })
+        .map(|attachment| AudioKey::Received(MediaKey::attachment(account, attachment)))
         .collect()
 }
