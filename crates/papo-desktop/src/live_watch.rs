@@ -131,8 +131,7 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
     let mut library = match library {
         Ok(library) => {
             // A library that starts in a fault still has the defaults.
-            let quick =
-                ranked(&library.baseline).unwrap_or_else(|| quick_reactions(&[], QUICK_REACTIONS));
+            let quick = ranked(&library.baseline).unwrap_or_else(|| unicode_quick(&[]));
             post(Posted::Quick(quick));
             Some(library)
         }
@@ -140,7 +139,7 @@ async fn account_watch<S: 'static>(session: Session, updates: Updates<S>, apply:
             // Without its counts, the account's quick reactions are the
             // defaults (`quick_reactions` of no use).
             log::debug!("an account's reaction use is not watched: {error}");
-            post(Posted::Quick(quick_reactions(&[], QUICK_REACTIONS)));
+            post(Posted::Quick(unicode_quick(&[])));
             None
         }
     };
@@ -227,5 +226,16 @@ fn ranked(update: &ExpressionLibraryUpdate) -> Option<Vec<String>> {
 }
 
 fn ranking(view: &ExpressionLibraryView) -> Vec<String> {
-    quick_reactions(&view.reaction_usage, QUICK_REACTIONS)
+    unicode_quick(&view.emoji_usage)
+}
+
+/// The quick reactions the hover bar draws: Unicode ones, until it draws custom emoji too.
+fn unicode_quick(usage: &[(String, u64)]) -> Vec<String> {
+    quick_reactions(usage, None, QUICK_REACTIONS)
+        .into_iter()
+        .filter_map(|emoji| match emoji {
+            papo_sdk_ui::operations::ReactionEmoji::Unicode(glyph) => Some(glyph),
+            papo_sdk_ui::operations::ReactionEmoji::Custom(_) => None,
+        })
+        .collect()
 }

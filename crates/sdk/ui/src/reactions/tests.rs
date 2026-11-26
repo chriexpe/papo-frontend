@@ -161,17 +161,45 @@ fn a_chip_toggles_only_with_permission_and_not_while_waiting() {
 
 #[test]
 fn quick_reactions_rank_your_use_then_fill_from_the_defaults() {
+    let gato = Uuid::from_u128(7);
     let usage = vec![
         ("🧀".to_owned(), 9),
-        (Uuid::from_u128(7).to_string(), 8),
+        (gato.to_string(), 8),
         ("👍".to_owned(), 3),
     ];
-    assert_eq!(quick_reactions(&usage, 3), ["🧀", "👍", "😂"]);
+    let glyphs = |quick: Vec<ReactionEmoji>| -> Vec<String> {
+        quick
+            .into_iter()
+            .map(|emoji| match emoji {
+                ReactionEmoji::Unicode(glyph) => glyph,
+                ReactionEmoji::Custom(id) => format!("<{id}>"),
+            })
+            .collect()
+    };
+    // Without the catalog naming it, a custom emoji is left out.
+    assert_eq!(glyphs(quick_reactions(&usage, None, 3)), ["🧀", "👍", "😂"]);
     assert_eq!(
-        quick_reactions(&usage, 8),
+        glyphs(quick_reactions(&usage, None, 8)),
         ["🧀", "👍", "😂", "❤️", "🔥", "😭", "👀", "🙏"]
     );
-    assert_eq!(quick_reactions(&[], 8), DEFAULT_QUICK_REACTIONS);
+    let catalog = papo_sdk::EmojiCatalog {
+        revision: 1,
+        emojis: vec![papo_sdk::CustomEmoji {
+            id: gato,
+            name: "gato".into(),
+            format: "png".into(),
+            created_at: "t".into(),
+        }],
+    };
+    assert_eq!(
+        glyphs(quick_reactions(&usage, Some(&catalog), 3)),
+        ["🧀".to_owned(), format!("<{gato}>"), "👍".to_owned()],
+        "a custom emoji joins the ranking"
+    );
+    assert_eq!(
+        glyphs(quick_reactions(&[], None, 8)),
+        DEFAULT_QUICK_REACTIONS
+    );
 }
 
 #[test]

@@ -37,7 +37,16 @@ pub use reactions::{
 };
 mod message_attention;
 pub use message_attention::{Attention, attention};
+mod emoji_suggestions;
+mod emoji_usage;
 mod mention_suggestions;
+mod unicode_emoji;
+pub use emoji_suggestions::{EmojiQuery, EmojiSuggestion, emoji_query, emoji_search};
+pub use emoji_usage::{emoji_used, frequent_emoji};
+pub use unicode_emoji::{
+    EmojiCategory, EmojiLanguage, UnicodeEmoji, fold as fold_emoji_query, unicode_emoji,
+    unicode_emoji_in, unicode_emoji_of,
+};
 mod message_snippet;
 pub use mention_suggestions::{
     MAX_MENTION_SUGGESTIONS, MentionQuery, MentionSuggestion, display_name, mention_query,

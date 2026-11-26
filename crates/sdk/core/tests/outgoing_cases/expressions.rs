@@ -108,3 +108,47 @@ fn rejected_and_ambiguous_sends_never_record_a_recent() -> Result {
     }
     Ok(())
 }
+
+#[test]
+fn a_confirmed_message_counts_its_emoji_with_the_reactions() -> Result {
+    let f = Fixture::new(Config::default())?;
+    let (session, channel) = f.run(signed_in(&f))??;
+    f.run(async {
+        let message = papo_sdk::OutgoingMessage {
+            content: "oi 😂😂".into(),
+            emoji: vec!["😂".into(), "😂".into()],
+            ..papo_sdk::OutgoingMessage::default()
+        };
+        session
+            .outgoing()
+            .enqueue(
+                channel,
+                id(91),
+                OperationKind::Message(message),
+                UnixMicros(0),
+            )
+            .await?;
+        state(&session, id(91), OperationState::Sent).await?;
+        let usage = session.expressions().snapshot().await?.emoji_usage;
+        assert_eq!(usage, [("😂".to_owned(), 2)]);
+        let too_many = papo_sdk::OutgoingMessage {
+            content: "x".into(),
+            emoji: vec!["😂".into(); papo_sdk::MAX_EMOJI_PER_MESSAGE + 1],
+            ..papo_sdk::OutgoingMessage::default()
+        };
+        assert!(
+            session
+                .outgoing()
+                .enqueue(
+                    channel,
+                    id(92),
+                    OperationKind::Message(too_many),
+                    UnixMicros(0)
+                )
+                .await
+                .is_err()
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })??;
+    f.finish()
+}

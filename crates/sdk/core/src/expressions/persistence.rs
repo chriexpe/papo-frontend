@@ -71,7 +71,7 @@ fn load(tx: &Transaction<'_>, account: AccountId) -> Result<ExpressionSnapshot, 
                      ORDER BY count DESC,used_order DESC
                      LIMIT 256",
     )?;
-    snapshot.reaction_usage = usage
+    snapshot.emoji_usage = usage
         .query_map(
             params![account.server().as_bytes(), account.user().as_bytes()],
             |row| {
@@ -170,6 +170,9 @@ pub(crate) fn confirmed(
 ) -> Result<(), OutgoingError> {
     match kind {
         OperationKind::Message(message) => {
+            for emoji in message.emoji.iter().take(crate::MAX_EMOJI_PER_MESSAGE) {
+                count_use(tx, account, emoji)?;
+            }
             if let Some(gif) = &message.gif {
                 let order = next_order(tx, "expression_recent")?;
                 let payload = serde_json::to_vec(gif).map_err(|_| OutgoingError::InvalidData)?;
@@ -197,25 +200,31 @@ pub(crate) fn confirmed(
         } => {
             let id =
                 emoji_id.map_or_else(|| unicode.clone().unwrap_or_default(), |id| id.to_string());
-            let order = next_order(tx, "expression_usage")?;
-            tx.execute(
-                "INSERT INTO expression_usage(server_id,user_id,id,count,used_order)
-                 VALUES(?1,?2,?3,1,?4)
-                 ON CONFLICT(server_id,user_id,id)
-                 DO UPDATE SET count=min(count+1,9223372036854775807),
-                 used_order=excluded.used_order",
-                params![
-                    account.server().as_bytes(),
-                    account.user().as_bytes(),
-                    id,
-                    order
-                ],
-            )?;
-            prune(tx, account, "expression_usage", 256)?;
+            count_use(tx, account, &id)?;
         }
         _ => {}
     }
     Ok(())
+}
+
+/// One more use of emoji `id` (a custom emoji's ID, a Unicode emoji's glyph): the account's one
+/// count, which its reactions and its messages share.
+fn count_use(tx: &Transaction<'_>, account: AccountId, id: &str) -> Result<(), rusqlite::Error> {
+    let order = next_order(tx, "expression_usage")?;
+    tx.execute(
+        "INSERT INTO expression_usage(server_id,user_id,id,count,used_order)
+         VALUES(?1,?2,?3,1,?4)
+         ON CONFLICT(server_id,user_id,id)
+         DO UPDATE SET count=min(count+1,9223372036854775807),
+         used_order=excluded.used_order",
+        params![
+            account.server().as_bytes(),
+            account.user().as_bytes(),
+            id,
+            order
+        ],
+    )?;
+    prune(tx, account, "expression_usage", 256)
 }
 
 fn prune(

@@ -26,7 +26,8 @@ pub use content::{
     OutgoingMessage, StagedAttachment,
 };
 pub use content::{
-    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE, MAX_EMOJI_PER_MESSAGE,
+    MAX_MESSAGE_ATTACHMENT_BYTES,
 };
 pub use pending::{PendingAttachment, StagingFailure};
 pub use progress::{AttachmentProgress, UploadProgress};
@@ -81,7 +82,7 @@ impl OperationState {
 }
 
 pub(super) enum EnqueueSource {
-    Kind(OperationKind),
+    Kind(Box<OperationKind>),
     Draft { revision: u64 },
 }
 

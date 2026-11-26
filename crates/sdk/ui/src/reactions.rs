@@ -14,6 +14,7 @@ use papo_sdk::{
 };
 
 use crate::{ChannelCapabilities, operations::ReactionEmoji};
+use papo_sdk::EmojiCatalog;
 
 /// The emoji that fill the quick reactions this account has not used enough to rank.
 pub const DEFAULT_QUICK_REACTIONS: [&str; 8] = ["😂", "👍", "❤️", "🔥", "😭", "👀", "🙏", "😮"];
@@ -100,22 +101,27 @@ pub fn unresolved_reactions(outgoing: &OutgoingSnapshot) -> impl Iterator<Item =
         })
 }
 
-/// This account's `count` quick reactions: its most used Unicode emoji first (`usage` is the
-/// expression library's `reaction_usage`, most used first), then the defaults it has not
-/// used. Custom emoji are left out until the SDK has an emoji catalog to draw them from.
+/// This account's `count` quick reactions: its most used emoji first, by the one count the
+/// picker's Frequently used reads too ([`crate::frequent_emoji`]: `usage` is the expression
+/// library's `emoji_usage`, custom emoji while `catalog` still has them), then the defaults it
+/// has not used. "❤" and "❤️" are one heart.
 #[must_use]
-pub fn quick_reactions(usage: &[(String, u64)], count: usize) -> Vec<String> {
-    let mut quick: Vec<String> = Vec::with_capacity(count);
-    let used = usage
-        .iter()
-        .map(|(key, _)| key.as_str())
-        .filter(|key| !key.is_empty() && Uuid::parse_str(key).is_err());
-    for key in used.chain(DEFAULT_QUICK_REACTIONS) {
+pub fn quick_reactions(
+    usage: &[(String, u64)],
+    catalog: Option<&EmojiCatalog>,
+    count: usize,
+) -> Vec<ReactionEmoji> {
+    let mut quick = crate::frequent_emoji(usage, catalog, count);
+    for default in DEFAULT_QUICK_REACTIONS {
         if quick.len() == count {
             break;
         }
-        if !quick.iter().any(|held| same_glyph(held, key)) {
-            quick.push(key.to_owned());
+        let held = quick.iter().any(|emoji| match emoji {
+            ReactionEmoji::Unicode(glyph) => same_glyph(glyph, default),
+            ReactionEmoji::Custom(_) => false,
+        });
+        if !held {
+            quick.push(ReactionEmoji::Unicode(default.to_owned()));
         }
     }
     quick

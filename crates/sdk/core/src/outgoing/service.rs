@@ -194,8 +194,14 @@ impl OutgoingService {
         kind: OperationKind,
         at: UnixMicros,
     ) -> Result<(), OutgoingError> {
-        self.enqueue_source(channel, local, EnqueueSource::Kind(kind), at, None)
-            .await
+        self.enqueue_source(
+            channel,
+            local,
+            EnqueueSource::Kind(Box::new(kind)),
+            at,
+            None,
+        )
+        .await
     }
     /// Internal ephemeral-command admission. Already committed operations remain generation-independent.
     pub(crate) async fn enqueue_in_generation(
@@ -209,7 +215,7 @@ impl OutgoingService {
         self.enqueue_source(
             channel,
             local,
-            EnqueueSource::Kind(kind),
+            EnqueueSource::Kind(Box::new(kind)),
             at,
             Some(generation),
         )
