@@ -33,7 +33,7 @@ impl Shell {
     }
 
     /// Account `account`'s catalog, when posted.
-    fn catalog(&self, account: AccountId) -> Option<&Arc<EmojiCatalog>> {
+    pub(super) fn catalog(&self, account: AccountId) -> Option<&Arc<EmojiCatalog>> {
         self.activity.get(&account)?.emojis.as_ref()
     }
 
@@ -56,6 +56,7 @@ impl Shell {
         {
             self.composer.bind_emojis(key, &emojis, false);
         }
+        self.emoji_picker_catalog_changed(account);
         self.want_emoji();
     }
 
@@ -151,6 +152,14 @@ impl Shell {
             for item in results.items().iter().skip(range.start).take(range.len()) {
                 ids.extend(custom_emoji_ids(&item.content));
             }
+        }
+        // The picker's cells on screen.
+        if let Some(picker) = self
+            .emoji_picker
+            .as_ref()
+            .filter(|picker| picker.target.key().account == account)
+        {
+            ids.extend(picker.shown_custom());
         }
         // The hover bar's, the strip's and the menu's quick reactions.
         ids.extend(

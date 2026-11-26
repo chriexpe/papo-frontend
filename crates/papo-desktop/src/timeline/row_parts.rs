@@ -217,8 +217,10 @@ fn bar(
         open.key.account.user(),
         reacting.capabilities,
     );
+    // A message you may not react to has no strip, so no More emoji either.
     let stretched = reacting
         .stretched
+        .filter(|_| actions.react)
         .and_then(|(on, chosen)| (on == id).then_some(chosen));
     let emoji = if actions.react {
         let shown = if stretched.is_some() {

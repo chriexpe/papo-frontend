@@ -52,7 +52,7 @@ impl Shell {
             return false;
         }
         // A stretched bar takes ← → Enter Space and Escape first.
-        if self.strip_key(key, id, event) {
+        if self.strip_key(key, id, event, tx) {
             return true;
         }
         match &event.key {

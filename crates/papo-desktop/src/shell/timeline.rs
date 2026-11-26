@@ -353,7 +353,7 @@ impl Shell {
             | self.poll_viewer_video(clock_s, tx)
             | self.poll_audio(clock_s, tx)
             | self.poll_players(clock_s, tx);
-        let list_closed = self.poll_reactions();
+        let list_closed = self.poll_reactions() | self.poll_emoji_picker(tx);
         let card_closed = self.poll_card();
         let searched = self.poll_search(clock_s);
         restored

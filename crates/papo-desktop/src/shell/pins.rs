@@ -260,6 +260,7 @@ impl Shell {
         self.cancel_opening();
         self.pins_panel = None;
         self.stretched = None;
+        self.drop_emoji_picker();
         self.search_conversation_left();
     }
 }

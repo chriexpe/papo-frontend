@@ -162,6 +162,10 @@ pub(crate) struct Shell {
     pinning: reacting::Pinning,
     /// The hover bar stretched into its strip, while one is.
     stretched: Option<activity::Stretched>,
+    /// The emoji picker, while open (`shell/emoji_picker.rs`).
+    pub(crate) emoji_picker: Option<crate::emoji_picker::EmojiPicker>,
+    /// What the picker's search edits when no picker is open: nothing reads it.
+    emoji_spare: rune::TextEdit,
     /// The newest opening of a message from a panel; only its answer
     /// counts (`message_open`).
     openings: u64,
@@ -311,6 +315,8 @@ impl Default for Shell {
             profile_pictures: profile_pictures::ProfilePictures::default(),
             pinning: reacting::Pinning::default(),
             stretched: None,
+            emoji_picker: None,
+            emoji_spare: rune::TextEdit::new(""),
             openings: 0,
             pins_panel: None,
             shortcuts_open: false,
@@ -440,6 +446,7 @@ pub(crate) mod direct;
 mod draft_writes;
 mod editing;
 mod emoji_images;
+mod emoji_picker;
 mod header;
 mod hover_bar;
 mod jump;

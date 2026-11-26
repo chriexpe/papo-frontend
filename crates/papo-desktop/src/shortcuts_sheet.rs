@@ -3,7 +3,7 @@
 //! and Escape or the same key closes it. It lists the keys that work today,
 //! grouped as the reference groups them, each with Papo's key and the
 //! system's, a dash where there is none. A key that comes with a later
-//! slice (notifications, settings, emoji, attachments, text size) joins the
+//! slice (notifications, settings, GIFs, attachments, text size) joins the
 //! sheet with it, never before.
 //!
 //! Owns the sheet's rows and look. Linux and Windows keys only, as the app

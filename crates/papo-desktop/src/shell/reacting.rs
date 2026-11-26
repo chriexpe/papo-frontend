@@ -122,6 +122,15 @@ impl Shell {
         }
     }
 
+    /// Whether you may react to message `id` of conversation `key`, shown now.
+    pub(super) fn may_react(&self, key: TimelineKey, id: Uuid) -> bool {
+        self.tabs
+            .shown()
+            .filter(|open| open.key == key)
+            .and_then(|open| item_actions(open, id))
+            .is_some_and(|(actions, _)| actions.react)
+    }
+
     /// A chip, the bar's or the strip's emoji, 1 2 3: your reaction `emoji`
     /// to message `id` is taken back when yours, else added; nothing while
     /// a change of it waits or the account may not. Returns whether it went.

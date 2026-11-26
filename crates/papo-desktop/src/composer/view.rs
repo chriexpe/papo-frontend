@@ -2,7 +2,7 @@
 //! field, growing to [`COMPOSER_MAX_LINES`] lines and then scrolling inside,
 //! and Send (Save while editing, §11), with the line over it that says the
 //! text is too long or a send failed, and the reply or edit bar as its
-//! header row (`bars`). Emoji, stickers and GIF join the pill with their pickers (D11).
+//! header row (`bars`), and the 😊 that opens the emoji picker (§16.1).
 //!
 //! Pure: it reads the composer and hands Enter, Shift+Enter, edits and Send
 //! to the shell.
@@ -21,7 +21,7 @@ use crate::design::{
     TYPE_SMALL,
 };
 use crate::emoji_images::{EmojiKey, EmojiLooks, EmojiPlace, inline_image};
-use crate::icons::{CHECK, PAPERCLIP, SEND};
+use crate::icons::{CHECK, PAPERCLIP, SEND, SMILE};
 use crate::shell::Shell;
 use crate::strings;
 use crate::timeline::replies::OriginalText;
@@ -55,6 +55,8 @@ pub(crate) struct PillContext<'a> {
     pub(crate) tray_ui: &'a TrayUi,
     /// What custom emoji draw as.
     pub(crate) emoji: EmojiLooks,
+    /// The emoji picker is open for this field: its tab, the 😊, is lit.
+    pub(crate) emoji_open: bool,
 }
 
 /// The pill for the shown channel, with the line over it when there is
@@ -67,6 +69,7 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         me,
         tray_ui,
         ref emoji,
+        emoji_open,
     } = *context;
     let Some((key, draft)) = composer.shown() else {
         // Nothing to write in: still the notice pill's anchor, at no height.
@@ -106,6 +109,7 @@ pub(crate) fn pill(composer: &Composer, context: &PillContext<'_>, look: &Look) 
         .gap(look.space(SPACE_SM))
         .items_end()
         .child(field)
+        .child(emoji_button(emoji_open, look))
         .child(action);
     let pill = col()
         .key(COMPOSER_PILL_KEY)
@@ -260,6 +264,41 @@ fn field(
             });
     }
     field
+}
+
+/// The element key of the pill's 😊, the Emoji tab.
+pub(crate) const EMOJI_BUTTON_KEY: &str = "composer-emoji";
+
+/// The pill's 😊 (§16.1): the picker's Emoji tab, kept where it is; lit in the link colour on
+/// `accent.soft` while the tab is open, and pressing it again closes the picker.
+fn emoji_button(open: bool, look: &Look) -> El {
+    let (fill, ink) = if open {
+        (look.palette.accent_soft, look.palette.link)
+    } else {
+        (rune::Color::TRANSPARENT, look.palette.text_secondary)
+    };
+    let hover_ink = if open {
+        look.palette.link
+    } else {
+        look.palette.text_primary
+    };
+    row()
+        .key(EMOJI_BUTTON_KEY)
+        .size(look.space(SEND_BUTTON), look.space(SEND_BUTTON))
+        .center()
+        .radius(action_radius(look))
+        .fill(fill)
+        .role("button")
+        .label(strings::picker_emoji())
+        .help(strings::picker_emoji())
+        .help_keys([strings::shortcut_emoji()])
+        .expanded(open)
+        .focusable(true)
+        .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
+        .hover(look.on_pill(look.palette.surface_hover))
+        .hover_group()
+        .on_press_tx(|shell: &mut Shell, tx| shell.emoji_button_pressed(tx))
+        .child(icon(&SMILE, PILL_ICON_PT).color(ink).group_color(hover_ink))
 }
 
 /// Send's and Save's corner radius: concentric with the pill, whose edge

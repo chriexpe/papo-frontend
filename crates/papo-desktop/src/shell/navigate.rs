@@ -88,6 +88,10 @@ impl Shell {
     /// Keys no control took: Alt+↑/↓ between channels, then Ctrl+A in the
     /// timeline.
     pub(crate) fn on_key(&mut self, key: &KeyEvent, tx: &mut Tx) -> bool {
+        // The emoji picker is modal: what stands behind it takes no keys (Ctrl+E is the app's).
+        if self.emoji_picker.is_some() {
+            return self.app_key(key, tx);
+        }
         self.app_key(key, tx)
             || self.channel_step_key(key, tx)
             || self.select_message_key(key, tx)
@@ -372,6 +376,7 @@ impl Shell {
             MenuAction::React { key, id, emoji } => {
                 self.toggle_reaction(key, id, &emoji);
             }
+            MenuAction::MoreEmoji { key, id } => self.more_emoji_pressed(key, id, tx),
             MenuAction::Person { key, user, action } => self.person_action(key, user, action, tx),
             MenuAction::Setting(choice) => self.settings_chosen(choice, tx),
             MenuAction::SearchScope { channel } => {

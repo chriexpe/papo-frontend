@@ -108,6 +108,11 @@ pub(crate) fn shortcuts_field_empty() -> &'static str {
     text!("shortcuts.field_empty")
 }
 
+/// Ctrl+E's row in Composer: the emoji picker.
+pub(crate) fn shortcuts_emoji() -> &'static str {
+    text!("shortcuts.emoji")
+}
+
 /// Escape's row in Composer.
 pub(crate) fn shortcuts_cancel_mode() -> &'static str {
     text!("shortcuts.cancel_mode")

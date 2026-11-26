@@ -24,7 +24,7 @@ pub(crate) struct Reacting {
     pub(crate) capabilities: Option<ChannelCapabilities>,
     /// The message whose bar Add reaction stretched, and the emoji ← and →
     /// are on.
-    pub(crate) stretched: Option<(Uuid, usize)>,
+    pub(crate) stretched: Option<(Uuid, crate::quick_strip::StripSpot)>,
 }
 
 impl Reacting {

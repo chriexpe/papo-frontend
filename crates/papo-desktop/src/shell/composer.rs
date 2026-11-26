@@ -105,6 +105,27 @@ impl Shell {
         self.run_composer(effects, None);
     }
 
+    /// What the composer pill shows besides the composer: its prompt, the original of a
+    /// reply, and the settings and surfaces it follows.
+    pub(super) fn pill_context<'a>(
+        &'a self,
+        placeholder: &'a str,
+        original: Option<&'a crate::timeline::replies::OriginalText>,
+    ) -> crate::composer::PillContext<'a> {
+        crate::composer::PillContext {
+            placeholder,
+            enter_sends: self.conversations.settings().enter_sends,
+            original,
+            me: self
+                .composer
+                .shown()
+                .map_or(Uuid::nil(), |(key, _)| key.account.user()),
+            tray_ui: &self.tray_ui,
+            emoji: self.emoji_images.looks(),
+            emoji_open: self.emoji_open_for_field(),
+        }
+    }
+
     /// Carries out the composer's effects. A wake needs `tx`; only edits
     /// and the poll ask for one, and both have it. Without an SDK (before
     /// it opens; headless tests) nothing reaches the bridge: no channel

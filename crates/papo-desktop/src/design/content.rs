@@ -98,6 +98,22 @@ pub(crate) const TYPE_JUMBO: Font = {
 /// The most emoji a jumbo message holds.
 pub(crate) const JUMBO_MOST: usize = 3;
 
+/// The emoji picker (§16.1, §16.2): at most this wide and tall, in points, one gap above the
+/// pill it grows from.
+pub(crate) const EMOJI_PICKER_MAX_PT: (f32, f32) = (440.0, 452.0);
+pub(crate) const EMOJI_PICKER_GAP_PT: f32 = 8.0;
+/// Its search well, category strip, section heading and preview bar, tall.
+pub(crate) const EMOJI_SEARCH_PT: f32 = 36.0;
+pub(crate) const EMOJI_STRIP_PT: f32 = 34.0;
+pub(crate) const EMOJI_HEADING_PT: f32 = 30.0;
+pub(crate) const EMOJI_PREVIEW_BAR_PT: f32 = 44.0;
+/// Below each section.
+pub(crate) const EMOJI_SECTION_GAP_PT: f32 = 8.0;
+/// A custom emoji in a cell, a Unicode one's size, and the preview bar's emoji.
+pub(crate) const EMOJI_CELL_CUSTOM_PT: f32 = 30.0;
+pub(crate) const EMOJI_CELL_UNICODE_PT: f32 = 26.0;
+pub(crate) const EMOJI_PREVIEW_EMOJI_PT: f32 = 28.0;
+
 /// A loading custom emoji's square: its corner radius (§9).
 pub(crate) const EMOJI_LOADING_RADIUS: Radius = Radius(4.0);
 

@@ -145,6 +145,7 @@ fn composer() -> Group {
                 &[],
             ),
             row_of(strings::shortcuts_cancel_mode(), &[&["Esc"]], &[]),
+            row_of(strings::shortcuts_emoji(), &[&["Ctrl", "E"]], &[]),
             row_of(
                 strings::shortcuts_bold_italic(),
                 &[],
