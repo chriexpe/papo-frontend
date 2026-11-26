@@ -201,7 +201,7 @@ pub(crate) fn player<S: TimelineHost>(
 
 /// A press anywhere on a poster plays it (or, with players off, opens the page), as its disc
 /// does; the disc keeps the keyboard.
-fn poster_press<S: TimelineHost>(at: MediaAt, key: PlayerKey, loadable: bool) -> El {
+pub(super) fn poster_press<S: TimelineHost>(at: MediaAt, key: PlayerKey, loadable: bool) -> El {
     let event = if loadable {
         PlayerEvent::Play
     } else {
@@ -246,6 +246,19 @@ fn dim<S: TimelineHost>() -> El {
 /// The 48 pt play disc: it plays, or with players off or WPE missing, opens the page in the
 /// browser and says so.
 fn play_disc<S: TimelineHost>(at: MediaAt, key: PlayerKey, loadable: bool, look: &Look) -> El {
+    play_disc_of::<S>(at, key, loadable, [VIDEO_PLAY_PT, VIDEO_PLAY_ICON_PT], look)
+}
+
+/// A play disc of `sides` (the disc's and its icon's, in points) at the centre of its box: a
+/// poster's 48 pt one, a track cover's 36 pt one.
+pub(super) fn play_disc_of<S: TimelineHost>(
+    at: MediaAt,
+    key: PlayerKey,
+    loadable: bool,
+    sides: [f32; 2],
+    look: &Look,
+) -> El {
+    let [side, icon_side] = sides;
     let (label, event) = if loadable {
         (strings::embed_play(), PlayerEvent::Play)
     } else {
@@ -253,8 +266,8 @@ fn play_disc<S: TimelineHost>(at: MediaAt, key: PlayerKey, loadable: bool, look:
     };
     let disc = el()
         .key(format!("{}-play", page_key(key)))
-        .size(VIDEO_PLAY_PT, VIDEO_PLAY_PT)
-        .radius(VIDEO_PLAY_PT / 2.0)
+        .size(side, side)
+        .radius(side / 2.0)
         .center()
         .fill(Color::BLACK.alpha(VIDEO_PLAY_ALPHA))
         .hover(Color::BLACK.alpha(PROVIDER_PLAY_HOVER_ALPHA))
@@ -263,7 +276,7 @@ fn play_disc<S: TimelineHost>(at: MediaAt, key: PlayerKey, loadable: bool, look:
         .label(label)
         .focus_ring(FOCUS_RING_PT.0, FOCUS_RING_PT.1, look.palette.focus_ring)
         .on_press_tx(move |host: &mut S, tx| host.player_event(at, key, event, tx))
-        .child(icon(&PLAY, VIDEO_PLAY_ICON_PT).color(Color::WHITE));
+        .child(icon(&PLAY, icon_side).color(Color::WHITE));
     let disc = pressed_by_keys::<S>(disc, at, key, event);
     el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .center()

@@ -1,16 +1,17 @@
 //! What a provider player's box, its menu and the keys ask for (`docs/design.md` §15.3,
 //! §15.5, §15.6): play (asking first for a site not allowed, nothing at all with players off),
 //! the ask's answers, Close player, Retry, Open in browser, the page's input and focus, the
-//! card's menu, Space or K and O on a focused message, and the provider viewer taking the
+//! card's menu, Space or K (any player) and O (a video) on a focused message, and the provider viewer taking the
 //! player and giving it back. The players' state is `players`'.
 
 use papo_sdk::Uuid;
+use papo_sdk_ui::{LinkPreview, PlayerKind};
 use rune::edit::KeyEvent;
 use rune::{Key, Tx};
 
 use super::Shell;
 use crate::link_cards::player::{Consent, PlayerEvent, ask_play_key, page_key};
-use crate::link_cards::{player_of, previews};
+use crate::link_cards::{is_provider_video, player_of, plays_on_provider, previews};
 use crate::message_media::received::{MediaAt, MediaSurface};
 use crate::provider_players::{Phase, PlayerKey};
 use crate::timeline::TimelineKey;
@@ -214,9 +215,10 @@ impl Shell {
         self.run_player_commands(change.commands);
     }
 
-    /// Space or K (`typed`) on focused message `id` (§15.6): its first provider video plays
-    /// (asking first when its site isn't allowed; a live one takes the keyboard). A provider
-    /// off the allowlist opens in the browser. Returns whether a provider video took it.
+    /// A key (`typed`) on focused message `id` (§15.4, §15.6). Space or K: its first provider
+    /// player (video or track) plays, asking first when its site isn't allowed; a live one takes
+    /// the keyboard; a provider off the allowlist opens in the browser. O: its first provider
+    /// video opens in the viewer (a track has none). Returns whether a player took the key.
     pub(super) fn message_player_key(
         &mut self,
         key: TimelineKey,
@@ -224,33 +226,46 @@ impl Shell {
         typed: &str,
         tx: &mut Tx,
     ) -> bool {
-        let Some(at) = self.first_provider_video(key, id) else {
-            return false;
-        };
         if typed == " " || typed.eq_ignore_ascii_case("k") {
+            let Some(at) = self.first_provider_player(key, id) else {
+                return false;
+            };
             self.play_player(at, tx);
             return true;
         }
-        if typed.eq_ignore_ascii_case("o")
-            && self
-                .preview_at(at)
-                .as_ref()
-                .is_some_and(|preview| player_of(at, preview).is_some())
-        {
-            self.player_viewer_from(at, tx);
-            return true;
+        if typed.eq_ignore_ascii_case("o") {
+            let Some(at) = self.first_provider_place(key, id, is_provider_video) else {
+                return false;
+            };
+            let plays_here = self.preview_at(at).as_ref().is_some_and(|preview| {
+                player_of(at, preview).is_some_and(|(_, player)| player.kind() == PlayerKind::Video)
+            });
+            if plays_here {
+                self.player_viewer_from(at, tx);
+                return true;
+            }
         }
         false
     }
 
-    /// The media place of message `id`'s first provider video, in the shown conversation.
-    pub(super) fn first_provider_video(&self, key: TimelineKey, id: Uuid) -> Option<MediaAt> {
+    /// The media place of message `id`'s first provider player (a video or a track), in the
+    /// shown conversation.
+    pub(super) fn first_provider_player(&self, key: TimelineKey, id: Uuid) -> Option<MediaAt> {
+        self.first_provider_place(key, id, plays_on_provider)
+    }
+
+    /// The media place of message `id`'s first preview that `wanted` picks, in the shown
+    /// conversation.
+    fn first_provider_place(
+        &self,
+        key: TimelineKey,
+        id: Uuid,
+        wanted: fn(&LinkPreview) -> bool,
+    ) -> Option<MediaAt> {
         let shown = self.conversations.settings().link_previews;
         let open = self.tabs.shown().filter(|open| open.key == key)?;
         let (message, _) = open.message(id)?;
-        let place = previews(message, shown)
-            .iter()
-            .position(crate::link_cards::is_provider_video)?;
+        let place = previews(message, shown).iter().position(wanted)?;
         Some(MediaAt {
             surface: MediaSurface::Timeline,
             account: key.account,

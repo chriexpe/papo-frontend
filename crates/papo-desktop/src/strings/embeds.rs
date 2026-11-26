@@ -65,6 +65,15 @@ pub(crate) fn embed_close_player() -> &'static str {
     text!("embed.close_player")
 }
 
+/// A track's cover, spoken (draft, §15.4): "Track from {provider}, {title}".
+pub(crate) fn embed_track_label(provider: &str, title: Option<&str>) -> String {
+    if let Some(title) = title {
+        template!("embed.track_label", "provider" => provider, "title" => title)
+    } else {
+        template!("embed.track_label_untitled", "provider" => provider)
+    }
+}
+
 /// A live player's region, spoken (draft, §15.6).
 pub(crate) fn embed_player_label(provider: &str, title: Option<&str>) -> String {
     if let Some(title) = title {

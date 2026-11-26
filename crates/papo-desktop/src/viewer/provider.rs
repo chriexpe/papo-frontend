@@ -96,7 +96,7 @@ fn top(shown: &ProviderShown<'_>, title: &str, look: &Look) -> El {
         .radius(look.radius(RADIUS_PILL))
         .pill_surface(look)
         .min_w(0.0)
-        .child(crate::link_cards::view::letter_tile(
+        .child(crate::link_cards::provider_marks::letter_tile(
             shown.provider,
             look.palette.line_strong,
         ))

@@ -22,7 +22,10 @@ impl Shell {
         key: crate::provider_players::PlayerKey,
         tx: &mut Tx,
     ) {
-        if self.players.store.page(key).is_none() {
+        // Only a video's page has a viewer (§15.5).
+        if self.players.store.page(key).is_none()
+            || self.players.store.kind(key) != Some(papo_sdk_ui::PlayerKind::Video)
+        {
             return;
         }
         if self.viewer.is_some() {

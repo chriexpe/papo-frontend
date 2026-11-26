@@ -1,10 +1,12 @@
-//! The window's clock for provider players (`docs/design.md` §15.3): a player below half shown
-//! for 10 s is released (the window hidden or another conversation shown counts as out of
-//! view, the viewer as in view), and a loading player's ring shows after half a second.
+//! The window's clock for provider players (`docs/design.md` §15.3, §15.4): a video player below
+//! half shown for 10 s is released (the window hidden or another conversation shown counts as
+//! out of view, the viewer as in view); a track plays on while its conversation shows and is
+//! released the moment another shows; a loading player's ring shows after half a second.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+use papo_sdk_ui::PlayerKind;
 use rune::Tx;
 
 use super::Shell;
@@ -24,7 +26,28 @@ impl Shell {
             .shown()
             .and_then(|open| open.tracker.shown_span_pt())
             .filter(|_| self.window_shown);
-        let shares: HashMap<PlayerKey, f32> = match span {
+        // A track keeps playing while its conversation shows, scrolled away included, and stops
+        // the moment another shows (§15.4).
+        let tracks: Vec<PlayerKey> = self
+            .players
+            .store
+            .live_pages()
+            .into_iter()
+            .map(|(key, _)| key)
+            .filter(|key| self.players.store.kind(*key) == Some(PlayerKind::Audio))
+            .collect();
+        let mut released = false;
+        let mut tracks_shown = Vec::new();
+        for key in tracks {
+            if self.shows_conversation_of(key) {
+                tracks_shown.push(key);
+            } else {
+                let commands = self.players.store.stop(key);
+                self.run_player_commands(commands);
+                released = true;
+            }
+        }
+        let mut shares: HashMap<PlayerKey, f32> = match span {
             None => HashMap::new(),
             Some((top_pt, bottom_pt)) => self
                 .players
@@ -39,13 +62,15 @@ impl Shell {
                 })
                 .collect(),
         };
+        // A shown conversation's track counts as fully in view.
+        shares.extend(tracks_shown.into_iter().map(|key| (key, 1.0)));
         self.players.store.shown(&shares, clock_s);
         // A window resized under the viewer, or moved to a screen of another scale.
         for (key, _) in self.players.store.live_pages() {
             self.size_page(key);
         }
         let (commands, next_s) = self.players.store.release_due(clock_s);
-        let released = !commands.is_empty();
+        released |= !commands.is_empty();
         self.run_player_commands(commands);
         if let Some(next_s) = next_s
             && self.players.next_release_s != Some(next_s)

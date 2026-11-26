@@ -27,17 +27,19 @@ impl Shell {
         key: PlayerKey,
         point: Option<[f32; 2]>,
     ) {
-        let Some(page) = self
-            .preview_at(at)
-            .and_then(|preview| preview.page().cloned())
-        else {
+        let Some(preview) = self.preview_at(at) else {
             return;
         };
+        let Some(page) = preview.page().cloned() else {
+            return;
+        };
+        let video = player_of(at, &preview)
+            .is_some_and(|(_, player)| player.kind() == papo_sdk_ui::PlayerKind::Video);
         let timeline = TimelineKey {
             account: at.account,
             channel: at.channel,
         };
-        let mut items = self.player_items(at, key);
+        let mut items = self.player_items(at, key, video);
         items.push(
             MenuItem::plain(
                 "menu-player-browser",
@@ -73,9 +75,10 @@ impl Shell {
         ));
     }
 
-    /// A provider video's own menu items (§15.6): Play (Space) and Open viewer (O) at rest,
-    /// Open viewer and Close player once live; none while players can't load.
-    fn player_items(&self, at: MediaAt, key: PlayerKey) -> Vec<MenuItem> {
+    /// A provider player's own menu items (§15.4, §15.6): Play (Space) and, for a video, Open
+    /// viewer (O) at rest; Open viewer (a video's) and Close player once live; none while
+    /// players can't load.
+    fn player_items(&self, at: MediaAt, key: PlayerKey, video: bool) -> Vec<MenuItem> {
         let action = |action| MenuAction::Player { at, key, action };
         let viewer = MenuItem::plain(
             "menu-player-viewer",
@@ -93,7 +96,11 @@ impl Shell {
                 false,
             )
             .with_icon(&icons::X);
-            vec![viewer, close]
+            if video {
+                vec![viewer, close]
+            } else {
+                vec![close]
+            }
         } else if self.players.loadable() {
             let play = MenuItem::plain(
                 "menu-player-play",
@@ -103,26 +110,30 @@ impl Shell {
             )
             .with_icon(&icons::PLAY)
             .with_shortcut(strings::shortcut_space());
-            vec![play, viewer]
+            if video {
+                vec![play, viewer]
+            } else {
+                vec![play]
+            }
         } else {
             Vec::new()
         }
     }
 
-    /// The message menu's player items for message `id`'s first provider video, so the
-    /// keyboard reaches them.
+    /// The message menu's player items for message `id`'s first provider player (as Space
+    /// plays it), so the keyboard reaches them.
     pub(super) fn message_player_items(&self, key: TimelineKey, id: Uuid) -> Vec<MenuItem> {
-        let Some(at) = self.first_provider_video(key, id) else {
+        let Some(at) = self.first_provider_player(key, id) else {
             return Vec::new();
         };
-        let Some(player) = self
-            .preview_at(at)
-            .as_ref()
-            .and_then(|preview| player_of(at, preview).map(|(player, _)| player))
-        else {
+        let Some((player, video)) = self.preview_at(at).as_ref().and_then(|preview| {
+            player_of(at, preview).map(|(player, descriptor)| {
+                (player, descriptor.kind() == papo_sdk_ui::PlayerKind::Video)
+            })
+        }) else {
             return Vec::new();
         };
-        self.player_items(at, player)
+        self.player_items(at, player, video)
     }
 
     /// What the player menu's item does.

@@ -12,22 +12,21 @@ use rune::color::srgb_decode;
 use rune::{Color, El, Link, LinkPaint, Span, col, el, icon, rich, row, text};
 
 use super::player::{self, PlayerBox};
+use super::provider_marks::{provider_chip, provider_line};
 use super::{
     CardPress, attachment_count, clip_of, is_provider_video, name_of, player_of, provider_of,
 };
 use crate::design::{
     CARD_DESCRIPTION_LINES, CARD_FIELD_COLUMN_GAP_PT, CARD_FIELD_ROW_GAP_PT,
-    CARD_FIELD_VALUE_LINES, CARD_FIELDS_PER_ROW, CARD_RULE_PT, FOCUS_RING_PT, LETTER_TILE_PT,
-    LETTER_TILE_RADIUS_PT, LINK_UNDERLINE_ALPHA, Look, MESSAGE_BLOCK_GAP, PROVIDER_CHIP_GAP_PT,
-    PROVIDER_CHIP_INSET_PT, PROVIDER_CHIP_PAD_PT, PROVIDER_CHIP_PT, PROVIDER_LINE_GAP_PT,
-    PROVIDER_PLAY_HOVER_ALPHA, RADIUS_CARD, TYPE_BODY_STRONG, TYPE_CAPTION, TYPE_CAPTION_MEDIUM,
-    TYPE_LETTER_TILE, TYPE_SMALL, TYPE_SMALL_MEDIUM, VIDEO_PLAY_ALPHA, VIDEO_PLAY_ICON_PT,
+    CARD_FIELD_VALUE_LINES, CARD_FIELDS_PER_ROW, CARD_RULE_PT, FOCUS_RING_PT, LINK_UNDERLINE_ALPHA,
+    Look, MESSAGE_BLOCK_GAP, PROVIDER_PLAY_HOVER_ALPHA, RADIUS_CARD, TYPE_BODY_STRONG,
+    TYPE_CAPTION, TYPE_CAPTION_MEDIUM, TYPE_SMALL, VIDEO_PLAY_ALPHA, VIDEO_PLAY_ICON_PT,
     VIDEO_PLAY_PT, card_rule,
 };
 use crate::icons::PLAY;
 use crate::message_media::received::{MediaAt, MediaStyle, MediaSurface, Shown, picture_cell};
 use crate::message_media::video::{self, VideoCell};
-use crate::message_media::{glass, inner_edge, single_box};
+use crate::message_media::{inner_edge, single_box};
 use crate::strings;
 use crate::timeline::TimelineHost;
 use crate::timeline::content::Press;
@@ -106,32 +105,53 @@ fn card_view<S: TimelineHost>(
     if let Some(line) = provider_line(card, rule, look) {
         parts = parts.child(line);
     }
-    if let Some(title) = &card.title {
-        parts = parts.child(title_text::<S>(
-            key,
-            message,
-            card,
-            title,
-            style.interactive,
+    // The card's picture box bounds: the card is as wide as Embed size.
+    let bounds = super::picture_bounds(style.embed_bounds, lead_gap_pt);
+    // A provider's track in the conversation: its cover row, then its strip (§15.4), in
+    // place of the title, description, fields and picture.
+    let track = player_of(at, preview)
+        .filter(|(_, player)| card.track.as_ref() == Some(*player))
+        .filter(|_| style.interactive && style.surface == MediaSurface::Timeline);
+    if let Some((player_key, player)) = track {
+        parts = parts.child(super::track::track::<S>(
+            &super::track::TrackCard {
+                at,
+                preview,
+                card,
+                key: player_key,
+                player,
+                bounds,
+                chip_tile: rule,
+            },
+            style,
             look,
         ));
-    }
-    if let Some(description) = &card.description {
-        parts = parts.child(
-            text(description.clone())
-                .font(look.font(TYPE_SMALL))
-                .color(look.palette.text_secondary)
-                .max_lines(CARD_DESCRIPTION_LINES)
-                .w_full(),
-        );
-    }
-    if !card.fields.is_empty() {
-        parts = parts.child(fields(card, look));
-    }
-    // The picture sits in the card's own column: the card is as wide as Embed size.
-    let bounds = super::picture_bounds(style.embed_bounds, lead_gap_pt);
-    if let Some(picture) = picture::<S>(at, preview, card, bounds, style, rule, look) {
-        parts = parts.child(picture);
+    } else {
+        if let Some(title) = &card.title {
+            parts = parts.child(title_text::<S>(
+                key,
+                message,
+                card,
+                title,
+                style.interactive,
+                look,
+            ));
+        }
+        if let Some(description) = &card.description {
+            parts = parts.child(
+                text(description.clone())
+                    .font(look.font(TYPE_SMALL))
+                    .color(look.palette.text_secondary)
+                    .max_lines(CARD_DESCRIPTION_LINES)
+                    .w_full(),
+            );
+        }
+        if !card.fields.is_empty() {
+            parts = parts.child(fields(card, look));
+        }
+        if let Some(picture) = picture::<S>(at, preview, card, bounds, style, rule, look) {
+            parts = parts.child(picture);
+        }
     }
     if let Some(footer) = &card.footer {
         parts = parts.child(
@@ -170,57 +190,9 @@ fn srgb(channels: [u8; 3]) -> Color {
     Color { r, g, b, a: 1.0 }
 }
 
-/// The provider line: the letter tile, then the provider's name and the author's.
-fn provider_line(card: &LinkCard, tile: Color, look: &Look) -> Option<El> {
-    let words = match (&card.provider, &card.author) {
-        (Some(provider), Some(author)) => strings::embed_provider_author(provider, author),
-        (Some(name), None) | (None, Some(name)) => name.clone(),
-        (None, None) => return None,
-    };
-    Some(
-        row()
-            .w_full()
-            .gap(PROVIDER_LINE_GAP_PT)
-            .items_center()
-            .child(letter_tile(&words, tile))
-            .child(
-                text(words)
-                    .font(look.font(TYPE_SMALL))
-                    .color(look.palette.text_muted)
-                    .truncate()
-                    .grow(1.0)
-                    .min_w(0.0),
-            ),
-    )
-}
-
-/// A 12 pt tile in `fill` with the first letter of `name`, standing for the favicon the server
-/// does not relay (§15.2).
-pub(crate) fn letter_tile(name: &str, fill: Color) -> El {
-    let letter: String = name
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_default();
-    // The letter takes whichever of white and black reads on the tile.
-    let ink = if crate::design::contrast(Color::WHITE, fill)
-        >= crate::design::contrast(Color::BLACK, fill)
-    {
-        Color::WHITE
-    } else {
-        Color::BLACK
-    };
-    el().size(LETTER_TILE_PT, LETTER_TILE_PT)
-        .radius(LETTER_TILE_RADIUS_PT)
-        .fill(fill)
-        .center()
-        .a11y_hidden()
-        .child(text(letter).font(TYPE_LETTER_TILE.0).color(ink))
-}
-
 /// The title, which is the link: underlined at 40 % under the pointer or the keyboard, opened
 /// by §9's link rules. Without a safe page it is plain text.
-fn title_text<S: TimelineHost>(
+pub(super) fn title_text<S: TimelineHost>(
     key: crate::timeline::TimelineKey,
     message: papo_sdk::Uuid,
     card: &LinkCard,
@@ -290,7 +262,7 @@ fn fields(card: &LinkCard, look: &Look) -> El {
 }
 
 /// A preview's picture as a picture cell shows it.
-fn shown_picture(at: MediaAt, preview: &LinkPreview) -> Shown {
+pub(super) fn shown_picture(at: MediaAt, preview: &LinkPreview) -> Shown {
     let gif = super::picture_of(preview).is_some_and(|picture| picture.kind == AttachmentKind::Gif);
     let label = if gif {
         strings::media_gif().to_owned()
@@ -368,33 +340,6 @@ fn picture<S: TimelineHost>(
         };
     }
     Some(cell.child(inner_edge(look)))
-}
-
-/// The chip at a poster's top left naming whose player it is, on dark glass.
-fn provider_chip(provider: &str, tile: Color, look: &Look) -> El {
-    el().pin(
-        Some(PROVIDER_CHIP_INSET_PT),
-        Some(PROVIDER_CHIP_INSET_PT),
-        None,
-        None,
-    )
-    .a11y_hidden()
-    .child(glass(
-        row()
-            .h(PROVIDER_CHIP_PT)
-            .pl(PROVIDER_CHIP_PAD_PT.0)
-            .pr(PROVIDER_CHIP_PAD_PT.1)
-            .gap(PROVIDER_CHIP_GAP_PT)
-            .items_center()
-            .radius(PROVIDER_CHIP_PT / 2.0)
-            .child(letter_tile(provider, tile))
-            .child(
-                text(provider.to_owned())
-                    .font(look.font(TYPE_SMALL_MEDIUM))
-                    .color(Color::WHITE)
-                    .truncate(),
-            ),
-    ))
 }
 
 /// The play disc of a poster that never plays here: it opens the page in the browser, by §9's

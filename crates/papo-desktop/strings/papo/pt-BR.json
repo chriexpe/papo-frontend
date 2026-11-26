@@ -736,5 +736,7 @@
   "settings.players_clear_spoken": "Limpar os dados de {{site}}",
   "settings.players_remove_spoken": "Remover {{site}}",
   "settings.players_clear.note": "Limpar os dados de um site desconecta você dele no Papo.",
-  "shortcut.space": "Espaço"
+  "shortcut.space": "Espaço",
+  "embed.track_label": "Faixa do {{provider}}, {{title}}",
+  "embed.track_label_untitled": "Faixa do {{provider}}"
 }
