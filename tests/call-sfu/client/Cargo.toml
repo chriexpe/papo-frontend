@@ -11,7 +11,7 @@ rune-proof = ["dep:rune", "papo-call/benchmark-telemetry"]
 [dependencies]
 gstreamer = "0.24"
 gstreamer-app = "0.24"
-rune = { git = "https://github.com/chriexpe/rune", rev = "cd94e2b5e43dc5de3e0068123112a9c3b535f322", optional = true }
+rune = { git = "https://github.com/chriexpe/rune", rev = "7638f0a632b8f8c3132e22809d0de57eb479c0ef", optional = true }
 log = "0.4"
 papo-api = { path = "../../../crates/sdk/api" }
 papo-call = { path = "../../../crates/papo-call" }
