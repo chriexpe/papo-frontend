@@ -43,6 +43,9 @@ pub(crate) struct SessionInner {
     /// Held by `change_profile` from its read-back to its save, so two changes of
     /// one account's profile never merge over the same read-back.
     pub profile_serial: tokio::sync::Mutex<()>,
+    /// Held by `change_notification_settings` from its `whoami` read-back to its save, so
+    /// two changes of one account's settings never overwrite each other (B-020).
+    pub settings_serial: tokio::sync::Mutex<()>,
     pub history: crate::history::HistoryStore,
     pub reading: crate::reading::Reading,
     pub badges: crate::badges::Badges,
@@ -120,6 +123,7 @@ impl SessionInner {
             admission: crate::resource_admission::Diagnostics::default(),
             operations_serial: tokio::sync::Mutex::new(()),
             profile_serial: tokio::sync::Mutex::new(()),
+            settings_serial: tokio::sync::Mutex::new(()),
             history: crate::history::HistoryStore::default(),
             reading: crate::reading::Reading::new(generation),
             badges: crate::badges::Badges::new(generation),
@@ -152,6 +156,7 @@ impl SessionInner {
         self.notifications
             .status
             .send_replace(crate::NotificationStatus::Closed);
+        self.notifications.account_policy.close();
         self.auth.close();
         self.connection.close();
         self.round_trip.send_replace(None);

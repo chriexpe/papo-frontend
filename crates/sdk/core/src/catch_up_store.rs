@@ -327,4 +327,45 @@ impl Registry {
             .await
             .map_err(ClientError::from)
     }
+
+    pub(crate) async fn commit_mark_all_read(
+        &self,
+        session: Arc<SessionInner>,
+        generation: Generation,
+        local_points: Vec<(Uuid, MessageKey)>,
+        catch_up_updates: Vec<CatchUpCommit>,
+    ) -> Result<(), ReadingError> {
+        if local_points.is_empty() && catch_up_updates.is_empty() {
+            return Ok(());
+        }
+        let account = session.account;
+        self.writer
+            .write(move |tx| -> Result<(), CatchUpWriteError> {
+                session.epochs.validate(generation)?;
+                visible_account(tx, account)?;
+                for (channel, point) in local_points {
+                    if session
+                        .reading
+                        .positions
+                        .check_current_channel(channel, generation)
+                        .is_none()
+                    {
+                        crate::read_points::advance_local_in_tx(tx, account, channel, point)?;
+                    }
+                }
+                for commit in catch_up_updates {
+                    if session
+                        .reading
+                        .positions
+                        .check_current_channel(commit.channel, generation)
+                        .is_none()
+                    {
+                        upsert_catch_up_tx(tx, account, commit.channel, &commit.state)?;
+                    }
+                }
+                Ok(())
+            })
+            .await
+            .map_err(ReadingError::from)
+    }
 }

@@ -89,7 +89,9 @@ pub(super) fn candidate() -> policy::Candidate {
         channel: Uuid::from_u128(2),
         message: Uuid::from_u128(3),
         author: Some(Uuid::from_u128(4)),
+        external_author: None,
         content: String::new(),
+        attachments: Vec::new(),
         triggered: true,
         read: false,
         trigger_revision: None,
@@ -384,4 +386,154 @@ fn policy_mentions_uses_context_free_canonical_token_matcher() {
         "plain @mention(<@00000000-0000-4000-8000-000000000001>) without closing",
         other
     ));
+}
+
+#[test]
+fn delivery_carries_author_dm_and_redacts_attachments_when_preview_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, session) = fixture(dir.path());
+    let generation = session.generation();
+    let author_id = Uuid::from_u128(4);
+    let dm_channel = Uuid::from_u128(20);
+    let mut snapshot = (**session.inner.resources.borrow()).clone();
+    snapshot.users.set(
+        author_id,
+        crate::UserRecord {
+            id: author_id,
+            username: Some("lia".into()),
+            nickname: Some("Lia M.".into()),
+            roles: Some(Vec::new()),
+            banned: Some(false),
+            status_message: None,
+            typing: None,
+            created_at: None,
+        },
+    );
+    snapshot.dms.set(
+        dm_channel,
+        crate::DirectRecord {
+            id: dm_channel,
+            peer_id: author_id,
+            created_at: String::new(),
+            last_message: None,
+            last_read_message: None,
+            last_read_at: None,
+            unread_count: 0,
+        },
+    );
+    session.inner.publish_resources(snapshot).unwrap();
+    let resources = PolicyResources::from_snapshot(&session.inner.resources.borrow());
+    let backend = papo_api::wire::Notifications::default();
+    let attachment = papo_api::wire::Attachment {
+        id: Some(Uuid::from_u128(50).to_string()),
+        original_file_name: Some("photo.png".into()),
+        mime_type: Some("image/png".into()),
+        ..Default::default()
+    };
+
+    let mut item = candidate();
+    item.content = "hello".into();
+    item.attachments = vec![attachment.clone()];
+    let mut settings = NotificationSettings::default();
+    let private = policy::decide(
+        &session,
+        generation,
+        &settings,
+        &backend,
+        &item,
+        &resources,
+        ReadEvidence::Unread,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(private.author, Some(author_id));
+    assert_eq!(private.author_name.as_deref(), Some("Lia M."));
+    assert!(!private.is_dm);
+    assert!(private.preview.is_none());
+    assert!(private.attachments.is_empty());
+
+    settings.preview = true;
+    let shown = policy::decide(
+        &session,
+        generation,
+        &settings,
+        &backend,
+        &item,
+        &resources,
+        ReadEvidence::Unread,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(shown.preview.as_deref(), Some("hello"));
+    assert_eq!(shown.attachments.len(), 1);
+    assert_eq!(
+        shown.attachments[0].original_file_name.as_deref(),
+        Some("photo.png")
+    );
+
+    item.channel = dm_channel;
+    item.external_author = Some("Webhook Bot".into());
+    let dm = policy::decide(
+        &session,
+        generation,
+        &settings,
+        &backend,
+        &item,
+        &resources,
+        ReadEvidence::Unread,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(dm.is_dm);
+    assert_eq!(dm.author_name.as_deref(), Some("Webhook Bot"));
+    client.shutdown().unwrap();
+}
+
+#[test]
+fn account_policy_publishes_backend_notification_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, session) = fixture(dir.path());
+    let generation = session.generation();
+    let mut rx = session.notifications().subscribe_account_policy();
+    let initial = session.notifications().account_policy().unwrap();
+    assert_eq!(
+        initial,
+        AccountNotificationPolicy {
+            generation,
+            enabled: true,
+            mentions: true,
+            message_preview: true,
+            sound: true,
+        }
+    );
+    super::backend::remember(
+        &session.inner,
+        generation,
+        Some(papo_api::wire::WhoamiResponseSettings {
+            version: Some(2),
+            config: Some(papo_api::wire::UserConfig {
+                notifications: Some(papo_api::wire::Notifications {
+                    enabled: Some(true),
+                    mentions: Some(false),
+                    message_preview: Some(false),
+                    sound: Some(false),
+                }),
+                ..Default::default()
+            }),
+        }),
+    )
+    .unwrap();
+    assert!(rx.has_changed().unwrap());
+    let updated = rx.borrow_and_update().unwrap();
+    assert_eq!(
+        updated,
+        AccountNotificationPolicy {
+            generation,
+            enabled: true,
+            mentions: false,
+            message_preview: false,
+            sound: false,
+        }
+    );
+    client.shutdown().unwrap();
 }
