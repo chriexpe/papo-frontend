@@ -38,6 +38,8 @@ pub(crate) struct AccountFacts {
     pub(crate) password_changed: bool,
     /// The destructive row asking its question, if one is.
     pub(crate) asking: Option<RowId>,
+    /// The account's server-side notification settings (`whoami`), once loaded.
+    pub(crate) notification_policy: Option<papo_sdk::AccountNotificationPolicy>,
 }
 
 /// A text row: its value or what shows without one, and its longest.

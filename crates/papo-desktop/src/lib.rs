@@ -48,6 +48,8 @@ mod menu;
 mod message_media;
 mod navigation;
 mod notice;
+mod notification_settings;
+mod notifications;
 mod own_profile;
 mod person_avatar;
 mod picker;
@@ -67,6 +69,7 @@ mod remove_server;
 mod save_folder;
 mod saving;
 mod sdk_bridge;
+mod server_card;
 mod server_list;
 mod settings;
 mod shell;
@@ -114,6 +117,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     strings::use_system_language();
     rune::set_app_id(window::APP_ID);
+    if let Err(error) = rune_notify::register(&rune_notify::Identity::new(
+        window::APP_ID,
+        strings::window_title(),
+    )) {
+        log::debug!("OS notifications did not register: {error}");
+    }
     // Rune ends the process the moment the app quits unless told otherwise;
     // the exit fence below runs after the window is gone.
     rune::orderly_exit();
@@ -124,10 +133,26 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .on_close_request(Shell::close_requested)
         // Read reports wait while the window is off screen.
         .on_visibility(Shell::window_visibility)
+        // Notification suppression follows window focus as well as visibility.
+        .on_focus(Shell::window_focus)
         // Liquid glass on the floating surfaces: Rune's frame, with a lens
         // at each glass surface (`glass`).
         .compositor(glass::GlassCompositor::default());
     let post = Arc::new(app.handle());
+    let notify_handle = app.handle();
+    rune_notify::on_click(move |click| {
+        if let Some(token) = click.activation_token() {
+            notify_handle.activate(token.to_owned());
+        } else {
+            notify_handle.open();
+        }
+        if let Some(target) = notifications::parse_click(&click) {
+            notify_handle.post(Box::new(move |shell: &mut Shell, tx| {
+                shell.notification_clicked(target, tx);
+                true
+            }));
+        }
+    });
     lifecycle.attach(Arc::new(app.handle()));
     let bridge = Rc::new(RefCell::new(BridgeSlot::NotStarted));
     let starter = Rc::clone(&bridge);

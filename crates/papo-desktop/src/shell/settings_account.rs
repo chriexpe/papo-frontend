@@ -39,6 +39,7 @@ impl Shell {
             blocked: server.blocked.clone(),
             password_changed: panel.is_some_and(|panel| panel.password_changed),
             asking: panel.and_then(|panel| panel.asking),
+            notification_policy: server.notification_policy,
         })
     }
 

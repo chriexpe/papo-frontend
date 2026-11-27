@@ -40,6 +40,8 @@ pub(crate) struct Shell {
     /// "Enter to send".
     /// The Conversations settings.
     pub(crate) conversations: crate::conversation_settings::ConversationStore,
+    /// The device-scoped Notifications settings (Tray counter).
+    pub(crate) notification_prefs: crate::notification_settings::NotificationStore,
     /// The General settings: the language and Confirm external links.
     pub(crate) general: crate::general_settings::GeneralStore,
     /// The unsent message whose "Send again?" is open.
@@ -111,6 +113,11 @@ pub(crate) struct Shell {
     content: content::Content,
     /// Whether the window is on screen: read reports wait while it is not.
     window_shown: bool,
+    /// Focus, visible-channel suppression, and pending click routing for OS
+    /// notifications.
+    notifications: notifications::NotificationsRuntime,
+    /// Transient state for the open server card.
+    server_card: server_card::ServerCardRuntime,
     /// The last ⌛ press's number; each takes the next.
     seeks: u64,
     /// Each signed-in account's queue, quick reactions and people's
@@ -263,6 +270,7 @@ impl Default for Shell {
             draft_writes: draft_writes::DraftWrites::default(),
             local_ids: papo_sdk::Uuid::new_v4,
             conversations: crate::conversation_settings::ConversationStore::default(),
+            notification_prefs: crate::notification_settings::NotificationStore::default(),
             general: crate::general_settings::GeneralStore::default(),
             resend: None,
             deleting: None,
@@ -295,6 +303,8 @@ impl Default for Shell {
             day_ends_s: None,
             content: content::Content::default(),
             window_shown: true,
+            notifications: notifications::NotificationsRuntime::default(),
+            server_card: server_card::ServerCardRuntime::default(),
             seeks: 0,
             activity: HashMap::new(),
             direct: direct_list::DirectRows::new(),
@@ -357,9 +367,11 @@ impl BridgeHost for Shell {
         sdk.watch(|client, updates| server_list::run(client, updates, Shell::servers_changed));
         sdk.watch(|client, updates| live_watch::run(client, updates, Shell::activity_posted));
         sdk.watch(|client, updates| direct_list::run(client, updates, Shell::direct_posted));
+        sdk.run(crate::notifications::run);
         sdk.run(reconnect_hints::run);
         sdk.watch(crate::system_font::run);
         self.sdk = Some(sdk);
+        self.sync_visible_channel();
     }
 
     fn sdk_failed(&mut self, failure: OpenFailure) {
@@ -387,6 +399,7 @@ impl Shell {
         self.layout = crate::layout_prefs::LayoutPrefs::read(&prefs);
         self.recent_jumps = crate::recent_jumps::RecentJumps::read(&prefs);
         self.conversations = crate::conversation_settings::ConversationStore::read(&prefs);
+        self.notification_prefs = crate::notification_settings::NotificationStore::read(&prefs);
         self.general = crate::general_settings::GeneralStore::read(&prefs);
         // Before the first frame: the window opens in the chosen language.
         crate::strings::use_language(self.general.settings().language);
@@ -467,6 +480,7 @@ mod message_menu;
 mod message_open;
 mod navigate;
 mod new_message;
+mod notifications;
 mod outgoing;
 mod own_pictures;
 mod picker;
@@ -497,6 +511,7 @@ mod search_list;
 mod search_open;
 mod search_panel;
 mod search_run;
+mod server_card;
 mod settings;
 mod settings_account;
 mod settings_colours;
@@ -504,6 +519,7 @@ mod settings_conversations;
 mod settings_diagnostics;
 mod settings_file;
 mod settings_general;
+mod settings_notifications;
 mod settings_password;
 mod settings_players;
 mod sign_in_flow;

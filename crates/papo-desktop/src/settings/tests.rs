@@ -11,6 +11,8 @@ use crate::general_settings::GeneralSettings;
 
 static CONVERSATIONS: std::sync::LazyLock<ConversationSettings> =
     std::sync::LazyLock::new(ConversationSettings::default);
+static NOTIFICATIONS: std::sync::LazyLock<crate::notification_settings::NotificationPrefs> =
+    std::sync::LazyLock::new(crate::notification_settings::NotificationPrefs::default);
 static GENERAL: std::sync::LazyLock<GeneralSettings> =
     std::sync::LazyLock::new(GeneralSettings::default);
 static TRUSTED: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -25,6 +27,7 @@ fn context(appearance: &Appearance) -> Context<'_> {
     Context {
         appearance,
         conversations: &CONVERSATIONS,
+        notifications: &NOTIFICATIONS,
         general: &GENERAL,
         trusted: &TRUSTED,
         players: &PLAYERS,
@@ -213,4 +216,65 @@ fn clear_media_cache_asks_in_its_row_first() {
     };
     assert!(*asking);
     assert_eq!(question, "Clear the cache?");
+}
+
+#[test]
+fn notifications_page_hides_sub_toggles_when_master_is_off() {
+    use super::rows::{account::AccountFacts, notifications_summary};
+    use papo_sdk::{AccountNotificationPolicy, Generation};
+
+    let appearance = Appearance::default();
+    let policy_on = AccountNotificationPolicy {
+        generation: Generation::for_test(1),
+        enabled: true,
+        mentions: true,
+        message_preview: true,
+        sound: false,
+    };
+    let account_on = AccountFacts {
+        server: "Lumen".to_owned(),
+        handle: "ana".to_owned(),
+        notification_policy: Some(policy_on),
+        ..AccountFacts::default()
+    };
+    let cx_on = Context {
+        account: Some(&account_on),
+        ..context(&appearance)
+    };
+    assert_eq!(notifications_summary(&cx_on), "On · tray counter");
+    let rows_on: Vec<RowId> = page(PageId::Notifications, &cx_on)
+        .into_iter()
+        .flat_map(|group| group.rows)
+        .map(|row| row.id)
+        .collect();
+    assert!(rows_on.contains(&RowId::NotifyMessages));
+    assert!(rows_on.contains(&RowId::NotifyMentions));
+    assert!(rows_on.contains(&RowId::NotifyPreview));
+    assert!(rows_on.contains(&RowId::NotifySound));
+    assert!(rows_on.contains(&RowId::NotifySyncNote));
+    assert!(rows_on.contains(&RowId::TrayCounter));
+    assert!(rows_on.contains(&RowId::ChannelNotifications));
+
+    let account_off = AccountFacts {
+        notification_policy: Some(AccountNotificationPolicy {
+            enabled: false,
+            ..policy_on
+        }),
+        ..account_on
+    };
+    let cx_off = Context {
+        account: Some(&account_off),
+        ..context(&appearance)
+    };
+    assert_eq!(notifications_summary(&cx_off), "Off");
+    let rows_off: Vec<RowId> = page(PageId::Notifications, &cx_off)
+        .into_iter()
+        .flat_map(|group| group.rows)
+        .map(|row| row.id)
+        .collect();
+    assert!(rows_off.contains(&RowId::NotifyMessages));
+    assert!(!rows_off.contains(&RowId::NotifyMentions));
+    assert!(!rows_off.contains(&RowId::NotifyPreview));
+    assert!(!rows_off.contains(&RowId::NotifySound));
+    assert!(rows_off.contains(&RowId::TrayCounter));
 }

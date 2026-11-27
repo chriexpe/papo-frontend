@@ -1147,7 +1147,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4244,6 +4244,7 @@ dependencies = [
  "rune-fx",
  "rune-highlights",
  "rune-i18n",
+ "rune-notify",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5471,6 +5472,22 @@ dependencies = [
 name = "rune-motion"
 version = "0.1.0"
 source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
+
+[[package]]
+name = "rune-notify"
+version = "0.0.1"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
+dependencies = [
+ "async-channel",
+ "async-io",
+ "block2 0.6.2",
+ "futures-lite",
+ "objc2 0.6.5",
+ "windows",
+ "windows-core",
+ "windows-registry",
+ "zbus 5.19.0",
+]
 
 [[package]]
 name = "rune-spell"

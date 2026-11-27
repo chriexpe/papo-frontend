@@ -56,6 +56,7 @@ impl Shell {
         if self.nav.direct_shown() {
             self.sync_timeline(Some(tx));
         }
+        self.try_open_pending_notification(tx);
         true
     }
 

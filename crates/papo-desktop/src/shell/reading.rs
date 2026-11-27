@@ -47,6 +47,7 @@ impl Shell {
             self.flush_composer();
         }
         self.video_window_shown(shown, tx);
+        self.sync_visible_channel();
         self.report_reading();
     }
 

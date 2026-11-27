@@ -30,6 +30,7 @@ mod media;
 mod message_menu;
 mod navigation;
 mod new_message;
+mod notifications;
 mod outgoing;
 mod pins;
 pub(super) mod players;

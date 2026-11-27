@@ -46,6 +46,8 @@ pub(crate) struct Navigation {
     pub(crate) menu: Option<OpenMenu>,
     /// The server whose accounts are open: its pill grown from ⇄.
     accounts: Option<ServerId>,
+    /// The server whose card is open: its pill grown downward.
+    server_card: Option<ServerId>,
     /// Whether Direct's accounts are open: every account on every server.
     direct_accounts: bool,
     /// The server whose removal waits for the person to confirm.
@@ -103,6 +105,12 @@ impl Navigation {
         if self.accounts.is_some_and(|server| !order.contains(&server)) {
             self.accounts = None;
         }
+        if self
+            .server_card
+            .is_some_and(|server| !order.contains(&server))
+        {
+            self.server_card = None;
+        }
     }
 
     /// The rail in the order to draw: a drag's preview, else the order on its
@@ -157,10 +165,11 @@ impl Navigation {
         self.direct_blocked = !self.direct_blocked;
     }
 
-    /// Shows Direct in the server's place; the server's accounts close.
+    /// Shows Direct in the server's place; the server's accounts and card close.
     pub(crate) fn select_direct(&mut self) {
         self.direct = true;
         self.accounts = None;
+        self.server_card = None;
     }
 
     /// The direct conversation picked in Direct, while Direct is shown.
@@ -218,7 +227,26 @@ impl Navigation {
             if self.accounts != Some(id) {
                 self.accounts = None;
             }
+            if self.server_card != Some(id) {
+                self.server_card = None;
+            }
         }
+    }
+
+    /// Whether the selected server's card is open.
+    pub(crate) fn server_card_open(&self) -> bool {
+        !self.direct && self.server_card.is_some() && self.server_card == self.selected
+    }
+
+    /// Opens the selected server's card, closing the other overlays.
+    pub(crate) fn open_server_card(&mut self) {
+        self.dismiss_overlays();
+        self.server_card = self.selected;
+    }
+
+    /// Closes the server card.
+    pub(crate) fn close_server_card(&mut self) {
+        self.server_card = None;
     }
 
     /// Whether the selected server's accounts are open.
@@ -339,6 +367,7 @@ impl Navigation {
         self.drag = None;
         self.menu = None;
         self.accounts = None;
+        self.server_card = None;
         self.direct_accounts = false;
         self.removing = None;
     }

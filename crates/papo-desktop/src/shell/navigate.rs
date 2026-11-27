@@ -68,6 +68,7 @@ impl Shell {
         self.drop_unshown_dms();
         self.retain_timelines();
         self.sync_timeline(Some(tx));
+        self.try_open_pending_notification(tx);
         true
     }
 
@@ -180,8 +181,12 @@ impl Shell {
             Key::Down if alt_alone => 1,
             _ => return false,
         };
-        // The accounts grown from ⇄ hold the keyboard like a popup does.
-        if self.popup_shown() || self.nav.accounts_open() || self.nav.selected_channel().is_none() {
+        // The accounts or server card grown from the pill hold the keyboard like a popup does.
+        if self.popup_shown()
+            || self.nav.accounts_open()
+            || self.nav.server_card_open()
+            || self.nav.selected_channel().is_none()
+        {
             return false;
         }
         let Some(next) = self.nav.channel_beside(by).map(str::to_owned) else {
@@ -292,6 +297,7 @@ impl Shell {
     fn open_menu(&mut self, placement: Placement, trigger: String, server: ServerId) {
         // ⚙ shows on the grown pill too; the menu takes the pill's place.
         self.nav.close_accounts();
+        self.nav.close_server_card();
         let items = vec![MenuItem::plain(
             "menu-remove-server",
             strings::remove_server(),
@@ -391,6 +397,11 @@ impl Shell {
             }
             MenuAction::Person { key, user, action } => self.person_action(key, user, action, tx),
             MenuAction::Setting(choice) => self.settings_chosen(choice, tx),
+            MenuAction::ChannelNotify {
+                server,
+                channel,
+                mode,
+            } => self.apply_channel_notify(server, channel, mode),
             MenuAction::SearchScope { channel } => {
                 let scope = if channel {
                     super::search::Scope::Channel

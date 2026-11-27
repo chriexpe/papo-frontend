@@ -80,6 +80,11 @@ line_icon!(
     "chat"
 );
 line_icon!(
+    /// The Notifications page in the settings nav.
+    BELL,
+    "bell"
+);
+line_icon!(
     /// Remove the selected background colour.
     MINUS,
     "minus"

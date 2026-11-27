@@ -88,6 +88,12 @@ pub(crate) enum MenuAction {
     SearchScope { channel: bool },
     /// A settings choice's value (`docs/design.md` §8: a menu under the row).
     Setting(crate::shell::SettingChoice),
+    /// A channel (or all channels on `server`) notification mode from the server card.
+    ChannelNotify {
+        server: ServerId,
+        channel: Option<Uuid>,
+        mode: crate::server_card::ChannelNotifyMode,
+    },
     /// Something a profile card does about person `user`, seen from
     /// timeline `key`.
     Person {

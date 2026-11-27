@@ -29,6 +29,7 @@ fn server(name: &str, channels: &[&str]) -> ServerEntry {
                 id: format!("{name}-{channel}"),
                 name: (*channel).to_owned(),
                 topic: None,
+                notification_mode: None,
                 badge: Badge::default(),
             })
             .collect(),
@@ -36,6 +37,8 @@ fn server(name: &str, channels: &[&str]) -> ServerEntry {
         direct_badges: std::collections::BTreeMap::new(),
         blocked: Vec::new(),
         own: None,
+        member_count: 0,
+        notification_policy: None,
         badge: Badge::default(),
     }
 }
@@ -282,6 +285,7 @@ fn no_other_unread_channel_or_a_voice_room_selected_steps_nowhere() {
         id: "lumen-hangout".to_owned(),
         name: "hangout".to_owned(),
         topic: None,
+        notification_mode: None,
         badge: Badge::default(),
     });
     nav.servers_changed(ServerList {
