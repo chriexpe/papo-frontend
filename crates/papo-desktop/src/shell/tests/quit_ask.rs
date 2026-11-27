@@ -8,7 +8,7 @@ use papo_sdk::{
     Operation, OperationKind, OperationState, OutgoingAttachment, OutgoingMessage,
     OutgoingSnapshot, Uuid,
 };
-use rune::{Key, KeyEvent, Mods, Runtime};
+use rune::{CloseResponse, Key, KeyEvent, Mods, Runtime};
 
 use super::composer::{shown, writing};
 use super::{FRAME_S, Shell, tree};
@@ -95,14 +95,10 @@ fn ctrl_q_reaches_the_question() {
 #[test]
 fn the_close_button_is_held_only_while_uploading() {
     let mut busy = with_queue(queue_with(OperationState::Preparing));
-    let mut held = false;
-    busy.update(|shell, tx| held = shell.close_requested(tx));
-    assert!(held);
+    busy.update(|shell, tx| assert_eq!(shell.close_requested(tx), CloseResponse::Defer));
     assert_eq!(busy.state.leaving, Some(Leaving::Close));
     let mut idle = with_queue(queue_with(OperationState::Queued));
-    let mut held = true;
-    idle.update(|shell, tx| held = shell.close_requested(tx));
-    assert!(!held);
+    idle.update(|shell, tx| assert_eq!(shell.close_requested(tx), CloseResponse::Close));
     assert_eq!(idle.state.leaving, None);
 }
 

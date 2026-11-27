@@ -14,7 +14,7 @@ dependencies = [
 [[package]]
 name = "accesskit_atspi_common"
 version = "0.21.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -37,7 +37,7 @@ dependencies = [
 [[package]]
 name = "accesskit_macos"
 version = "0.27.2"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -68,7 +68,7 @@ dependencies = [
 [[package]]
 name = "accesskit_windows"
 version = "0.35.2"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -3422,7 +3422,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -4193,7 +4193,7 @@ dependencies = [
  "papo-api",
  "papo-call",
  "papo-sdk",
- "rune 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
+ "rune",
  "tokio",
 ]
 
@@ -4240,7 +4240,7 @@ dependencies = [
  "papo-call",
  "papo-sdk",
  "papo-sdk-ui",
- "rune 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
+ "rune",
  "rune-fx",
  "rune-highlights",
  "rune-i18n",
@@ -4402,7 +4402,7 @@ checksum = "9c4482d912d7671a7cd2089794f90ef3bb5f5f8c738230fb0fcd50fa020f0ed3"
 [[package]]
 name = "parley_engine"
 version = "0.12.0"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "fontique",
  "harfrust",
@@ -5251,7 +5251,7 @@ dependencies = [
 [[package]]
 name = "rune"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -5283,16 +5283,16 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "rfd",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-edit 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-gpu 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-image 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-media 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-motion 0.1.0 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-spell 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-staging 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-taffy 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-text 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
+ "rune-core",
+ "rune-edit",
+ "rune-gpu",
+ "rune-image",
+ "rune-media",
+ "rune-motion",
+ "rune-spell",
+ "rune-staging",
+ "rune-taffy",
+ "rune-text",
  "rustc-demangle",
  "rustc-hash 2.1.3",
  "serde",
@@ -5304,11 +5304,13 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-plasma",
  "wayland-protocols-wlr",
  "web-sys",
  "wgpu",
  "windows",
  "windows-core",
+ "windows-registry",
  "windows-sys 0.61.2",
  "winit",
  "x11rb",
@@ -5318,102 +5320,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "rune"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
-dependencies = [
- "accesskit",
- "accesskit_macos",
- "accesskit_unix",
- "accesskit_windows",
- "arboard",
- "blake3",
- "block2 0.5.1",
- "block2 0.6.2",
- "bytemuck",
- "console_error_panic_hook",
- "futures-util",
- "half",
- "image",
- "js-sys",
- "libc",
- "libloading",
- "objc2 0.5.2",
- "objc2 0.6.5",
- "objc2-app-kit 0.2.2",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-video",
- "objc2-foundation 0.2.2",
- "objc2-foundation 0.3.2",
- "objc2-metal 0.3.2",
- "parley",
- "png 0.18.1",
- "pollster",
- "raw-window-handle",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-edit 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-gpu 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-image 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-media 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-motion 0.1.0 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-spell 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-staging 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-taffy 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-text 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rustc-demangle",
- "rustc-hash 2.1.3",
- "serde",
- "serde_json",
- "taffy",
- "tokio",
- "unicode-segmentation",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-wlr",
- "web-sys",
- "wgpu",
- "windows",
- "windows-core",
- "windows-sys 0.61.2",
- "winit",
- "x11rb",
- "xkbcommon",
- "zbus 6.3.0",
- "zeroize",
-]
-
-[[package]]
 name = "rune-core"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "js-sys",
  "libc",
  "portable-atomic",
- "rune-motion 0.1.0 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rustc-hash 2.1.3",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "web-time",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rune-core"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
-dependencies = [
- "js-sys",
- "libc",
- "portable-atomic",
- "rune-motion 0.1.0 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
+ "rune-motion",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -5427,26 +5341,12 @@ dependencies = [
 [[package]]
 name = "rune-edit"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "js-sys",
  "parley",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-text 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "serde_json",
- "unicode-segmentation",
- "zeroize",
-]
-
-[[package]]
-name = "rune-edit"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
-dependencies = [
- "js-sys",
- "parley",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-text 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
+ "rune-core",
+ "rune-text",
  "serde_json",
  "unicode-segmentation",
  "zeroize",
@@ -5455,18 +5355,18 @@ dependencies = [
 [[package]]
 name = "rune-fx"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "bytemuck",
- "rune-motion 0.1.0 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-staging 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
+ "rune-motion",
+ "rune-staging",
  "wgpu",
 ]
 
 [[package]]
 name = "rune-gpu"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -5479,35 +5379,9 @@ dependencies = [
  "parking_lot",
  "pollster",
  "raw-window-metal",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-motion 0.1.0 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-staging 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "wayland-client",
- "wayland-protocols",
- "wgpu",
- "wgpu-naga-bridge",
- "windows",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rune-gpu"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
-dependencies = [
- "blake3",
- "bytemuck",
- "libc",
- "objc2 0.6.5",
- "objc2-core-foundation",
- "objc2-foundation 0.3.2",
- "objc2-metal 0.3.2",
- "objc2-quartz-core 0.3.2",
- "parking_lot",
- "pollster",
- "raw-window-metal",
- "rune-motion 0.1.0 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-staging 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
+ "rune-core",
+ "rune-motion",
+ "rune-staging",
  "wayland-client",
  "wayland-protocols",
  "wgpu",
@@ -5519,7 +5393,7 @@ dependencies = [
 [[package]]
 name = "rune-highlights"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "unicode-ident",
  "wasmparser",
@@ -5528,7 +5402,7 @@ dependencies = [
 [[package]]
 name = "rune-i18n"
 version = "0.1.0"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "fixed_decimal",
  "icu_decimal",
@@ -5547,7 +5421,7 @@ dependencies = [
 [[package]]
 name = "rune-image"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "blake3",
  "image",
@@ -5556,24 +5430,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "resvg",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rune-image"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
-dependencies = [
- "blake3",
- "image",
- "js-sys",
- "objc2 0.5.2",
- "objc2-foundation 0.2.2",
- "resvg",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
+ "rune-core",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "windows-sys 0.61.2",
@@ -5582,7 +5439,7 @@ dependencies = [
 [[package]]
 name = "rune-media"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "ash",
  "blake3",
@@ -5600,39 +5457,10 @@ dependencies = [
  "objc2-metal 0.3.2",
  "opuscule",
  "pollster",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-gpu 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-image 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-staging 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "symphonia",
- "wgpu",
- "windows",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rune-media"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
-dependencies = [
- "ash",
- "block2 0.6.2",
- "bytemuck",
- "libc",
- "objc2 0.6.5",
- "objc2-av-foundation",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-media",
- "objc2-core-video",
- "objc2-foundation 0.3.2",
- "objc2-io-surface",
- "objc2-metal 0.3.2",
- "opuscule",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-gpu 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-image 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-staging 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
+ "rune-core",
+ "rune-gpu",
+ "rune-image",
+ "rune-staging",
  "symphonia",
  "wgpu",
  "windows",
@@ -5642,41 +5470,17 @@ dependencies = [
 [[package]]
 name = "rune-motion"
 version = "0.1.0"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
-
-[[package]]
-name = "rune-motion"
-version = "0.1.0"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 
 [[package]]
 name = "rune-spell"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "js-sys",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rustc-hash 2.1.3",
- "spellbook",
- "unicode-segmentation",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "windows",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rune-spell"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
-dependencies = [
- "js-sys",
- "objc2-app-kit 0.2.2",
- "objc2-foundation 0.2.2",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
+ "rune-core",
  "rustc-hash 2.1.3",
  "spellbook",
  "unicode-segmentation",
@@ -5690,33 +5494,16 @@ dependencies = [
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "wgpu",
  "windows",
 ]
 
 [[package]]
-name = "rune-staging"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
-dependencies = [
- "wgpu",
-]
-
-[[package]]
 name = "rune-taffy"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
-dependencies = [
- "stacker",
- "taffy",
-]
-
-[[package]]
-name = "rune-taffy"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "stacker",
  "taffy",
@@ -5725,7 +5512,7 @@ dependencies = [
 [[package]]
 name = "rune-text"
 version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "bytemuck",
  "fontique",
@@ -5735,9 +5522,9 @@ dependencies = [
  "objc2-core-text",
  "parley",
  "parley_engine",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-image 0.0.1 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
- "rune-motion 0.1.0 (git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d)",
+ "rune-core",
+ "rune-image",
+ "rune-motion",
  "rune-tiny-skia-path",
  "rustc-hash 2.1.3",
  "skrifa",
@@ -5751,37 +5538,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "rune-text"
-version = "0.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
-dependencies = [
- "bytemuck",
- "fontique",
- "icu_properties",
- "icu_segmenter",
- "objc2-core-foundation",
- "objc2-core-text",
- "parley",
- "parley_engine",
- "rune-core 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-image 0.0.1 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rune-motion 0.1.0 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "rustc-hash 2.1.3",
- "skrifa",
- "swash",
- "tiny-skia-path 0.11.4 (git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322)",
- "unicode-segmentation",
- "wasm-bindgen",
- "windows",
- "windows-core",
- "windows-sys 0.61.2",
- "zeroize",
-]
-
-[[package]]
 name = "rune-tiny-skia-path"
 version = "0.11.4"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "arrayref",
  "bytemuck",
@@ -5978,7 +5737,7 @@ dependencies = [
 [[package]]
 name = "sctk-adwaita"
 version = "0.10.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "log",
  "smithay-client-toolkit",
@@ -6727,7 +6486,7 @@ dependencies = [
  "cfg-if",
  "log",
  "png 0.17.16",
- "tiny-skia-path 0.11.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tiny-skia-path",
 ]
 
 [[package]]
@@ -6735,16 +6494,6 @@ name = "tiny-skia-path"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c9e7fc0c2e86a30b117d0462aa261b72b7a99b7ebd7deb3a14ceda95c5bdc93"
-dependencies = [
- "arrayref",
- "bytemuck",
- "strict-num",
-]
-
-[[package]]
-name = "tiny-skia-path"
-version = "0.11.4"
-source = "git+https://github.com/chriexpe/rune?rev=cd94e2b5e43dc5de3e0068123112a9c3b535f322#cd94e2b5e43dc5de3e0068123112a9c3b535f322"
 dependencies = [
  "arrayref",
  "bytemuck",
@@ -7480,7 +7229,7 @@ dependencies = [
  "siphasher",
  "strict-num",
  "svgtypes",
- "tiny-skia-path 0.11.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tiny-skia-path",
  "xmlwriter",
 ]
 
@@ -7912,7 +7661,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -8118,6 +7867,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-registry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
+dependencies = [
+ "windows-link",
+ "windows-result",
+ "windows-strings",
+]
+
+[[package]]
 name = "windows-result"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8238,7 +7998,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/chriexpe/rune?rev=1cef70cf65284a7ba0f59c10f1b9fea8c70e268d#1cef70cf65284a7ba0f59c10f1b9fea8c70e268d"
+source = "git+https://github.com/chriexpe/rune?rev=7638f0a632b8f8c3132e22809d0de57eb479c0ef#7638f0a632b8f8c3132e22809d0de57eb479c0ef"
 dependencies = [
  "ahash",
  "android-activity",

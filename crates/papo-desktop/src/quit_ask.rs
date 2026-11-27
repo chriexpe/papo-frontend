@@ -8,7 +8,7 @@
 //! read from the SDK's outgoing queues.
 
 use papo_sdk::{OperationKind, OperationState, OutgoingSnapshot};
-use rune::{El, Tx};
+use rune::{CloseResponse, El, Tx};
 
 use crate::confirm::{Question, confirm};
 use crate::design::Look;
@@ -72,14 +72,13 @@ impl Shell {
         leave(leaving, tx);
     }
 
-    /// The window's close request (`App::on_close_request`): true keeps
-    /// the window to ask first.
-    pub(crate) fn close_requested(&mut self, _tx: &mut Tx) -> bool {
+    /// Allows the window to close unless an upload needs confirmation.
+    pub(crate) fn close_requested(&mut self, _tx: &mut Tx) -> CloseResponse {
         if !self.uploading_anywhere() {
-            return false;
+            return CloseResponse::Close;
         }
         self.leaving = Some(Leaving::Close);
-        true
+        CloseResponse::Defer
     }
 
     /// Cancel, Escape or Return: the app stays, the uploads go on.
