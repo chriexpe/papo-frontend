@@ -9,6 +9,7 @@
 
 mod account_switch;
 mod account_watch;
+mod allocator;
 mod appearance;
 mod attaching;
 mod audio_store;
@@ -106,6 +107,9 @@ use crate::shell::Shell;
 /// Returns Rune's error when the window cannot open, for example without a
 /// Wayland or X11 display.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // Before any background thread starts so glibc arena/threshold limits apply
+    // to every worker pool and native media library in the process.
+    allocator::configure();
     init_logging();
     // Before anything else starts: a later launch only hands off and exits.
     let mut lifecycle = match Lifecycle::start() {

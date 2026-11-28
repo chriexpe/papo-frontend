@@ -1,8 +1,8 @@
-//! Handing freed decoder memory back to the system when a pipeline is let go (Linux with
-//! glibc). Each player's streaming and decoder threads allocate frames from an allocator arena
-//! of their own; freed, those frames stay in the arenas, so players opened and let go while a
-//! conversation scrolls grew the process by about 200 MiB in 80 s (with two arenas it levelled
-//! at about 410 MiB). `malloc_trim` gives every arena's free pages back.
+//! Handing freed decoder memory back to the system when a playback, probe or waveform pipeline
+//! is let go (Linux with glibc). Process startup (`allocator::configure`) locks glibc's
+//! `mmap_threshold` and `trim_threshold` at 128 KiB and bounds arenas so large frame buffers
+//! return via `munmap`; this module complements that by releasing smaller (`< 128 KiB`) interior
+//! free pages that GStreamer/libav pipelines leave fragmented in the arenas after teardown.
 //!
 //! The one `unsafe` in the playback module. Safety: `malloc_trim` is glibc's, thread-safe (it
 //! locks each arena while it trims), takes a plain integer and touches no memory of ours; it

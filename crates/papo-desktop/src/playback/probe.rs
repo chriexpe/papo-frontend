@@ -49,6 +49,8 @@ pub(super) fn probe(bytes: Arc<[u8]>, poster_px: [u32; 2]) -> Result<Probe, Play
         }
     });
     let _ = graph.pipeline.set_state(gst::State::Null);
+    drop(graph);
+    super::memory::return_freed_memory();
     probe
 }
 
