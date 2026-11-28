@@ -42,6 +42,8 @@ pub(super) fn read_audio(
     let graph = pipeline::build(bytes, Mode::Peaks, None, None)?;
     let read = read(&graph, ahead_max_ms, progress, stop);
     let _ = graph.pipeline.set_state(gst::State::Null);
+    drop(graph);
+    super::memory::return_freed_memory();
     read
 }
 
